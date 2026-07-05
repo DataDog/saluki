@@ -24,9 +24,27 @@ pub struct SharedConfiguration {
     /// Autoscaling failover, shared by checks, DogStatsD, and OTLP.
     pub autoscaling_failover: AutoscalingFailover,
 
+    /// Secrets-management settings that gate forwarder API-key refresh behavior.
+    pub secrets: Secrets,
+
+    /// Runtime directory for on-disk state, used to derive the forwarder's retry-queue storage path
+    /// when no explicit path is configured.
+    pub run_path: PathBuf,
+
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
     pub metrics_level: String,
+}
+
+/// Secrets-management settings that gate forwarder API-key refresh behavior.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Secrets {
+    /// Path to the custom script executed to fetch secrets. Empty when secrets management is off.
+    pub backend_command: String,
+
+    /// Minutes between secret refreshes triggered by an invalid or expired API key (HTTP 403). Zero
+    /// disables API-key-failure-triggered refresh.
+    pub refresh_on_api_key_failure_interval: u64,
 }
 
 /// Primary outbound endpoints plus the forwarder, proxy, TLS, and compression settings that apply

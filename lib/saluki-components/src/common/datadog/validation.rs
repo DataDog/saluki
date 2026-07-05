@@ -1,16 +1,16 @@
 use std::{collections::HashSet, future, sync::LazyLock, time::Duration};
 
+use agent_data_plane_config::{Live, SalukiConfiguration};
 use bytes::Bytes;
 use http::{Request, StatusCode, Uri};
 use http_body_util::Empty;
 use regex::Regex;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClient;
 use tokio::{
     select,
-    sync::{broadcast, mpsc},
+    sync::mpsc,
     task::JoinHandle,
     time::{self, MissedTickBehavior},
 };
@@ -39,20 +39,20 @@ pub(crate) enum ValidationReadiness {
 pub(crate) struct ApiKeyValidator {
     endpoints: Vec<RoutableEndpoint>,
     client: HttpClient,
-    live_config: Option<GenericConfiguration>,
+    live: Option<Live<SalukiConfiguration>>,
     interval: Duration,
 }
 
 impl ApiKeyValidator {
     /// Creates API key validation for the given startup endpoint set.
     pub(crate) fn new(
-        endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
+        endpoints: Vec<RoutableEndpoint>, client: HttpClient, live: Option<Live<SalukiConfiguration>>,
         interval: Duration,
     ) -> Self {
         Self {
             endpoints,
             client,
-            live_config,
+            live,
             interval,
         }
     }
@@ -60,13 +60,7 @@ impl ApiKeyValidator {
     /// Spawns the API key validation task and returns a readiness handle.
     pub(crate) fn spawn(self) -> ApiKeyValidationHandle {
         let (readiness_tx, readiness_rx) = mpsc::channel(1);
-        let task = spawn_validation_task(
-            self.endpoints,
-            self.client,
-            self.live_config,
-            self.interval,
-            readiness_tx,
-        );
+        let task = spawn_validation_task(self.endpoints, self.client, self.live, self.interval, readiness_tx);
 
         ApiKeyValidationHandle {
             task,
@@ -125,17 +119,17 @@ enum KeyValidationResult {
 }
 
 fn spawn_validation_task(
-    endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
-    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>,
+    endpoints: Vec<RoutableEndpoint>, client: HttpClient, live: Option<Live<SalukiConfiguration>>, interval: Duration,
+    readiness_tx: mpsc::Sender<ValidationReadiness>,
 ) -> JoinHandle<()> {
     spawn_traced_named(
         "dd-api-key-validation",
-        run_validation_loop(endpoints, client, live_config, interval, readiness_tx),
+        run_validation_loop(endpoints, client, live, interval, readiness_tx),
     )
 }
 
 async fn run_validation_loop(
-    mut endpoints: Vec<RoutableEndpoint>, mut client: HttpClient, live_config: Option<GenericConfiguration>,
+    mut endpoints: Vec<RoutableEndpoint>, mut client: HttpClient, live: Option<Live<SalukiConfiguration>>,
     interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>,
 ) {
     if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
@@ -147,9 +141,15 @@ async fn run_validation_loop(
     // The startup validation above is the immediate tick.
     interval.tick().await;
 
-    let mut config_updates_rx = live_config
+    // Re-validate whenever any API-key source changes: the primary key, the Multi-Region Failover
+    // override key, or the dual-shipping endpoint keys.
+    let mut api_key = live.as_ref().map(|live| live.project(|c| &c.shared.endpoints.api_key));
+    let mut mrf_api_key = live
         .as_ref()
-        .and_then(GenericConfiguration::subscribe_for_updates);
+        .map(|live| live.project(|c| &c.domains.multi_region_failover.api_key));
+    let mut additional_endpoints = live
+        .as_ref()
+        .map(|live| live.project(|c| &c.shared.endpoints.additional_endpoints));
 
     loop {
         select! {
@@ -158,7 +158,17 @@ async fn run_validation_loop(
                     return;
                 }
             },
-            _ = wait_for_validation_config_change(&mut config_updates_rx) => {
+            _ = wait_for_change(&mut api_key) => {
+                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
+                    return;
+                }
+            },
+            _ = wait_for_change(&mut mrf_api_key) => {
+                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
+                    return;
+                }
+            },
+            _ = wait_for_change(&mut additional_endpoints) => {
                 if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
                     return;
                 }
@@ -167,32 +177,12 @@ async fn run_validation_loop(
     }
 }
 
-async fn wait_for_validation_config_change(
-    rx: &mut Option<broadcast::Receiver<saluki_config::dynamic::ConfigChangeEvent>>,
-) {
-    let Some(rx) = rx else {
-        std::future::pending::<()>().await;
-        return;
-    };
-
-    loop {
-        match rx.recv().await {
-            Ok(event) if is_validation_trigger_key(&event.key) => return,
-            Ok(_) => {}
-            Err(broadcast::error::RecvError::Lagged(_)) => return,
-            Err(broadcast::error::RecvError::Closed) => {
-                std::future::pending::<()>().await;
-                return;
-            }
-        }
+/// Resolves when the projected view changes, or parks forever when there is no live view.
+async fn wait_for_change<T: Clone + PartialEq + 'static>(view: &mut Option<Live<T>>) {
+    match view {
+        Some(view) => view.changed().await,
+        None => std::future::pending().await,
     }
-}
-
-fn is_validation_trigger_key(key: &str) -> bool {
-    key == "api_key"
-        || key == "multi_region_failover.api_key"
-        || key == "additional_endpoints"
-        || key.starts_with("additional_endpoints.")
 }
 
 async fn validate_and_send_readiness(
@@ -351,11 +341,10 @@ mod tests {
         Arc,
     };
 
+    use arc_swap::ArcSwap;
     use axum::{routing::get, Router};
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_tls::initialize_default_crypto_provider;
-    use serde_json::json;
-    use tokio::net::TcpListener;
+    use tokio::{net::TcpListener, sync::watch};
 
     use super::*;
     use crate::common::datadog::{config::ForwarderConfiguration, endpoints::ResolvedEndpoint};
@@ -363,6 +352,21 @@ mod tests {
     fn validation_url_for(raw_endpoint: &str) -> String {
         let endpoint = ResolvedEndpoint::from_raw_endpoint(raw_endpoint, "api-key").expect("endpoint should resolve");
         validation_base_url(endpoint.endpoint()).to_string()
+    }
+
+    /// A [`Live`] view backed by a cell the test can flip, mirroring how the config system drives
+    /// runtime updates.
+    fn drivable_live(
+        config: SalukiConfiguration,
+    ) -> (
+        Arc<ArcSwap<SalukiConfiguration>>,
+        watch::Sender<()>,
+        Live<SalukiConfiguration>,
+    ) {
+        let cell = Arc::new(ArcSwap::from_pointee(config));
+        let (tx, rx) = watch::channel(());
+        let live = Live::dynamic(Arc::clone(&cell), rx, |c| c);
+        (cell, tx, live)
     }
 
     #[test]
@@ -388,22 +392,6 @@ mod tests {
 
         for (case_name, raw_endpoint, expected_url) in cases {
             assert_eq!(validation_url_for(raw_endpoint), expected_url, "{case_name}");
-        }
-    }
-
-    #[test]
-    fn validation_config_triggers_include_nested_additional_endpoints_changes() {
-        let cases = [
-            ("api_key", true),
-            ("multi_region_failover.api_key", true),
-            ("additional_endpoints", true),
-            ("additional_endpoints.http://additional.example.com.0", true),
-            ("forwarder_timeout", false),
-            ("multi_region_failover.enabled", false),
-        ];
-
-        for (key, should_trigger) in cases {
-            assert_eq!(is_validation_trigger_key(key), should_trigger, "{key}");
         }
     }
 
@@ -452,25 +440,32 @@ mod tests {
         );
     }
 
+    fn primary_additional_opw_config() -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        let endpoints = &mut config.shared.endpoints;
+        endpoints.api_key = "primary-key".to_string();
+        endpoints.dd_url = Some("http://primary.example.com".to_string());
+        endpoints.additional_endpoints = [(
+            "http://additional.example.com".to_string(),
+            vec![
+                "additional-key".to_string(),
+                "additional-key".to_string(),
+                String::new(),
+            ],
+        )]
+        .into_iter()
+        .collect();
+        endpoints.opw_intake.enabled = true;
+        endpoints.opw_intake.url = "http://opw.example.com".to_string();
+        config
+    }
+
     #[tokio::test]
     async fn validation_targets_include_primary_additional_and_opw() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["additional-key", "additional-key", ""]
-                },
-                "observability_pipelines_worker_metrics_enabled": true,
-                "observability_pipelines_worker_metrics_url": "http://opw.example.com"
-            })),
-            None,
-            false,
-        )
-        .await;
-        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let config = primary_additional_opw_config();
+        let forwarder_config = ForwarderConfiguration::from_model(&config.shared).expect("config should build");
         let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config))
+            .build_routable_endpoints(Some(Live::fixed(config)))
             .expect("endpoints should resolve");
 
         let targets = collect_validation_targets(&mut endpoints);
@@ -493,52 +488,37 @@ mod tests {
         );
     }
 
+    fn config_with_additional(entries: &[(&str, &[&str])]) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.endpoints.api_key = "primary-key".to_string();
+        config.shared.endpoints.dd_url = Some("http://primary.example.com".to_string());
+        config.shared.endpoints.additional_endpoints = entries
+            .iter()
+            .map(|(url, keys)| (url.to_string(), keys.iter().map(|k| k.to_string()).collect()))
+            .collect();
+        config
+    }
+
     #[tokio::test]
     async fn validation_targets_refresh_existing_additional_endpoint_key() {
-        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
-        let sender = sender.expect("dynamic sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["old-additional-key"]
-                }
-            })))
-            .await
-            .expect("initial snapshot should send");
-        config.ready().await;
-
-        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let initial = config_with_additional(&[("http://additional.example.com", &["old-additional-key"])]);
+        let forwarder_config = ForwarderConfiguration::from_model(&initial.shared).expect("config should build");
+        let (cell, tx, live) = drivable_live(initial);
         let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config.clone()))
+            .build_routable_endpoints(Some(live))
             .expect("endpoints should resolve");
 
-        sender
-            .send(ConfigUpdate::Snapshot(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["new-additional-key"],
-                    "http://new.example.com": ["ignored-new-domain-key"]
-                }
-            })))
-            .await
-            .expect("updated snapshot should send");
+        // Rotate the existing endpoint's key and add a new domain the startup set never saw.
+        cell.store(Arc::new(config_with_additional(&[
+            ("http://additional.example.com", &["new-additional-key"]),
+            ("http://new.example.com", &["ignored-new-domain-key"]),
+        ])));
+        tx.send(()).expect("live cell should have a receiver");
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let targets = loop {
-            let targets = collect_validation_targets(&mut endpoints);
-            if targets.iter().any(|target| target.api_key == "new-additional-key") {
-                break targets;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for key refresh"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
+        let targets = collect_validation_targets(&mut endpoints);
 
+        // The existing endpoint refreshes to the rotated key; the new domain is not added because
+        // the startup endpoint set is fixed.
         assert!(targets.iter().any(|target| target.api_key == "new-additional-key"));
         assert!(!targets
             .iter()

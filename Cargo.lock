@@ -4492,7 +4492,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
- "serde_yaml",
  "simdutf8",
  "smallvec",
  "snafu",

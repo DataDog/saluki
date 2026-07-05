@@ -698,6 +698,9 @@ compressed wire payload bytes.
 | `proxy.http`                                                   | HTTP proxy URL                                     |
 | `proxy.https`                                                  | HTTPS proxy URL                                    |
 | `proxy.no_proxy`                                               | Hosts bypassing proxy                              |
+| `run_path`                                                     | Runtime directory for on-disk state                |
+| `secret_backend_command`                                       | Path to the secrets backend command                |
+| `secret_refresh_on_api_key_failure_interval`                   | Secret refresh interval on API key failure         |
 | `serializer_compressor_kind`                                   | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                      |
 | `serializer_experimental_use_v3_api.series.beta_route`         | Beta V3 series API route                           |

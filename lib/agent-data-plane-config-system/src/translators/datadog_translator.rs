@@ -713,12 +713,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
             .retry_queue_capacity_time_interval_sec = value.max(0) as u64;
     }
 
-    fn consume_forwarder_retry_queue_max_size(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.retry_queue_max_size = Some(value.max(0) as u64);
+    fn consume_forwarder_retry_queue_max_size(&mut self, value: Option<i64>) {
+        self.config.shared.endpoints.forwarder.retry_queue_max_size = value.map(|v| v.max(0) as u64);
     }
 
-    fn consume_forwarder_retry_queue_payloads_max_size(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.retry_queue_payloads_max_size = Some(value.max(0) as u64);
+    fn consume_forwarder_retry_queue_payloads_max_size(&mut self, value: Option<i64>) {
+        self.config.shared.endpoints.forwarder.retry_queue_payloads_max_size = value.map(|v| v.max(0) as u64);
     }
 
     fn consume_forwarder_stop_timeout(&mut self, value: i64) {
@@ -941,6 +941,26 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_proxy_no_proxy(&mut self, value: Vec<String>) {
         self.config.shared.endpoints.proxy.no_proxy = value;
+    }
+
+    fn consume_run_path(&mut self, value: String) {
+        // The vendored schema default is the literal template `${run_path}`, which Saluki does not
+        // expand. Treat that placeholder (as well as empty or whitespace-only values) as unset,
+        // leaving `run_path` as the empty default so the forwarder does not derive a bogus
+        // `${run_path}/transactions_to_retry` storage path.
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed == "${run_path}" {
+            return;
+        }
+        self.config.shared.run_path = PathBuf::from(value);
+    }
+
+    fn consume_secret_backend_command(&mut self, value: String) {
+        self.config.shared.secrets.backend_command = value;
+    }
+
+    fn consume_secret_refresh_on_api_key_failure_interval(&mut self, value: i64) {
+        self.config.shared.secrets.refresh_on_api_key_failure_interval = value.max(0) as u64;
     }
 
     fn consume_serializer_compressor_kind(&mut self, value: String) {
@@ -1348,6 +1368,90 @@ mod tests {
         assert!(
             !modes.contains_key("https://bad.example.com"),
             "the invalid entry must be omitted from the map"
+        );
+    }
+
+    #[test]
+    fn run_path_schema_default_placeholder_leaves_run_path_unset() {
+        // The vendored schema default for `run_path` is the literal template `${run_path}`. Saluki
+        // does not expand templates, so this must not propagate; `run_path` stays empty (unset).
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "run_path": "${run_path}",
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+        assert_eq!(config.shared.run_path, std::path::PathBuf::new());
+    }
+
+    #[test]
+    fn run_path_explicit_value_is_preserved() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "run_path": "/opt/datadog-agent/run",
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+        assert_eq!(
+            config.shared.run_path,
+            std::path::PathBuf::from("/opt/datadog-agent/run")
+        );
+    }
+
+    #[test]
+    fn run_path_whitespace_only_value_leaves_run_path_unset() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "run_path": "   ",
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+        assert_eq!(config.shared.run_path, std::path::PathBuf::new());
+    }
+
+    #[test]
+    fn retry_queue_sizes_absent_when_unset() {
+        // An empty source must leave both retry-queue size keys unset. The schema default for
+        // `forwarder_retry_queue_payloads_max_size` is 15 MiB, but ADP owns that effective default
+        // downstream in `RetryConfiguration::queue_max_size_bytes()`; if the schema default leaked
+        // into the model as `Some(..)`, the deprecated-key fallback below could never fire.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({})).expect("datadog source deserializes");
+
+        let (config, _errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        let forwarder = &config.shared.endpoints.forwarder;
+        assert_eq!(forwarder.retry_queue_payloads_max_size, None);
+        assert_eq!(forwarder.retry_queue_max_size, None);
+    }
+
+    #[test]
+    fn retry_queue_deprecated_key_only_is_preserved() {
+        // Setting only the deprecated `forwarder_retry_queue_max_size` must reach the model as
+        // `Some(..)` so the getter's precedence honors it; the payloads key must stay `None`.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "forwarder_retry_queue_max_size": 5000,
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, _errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        let forwarder = &config.shared.endpoints.forwarder;
+        assert_eq!(forwarder.retry_queue_payloads_max_size, None);
+        assert_eq!(forwarder.retry_queue_max_size, Some(5000));
+    }
+
+    #[test]
+    fn retry_queue_payloads_key_is_preserved() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "forwarder_retry_queue_payloads_max_size": 2048,
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, _errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert_eq!(
+            config.shared.endpoints.forwarder.retry_queue_payloads_max_size,
+            Some(2048)
         );
     }
 }

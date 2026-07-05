@@ -1,5 +1,6 @@
 //! Cluster Agent forwarder.
 
+use agent_data_plane_config::shared::SharedConfiguration;
 use async_trait::async_trait;
 use http::{
     header::AUTHORIZATION,
@@ -8,7 +9,6 @@ use http::{
 };
 use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
     data_model::payload::PayloadType,
@@ -45,10 +45,10 @@ pub struct ClusterAgentForwarderConfiguration {
 impl ClusterAgentForwarderConfiguration {
     /// Creates a new `ClusterAgentForwarderConfiguration` from the given Cluster Agent endpoint and bearer token.
     pub fn from_configuration(
-        config: &GenericConfiguration, endpoint_url: String, auth_token: String,
+        shared: &SharedConfiguration, endpoint_url: String, auth_token: String,
     ) -> Result<Self, GenericError> {
         let auth_header_value = bearer_auth_header_value(&auth_token)?;
-        let mut forwarder_config = ForwarderConfiguration::from_configuration(config)?.with_allow_arbitrary_tags(false);
+        let mut forwarder_config = ForwarderConfiguration::from_model(shared)?.with_allow_arbitrary_tags(false);
 
         let endpoint = forwarder_config.endpoint_mut();
         endpoint.clear_additional_endpoints();
@@ -200,9 +200,8 @@ fn get_cluster_agent_endpoint_name(uri: &Uri) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::SalukiConfiguration;
     use http::Method;
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
 
     use super::*;
     use crate::common::datadog::endpoints::EndpointRoute;
@@ -235,29 +234,22 @@ mod tests {
         assert!(bearer_auth_header_value("bad\ntoken").is_err());
     }
 
-    #[tokio::test]
-    async fn configuration_uses_only_cluster_agent_endpoint() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-api-key",
-                "dd_url": "https://app.datadoghq.com",
-                "additional_endpoints": {
-                    "https://additional.example.com": ["additional-api-key"]
-                },
-                "observability_pipelines_worker": {
-                    "metrics": {
-                        "enabled": true,
-                        "url": "https://opw.example.com"
-                    }
-                }
-            })),
-            None,
-            false,
-        )
-        .await;
+    #[test]
+    fn configuration_uses_only_cluster_agent_endpoint() {
+        let mut shared = SalukiConfiguration::default().shared;
+        shared.endpoints.api_key = "primary-api-key".to_string();
+        shared.endpoints.dd_url = Some("https://app.datadoghq.com".to_string());
+        shared.endpoints.additional_endpoints = [(
+            "https://additional.example.com".to_string(),
+            vec!["additional-api-key".to_string()],
+        )]
+        .into_iter()
+        .collect();
+        shared.endpoints.opw_intake.enabled = true;
+        shared.endpoints.opw_intake.url = "https://opw.example.com".to_string();
 
         let config = ClusterAgentForwarderConfiguration::from_configuration(
-            &config,
+            &shared,
             "https://cluster-agent.example.com".to_string(),
             "secret-token".to_string(),
         )
