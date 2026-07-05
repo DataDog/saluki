@@ -87,7 +87,7 @@ impl TraceSamplerConfiguration {
     /// Creates a new `TraceSamplerConfiguration` from the resolved traces configuration.
     pub fn from_configuration(config: &TracesConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
-            sampling_rate: config.probabilistic_sampler.sampling_percentage / 100.0,
+            sampling_rate: normalize_sampling_rate(config.probabilistic_sampler.sampling_percentage / 100.0),
             error_sampling_enabled: config.error_sampling_enabled,
             error_tracking_standalone: config.error_tracking_standalone_enabled,
             probabilistic_sampler_enabled: config.probabilistic_sampler.enabled,
@@ -615,6 +615,23 @@ mod tests {
         assert_eq!(config.rare_sampler_tps, 5.0);
         assert_eq!(config.rare_sampler_cooldown_period, std::time::Duration::from_secs(300));
         assert_eq!(config.rare_sampler_cardinality, 200);
+    }
+
+    #[test]
+    fn default_probabilistic_sampling_rate_normalizes_to_one() {
+        // The model default for `probabilistic_sampler.sampling_percentage` is 0, which yields a
+        // rate of 0.0. That must normalize back to 1.0 (keep everything), matching prior behavior.
+        let config = TracesConfiguration {
+            probabilistic_sampler: agent_data_plane_config::domains::traces::ProbabilisticSampler {
+                enabled: true,
+                sampling_percentage: 0.0,
+            },
+            ..trace_configuration()
+        };
+
+        let config = TraceSamplerConfiguration::from_configuration(&config).expect("configuration builds");
+
+        assert_eq!(config.sampling_rate, 1.0);
     }
 
     fn create_test_sampler() -> TraceSampler {
