@@ -186,7 +186,7 @@ pub type PathResolverMap<F> = HashMap<String, PathResolver<F>>;
 // Callback Types
 // =====================================================================================================================
 
-/// Trait for lazy argument evaluation - ZERO ALLOCATION at runtime!
+/// Trait for lazy argument evaluation - ZERO ALLOCATION at runtime.
 /// Arguments are evaluated only when requested by the callback.
 pub trait Args {
     /// Number of arguments
