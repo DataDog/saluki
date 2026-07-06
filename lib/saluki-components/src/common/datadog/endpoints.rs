@@ -36,13 +36,19 @@ fn default_site() -> String {
     DEFAULT_SITE.to_owned()
 }
 
-/// Returns the effective `dd_url` override, treating a value equal to the default-derived URL as unset.
+/// Deserializes an optional `dd_url`, treating the schema-default URL as absent.
 ///
-/// The Core Agent always sends `dd_url` at its schema default, which is the URL constructed from the
-/// default `site`. A `dd_url` equal to this default carries no override intent and must not shadow
-/// the operator's `site` configuration.
-fn effective_override_url(dd_url: Option<&str>) -> Option<&str> {
-    dd_url.filter(|url| *url != DEFAULT_PRIMARY_ENDPOINT)
+/// The Core Agent always sends `dd_url` at its schema default (`https://app.datadoghq.com`) even
+/// when the operator only configured `site`. Filtering here — at deserialization — ensures that a
+/// value equal to the default is treated as `None`, allowing `site` to determine the endpoint. This
+/// only affects the serde path; programmatic callers such as `set_dd_url` bypass serde and are
+/// unaffected.
+fn deserialize_dd_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val = Option::<String>::deserialize(deserializer)?;
+    Ok(val.filter(|url| url.as_str() != DEFAULT_PRIMARY_ENDPOINT))
 }
 
 /// Per-endpoint V3 protocol settings.
@@ -494,7 +500,7 @@ pub struct EndpointConfiguration {
     /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
     ///
     /// Defaults to unset.
-    #[serde(default, alias = "url")]
+    #[serde(default, alias = "url", deserialize_with = "deserialize_dd_url")]
     dd_url: Option<String>,
 
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
@@ -534,19 +540,15 @@ impl EndpointConfiguration {
     pub(crate) fn build_primary_endpoint(
         &self, configuration: Option<GenericConfiguration>,
     ) -> Result<ResolvedEndpoint, GenericError> {
-        calculate_resolved_endpoint(
-            effective_override_url(self.dd_url.as_deref()),
-            &self.site,
-            &self.api_key,
-        )
-        .error_context("Failed parsing/resolving the primary destination endpoint.")
-        .map(|endpoint| endpoint.with_configuration(configuration))
-        .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
+        calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
+            .error_context("Failed parsing/resolving the primary destination endpoint.")
+            .map(|endpoint| endpoint.with_configuration(configuration))
+            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
     }
 
     /// Returns the configured primary endpoint string without resolving or version-prefixing it.
     pub(crate) fn configured_primary_endpoint(&self) -> String {
-        match effective_override_url(self.dd_url.as_deref()) {
+        match self.dd_url.as_deref() {
             Some(url) => url.to_string(),
             None => {
                 let base_domain = if self.site.is_empty() { DEFAULT_SITE } else { &self.site };
@@ -1575,35 +1577,46 @@ mod tests {
     }
 
     #[test]
-    fn effective_override_url_returns_none_for_default_dd_url() {
-        // The default dd_url (what the Agent sends when operator only configured site) equals the URL
-        // constructed from the default site. It should be treated as unset so that site takes precedence.
-        assert_eq!(None, effective_override_url(Some("https://app.datadoghq.com")));
+    fn deserialize_dd_url_filters_default_value() {
+        // The default dd_url (what the Agent sends when operator only configured site) should
+        // deserialize to None so that site takes precedence.
+        let config_str = r#"{"api_key": "test-key", "dd_url": "https://app.datadoghq.com"}"#;
+        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
+        assert_eq!(None, config.dd_url);
     }
 
     #[test]
-    fn effective_override_url_returns_none_when_input_is_none() {
-        // Absence of dd_url is still absence after filtering.
-        assert_eq!(None, effective_override_url(None));
+    fn deserialize_dd_url_preserves_explicit_override() {
+        // A dd_url that differs from the default should deserialize as-is.
+        let config_str = r#"{"api_key": "test-key", "dd_url": "https://proxy.internal.example.com:3128"}"#;
+        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
+        assert_eq!(
+            Some("https://proxy.internal.example.com:3128".to_string()),
+            config.dd_url
+        );
     }
 
     #[test]
-    fn effective_override_url_returns_some_for_explicit_override() {
-        // A dd_url that differs from the default is an explicit override and should be honored.
-        let explicit_url = Some("https://proxy.internal.example.com:3128");
-        assert_eq!(explicit_url, effective_override_url(explicit_url));
+    fn set_dd_url_is_not_filtered() {
+        // Programmatic calls to set_dd_url bypass serde and are never filtered, even if set to the default value.
+        // This is important for MRF and other override paths that may explicitly set the default URL.
+        let mut config = EndpointConfiguration {
+            api_key: "test-key".to_string(),
+            api_key_refresh_config_path: None,
+            site: "datadoghq.eu".to_string(),
+            dd_url: None,
+            additional_endpoints: AdditionalEndpoints::default(),
+        };
+        config.set_dd_url("https://app.datadoghq.com".to_string());
+        assert_eq!(Some("https://app.datadoghq.com".to_string()), config.dd_url);
     }
 
     #[test]
     fn site_takes_precedence_when_dd_url_is_default() {
         // When dd_url is at its default (sent by Agent with source="default"), site should determine the endpoint.
-        let config = EndpointConfiguration {
-            api_key: "fake-key".to_string(),
-            api_key_refresh_config_path: None,
-            site: "datadoghq.eu".to_string(),
-            dd_url: Some("https://app.datadoghq.com".to_string()), // Default value
-            additional_endpoints: AdditionalEndpoints::default(),
-        };
+        // This is tested through deserialization so the default-filtering occurs.
+        let config_str = r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://app.datadoghq.com"}"#;
+        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
 
         assert_eq!("https://app.datadoghq.eu", config.configured_primary_endpoint());
     }
@@ -1611,13 +1624,9 @@ mod tests {
     #[test]
     fn explicit_dd_url_overrides_site() {
         // A dd_url that diverges from the default should take precedence over site.
-        let config = EndpointConfiguration {
-            api_key: "fake-key".to_string(),
-            api_key_refresh_config_path: None,
-            site: "datadoghq.eu".to_string(),
-            dd_url: Some("https://proxy.internal.example.com:3128".to_string()),
-            additional_endpoints: AdditionalEndpoints::default(),
-        };
+        let config_str =
+            r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://proxy.internal.example.com:3128"}"#;
+        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
 
         assert_eq!(
             "https://proxy.internal.example.com:3128",
