@@ -4,7 +4,8 @@
 //! implementations (`FixedSizeInterner`, `GenericMapInterner`, etc). These components are meant to work in concert,
 //! allowing for using a single string type that can handle owned, shared, and interned strings, and providing a way to
 //! efficiently intern strings when possible.
-#![deny(warnings)]
+#![cfg_attr(target_endian = "little", deny(warnings))]
+#![cfg_attr(target_endian = "big", allow(dead_code, unused_imports))]
 #![deny(missing_docs)]
 // We only support 64-bit little-endian platforms anyways, so there's no risk of our enum variants having their values truncated.
 #![allow(clippy::enum_clike_unportable_variant)]
@@ -22,6 +23,11 @@ pub use self::clone::CheapMetaString;
 
 pub mod interning;
 use self::interning::{InternedString, InternedStringState, Interner};
+
+#[cfg(target_endian = "big")]
+mod big_endian;
+#[cfg(target_endian = "big")]
+pub use self::big_endian::MetaString;
 
 const ZERO_VALUE: usize = 0;
 const TOP_MOST_BIT: usize = usize::MAX & !(isize::MAX as usize);
@@ -52,9 +58,9 @@ const fn get_scaled_union_tag(tag: u8) -> usize {
 }
 
 // High-level invariant checks to ensure `stringtheory` isn't being used on an unsupported platform.
-#[cfg(not(all(target_pointer_width = "64", target_endian = "little")))]
+#[cfg(not(all(target_pointer_width = "64", any(target_endian = "little", target_endian = "big"))))]
 const _INVARIANTS_CHECK: () = {
-    compile_error!("`stringtheory` is only supported on 64-bit little-endian platforms.");
+    compile_error!("`stringtheory` is only supported on 64-bit platforms.");
 };
 
 const fn is_tagged(cap: u8) -> bool {
@@ -712,11 +718,13 @@ unsafe impl Sync for Inner {}
 ///
 /// If a caller needs to be able to modify the string data, they can call `into_owned` to get an owned version of the
 /// string, make their modifications to the owned version, and then convert that back to `MetaString`.
+#[cfg(target_endian = "little")]
 #[derive(Clone)]
 pub struct MetaString {
     inner: Inner,
 }
 
+#[cfg(target_endian = "little")]
 impl MetaString {
     /// Creates an empty `MetaString`.
     ///
@@ -776,56 +784,66 @@ impl MetaString {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl Default for MetaString {
     fn default() -> Self {
         Self::empty()
     }
 }
 
+#[cfg(target_endian = "little")]
 impl hash::Hash for MetaString {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.deref().hash(state)
     }
 }
 
+#[cfg(target_endian = "little")]
 impl PartialEq<str> for MetaString {
     fn eq(&self, other: &str) -> bool {
         self.deref() == other
     }
 }
 
+#[cfg(target_endian = "little")]
 impl PartialEq<&str> for MetaString {
     fn eq(&self, other: &&str) -> bool {
         self.deref() == *other
     }
 }
 
+#[cfg(target_endian = "little")]
 impl PartialEq<MetaString> for MetaString {
     fn eq(&self, other: &MetaString) -> bool {
         self.deref() == other.deref()
     }
 }
 
+#[cfg(target_endian = "little")]
 impl Eq for MetaString {}
 
+#[cfg(target_endian = "little")]
 impl PartialOrd for MetaString {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
+#[cfg(target_endian = "little")]
 impl Ord for MetaString {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.deref().cmp(other.deref())
     }
 }
 
+#[cfg(target_endian = "little")]
 impl Borrow<str> for MetaString {
     fn borrow(&self) -> &str {
         self.deref()
     }
 }
 
+#[cfg(target_endian = "little")]
 impl Serialize for MetaString {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -835,6 +853,7 @@ impl Serialize for MetaString {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl<'de> Deserialize<'de> for MetaString {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -861,18 +880,21 @@ impl<'de> Deserialize<'de> for MetaString {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl From<String> for MetaString {
     fn from(s: String) -> Self {
         Self { inner: Inner::owned(s) }
     }
 }
 
+#[cfg(target_endian = "little")]
 impl From<&str> for MetaString {
     fn from(s: &str) -> Self {
         Self::try_inline(s).unwrap_or_else(|| Self::from(s.to_owned()))
     }
 }
 
+#[cfg(target_endian = "little")]
 impl From<InternedString> for MetaString {
     fn from(s: InternedString) -> Self {
         Self {
@@ -881,6 +903,7 @@ impl From<InternedString> for MetaString {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl From<Arc<str>> for MetaString {
     fn from(s: Arc<str>) -> Self {
         Self {
@@ -889,12 +912,14 @@ impl From<Arc<str>> for MetaString {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl From<MetaString> for protobuf::Chars {
     fn from(value: MetaString) -> Self {
         value.into_owned().into()
     }
 }
 
+#[cfg(target_endian = "little")]
 impl<'a> From<&'a MetaString> for protobuf::Chars {
     fn from(value: &'a MetaString) -> Self {
         // TODO: We're foregoing additional code/complexity to recover a static reference, when our string storage is
@@ -906,6 +931,7 @@ impl<'a> From<&'a MetaString> for protobuf::Chars {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl Deref for MetaString {
     type Target = str;
 
@@ -914,25 +940,28 @@ impl Deref for MetaString {
     }
 }
 
+#[cfg(target_endian = "little")]
 impl AsRef<str> for MetaString {
     fn as_ref(&self) -> &str {
         self.deref()
     }
 }
 
+#[cfg(target_endian = "little")]
 impl fmt::Debug for MetaString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.deref().fmt(f)
     }
 }
 
+#[cfg(target_endian = "little")]
 impl fmt::Display for MetaString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.deref().fmt(f)
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_endian = "little"))]
 mod tests {
     use std::{num::NonZeroUsize, sync::Arc};
 
