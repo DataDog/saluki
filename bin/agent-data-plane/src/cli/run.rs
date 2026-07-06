@@ -7,7 +7,7 @@ use std::{
 use agent_data_plane_config::shared::Compression;
 use agent_data_plane_config_system::{ConfigurationSystem, EnvOverlayMode};
 use argh::FromArgs;
-use datadog_agent_commons::platform::PlatformSettings;
+use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
@@ -477,7 +477,9 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
     if !dp_config.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(config)?;
+        let client_config = RemoteAgentClientConfiguration::from_configuration(config)?;
+        let saluki = config_system.config();
+        let host_tags_config = HostTagsConfiguration::from_configuration(client_config, &saluki.shared.tags);
         if host_tags_config.enabled() {
             metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
         }
