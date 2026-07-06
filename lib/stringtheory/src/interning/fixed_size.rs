@@ -225,9 +225,17 @@ impl EntryHeader {
     /// Returns `true` if the reference count was incremented. A return value of `false` means the entry has already
     /// been released -- its reference count reached zero -- and is pending reclamation, so it must not be reused.
     fn try_increment_active_refs(&self) -> bool {
-        self.refs
+        // loom's AtomicUsize does not yet have `try_update`; std's was renamed from `fetch_update`
+        #[cfg(not(feature = "loom"))]
+        return self
+            .refs
+            .try_update(AcqRel, Acquire, |refs| (refs != 0).then_some(refs + 1))
+            .is_ok();
+        #[cfg(feature = "loom")]
+        return self
+            .refs
             .fetch_update(AcqRel, Acquire, |refs| (refs != 0).then_some(refs + 1))
-            .is_ok()
+            .is_ok();
     }
 }
 
