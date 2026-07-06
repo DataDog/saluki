@@ -125,7 +125,7 @@ impl PointKind {
 ///
 /// Uses [`PointKind`] internally to avoid precision loss when mixing
 /// large integers with fractional float32 values.
-pub fn value_type_for_values(values: impl Iterator<Item = f64>) -> V3ValueType {
+pub(crate) fn value_type_for_values(values: impl Iterator<Item = f64>) -> V3ValueType {
     let mut kind = PointKind::Zero;
     for v in values {
         kind = kind.union(PointKind::for_value(v));
