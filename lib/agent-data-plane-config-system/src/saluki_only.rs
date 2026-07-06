@@ -414,21 +414,13 @@ pub struct OttlFilterTraces {
 
 /// The `ottl_transform_config` object: OTTL span-transform processor.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OttlTransformConfig {
     /// Evaluation error handling mode (`ottl_transform_config.error_mode`: `ignore` / `silent` /
     /// `propagate`).
-    pub error_mode: Option<String>,
+    pub error_mode: Option<OttlErrorMode>,
     /// OTTL span-mutating statements (`ottl_transform_config.trace_statements`).
     pub trace_statements: Vec<String>,
-}
-
-fn parse_ottl_transform_error_mode(mode: Option<String>) -> OttlErrorMode {
-    match mode.as_deref() {
-        Some("ignore") => OttlErrorMode::Ignore,
-        Some("silent") => OttlErrorMode::Silent,
-        _ => OttlErrorMode::Propagate,
-    }
 }
 
 impl SalukiOnly {
@@ -561,7 +553,7 @@ impl SalukiOnly {
         }
         if let Some(transform) = &self.ottl_transform_config {
             traces.ottl_transform = OttlTransform {
-                error_mode: parse_ottl_transform_error_mode(transform.error_mode.clone()),
+                error_mode: transform.error_mode.unwrap_or_default(),
                 trace_statements: transform.trace_statements.clone(),
             };
         }
@@ -775,6 +767,19 @@ mod tests {
             assert!(
                 serde_json::from_value::<SalukiOnly>(value).is_err(),
                 "invalid OTTL filter configuration must fail deserialization"
+            );
+        }
+    }
+
+    #[test]
+    fn ottl_transform_config_rejects_unknown_fields_and_values() {
+        for value in [
+            json!({ "ottl_transform_config": { "error_mode": "ignroe" } }),
+            json!({ "ottl_transform_config": { "unknown": true } }),
+        ] {
+            assert!(
+                serde_json::from_value::<SalukiOnly>(value).is_err(),
+                "invalid OTTL transform configuration must fail deserialization"
             );
         }
     }
