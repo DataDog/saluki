@@ -26,8 +26,23 @@ static DD_SITE_FROM_HOSTNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 pub const DEFAULT_SITE: &str = "datadoghq.com";
 
+/// The primary endpoint URL that is constructed when both `site` and `dd_url` are at their defaults.
+///
+/// The Core Agent sends `dd_url` at this value even when the operator only configured `site`.
+/// A `dd_url` equal to this constant carries no override intent and must not shadow `site`.
+const DEFAULT_PRIMARY_ENDPOINT: &str = "https://app.datadoghq.com";
+
 fn default_site() -> String {
     DEFAULT_SITE.to_owned()
+}
+
+/// Returns the effective `dd_url` override, treating a value equal to the default-derived URL as unset.
+///
+/// The Core Agent always sends `dd_url` at its schema default, which is the URL constructed from the
+/// default `site`. A `dd_url` equal to this default carries no override intent and must not shadow
+/// the operator's `site` configuration.
+fn effective_override_url(dd_url: Option<&str>) -> Option<&str> {
+    dd_url.filter(|url| *url != DEFAULT_PRIMARY_ENDPOINT)
 }
 
 /// Per-endpoint V3 protocol settings.
@@ -519,15 +534,19 @@ impl EndpointConfiguration {
     pub(crate) fn build_primary_endpoint(
         &self, configuration: Option<GenericConfiguration>,
     ) -> Result<ResolvedEndpoint, GenericError> {
-        calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
-            .error_context("Failed parsing/resolving the primary destination endpoint.")
-            .map(|endpoint| endpoint.with_configuration(configuration))
-            .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
+        calculate_resolved_endpoint(
+            effective_override_url(self.dd_url.as_deref()),
+            &self.site,
+            &self.api_key,
+        )
+        .error_context("Failed parsing/resolving the primary destination endpoint.")
+        .map(|endpoint| endpoint.with_configuration(configuration))
+        .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
     }
 
     /// Returns the configured primary endpoint string without resolving or version-prefixing it.
     pub(crate) fn configured_primary_endpoint(&self) -> String {
-        match self.dd_url.as_deref() {
+        match effective_override_url(self.dd_url.as_deref()) {
             Some(url) => url.to_string(),
             None => {
                 let base_domain = if self.site.is_empty() { DEFAULT_SITE } else { &self.site };
@@ -1553,5 +1572,56 @@ mod tests {
             calculate_resolved_endpoint(None, "datadoghq.com", "").expect("error calculating default API endpoint");
 
         assert_eq!("https://app.datadoghq.com", resolved.configured_endpoint());
+    }
+
+    #[test]
+    fn effective_override_url_returns_none_for_default_dd_url() {
+        // The default dd_url (what the Agent sends when operator only configured site) equals the URL
+        // constructed from the default site. It should be treated as unset so that site takes precedence.
+        assert_eq!(None, effective_override_url(Some("https://app.datadoghq.com")));
+    }
+
+    #[test]
+    fn effective_override_url_returns_none_when_input_is_none() {
+        // Absence of dd_url is still absence after filtering.
+        assert_eq!(None, effective_override_url(None));
+    }
+
+    #[test]
+    fn effective_override_url_returns_some_for_explicit_override() {
+        // A dd_url that differs from the default is an explicit override and should be honored.
+        let explicit_url = Some("https://proxy.internal.example.com:3128");
+        assert_eq!(explicit_url, effective_override_url(explicit_url));
+    }
+
+    #[test]
+    fn site_takes_precedence_when_dd_url_is_default() {
+        // When dd_url is at its default (sent by Agent with source="default"), site should determine the endpoint.
+        let config = EndpointConfiguration {
+            api_key: "fake-key".to_string(),
+            api_key_refresh_config_path: None,
+            site: "datadoghq.eu".to_string(),
+            dd_url: Some("https://app.datadoghq.com".to_string()), // Default value
+            additional_endpoints: AdditionalEndpoints::default(),
+        };
+
+        assert_eq!("https://app.datadoghq.eu", config.configured_primary_endpoint());
+    }
+
+    #[test]
+    fn explicit_dd_url_overrides_site() {
+        // A dd_url that diverges from the default should take precedence over site.
+        let config = EndpointConfiguration {
+            api_key: "fake-key".to_string(),
+            api_key_refresh_config_path: None,
+            site: "datadoghq.eu".to_string(),
+            dd_url: Some("https://proxy.internal.example.com:3128".to_string()),
+            additional_endpoints: AdditionalEndpoints::default(),
+        };
+
+        assert_eq!(
+            "https://proxy.internal.example.com:3128",
+            config.configured_primary_endpoint()
+        );
     }
 }
