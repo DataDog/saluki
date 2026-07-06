@@ -596,6 +596,12 @@ inventory:
       ADP writes to its own log file, separate from the Core Agent. The Core Agent's `log_file`
       key is deliberately not consulted. Set `disable_file_logging: true` to disable file logging
       entirely, which causes this key to have no effect.
+
+      The Agent schema defaults this to a fixed Linux path, but ADP's default log file is
+      platform-specific and cannot be expressed as a literal here. Generated as an absence-aware
+      Option so an unset key leaves the model default empty; `LoggingConfigurationTranslator` then
+      resolves that empty value to the platform's default log path. An explicit path still wins.
+    saluki_overrides_default: true
     test_support:
       used_by: [get_typed]
       additional_attributes:

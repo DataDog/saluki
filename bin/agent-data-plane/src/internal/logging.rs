@@ -209,7 +209,7 @@ mod tests {
             to_syslog: false,
             syslog_rfc: false,
             syslog_uri: String::new(),
-            file: "/var/log/datadog/agent-data-plane.log".to_string(),
+            file: String::new(),
             disable_file_logging: false,
             file_max_rolls: 1,
             file_max_size: 10_000_000,

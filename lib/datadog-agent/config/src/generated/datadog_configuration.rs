@@ -928,8 +928,8 @@ pub struct DataPlane {
     #[serde(default)]
     pub enabled: bool,
 
-    #[serde(default = "defaults::datadog_configuration_data_plane_log_file")]
-    pub log_file: String,
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub log_file: Option<String>,
 
     #[serde(default)]
     pub otlp: DataPlaneOtlp,
@@ -952,7 +952,7 @@ impl Default for DataPlane {
             api_listen_address: defaults::datadog_configuration_data_plane_api_listen_address(),
             dogstatsd: Default::default(),
             enabled: Default::default(),
-            log_file: defaults::datadog_configuration_data_plane_log_file(),
+            log_file: Default::default(),
             otlp: Default::default(),
             remote_agent_enabled: defaults::default_bool::<true>(),
             secure_api_listen_address: defaults::datadog_configuration_data_plane_secure_api_listen_address(),
@@ -1702,9 +1702,6 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_data_plane_api_listen_address() -> String {
         "tcp://0.0.0.0:5100".to_string()
-    }
-    pub(super) fn datadog_configuration_data_plane_log_file() -> String {
-        "/var/log/datadog/agent-data-plane.log".to_string()
     }
     pub(super) fn datadog_configuration_data_plane_secure_api_listen_address() -> String {
         "tcp://0.0.0.0:5101".to_string()

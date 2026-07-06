@@ -413,8 +413,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.control.enabled = value;
     }
 
-    fn consume_data_plane_log_file(&mut self, value: String) {
-        self.config.control.logging.file = value;
+    fn consume_data_plane_log_file(&mut self, value: Option<String>) {
+        // Flagged `saluki_overrides_default`: absent (`None`) leaves the model default empty, which
+        // `LoggingConfigurationTranslator` resolves to the platform-specific default log path; an
+        // explicit path wins. Never derive the default from the Agent's Linux literal here, or a
+        // user who deliberately picks that path becomes indistinguishable from the default.
+        if let Some(value) = value {
+            self.config.control.logging.file = value;
+        }
     }
 
     fn consume_data_plane_otlp_enabled(&mut self, value: bool) {
@@ -1471,11 +1477,29 @@ mod tests {
         assert!(!logging.to_syslog);
         assert!(!logging.syslog_rfc);
         assert_eq!(logging.syslog_uri, "");
-        assert_eq!(logging.file, "/var/log/datadog/agent-data-plane.log");
+        // `data_plane.log_file` is flagged `saluki_overrides_default`, so an unset key must leave the
+        // model file empty rather than adopting the Agent schema's Linux literal.
+        // `LoggingConfigurationTranslator` resolves that empty value to the platform default path.
+        assert_eq!(logging.file, "");
         assert!(!logging.disable_file_logging);
         assert_eq!(logging.file_max_rolls, 1);
         // `10Mb` parses as 10 decimal megabytes.
         assert_eq!(logging.file_max_size, 10_000_000);
+    }
+
+    #[test]
+    fn data_plane_log_file_explicit_path_is_preserved() {
+        // An explicitly configured `data_plane.log_file` must reach the model unchanged, even when
+        // it equals the Agent's Linux default: the flagged Option distinguishes a deliberate choice
+        // from an unset key.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "data_plane": { "log_file": "/var/log/datadog/agent-data-plane.log" },
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+        assert_eq!(config.control.logging.file, "/var/log/datadog/agent-data-plane.log");
     }
 
     #[test]

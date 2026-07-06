@@ -61,7 +61,7 @@ pub trait DatadogConfigWitness {
     fn consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(&mut self, value: i64);
     fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool);
     fn consume_data_plane_enabled(&mut self, value: bool);
-    fn consume_data_plane_log_file(&mut self, value: String);
+    fn consume_data_plane_log_file(&mut self, value: Option<String>);
     fn consume_data_plane_otlp_enabled(&mut self, value: bool);
     fn consume_data_plane_otlp_proxy_enabled(&mut self, value: bool);
     fn consume_data_plane_otlp_proxy_logs_enabled(&mut self, value: bool);

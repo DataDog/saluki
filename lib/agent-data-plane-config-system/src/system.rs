@@ -6,9 +6,12 @@ use std::sync::Arc;
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
 use datadog_agent_config::{apply_env_overlay, DatadogConfiguration, EnvOverlayMode, TranslateErrors};
+use saluki_common::deser::PermissiveBool;
 use saluki_config::dynamic::ConfigChangeEvent;
 use saluki_config::{ConfigurationError, GenericConfiguration};
+use serde::de::IntoDeserializer as _;
 use serde::Deserialize;
+use serde_with::DeserializeAs as _;
 use snafu::Snafu;
 use tokio::sync::{broadcast, watch};
 use tracing::{debug, warn};
@@ -300,7 +303,33 @@ fn normalize_datadog_input_forms(merged: &mut serde_json::Value) {
             }
         }
     }
+
+    // The logging keys below were read with `saluki_common::deser::PermissiveBool` before the typed-
+    // config migration, which accepts wider scalar forms than the generated `bool` deserializer
+    // (native bool, `"true"`/`"false"`, short forms like `"1"`/`"t"`, and numeric `0`/`1`). Coerce
+    // each present value back to a native boolean so those forms — including env-var strings — keep
+    // deserializing. An unrecognized form is left in place so the downstream `bool` deserialize
+    // surfaces the error, matching `PermissiveBool`'s own rejection.
+    for key in PERMISSIVE_BOOL_LOGGING_KEYS {
+        if let Some(value) = object.get_mut(*key) {
+            if let Ok(coerced) = PermissiveBool::deserialize_as(value.clone().into_deserializer()) {
+                *value = serde_json::Value::Bool(coerced);
+            }
+        }
+    }
 }
+
+/// The logging keys read with `PermissiveBool` before the typed-config migration. The generated
+/// source deserializer types these as plain `bool`, so their permissive input forms are normalized
+/// back to native booleans in `normalize_datadog_input_forms`.
+const PERMISSIVE_BOOL_LOGGING_KEYS: &[&str] = &[
+    "log_format_json",
+    "log_format_rfc3339",
+    "log_to_console",
+    "log_to_syslog",
+    "syslog_rfc",
+    "disable_file_logging",
+];
 
 /// Translates the Datadog and Saluki-only sources into one [`SalukiConfiguration`], returning every
 /// error recorded while converting an individual Datadog value.
@@ -629,6 +658,119 @@ mod tests {
                 ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("additional_endpoints translates");
             assert_eq!(system.config().shared.endpoints.additional_endpoints, expected);
         }
+    }
+
+    /// The six logging keys read with `PermissiveBool` before the migration. Kept local to the test so
+    /// a divergence from `super::PERMISSIVE_BOOL_LOGGING_KEYS` is caught by the coverage assertion.
+    const LOGGING_BOOL_KEYS: &[&str] = &[
+        "log_format_json",
+        "log_format_rfc3339",
+        "log_to_console",
+        "log_to_syslog",
+        "syslog_rfc",
+        "disable_file_logging",
+    ];
+
+    /// Reads the model boolean each logging key drives, so a table-driven test can assert every key.
+    fn logging_bool(config: &SalukiConfiguration, key: &str) -> bool {
+        let logging = &config.control.logging;
+        match key {
+            "log_format_json" => logging.format_json,
+            "log_format_rfc3339" => logging.format_rfc3339,
+            "log_to_console" => logging.to_console,
+            "log_to_syslog" => logging.to_syslog,
+            "syslog_rfc" => logging.syslog_rfc,
+            "disable_file_logging" => logging.disable_file_logging,
+            other => panic!("unexpected logging key `{other}`"),
+        }
+    }
+
+    #[tokio::test]
+    async fn permissive_bool_logging_keys_accept_all_forms() {
+        // Every permissive input form the deleted `PermissiveBool` component parsing accepted must
+        // still resolve to the right native boolean for all six logging keys: native bools, quoted
+        // `true`/`false` (case-insensitive), the short string forms, and numeric `0`/`1`.
+        let true_forms = [
+            json!(true),
+            json!("true"),
+            json!("True"),
+            json!("TRUE"),
+            json!("1"),
+            json!("t"),
+            json!("T"),
+            json!(1),
+        ];
+        let false_forms = [
+            json!(false),
+            json!("false"),
+            json!("False"),
+            json!("FALSE"),
+            json!("0"),
+            json!("f"),
+            json!("F"),
+            json!(0),
+        ];
+
+        for key in LOGGING_BOOL_KEYS {
+            for (forms, expected) in [(&true_forms, true), (&false_forms, false)] {
+                for form in forms {
+                    let mut object = serde_json::Map::new();
+                    object.insert((*key).to_string(), form.clone());
+                    let (raw_map, _) =
+                        ConfigurationLoader::for_tests(Some(serde_json::Value::Object(object)), None, false).await;
+
+                    let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback)
+                        .unwrap_or_else(|e| panic!("`{key}` = {form} should deserialize: {e}"));
+
+                    assert_eq!(
+                        logging_bool(&system.config(), key),
+                        expected,
+                        "`{key}` = {form} should resolve to {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn permissive_bool_logging_keys_accept_env_var_forms() {
+        // Environment variables land in the merged tree as flat string keys, after `apply_env_overlay`
+        // and before normalization; a representative true and false form must still be coerced.
+        let (raw_map, _) = ConfigurationLoader::for_tests(
+            None,
+            Some(&[
+                ("LOG_FORMAT_JSON".to_string(), "1".to_string()),
+                ("LOG_TO_CONSOLE".to_string(), "false".to_string()),
+            ]),
+            false,
+        )
+        .await;
+        raw_map.ready().await;
+
+        let system = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback).expect("env-var forms deserialize");
+        let logging = &system.config().control.logging;
+        assert!(logging.format_json, "env-var `1` should resolve to true");
+        assert!(!logging.to_console, "env-var `false` should resolve to false");
+    }
+
+    #[tokio::test]
+    async fn permissive_bool_logging_key_rejects_invalid_form() {
+        // An unrecognized form is left in place so the generated `bool` deserialize surfaces the
+        // error, matching `PermissiveBool`'s own rejection.
+        let (raw_map, _) =
+            ConfigurationLoader::for_tests(Some(json!({ "log_format_json": "maybe" })), None, false).await;
+
+        let result = ConfigurationSystem::load(raw_map, EnvOverlayMode::Fallback);
+        assert!(
+            matches!(result, Err(ConfigurationSystemError::Deserialize { .. })),
+            "an invalid permissive-bool form must fail source deserialization"
+        );
+    }
+
+    #[test]
+    fn permissive_bool_logging_key_table_is_in_sync() {
+        // The scoped normalization must cover exactly these six keys and no others.
+        assert_eq!(super::PERMISSIVE_BOOL_LOGGING_KEYS, LOGGING_BOOL_KEYS);
     }
 
     #[tokio::test]

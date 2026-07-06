@@ -10,9 +10,11 @@ agent-data-plane-config = { workspace = true }
 arc-swap = { workspace = true }
 bytesize = { workspace = true }
 datadog-agent-config = { workspace = true }
+saluki-common = { workspace = true }
 saluki-config = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_with = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
