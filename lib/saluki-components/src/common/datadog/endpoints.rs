@@ -39,7 +39,7 @@ fn default_site() -> String {
 /// Deserializes an optional `dd_url`, treating the schema-default URL as absent.
 ///
 /// The Core Agent always sends `dd_url` at its schema default (`https://app.datadoghq.com`) even
-/// when the operator only configured `site`. Filtering here — at deserialization — ensures that a
+/// when the operator only configured `site`. Filtering here, at deserialization, ensures that a
 /// value equal to the default is treated as `None`, allowing `site` to determine the endpoint. This
 /// only affects the serde path; programmatic callers such as `set_dd_url` bypass serde and are
 /// unaffected.
