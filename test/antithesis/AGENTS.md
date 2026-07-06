@@ -5,14 +5,15 @@ This directory contains files relevant to running tests in Antithesis.
 Use the `antithesis-setup` skill to scaffold and manage this directory. Use the
 `antithesis-research` skill to analyze the system and build a property
 catalog. Use the `antithesis-workload` skill to implement assertions and test
-commands. Use the `antithesis-launch` skill to build, validate, and submit
-Antithesis runs — do not run `snouty launch` directly.
+commands. Use the `antithesis-launch` skill or the `test/antithesis/bin/launch.sh` wrapper
+to build and submit Antithesis runs. Do not hand-type `snouty launch`.
 
-**snouty launch**
+**launch.sh**
 
-Use `snouty launch --json --webhook basic_test --config test/antithesis/scenarios/general`
-to start an Antithesis run. Always run `compose build` first to ensure images
-are up to date.
+`test/antithesis/bin/launch.sh <scenario>` builds the images, renders the compose
+with concrete tags, and submits to the `persistent_storage` webhook with the node,
+cpu, and clock fault profile the scenario's `launch.env` sets. See the script
+header for env overrides such as DURATION and WEBHOOK.
 
 **snouty validate**
 
@@ -34,7 +35,7 @@ testing. Antithesis will not run any test commands until it receives this event.
   `make check-all` / `make test`.
 - `scenarios/general/` — all Antithesis/Docker infrastructure: the `Dockerfile`,
   `docker-compose.yaml`, and per-container build inputs grouped by service
-  (`scenarios/general/adp/`, `scenarios/general/workload/`). This is the directory snouty consumes as
+  (`scenarios/general/workload/`). This is the directory snouty consumes as
   `--config`; it contains `docker-compose.yaml` at its top. Its Cargo package
   (`antithesis-scenario-general`) owns general-only test commands under
   `src/bin/`. Snouty will push tagged images, consume this directory, and

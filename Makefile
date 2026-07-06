@@ -790,7 +790,7 @@ ifeq ($(shell command -v snouty >/dev/null || echo not-found), not-found)
 endif
 
 .PHONY: antithesis-build
-antithesis-build: ## Builds the Antithesis harness container images
+antithesis-build: build-datadog-agent-image-release ## Builds the Antithesis harness container images
 	@echo "[*] Building Antithesis harness images..."
 	@docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
 
@@ -799,10 +799,10 @@ antithesis-build-differential: build-datadog-agent-image-release ## Builds the d
 	@echo "[*] Building differential Antithesis harness images..."
 	@docker compose -f $(ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE) build
 
-.PHONY: antithesis-validate
-antithesis-validate: check-antithesis-tools antithesis-build
-antithesis-validate: ## Validates the Antithesis harness: builds images, runs 'snouty validate'
-	@echo "[*] Validating Antithesis harness with snouty..."
+.PHONY: antithesis-validate-general
+antithesis-validate-general: check-antithesis-tools antithesis-build
+antithesis-validate-general: ## Validates the general Antithesis harness: builds images, runs 'snouty validate'
+	@echo "[*] Validating general Antithesis harness with snouty..."
 	@snouty validate $(ANTITHESIS_CONFIG_DIR)
 
 .PHONY: antithesis-validate-differential
@@ -810,6 +810,9 @@ antithesis-validate-differential: check-antithesis-tools antithesis-build-differ
 antithesis-validate-differential: ## Validates the differential Antithesis harness
 	@echo "[*] Validating differential Antithesis harness with snouty..."
 	@snouty validate $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)
+
+.PHONY: antithesis-validate
+antithesis-validate: antithesis-validate-general antithesis-validate-differential ## Validates both Antithesis harnesses (general + differential)
 
 ##@ Profiling
 

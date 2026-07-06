@@ -1,0 +1,21 @@
+#!/usr/bin/execlineb -S1
+
+# Antithesis override of the converged image's data-plane s6 `finish`.
+#
+# cont-init creates /run/adp/env only when the data plane is enabled, marking the
+# ADP-on lane whose SUT is agent-data-plane. When that lane's ADP exits at all,
+# clean code 0 or a crash, the SUT is gone, so tear the whole container down and
+# let Antithesis record the fault, exactly as a standalone-ADP container death
+# would. The antithesis build runs ADP with panic="abort", so a panic becomes
+# SIGABRT and lands here too. In the ADP-off reference lane the marker is absent
+# and the SUT is the Core Agent, so a stray ADP exit only disables this service.
+ifthenelse
+    { s6-test -d /run/adp/env }
+    {
+        foreground { /initlog.sh "agent-data-plane SUT exited, code ${1} signal ${2}, bringing container down" }
+        s6-svscanctl -t /var/run/s6/services
+    }
+    {
+        foreground { /initlog.sh "agent-data-plane exited with code ${1} while disabled, disabling" }
+        foreground { /bin/s6-svc -d /var/run/s6/services/data-plane/ }
+    }
