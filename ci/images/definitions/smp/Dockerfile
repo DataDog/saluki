@@ -28,7 +28,7 @@ RUN chmod +x /install-buildcache.sh && /install-buildcache.sh
 # Final stage: runtime-only dependencies. Build toolchain is not present here.
 FROM registry.ddbuild.io/docker:24.0.4-jammy
 
-ARG RUST_VERSION=1.93.0
+ARG RUST_VERSION=1.94.0
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC

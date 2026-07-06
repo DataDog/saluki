@@ -525,7 +525,7 @@ check-fmt: ## Check that all Rust source files are formatted properly
 	@echo "[*] Checking Rust source code formatting..."
 	@cargo +nightly fmt -- --check
 	@echo "[*] Checking Cargo.toml formatting..."
-	@cargo sort --workspace --check >/dev/null
+	@cargo sort --workspace . --check >/dev/null
 
 .PHONY: check-licenses
 check-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
@@ -938,7 +938,7 @@ fmt: ## Format Rust source code
 	@echo "[*] Ensuring workspace dependencies are autoinherited..."
 	@cargo autoinherit 2>/dev/null
 	@echo "[*] Formatting Cargo.toml files..."
-	@cargo sort --workspace >/dev/null
+	@cargo sort --workspace . >/dev/null
 
 .PHONY: sync-licenses
 sync-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
