@@ -44,6 +44,10 @@ impl GaugeStorage {
 
 impl GaugeFn for GaugeStorage {
     fn increment(&self, value: f64) {
+        // `fetch_update` is deprecated on newer nightly toolchains in favor of `try_update`, but
+        // `try_update` isn't stable on our pinned stable toolchain yet. Suppress the deprecation so
+        // `cargo +nightly doc` (which runs under `#![deny(warnings)]`) doesn't fail.
+        #[allow(deprecated)]
         self.current
             .fetch_update(SeqCst, SeqCst, |v| {
                 let new = f64::from_bits(v) + value;
@@ -53,6 +57,7 @@ impl GaugeFn for GaugeStorage {
     }
 
     fn decrement(&self, value: f64) {
+        #[allow(deprecated)]
         self.current
             .fetch_update(SeqCst, SeqCst, |v| {
                 let new = f64::from_bits(v) - value;

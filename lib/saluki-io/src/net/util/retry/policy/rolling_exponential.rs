@@ -120,6 +120,11 @@ where
 
                     // We never expect this to fail since we never conditionally try to update: we _always_ want to
                     // decrease the error count.
+                    //
+                    // `fetch_update` is deprecated on newer nightly toolchains in favor of `try_update`, but
+                    // `try_update` isn't stable on our pinned stable toolchain yet. Suppress the deprecation so
+                    // `cargo +nightly doc` (which runs under `#![deny(warnings)]`) doesn't fail.
+                    #[allow(deprecated)]
                     let _ = self
                         .error_count
                         .fetch_update(AcqRel, Relaxed, |count| Some(count.saturating_sub(factor)));
