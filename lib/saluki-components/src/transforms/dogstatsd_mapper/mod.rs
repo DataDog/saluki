@@ -423,7 +423,7 @@ mod tests {
     }
 
     fn mapper_with_cache(json_data: Value, cache_size: usize) -> Result<MetricMapper, GenericError> {
-        let context = ComponentContext::transform(ComponentId::try_from("test_mapper").unwrap());
+        let context = ComponentContext::transform("test", ComponentId::try_from("test_mapper").unwrap());
         let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
         let context_string_interner_bytes = ByteSize::kib(64);
         mpc.build(context, context_string_interner_bytes, cache_size)

@@ -1068,8 +1068,10 @@ mod tests {
 
     #[test]
     fn retry_queue_id_uses_raw_additional_endpoint_url() {
-        let context =
-            ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
+        let context = ComponentContext::forwarder(
+            "test",
+            ComponentId::try_from("test_forwarder").expect("component ID should be valid"),
+        );
         let additional: AdditionalEndpoints = serde_yaml::from_str(
             r#"
 app.datadoghq.com: [key-a]
@@ -1090,8 +1092,10 @@ https://app.datadoghq.com: [key-b]
 
     #[test]
     fn retry_queue_id_uses_additional_endpoint_api_key_index() {
-        let context =
-            ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
+        let context = ComponentContext::forwarder(
+            "test",
+            ComponentId::try_from("test_forwarder").expect("component ID should be valid"),
+        );
         let additional: AdditionalEndpoints = serde_yaml::from_str(
             r#"
 app.datadoghq.com: [key-a, key-b]
@@ -1531,8 +1535,10 @@ app.datadoghq.com: [key-a, key-b]
             "skip_ssl_validation": true,
         });
         let forwarder_config = forwarder_config_from_value(value);
-        let context =
-            ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
+        let context = ComponentContext::forwarder(
+            "test",
+            ComponentId::try_from("test_forwarder").expect("component ID should be valid"),
+        );
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 

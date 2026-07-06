@@ -92,9 +92,8 @@ mod tests {
     fn create_consumer<T: Clone>(
         channel_size: usize,
     ) -> (Consumer<DispatchableEvent<T>>, mpsc::Sender<DispatchableEvent<T>>) {
-        let component_context = ComponentId::try_from("consumer_test")
-            .map(ComponentContext::source)
-            .expect("component ID should never be invalid");
+        let component_id = ComponentId::try_from("consumer_test").expect("component ID should never be invalid");
+        let component_context = ComponentContext::source("test", component_id);
 
         let (tx, rx) = mpsc::channel(channel_size);
         let consumer = Consumer::new(component_context, rx);

@@ -961,7 +961,7 @@ mod tests {
     /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
     fn build_basic_dispatcher() -> (EventsDispatcher, DispatcherReceiver) {
         let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
-        let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id));
+        let mut dispatcher = Dispatcher::new(ComponentContext::transform("test", component_id));
 
         let (buffer_tx, buffer_rx) = mpsc::channel(1);
         dispatcher.add_output(OutputName::Default).unwrap();

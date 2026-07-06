@@ -380,7 +380,7 @@ mod tests {
     }
 
     fn test_component_context() -> ComponentContext {
-        ComponentContext::source(ComponentId::try_from("otlp_test").unwrap())
+        ComponentContext::source("test", ComponentId::try_from("otlp_test").unwrap())
     }
 
     #[tokio::test]

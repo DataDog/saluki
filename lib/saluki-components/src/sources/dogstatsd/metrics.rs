@@ -368,7 +368,10 @@ mod tests {
     use super::*;
 
     fn test_context() -> ComponentContext {
-        ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"))
+        ComponentContext::source(
+            "test",
+            ComponentId::try_from("dogstatsd_test").expect("valid component ID"),
+        )
     }
 
     fn udp_listen_addr() -> ListenAddress {

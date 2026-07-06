@@ -246,22 +246,23 @@ impl TypedComponentId {
         self.ty
     }
 
-    /// Returns the component context.
-    pub fn component_context(&self) -> ComponentContext {
+    /// Returns the component context, rooted at the given topology.
+    pub fn component_context(&self, topology_name: &str) -> ComponentContext {
         match self.ty {
-            ComponentType::Source => ComponentContext::source(self.id.clone()),
-            ComponentType::Relay => ComponentContext::relay(self.id.clone()),
-            ComponentType::Decoder => ComponentContext::decoder(self.id.clone()),
-            ComponentType::Transform => ComponentContext::transform(self.id.clone()),
-            ComponentType::Encoder => ComponentContext::encoder(self.id.clone()),
-            ComponentType::Forwarder => ComponentContext::forwarder(self.id.clone()),
-            ComponentType::Destination => ComponentContext::destination(self.id.clone()),
+            ComponentType::Source => ComponentContext::source(topology_name, self.id.clone()),
+            ComponentType::Relay => ComponentContext::relay(topology_name, self.id.clone()),
+            ComponentType::Decoder => ComponentContext::decoder(topology_name, self.id.clone()),
+            ComponentType::Transform => ComponentContext::transform(topology_name, self.id.clone()),
+            ComponentType::Encoder => ComponentContext::encoder(topology_name, self.id.clone()),
+            ComponentType::Forwarder => ComponentContext::forwarder(topology_name, self.id.clone()),
+            ComponentType::Destination => ComponentContext::destination(topology_name, self.id.clone()),
         }
     }
 
-    /// Consumes the `TypedComponentId` and returns its component ID, component type, and component context.
-    pub fn into_parts(self) -> (ComponentId, ComponentType, ComponentContext) {
-        let component_context = self.component_context();
+    /// Consumes the `TypedComponentId` and returns its component ID, component type, and component context (rooted at
+    /// the given topology).
+    pub fn into_parts(self, topology_name: &str) -> (ComponentId, ComponentType, ComponentContext) {
+        let component_context = self.component_context(topology_name);
         (self.id, self.ty, component_context)
     }
 }

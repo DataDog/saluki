@@ -215,6 +215,14 @@ impl ComponentRegistry {
     pub fn as_bounds(&self) -> ComponentBounds {
         self.inner.lock().unwrap().as_bounds()
     }
+
+    /// Returns the fully qualified, dotted name of the component this registry is scoped to.
+    ///
+    /// The root registry has no name and returns `None`; every named subcomponent returns its full path (for
+    /// example, `topology.primary.sources.dsd_in`).
+    pub fn full_name(&self) -> Option<String> {
+        self.inner.lock().unwrap().full_name.clone()
+    }
 }
 
 /// A cloneable, read-only handle to a component registry.
