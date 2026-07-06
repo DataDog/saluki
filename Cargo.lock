@@ -192,6 +192,7 @@ version = "0.1.0"
 dependencies = [
  "antithesis_sdk",
  "anyhow",
+ "async-compression",
  "axum",
  "clap",
  "datadog-protos",
@@ -207,6 +208,7 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
