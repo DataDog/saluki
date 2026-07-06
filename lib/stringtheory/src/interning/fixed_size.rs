@@ -226,7 +226,7 @@ impl EntryHeader {
     /// been released -- its reference count reached zero -- and is pending reclamation, so it must not be reused.
     fn try_increment_active_refs(&self) -> bool {
         self.refs
-            .try_update(AcqRel, Acquire, |refs| (refs != 0).then_some(refs + 1))
+            .fetch_update(AcqRel, Acquire, |refs| (refs != 0).then_some(refs + 1))
             .is_ok()
     }
 }
