@@ -21,8 +21,29 @@ static DD_URL_REGEX: LazyLock<Regex> =
 
 pub const DEFAULT_SITE: &str = "datadoghq.com";
 
+/// The primary endpoint URL that is constructed when both `site` and `dd_url` are at their defaults.
+///
+/// The Core Agent sends `dd_url` at this value even when the operator only configured `site`.
+/// A `dd_url` equal to this constant carries no override intent and must not shadow `site`.
+const DEFAULT_PRIMARY_ENDPOINT: &str = "https://app.datadoghq.com";
+
 fn default_site() -> String {
     DEFAULT_SITE.to_owned()
+}
+
+/// Deserializes an optional `dd_url`, treating the schema-default URL as absent.
+///
+/// The Core Agent always sends `dd_url` at its schema default (`https://app.datadoghq.com`) even
+/// when the operator only configured `site`. Filtering here, at deserialization, ensures that a
+/// value equal to the default is treated as `None`, allowing `site` to determine the endpoint. This
+/// only affects the serde path; programmatic callers such as `set_dd_url` bypass serde and are
+/// unaffected.
+fn deserialize_dd_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val = Option::<String>::deserialize(deserializer)?;
+    Ok(val.filter(|url| url.as_str() != DEFAULT_PRIMARY_ENDPOINT))
 }
 
 /// Error type for invalid endpoints.
@@ -136,7 +157,7 @@ pub struct EndpointConfiguration {
     /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
     ///
     /// Defaults to unset.
-    #[serde(default, alias = "url")]
+    #[serde(default, alias = "url", deserialize_with = "deserialize_dd_url")]
     dd_url: Option<String>,
 
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
@@ -637,5 +658,64 @@ mod tests {
         let resolved = calculate_resolved_endpoint(Some(override_url), "us3.datadoghq.com", "")
             .expect("error calculating override API endpoint");
         assert_eq!(expected_endpoint, resolved.endpoint().to_string());
+    }
+
+    #[test]
+    fn deserialize_dd_url_filters_default_value() {
+        // The default dd_url (what the Agent sends when operator only configured site) should
+        // deserialize to None so that site takes precedence.
+        let config_str = r#"{"api_key": "test-key", "dd_url": "https://app.datadoghq.com"}"#;
+        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
+        assert_eq!(None, config.dd_url);
+    }
+
+    #[test]
+    fn deserialize_dd_url_preserves_explicit_override() {
+        // A dd_url that differs from the default should deserialize as-is.
+        let config_str = r#"{"api_key": "test-key", "dd_url": "https://proxy.internal.example.com:3128"}"#;
+        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
+        assert_eq!(
+            Some("https://proxy.internal.example.com:3128".to_string()),
+            config.dd_url
+        );
+    }
+
+    #[test]
+    fn set_dd_url_is_not_filtered() {
+        // Programmatic calls to set_dd_url bypass serde and are never filtered, even if set to the default value.
+        // This is important for MRF and other override paths that may explicitly set the default URL.
+        let config_str = r#"{"api_key": "test-key", "site": "datadoghq.eu"}"#;
+        let mut config: EndpointConfiguration =
+            serde_json::from_str(config_str).expect("deserialization should succeed");
+        config.set_dd_url("https://app.datadoghq.com".to_string());
+        assert_eq!(Some("https://app.datadoghq.com".to_string()), config.dd_url);
+    }
+
+    #[test]
+    fn site_takes_precedence_when_dd_url_is_default() {
+        // When dd_url is at its default (sent by Agent with source="default"), site should determine the endpoint.
+        // This is tested through deserialization so the default-filtering occurs.
+        let config_str = r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://app.datadoghq.com"}"#;
+        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
+
+        let resolved = config
+            .build_primary_endpoint(None)
+            .expect("error building primary endpoint");
+        // The site path applies a version prefix, so assert the host resolves to the eu site rather than the
+        // default US1 intake.
+        let host = resolved.endpoint().host_str().unwrap();
+        assert!(host.ends_with("datadoghq.eu"), "expected eu site, got {host}");
+    }
+
+    #[test]
+    fn explicit_dd_url_overrides_site() {
+        // A dd_url that diverges from the default should take precedence over site.
+        let config_str = r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://dogpound.io/"}"#;
+        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
+
+        let resolved = config
+            .build_primary_endpoint(None)
+            .expect("error building primary endpoint");
+        assert_eq!("dogpound.io", resolved.endpoint().host_str().unwrap());
     }
 }
