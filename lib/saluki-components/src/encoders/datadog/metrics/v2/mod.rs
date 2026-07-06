@@ -287,7 +287,7 @@ fn encode_series_metric(
         output_stream,
         scratch_buf,
         "host",
-        metric.metadata().hostname().unwrap_or_default(),
+        metric.context().host().unwrap_or_default(),
     )?;
 
     // Write the origin metadata, if it exists.
@@ -367,7 +367,7 @@ fn encode_sketch_metric(
     // Write the host.
     output_stream.write_string(
         constants::SKETCH_HOST_FIELD_NUMBER,
-        metric.metadata().hostname().unwrap_or_default(),
+        metric.context().host().unwrap_or_default(),
     )?;
 
     // Set the origin metadata, if it exists.

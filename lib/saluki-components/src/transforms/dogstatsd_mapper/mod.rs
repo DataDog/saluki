@@ -264,6 +264,9 @@ impl MetricMapper {
         let metric_name = context.name();
         let tags = context.tags();
         let origin_tags = context.origin_tags();
+        // TODO: If host-bearing remaps show measurable allocation overhead, preserve the context's underlying host
+        // representation through the resolver instead of rematerializing it from `&str`.
+        let host = context.host();
 
         // See if we have a cached result for this metric name.
         if let Some(cache) = &self.cache {
@@ -274,9 +277,9 @@ impl MetricMapper {
                         let mut merged_tags = tags.clone();
                         merged_tags.merge_shared(&result.extra_tags);
 
-                        self.context_resolver.resolve_with_host_and_origin_tags(
+                        self.context_resolver.resolve_with_optional_host_and_origin_tags(
                             result.name.clone(),
-                            context.host().clone(),
+                            host,
                             merged_tags,
                             origin_tags.clone(),
                         )
@@ -315,9 +318,9 @@ impl MetricMapper {
                     let mut merged_tags = tags.clone();
                     merged_tags.merge_shared(&extra_tags);
 
-                    let resolved = self.context_resolver.resolve_with_host_and_origin_tags(
+                    let resolved = self.context_resolver.resolve_with_optional_host_and_origin_tags(
                         new_name.as_str(),
-                        context.host().clone(),
+                        host,
                         merged_tags,
                         origin_tags.clone(),
                     )?;
@@ -502,8 +505,8 @@ mod tests {
         let mapped_b = mapper.try_map(&context_b).expect("should have remapped");
 
         assert_ne!(mapped_a, mapped_b);
-        assert_eq!(mapped_a.host(), "host-a");
-        assert_eq!(mapped_b.host(), "host-b");
+        assert_eq!(mapped_a.host(), Some("host-a"));
+        assert_eq!(mapped_b.host(), Some("host-b"));
         assert_eq!(mapped_a.name(), "test.job.duration");
         assert_tags(&mapped_a, &["job_name:worker"]);
         assert_tags(&mapped_b, &["job_name:worker"]);

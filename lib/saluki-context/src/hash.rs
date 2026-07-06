@@ -28,14 +28,14 @@ where
     T2: AsRef<str>,
 {
     let mut seen = PrehashedHashSet::default();
-    hash_context_with_host_and_seen(name, "", tags, origin_tags, &mut seen)
+    hash_context_with_host_and_seen(name, None, tags, origin_tags, &mut seen)
 }
 
 /// Hashes a metric context with an explicit host dimension, using a provided set to track duplicate tags.
 ///
-/// Takes a metric name, host, an iterator of tags, and an iterator of origin tags, and returns a tuple containing a
-/// unique hash key for the overall context, and a unique hash key for the non-origin tags by themselves. The host is
-/// considered part of overall context identity, but not part of the non-origin tag set.
+/// Takes a metric name, optional host, an iterator of tags, and an iterator of origin tags, and returns a tuple
+/// containing a unique hash key for the overall context, and a unique hash key for the non-origin tags by themselves.
+/// The host is considered part of overall context identity, but not part of the non-origin tag set.
 ///
 /// All tags are hashed in an order-oblivious (XOR) manner, which allows tags to be hashed in any order while still
 /// resulting in the same overall hash. This function is _not_ oblivious to the actual tag values themselves, though, so
@@ -46,9 +46,10 @@ where
 /// caller to provide the hash set used for tracking duplicates, and is more efficient than [`hash_context`] which
 /// allocates a new hash set each time.
 ///
-/// Returns a hash that uniquely identifies the combination of name, host, tags, and origin of the value.
+/// Returns a hash that uniquely identifies the combination of name, host, tags, and origin of the value. An unset host
+/// and an explicitly empty host are distinct contexts.
 pub(super) fn hash_context_with_host_and_seen<I, I2, T, T2>(
-    name: &str, host: &str, tags: I, origin_tags: I2, seen: &mut PrehashedHashSet<u64>,
+    name: &str, host: Option<&str>, tags: I, origin_tags: I2, seen: &mut PrehashedHashSet<u64>,
 ) -> (ContextKey, TagSetKey)
 where
     I: IntoIterator<Item = T>,
@@ -62,9 +63,7 @@ where
 
     // Hash the metric name and host.
     name.hash(&mut hasher);
-    if !host.is_empty() {
-        host.hash(&mut hasher);
-    }
+    host.hash(&mut hasher);
 
     // Hash the metric tags individually and XOR their hashes together, which allows us to be order-oblivious:
     let mut combined_tags_hash = 0;
