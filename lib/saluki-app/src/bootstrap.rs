@@ -77,7 +77,7 @@ impl AppBootstrapper {
 
     /// Sets the prefix to use for internal metrics.
     ///
-    /// Defaults to "saluki".
+    /// Defaults to `saluki`.
     pub fn with_metrics_prefix<S: Into<String>>(mut self, prefix: S) -> Self {
         self.metrics_prefix = prefix.into();
         self
