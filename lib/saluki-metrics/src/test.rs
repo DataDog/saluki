@@ -45,7 +45,7 @@ impl GaugeStorage {
 impl GaugeFn for GaugeStorage {
     fn increment(&self, value: f64) {
         self.current
-            .fetch_update(SeqCst, SeqCst, |v| {
+            .try_update(SeqCst, SeqCst, |v| {
                 let new = f64::from_bits(v) + value;
                 Some(new.to_bits())
             })
@@ -54,7 +54,7 @@ impl GaugeFn for GaugeStorage {
 
     fn decrement(&self, value: f64) {
         self.current
-            .fetch_update(SeqCst, SeqCst, |v| {
+            .try_update(SeqCst, SeqCst, |v| {
                 let new = f64::from_bits(v) - value;
                 Some(new.to_bits())
             })
