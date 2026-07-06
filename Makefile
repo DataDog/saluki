@@ -578,7 +578,7 @@ test-docs: ## Runs all doctests
 test-miri: check-rust-build-tools ensure-rust-miri
 test-miri: ## Runs all Miri-specific unit tests
 	@echo "[*] Running Miri-specific unit tests..."
-	cargo +nightly-2025-06-16 miri test -p stringtheory
+	cargo +nightly-2026-07-05 miri test -p stringtheory
 
 .PHONY: test-loom
 test-loom: check-rust-build-tools
@@ -744,10 +744,10 @@ ensure-rust-miri:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
 	$(error "Rustup must be present to install nightly toolchain/Miri component: https://www.rust-lang.org/tools/install")
 endif
-	@echo "[*] Installing/updating nightly Rust (2025-06-16) and Miri component..."
-	@rustup toolchain install nightly-2025-06-16 --component miri
+	@echo "[*] Installing/updating nightly Rust (2026-07-05) and Miri component..."
+	@rustup toolchain install nightly-2026-07-05 --component miri
 	@echo "[*] Ensuring Miri is setup..."
-	@cargo +nightly-2025-06-16 miri setup
+	@cargo +nightly-2026-07-05 miri setup
 
 ##@ Antithesis
 
