@@ -7,10 +7,10 @@
 //!
 //! [OpenTelemetry Transform processor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor
 
+use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlTransform as OttlTransformSettings};
 use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser};
 use saluki_common::collections::FastHashMap;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -21,31 +21,22 @@ use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
 use tracing::{debug, error};
 
-mod config;
-use self::config::{ErrorMode, OttlTransformConfig};
-
 mod span_context;
 use self::span_context::{SpanTransformContext, SpanTransformFamily};
 
 /// Configuration for the OTTL Transform processor.
 #[derive(Clone, Debug)]
 pub struct OttlTransformConfiguration {
-    config: OttlTransformConfig,
+    error_mode: OttlErrorMode,
+    trace_statements: Vec<String>,
 }
 
 impl OttlTransformConfiguration {
-    /// Creates an `OttlTransformConfiguration` from the given configuration.
-    ///
-    /// Reads the OTTL Transform config from the `ottl_transform_config` key at the top level of the data-plane
-    /// configuration.
-    ///
-    /// # Errors
-    ///
-    /// If a value at `ottl_transform_config` exists but fails to deserialize, an error is returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let transform_config = config.try_get_typed::<OttlTransformConfig>("ottl_transform_config")?;
+    /// Creates configuration from the resolved traces-domain settings.
+    pub fn from_configuration(config: &OttlTransformSettings) -> Result<Self, GenericError> {
         Ok(Self {
-            config: transform_config.unwrap_or_default(),
+            error_mode: config.error_mode,
+            trace_statements: config.trace_statements.clone(),
         })
     }
 }
@@ -68,7 +59,7 @@ impl SynchronousTransformBuilder for OttlTransformConfiguration {
         let enums = EnumMap::new();
 
         let mut span_parsers = Vec::new();
-        for statement in &self.config.trace_statements {
+        for statement in &self.trace_statements {
             let statement = statement.trim();
             if statement.is_empty() {
                 continue;
@@ -84,7 +75,7 @@ impl SynchronousTransformBuilder for OttlTransformConfiguration {
         }
 
         Ok(Box::new(OttlTransform {
-            error_mode: self.config.error_mode,
+            error_mode: self.error_mode,
             span_parsers,
         }))
     }
@@ -98,7 +89,7 @@ impl MemoryBounds for OttlTransformConfiguration {
 
 /// Synchronous transform that applies OTTL statements to each span in a trace.
 pub struct OttlTransform {
-    error_mode: ErrorMode,
+    error_mode: OttlErrorMode,
     span_parsers: Vec<ottl::Parser<SpanTransformFamily>>,
 }
 
@@ -115,11 +106,11 @@ impl OttlTransform {
             match parser.execute(&mut ctx) {
                 Ok(_) => {}
                 Err(e) => match self.error_mode {
-                    ErrorMode::Ignore => {
+                    OttlErrorMode::Ignore => {
                         error!(error = %e, "OTTL transform statement error; ignoring");
                     }
-                    ErrorMode::Silent => {}
-                    ErrorMode::Propagate => {
+                    OttlErrorMode::Silent => {}
+                    OttlErrorMode::Propagate => {
                         // The OTel spec drops the entire payload on propagate errors,
                         // but the SynchronousTransform API does not support error propagation.
                         // We log and stop processing further statements for this span.
@@ -155,7 +146,6 @@ mod tests {
     use std::sync::Arc;
 
     use saluki_common::collections::FastHashMap;
-    use saluki_config::ConfigurationLoader;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
         data_model::event::{
@@ -219,9 +209,16 @@ mod tests {
         )
     }
 
-    async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {
-        let (config, _) = ConfigurationLoader::for_tests(cfg_json, None, false).await;
-        let ottl_config = OttlTransformConfiguration::from_configuration(&config).expect("config should parse");
+    fn make_transform_config(error_mode: OttlErrorMode, statements: &[&str]) -> OttlTransformConfiguration {
+        let config = OttlTransformSettings {
+            error_mode,
+            trace_statements: statements.iter().map(|statement| (*statement).to_owned()).collect(),
+        };
+        OttlTransformConfiguration::from_configuration(&config).expect("typed configuration should be valid")
+    }
+
+    async fn build_transform(error_mode: OttlErrorMode, statements: &[&str]) -> Box<dyn SynchronousTransform + Send> {
+        let ottl_config = make_transform_config(error_mode, statements);
         let ctx = test_component_context();
         ottl_config.build(ctx).await.expect("build should succeed")
     }
@@ -230,7 +227,7 @@ mod tests {
 
     #[tokio::test]
     async fn from_configuration_absent_key_returns_default() {
-        let mut transform = build_transform(None).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &[]).await;
         let span = make_span(1, 1, HashMap::from([("a".into(), "b".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -243,27 +240,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn from_configuration_invalid_yaml_returns_error() {
-        let invalid = serde_json::json!({
-            "ottl_transform_config": {
-                "unknown_field": 1
-            }
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(invalid), None, false).await;
-        let result = OttlTransformConfiguration::from_configuration(&config);
-        assert!(result.is_err(), "unknown fields must cause deserialization error");
+    /// The component configuration copies the resolved model values without interpreting source YAML.
+    #[test]
+    fn from_configuration_copies_typed_values() {
+        let config = make_transform_config(OttlErrorMode::Silent, &["set(attributes[\"a\"], \"b\")"]);
+        assert_eq!(config.error_mode, OttlErrorMode::Silent);
+        assert_eq!(config.trace_statements, ["set(attributes[\"a\"], \"b\")"]);
     }
 
     #[tokio::test]
     async fn build_invalid_statement_returns_error() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["syntax error !!"]
-            }
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlTransformConfiguration::from_configuration(&config).expect("config is valid");
+        let ottl_config = make_transform_config(OttlErrorMode::default(), &["syntax error !!"]);
         let ctx = test_component_context();
         let result = ottl_config.build(ctx).await;
         assert!(result.is_err(), "invalid OTTL syntax must make build fail");
@@ -271,12 +258,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_empty_and_whitespace_statements_skipped() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["", "   ", "\t"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["", "   ", "\t"]).await;
         let span = make_span(1, 1, HashMap::from([("a".into(), "b".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -293,12 +275,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_new_attribute() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"newkey\"], \"newval\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform =
+            build_transform(OttlErrorMode::default(), &["set(attributes[\"newkey\"], \"newval\")"]).await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -309,12 +287,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_overwrite_existing_attribute() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"key\"], \"new\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"key\"], \"new\")"]).await;
         let span = make_span(1, 1, HashMap::from([("key".into(), "old".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -325,12 +298,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_nil_removes_attribute() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"gone\"], attributes[\"nonexistent\"])"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"gone\"], attributes[\"nonexistent\"])"],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::from([("gone".into(), "here".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -347,12 +319,7 @@ mod tests {
     async fn set_int_value_converts_to_string() {
         //"The answer to the Ultimate Question of Life, the Universe, and Everything"
         //The Hitchhiker's Guide to the Galaxy ;)
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"num\"], 42)"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"num\"], 42)"]).await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -363,12 +330,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_float_value_converts_to_string() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"not_pi\"], 6.14)"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"not_pi\"], 6.14)"]).await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -379,12 +341,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_bool_value_converts_to_string() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"flag\"], true)"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"flag\"], true)"]).await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -395,12 +352,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_from_another_attribute() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"dst\"], attributes[\"src\"])"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"dst\"], attributes[\"src\"])"],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::from([("src".into(), "hello".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -413,12 +369,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_with_where_clause_matching() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::from([("env".into(), "prod".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -429,12 +384,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_with_where_clause_not_matching() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::from([("env".into(), "staging".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -449,14 +403,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_with_where_clause_on_resource_attributes() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": [
-                    "set(attributes[\"x\"], \"v\") where resource.attributes[\"host.name\"] == \"localhost\""
-                ]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"x\"], \"v\") where resource.attributes[\"host.name\"] == \"localhost\""],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], Some(vec!["host.name:localhost"]));
         let mut buffer = EventsBuffer::default();
@@ -469,15 +420,11 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_statements_execute_in_order() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": [
-                    "set(attributes[\"a\"], \"1\")",
-                    "set(attributes[\"b\"], \"2\")"
-                ]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"a\"], \"1\")", "set(attributes[\"b\"], \"2\")"],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -489,15 +436,14 @@ mod tests {
 
     #[tokio::test]
     async fn later_statement_sees_earlier_mutation() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": [
-                    "set(attributes[\"a\"], \"1\")",
-                    "set(attributes[\"b\"], attributes[\"a\"])"
-                ]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &[
+                "set(attributes[\"a\"], \"1\")",
+                "set(attributes[\"b\"], attributes[\"a\"])",
+            ],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -512,15 +458,14 @@ mod tests {
 
     #[tokio::test]
     async fn where_clause_sees_earlier_mutation() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": [
-                    "set(attributes[\"env\"], \"prod\")",
-                    "set(attributes[\"x\"], \"1\") where attributes[\"env\"] == \"prod\""
-                ]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &[
+                "set(attributes[\"env\"], \"prod\")",
+                "set(attributes[\"x\"], \"1\") where attributes[\"env\"] == \"prod\"",
+            ],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -537,16 +482,14 @@ mod tests {
 
     #[tokio::test]
     async fn error_mode_ignore_continues_processing() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "error_mode": "ignore",
-                "trace_statements": [
-                    "set(resource.attributes[\"x\"], \"fail\")",
-                    "set(attributes[\"ok\"], \"yes\")"
-                ]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::Ignore,
+            &[
+                "set(resource.attributes[\"x\"], \"fail\")",
+                "set(attributes[\"ok\"], \"yes\")",
+            ],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -561,16 +504,14 @@ mod tests {
 
     #[tokio::test]
     async fn error_mode_silent_continues_processing() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "error_mode": "silent",
-                "trace_statements": [
-                    "set(resource.attributes[\"x\"], \"fail\")",
-                    "set(attributes[\"ok\"], \"yes\")"
-                ]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::Silent,
+            &[
+                "set(resource.attributes[\"x\"], \"fail\")",
+                "set(attributes[\"ok\"], \"yes\")",
+            ],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -585,16 +526,14 @@ mod tests {
 
     #[tokio::test]
     async fn error_mode_propagate_stops_span_processing() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "error_mode": "propagate",
-                "trace_statements": [
-                    "set(resource.attributes[\"x\"], \"fail\")",
-                    "set(attributes[\"should_not_appear\"], \"yes\")"
-                ]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::Propagate,
+            &[
+                "set(resource.attributes[\"x\"], \"fail\")",
+                "set(attributes[\"should_not_appear\"], \"yes\")",
+            ],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -611,12 +550,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_applies_to_all_spans() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"added\"], \"yes\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"added\"], \"yes\")"]).await;
         let spans = vec![
             make_span(1, 1, HashMap::new()),
             make_span(1, 2, HashMap::new()),
@@ -638,12 +572,11 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_each_span_independent() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"x\"], \"v\") where attributes[\"env\"] == \"prod\""],
+        )
+        .await;
         let spans = vec![
             make_span(1, 1, HashMap::from([("env".into(), "prod".into())])),
             make_span(1, 2, HashMap::from([("env".into(), "staging".into())])),
@@ -672,12 +605,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_multiple_traces() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"tagged\"], \"yes\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"tagged\"], \"yes\")"]).await;
         let trace1 = make_trace(vec![make_span(1, 1, HashMap::new())], None);
         let trace2 = make_trace(vec![make_span(2, 1, HashMap::new())], None);
         let mut buffer = EventsBuffer::default();
@@ -698,12 +626,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_empty_statements_noop() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": []
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &[]).await;
         let span = make_span(1, 1, HashMap::from([("a".into(), "b".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -720,13 +643,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_resource_attributes_returns_error() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "error_mode": "ignore",
-                "trace_statements": ["set(resource.attributes[\"key\"], \"value\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform =
+            build_transform(OttlErrorMode::Ignore, &["set(resource.attributes[\"key\"], \"value\")"]).await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], Some(vec!["key:original"]));
         let mut buffer = EventsBuffer::default();
@@ -758,12 +676,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_empty_string_value() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"key\"], \"\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"key\"], \"\")"]).await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -778,12 +691,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_attribute_with_dots_in_key() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"service.name\"], \"foo\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"service.name\"], \"foo\")"],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -794,12 +706,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_attribute_with_special_characters() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"key with spaces\"], \"value with ñ and 日本語\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"key with spaces\"], \"value with ñ and 日本語\")"],
+        )
+        .await;
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
@@ -813,12 +724,7 @@ mod tests {
 
     #[tokio::test]
     async fn transform_buffer_non_trace_events_ignored() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"x\"], \"y\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"x\"], \"y\")"]).await;
 
         let sc = ServiceCheck::new("test.check", CheckStatus::Ok);
         let span = make_span(1, 1, HashMap::new());
@@ -870,12 +776,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_set_all() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"tag\"], \"value\")"]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(OttlErrorMode::default(), &["set(attributes[\"tag\"], \"value\")"]).await;
 
         let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)
             .map(|i| make_span(1, i as u64, HashMap::new()))
@@ -900,12 +801,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_set_half() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"tag\"], \"value\") where attributes[\"half\"] == \"yes\""]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"tag\"], \"value\") where attributes[\"half\"] == \"yes\""],
+        )
+        .await;
 
         let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)
             .map(|i| {
@@ -933,12 +833,11 @@ mod tests {
     #[tokio::test]
     #[ignore = "performance test; run with: cargo test -- --ignored --nocapture perf_throughput"]
     async fn perf_throughput_set_none() {
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": {
-                "trace_statements": ["set(attributes[\"tag\"], \"value\") where attributes[\"nomatch\"] == \"yes\""]
-            }
-        });
-        let mut transform = build_transform(Some(cfg_json)).await;
+        let mut transform = build_transform(
+            OttlErrorMode::default(),
+            &["set(attributes[\"tag\"], \"value\") where attributes[\"nomatch\"] == \"yes\""],
+        )
+        .await;
 
         let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)
             .map(|i| make_span(1, i as u64, HashMap::from([("env".into(), "keep".into())])))
