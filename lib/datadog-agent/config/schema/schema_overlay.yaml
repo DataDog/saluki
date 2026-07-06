@@ -599,8 +599,8 @@ inventory:
 
       The Agent schema defaults this to a fixed Linux path, but ADP's default log file is
       platform-specific and cannot be expressed as a literal here. Generated as an absence-aware
-      Option so an unset key leaves the model default empty; `LoggingConfigurationTranslator` then
-      resolves that empty value to the platform's default log path. An explicit path still wins.
+      Option so an unset key stays `None` on the model; `LoggingConfigurationTranslator` then
+      resolves `None` to the platform's default log path. An explicit path still wins.
     saluki_overrides_default: true
     test_support:
       used_by: [get_typed]

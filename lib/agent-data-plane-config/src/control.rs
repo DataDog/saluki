@@ -98,8 +98,9 @@ pub struct Logging {
     /// Destination URI for syslog forwarding.
     pub syslog_uri: String,
 
-    /// Path of the log file.
-    pub file: String,
+    /// Configured log-file path, or `None` when unset. Resolved to the platform-specific default at
+    /// the point of use, because this crate is a pure data model and cannot compute a platform path.
+    pub file: Option<String>,
 
     /// Whether file logging is turned off entirely.
     pub disable_file_logging: bool,

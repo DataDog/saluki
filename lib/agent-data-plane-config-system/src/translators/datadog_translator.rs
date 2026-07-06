@@ -414,13 +414,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_log_file(&mut self, value: Option<String>) {
-        // Flagged `saluki_overrides_default`: absent (`None`) leaves the model default empty, which
-        // `LoggingConfigurationTranslator` resolves to the platform-specific default log path; an
-        // explicit path wins. Never derive the default from the Agent's Linux literal here, or a
-        // user who deliberately picks that path becomes indistinguishable from the default.
-        if let Some(value) = value {
-            self.config.control.logging.file = value;
-        }
+        // Flagged `saluki_overrides_default`, so the source is absence-aware: `None` (unset) stays
+        // `None` on the model, which `LoggingConfigurationTranslator` resolves to the platform
+        // default log path. The Agent schema's Linux literal is never adopted as the default here.
+        self.config.control.logging.file = value;
     }
 
     fn consume_data_plane_otlp_enabled(&mut self, value: bool) {
@@ -1477,10 +1474,10 @@ mod tests {
         assert!(!logging.to_syslog);
         assert!(!logging.syslog_rfc);
         assert_eq!(logging.syslog_uri, "");
-        // `data_plane.log_file` is flagged `saluki_overrides_default`, so an unset key must leave the
-        // model file empty rather than adopting the Agent schema's Linux literal.
-        // `LoggingConfigurationTranslator` resolves that empty value to the platform default path.
-        assert_eq!(logging.file, "");
+        // `data_plane.log_file` is flagged `saluki_overrides_default`, so an unset key stays `None`
+        // rather than adopting the Agent schema's Linux literal. `LoggingConfigurationTranslator`
+        // resolves `None` to the platform default path.
+        assert_eq!(logging.file, None);
         assert!(!logging.disable_file_logging);
         assert_eq!(logging.file_max_rolls, 1);
         // `10Mb` parses as 10 decimal megabytes.
@@ -1490,8 +1487,8 @@ mod tests {
     #[test]
     fn data_plane_log_file_explicit_path_is_preserved() {
         // An explicitly configured `data_plane.log_file` must reach the model unchanged, even when
-        // it equals the Agent's Linux default: the flagged Option distinguishes a deliberate choice
-        // from an unset key.
+        // it equals the Agent's Linux default: the absence-aware source distinguishes a deliberate
+        // choice (`Some`) from an unset key (`None`).
         let datadog: DatadogConfiguration = serde_json::from_value(json!({
             "data_plane": { "log_file": "/var/log/datadog/agent-data-plane.log" },
         }))
@@ -1499,7 +1496,10 @@ mod tests {
 
         let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
         assert!(errors.is_none());
-        assert_eq!(config.control.logging.file, "/var/log/datadog/agent-data-plane.log");
+        assert_eq!(
+            config.control.logging.file.as_deref(),
+            Some("/var/log/datadog/agent-data-plane.log")
+        );
     }
 
     #[test]
@@ -1530,7 +1530,7 @@ mod tests {
         assert!(logging.to_syslog);
         assert!(logging.syslog_rfc);
         assert_eq!(logging.syslog_uri, "udp://127.0.0.1:1514");
-        assert_eq!(logging.file, "/tmp/adp.log");
+        assert_eq!(logging.file.as_deref(), Some("/tmp/adp.log"));
         assert!(logging.disable_file_logging);
         assert_eq!(logging.file_max_rolls, 5);
         assert_eq!(logging.file_max_size, 64_000);

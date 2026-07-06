@@ -76,16 +76,17 @@ impl LoggingConfigurationTranslator {
             (String::new(), false)
         };
 
-        // File destination: the per-subagent path, with the platform default as fallback for an empty path. The Core
-        // Agent's own `log_file` is deliberately never consulted. `disable_file_logging` short-circuits file output.
+        // File destination: the per-subagent path, falling back to the platform default when unset (or blank). The
+        // Core Agent's own `log_file` is deliberately never consulted. `disable_file_logging` short-circuits file
+        // output.
         let log_file = if logging.disable_file_logging {
             String::new()
-        } else if logging.file.is_empty() {
-            PlatformSettings::get_default_log_file_path()
-                .to_string_lossy()
-                .into_owned()
         } else {
-            logging.file.clone()
+            logging.file.clone().filter(|path| !path.is_empty()).unwrap_or_else(|| {
+                PlatformSettings::get_default_log_file_path()
+                    .to_string_lossy()
+                    .into_owned()
+            })
         };
 
         Ok(LoggingConfiguration {
@@ -209,7 +210,7 @@ mod tests {
             to_syslog: false,
             syslog_rfc: false,
             syslog_uri: String::new(),
-            file: String::new(),
+            file: None,
             disable_file_logging: false,
             file_max_rolls: 1,
             file_max_size: 10_000_000,
@@ -373,7 +374,7 @@ mod tests {
     #[test]
     fn configured_log_file_is_used() {
         let logging = translate(&Logging {
-            file: "/tmp/adp.log".to_string(),
+            file: Some("/tmp/adp.log".to_string()),
             ..default_logging()
         });
 
@@ -384,7 +385,7 @@ mod tests {
     fn disable_file_logging_produces_empty_log_file() {
         let logging = translate(&Logging {
             disable_file_logging: true,
-            file: "/tmp/adp.log".to_string(),
+            file: Some("/tmp/adp.log".to_string()),
             ..default_logging()
         });
 
@@ -392,9 +393,23 @@ mod tests {
     }
 
     #[test]
-    fn empty_log_file_falls_back_to_platform_default() {
+    fn unset_log_file_falls_back_to_platform_default() {
         let logging = translate(&Logging {
-            file: String::new(),
+            file: None,
+            ..default_logging()
+        });
+
+        assert_eq!(
+            logging.log_file,
+            PlatformSettings::get_default_log_file_path().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn blank_log_file_falls_back_to_platform_default() {
+        // A configured-but-blank path is treated as unset, matching the pre-migration behavior.
+        let logging = translate(&Logging {
+            file: Some(String::new()),
             ..default_logging()
         });
 
