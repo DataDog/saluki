@@ -206,7 +206,7 @@ tower-http = { version = "0.7", default-features = false }
 bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
-lading-payload = { git = "https://github.com/DataDog/lading", rev = "e98e30524c8caa31d585703da790e15fd6f92573" }
+lading-payload = { git = "https://github.com/DataDog/lading", rev = "576129489df44ae0e71c4871c51910837c919b90" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.18.0", default-features = false, features = [
   "macros",
