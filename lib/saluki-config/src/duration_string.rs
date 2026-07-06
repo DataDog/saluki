@@ -13,6 +13,10 @@ use std::fmt::{Debug, Display, Formatter};
 use std::str::FromStr;
 use std::time::Duration;
 
+use go_duration::{
+    checked_duration_from_nanos_f64, checked_duration_from_nanos_i128, checked_duration_from_nanos_u128,
+    parse_viper_duration,
+};
 pub use go_duration::{parse_duration, ParseDurationError};
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
@@ -90,7 +94,7 @@ impl FromStr for DurationString {
     type Err = ParseDurationError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_string(s).map(Self)
+        parse_viper_duration(s).map(Self)
     }
 }
 
@@ -122,78 +126,41 @@ impl<'de> Visitor<'de> for DurationStringVisitor {
     }
 
     fn visit_i64<E: de::Error>(self, n: i64) -> Result<DurationString, E> {
-        if n < 0 {
-            return Err(E::custom(ParseDurationError::Negative));
-        }
-        Ok(DurationString(Duration::from_nanos(n as u64)))
+        checked_duration_from_nanos_i128(n as i128)
+            .map(DurationString)
+            .map_err(E::custom)
     }
 
     fn visit_i128<E: de::Error>(self, n: i128) -> Result<DurationString, E> {
-        if n < 0 {
-            return Err(E::custom(ParseDurationError::Negative));
-        }
-        if n > MAX_NANOS_U64 as i128 {
-            return Err(E::custom(ParseDurationError::Overflow));
-        }
-        Ok(DurationString(Duration::from_nanos(n as u64)))
+        checked_duration_from_nanos_i128(n)
+            .map(DurationString)
+            .map_err(E::custom)
     }
 
     fn visit_u64<E: de::Error>(self, n: u64) -> Result<DurationString, E> {
-        if n > MAX_NANOS_U64 {
-            return Err(E::custom(ParseDurationError::Overflow));
-        }
-        Ok(DurationString(Duration::from_nanos(n)))
+        checked_duration_from_nanos_u128(n as u128)
+            .map(DurationString)
+            .map_err(E::custom)
     }
 
     fn visit_u128<E: de::Error>(self, n: u128) -> Result<DurationString, E> {
-        if n > MAX_NANOS_U64 as u128 {
-            return Err(E::custom(ParseDurationError::Overflow));
-        }
-        Ok(DurationString(Duration::from_nanos(n as u64)))
+        checked_duration_from_nanos_u128(n)
+            .map(DurationString)
+            .map_err(E::custom)
     }
 
     fn visit_f64<E: de::Error>(self, f: f64) -> Result<DurationString, E> {
-        if !f.is_finite() {
-            return Err(E::custom("duration nanoseconds must be finite"));
-        }
-        if f < 0.0 {
-            return Err(E::custom(ParseDurationError::Negative));
-        }
-        if f > MAX_NANOS_U64 as f64 {
-            return Err(E::custom(ParseDurationError::Overflow));
-        }
-        Ok(DurationString(Duration::from_nanos(f as u64)))
+        checked_duration_from_nanos_f64(f)
+            .map(DurationString)
+            .map_err(E::custom)
     }
 
     fn visit_str<E: de::Error>(self, s: &str) -> Result<DurationString, E> {
-        parse_string(s).map(DurationString).map_err(E::custom)
+        parse_viper_duration(s).map(DurationString).map_err(E::custom)
     }
 
     fn visit_string<E: de::Error>(self, s: String) -> Result<DurationString, E> {
         self.visit_str(&s)
-    }
-}
-
-/// Maximum number of nanoseconds we will accept, matching the Agent's cap (Go's `time.Duration` is `int64`, so
-/// `i64::MAX` nanoseconds is the largest representable value).
-const MAX_NANOS_U64: u64 = i64::MAX as u64;
-
-/// Parses a string using viper/cast precedence: try matching Go's `time.ParseDuration` first (via the
-/// [`go_duration`] crate), then fall back to a bare integer (treated as nanoseconds).
-fn parse_string(s: &str) -> Result<Duration, ParseDurationError> {
-    let trimmed = s.trim();
-    match parse_duration(trimmed) {
-        Ok(d) => Ok(d),
-        Err(err) => match trimmed.parse::<i128>() {
-            Ok(n) if n < 0 => Err(ParseDurationError::Negative),
-            Ok(n) => {
-                if n > MAX_NANOS_U64 as i128 {
-                    return Err(ParseDurationError::Overflow);
-                }
-                Ok(Duration::from_nanos(n as u64))
-            }
-            Err(_) => Err(err),
-        },
     }
 }
 

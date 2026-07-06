@@ -6,8 +6,10 @@
 //! including the runtime configuration layer and build-time config-schema codegen. This crate is the single owner of
 //! that algorithm so it isn't duplicated in each of those places.
 //!
-//! Only the parsing primitive lives here. Higher-level coercion (for example, viper's "a bare integer is nanoseconds"
-//! fallback) is intentionally left to callers.
+//! Two layers are provided. [`parse_duration`] is the strict Go grammar primitive. [`parse_viper_duration`] wraps it
+//! with the viper/cast coercion the Agent actually applies to configuration values (trim whitespace, then fall back
+//! to interpreting a bare integer as nanoseconds). Consumers that must accept exactly what the Agent accepts should
+//! use [`parse_viper_duration`] so that coercion lives in one place instead of being re-derived per call site.
 //!
 //! [go-duration]: https://pkg.go.dev/time#ParseDuration
 //! [viper]: https://github.com/spf13/viper
@@ -21,7 +23,7 @@ use std::time::Duration;
 
 /// Maximum number of nanoseconds we accept, matching the Agent's cap: Go's `time.Duration` is an `int64`, so
 /// `i64::MAX` nanoseconds is the largest representable value.
-const MAX_NANOS_U64: u64 = i64::MAX as u64;
+pub const MAX_NANOS_U64: u64 = i64::MAX as u64;
 
 /// Error returned when a duration string can't be parsed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -165,6 +167,70 @@ pub fn parse_duration(s: &str) -> Result<Duration, ParseDurationError> {
     Ok(Duration::from_nanos(total_ns as u64))
 }
 
+/// Parses a duration the way the Datadog Agent's configuration loader does.
+///
+/// The Agent loads configuration through [spf13/viper][viper], which coerces values via [spf13/cast][cast]'s
+/// `cast.ToDurationE`. For a string that means: trim surrounding whitespace, try Go's `time.ParseDuration` grammar
+/// ([`parse_duration`]), and if that fails, fall back to interpreting the entire string as a bare integer count of
+/// nanoseconds. This is the coercion ADP must reproduce to accept the same configuration the Agent does, including a
+/// unit-less string such as `"5"` (5 nanoseconds), env-var input like `DD_EXPECTED_TAGS_DURATION=5`, and
+/// whitespace-padded input like `" 5s"`.
+///
+/// Negative values and values beyond the `time.Duration` bound ([`MAX_NANOS_U64`] nanoseconds) are rejected in both
+/// the Go-grammar and the bare-integer path.
+///
+/// [viper]: https://github.com/spf13/viper
+/// [cast]: https://github.com/spf13/cast
+pub fn parse_viper_duration(s: &str) -> Result<Duration, ParseDurationError> {
+    let trimmed = s.trim();
+    match parse_duration(trimmed) {
+        Ok(d) => Ok(d),
+        // Go's grammar rejected it; fall back to viper's bare-integer-nanoseconds interpretation. Only substitute
+        // the fallback when the string is actually an integer; otherwise surface the original grammar error.
+        Err(grammar_err) => match trimmed.parse::<i128>() {
+            Ok(nanos) => checked_duration_from_nanos_i128(nanos),
+            Err(_) => Err(grammar_err),
+        },
+    }
+}
+
+/// Converts a signed nanosecond count into a [`Duration`], rejecting negative values and values beyond the
+/// `time.Duration` bound ([`MAX_NANOS_U64`] nanoseconds).
+pub fn checked_duration_from_nanos_i128(nanos: i128) -> Result<Duration, ParseDurationError> {
+    if nanos < 0 {
+        return Err(ParseDurationError::Negative);
+    }
+    if nanos > MAX_NANOS_U64 as i128 {
+        return Err(ParseDurationError::Overflow);
+    }
+    Ok(Duration::from_nanos(nanos as u64))
+}
+
+/// Converts an unsigned nanosecond count into a [`Duration`], rejecting values beyond the `time.Duration` bound
+/// ([`MAX_NANOS_U64`] nanoseconds).
+pub fn checked_duration_from_nanos_u128(nanos: u128) -> Result<Duration, ParseDurationError> {
+    if nanos > MAX_NANOS_U64 as u128 {
+        return Err(ParseDurationError::Overflow);
+    }
+    Ok(Duration::from_nanos(nanos as u64))
+}
+
+/// Converts a floating-point nanosecond count into a [`Duration`], rejecting non-finite, negative, and out-of-range
+/// values. The fractional part is truncated toward zero, matching [`Duration::from_nanos`] and viper's `int64`
+/// coercion.
+pub fn checked_duration_from_nanos_f64(nanos: f64) -> Result<Duration, ParseDurationError> {
+    if !nanos.is_finite() {
+        return Err(invalid("<non-finite>", "duration nanoseconds must be finite"));
+    }
+    if nanos < 0.0 {
+        return Err(ParseDurationError::Negative);
+    }
+    if nanos > MAX_NANOS_U64 as f64 {
+        return Err(ParseDurationError::Overflow);
+    }
+    Ok(Duration::from_nanos(nanos as u64))
+}
+
 fn consume_digits(s: &str) -> (&str, &str) {
     let end = s.bytes().take_while(|b| b.is_ascii_digit()).count();
     s.split_at(end)
@@ -248,6 +314,73 @@ mod tests {
         assert!(matches!(
             parse_duration("9223372036854775808ns"),
             Err(ParseDurationError::Overflow)
+        ));
+    }
+
+    #[test]
+    fn viper_coercion_accepts_go_strings_and_bare_integers() {
+        // Go-grammar strings still parse.
+        assert_eq!(parse_viper_duration("10s").unwrap(), Duration::from_secs(10));
+        assert_eq!(parse_viper_duration("0s").unwrap(), Duration::ZERO);
+        // Bare integers are nanoseconds (viper's fallback), not part of the Go grammar.
+        assert_eq!(parse_viper_duration("5").unwrap(), Duration::from_nanos(5));
+        assert_eq!(parse_viper_duration("0").unwrap(), Duration::ZERO);
+        // Surrounding whitespace is trimmed before either interpretation.
+        assert_eq!(parse_viper_duration(" 5s").unwrap(), Duration::from_secs(5));
+        assert_eq!(parse_viper_duration("  5  ").unwrap(), Duration::from_nanos(5));
+    }
+
+    #[test]
+    fn viper_coercion_rejects_negative_overflow_and_junk() {
+        // Negative and overflow are rejected in both the Go-grammar and the bare-integer path.
+        assert!(matches!(parse_viper_duration("-1s"), Err(ParseDurationError::Negative)));
+        assert!(matches!(parse_viper_duration("-5"), Err(ParseDurationError::Negative)));
+        assert!(matches!(
+            parse_viper_duration("9223372036854775808"),
+            Err(ParseDurationError::Overflow)
+        ));
+        assert_eq!(
+            parse_viper_duration("9223372036854775807").unwrap(),
+            Duration::from_nanos(9_223_372_036_854_775_807)
+        );
+        // Non-integer junk surfaces the original Go-grammar error rather than the fallback's.
+        assert!(matches!(
+            parse_viper_duration("abc"),
+            Err(ParseDurationError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn checked_numeric_conversions() {
+        let max = MAX_NANOS_U64;
+        assert_eq!(
+            checked_duration_from_nanos_i128(max as i128).unwrap(),
+            Duration::from_nanos(max)
+        );
+        assert!(matches!(
+            checked_duration_from_nanos_i128(-1),
+            Err(ParseDurationError::Negative)
+        ));
+        assert!(matches!(
+            checked_duration_from_nanos_i128(max as i128 + 1),
+            Err(ParseDurationError::Overflow)
+        ));
+        assert!(matches!(
+            checked_duration_from_nanos_u128(max as u128 + 1),
+            Err(ParseDurationError::Overflow)
+        ));
+        assert_eq!(checked_duration_from_nanos_f64(1.9).unwrap(), Duration::from_nanos(1));
+        assert!(matches!(
+            checked_duration_from_nanos_f64(-0.5),
+            Err(ParseDurationError::Negative)
+        ));
+        assert!(matches!(
+            checked_duration_from_nanos_f64(f64::INFINITY),
+            Err(ParseDurationError::Invalid { .. })
+        ));
+        assert!(matches!(
+            checked_duration_from_nanos_f64(f64::NAN),
+            Err(ParseDurationError::Invalid { .. })
         ));
     }
 

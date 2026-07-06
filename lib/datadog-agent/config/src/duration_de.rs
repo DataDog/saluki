@@ -10,23 +10,24 @@
 use std::fmt;
 use std::time::Duration;
 
-use go_duration::{parse_duration, ParseDurationError};
+use go_duration::{
+    checked_duration_from_nanos_f64, checked_duration_from_nanos_i128, checked_duration_from_nanos_u128,
+    parse_viper_duration,
+};
 use serde::de::{self, Deserializer, Visitor};
 
-/// Largest nanosecond count we accept, matching the Agent's cap: Go's `time.Duration` is an `int64`,
-/// so `i64::MAX` nanoseconds is the largest representable value. This mirrors the bound enforced by
-/// `saluki_config::DurationString`, the type this deserializer replaced on the typed config path.
-const MAX_NANOS_U64: u64 = i64::MAX as u64;
-
-/// Deserialize a duration expressed as integer nanoseconds or a Go duration string.
+/// Deserialize a duration expressed as numeric nanoseconds or a configuration string.
 ///
-/// A numeric value is nanoseconds (matching the wire encoding and the classifier's
-/// `duration_value_as_nanos`); a string is parsed with the shared `go-duration` parser.
+/// Both shapes are coerced through the shared `go-duration` crate, so the typed `DatadogConfiguration`
+/// path accepts and rejects exactly what `saluki_config::DurationString` did before this migration
+/// (that type is now built on the same functions):
 ///
-/// Acceptance and rejection match `saluki_config::DurationString`, the type this replaced on the
-/// typed config path: negative numeric and negative string durations are rejected (not clamped to
-/// zero), and numeric values above the `time.Duration` bound (`i64::MAX` nanoseconds) are rejected
-/// as overflow.
+/// - numeric values are nanoseconds, with negatives and values above the `time.Duration` bound
+///   (`i64::MAX` nanoseconds) rejected rather than clamped;
+/// - strings go through viper/cast coercion via `parse_viper_duration`: surrounding whitespace is
+///   trimmed, a Go duration string (for example `"10s"`) is parsed, and a bare integer string (for
+///   example `"5"`, as delivered by env vars like `DD_EXPECTED_TAGS_DURATION=5`) is treated as
+///   nanoseconds.
 pub(crate) fn deserialize_go_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
@@ -41,51 +42,27 @@ where
         }
 
         fn visit_u64<E: de::Error>(self, nanos: u64) -> Result<Duration, E> {
-            if nanos > MAX_NANOS_U64 {
-                return Err(E::custom(ParseDurationError::Overflow));
-            }
-            Ok(Duration::from_nanos(nanos))
+            checked_duration_from_nanos_u128(nanos as u128).map_err(de::Error::custom)
         }
 
         fn visit_u128<E: de::Error>(self, nanos: u128) -> Result<Duration, E> {
-            if nanos > MAX_NANOS_U64 as u128 {
-                return Err(E::custom(ParseDurationError::Overflow));
-            }
-            Ok(Duration::from_nanos(nanos as u64))
+            checked_duration_from_nanos_u128(nanos).map_err(de::Error::custom)
         }
 
         fn visit_i64<E: de::Error>(self, nanos: i64) -> Result<Duration, E> {
-            if nanos < 0 {
-                return Err(E::custom(ParseDurationError::Negative));
-            }
-            Ok(Duration::from_nanos(nanos as u64))
+            checked_duration_from_nanos_i128(nanos as i128).map_err(de::Error::custom)
         }
 
         fn visit_i128<E: de::Error>(self, nanos: i128) -> Result<Duration, E> {
-            if nanos < 0 {
-                return Err(E::custom(ParseDurationError::Negative));
-            }
-            if nanos > MAX_NANOS_U64 as i128 {
-                return Err(E::custom(ParseDurationError::Overflow));
-            }
-            Ok(Duration::from_nanos(nanos as u64))
+            checked_duration_from_nanos_i128(nanos).map_err(de::Error::custom)
         }
 
         fn visit_f64<E: de::Error>(self, nanos: f64) -> Result<Duration, E> {
-            if !nanos.is_finite() {
-                return Err(E::custom("duration nanoseconds must be finite"));
-            }
-            if nanos < 0.0 {
-                return Err(E::custom(ParseDurationError::Negative));
-            }
-            if nanos > MAX_NANOS_U64 as f64 {
-                return Err(E::custom(ParseDurationError::Overflow));
-            }
-            Ok(Duration::from_nanos(nanos as u64))
+            checked_duration_from_nanos_f64(nanos).map_err(de::Error::custom)
         }
 
         fn visit_str<E: de::Error>(self, text: &str) -> Result<Duration, E> {
-            parse_duration(text).map_err(de::Error::custom)
+            parse_viper_duration(text).map_err(de::Error::custom)
         }
 
         fn visit_string<E: de::Error>(self, text: String) -> Result<Duration, E> {
@@ -144,6 +121,22 @@ mod tests {
     fn negative_string_is_rejected() {
         assert!(err(r#"{"d": "-1s"}"#).contains("negative"));
         assert!(err(r#"{"d": "-0.5h"}"#).contains("negative"));
+        // Negative bare-integer string, rejected on the viper fallback path.
+        assert!(err(r#"{"d": "-5"}"#).contains("negative"));
+    }
+
+    #[test]
+    fn bare_integer_string_is_nanoseconds() {
+        // Viper coerces a unit-less string to nanoseconds; this is how env-var input such as
+        // `DD_EXPECTED_TAGS_DURATION=5` arrives. `DurationString` accepted it, so the typed path must too.
+        assert_eq!(parse(r#"{"d": "5"}"#), Duration::from_nanos(5));
+        assert_eq!(parse(r#"{"d": "0"}"#), Duration::ZERO);
+    }
+
+    #[test]
+    fn whitespace_padded_string_is_trimmed() {
+        assert_eq!(parse(r#"{"d": " 5s"}"#), Duration::from_secs(5));
+        assert_eq!(parse(r#"{"d": "  5  "}"#), Duration::from_nanos(5));
     }
 
     #[test]
@@ -159,6 +152,8 @@ mod tests {
     #[test]
     fn overflow_string_is_rejected() {
         assert!(err(r#"{"d": "9223372036854775808ns"}"#).contains("exceeds"));
+        // Overflowing bare-integer string, rejected on the viper fallback path.
+        assert!(err(r#"{"d": "9223372036854775808"}"#).contains("exceeds"));
     }
 
     #[test]
