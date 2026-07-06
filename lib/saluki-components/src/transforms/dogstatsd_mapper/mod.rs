@@ -264,6 +264,9 @@ impl MetricMapper {
         let metric_name = context.name();
         let tags = context.tags();
         let origin_tags = context.origin_tags();
+        // TODO: If host-bearing remaps show measurable allocation overhead, preserve the context's underlying host
+        // representation through the resolver instead of rematerializing it from `&str`.
+        let host = context.host();
 
         // See if we have a cached result for this metric name.
         if let Some(cache) = &self.cache {
@@ -276,7 +279,7 @@ impl MetricMapper {
 
                         self.context_resolver.resolve_with_optional_host_and_origin_tags(
                             result.name.clone(),
-                            context.host_meta(),
+                            host,
                             merged_tags,
                             origin_tags.clone(),
                         )
@@ -317,7 +320,7 @@ impl MetricMapper {
 
                     let resolved = self.context_resolver.resolve_with_optional_host_and_origin_tags(
                         new_name.as_str(),
-                        context.host_meta(),
+                        host,
                         merged_tags,
                         origin_tags.clone(),
                     )?;
