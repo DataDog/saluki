@@ -11,6 +11,7 @@ members = [
   "lib/datadog-agent/config-overlay-model",
   "lib/datadog-agent/config-testing",
   "lib/ddsketch",
+  "lib/go-duration",
   "lib/ottl",
   "lib/process-memory",
   "lib/prometheus-exposition",
@@ -52,6 +53,7 @@ datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
+go-duration = { path = "lib/go-duration" }
 resource-accounting = { path = "lib/resource-accounting" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }

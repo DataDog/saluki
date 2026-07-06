@@ -36,7 +36,7 @@ jobs:
       # `make generate-api-docs` installs and pins the nightly toolchain it needs (see
       # RUST_NIGHTLY_VERSION in the Makefile); this step just provides rustup/cargo.
       - name: Set up Rust
-        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17
         with:
           toolchain: stable
           cache: false

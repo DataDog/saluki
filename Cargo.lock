@@ -1200,6 +1200,7 @@ name = "datadog-agent-config"
 version = "0.1.0"
 dependencies = [
  "datadog-agent-config-overlay-model",
+ "go-duration",
  "indexmap",
  "prettyplease",
  "schemars",
@@ -1835,6 +1836,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "go-duration"
+version = "0.1.0"
+
+[[package]]
 name = "granit-parser"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1882,6 +1887,7 @@ dependencies = [
  "anyhow",
  "clap",
  "itoa",
+ "libc",
  "num-traits",
  "rand 0.10.1",
  "ryu",
@@ -4483,6 +4489,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "figment",
+ "go-duration",
  "saluki-antithesis",
  "saluki-error",
  "serde",
