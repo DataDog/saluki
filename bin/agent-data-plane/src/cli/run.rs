@@ -122,28 +122,6 @@ pub async fn handle_run_command(
             dynamic_config.ready().await;
             info!("Initial configuration received.");
 
-            // Now that the Datadog Agent has supplied its authoritative configuration, reload the logging subsystem
-            // so its destinations, format, and level reflect what the Agent specifies rather than the bootstrap-phase
-            // defaults. The configuration system is not built until after this point, so translate a one-shot typed
-            // snapshot of the dynamic configuration to read the logging model from.
-            match agent_data_plane_config_system::translate_snapshot(&dynamic_config, EnvOverlayMode::Fallback)
-                .error_context("Failed to translate dynamic configuration for logging reload.")
-                .and_then(|saluki| LoggingConfigurationTranslator::translate(&saluki.control.logging))
-            {
-                Ok(logging_config) => {
-                    if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
-                        warn!(
-                            error = %e,
-                            "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
-                        );
-                    }
-                }
-                Err(e) => warn!(
-                    error = %e,
-                    "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
-                ),
-            }
-
             // Reload our data plane configuration based on the dynamic configuration.
             let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
                 .error_context("Failed to load data plane configuration.")?;
@@ -183,6 +161,28 @@ pub async fn handle_run_command(
     // env-var reachability for nested keys, which the whole-struct typed deserialize otherwise drops.
     let config_sys = ConfigurationSystem::load(config.clone(), EnvOverlayMode::Fallback)
         .error_context("Failed to load configuration.")?;
+
+    // When the Datadog Agent supplied a dynamic configuration, reload the logging subsystem so its destinations,
+    // format, and level reflect the Agent's settings rather than the bootstrap-phase defaults. The configuration
+    // system has already resolved the typed model, so read the logging sub-tree straight from it instead of
+    // re-translating.
+    if !in_standalone_mode && use_new_config_stream_endpoint {
+        let saluki = config_sys.config();
+        match LoggingConfigurationTranslator::translate(&saluki.control.logging) {
+            Ok(logging_config) => {
+                if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
+                    warn!(
+                        error = %e,
+                        "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
+                    );
+                }
+            }
+            Err(e) => warn!(
+                error = %e,
+                "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
+            ),
+        }
+    }
 
     // Create the blueprint for our primary topology.
     let (mut blueprint, control_surfaces) =
