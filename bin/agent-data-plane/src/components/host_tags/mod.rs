@@ -3,9 +3,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use agent_data_plane_config::shared::GlobalTags;
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
-use saluki_config::{DurationString, GenericConfiguration};
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
@@ -22,21 +22,13 @@ pub struct HostTagsConfiguration {
     expected_tags_duration: Duration,
 }
 
-const DEFAULT_EXPECTED_TAGS_DURATION: Duration = Duration::ZERO;
-
 impl HostTagsConfiguration {
-    /// Creates a new `HostTagsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let client_config = RemoteAgentClientConfiguration::from_configuration(config)?;
-        let expected_tags_duration = config
-            .try_get_typed::<DurationString>("expected_tags_duration")?
-            .map(|ds| ds.as_duration())
-            .unwrap_or(DEFAULT_EXPECTED_TAGS_DURATION);
-
-        Ok(Self {
+    /// Creates a new `HostTagsConfiguration` from the remote-agent client configuration and the shared tag settings.
+    pub fn from_configuration(client_config: RemoteAgentClientConfiguration, tags: &GlobalTags) -> Self {
+        Self {
             client_config,
-            expected_tags_duration,
-        })
+            expected_tags_duration: tags.expected_tags_duration,
+        }
     }
 
     /// Returns `true` if host tags enrichment is enabled.
