@@ -57,7 +57,7 @@ fn get_finalized_corpus_blueprint(config: &Config) -> Result<CorpusBlueprint, Ge
                 dsd_config.length_prefix_framed = true;
             }
         }
-        Payload::OpenTelemetryMetrics(_) | Payload::OpenTelemetryTraces(_) => {}
+        Payload::Static(_) | Payload::OpenTelemetryMetrics(_) | Payload::OpenTelemetryTraces(_) => {}
     }
 
     // Validate that the blueprint is valid from a payload generation standpoint.
@@ -77,6 +77,7 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
             let mut generator = DogStatsD::new(&config, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
         }
+        Payload::Static(payload) => generate_static_payloads(&payload, &mut payloads, blueprint.size),
         Payload::OpenTelemetryMetrics(config) => {
             let mut generator = OpentelemetryMetrics::new(config, usize::MAX, &mut rng)?;
             generate_payloads_inner(&mut generator, rng, &mut payloads, blueprint.size, 8192)?
@@ -93,6 +94,13 @@ fn generate_payloads(mut rng: StdRng, blueprint: CorpusBlueprint) -> Result<(Vec
         Err(generic_error!("No payloads were generated."))
     } else {
         Ok((payloads, ByteSize(total_size)))
+    }
+}
+
+fn generate_static_payloads(payload: &str, payloads: &mut Vec<Bytes>, size: NonZeroUsize) {
+    let payload = Bytes::copy_from_slice(payload.as_bytes());
+    for _ in 0..size.get() {
+        payloads.push(payload.clone());
     }
 }
 
