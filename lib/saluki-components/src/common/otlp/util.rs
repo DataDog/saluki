@@ -64,7 +64,7 @@ static CONTAINER_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = L
     m.insert(CONTAINER_NAME, "container_name");
     m.insert(CONTAINER_IMAGE_NAME, "image_name");
     m.insert("container.image.tag", "image_tag"); // For older semconv versions
-    m.insert(CONTAINER_RUNTIME, "runtime");
+    m.insert("container.runtime", "runtime");
 
     // Cloud conventions
     // https://www.datadoghq.com/blog/tagging-best-practices/
