@@ -13,7 +13,6 @@ default = []
 fips = ["saluki-io/fips"]
 
 [dependencies]
-antithesis_sdk = { workspace = true, optional = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }

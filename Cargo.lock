@@ -4413,7 +4413,6 @@ dependencies = [
 name = "saluki-components"
 version = "0.1.0"
 dependencies = [
- "antithesis_sdk",
  "arc-swap",
  "async-trait",
  "axum",
