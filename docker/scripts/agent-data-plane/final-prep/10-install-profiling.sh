@@ -12,7 +12,7 @@ ddprof_version="v0.22.1"
 
 if [ "${INTERNAL_BUILD:-}" = "true" ]; then
     apt-get update
-    apt-get install --no-install-recommends -y ca-certificates curl
+    apt-get install --no-install-recommends -y ca-certificates=20260601~26.04.1 curl=8.18.0-1ubuntu2.2
     curl -s -L -o /rootfs/ddprof \
         "https://github.com/DataDog/ddprof/releases/download/${ddprof_version}/ddprof-${TARGETARCH}"
     chmod +x /rootfs/ddprof

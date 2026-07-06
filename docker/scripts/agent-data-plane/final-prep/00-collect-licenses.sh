@@ -31,7 +31,7 @@ else
     # No prebuilt source (scratch default): fetch the SPDX archive from GitHub. Ensure curl and CA
     # certificates are available first (a near no-op on the CI build image, an install on plain Ubuntu).
     apt-get update
-    apt-get install --no-install-recommends -y ca-certificates curl
+    apt-get install --no-install-recommends -y ca-certificates=20260601~26.04.1 curl=8.18.0-1ubuntu2.2
     sh /tooling/fetch-spdx-licenses.sh /tmp/spdx
     spdx_text_dir=/tmp/spdx/text
 fi
