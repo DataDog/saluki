@@ -696,7 +696,7 @@ inventory:
     planned: true
     pipelines: [dogstatsd]
     description: "Enable experimental HTTP/H2C DSD listener"
-    documentation: "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP."
+    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; planned when the DogStatsD-over-HTTP work resumes."
     issue: "#1682"
 
   dogstatsd_experimental_http.listen_address:
@@ -705,7 +705,7 @@ inventory:
     planned: true
     pipelines: [dogstatsd]
     description: "Bind address for experimental HTTP DSD listener"
-    documentation: "Experimental HTTP/H2C DogStatsD ingestion endpoint; not needed for ADP."
+    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; planned when the DogStatsD-over-HTTP work resumes."
     issue: "#1682"
 
   dogstatsd_flush_incomplete_buckets:
