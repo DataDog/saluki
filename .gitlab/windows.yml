@@ -1,5 +1,5 @@
 .windows-amd64-test-job:
-  tags: ["windows-v2:2022"]
+  tags: ["windows-v2:2025"]
   interruptible: true
   variables:
     ARCH: "x64"

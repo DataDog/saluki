@@ -89,6 +89,24 @@ const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
     ("DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE"),
 ];
 
+fn build_port_mappings_for_runtime(
+    runtime: &str, exposed_ports: &[String], details: &DriverDetails,
+) -> HashMap<String, u16> {
+    let mut mappings = HashMap::new();
+
+    for port_spec in exposed_ports {
+        if let Ok((port, protocol)) = parse_port_spec(port_spec) {
+            if runtime == crate::config::WINDOWS_RUNTIME {
+                mappings.insert(format!("{}/{}", port, protocol), port);
+            } else if let Some(host_port) = details.try_get_exposed_port(protocol, port) {
+                mappings.insert(format!("{}/{}", port, protocol), host_port);
+            }
+        }
+    }
+
+    mappings
+}
+
 fn normalize_env_for_runtime(mut env: HashMap<String, String>, runtime: &str) -> HashMap<String, String> {
     if runtime == crate::config::WINDOWS_RUNTIME {
         for (source, target) in WINDOWS_ENV_ALIASES {
@@ -861,17 +879,11 @@ impl IntegrationRunner {
     }
 
     fn build_port_mappings(&self, details: &DriverDetails) -> HashMap<String, u16> {
-        let mut mappings = HashMap::new();
-
-        for port_spec in &self.test_case.container.exposed_ports {
-            if let Ok((port, protocol)) = parse_port_spec(port_spec) {
-                if let Some(host_port) = details.try_get_exposed_port(protocol, port) {
-                    mappings.insert(format!("{}/{}", port, protocol), host_port);
-                }
-            }
-        }
-
-        mappings
+        build_port_mappings_for_runtime(
+            &self.test_case.active_runtime,
+            &self.test_case.container.exposed_ports,
+            details,
+        )
     }
 
     async fn start_log_capture(&self, container_name: &str) -> Result<(), GenericError> {
@@ -1153,6 +1165,30 @@ mod tests {
         let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
 
         assert!(!normalized.contains_key("DD_DATA_PLANE__ENABLED"));
+    }
+
+    #[test]
+    fn windows_runtime_uses_identity_port_mappings_for_exposed_ports() {
+        let exposed_ports = vec!["55100/tcp".to_string(), "58125/udp".to_string()];
+
+        let mappings = build_port_mappings_for_runtime(
+            crate::config::WINDOWS_RUNTIME,
+            &exposed_ports,
+            &DriverDetails::default(),
+        );
+
+        assert_eq!(mappings.get("55100/tcp"), Some(&55100));
+        assert_eq!(mappings.get("58125/udp"), Some(&58125));
+    }
+
+    #[test]
+    fn linux_runtime_uses_docker_host_port_mappings_for_exposed_ports() {
+        let exposed_ports = vec!["55100/tcp".to_string()];
+
+        let mappings =
+            build_port_mappings_for_runtime(crate::config::LINUX_RUNTIME, &exposed_ports, &DriverDetails::default());
+
+        assert!(mappings.is_empty());
     }
 
     #[test]
