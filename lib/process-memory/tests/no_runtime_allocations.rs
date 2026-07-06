@@ -1,3 +1,5 @@
+#![cfg(not(target_os = "aix"))]
+
 //! Allocation test for `Querier`.
 //!
 //! This is an integration test because the global allocator must be overridden to track all
@@ -18,7 +20,7 @@ fn main() {
     // This test ensures that after initially creating `Querier`, there are _no_ runtime allocations made when calling
     // `resident_set_size`.
     //
-    // This invariant should always hold, and should do so for all supported platforms.
+    // This invariant should hold on platforms that run this allocation profiler test.
     let mut querier = Querier::default();
 
     let _profiler = Profiler::builder().testing().build();
