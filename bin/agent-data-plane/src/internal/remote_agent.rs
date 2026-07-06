@@ -35,7 +35,15 @@ use tokio::{
     time::{interval, MissedTickBehavior},
 };
 use tonic::{server::NamedService, Status};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
+
+/// The source identifier used by the Core Agent for settings that are at their schema default.
+///
+/// The Core Agent includes all known settings in its config snapshot regardless of whether they were
+/// explicitly set, tagging each one with a source string.  Settings whose source equals this value
+/// were never explicitly configured by the operator and should be treated as absent so that ADP's
+/// own serde defaults take precedence (for example, `dd_url = None` so that `site` is honoured).
+const CONFIG_SOURCE_DEFAULT: &str = "default";
 
 use crate::config::DataPlaneConfiguration;
 use crate::state::metrics::get_datadog_agent_remappings;
@@ -295,11 +303,16 @@ async fn run_config_stream_event_loop(
                         }
                         Some(config_event::Event::Update(update)) => {
                             if let Some(setting) = update.setting {
-                                let v = proto_value_to_serde_value(&setting.value);
-                                Some(ConfigUpdate::Partial {
-                                    key: setting.key,
-                                    value: v,
-                                })
+                                if setting.source == CONFIG_SOURCE_DEFAULT {
+                                    trace!(key = %setting.key, "Skipping default-sourced config update.");
+                                    None
+                                } else {
+                                    let v = proto_value_to_serde_value(&setting.value);
+                                    Some(ConfigUpdate::Partial {
+                                        key: setting.key,
+                                        value: v,
+                                    })
+                                }
                             } else {
                                 None
                             }
@@ -329,10 +342,17 @@ async fn run_config_stream_event_loop(
 }
 
 /// Converts a `ConfigSnapshot` into a nested `serde_json::Value::Object`.
+///
+/// Settings whose source is [`CONFIG_SOURCE_DEFAULT`] are omitted so that ADP's own serde defaults
+/// apply for any key the operator did not explicitly configure.
 fn snapshot_to_map(snapshot: &ConfigSnapshot) -> Value {
     let mut root = Value::Object(Map::new());
 
     for setting in &snapshot.settings {
+        if setting.source == CONFIG_SOURCE_DEFAULT {
+            trace!(key = %setting.key, "Skipping default-sourced config setting.");
+            continue;
+        }
         let value = proto_value_to_serde_value(&setting.value);
         upsert(&mut root, &setting.key, value);
     }
@@ -747,6 +767,8 @@ impl StatusSectionWriter<'_> {
 
 #[cfg(test)]
 mod tests {
+    use datadog_protos::agent::{ConfigSetting, ConfigSnapshot};
+
     use super::*;
 
     #[test]
@@ -779,5 +801,60 @@ mod tests {
         let input = vec![b'y'; DIAGNOSTIC_ARTIFACT_MAX_BYTES];
         let output = cap_artifact(input.clone());
         assert_eq!(output, input);
+    }
+
+    fn string_setting(source: &str, key: &str, value: &str) -> ConfigSetting {
+        ConfigSetting {
+            source: source.to_string(),
+            key: key.to_string(),
+            value: Some(prost_types::Value {
+                kind: Some(prost_types::value::Kind::StringValue(value.to_string())),
+            }),
+        }
+    }
+
+    fn snapshot_with_settings(settings: Vec<ConfigSetting>) -> ConfigSnapshot {
+        ConfigSnapshot {
+            origin: String::new(),
+            sequence_id: 0,
+            settings,
+        }
+    }
+
+    #[test]
+    fn snapshot_to_map_includes_explicitly_set_keys() {
+        let snapshot = snapshot_with_settings(vec![
+            string_setting("file", "site", "datadoghq.eu"),
+            string_setting("env_var", "api_key", "abc123"),
+        ]);
+        let map = snapshot_to_map(&snapshot);
+
+        assert_eq!(map["site"], serde_json::json!("datadoghq.eu"));
+        assert_eq!(map["api_key"], serde_json::json!("abc123"));
+    }
+
+    #[test]
+    fn snapshot_to_map_excludes_default_sourced_keys() {
+        let snapshot = snapshot_with_settings(vec![
+            // The Core Agent sends dd_url at its schema default — this must not appear in the map
+            // so that ADP's own serde default (None) applies and `site` is honoured instead.
+            string_setting("default", "dd_url", "https://app.datadoghq.com"),
+            string_setting("file", "site", "datadoghq.eu"),
+        ]);
+        let map = snapshot_to_map(&snapshot);
+
+        assert!(map.get("dd_url").is_none(), "dd_url should be absent when default-sourced");
+        assert_eq!(map["site"], serde_json::json!("datadoghq.eu"));
+    }
+
+    #[test]
+    fn snapshot_to_map_includes_explicit_dd_url_override() {
+        let snapshot = snapshot_with_settings(vec![
+            string_setting("file", "dd_url", "https://proxy.example.com"),
+            string_setting("file", "site", "datadoghq.eu"),
+        ]);
+        let map = snapshot_to_map(&snapshot);
+
+        assert_eq!(map["dd_url"], serde_json::json!("https://proxy.example.com"));
     }
 }
