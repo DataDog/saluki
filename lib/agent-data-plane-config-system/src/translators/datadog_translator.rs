@@ -26,6 +26,7 @@ use agent_data_plane_config::shared::{ForwarderHttpProtocol, ZSTD_DEFAULT_OVERRI
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
+use tracing::warn;
 
 /// Translates a [`DatadogConfiguration`] into a [`SalukiConfiguration`].
 ///
@@ -149,66 +150,48 @@ fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfi
     })
 }
 
-/// The result of parsing one `metric_tag_filterlist` object.
-///
-/// The two failure modes differ in whether the entry can still be used, and the caller relies on
-/// that difference to honor the system's opposite stances on translation errors (strict at startup,
-/// lenient at runtime). A [`Recovered`][Self::Recovered] entry is still usable, so a runtime update
-/// keeps filtering with it while startup still rejects the config on the recorded error. A
-/// [`Malformed`][Self::Malformed] object yields no value, so it is skipped.
-enum TagFilterEntry {
-    /// The object parsed and its `action` was recognized.
-    Valid(MetricTagFilterEntry),
-    /// The object parsed but its `action` was not `include`, `exclude`, or empty. The entry is kept
-    /// with `action` defaulted to `exclude`, matching the component's own tolerance, and the error
-    /// is recorded so a strict startup still rejects the config.
-    Recovered(MetricTagFilterEntry, TranslateError),
-    /// The object could not be deserialized into an entry; no value is recoverable.
-    Malformed(TranslateError),
-}
-
-/// Parses one `metric_tag_filterlist` object into a [`TagFilterEntry`].
+/// Parses one `metric_tag_filterlist` object into a [`MetricTagFilterEntry`].
 ///
 /// Like `parse_mapper_profile`, this imposes the typed model shape on a free-form schema object via
-/// a local `#[derive(Deserialize)]` shim. Unlike it, an unrecognized `action` does not discard the
-/// entry: the schema lets any string through, so the component tolerates typos by defaulting to
-/// `exclude`, and this preserves that behavior while still surfacing the error.
-fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
+/// a local `#[derive(Deserialize)]` shim, and it exactly preserves the pre-cutover component
+/// deserialization contract:
+///
+/// - `metric_name` and `tags` are required; a missing field is a deserialization error. `tags` in
+///   particular must not default to empty, or an `include` entry could silently strip every tag
+///   from its metric.
+/// - `action` is optional. A missing key, a `null`, an empty string, or `"exclude"` all mean
+///   `exclude`; `"include"` means `include`.
+/// - Any other `action` string is tolerated, not rejected: the schema lets any string through, so
+///   the entry is kept with `action` defaulted to `exclude` and a warning is logged. This does not
+///   record a translation error, so it never rejects startup, matching the old behavior.
+fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> Result<MetricTagFilterEntry, TranslateError> {
     #[derive(serde::Deserialize)]
     struct RawEntry {
         metric_name: String,
         #[serde(default)]
-        action: String,
-        #[serde(default)]
+        action: Option<String>,
         tags: Vec<String>,
     }
 
-    let parsed: RawEntry = match serde_json::from_value(raw).map_err(|error| TranslateError::new(key, error)) {
-        Ok(parsed) => parsed,
-        Err(error) => return TagFilterEntry::Malformed(error),
+    let parsed: RawEntry = serde_json::from_value(raw).map_err(|error| TranslateError::new(key, error))?;
+
+    let action = match parsed.action.as_deref() {
+        Some("include") => FilterAction::Include,
+        None | Some("") | Some("exclude") => FilterAction::Exclude,
+        Some(other) => {
+            warn!(
+                action = %other,
+                "`metric_tag_filterlist.*.action` should be either `include` or `exclude`; defaulting to `exclude`."
+            );
+            FilterAction::Exclude
+        }
     };
 
-    let (action, action_error) = match parsed.action.as_str() {
-        "include" => (FilterAction::Include, None),
-        "" | "exclude" => (FilterAction::Exclude, None),
-        other => (
-            FilterAction::Exclude,
-            Some(TranslateError::new_with_message(
-                key,
-                format!("unknown filter action `{other}`"),
-            )),
-        ),
-    };
-
-    let entry = MetricTagFilterEntry {
+    Ok(MetricTagFilterEntry {
         metric_name: parsed.metric_name,
         action,
         tags: parsed.tags,
-    };
-    match action_error {
-        Some(error) => TagFilterEntry::Recovered(entry, error),
-        None => TagFilterEntry::Valid(entry),
-    }
+    })
 }
 
 impl DatadogConfigWitness for DatadogTranslator<'_> {
@@ -398,11 +381,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(&mut self, value: i64) {
-        self.config
-            .domains
-            .dogstatsd
-            .aggregation
-            .aggregator_tag_filter_cache_capacity = value.max(0) as usize;
+        // A negative or otherwise unrepresentable value must record an error rather than being
+        // clamped: the old `try_get_typed::<usize>` path rejected it, and silently coercing `-1` to
+        // `0` would build a degenerate one-entry dedup cache.
+        if let Some(value) =
+            self.checked_integer_conversion("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity", value)
+        {
+            self.config
+                .domains
+                .dogstatsd
+                .aggregation
+                .aggregator_tag_filter_cache_capacity = value;
+        }
     }
 
     fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool) {
@@ -816,12 +806,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         let mut entries = Vec::with_capacity(value.len());
         for raw in value {
             match parse_tag_filter_entry("metric_tag_filterlist", raw) {
-                TagFilterEntry::Valid(entry) => entries.push(entry),
-                TagFilterEntry::Recovered(entry, error) => {
-                    self.record_error(error);
-                    entries.push(entry);
-                }
-                TagFilterEntry::Malformed(error) => self.record_error(error),
+                Ok(entry) => entries.push(entry),
+                Err(error) => self.record_error(error),
             }
         }
         self.config.domains.dogstatsd.tag_filterlist = entries;
@@ -1226,13 +1212,64 @@ mod tests {
     }
 
     #[test]
-    fn bad_tag_filter_action_keeps_the_whole_list() {
+    fn tag_filter_action_forms_match_the_pre_cutover_contract() {
         use agent_data_plane_config::domains::dogstatsd::FilterAction;
 
-        // One entry has a typo'd action between two valid entries. The bad action must not discard
-        // the list: the entry is kept with `action` defaulted to `exclude`, an error is recorded
-        // (so a strict startup rejects the config), and the surrounding valid entries survive (so a
-        // lenient runtime update keeps filtering).
+        // Every accepted `action` form maps exactly as the old component deserializer did: missing,
+        // `null`, `""`, and `"exclude"` all mean exclude; `"include"` means include; an unknown
+        // string is tolerated (kept, coerced to exclude) rather than rejected. None of these record
+        // a translation error, so startup is not rejected.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "metric_tag_filterlist": [
+                { "metric_name": "missing", "tags": ["a"] },
+                { "metric_name": "null", "action": null, "tags": ["b"] },
+                { "metric_name": "empty", "action": "", "tags": ["c"] },
+                { "metric_name": "exclude", "action": "exclude", "tags": ["d"] },
+                { "metric_name": "include", "action": "include", "tags": ["e"] },
+                { "metric_name": "typo", "action": "exlude", "tags": ["f"] },
+            ],
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(
+            errors.is_none(),
+            "accepted action forms, including an unknown string, must not record a translation error"
+        );
+
+        let entries = &config.domains.dogstatsd.tag_filterlist;
+        assert_eq!(entries.len(), 6, "every accepted entry must survive");
+        assert_eq!(
+            entries[0].action,
+            FilterAction::Exclude,
+            "missing action defaults to exclude"
+        );
+        assert_eq!(
+            entries[1].action,
+            FilterAction::Exclude,
+            "null action defaults to exclude"
+        );
+        assert_eq!(
+            entries[2].action,
+            FilterAction::Exclude,
+            "empty action defaults to exclude"
+        );
+        assert_eq!(entries[3].action, FilterAction::Exclude);
+        assert_eq!(entries[4].action, FilterAction::Include);
+        assert_eq!(
+            entries[5].action,
+            FilterAction::Exclude,
+            "an unknown action is coerced to exclude"
+        );
+    }
+
+    #[test]
+    fn tag_filter_unknown_action_keeps_the_whole_list() {
+        use agent_data_plane_config::domains::dogstatsd::FilterAction;
+
+        // One entry has a typo'd action between two valid entries. It must not discard the list nor
+        // reject startup: the entry is kept with `action` coerced to exclude and the surrounding
+        // valid entries survive.
         let datadog: DatadogConfiguration = serde_json::from_value(json!({
             "metric_tag_filterlist": [
                 { "metric_name": "a", "action": "include", "tags": ["x"] },
@@ -1243,6 +1280,10 @@ mod tests {
         .expect("datadog source deserializes");
 
         let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(
+            errors.is_none(),
+            "an unknown action is tolerated and must not reject startup"
+        );
 
         let entries = &config.domains.dogstatsd.tag_filterlist;
         assert_eq!(entries.len(), 3, "a bad action must not drop the other entries");
@@ -1253,10 +1294,78 @@ mod tests {
             "unknown action defaults to exclude"
         );
         assert_eq!(entries[1].metric_name, "b");
+        assert_eq!(entries[1].tags, vec!["y".to_string()]);
         assert_eq!(entries[2].action, FilterAction::Exclude);
+    }
 
-        // The error is still surfaced, so startup's strict gate rejects the config.
-        assert!(errors.is_some(), "an unknown action must record a translation error");
+    #[test]
+    fn tag_filter_missing_tags_is_rejected() {
+        // `tags` is required. An entry that omits it (e.g. `{"metric_name":"m","action":"include"}`)
+        // must record a translation error so a strict startup rejects the config, rather than
+        // silently loading an empty tag set that would strip every tag from the metric. The invalid
+        // entry is dropped, so a lenient runtime update keeps the surrounding valid entries.
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "metric_tag_filterlist": [
+                { "metric_name": "good", "action": "exclude", "tags": ["x"] },
+                { "metric_name": "no_tags", "action": "include" },
+            ],
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog, SalukiConfiguration::default()).translate();
+        assert!(
+            errors.is_some(),
+            "a missing `tags` field must record a translation error"
+        );
+
+        let entries = &config.domains.dogstatsd.tag_filterlist;
+        assert_eq!(entries.len(), 1, "the entry missing `tags` must be dropped");
+        assert_eq!(entries[0].metric_name, "good");
+    }
+
+    #[test]
+    fn aggregator_tag_filter_cache_capacity_forms() {
+        // The default of 100,000 comes from the schema witness when the key is unset; an explicit
+        // valid value (including zero) translates cleanly; a negative value is rejected (recorded)
+        // rather than silently clamped to zero, matching the old `try_get_typed::<usize>` path.
+        let default_source: DatadogConfiguration =
+            serde_json::from_value(json!({})).expect("datadog source deserializes");
+        let (config, errors) = DatadogTranslator::new(&default_source, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none());
+        assert_eq!(
+            config
+                .domains
+                .dogstatsd
+                .aggregation
+                .aggregator_tag_filter_cache_capacity,
+            100_000,
+            "the unset default is 100,000"
+        );
+
+        let zero_source: DatadogConfiguration = serde_json::from_value(
+            json!({ "data_plane": { "dogstatsd": { "aggregator_tag_filter_cache_capacity": 0 } } }),
+        )
+        .expect("datadog source deserializes");
+        let (config, errors) = DatadogTranslator::new(&zero_source, SalukiConfiguration::default()).translate();
+        assert!(errors.is_none(), "zero is a valid capacity");
+        assert_eq!(
+            config
+                .domains
+                .dogstatsd
+                .aggregation
+                .aggregator_tag_filter_cache_capacity,
+            0
+        );
+
+        let negative_source: DatadogConfiguration = serde_json::from_value(
+            json!({ "data_plane": { "dogstatsd": { "aggregator_tag_filter_cache_capacity": -1 } } }),
+        )
+        .expect("datadog source deserializes");
+        let (_config, errors) = DatadogTranslator::new(&negative_source, SalukiConfiguration::default()).translate();
+        assert!(
+            errors.is_some(),
+            "a negative capacity must record a translation error rather than being clamped"
+        );
     }
 
     #[test]
