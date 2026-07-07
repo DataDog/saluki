@@ -53,11 +53,6 @@ impl<K: Eq + Hash> Interner<K> {
     pub fn len(&self) -> usize {
         self.index.len()
     }
-
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
 }
 
 #[cfg(test)]
