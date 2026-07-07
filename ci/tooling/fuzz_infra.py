@@ -14,6 +14,7 @@ import requests
 import toml
 
 DEFAULT_FUZZING_SLACK_CHANNEL = "fuzzing-ops"
+DEFAULT_RUST_NIGHTLY_VERSION = "nightly-2026-01-18"
 
 # Lets reuse the token for all requests to avoid issues with rate limiting.
 # The process should be short lived enough that the token should be valid for the duration (it's only the uploading step)
@@ -143,8 +144,12 @@ def upload_fuzz(
     print(response_json)
 
 
+def get_rust_nightly_version() -> str:
+    return os.getenv("RUST_NIGHTLY_VERSION", DEFAULT_RUST_NIGHTLY_VERSION)
+
+
 def search_fuzz_tests(directory) -> list[str]:
-    fuzz_list_cmd = ["cargo", "+nightly", "fuzz", "list"]
+    fuzz_list_cmd = ["cargo", f"+{get_rust_nightly_version()}", "fuzz", "list"]
     process = Popen(fuzz_list_cmd, cwd=directory, stdout=PIPE, stderr=PIPE)
     stdout, stderr = process.communicate()
 
@@ -162,7 +167,7 @@ def search_fuzz_tests(directory) -> list[str]:
 
 
 def build_fuzz(directory, fuzz_test) -> bool:
-    build_cmd = ["cargo", "+nightly", "fuzz", "build", fuzz_test]
+    build_cmd = ["cargo", f"+{get_rust_nightly_version()}", "fuzz", "build", fuzz_test]
     return Popen(build_cmd, cwd=directory).wait() == 0
 
 
