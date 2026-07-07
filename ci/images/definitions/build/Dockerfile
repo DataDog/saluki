@@ -14,7 +14,7 @@ COPY bin/agent-data-plane/Cargo.toml /tmp/bin/agent-data-plane/Cargo.toml
 
 FROM ${BASE_IMAGE}
 
-ARG RUST_VERSION=1.93.0
+ARG RUST_VERSION=1.94.0
 ARG TARGETARCH
 
 # Base image defaults to the unprivileged `dog` user; switch to root for all install steps.

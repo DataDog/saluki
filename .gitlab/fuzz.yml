@@ -10,8 +10,10 @@ fuzz:infra:
     - if: '$CI_COMMIT_REF_NAME == "main" && $CI_PIPELINE_SOURCE == "push"'
     - when: manual
       allow_failure: true
+  variables:
+    RUST_NIGHTLY_VERSION: nightly-2026-01-18
   before_script:
-    - cargo +nightly install cargo-fuzz
+    - cargo +${RUST_NIGHTLY_VERSION} install cargo-fuzz
     # Install Python dependencies for fuzz_infra.py
     - apt-get update && apt-get install -y python3 python3-pip
     - pip3 install requests toml # parsing of cargo toml files

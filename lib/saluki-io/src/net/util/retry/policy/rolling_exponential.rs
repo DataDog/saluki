@@ -122,7 +122,7 @@ where
                     // decrease the error count.
                     let _ = self
                         .error_count
-                        .try_update(AcqRel, Relaxed, |count| Some(count.saturating_sub(factor)));
+                        .fetch_update(AcqRel, Relaxed, |count| Some(count.saturating_sub(factor)));
                 }
                 None => {
                     debug!("Resetting error count to zero after successful response.");
