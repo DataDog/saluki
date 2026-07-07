@@ -236,10 +236,28 @@ mod tests {
         assert!(err.to_string().contains("fail-message"));
     }
 
+    fn slow_host_command() -> Vec<String> {
+        #[cfg(windows)]
+        {
+            vec![
+                "powershell".to_string(),
+                "-NoProfile".to_string(),
+                "-NonInteractive".to_string(),
+                "-Command".to_string(),
+                "Start-Sleep -Seconds 5".to_string(),
+            ]
+        }
+
+        #[cfg(not(windows))]
+        {
+            vec!["sh".to_string(), "-c".to_string(), "sleep 5".to_string()]
+        }
+    }
+
     #[tokio::test]
     async fn host_exec_times_out() {
         let err = exec_on_host_with_timeout(
-            &["sh".to_string(), "-c".to_string(), "sleep 5".to_string()],
+            &slow_host_command(),
             std::time::Duration::from_millis(50),
             &tokio_util::sync::CancellationToken::new(),
             &tokio_util::sync::CancellationToken::new(),
@@ -247,6 +265,9 @@ mod tests {
         .await
         .expect_err("host command should time out");
 
-        assert!(err.to_string().contains("Timed out running host command"));
+        assert!(
+            err.to_string().contains("Timed out running host command"),
+            "unexpected error: {err}"
+        );
     }
 }
