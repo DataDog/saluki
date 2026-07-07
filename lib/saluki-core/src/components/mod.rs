@@ -52,12 +52,11 @@ impl ComponentType {
         }
     }
 
-    /// Returns the category (plural) representation of the component type.
+    /// Returns the categorical string representation of the component type.
     ///
-    /// Where [`as_str`][Self::as_str] returns the singular form (for example, `source`), this returns the plural form
-    /// (for example, `sources`) used as the category segment in a [`SubsystemIdentifier`], and hence in health
-    /// registry, resource-accounting, and process names.
-    pub fn as_category(&self) -> &'static str {
+    /// This is a plural form of the value returned by [`as_str`][Self::as_str]. For example, if [`as_str`][Self::as_str]
+    /// returns `source`, this returns `sources`.
+    pub fn as_category_str(&self) -> &'static str {
         match self {
             Self::Source => "sources",
             Self::Relay => "relays",
@@ -72,13 +71,7 @@ impl ComponentType {
 
 /// A component context.
 ///
-/// A component context uniquely identifies a component by coupling its topology root (the `topology.<name>`
-/// [`SubsystemIdentifier`] prefix shared by every component in the topology), its identifier (name), and its type
-/// (source, relay, decoder, transform, encoder, forwarder, or destination). Together these yield the component's
-/// canonical, fully qualified [`identity`][Self::identity] -- the same across every subsystem.
-///
-/// Practically speaking, all components are required to have a unique identifier. However, identifiers may be opaque
-/// enough that without knowing the _type_ of component, the identifier doesn't provide enough information.
+/// Holds the identifiers (absolute and relative) for a component, as well as its type.
 #[derive(Clone)]
 pub struct ComponentContext {
     topology_root: SubsystemIdentifier,
@@ -195,6 +188,9 @@ impl ComponentContext {
     }
 
     /// Returns the component identifier.
+    ///
+    /// This is the relative identifier of the component, unique within its topology but not guaranteed to be globally
+    /// unique. See [`ComponentContext::identity`] for the fully qualified identity.
     pub fn component_id(&self) -> &ComponentId {
         &self.component_id
     }
@@ -213,7 +209,7 @@ impl ComponentContext {
     pub fn identity(&self) -> SubsystemIdentifier {
         self.topology_root
             .clone()
-            .child(self.component_type.as_category())
+            .child(self.component_type.as_category_str())
             .child(&*self.component_id)
     }
 }

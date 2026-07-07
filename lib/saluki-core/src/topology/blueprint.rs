@@ -38,7 +38,7 @@ fn component_registry_node(
 ) -> ComponentRegistry {
     registry.get_or_create(format!(
         "{}.{}",
-        component_type.as_category(),
+        component_type.as_category_str(),
         crate::runtime::get_sanitized_name(component_id)
     ))
 }
@@ -1586,7 +1586,7 @@ mod tests {
                 Name::root(topology_root(topology_name).to_string()).expect("topology name is non-empty");
             let process_name = Name::scoped(
                 &topology_sup,
-                format!("{}.{}", ComponentType::Source.as_category(), context.component_id()),
+                format!("{}.{}", ComponentType::Source.as_category_str(), context.component_id()),
             )
             .expect("component name is non-empty");
             assert_eq!(

@@ -661,7 +661,7 @@ where
     // names).
     let mut component_sup = Supervisor::new(format!(
         "{}.{}",
-        component_context.component_type().as_category(),
+        component_context.component_type().as_category_str(),
         component_context.component_id()
     ))?
     .with_auto_shutdown(AutoShutdown::AnySignificant)
