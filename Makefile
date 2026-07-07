@@ -37,6 +37,11 @@ MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
 
+# Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
+# nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
+# move both at once.
+export RUST_NIGHTLY_VERSION ?= nightly-2026-07-05
+
 # Tool configuration.
 export AUTOINSTALL ?= true
 export CARGO_BIN_DIR := $(shell echo "${HOME}/.cargo/bin")
@@ -486,10 +491,10 @@ check-all: ## Check everything
 check-all: check-fmt check-clippy check-docs check-deny check-licenses check-unused-deps generate-api-docs check-features
 
 .PHONY: generate-api-docs
-generate-api-docs: check-rust-build-tools
+generate-api-docs: check-rust-build-tools ensure-rust-nightly
 generate-api-docs: ## Check that API documentation builds without errors
 	@echo "[*] Checking API documentation build..."
-	@RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
+	@RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +$(RUST_NIGHTLY_VERSION) doc --no-deps -Zrustdoc-map --lib
 
 .PHONY: check-clippy
 check-clippy: check-rust-build-tools
@@ -567,7 +572,7 @@ test-docs: ## Runs all doctests
 test-miri: check-rust-build-tools ensure-rust-miri
 test-miri: ## Runs all Miri-specific unit tests
 	@echo "[*] Running Miri-specific unit tests..."
-	cargo +nightly-2025-06-16 miri test -p stringtheory
+	cargo +$(RUST_NIGHTLY_VERSION) miri test -p stringtheory
 
 .PHONY: test-loom
 test-loom: check-rust-build-tools
@@ -725,15 +730,20 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 .PHONY: test-integration-macos-ci
 test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
 
-.PHONY: ensure-rust-miri
-ensure-rust-miri:
+.PHONY: ensure-rust-nightly
+ensure-rust-nightly:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
-	$(error "Rustup must be present to install nightly toolchain/Miri component: https://www.rust-lang.org/tools/install")
+	$(error "Rustup must be present to install the nightly toolchain: https://www.rust-lang.org/tools/install")
 endif
-	@echo "[*] Installing/updating nightly Rust (2025-06-16) and Miri component..."
-	@rustup toolchain install nightly-2025-06-16 --component miri
+	@echo "[*] Installing/updating nightly Rust ($(RUST_NIGHTLY_VERSION))..."
+	@rustup toolchain install $(RUST_NIGHTLY_VERSION) --profile minimal
+
+.PHONY: ensure-rust-miri
+ensure-rust-miri: ensure-rust-nightly
+	@echo "[*] Installing/updating Miri component..."
+	@rustup component add miri --toolchain $(RUST_NIGHTLY_VERSION)
 	@echo "[*] Ensuring Miri is setup..."
-	@cargo +nightly-2025-06-16 miri setup
+	@cargo +$(RUST_NIGHTLY_VERSION) miri setup
 
 ##@ Antithesis
 
