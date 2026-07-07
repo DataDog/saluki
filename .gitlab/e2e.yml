@@ -159,7 +159,9 @@ test-integration:
     #     $CI_PROJECT_DIR/target/<profile>/, holds UDP 58125 / TCP 5100–5102 etc. across runs).
     #     Both profiles are swept because BUILD_PROFILE flows from .gitlab-ci.yml workflow
     #     rules: `release` on dev pipelines, `optimized-release` on tagged release pipelines.
+    #   - stale Datadog Agent DMG mounts from interrupted installs; these runners persist across jobs.
     - sudo pkill -9 -f /tmp/saluki-dda/ || true
+    - bash ci/tooling/cleanup-macos-dda-mounts.sh || true
     - sudo pkill -9 -f /target/release/agent-data-plane || true
     - sudo pkill -9 -f /target/optimized-release/agent-data-plane || true
   script:
@@ -177,6 +179,7 @@ test-integration:
     - ps -axo pid,ppid,user,command > integration-logs/host-diag/ps.txt 2>&1 || true
     - cp /tmp/saluki-agent-bootstrap.log integration-logs/host-diag/saluki-agent-bootstrap.log 2>/dev/null || true
     - ls -la /tmp/saluki-dda/datadog-agent/etc/ > integration-logs/host-diag/sandbox-etc.txt 2>&1 || true
+    - bash ci/tooling/cleanup-macos-dda-mounts.sh || true
 
 test-integration-macos-arm64:
   extends:

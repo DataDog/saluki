@@ -692,12 +692,24 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 			curl -fL "$(MACOS_TEST_AGENT_DMG_URL)" -o "$$DMG_PATH"; \
 		fi; \
 		MOUNT_DIR=$$(mktemp -d /tmp/saluki-dda-mount-XXXXXX); \
-		hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; \
+		cleanup_mount() { bash "$(CURDIR)/ci/tooling/cleanup-macos-dda-mounts.sh" "$$MOUNT_DIR"; }; \
+		trap cleanup_mount EXIT; \
+		for attempt in 1 2 3; do \
+			if hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; then \
+				break; \
+			fi; \
+			if [ "$$attempt" = "3" ]; then \
+				echo "ERROR: failed to attach $$DMG_PATH after $$attempt attempts" >&2; \
+				exit 1; \
+			fi; \
+			echo "[*] Failed to attach $$DMG_PATH on attempt $$attempt; retrying..." >&2; \
+			sleep $$((attempt * 2)); \
+		done; \
 		PKG=$$(find "$$MOUNT_DIR" -name '*.pkg' | head -1); \
 		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX) && rm -rf "$$EXPAND_DIR"; \
 		pkgutil --expand-full "$$PKG" "$$EXPAND_DIR" >/dev/null; \
-		hdiutil detach "$$MOUNT_DIR" >/dev/null; \
-		rmdir "$$MOUNT_DIR" 2>/dev/null || true; \
+		cleanup_mount; \
+		trap - EXIT; \
 		PAYLOAD_DIR=$$(find "$$EXPAND_DIR" -type d -name Payload | head -1); \
 		if [ -z "$$PAYLOAD_DIR" ] || [ ! -x "$$PAYLOAD_DIR/bin/agent/agent" ]; then \
 			echo "ERROR: pkg payload did not contain bin/agent/agent. Expanded layout:" >&2; \
