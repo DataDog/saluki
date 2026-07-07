@@ -10,6 +10,7 @@ members = [
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
   "lib/datadog-agent/config-testing",
+  "lib/datadog-agent/metrics-v3",
   "lib/ddsketch",
   "lib/go-duration",
   "lib/ottl",
@@ -47,6 +48,7 @@ license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
+datadog-agent-metrics-v3 = { path = "lib/datadog-agent/metrics-v3" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }

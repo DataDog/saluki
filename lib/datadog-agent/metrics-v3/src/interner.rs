@@ -2,14 +2,15 @@
 
 use std::{borrow::Borrow, hash::Hash};
 
-use saluki_common::collections::FastHashMap;
+type FastBuildHasher = foldhash::quality::RandomState;
+type FastHashMap<K, V> = std::collections::HashMap<K, V, FastBuildHasher>;
 
 /// Generic interning structure for dictionary deduplication.
 ///
 /// Assigns unique 1-based IDs to values, returning the same ID for duplicate values.
 /// ID 0 is reserved for "empty/none" in the V3 format.
 #[derive(Debug)]
-pub struct Interner<K: Eq + Hash> {
+pub(crate) struct Interner<K: Eq + Hash> {
     index: FastHashMap<K, i64>,
     last_id: i64,
 }

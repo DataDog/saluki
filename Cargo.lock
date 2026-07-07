@@ -1252,6 +1252,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-agent-metrics-v3"
+version = "0.1.0"
+dependencies = [
+ "foldhash 0.2.0",
+ "protobuf",
+]
+
+[[package]]
 name = "datadog-intake"
 version = "0.1.0"
 dependencies = [
@@ -4432,6 +4440,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "datadog-agent-config-testing",
+ "datadog-agent-metrics-v3",
  "datadog-protos",
  "ddsketch",
  "derive-where",

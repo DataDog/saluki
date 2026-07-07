@@ -6,9 +6,13 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum V3MetricType {
+    /// A monotonically increasing counter, submitted as per-interval deltas.
     Count = 1,
+    /// A count normalized to a per-second rate.
     Rate = 2,
+    /// A point-in-time value.
     Gauge = 3,
+    /// A distribution summarized as a DDSketch.
     Sketch = 4,
 }
 
@@ -25,7 +29,7 @@ impl V3MetricType {
 /// value array contains the metric's points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum V3ValueType {
+pub(crate) enum V3ValueType {
     /// Value is zero, not stored explicitly.
     Zero = 0x00,
 
@@ -125,7 +129,7 @@ impl PointKind {
 ///
 /// Uses [`PointKind`] internally to avoid precision loss when mixing
 /// large integers with fractional float32 values.
-pub(super) fn value_type_for_values(values: impl Iterator<Item = f64>) -> V3ValueType {
+pub(crate) fn value_type_for_values(values: impl Iterator<Item = f64>) -> V3ValueType {
     let mut kind = PointKind::Zero;
     for v in values {
         kind = kind.union(PointKind::for_value(v));
