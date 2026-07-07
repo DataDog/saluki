@@ -1,8 +1,9 @@
-//! `/api/v2/series` handler and validation pipeline.
+//! Metric and sketch intake handlers.
 //!
 //! `handle_series` fires every payload property's assertion. It walks the
 //! envelope, byte-size, and decode checks in order. It returns the first failure
-//! status, or `202 Accepted` when every check holds.
+//! status, or `202 Accepted` when every check holds. `handle_sketches` parses and
+//! records sketch payloads.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,10 +13,10 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use datadog_protos::metrics::SketchPayload;
 use protobuf::Message;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
+use crate::capture::EpochSeconds;
 use crate::http::middleware::Measurements;
 use crate::http::state::AppState;
 use crate::http::MAX_DECOMPRESSED_BODY_BYTES;
@@ -84,22 +85,33 @@ pub(crate) async fn handle_series(State(state): State<AppState>, request: Reques
     let uncompressed_len = body_bytes.len() as u64;
 
     // Envelope and byte-size properties.
-    let api_key_ok = envelope::api_key(&headers);
-    let content_type_ok = envelope::content_type(&headers);
-    envelope::content_encoding(&headers);
-    let compressed_ok = bytes::compressed_size(compressed_len);
-    let uncompressed_ok = bytes::uncompressed_size(uncompressed_len, decompression_applied);
-    bytes::content_length(declared_content_length, compressed_len);
+    let api_key_ok = envelope::api_key(state.target, &headers);
+    let content_type_ok = envelope::content_type(state.target, &headers);
+    envelope::content_encoding(state.target, &headers);
+    let compressed_ok = bytes::compressed_size(state.target, compressed_len);
+    let uncompressed_ok = bytes::uncompressed_size(state.target, uncompressed_len, decompression_applied);
+    bytes::content_length(state.target, declared_content_length, compressed_len);
 
-    let (observation, decode_ok) = SeriesObservation::decode(&body_bytes, decompression_applied);
+    let (observation, decode_ok) = SeriesObservation::decode(state.target, &body_bytes, decompression_applied);
 
     if let Some(observation) = observation.as_ref() {
-        observation.assert_payload_properties(now_secs, &state.established_host);
+        observation.assert_payload_properties(state.target, now_secs, &state.established_host);
         debug!(
             bytes = body_bytes.len(),
             series = observation.series_len(),
             "received /api/v2/series"
         );
+    }
+
+    if let Some(observation) = observation {
+        let count = state.recorder.record_series_v2(
+            state.target,
+            observation.into_payload(),
+            EpochSeconds::from_epoch_secs(now_secs),
+        );
+        if count > 0 {
+            info!(target = state.target.as_str(), count, "captured metrics");
+        }
     }
 
     // Return the first failure status in pipeline order, or 202 Accepted.
@@ -114,21 +126,30 @@ pub(crate) async fn handle_series(State(state): State<AppState>, request: Reques
 }
 
 /// Handler for `POST /api/beta/sketches`.
-pub(crate) async fn handle_sketches(body: Body) -> StatusCode {
+pub(crate) async fn handle_sketches(State(state): State<AppState>, body: Body) -> StatusCode {
+    let Ok(now_secs) = now_epoch_secs() else {
+        error!("System clock is not readable as seconds since the Unix epoch.");
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
     let body = match to_bytes(body, MAX_DECOMPRESSED_BODY_BYTES).await {
         Ok(body) => body,
         Err(e) => {
-            error!(error = %e, cap = MAX_DECOMPRESSED_BODY_BYTES, "Rejected sketches body at the decompressed cap.");
+            error!(target = state.target.as_str(), error = %e, cap = MAX_DECOMPRESSED_BODY_BYTES, "Rejected sketches body at the decompressed cap.");
             return StatusCode::PAYLOAD_TOO_LARGE;
         }
     };
-    match SketchPayload::parse_from_bytes(&body) {
-        Ok(_) => StatusCode::ACCEPTED,
+    let payload = match datadog_protos::metrics::SketchPayload::parse_from_bytes(&body) {
+        Ok(payload) => payload,
         Err(e) => {
-            error!(error = %e, "failed to parse sketch payload");
-            StatusCode::BAD_REQUEST
+            error!(target = state.target.as_str(), error = %e, "failed to parse sketch payload");
+            return StatusCode::BAD_REQUEST;
         }
-    }
+    };
+    let count = state
+        .recorder
+        .record_sketches(state.target, payload, EpochSeconds::from_epoch_secs(now_secs));
+    info!(target = state.target.as_str(), count, "captured sketch metrics");
+    StatusCode::ACCEPTED
 }
 
 /// Return the first failed status check, in the given pipeline order, or `None`

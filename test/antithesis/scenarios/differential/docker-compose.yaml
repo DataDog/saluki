@@ -1,0 +1,103 @@
+name: saluki-differential
+
+services:
+  intake:
+    container_name: intake
+    hostname: intake
+    platform: linux/amd64
+    init: true
+    build:
+      context: ../../../..
+      dockerfile: test/antithesis/scenarios/differential/Dockerfile
+      target: intake
+    image: intake-differential:latest
+    environment:
+      NO_COLOR: "1"
+      DD_HOSTNAME: "antithesis-differential"
+      AGENT_LISTEN_ADDR: "0.0.0.0:2049"
+      ADP_LISTEN_ADDR: "0.0.0.0:2050"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2049'"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  datadog-agent:
+    container_name: datadog-agent
+    hostname: datadog-agent
+    platform: linux/amd64
+    build:
+      context: ../../../..
+      dockerfile: test/antithesis/scenarios/differential/Dockerfile
+      target: datadog-agent
+    image: datadog-agent-differential:latest
+    environment:
+      NO_COLOR: "1"
+      DD_API_KEY: "antithesis-test-api-key"
+      DD_DD_URL: "http://intake:2049"
+      DD_HOSTNAME: "antithesis-differential"
+      AGENT_CONFIG_DIR: "/agent-config"
+    volumes:
+      - agent-dogstatsd-socket:/var/run/dogstatsd
+      - agent-config:/agent-config:ro
+    depends_on:
+      intake:
+        condition: service_healthy
+
+  adp:
+    container_name: adp
+    hostname: adp
+    platform: linux/amd64
+    init: true
+    build:
+      context: ../../../..
+      dockerfile: test/antithesis/scenarios/differential/Dockerfile
+      target: adp
+    image: adp-differential:latest
+    command: ["run"]
+    environment:
+      NO_COLOR: "1"
+      DD_API_KEY: "antithesis-test-api-key"
+      DD_DD_URL: "http://intake:2050"
+      DD_HOSTNAME: "antithesis-differential"
+      DD_DATA_PLANE_ENABLED: "true"
+      DD_DATA_PLANE_STANDALONE_MODE: "true"
+      DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      AGENT_CONFIG_DIR: "/agent-config"
+    volumes:
+      - adp-dogstatsd-socket:/var/run/dogstatsd
+      - agent-config:/agent-config:ro
+    depends_on:
+      intake:
+        condition: service_healthy
+
+  workload:
+    container_name: workload
+    hostname: workload
+    platform: linux/amd64
+    init: true
+    build:
+      context: ../../../..
+      dockerfile: test/antithesis/scenarios/differential/Dockerfile
+      target: workload-differential
+    image: workload-differential:latest
+    environment:
+      NO_COLOR: "1"
+      CONFIG_PROFILE: "differential"
+      INTAKE_CONTROL_ADDR: "intake:2049"
+      AGENT_DOGSTATSD_SOCKET: "/var/run/datadog-agent/dsd.socket"
+      ADP_DOGSTATSD_SOCKET: "/var/run/adp/dsd.socket"
+      DOGSTATSD_SOCKET: "/var/run/dogstatsd/dsd.socket"
+      DD_HOSTNAME: "antithesis-differential"
+    volumes:
+      - agent-dogstatsd-socket:/var/run/datadog-agent
+      - adp-dogstatsd-socket:/var/run/adp
+      - agent-config:/agent-config
+    depends_on:
+      intake:
+        condition: service_healthy
+
+volumes:
+  agent-dogstatsd-socket:
+  adp-dogstatsd-socket:
+  agent-config:

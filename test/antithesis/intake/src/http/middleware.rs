@@ -1,4 +1,4 @@
-//! HTTP middleware for intake request measurement.
+//! HTTP middleware used by Datadog-compatible routes.
 //!
 //! The `/api/v2/series` route stacks measurement middleware ahead of the
 //! decompression layer so Pyld05 (compressed size), Pyld06 (uncompressed size),
@@ -29,7 +29,7 @@ pub(crate) struct Measurements {
 }
 
 /// Buffer the body and record compressed size, encoding, and content-length before decompression.
-pub(crate) async fn measure_compressed_size(req: Request, next: Next) -> Response {
+pub(super) async fn measure_compressed_size(req: Request, next: Next) -> Response {
     let (parts, body) = req.into_parts();
     let Ok(bytes) = axum::body::to_bytes(body, MAX_COMPRESSED_BODY_BYTES).await else {
         return StatusCode::PAYLOAD_TOO_LARGE.into_response();

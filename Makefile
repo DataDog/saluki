@@ -19,6 +19,9 @@ export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | gre
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
 export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 
+# Datadog Agent version used by the project-wide comparison image.
+export DATADOG_AGENT_VERSION := $(shell cat .datadog-agent-version)
+
 # SPDX license-list-data tag used by package-adp-host to harvest THIRD-PARTY-* license texts.
 # Pinned to match docker/Dockerfile.agent-data-plane so the host-built tarball ships the same
 # set of license texts as the linux Docker artifact; bump in lockstep with the Dockerfile.
@@ -206,6 +209,7 @@ build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent
 	@docker build \
 		--tag saluki-images/datadog-agent:testing-devel \
 		--tag local.dev/saluki-images/datadog-agent:testing-devel \
+		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-devel \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -216,6 +220,7 @@ build-datadog-agent-image-release: build-adp-image-release ## Builds the converg
 	@docker build \
 		--tag saluki-images/datadog-agent:testing-release \
 		--tag local.dev/saluki-images/datadog-agent:testing-release \
+		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-release \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -763,6 +768,8 @@ ensure-rust-miri: ensure-rust-nightly
 
 ANTITHESIS_CONFIG_DIR := test/antithesis/scenarios/general
 ANTITHESIS_COMPOSE_FILE := $(ANTITHESIS_CONFIG_DIR)/docker-compose.yaml
+ANTITHESIS_DIFFERENTIAL_CONFIG_DIR := test/antithesis/scenarios/differential
+ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE := $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)/docker-compose.yaml
 
 .PHONY: check-antithesis-tools
 check-antithesis-tools:
@@ -775,11 +782,22 @@ antithesis-build: ## Builds the Antithesis harness container images
 	@echo "[*] Building Antithesis harness images..."
 	@docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
 
+.PHONY: antithesis-build-differential
+antithesis-build-differential: build-datadog-agent-image-release ## Builds the differential Antithesis harness images
+	@echo "[*] Building differential Antithesis harness images..."
+	@docker compose -f $(ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE) build
+
 .PHONY: antithesis-validate
 antithesis-validate: check-antithesis-tools antithesis-build
 antithesis-validate: ## Validates the Antithesis harness: builds images, runs 'snouty validate'
 	@echo "[*] Validating Antithesis harness with snouty..."
 	@snouty validate $(ANTITHESIS_CONFIG_DIR)
+
+.PHONY: antithesis-validate-differential
+antithesis-validate-differential: check-antithesis-tools antithesis-build-differential
+antithesis-validate-differential: ## Validates the differential Antithesis harness
+	@echo "[*] Validating differential Antithesis harness with snouty..."
+	@snouty validate $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)
 
 ##@ Profiling
 
