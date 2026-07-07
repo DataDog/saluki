@@ -50,7 +50,7 @@ export GO_APP_IMAGE ?= ubuntu:24.04
 # Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
 # nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
 # move both at once.
-export RUST_NIGHTLY_VERSION ?= nightly-2026-07-05
+export RUST_NIGHTLY_VERSION ?= nightly-2026-01-18
 
 # Tool configuration.
 export AUTOINSTALL ?= true
@@ -520,10 +520,10 @@ check-deny: ## Check all crate dependencies for outstanding advisories or usage 
 	@cargo deny check --hide-inclusion-graph --show-stats
 
 .PHONY: check-fmt
-check-fmt: check-rust-build-tools cargo-install-cargo-sort
+check-fmt: check-rust-build-tools ensure-rust-nightly cargo-install-cargo-sort
 check-fmt: ## Check that all Rust source files are formatted properly
 	@echo "[*] Checking Rust source code formatting..."
-	@cargo +nightly fmt -- --check
+	@cargo +$(RUST_NIGHTLY_VERSION) fmt -- --check
 	@echo "[*] Checking Cargo.toml formatting..."
 	@cargo sort --workspace . --check >/dev/null
 
@@ -750,7 +750,7 @@ ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
 	$(error "Rustup must be present to install the nightly toolchain: https://www.rust-lang.org/tools/install")
 endif
 	@echo "[*] Installing/updating nightly Rust ($(RUST_NIGHTLY_VERSION))..."
-	@rustup toolchain install $(RUST_NIGHTLY_VERSION) --profile minimal
+	@rustup toolchain install $(RUST_NIGHTLY_VERSION) --profile minimal --component rustfmt
 
 .PHONY: ensure-rust-miri
 ensure-rust-miri: ensure-rust-nightly
@@ -931,10 +931,10 @@ clean-kind: check-kind-tools ## Cleans up orphaned panoramic namespaces in the k
 clean-correctness: clean-airlock clean-kind ## Cleans up all orphaned correctness test resources (Docker + kind)
 
 .PHONY: fmt
-fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
+fmt: check-rust-build-tools ensure-rust-nightly cargo-install-cargo-autoinherit cargo-install-cargo-sort
 fmt: ## Format Rust source code
 	@echo "[*] Formatting Rust source code..."
-	@cargo +nightly fmt
+	@cargo +$(RUST_NIGHTLY_VERSION) fmt
 	@echo "[*] Ensuring workspace dependencies are autoinherited..."
 	@cargo autoinherit 2>/dev/null
 	@echo "[*] Formatting Cargo.toml files..."
