@@ -160,6 +160,7 @@ mod tests {
             trace::{AttributeValue, Span, Trace},
             Event,
         },
+        support::SubsystemIdentifier,
         topology::{ComponentId, EventsBuffer},
     };
     use stringtheory::MetaString;
@@ -198,12 +199,19 @@ mod tests {
             .sum()
     }
 
+    fn test_component_context() -> ComponentContext {
+        ComponentContext::transform(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("ottl_filter").unwrap(),
+        )
+    }
+
     /// When `ottl_filter_config` is absent, config defaults to empty conditions and no spans are dropped.
     #[tokio::test]
     async fn from_configuration_absent_key_returns_default() {
         let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("should succeed");
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.expect("build should succeed");
         let span = make_span(1, 1, HashMap::from([("a".into(), "b".into())]));
         let trace = make_trace(vec![span], None);
@@ -236,7 +244,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("config is valid");
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let result = ottl_config.build(ctx).await;
         assert!(result.is_err(), "invalid OTTL condition must make build fail");
     }
@@ -256,7 +264,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("config is valid");
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.expect("build must succeed");
         let span_match_first = make_span(1, 1, HashMap::from([("a".into(), "x".into())]));
         let trace1 = make_trace(vec![span_match_first], None);
@@ -284,7 +292,7 @@ mod tests {
     async fn should_drop_span_empty_parsers_returns_false() {
         let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("drop".into(), "me".into())]));
         let trace = make_trace(vec![span], None);
@@ -302,7 +310,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("env".into(), "drop".into())]));
         let trace = make_trace(vec![span], None);
@@ -320,7 +328,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("env".into(), "keep".into())]));
         let trace = make_trace(vec![span], None);
@@ -338,7 +346,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::new());
         let trace = make_trace(vec![span], Some(vec!["host.name:localhost"]));
@@ -368,7 +376,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span_first_false_second_true = make_span(
             1,
@@ -402,7 +410,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "value".into())]));
         let trace = make_trace(vec![span], None);
@@ -427,7 +435,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
         let trace = make_trace(vec![span], None);
@@ -448,7 +456,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
         let trace = make_trace(vec![span], None);
@@ -469,7 +477,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
         let trace = make_trace(vec![span], None);
@@ -487,7 +495,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let keep1 = make_span(
             1,
@@ -537,7 +545,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let s1 = make_span(1, 1, HashMap::from([("env".into(), "drop".into())]));
         let s2 = make_span(1, 2, HashMap::from([("env".into(), "drop".into())]));
@@ -573,7 +581,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
 
         let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)
@@ -605,7 +613,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
 
         let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)
@@ -637,7 +645,7 @@ mod tests {
     async fn perf_throughput_filter_none() {
         let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
         let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = ComponentContext::transform("test", ComponentId::try_from("ottl_filter").unwrap());
+        let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
 
         let spans: Vec<Span> = (0..PERF_SPANS_PER_BUFFER)

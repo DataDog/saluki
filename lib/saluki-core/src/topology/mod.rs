@@ -2,8 +2,6 @@
 
 use std::num::NonZeroUsize;
 
-use resource_accounting::ComponentRegistry;
-
 use crate::data_model::payload::Payload;
 use crate::support::SubsystemIdentifier;
 use crate::topology::interconnect::FixedSizeEventBuffer;
@@ -55,30 +53,6 @@ pub type PayloadsDispatcher = Dispatcher<PayloadsBuffer>;
 /// Default consumer for payload-based components.
 pub type PayloadsConsumer = Consumer<PayloadsBuffer>;
 
-/// Returns the canonical identifier root for a topology with the given name (for example, `topology.primary`).
-///
-/// This is the single definition of how topology identifiers are rooted. Every component in a topology derives its
-/// [`SubsystemIdentifier`][crate::support::SubsystemIdentifier] by extending this root, and the health registry,
-/// resource accounting, and process-name renderings all share it -- so they stay byte-identical. The topology name is
-/// sanitized (as part of building the identifier) to the process-name-safe form, so the root is valid regardless of
-/// which subsystem consumes it.
-pub(crate) fn topology_root(name: &str) -> SubsystemIdentifier {
+pub(crate) fn topology_identifier(name: &str) -> SubsystemIdentifier {
     SubsystemIdentifier::from_segments(["topology", name])
-}
-
-pub(super) struct RegisteredComponent<T> {
-    component: T,
-    component_registry: ComponentRegistry,
-}
-
-impl<T> RegisteredComponent<T> {
-    fn new(component: T, component_registry: ComponentRegistry) -> Self {
-        Self {
-            component,
-            component_registry,
-        }
-    }
-    fn into_parts(self) -> (T, ComponentRegistry) {
-        (self.component, self.component_registry)
-    }
 }

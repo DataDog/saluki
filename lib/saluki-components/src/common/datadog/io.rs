@@ -989,7 +989,7 @@ mod tests {
     };
     use saluki_common::buf::FrozenChunkedBytesBuffer;
     use saluki_config::ConfigurationLoader;
-    use saluki_core::{observability::ComponentMetricsExt as _, topology::ComponentId};
+    use saluki_core::{observability::ComponentMetricsExt as _, support::SubsystemIdentifier, topology::ComponentId};
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
     use serde_json::json;
@@ -1008,6 +1008,13 @@ mod tests {
         METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_PATH, METRICS_SKETCHES_V3_PATH,
     };
+
+    fn test_component_context() -> ComponentContext {
+        ComponentContext::forwarder(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("test_forwarder").unwrap(),
+        )
+    }
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
@@ -1068,10 +1075,7 @@ mod tests {
 
     #[test]
     fn retry_queue_id_uses_raw_additional_endpoint_url() {
-        let context = ComponentContext::forwarder(
-            "test",
-            ComponentId::try_from("test_forwarder").expect("component ID should be valid"),
-        );
+        let context = test_component_context();
         let additional: AdditionalEndpoints = serde_yaml::from_str(
             r#"
 app.datadoghq.com: [key-a]
@@ -1092,10 +1096,7 @@ https://app.datadoghq.com: [key-b]
 
     #[test]
     fn retry_queue_id_uses_additional_endpoint_api_key_index() {
-        let context = ComponentContext::forwarder(
-            "test",
-            ComponentId::try_from("test_forwarder").expect("component ID should be valid"),
-        );
+        let context = test_component_context();
         let additional: AdditionalEndpoints = serde_yaml::from_str(
             r#"
 app.datadoghq.com: [key-a, key-b]
@@ -1535,10 +1536,7 @@ app.datadoghq.com: [key-a, key-b]
             "skip_ssl_validation": true,
         });
         let forwarder_config = forwarder_config_from_value(value);
-        let context = ComponentContext::forwarder(
-            "test",
-            ComponentId::try_from("test_forwarder").expect("component ID should be valid"),
-        );
+        let context = test_component_context();
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 

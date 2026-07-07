@@ -2054,6 +2054,7 @@ mod tests {
     use saluki_core::{
         components::ComponentContext,
         pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
+        support::SubsystemIdentifier,
         topology::ComponentId,
     };
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
@@ -2085,6 +2086,13 @@ mod tests {
     fn is_ipv6_unavailable_error(error: &std::io::Error) -> bool {
         matches!(error.kind(), ErrorKind::AddrNotAvailable | ErrorKind::Unsupported)
             || matches!(error.raw_os_error(), Some(LINUX_EAFNOSUPPORT | MACOS_EAFNOSUPPORT))
+    }
+
+    fn test_component_context() -> ComponentContext {
+        ComponentContext::source(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("dogstatsd_test").unwrap(),
+        )
     }
 
     #[derive(Default)]
@@ -2142,10 +2150,7 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
-        let context = ComponentContext::source(
-            "test",
-            ComponentId::try_from("dogstatsd_test").expect("valid component ID"),
-        );
+        let context = test_component_context();
         let metrics = build_metrics(&listen_addr, &context, true);
         let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
         let mut context_resolvers = test_context_resolvers();
@@ -2186,10 +2191,7 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
-        let context = ComponentContext::source(
-            "test",
-            ComponentId::try_from("dogstatsd_test").expect("valid component ID"),
-        );
+        let context = test_component_context();
         let metrics = build_metrics(&listen_addr, &context, true);
         let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
         let mut context_resolvers = test_context_resolvers();
@@ -2497,10 +2499,7 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
-        let context = ComponentContext::source(
-            "test",
-            ComponentId::try_from("dogstatsd_test").expect("valid component ID"),
-        );
+        let context = test_component_context();
         let metrics = build_metrics(&listen_addr, &context, false);
         let (packets_tx, packets_rx) = mpsc::channel(1);
         let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
@@ -2557,10 +2556,7 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
-        let context = ComponentContext::source(
-            "test",
-            ComponentId::try_from("dogstatsd_test").expect("valid component ID"),
-        );
+        let context = test_component_context();
         let metrics = build_metrics(&listen_addr, &context, false);
         let (packets_tx, packets_rx) = mpsc::channel(1);
         let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
@@ -2583,10 +2579,7 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
-        let context = ComponentContext::source(
-            "test",
-            ComponentId::try_from("dogstatsd_test").expect("valid component ID"),
-        );
+        let context = test_component_context();
         let metrics = build_metrics(&listen_addr, &context, false);
         let (packets_tx, _packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
         let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics);
@@ -2611,10 +2604,7 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
-        let context = ComponentContext::source(
-            "test",
-            ComponentId::try_from("dogstatsd_test").expect("valid component ID"),
-        );
+        let context = test_component_context();
         let metrics = build_metrics(&listen_addr, &context, false);
         let socket = UdpSocket::bind("127.0.0.1:0").await.expect("socket should bind");
         let forwarder = ConnectedPacketForwarder {

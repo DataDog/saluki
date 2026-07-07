@@ -2,10 +2,7 @@
 use core::fmt;
 use std::{borrow::Cow, ops::Deref};
 
-use crate::{
-    components::{ComponentContext, ComponentType},
-    topology::graph::DataType,
-};
+use crate::{components::ComponentType, support::SubsystemIdentifier, topology::graph::DataType};
 
 const INVALID_COMPONENT_ID: &str =
     "component IDs may only contain alphanumerics (a-z, A-Z, or 0-9), underscores, and hyphens";
@@ -246,24 +243,9 @@ impl TypedComponentId {
         self.ty
     }
 
-    /// Returns the component context, rooted at the given topology.
-    pub fn component_context(&self, topology_name: &str) -> ComponentContext {
-        match self.ty {
-            ComponentType::Source => ComponentContext::source(topology_name, self.id.clone()),
-            ComponentType::Relay => ComponentContext::relay(topology_name, self.id.clone()),
-            ComponentType::Decoder => ComponentContext::decoder(topology_name, self.id.clone()),
-            ComponentType::Transform => ComponentContext::transform(topology_name, self.id.clone()),
-            ComponentType::Encoder => ComponentContext::encoder(topology_name, self.id.clone()),
-            ComponentType::Forwarder => ComponentContext::forwarder(topology_name, self.id.clone()),
-            ComponentType::Destination => ComponentContext::destination(topology_name, self.id.clone()),
-        }
-    }
-
-    /// Consumes the `TypedComponentId` and returns its component ID, component type, and component context (rooted at
-    /// the given topology).
-    pub fn into_parts(self, topology_name: &str) -> (ComponentId, ComponentType, ComponentContext) {
-        let component_context = self.component_context(topology_name);
-        (self.id, self.ty, component_context)
+    /// Consumes the `TypedComponentId` and returns its component ID and component type.
+    pub fn into_parts(self) -> (ComponentId, ComponentType) {
+        (self.id, self.ty)
     }
 }
 
@@ -330,6 +312,12 @@ where
     fn as_component_ids(&self) -> impl Iterator<Item: AsRef<str>> {
         self.into_iter()
     }
+}
+
+pub(super) fn get_component_relative_identifier(
+    component_type: ComponentType, component_id: &ComponentId,
+) -> SubsystemIdentifier {
+    SubsystemIdentifier::from_segments([component_type.as_category_str(), component_id])
 }
 
 #[cfg(test)]
