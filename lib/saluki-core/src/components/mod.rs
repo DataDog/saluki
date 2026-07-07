@@ -199,12 +199,10 @@ impl ComponentContext {
         self.component_type
     }
 
-    /// Returns the fully qualified, canonical identity of this component.
+    /// Returns the fully qualified identity of this component.
     ///
-    /// The returned [`SubsystemIdentifier`] is the single source of truth for how this component is named across
-    /// subsystems (the health registry, resource accounting, and the supervision/process tree). It extends the
-    /// topology root with the component's category and identifier, yielding the form `topology.<name>.<category>.<id>`
-    /// (where `<category>` is the plural component type, [`ComponentType::as_category`]).
+    /// The returned identifier uniquekly identifies the component within the process, inclusive of the topology to
+    /// which it belongs.
     pub fn identity(&self) -> SubsystemIdentifier {
         self.topology_root
             .clone()
@@ -215,7 +213,7 @@ impl ComponentContext {
 
 impl fmt::Display for ComponentContext {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}[{}]", self.component_type.as_str(), self.component_id)
+        write!(f, "{}", self.identity())
     }
 }
 
@@ -235,5 +233,11 @@ mod tests {
         // valid process name and matches across every subsystem.
         let context = ComponentContext::test_transform("dsd-mapper");
         assert_eq!(context.identity().to_string(), "topology.test.transforms.dsd_mapper");
+    }
+
+    #[test]
+    fn context_display_equals_identity_to_string() {
+        let context = ComponentContext::test_transform("dsd-mapper");
+        assert_eq!(context.to_string(), context.identity().to_string());
     }
 }
