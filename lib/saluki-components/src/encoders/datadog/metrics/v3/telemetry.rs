@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use datadog_metrics_v3::V3ValueEncodingStats;
+use datadog_agent_metrics_v3::{V3ValueEncodingStats, COLUMN_NAMES};
 use metrics::Counter;
 use saluki_metrics::MetricsBuilder;
-
-use super::constants::COLUMN_NAMES;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum V3PayloadSplitReason {

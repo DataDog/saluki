@@ -1237,6 +1237,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "datadog-agent-metrics-v3"
+version = "0.1.0"
+dependencies = [
+ "foldhash 0.2.0",
+ "protobuf",
+]
+
+[[package]]
 name = "datadog-intake"
 version = "0.1.0"
 dependencies = [
@@ -1253,14 +1261,6 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "datadog-metrics-v3"
-version = "0.1.0"
-dependencies = [
- "foldhash 0.2.0",
- "protobuf",
 ]
 
 [[package]]
@@ -4421,7 +4421,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "datadog-agent-config-testing",
- "datadog-metrics-v3",
+ "datadog-agent-metrics-v3",
  "datadog-protos",
  "ddsketch",
  "derive-where",

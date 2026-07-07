@@ -15,11 +15,10 @@
 //! - Incrementally compressed blocks. This is a centerpiece of the implementation on the Agent side,
 //!   but we do this in a single shot as part of this initial implementation.
 
-mod constants;
 mod payload;
 mod telemetry;
 
-pub(crate) use datadog_metrics_v3::V3EncoderStats;
-pub use datadog_metrics_v3::{V3EncodedMetrics, V3MetricType, V3Writer};
+pub(crate) use datadog_agent_metrics_v3::V3EncoderStats;
+pub use datadog_agent_metrics_v3::{V3EncodedMetrics, V3MetricType, V3Writer};
 pub(super) use payload::{V3EncodedRequest, V3PayloadLimits, V3PayloadRequest};
 pub(crate) use telemetry::{V3PayloadSplitReason, V3SerializerTelemetry};
