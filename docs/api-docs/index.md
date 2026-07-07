@@ -7,7 +7,7 @@
 > To generate API documentation locally, run:
 >
 > ```shell
-> RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
+> make generate-api-docs
 > ```
 >
 > The output is written to `target/doc/`.

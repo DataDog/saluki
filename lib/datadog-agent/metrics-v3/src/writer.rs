@@ -3,83 +3,142 @@
 //! The [`V3Writer`] accumulates metrics in columnar format with dictionary deduplication,
 //! then produces [`V3EncodedData`] ready for protobuf serialization.
 
+use std::fmt;
+
 use protobuf::CodedOutputStream;
-use saluki_error::GenericError;
 
-use super::constants::*;
-use super::interner::Interner;
-use super::telemetry::V3ValueEncodingStats;
-use super::types::{value_type_for_values, V3MetricType, V3ValueType};
+use crate::{
+    constants::{
+        DICT_NAME_STR_FIELD_NUMBER, DICT_ORIGIN_INFO_FIELD_NUMBER, DICT_RESOURCE_LEN_FIELD_NUMBER,
+        DICT_RESOURCE_NAME_FIELD_NUMBER, DICT_RESOURCE_STR_FIELD_NUMBER, DICT_RESOURCE_TYPE_FIELD_NUMBER,
+        DICT_SOURCE_TYPE_NAME_FIELD_NUMBER, DICT_TAGSETS_FIELD_NUMBER, DICT_TAGS_STR_FIELD_NUMBER,
+        DICT_UNIT_STR_FIELD_NUMBER, INTERVALS_FIELD_NUMBER, NAMES_FIELD_NUMBER, NUM_POINTS_FIELD_NUMBER,
+        ORIGIN_INFO_FIELD_NUMBER, RESOURCES_FIELD_NUMBER, SKETCH_BIN_CNTS_FIELD_NUMBER, SKETCH_BIN_KEYS_FIELD_NUMBER,
+        SKETCH_NUM_BINS_FIELD_NUMBER, SOURCE_TYPE_NAME_FIELD_NUMBER, TAGS_FIELD_NUMBER, TIMESTAMPS_FIELD_NUMBER,
+        TYPES_FIELD_NUMBER, UNIT_REFS_FIELD_NUMBER, VALS_FLOAT32_FIELD_NUMBER, VALS_FLOAT64_FIELD_NUMBER,
+        VALS_SINT64_FIELD_NUMBER,
+    },
+    interner::Interner,
+    types::{value_type_for_values, V3MetricType, V3ValueType},
+};
 
-const FLAG_NO_INDEX: u64 = 0x100;
-const FLAG_HAS_UNIT: u64 = 0x200;
+/// Error encountered while encoding a V3 payload.
+#[derive(Debug)]
+pub struct V3EncodeError(protobuf::Error);
+
+impl fmt::Display for V3EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "failed to encode V3 payload: {}", self.0)
+    }
+}
+
+impl std::error::Error for V3EncodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+impl From<protobuf::Error> for V3EncodeError {
+    fn from(e: protobuf::Error) -> Self {
+        Self(e)
+    }
+}
+
+impl V3EncodeError {
+    /// Returns the underlying `protobuf` error.
+    pub fn into_inner(self) -> protobuf::Error {
+        self.0
+    }
+}
+
+pub(crate) const FLAG_NO_INDEX: u64 = 0x100;
+pub(crate) const FLAG_HAS_UNIT: u64 = 0x200;
 
 /// Encoded V3 payload data ready for protobuf serialization.
 ///
 /// Used primarily as a helper for testing.
 #[derive(Debug, Default)]
-struct V3EncodedData {
+pub(crate) struct V3EncodedData {
     // Dictionary encoded bytes (varint-length-prefixed strings)
-    pub dict_name_bytes: Vec<u8>,
-    pub dict_tags_bytes: Vec<u8>,
-    pub dict_tagsets: Vec<i64>,
-    pub dict_resource_str_bytes: Vec<u8>,
-    pub dict_resource_len: Vec<i64>,
-    pub dict_resource_type: Vec<i64>,
-    pub dict_resource_name: Vec<i64>,
-    pub dict_source_type_bytes: Vec<u8>,
-    pub dict_origin_info: Vec<i32>,
-    pub dict_unit_bytes: Vec<u8>,
+    dict_name_bytes: Vec<u8>,
+    dict_tags_bytes: Vec<u8>,
+    dict_tagsets: Vec<i64>,
+    dict_resource_str_bytes: Vec<u8>,
+    dict_resource_len: Vec<i64>,
+    dict_resource_type: Vec<i64>,
+    dict_resource_name: Vec<i64>,
+    dict_source_type_bytes: Vec<u8>,
+    dict_origin_info: Vec<i32>,
+    dict_unit_bytes: Vec<u8>,
 
     // Per-metric columns (one entry per metric, except conditional columns)
-    pub types: Vec<u64>,
-    pub names: Vec<i64>,
-    pub tags: Vec<i64>,
-    pub resources: Vec<i64>,
-    pub intervals: Vec<u64>,
-    pub num_points: Vec<u64>,
-    pub source_type_names: Vec<i64>,
-    pub origin_infos: Vec<i64>,
-    pub unit_refs: Vec<i64>, // Present only for metrics with FLAG_HAS_UNIT set.
+    types: Vec<u64>,
+    names: Vec<i64>,
+    tags: Vec<i64>,
+    resources: Vec<i64>,
+    intervals: Vec<u64>,
+    num_points: Vec<u64>,
+    source_type_names: Vec<i64>,
+    origin_infos: Vec<i64>,
+    unit_refs: Vec<i64>, // Present only for metrics with FLAG_HAS_UNIT set.
 
     // Point data (varies per metric based on num_points)
-    pub timestamps: Vec<i64>,
-    pub vals_sint64: Vec<i64>,
-    pub vals_float32: Vec<f32>,
-    pub vals_float64: Vec<f64>,
+    timestamps: Vec<i64>,
+    vals_sint64: Vec<i64>,
+    vals_float32: Vec<f32>,
+    vals_float64: Vec<f64>,
 
     // Sketch data
-    pub sketch_num_bins: Vec<u64>,
-    pub sketch_bin_keys: Vec<i32>,
-    pub sketch_bin_cnts: Vec<u32>,
-    pub value_encoding_stats: V3ValueEncodingStats,
+    sketch_num_bins: Vec<u64>,
+    sketch_bin_keys: Vec<i32>,
+    sketch_bin_cnts: Vec<u32>,
+
+    value_encoding_stats: V3ValueEncodingStats,
 }
 
 /// Encoded V3 metrics payload with telemetry data.
 pub struct V3EncodedMetrics {
     /// Serialized `MetricData` protobuf payload.
-    pub(crate) payload: Vec<u8>,
+    pub payload: Vec<u8>,
     /// Telemetry produced while encoding the payload.
-    pub(crate) stats: V3EncoderStats,
+    pub stats: V3EncoderStats,
 }
 
 /// Telemetry data produced while encoding a V3 metrics payload.
-pub(crate) struct V3EncoderStats {
-    pub(crate) value_encoding_stats: V3ValueEncodingStats,
-    pub(crate) columns: Vec<V3ColumnBytes>,
+pub struct V3EncoderStats {
+    /// Counts of how many point values were compacted into each value column.
+    pub value_encoding_stats: V3ValueEncodingStats,
+    /// Raw bytes written for each present column, keyed by field number.
+    pub columns: Vec<V3ColumnBytes>,
+}
+
+/// Counts of how many point values were encoded into each value column.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct V3ValueEncodingStats {
+    /// Number of point values that were zero and required no explicit storage.
+    pub zero: u64,
+    /// Number of point values stored as signed integers.
+    pub sint64: u64,
+    /// Number of point values stored as 32-bit floats.
+    pub float32: u64,
+    /// Number of point values stored as 64-bit floats.
+    pub float64: u64,
 }
 
 /// Raw stream bytes for a single V3 column before protobuf field framing.
-pub(crate) struct V3ColumnBytes {
-    pub(crate) field_number: u32,
-    pub(crate) bytes: Vec<u8>,
-    pub(crate) compressed_len: usize,
+pub struct V3ColumnBytes {
+    /// Protocol Buffers field number this column corresponds to.
+    pub field_number: u32,
+    /// Column contents, framed as an unwrapped (no field tag) protobuf value.
+    pub bytes: Vec<u8>,
+    /// Reserved for the compressed length of `bytes`; currently always `0`.
+    pub compressed_len: usize,
 }
 
 /// V3 columnar metrics writer.
 ///
 /// Accumulates metrics in columnar format with dictionary deduplication.
-/// Call [`V3Writer::write`] for each metric, then [`V3Writer::close`] to finalize
+/// Call [`V3Writer::write`] for each metric, then [`V3Writer::finalize`] to finalize
 /// and get the encoded data.
 #[derive(Debug, Default)]
 pub struct V3Writer {
@@ -212,7 +271,7 @@ impl V3Writer {
     /// Finalizes the writer and serializes the data to the given output buffer.
     ///
     /// This performs delta encoding on all index arrays.
-    pub fn finalize(self) -> Result<V3EncodedMetrics, GenericError> {
+    pub fn finalize(self) -> Result<V3EncodedMetrics, V3EncodeError> {
         let data = self.finalize_inner();
         let mut output = Vec::new();
         let mut columns = Vec::new();
@@ -759,7 +818,7 @@ impl<'a> V3MetricBuilder<'a> {
 
 fn write_bytes_column(
     output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, bytes: &[u8],
-) -> Result<(), GenericError> {
+) -> Result<(), V3EncodeError> {
     let start = output.len();
     {
         let mut os = CodedOutputStream::vec(output);
@@ -780,7 +839,7 @@ fn write_bytes_column(
 
 fn write_packed_column<F, R>(
     output: &mut Vec<u8>, columns: &mut Vec<V3ColumnBytes>, field_number: u32, write_framed: F, write_raw: R,
-) -> Result<(), GenericError>
+) -> Result<(), V3EncodeError>
 where
     F: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,
     R: FnOnce(&mut CodedOutputStream<'_>) -> protobuf::Result<()>,

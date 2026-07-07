@@ -308,12 +308,9 @@ impl DriverConfig {
 
     /// Adds an exposed port to the container.
     ///
-    /// Exposed ports are ports mapped from inside the container to an ephemeral port on the host. The `protocol` should
-    /// be either `tcp` or `udp`. A port on the host side is picked from the "local" port range. For example, on Linux
-    /// the range is defined by `/proc/sys/net/ipv4/ip_local_port_range`.
-    ///
-    /// When starting the driver via [`Driver::start`][crate::driver::Driver::start], the ephemeral port mappings will
-    /// be returned in [`DriverDetails`].
+    /// The `protocol` should be either `tcp` or `udp`. Linux containers publish exposed ports to ephemeral host ports,
+    /// which are returned in [`DriverDetails`] after starting the driver. Windows containers keep exposed ports internal
+    /// to the container network because Panoramic probes them from inside the container or via the container IP.
     pub fn with_exposed_port(mut self, protocol: &'static str, internal_port: u16) -> Self {
         self.exposed_ports.push((protocol, internal_port));
         self
@@ -351,6 +348,24 @@ impl DriverConfig {
             ContainerOs::Linux => "bridge",
             ContainerOs::Windows => "nat",
         }
+    }
+
+    fn port_publishing_options(&self) -> (Option<bool>, Option<Vec<String>>) {
+        if self.exposed_ports.is_empty() {
+            return (None, None);
+        }
+
+        let exposed_ports = self
+            .exposed_ports
+            .iter()
+            .map(|(protocol, internal_port)| format!("{}/{}", internal_port, protocol))
+            .collect();
+        let publish_all_ports = match self.container_os {
+            ContainerOs::Linux => Some(true),
+            ContainerOs::Windows => None,
+        };
+
+        (publish_all_ports, Some(exposed_ports))
     }
 
     /// Returns the full set of bind mounts to apply to this container, including OS-specific
@@ -738,17 +753,7 @@ impl Driver {
             None
         };
 
-        let (publish_all_ports, exposed_ports) = if self.config.exposed_ports.is_empty() {
-            (None, None)
-        } else {
-            let exposed_ports: Vec<String> = self
-                .config
-                .exposed_ports
-                .iter()
-                .map(|(protocol, internal_port)| format!("{}/{}", internal_port, protocol))
-                .collect();
-            (Some(true), Some(exposed_ports))
-        };
+        let (publish_all_ports, exposed_ports) = self.config.port_publishing_options();
 
         // Linux test containers run with `pid_mode=host` so origin-detection logic in ADP and
         // the Core Agent can see processes on the runner. Windows containers do not support
@@ -1351,6 +1356,28 @@ mod tests {
             DriverConfig::from_image("target", "example:latest".to_string()).with_container_os(ContainerOs::Windows);
 
         assert_eq!(config.network_driver(), "nat");
+    }
+
+    #[test]
+    fn windows_container_exposes_ports_without_publishing_to_host() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string())
+            .with_container_os(ContainerOs::Windows)
+            .with_exposed_port("udp", 58125);
+
+        let (publish_all_ports, exposed_ports) = config.port_publishing_options();
+
+        assert_eq!(publish_all_ports, None);
+        assert_eq!(exposed_ports, Some(vec!["58125/udp".to_string()]));
+    }
+
+    #[test]
+    fn linux_container_exposes_ports_and_publishes_to_host() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string()).with_exposed_port("tcp", 55100);
+
+        let (publish_all_ports, exposed_ports) = config.port_publishing_options();
+
+        assert_eq!(publish_all_ports, Some(true));
+        assert_eq!(exposed_ports, Some(vec!["55100/tcp".to_string()]));
     }
 
     #[test]

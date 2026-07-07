@@ -39,6 +39,15 @@ testing. Antithesis will not run any test commands until it receives this event.
   (`antithesis-scenario-general`) owns general-only test commands under
   `src/bin/`. Snouty will push tagged images, consume this directory, and
   launch the run.
+- `scenarios/differential/` — the A/B scenario that runs ADP and the Datadog
+  Agent side by side against one shared sampled config and asserts they emit the
+  same metric context inventory for an identical DogStatsD stream. The Agent is
+  normative. Its layout mirrors `general/`: `Dockerfile`, `docker-compose.yaml`,
+  per-service build inputs, and a `README.md` describing the oracle and the
+  private control API. Its Cargo package (`antithesis-scenario-differential`)
+  owns the differential test commands under `src/bin/`. Build and validate it
+  with `make antithesis-build-differential` and `make
+  antithesis-validate-differential`.
 
 **scratchbook**
 

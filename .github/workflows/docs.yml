@@ -34,11 +34,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
       # `make generate-api-docs` installs and pins the nightly toolchain it needs (see
-      # RUST_NIGHTLY_VERSION in the Makefile); this step just provides rustup/cargo.
-      - name: Set up Rust
+      # RUST_NIGHTLY_VERSION in the Makefile); this step just provides Rust 1.94 and rustup/cargo.
+      - name: Set up Rust 1.94
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17
         with:
-          toolchain: stable
+          toolchain: 1.94.0
           cache: false
           rustflags: ""
       - name: Generate API documentation

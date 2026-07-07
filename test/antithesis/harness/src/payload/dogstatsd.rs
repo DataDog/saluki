@@ -102,6 +102,7 @@ fn choose_message<R: Rng + ?Sized>(rng: &mut R) -> Message {
 }
 
 /// Write one `DogStatsD` message of a sampled type to `buf` at the given vibe.
+///
 /// Returns the packed value count when a multi-value metric was emitted, else
 /// `None`.
 pub fn send<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> Option<usize> {

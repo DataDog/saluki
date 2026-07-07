@@ -173,14 +173,29 @@ dependencies = [
  "datadog-protos",
  "headers",
  "mime",
+ "proptest",
  "protobuf",
  "serde",
  "serde_json",
+ "stele",
  "tokio",
  "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "antithesis-scenario-differential"
+version = "0.1.0"
+dependencies = [
+ "antithesis_sdk",
+ "anyhow",
+ "clap",
+ "harness",
+ "reqwest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1058,9 +1073,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1234,6 +1249,14 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tinytemplate",
+]
+
+[[package]]
+name = "datadog-agent-metrics-v3"
+version = "0.1.0"
+dependencies = [
+ "foldhash 0.2.0",
+ "protobuf",
 ]
 
 [[package]]
@@ -4041,7 +4064,9 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -4415,6 +4440,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "datadog-agent-config-testing",
+ "datadog-agent-metrics-v3",
  "datadog-protos",
  "ddsketch",
  "derive-where",
