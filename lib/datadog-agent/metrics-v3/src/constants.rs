@@ -28,10 +28,10 @@ pub(crate) const ORIGIN_INFO_FIELD_NUMBER: u32 = 24;
 pub(crate) const DICT_UNIT_STR_FIELD_NUMBER: u32 = 25;
 pub(crate) const UNIT_REFS_FIELD_NUMBER: u32 = 26;
 
-// Display names for the V3 columns, indexed by their Protocol Buffers field number (from
-// `lib/protos/datadog/proto/agent-payload/intake_v3.proto`, also mirrored in
-// `datadog_agent_metrics_v3::writer` as the `*_FIELD_NUMBER` constants). Index 0 is unused since
-// field numbers start at 1.
+/// Display names for the V3 columns, indexed by their Protocol Buffers field number (from
+/// `lib/protos/datadog/proto/agent-payload/intake_v3.proto`, also mirrored in
+/// `datadog_agent_metrics_v3::writer` as the `*_FIELD_NUMBER` constants). Index 0 is unused since
+/// field numbers start at 1.
 pub const COLUMN_NAMES: [&str; 27] = [
     "reserved",
     "DictNameStr",

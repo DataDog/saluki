@@ -51,49 +51,49 @@ impl V3EncodeError {
     }
 }
 
-pub const FLAG_NO_INDEX: u64 = 0x100;
-pub const FLAG_HAS_UNIT: u64 = 0x200;
+pub(crate) const FLAG_NO_INDEX: u64 = 0x100;
+pub(crate) const FLAG_HAS_UNIT: u64 = 0x200;
 
 /// Encoded V3 payload data ready for protobuf serialization.
 ///
 /// Used primarily as a helper for testing.
 #[derive(Debug, Default)]
-pub struct V3EncodedData {
+pub(crate) struct V3EncodedData {
     // Dictionary encoded bytes (varint-length-prefixed strings)
-    pub dict_name_bytes: Vec<u8>,
-    pub dict_tags_bytes: Vec<u8>,
-    pub dict_tagsets: Vec<i64>,
-    pub dict_resource_str_bytes: Vec<u8>,
-    pub dict_resource_len: Vec<i64>,
-    pub dict_resource_type: Vec<i64>,
-    pub dict_resource_name: Vec<i64>,
-    pub dict_source_type_bytes: Vec<u8>,
-    pub dict_origin_info: Vec<i32>,
-    pub dict_unit_bytes: Vec<u8>,
+    dict_name_bytes: Vec<u8>,
+    dict_tags_bytes: Vec<u8>,
+    dict_tagsets: Vec<i64>,
+    dict_resource_str_bytes: Vec<u8>,
+    dict_resource_len: Vec<i64>,
+    dict_resource_type: Vec<i64>,
+    dict_resource_name: Vec<i64>,
+    dict_source_type_bytes: Vec<u8>,
+    dict_origin_info: Vec<i32>,
+    dict_unit_bytes: Vec<u8>,
 
     // Per-metric columns (one entry per metric, except conditional columns)
-    pub types: Vec<u64>,
-    pub names: Vec<i64>,
-    pub tags: Vec<i64>,
-    pub resources: Vec<i64>,
-    pub intervals: Vec<u64>,
-    pub num_points: Vec<u64>,
-    pub source_type_names: Vec<i64>,
-    pub origin_infos: Vec<i64>,
-    pub unit_refs: Vec<i64>, // Present only for metrics with FLAG_HAS_UNIT set.
+    types: Vec<u64>,
+    names: Vec<i64>,
+    tags: Vec<i64>,
+    resources: Vec<i64>,
+    intervals: Vec<u64>,
+    num_points: Vec<u64>,
+    source_type_names: Vec<i64>,
+    origin_infos: Vec<i64>,
+    unit_refs: Vec<i64>, // Present only for metrics with FLAG_HAS_UNIT set.
 
     // Point data (varies per metric based on num_points)
-    pub timestamps: Vec<i64>,
-    pub vals_sint64: Vec<i64>,
-    pub vals_float32: Vec<f32>,
-    pub vals_float64: Vec<f64>,
+    timestamps: Vec<i64>,
+    vals_sint64: Vec<i64>,
+    vals_float32: Vec<f32>,
+    vals_float64: Vec<f64>,
 
     // Sketch data
-    pub sketch_num_bins: Vec<u64>,
-    pub sketch_bin_keys: Vec<i32>,
-    pub sketch_bin_cnts: Vec<u32>,
+    sketch_num_bins: Vec<u64>,
+    sketch_bin_keys: Vec<i32>,
+    sketch_bin_cnts: Vec<u32>,
 
-    pub value_encoding_stats: V3ValueEncodingStats,
+    value_encoding_stats: V3ValueEncodingStats,
 }
 
 /// Encoded V3 metrics payload with telemetry data.
@@ -106,23 +106,32 @@ pub struct V3EncodedMetrics {
 
 /// Telemetry data produced while encoding a V3 metrics payload.
 pub struct V3EncoderStats {
+    /// Counts of how many point values were compacted into each value column.
     pub value_encoding_stats: V3ValueEncodingStats,
+    /// Raw bytes written for each present column, keyed by field number.
     pub columns: Vec<V3ColumnBytes>,
 }
 
 /// Counts of how many point values were encoded into each value column.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct V3ValueEncodingStats {
+    /// Number of point values that were zero and required no explicit storage.
     pub zero: u64,
+    /// Number of point values stored as signed integers.
     pub sint64: u64,
+    /// Number of point values stored as 32-bit floats.
     pub float32: u64,
+    /// Number of point values stored as 64-bit floats.
     pub float64: u64,
 }
 
 /// Raw stream bytes for a single V3 column before protobuf field framing.
 pub struct V3ColumnBytes {
+    /// Protocol Buffers field number this column corresponds to.
     pub field_number: u32,
+    /// Column contents, framed as an unwrapped (no field tag) protobuf value.
     pub bytes: Vec<u8>,
+    /// Reserved for the compressed length of `bytes`; currently always `0`.
     pub compressed_len: usize,
 }
 
