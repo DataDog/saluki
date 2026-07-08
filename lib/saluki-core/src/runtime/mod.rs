@@ -55,7 +55,10 @@
 //! failed workers and supervisors are restarted.
 
 mod process;
+pub(crate) use self::process::get_sanitized_name;
 pub use self::process::Id as ProcessId;
+#[cfg(test)]
+pub(crate) use self::process::Name;
 
 pub mod state;
 

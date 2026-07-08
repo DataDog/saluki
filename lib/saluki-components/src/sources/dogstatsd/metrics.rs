@@ -362,13 +362,16 @@ fn error_tags(
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
-    use saluki_core::{components::ComponentContext, topology::ComponentId};
+    use saluki_core::{components::ComponentContext, support::SubsystemIdentifier, topology::ComponentId};
     use saluki_metrics::test::TestRecorder;
 
     use super::*;
 
     fn test_context() -> ComponentContext {
-        ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"))
+        ComponentContext::source(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("dogstatsd_test").expect("valid component ID"),
+        )
     }
 
     fn udp_listen_addr() -> ListenAddress {

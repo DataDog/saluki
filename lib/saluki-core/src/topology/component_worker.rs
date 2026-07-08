@@ -14,7 +14,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use resource_accounting::{ResourceGroupToken, Track as _};
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::generic_error;
 use tracing::{error_span, Instrument as _};
@@ -39,9 +38,9 @@ use crate::runtime::{InitializationError, ShutdownStrategy, Supervisable, Superv
 pub(super) trait RunnableComponent: Send + 'static {
     /// Consumes the component and its context, returning the future that runs the component.
     ///
-    /// `process_shutdown` is the shutdown signal of the component's dedicated supervisor. The returned
-    /// future is tracked under the component's own resource group so its allocations remain attributed
-    /// to the component rather than to its supervisor.
+    /// `process_shutdown` is the shutdown signal of the component's dedicated supervisor. The run-future's
+    /// allocations are attributed to the component's resource group by the process it runs in: the component's
+    /// dedicated supervisor is named for the component, so no additional tracking is needed here.
     fn run_with_shutdown(self, process_shutdown: ShutdownHandle) -> SupervisorFuture;
 }
 
@@ -111,11 +110,10 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
 /// context (sources and relays) or dropped (the channel-draining kinds).
 macro_rules! runnable_component {
     ($name:ident, $component:path, $context:ty, inject_shutdown) => {
-        /// Pairs a built component with its context and resource group for supervised execution.
+        /// Pairs a built component with its context for supervised execution.
         pub(super) struct $name {
             pub(super) component: Box<dyn $component + Send>,
             pub(super) context: $context,
-            pub(super) alloc_group: ResourceGroupToken,
         }
 
         impl RunnableComponent for $name {
@@ -123,30 +121,24 @@ macro_rules! runnable_component {
                 let Self {
                     component,
                     mut context,
-                    alloc_group,
                 } = self;
                 context.set_shutdown_handle(process_shutdown);
-                Box::pin(component.run(context).track_resources(alloc_group))
+                Box::pin(component.run(context))
             }
         }
     };
     ($name:ident, $component:path, $context:ty) => {
-        /// Pairs a built component with its context and resource group for supervised execution.
+        /// Pairs a built component with its context for supervised execution.
         pub(super) struct $name {
             pub(super) component: Box<dyn $component + Send>,
             pub(super) context: $context,
-            pub(super) alloc_group: ResourceGroupToken,
         }
 
         impl RunnableComponent for $name {
             fn run_with_shutdown(self, _process_shutdown: ShutdownHandle) -> SupervisorFuture {
                 // This kind has no shutdown handle of its own: it stops when its upstream channels close.
-                let Self {
-                    component,
-                    context,
-                    alloc_group,
-                } = self;
-                Box::pin(component.run(context).track_resources(alloc_group))
+                let Self { component, context } = self;
+                Box::pin(component.run(context))
             }
         }
     };

@@ -163,6 +163,7 @@ mod tests {
             trace::{AttributeValue, Span, Trace},
             Event,
         },
+        support::SubsystemIdentifier,
         topology::{ComponentId, EventsBuffer},
     };
     use stringtheory::MetaString;
@@ -211,10 +212,17 @@ mod tests {
             })
     }
 
+    fn test_component_context() -> ComponentContext {
+        ComponentContext::transform(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("ottl_transform").unwrap(),
+        )
+    }
+
     async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {
         let (config, _) = ConfigurationLoader::for_tests(cfg_json, None, false).await;
         let ottl_config = OttlTransformConfiguration::from_configuration(&config).expect("config should parse");
-        let ctx = ComponentContext::transform(ComponentId::try_from("ottl_transform").unwrap());
+        let ctx = test_component_context();
         ottl_config.build(ctx).await.expect("build should succeed")
     }
 
@@ -256,7 +264,7 @@ mod tests {
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
         let ottl_config = OttlTransformConfiguration::from_configuration(&config).expect("config is valid");
-        let ctx = ComponentContext::transform(ComponentId::try_from("ottl_transform").unwrap());
+        let ctx = test_component_context();
         let result = ottl_config.build(ctx).await;
         assert!(result.is_err(), "invalid OTTL syntax must make build fail");
     }

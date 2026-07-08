@@ -343,7 +343,7 @@ mod tests {
     use std::sync::Arc;
 
     use resource_accounting::MemoryLimiter;
-    use saluki_core::{components::ComponentContext, topology::ComponentId};
+    use saluki_core::{components::ComponentContext, support::SubsystemIdentifier, topology::ComponentId};
     use saluki_metrics::test::TestRecorder;
 
     use super::*;
@@ -380,7 +380,10 @@ mod tests {
     }
 
     fn test_component_context() -> ComponentContext {
-        ComponentContext::source(ComponentId::try_from("otlp_test").unwrap())
+        ComponentContext::source(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("otlp_test").unwrap(),
+        )
     }
 
     #[tokio::test]

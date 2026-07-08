@@ -2,15 +2,13 @@ use std::{
     future::Future,
     ops::Deref,
     pin::Pin,
-    sync::{
-        atomic::{AtomicUsize, Ordering::Relaxed},
-        Arc,
-    },
+    sync::atomic::{AtomicUsize, Ordering::Relaxed},
     task::{Context, Poll},
 };
 
 use pin_project::{pin_project, pinned_drop};
 use resource_accounting::{ResourceGroupRegistry, ResourceGroupToken, Track as _, Tracked};
+use stringtheory::MetaString;
 use tracing::{debug_span, instrument::Instrumented, Instrument as _};
 
 use super::state::{DataspaceRegistry, CURRENT_DATASPACE};
@@ -63,29 +61,22 @@ impl Id {
 /// Process names will be sanitized if they contain invalid characters, such as hyphens or spaces. Invalid characters
 /// will be replaced with underscores.
 ///
+/// A period in a provided name is treated as a segment separator: the name is split on periods, each segment is
+/// sanitized independently, and the segments are rejoined with periods. This lets a caller supply an already-scoped
+/// name (such as `topology.primary`) and have it preserved as distinct segments rather than collapsed.
+///
 /// Not guaranteed to be unique.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Name(Arc<str>);
+pub struct Name(MetaString);
 
 impl Name {
     pub(crate) fn root<N: AsRef<str>>(name: N) -> Option<Self> {
-        let name = name.as_ref();
-        if name.is_empty() {
-            return None;
-        }
-
-        Some(Self(get_sanitized_name(name)))
+        sanitize_scoped_name(name.as_ref()).map(Self)
     }
 
     pub(crate) fn scoped<N: AsRef<str>>(parent: &Name, name: N) -> Option<Self> {
-        let name = name.as_ref();
-        if name.is_empty() {
-            return None;
-        }
-
-        let sanitized_name = get_sanitized_name(name);
-        let scoped_name = format!("{}.{}", parent.0, sanitized_name);
-        Some(Self(scoped_name.into()))
+        let child = sanitize_scoped_name(name.as_ref())?;
+        Some(Self(format!("{}.{}", parent.0, child).into()))
     }
 }
 
@@ -153,7 +144,8 @@ impl Process {
         &self.id
     }
 
-    /// Returns the fully qualified process name (scoped under its parent, for example `topology_primary.dsd_in.source`).
+    /// Returns the fully qualified process name (scoped under its parent, for example
+    /// `topology.primary.sources.dsd_in.source`).
     pub(crate) fn name(&self) -> &str {
         &self.name
     }
@@ -271,7 +263,7 @@ fn is_process_name_segment_valid(name: &str) -> bool {
     true
 }
 
-fn get_sanitized_name(name: &str) -> Arc<str> {
+pub(crate) fn get_sanitized_name(name: &str) -> MetaString {
     if is_process_name_segment_valid(name) {
         name.into()
     } else {
@@ -296,7 +288,33 @@ fn get_sanitized_name(name: &str) -> Arc<str> {
 
         // Remove all non-alphanumeric characters from beginning and end.
         let trimmed = sanitized.trim_matches(|c: char| !c.is_alphanumeric());
-        Arc::from(trimmed)
+        trimmed.into()
+    }
+}
+
+/// Sanitizes a (possibly dotted) name into a dotted string of process-safe segments.
+///
+/// Periods are treated as segment separators: the input is split on `.`, each segment is sanitized via
+/// [`get_sanitized_name`], and the results are rejoined with `.`. Segments that are empty (or sanitize to empty) are
+/// dropped. Returns `None` if nothing remains.
+fn sanitize_scoped_name(name: &str) -> Option<MetaString> {
+    let mut rendered = String::new();
+    for segment in name.split('.') {
+        let sanitized = get_sanitized_name(segment);
+        if sanitized.is_empty() {
+            continue;
+        }
+
+        if !rendered.is_empty() {
+            rendered.push('.');
+        }
+        rendered.push_str(&sanitized);
+    }
+
+    if rendered.is_empty() {
+        None
+    } else {
+        Some(rendered.into())
     }
 }
 
@@ -315,7 +333,7 @@ mod tests {
             ("--worker_123", Some("worker_123")),
             ("worker 123", Some("worker_123")),
             ("worker===123", Some("worker_123")),
-            ("topology.worker", Some("topology_worker")),
+            ("topology.worker", Some("topology.worker")),
             ("", None),
         ];
 
@@ -336,7 +354,7 @@ mod tests {
             ("--worker_123", Some("topology_sup.worker_123")),
             ("worker 123", Some("topology_sup.worker_123")),
             ("worker===123", Some("topology_sup.worker_123")),
-            ("nested.worker", Some("topology_sup.nested_worker")),
+            ("nested.worker", Some("topology_sup.nested.worker")),
             ("", None),
         ];
 

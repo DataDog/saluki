@@ -17,4 +17,5 @@ pub mod health;
 pub mod observability;
 pub mod pooling;
 pub mod runtime;
+pub mod support;
 pub mod topology;
