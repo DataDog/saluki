@@ -201,7 +201,7 @@ impl ComponentContext {
 
     /// Returns the fully qualified identity of this component.
     ///
-    /// The returned identifier uniquekly identifies the component within the process, inclusive of the topology to
+    /// The returned identifier uniquely identifies the component within the process, inclusive of the topology to
     /// which it belongs.
     pub fn identity(&self) -> SubsystemIdentifier {
         self.topology_root
@@ -228,16 +228,8 @@ mod tests {
     }
 
     #[test]
-    fn identity_sanitizes_hyphenated_id() {
-        // Hyphens are allowed in component IDs but are sanitized to underscores in the canonical identity, so it is a
-        // valid process name and matches across every subsystem.
-        let context = ComponentContext::test_transform("dsd-mapper");
-        assert_eq!(context.identity().to_string(), "topology.test.transforms.dsd_mapper");
-    }
-
-    #[test]
     fn context_display_equals_identity_to_string() {
-        let context = ComponentContext::test_transform("dsd-mapper");
+        let context = ComponentContext::test_transform("dsd_mapper");
         assert_eq!(context.to_string(), context.identity().to_string());
     }
 }

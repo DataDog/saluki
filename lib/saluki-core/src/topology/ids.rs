@@ -4,12 +4,16 @@ use std::{borrow::Cow, ops::Deref};
 
 use crate::{components::ComponentType, support::SubsystemIdentifier, topology::graph::DataType};
 
-const INVALID_COMPONENT_ID: &str =
-    "component IDs may only contain alphanumerics (a-z, A-Z, or 0-9), underscores, and hyphens";
+const INVALID_COMPONENT_ID: &str = "component IDs may only contain alphanumerics (a-z, A-Z, or 0-9) and underscores, \
+     and must start and end with an alphanumeric character";
 const INVALID_COMPONENT_OUTPUT_ID: &str =
-    "component output IDs may only contain alphanumerics (a-z, A-Z, or 0-9), underscores, hyphens, and up to one period";
+    "component output IDs may only contain alphanumerics (a-z, A-Z, or 0-9), underscores, and up to one period \
+     separator, where each side of the separator must start and end with an alphanumeric character";
 
 /// A component identifier.
+///
+/// Component identifiers contain only alphanumerics and underscores, and must start and end with an alphanumeric
+/// character.
 #[derive(Clone, Debug, Hash, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ComponentId(Cow<'static, str>);
 
@@ -109,42 +113,65 @@ impl fmt::Display for ComponentOutputId {
     }
 }
 
+/// Validates a component ID, or -- when `as_output_id` is `true` -- a component output ID.
+///
+/// A component ID must be non-empty, contain only ASCII alphanumerics and underscores, and both start and end with an
+/// alphanumeric character. A component output ID additionally permits a single period, which separates the component ID
+/// from the output name; each side of the separator must independently satisfy the component ID rules.
 const fn validate_component_id(id: &str, as_output_id: bool) -> bool {
     let id_bytes = id.as_bytes();
+    let end = id_bytes.len();
 
     // Identifiers cannot be empty strings.
-    if id_bytes.is_empty() {
+    if end == 0 {
         return false;
     }
 
-    // Keep track of whether or not we've seen a period yet. If we have, we track its index, which serves two purposes:
-    // figure out if we see _another_ period (can only have one), and ensure that either side of the string (when split
-    // by the separator) isn't empty.
+    // Walk the string a byte at a time. Periods are only meaningful for output IDs, where a single period separates the
+    // component ID from the output name; every other byte must be an alphanumeric or underscore. Each segment (the whole
+    // string when there's no separator) is validated as it's closed out.
     let mut idx = 0;
-    let end = id_bytes.len();
-    let mut separator_idx = end;
+    let mut segment_start = 0;
+    let mut seen_separator = false;
     while idx < end {
         let b = id_bytes[idx];
-        if !b.is_ascii_alphanumeric() && b != b'_' && b != b'-' {
-            if as_output_id && b == b'.' && separator_idx == end {
-                // Found our period separator.
-                separator_idx = idx;
-            } else {
-                // We're not validating as an output ID, or we already saw a period separator, which means this is
-                // invalid.
+        if b == b'.' {
+            if !as_output_id || seen_separator {
+                // We're not validating as an output ID, or we already saw a period separator: either way, invalid.
                 return false;
             }
+            seen_separator = true;
+
+            // Close out and validate the segment that just ended.
+            if !is_valid_component_id_segment(id_bytes, segment_start, idx) {
+                return false;
+            }
+            segment_start = idx + 1;
+        } else if !b.is_ascii_alphanumeric() && b != b'_' {
+            // Anything other than an alphanumeric, underscore, or (handled above) period separator is invalid.
+            return false;
         }
 
         idx += 1;
     }
 
-    if as_output_id && (separator_idx == 0 || separator_idx == end - 1) {
-        // Can't have the separator as the first or last character.
+    // Validate the final (or only) segment.
+    is_valid_component_id_segment(id_bytes, segment_start, end)
+}
+
+/// Returns `true` if the byte range `[start, end)` of `bytes` is a valid component ID segment.
+///
+/// The caller guarantees the range contains only alphanumerics and underscores; this additionally requires the segment
+/// to be non-empty and to start and end with an alphanumeric character (which rejects leading/trailing underscores as
+/// well as empty segments arising from leading, trailing, or duplicate separators).
+const fn is_valid_component_id_segment(bytes: &[u8], start: usize, end: usize) -> bool {
+    // Segment cannot be empty.
+    if start >= end {
         return false;
     }
 
-    true
+    // Segments must start and end with an alphanumeric character.
+    bytes[start].is_ascii_alphanumeric() && bytes[end - 1].is_ascii_alphanumeric()
 }
 
 /// An output name.
@@ -340,6 +367,57 @@ mod tests {
         assert!(ComponentId::try_from("").is_err());
         assert!(ComponentId::try_from("non_alphanumeric_$#!").is_err());
         assert!(ComponentId::try_from("cant_have_periods_for_non_component_output_id.foo").is_err());
+
+        // Hyphens are rejected: they would sanitize to underscores, so `foo-bar` and `foo_bar` would otherwise collide
+        // on the same canonical identity.
+        assert!(ComponentId::try_from("dsd-in").is_err());
+        assert!(ComponentId::try_from("foo-bar").is_err());
+
+        // Leading/trailing underscores are rejected: they are trimmed during sanitization, so `_foo`/`foo_` would
+        // otherwise collide with `foo`.
+        assert!(ComponentId::try_from("_foo").is_err());
+        assert!(ComponentId::try_from("foo_").is_err());
+        assert!(ComponentId::try_from("--").is_err());
+    }
+
+    #[test]
+    fn component_id_is_sanitization_fixed_point() {
+        // A ComponentId must be valid if and only if it is already in canonical form -- that is, sanitizing it via
+        // `get_sanitized_name` is a no-op. This is what guarantees distinct component IDs can never collapse to the same
+        // canonical identity across subsystems. If the ComponentId rules and the sanitizer ever drift apart, this test
+        // fails.
+        use crate::runtime::get_sanitized_name;
+
+        let cases = [
+            "component",
+            "component_1",
+            "foo__bar",
+            "a",
+            "0",
+            "dsd-mapper",
+            "foo-bar",
+            "_foo",
+            "foo_",
+            "_foo_",
+            "--",
+            "",
+            "foo.bar",
+            "foo bar",
+            "foo$bar",
+        ];
+
+        for case in cases {
+            let is_valid = ComponentId::try_from(case).is_ok();
+
+            // The empty string is a trivial fixed point of the sanitizer but is not a valid ID, so we require
+            // non-emptiness alongside the fixed-point property.
+            let is_canonical = !case.is_empty() && &*get_sanitized_name(case) == case;
+
+            assert_eq!(
+                is_valid, is_canonical,
+                "ComponentId validity must match the sanitization fixed point for {case:?}: valid={is_valid}, canonical={is_canonical}"
+            );
+        }
     }
 
     #[test]
@@ -365,5 +443,42 @@ mod tests {
         assert!(ComponentOutputId::try_from("too.many.periods").is_err());
         assert!(ComponentOutputId::try_from(".one_side_of_named_output_is_empty").is_err());
         assert!(ComponentOutputId::try_from("one_side_of_named_output_is_empty.").is_err());
+    }
+}
+
+#[cfg(test)]
+mod property_tests {
+    use proptest::prelude::*;
+
+    use super::ComponentId;
+    use crate::runtime::get_sanitized_name;
+
+    proptest! {
+        #[test]
+        fn property_test_component_id_sanitized_name_equality_ascii(s in "[A-Za-z0-9_.\\- ]{0,16}") {
+            // Anti-drift invariant: when a given ASCII string requires no sanitization (`get_sanitized_name(input) ==
+            // input`), we should never fail to parse it as a valid `ComponentId`.
+            //
+            // This tries to ensure that if the parsing rules for `ComponentId` or `get_sanitized_name` change, we will
+            // surface that through this test failing.
+            let is_valid = ComponentId::try_from(s.as_str()).is_ok();
+            let is_canonical = !s.is_empty() && &*get_sanitized_name(&s) == s.as_str();
+            prop_assert_eq!(is_valid, is_canonical, "ComponentId validity must match canonical form for {:?}", s);
+        }
+
+        #[test]
+        fn property_test_valid_component_id_always_canonical(s in ".{0,16}") {
+            // Safety invariant: when a given string (any Unicode string) is accepted as a `ComponentId`, it must
+            // already be canonical, so routing it through the sanitizer is a no-op and two distinct IDs can never
+            // collapse onto the same identity.
+            //
+            // This is a superset of the ASCII-only validation: `get_sanitized_name` is able to sanitize non-ASCII names
+            // into a canonical representation, but only ASCII names are accepted by `ComponentId`, so we only check for
+            // canonical equality if the string was able to be parsed as a `ComponentId` in the first place.
+            if ComponentId::try_from(s.as_str()).is_ok() {
+                prop_assert!(!s.is_empty(), "an accepted ComponentId must be non-empty");
+                prop_assert_eq!(&*get_sanitized_name(&s), s.as_str(), "an accepted ComponentId must already be canonical");
+            }
+        }
     }
 }

@@ -1528,7 +1528,7 @@ mod tests {
         // identical to reference the same entity across subsystems like the health registry, resource accounting, the
         // supervision/process tree, and so on.
 
-        for (topology_name, raw_id) in [("primary", "dsd_in"), ("primary", "dsd-in")] {
+        for (topology_name, raw_id) in [("primary", "dsd_in"), ("secondary", "dsd_agg")] {
             // Calculate the root topology identifier, our component context, and the identifiers for the component.
             let topology_root = topology_identifier(topology_name);
             let component_context = ComponentContext::source(&topology_root, ComponentId::try_from(raw_id).unwrap());
