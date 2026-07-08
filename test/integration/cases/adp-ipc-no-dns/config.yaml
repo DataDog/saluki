@@ -2,7 +2,7 @@
 #
 # The Core Agent IPC endpoint is a literal loopback address (`https://127.0.0.1:<cmd_port>`),
 # so ADP should not need to load `/etc/resolv.conf` just to register with the Core Agent or
-# receive its initial configuration. This test mounts a resolver config with no nameservers to
+# receive its initial configuration. This test clears the resolver config at container startup to
 # reproduce hosts where Hickory cannot load system DNS configuration.
 
 type: integration
@@ -25,7 +25,7 @@ env:
 
 container:
   files:
-    - "resolv.conf:/etc/resolv.conf"
+    - "empty-resolv-conf.sh:/etc/cont-init.d/01-empty-resolv-conf.sh"
   exposed_ports:
     - "58125/udp"
 
