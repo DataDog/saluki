@@ -908,8 +908,7 @@ mod tests {
     use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
         components::ComponentContext,
-        support::SubsystemIdentifier,
-        topology::{interconnect::Dispatcher, ComponentId, OutputName},
+        topology::{interconnect::Dispatcher, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -961,10 +960,7 @@ mod tests {
 
     /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
     fn build_basic_dispatcher() -> (EventsDispatcher, DispatcherReceiver) {
-        let context = ComponentContext::transform(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("test").unwrap(),
-        );
+        let context = ComponentContext::test_transform("test");
         let mut dispatcher = Dispatcher::new(context);
 
         let (buffer_tx, buffer_rx) = mpsc::channel(1);

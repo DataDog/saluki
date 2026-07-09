@@ -19,7 +19,7 @@ otherwise keep hand-rolling the thing it replaces.
   plus a cross-link to `docs/development/testing.md`, and add the `property_test_` CI-load-bearing note plus an
   Antithesis-vs-unit-test disambiguation pointer to `AGENTS.md`'s Gotchas section.
 
-- [ ] **G1 — Expose `ComponentContext` test-util helpers cross-crate + heartbeat/context coverage**
+- [x] **G1 — Expose `ComponentContext` test-util helpers cross-crate + heartbeat/context coverage**
   (`tobz/test-cleanup-componentcontext-test-util`, `test(core)`)
   Foundational: unblocks every later group that constructs a `ComponentContext` in a test.
   - [medium/small] `ComponentContext::test_source`/`test_relay`/`test_decoder`/`test_transform`/`test_encoder`/

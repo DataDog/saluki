@@ -95,6 +95,7 @@ derive-where = { workspace = true }
 proptest = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
 rustls = { workspace = true }
+saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
 tempfile = { workspace = true }

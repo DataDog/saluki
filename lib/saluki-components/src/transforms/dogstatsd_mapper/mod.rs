@@ -407,10 +407,7 @@ mod tests {
 
     use bytesize::ByteSize;
     use saluki_context::{Context, ContextResolverBuilder};
-    use saluki_core::{
-        components::ComponentContext, data_model::event::metric::Metric, support::SubsystemIdentifier,
-        topology::ComponentId,
-    };
+    use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
     use saluki_error::GenericError;
     use serde_json::{json, Value};
 
@@ -426,10 +423,7 @@ mod tests {
     }
 
     fn mapper_with_cache(json_data: Value, cache_size: usize) -> Result<MetricMapper, GenericError> {
-        let context = ComponentContext::transform(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("test_mapper").unwrap(),
-        );
+        let context = ComponentContext::test_transform("test_mapper");
         let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
         let context_string_interner_bytes = ByteSize::kib(64);
         mpc.build(context, context_string_interner_bytes, cache_size)

@@ -163,8 +163,7 @@ mod tests {
             trace::{AttributeValue, Span, Trace},
             Event,
         },
-        support::SubsystemIdentifier,
-        topology::{ComponentId, EventsBuffer},
+        topology::EventsBuffer,
     };
     use stringtheory::MetaString;
 
@@ -213,10 +212,7 @@ mod tests {
     }
 
     fn test_component_context() -> ComponentContext {
-        ComponentContext::transform(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("ottl_transform").unwrap(),
-        )
+        ComponentContext::test_transform("ottl_transform")
     }
 
     async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {
