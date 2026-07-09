@@ -212,7 +212,7 @@ impl RemoteAgentWorkloadMetadataCollector {
 #[async_trait]
 impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
     fn name(&self) -> &'static str {
-        "remote-agent-wmeta"
+        "remote_agent_wmeta"
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {

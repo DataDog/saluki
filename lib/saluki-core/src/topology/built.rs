@@ -584,7 +584,7 @@ fn build_health_handle(
     // Register under the component's canonical identity, so the health registry name is byte-identical to the
     // resource-accounting and process-tree names for the same component. `TopologyReady` derives its match prefix
     // from the same `topology_root` that the identity is built from, so the two stay in sync.
-    let maybe_handle = health_registry.register_component(component_context.identity().to_string());
+    let maybe_handle = health_registry.register_component(&component_context.identity());
 
     match maybe_handle {
         Some(handle) => Ok(handle),

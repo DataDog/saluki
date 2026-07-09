@@ -194,7 +194,7 @@ impl TopologyBlueprint {
             .health_registry
             .clone()
             .expect("health registry must be set before acquiring a topology readiness handle");
-        let component_prefix = format!("{}.", super::topology_identifier(&self.name));
+        let component_root = super::topology_identifier(&self.name);
 
         let (registered_tx, registered_rx) = oneshot::channel();
         self.state_mut().ready_signal = Some(registered_tx);
@@ -202,7 +202,7 @@ impl TopologyBlueprint {
         TopologyReady {
             registered_rx,
             health_registry,
-            component_prefix,
+            component_root,
         }
     }
 
@@ -382,7 +382,7 @@ impl TopologyBlueprint {
 pub struct TopologyReady {
     registered_rx: oneshot::Receiver<()>,
     health_registry: HealthRegistry,
-    component_prefix: String,
+    component_root: SubsystemIdentifier,
 }
 
 impl TopologyReady {
@@ -401,9 +401,7 @@ impl TopologyReady {
         }
 
         // Now wait for all registered topology components to actually become ready.
-        self.health_registry
-            .all_ready_matching(|name| name.starts_with(&self.component_prefix))
-            .await;
+        self.health_registry.all_ready_under(self.component_root).await;
 
         true
     }
@@ -923,6 +921,7 @@ mod tests {
             InitializationError, RestartMode, RestartStrategy, Supervisable, Supervisor, SupervisorError,
             SupervisorFuture,
         },
+        support::SubsystemIdentifier,
         topology::{
             test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
             OutputDefinition,
@@ -1377,7 +1376,7 @@ mod tests {
         // Simulate an unrelated subsystem that has already registered and become ready. A naive readiness check against
         // the shared registry could resolve immediately here, even though the topology hasn't registered anything yet.
         let mut other = health_registry
-            .register_component("env_provider.workload.foo")
+            .register_component(&SubsystemIdentifier::from_dotted("env_provider.workload.foo"))
             .expect("should register component");
         other.mark_ready();
 
@@ -1385,7 +1384,7 @@ mod tests {
         let topology_ready = TopologyReady {
             registered_rx,
             health_registry: health_registry.clone(),
-            component_prefix: "topology.primary.".to_string(),
+            component_root: topology_identifier("primary"),
         };
 
         let mut wait = spawn(topology_ready.wait());
@@ -1396,7 +1395,7 @@ mod tests {
 
         // Now register a topology component (as the topology does when it spawns), but leave it not-ready.
         let mut source = health_registry
-            .register_component("topology.primary.sources.in")
+            .register_component(&SubsystemIdentifier::from_dotted("topology.primary.sources.in"))
             .expect("should register component");
 
         // Fire the registration signal. `wait` advances to the scoped readiness check, which is still pending because
@@ -1417,7 +1416,7 @@ mod tests {
         let topology_ready = TopologyReady {
             registered_rx,
             health_registry,
-            component_prefix: "topology.primary.".to_string(),
+            component_root: topology_identifier("primary"),
         };
 
         // Drop the sender without ever signaling, as happens when the topology is torn down before it registers its

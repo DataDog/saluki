@@ -78,7 +78,7 @@ impl ADPEnvironmentProvider {
 
         let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
             config,
-            component_registry.get_or_create("workload"),
+            provider_component.get_or_create("workload"),
             health_registry,
         )
         .await?;
@@ -106,11 +106,10 @@ impl ADPEnvironmentProvider {
     pub fn wait_for_ready(&self) -> impl Future<Output = ()> + Send + 'static {
         let health_registry = self.health_registry.clone();
         let has_workload_provider = self.workload_provider.is_some();
+        let workload_root = workload::workload_root();
         async move {
             if has_workload_provider {
-                health_registry
-                    .all_ready_matching(|name| name.starts_with(workload::WORKLOAD_HEALTH_PREFIX))
-                    .await;
+                health_registry.all_ready_under(workload_root).await;
             }
         }
     }

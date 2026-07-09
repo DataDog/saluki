@@ -106,7 +106,7 @@ impl RemoteAgentTaggerMetadataCollector {
 #[async_trait]
 impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
     fn name(&self) -> &'static str {
-        "remote-agent-tags"
+        "remote_agent_tags"
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {

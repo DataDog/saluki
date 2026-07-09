@@ -11,6 +11,7 @@ use saluki_core::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuild
 use saluki_core::{
     health::{Health, HealthRegistry},
     runtime::{RestartStrategy, Supervisor},
+    support::SubsystemIdentifier,
 };
 #[cfg(unix)]
 use saluki_env::features::Feature;
@@ -71,11 +72,14 @@ pub struct RemoteAgentWorkloadProvider {
     on_demand_pid_resolver: OnDemandPIDResolver,
 }
 
-/// Common prefix for all health component names registered by the workload provider.
+/// Returns the canonical identifier root shared by every component the workload provider registers.
 ///
-/// This is used both when registering the workload provider's components and when waiting for those components to
-/// become ready (see `ADPEnvironmentProvider::wait_for_ready`), so the two stay in sync.
-pub(crate) const WORKLOAD_HEALTH_PREFIX: &str = "env_provider.workload.";
+/// All of the provider's health and resource-accounting identities descend from this root, and
+/// `ADPEnvironmentProvider::wait_for_ready` matches against it to await the provider's readiness, so registration and
+/// readiness stay in sync by construction.
+pub(crate) fn workload_root() -> SubsystemIdentifier {
+    SubsystemIdentifier::from_segments(["env_provider", "workload"])
+}
 
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration, along with a [`Supervisor`] that
@@ -88,7 +92,7 @@ impl RemoteAgentWorkloadProvider {
     pub async fn from_configuration(
         config: &GenericConfiguration, component_registry: ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
-        let mut component_registry = component_registry.get_or_create("remote-agent");
+        let mut component_registry = component_registry.get_or_create("remote_agent");
         let mut provider_bounds = component_registry.bounds_builder();
 
         // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
@@ -104,15 +108,14 @@ impl RemoteAgentWorkloadProvider {
 
         // Construct our metadata aggregator and any relevant metadata collectors based on the detected features we've
         // been given.
+        let remote_agent_root = workload_root().child("remote_agent");
+        let aggregator_id = remote_agent_root.clone().child("aggregator");
         let aggregator_health = health_registry
-            .register_component(format!("{WORKLOAD_HEALTH_PREFIX}remote_agent.aggregator"))
-            .ok_or_else(|| {
-                generic_error!(
-                    "Component '{WORKLOAD_HEALTH_PREFIX}remote_agent.aggregator' already registered in health registry."
-                )
-            })?;
+            .register_component(&aggregator_id)
+            .ok_or_else(|| generic_error!("Component '{aggregator_id}' already registered in health registry."))?;
         let (mut aggregator, operations_tx) = MetadataAggregator::new(aggregator_health);
 
+        let collectors_root = remote_agent_root.child("collectors");
         let mut collector_bounds = provider_bounds.subcomponent("collectors");
         let mut collector_workers: Vec<MetadataCollectorWorker> = Vec::new();
 
@@ -120,9 +123,13 @@ impl RemoteAgentWorkloadProvider {
         let feature_detector = FeatureDetector::automatic(config);
         #[cfg(unix)]
         if feature_detector.is_feature_available(Feature::Containerd) {
-            let cri_collector = build_collector("containerd", health_registry, &mut collector_bounds, |health| {
-                ContainerdMetadataCollector::from_configuration(config, health, string_interner.clone())
-            })
+            let cri_collector = build_collector(
+                &collectors_root,
+                "containerd",
+                health_registry,
+                &mut collector_bounds,
+                |health| ContainerdMetadataCollector::from_configuration(config, health, string_interner.clone()),
+            )
             .await?;
 
             collector_workers.push(MetadataCollectorWorker::new(cri_collector, operations_tx.clone()));
@@ -131,33 +138,45 @@ impl RemoteAgentWorkloadProvider {
         // Add the cgroups collector if the feature if we're on Linux.
         #[cfg(target_os = "linux")]
         {
-            let cgroups_collector = build_collector("cgroups", health_registry, &mut collector_bounds, |health| {
-                CgroupsMetadataCollector::from_configuration(
-                    config,
-                    feature_detector.clone(),
-                    health,
-                    string_interner.clone(),
-                )
-            })
+            let cgroups_collector = build_collector(
+                &collectors_root,
+                "cgroups",
+                health_registry,
+                &mut collector_bounds,
+                |health| {
+                    CgroupsMetadataCollector::from_configuration(
+                        config,
+                        feature_detector.clone(),
+                        health,
+                        string_interner.clone(),
+                    )
+                },
+            )
             .await?;
 
             collector_workers.push(MetadataCollectorWorker::new(cgroups_collector, operations_tx.clone()));
         }
 
         // Finally, add the Remote Agent collectors: one for the tagger, and one for workloadmeta.
-        let ra_tags_collector =
-            build_collector("remote-agent-tags", health_registry, &mut collector_bounds, |health| {
-                RemoteAgentTaggerMetadataCollector::from_configuration(config, health, string_interner.clone())
-            })
-            .await?;
+        let ra_tags_collector = build_collector(
+            &collectors_root,
+            "remote_agent_tags",
+            health_registry,
+            &mut collector_bounds,
+            |health| RemoteAgentTaggerMetadataCollector::from_configuration(config, health, string_interner.clone()),
+        )
+        .await?;
 
         collector_workers.push(MetadataCollectorWorker::new(ra_tags_collector, operations_tx.clone()));
 
-        let ra_wmeta_collector =
-            build_collector("remote-agent-wmeta", health_registry, &mut collector_bounds, |health| {
-                RemoteAgentWorkloadMetadataCollector::from_configuration(config, health, string_interner.clone())
-            })
-            .await?;
+        let ra_wmeta_collector = build_collector(
+            &collectors_root,
+            "remote_agent_wmeta",
+            health_registry,
+            &mut collector_bounds,
+            |health| RemoteAgentWorkloadMetadataCollector::from_configuration(config, health, string_interner.clone()),
+        )
+        .await?;
 
         collector_workers.push(MetadataCollectorWorker::new(ra_wmeta_collector, operations_tx));
 
@@ -232,23 +251,18 @@ impl CaptureEntityResolver for RemoteAgentWorkloadProvider {
 }
 
 async fn build_collector<F, Fut, O>(
-    collector_name: &str, health_registry: &HealthRegistry, bounds_builder: &mut MemoryBoundsBuilder<'_>, build: F,
+    collectors_root: &SubsystemIdentifier, collector_name: &str, health_registry: &HealthRegistry,
+    bounds_builder: &mut MemoryBoundsBuilder<'_>, build: F,
 ) -> Result<O, GenericError>
 where
     F: FnOnce(Health) -> Fut,
     Fut: Future<Output = Result<O, GenericError>>,
     O: MemoryBounds,
 {
+    let collector_id = collectors_root.clone().child(collector_name);
     let health = health_registry
-        .register_component(format!(
-            "{WORKLOAD_HEALTH_PREFIX}remote_agent.collector.{collector_name}"
-        ))
-        .ok_or_else(|| {
-            generic_error!(
-                "Component '{WORKLOAD_HEALTH_PREFIX}remote_agent.collector.{collector_name}' already registered in \
-                 health registry."
-            )
-        })?;
+        .register_component(&collector_id)
+        .ok_or_else(|| generic_error!("Component '{collector_id}' already registered in health registry."))?;
     let collector = build(health).await?;
     bounds_builder.with_subcomponent(collector_name, &collector);
 
