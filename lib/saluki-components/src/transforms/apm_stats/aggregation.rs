@@ -657,12 +657,13 @@ mod tests {
             meta.insert(MetaString::from("peer.service"), MetaString::from("remote-service"));
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("a", meta, metrics);
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-                let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
-                assert_eq!(agg.bucket_key.service.as_ref(), "a");
-                assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
-                assert_eq!(agg.bucket_key.peer_tags_hash, 0); // disabled
-            }
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("measured span should always produce a stat span");
+            let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
+            assert_eq!(agg.bucket_key.service.as_ref(), "a");
+            assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
+            assert_eq!(agg.bucket_key.peer_tags_hash, 0); // disabled
         }
 
         // peer tags aggregation enabled, span.kind == client
@@ -678,12 +679,13 @@ mod tests {
             meta.insert(MetaString::from("peer.service"), MetaString::from("remote-service"));
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("a", meta, metrics);
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-                let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
-                assert_eq!(agg.bucket_key.service.as_ref(), "a");
-                assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
-                assert_ne!(agg.bucket_key.peer_tags_hash, 0); // enabled and has peer tag
-            }
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("measured span should always produce a stat span");
+            let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
+            assert_eq!(agg.bucket_key.service.as_ref(), "a");
+            assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
+            assert_ne!(agg.bucket_key.peer_tags_hash, 0); // enabled and has peer tag
         }
 
         // peer tags aggregation enabled, span.kind == producer
@@ -699,12 +701,13 @@ mod tests {
             meta.insert(MetaString::from("peer.service"), MetaString::from("remote-service"));
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("a", meta, metrics);
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-                let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
-                assert_eq!(agg.bucket_key.service.as_ref(), "a");
-                assert_eq!(agg.bucket_key.span_kind, SpanKind::Producer);
-                assert_ne!(agg.bucket_key.peer_tags_hash, 0);
-            }
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("measured span should always produce a stat span");
+            let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
+            assert_eq!(agg.bucket_key.service.as_ref(), "a");
+            assert_eq!(agg.bucket_key.span_kind, SpanKind::Producer);
+            assert_ne!(agg.bucket_key.peer_tags_hash, 0);
         }
 
         // peer tags aggregation enabled but all peer tags are empty
@@ -722,12 +725,13 @@ mod tests {
             meta.insert(MetaString::from("db.system"), MetaString::from(""));
             let metrics = with_measured(FastHashMap::default());
             let span = make_span("a", meta, metrics);
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-                let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
-                assert_eq!(agg.bucket_key.service.as_ref(), "a");
-                assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
-                assert_eq!(agg.bucket_key.peer_tags_hash, 0); // empty tags = 0 hash
-            }
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("measured span should always produce a stat span");
+            let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
+            assert_eq!(agg.bucket_key.service.as_ref(), "a");
+            assert_eq!(agg.bucket_key.span_kind, SpanKind::Client);
+            assert_eq!(agg.bucket_key.peer_tags_hash, 0); // empty tags = 0 hash
         }
     }
 
@@ -749,60 +753,30 @@ mod tests {
 
         let concentrator = SpanConcentrator::new(true, true, &peer_tags, 0);
 
-        // client - should have peer tags
-        let span = make_span_with_kind("client");
-        if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-            assert!(!stat_span.matching_peer_tags.is_empty(), "client should have peer tags");
-        }
+        // Peer tags are only aggregated for client/producer/consumer span kinds (case-insensitive); server, internal,
+        // and unspecified kinds must not carry them. Each case unwraps with `.expect(...)` so a regression that makes
+        // `new_stat_span_from_span` return `None` fails loudly instead of silently skipping the assertion.
+        let cases = [
+            ("client", true),
+            ("CLIENT", true),
+            ("producer", true),
+            ("consumer", true),
+            ("server", false),
+            ("internal", false),
+            ("", false),
+        ];
 
-        // CLIENT (uppercase) - should have peer tags
-        let span = make_span_with_kind("CLIENT");
-        if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-            assert!(!stat_span.matching_peer_tags.is_empty(), "CLIENT should have peer tags");
-        }
-
-        // producer - should have peer tags
-        let span = make_span_with_kind("producer");
-        if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-            assert!(
+        for (span_kind, should_have_peer_tags) in cases {
+            let span = make_span_with_kind(span_kind);
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("measured span should always produce a stat span");
+            assert_eq!(
                 !stat_span.matching_peer_tags.is_empty(),
-                "producer should have peer tags"
-            );
-        }
-
-        // consumer - should have peer tags
-        let span = make_span_with_kind("consumer");
-        if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-            assert!(
-                !stat_span.matching_peer_tags.is_empty(),
-                "consumer should have peer tags"
-            );
-        }
-
-        // server - should NOT have peer tags
-        let span = make_span_with_kind("server");
-        if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-            assert!(
-                stat_span.matching_peer_tags.is_empty(),
-                "server should NOT have peer tags"
-            );
-        }
-
-        // internal - should NOT have peer tags (no base_service)
-        let span = make_span_with_kind("internal");
-        if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-            assert!(
-                stat_span.matching_peer_tags.is_empty(),
-                "internal should NOT have peer tags"
-            );
-        }
-
-        // empty - should NOT have peer tags
-        let span = make_span_with_kind("");
-        if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-            assert!(
-                stat_span.matching_peer_tags.is_empty(),
-                "empty span.kind should NOT have peer tags"
+                should_have_peer_tags,
+                "span.kind={:?} peer-tag expectation mismatch (matching_peer_tags={:?})",
+                span_kind,
+                stat_span.matching_peer_tags,
             );
         }
     }
@@ -816,10 +790,11 @@ mod tests {
             let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
             attrs.insert(MetaString::from("_dd.measured"), AV::Float(1.0));
             let span = Span::default().with_parent_id(0).with_attributes(attrs);
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-                let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
-                assert_eq!(agg.bucket_key.is_trace_root, Some(true));
-            }
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("measured span should always produce a stat span");
+            let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
+            assert_eq!(agg.bucket_key.is_trace_root, Some(true));
         }
 
         // Span with parent_id != 0 -> is_trace_root = false
@@ -827,10 +802,11 @@ mod tests {
             let mut attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
             attrs.insert(MetaString::from("_dd.measured"), AV::Float(1.0));
             let span = Span::default().with_parent_id(123).with_attributes(attrs);
-            if let Some(stat_span) = concentrator.new_stat_span_from_span(&span) {
-                let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
-                assert_eq!(agg.bucket_key.is_trace_root, Some(false));
-            }
+            let stat_span = concentrator
+                .new_stat_span_from_span(&span)
+                .expect("measured span should always produce a stat span");
+            let agg = new_aggregation_from_span(&stat_span, "", PayloadAggregationKey::default());
+            assert_eq!(agg.bucket_key.is_trace_root, Some(false));
         }
     }
 }

@@ -161,7 +161,7 @@ otherwise keep hand-rolling the thing it replaces.
     tests in `sources/otlp/metrics/translator.rs` and `cache.rs`, but those are otlp-metrics-translation work and
     were deferred to G13 (noted there) to keep all otlp-metrics test cleanup in one branch rather than splitting it._
 
-- [ ] **G10 — Fix vacuous/weak/tautological assertions and assertion-free proptests repo-wide**
+- [x] **G10 — Fix vacuous/weak/tautological assertions and assertion-free proptests repo-wide**
   (`tobz/test-cleanup-fix-vacuous-assertions-sweep`, `test(repo)`)
   - [medium/small] The only coverage for `ProbabilisticSampler::sample` is a tautological determinism test that
     asserts nothing about correctness.

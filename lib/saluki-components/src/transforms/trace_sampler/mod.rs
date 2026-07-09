@@ -706,14 +706,93 @@ mod tests {
     }
 
     #[test]
-    fn test_probabilistic_sampling_determinism() {
-        let sampler = create_test_sampler();
+    fn test_probabilistic_sampling_known_decisions() {
+        // The bucketed probabilistic sampler is fully deterministic: it hashes the trace ID into one of 0x4000
+        // buckets and keeps the trace when `bucket < (rate * 0x4000)`. These cases pin the exact keep/drop decision
+        // for known trace IDs at known rates, so a regression in the hash, the bucket mask, or the comparison is
+        // caught (a determinism-only check would not catch any of those).
+        //
+        // Expected values were computed directly from the FNV-1a bucket math in `ProbabilisticSampler::sample`
+        // (mirrors datadog-agent/pkg/trace/sampler/probabilistic.go). For reference, the trace IDs below hash to
+        // these buckets (out of 0x4000 = 16384): 0x1234567890ABCDEF -> 1764, 0x0 -> 9301, u64::MAX -> 12365.
+        struct Case {
+            trace_id: u64,
+            rate: f64,
+            expected_keep: bool,
+        }
 
-        // Same trace ID should always produce same decision
+        let cases = [
+            // rate 1.0 keeps every trace (the maximum bucket, 16383, is always below 16384).
+            Case {
+                trace_id: 0x1234567890ABCDEF,
+                rate: 1.0,
+                expected_keep: true,
+            },
+            // rate 0.0 drops every trace (no bucket is below 0).
+            Case {
+                trace_id: 0x1234567890ABCDEF,
+                rate: 0.0,
+                expected_keep: false,
+            },
+            // Same trace ID (bucket 1764) flips from drop to keep as the rate crosses its bucket ratio (~0.108).
+            Case {
+                trace_id: 0x1234567890ABCDEF,
+                rate: 0.10,
+                expected_keep: false,
+            },
+            Case {
+                trace_id: 0x1234567890ABCDEF,
+                rate: 0.20,
+                expected_keep: true,
+            },
+            // Trace ID 0 (bucket 9301) straddles rate 0.5 (scaled bucket 8192) vs 0.6 (scaled bucket 9830).
+            Case {
+                trace_id: 0,
+                rate: 0.50,
+                expected_keep: false,
+            },
+            Case {
+                trace_id: 0,
+                rate: 0.60,
+                expected_keep: true,
+            },
+            // u64::MAX (bucket 12365) straddles rate 0.5 vs 0.8.
+            Case {
+                trace_id: u64::MAX,
+                rate: 0.50,
+                expected_keep: false,
+            },
+            Case {
+                trace_id: u64::MAX,
+                rate: 0.80,
+                expected_keep: true,
+            },
+        ];
+
+        for case in cases {
+            let mut sampler = create_test_sampler();
+            sampler.sampling_rate = case.rate;
+            assert_eq!(
+                sampler.sample_probabilistic(case.trace_id),
+                case.expected_keep,
+                "trace_id={:#018x} rate={}",
+                case.trace_id,
+                case.rate
+            );
+        }
+    }
+
+    #[test]
+    fn test_probabilistic_sampling_is_deterministic() {
+        // Determinism is a documented property of `ProbabilisticSampler::sample` (same trace ID + rate always yields
+        // the same decision). This is intentionally a determinism-only check; correctness is covered by
+        // `test_probabilistic_sampling_known_decisions`.
+        let sampler = create_test_sampler();
         let trace_id = 0x1234567890ABCDEF_u64;
-        let result1 = sampler.sample_probabilistic(trace_id);
-        let result2 = sampler.sample_probabilistic(trace_id);
-        assert_eq!(result1, result2);
+        assert_eq!(
+            sampler.sample_probabilistic(trace_id),
+            sampler.sample_probabilistic(trace_id)
+        );
     }
 
     #[test]

@@ -343,14 +343,30 @@ pub fn filter_metric_tags(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_context::{
         tags::{Tag, TagSet},
         Context, TagSetMutViewState,
     };
-    use saluki_core::data_model::event::metric::Metric;
+    use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
+    use saluki_core::components::{
+        transforms::{TransformBuilder, TransformContext},
+        ComponentContext,
+    };
+    use saluki_core::data_model::event::{
+        metric::{Metric, MetricValues},
+        Event,
+    };
+    use saluki_core::health::HealthRegistry;
+    use saluki_core::runtime::{state::DataspaceRegistry, Supervisor};
+    use saluki_core::topology::interconnect::{Consumer, Dispatcher};
+    use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use serde_json::json;
+    use tokio::runtime::Handle;
+    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -1037,5 +1053,128 @@ mod tests {
         assert_eq!(tag_names(&metric), vec!["env:prod", "host:h1"]);
         assert!(!metric.context().tags().is_modified());
         assert!(!metric.context().origin_tags().is_modified());
+    }
+
+    #[tokio::test]
+    async fn run_loop_enforces_type_guard_and_exercises_context_cache() {
+        // The other tests call `filter_metric_tags` directly; this one drives the real `Transform::run()` loop to
+        // cover two behaviors those can't reach:
+        //   1. the run-loop type guard filters only distribution (sketch) and count metrics, leaving other metric
+        //      types (a gauge here) completely untouched even when a rule matches their name; and
+        //   2. the per-context dedup cache is exercised end-to-end -- the cache is keyed by `Context`, so metrics
+        //      that share a (name, tags) context resolve to a single cache entry, and every metric sharing that
+        //      context is filtered identically (the second and later occurrences take the cache-hit branch).
+
+        let cfg_json = json!({
+            "metric_tag_filterlist": [
+                { "metric_name": "svc.latency", "action": "exclude", "tags": ["host"] }
+            ]
+        });
+        let (config, _sender) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
+        let builder = TagFilterlistConfiguration::from_configuration(&config).expect("config should parse");
+
+        let component_context = ComponentContext::test_transform("tag_filterlist");
+        let transform = builder
+            .build(component_context.clone())
+            .await
+            .expect("tag filterlist should build");
+
+        // Wire a dispatcher whose default output we can drain after the run loop completes.
+        let mut dispatcher = Dispatcher::new(component_context.clone());
+        dispatcher.add_output(OutputName::Default).expect("add default output");
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        dispatcher
+            .attach_sender_to_output(&OutputName::Default, out_tx)
+            .expect("attach default sender");
+
+        // A distribution, a counter, and a gauge that all share the same (name, tags) context, followed by a repeat
+        // of the distribution. The counter and the repeated distribution hit the cache entry created by the first
+        // distribution.
+        let tags = &["host:h1", "env:prod"];
+        let mut input = EventsBuffer::default();
+        for event in [
+            Event::Metric(Metric::distribution(
+                Context::from_static_parts("svc.latency", tags),
+                1.0,
+            )),
+            Event::Metric(Metric::counter(Context::from_static_parts("svc.latency", tags), 1.0)),
+            Event::Metric(Metric::gauge(Context::from_static_parts("svc.latency", tags), 1.0)),
+            Event::Metric(Metric::distribution(
+                Context::from_static_parts("svc.latency", tags),
+                1.0,
+            )),
+        ] {
+            assert!(input.try_push(event).is_none(), "input buffer should have capacity");
+        }
+
+        let (in_tx, in_rx) = mpsc::channel(4);
+        let consumer = Consumer::new(component_context.clone(), in_rx);
+        in_tx.send(input).await.expect("send input buffer");
+        drop(in_tx); // Closing the input makes the run loop terminate deterministically.
+
+        let topology_context = TopologyContext::new(
+            Arc::from("test"),
+            MemoryLimiter::noop(),
+            HealthRegistry::new(),
+            Handle::current(),
+            DataspaceRegistry::new(),
+        );
+        let health = HealthRegistry::new()
+            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
+            .expect("component was not previously registered");
+        let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
+
+        let context = TransformContext::new(
+            &topology_context,
+            &component_context,
+            ComponentRegistry::default(),
+            health,
+            dispatcher,
+            consumer,
+            supervisor_handle,
+        );
+
+        transform.run(context).await.expect("tag filterlist run should succeed");
+
+        let mut dispatched: Vec<Metric> = Vec::new();
+        while let Ok(buffer) = out_rx.try_recv() {
+            for event in buffer {
+                if let Event::Metric(metric) = event {
+                    dispatched.push(metric);
+                }
+            }
+        }
+
+        // Nothing is dropped by the transform; order is preserved.
+        assert_eq!(dispatched.len(), 4, "all four metrics should be dispatched");
+
+        let sorted_tags = |metric: &Metric| {
+            let mut names: Vec<String> = metric
+                .context()
+                .tags()
+                .into_iter()
+                .map(|t| t.as_str().to_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        // Distribution (sketch) -> filtered on the cache-miss path.
+        assert!(dispatched[0].values().is_sketch());
+        assert_eq!(sorted_tags(&dispatched[0]), vec!["env:prod"]);
+        // Counter (count metric) -> filtered via the cache-hit branch (shares the distribution's context entry).
+        assert!(matches!(dispatched[1].values(), MetricValues::Counter(_)));
+        assert_eq!(sorted_tags(&dispatched[1]), vec!["env:prod"]);
+        // Gauge -> NOT a sketch and NOT a counter, so the type guard skips it and it passes through untouched.
+        assert!(!dispatched[2].values().is_sketch());
+        assert!(!matches!(dispatched[2].values(), MetricValues::Counter(_)));
+        assert_eq!(
+            sorted_tags(&dispatched[2]),
+            vec!["env:prod", "host:h1"],
+            "gauge metrics must not be filtered by the type guard"
+        );
+        // Repeated distribution -> filtered via the cache-hit branch, identical to the first distribution.
+        assert!(dispatched[3].values().is_sketch());
+        assert_eq!(sorted_tags(&dispatched[3]), vec!["env:prod"]);
     }
 }
