@@ -92,8 +92,8 @@ impl RemoteAgentWorkloadProvider {
     pub async fn from_configuration(
         config: &GenericConfiguration, component_registry: ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
-        let mut component_registry =
-            component_registry.get_or_create(&SubsystemIdentifier::from_segments(["remote_agent"]));
+        let root_provider_id = workload_root().child("remote_agent");
+        let mut component_registry = component_registry.get_or_create(&root_provider_id);
         let mut provider_bounds = component_registry.bounds_builder();
 
         // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
@@ -109,14 +109,13 @@ impl RemoteAgentWorkloadProvider {
 
         // Construct our metadata aggregator and any relevant metadata collectors based on the detected features we've
         // been given.
-        let remote_agent_root = workload_root().child("remote_agent");
-        let aggregator_id = remote_agent_root.clone().child("aggregator");
+        let aggregator_id = root_provider_id.clone().child("aggregator");
         let aggregator_health = health_registry
             .register_component(&aggregator_id)
             .ok_or_else(|| generic_error!("Component '{aggregator_id}' already registered in health registry."))?;
         let (mut aggregator, operations_tx) = MetadataAggregator::new(aggregator_health);
 
-        let collectors_root = remote_agent_root.child("collectors");
+        let collectors_root = root_provider_id.child("collectors");
         let mut collector_bounds = provider_bounds.subcomponent("collectors");
         let mut collector_workers: Vec<MetadataCollectorWorker> = Vec::new();
 
