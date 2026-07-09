@@ -172,5 +172,4 @@ pub struct ClassifierEntry {
     pub default: DefaultValue,
 }
 
-mod classifier_data;
-use classifier_data::CLASSIFIER_ENTRIES;
+use crate::generated::classifier_data::CLASSIFIER_ENTRIES;

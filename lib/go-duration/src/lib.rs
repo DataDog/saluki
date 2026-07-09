@@ -6,8 +6,9 @@
 //! including the runtime configuration layer and build-time config-schema codegen. This crate is the single owner of
 //! that algorithm so it isn't duplicated in each of those places.
 //!
-//! Only the parsing primitive lives here. Higher-level coercion (for example, viper's "a bare integer is nanoseconds"
-//! fallback) is intentionally left to callers.
+//! Two entry points are provided: [`parse_duration`] accepts only Go's strict `time.ParseDuration` grammar, while
+//! [`parse_duration_or_nanos`] adds viper/cast's coercion where a unit-less bare integer string (for example `"30"`)
+//! is read as that many nanoseconds. Callers that need Agent-compatible configuration coercion should use the latter.
 //!
 //! [go-duration]: https://pkg.go.dev/time#ParseDuration
 //! [viper]: https://github.com/spf13/viper
@@ -19,9 +20,8 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::time::Duration;
 
-/// Maximum number of nanoseconds we accept, matching the Agent's cap: Go's `time.Duration` is an `int64`, so
-/// `i64::MAX` nanoseconds is the largest representable value.
-const MAX_NANOS_U64: u64 = i64::MAX as u64;
+/// Maximum nanosecond value accepted for compatibility with Go's `time.Duration`.
+pub const MAX_DURATION_NANOS: u64 = i64::MAX as u64;
 
 /// Error returned when a duration string can't be parsed.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -159,10 +159,33 @@ pub fn parse_duration(s: &str) -> Result<Duration, ParseDurationError> {
         return Err(ParseDurationError::Negative);
     }
 
-    if total_ns > MAX_NANOS_U64 as u128 {
+    if total_ns > MAX_DURATION_NANOS as u128 {
         return Err(ParseDurationError::Overflow);
     }
     Ok(Duration::from_nanos(total_ns as u64))
+}
+
+/// Parses a duration string the way the Datadog Agent does: first as a strict Go duration via [`parse_duration`],
+/// then as a bare integer count of nanoseconds when the trimmed input contains only an integer. For example, `"30"`
+/// becomes 30 nanoseconds. Surrounding whitespace is ignored.
+///
+/// Use [`parse_duration`] instead when only Go's `time.ParseDuration` grammar should be accepted.
+///
+/// # Errors
+///
+/// Returns [`ParseDurationError`] when the value is neither a Go duration nor a bare integer, is negative, or exceeds
+/// the supported nanosecond range.
+pub fn parse_duration_or_nanos(s: &str) -> Result<Duration, ParseDurationError> {
+    let trimmed = s.trim();
+    match parse_duration(trimmed) {
+        Ok(duration) => Ok(duration),
+        Err(unit_error) => match trimmed.parse::<i128>() {
+            Ok(nanos) if nanos < 0 => Err(ParseDurationError::Negative),
+            Ok(nanos) if nanos > MAX_DURATION_NANOS as i128 => Err(ParseDurationError::Overflow),
+            Ok(nanos) => Ok(Duration::from_nanos(nanos as u64)),
+            Err(_) => Err(unit_error),
+        },
+    }
 }
 
 fn consume_digits(s: &str) -> (&str, &str) {
@@ -268,5 +291,36 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("exceeds"));
+    }
+
+    #[test]
+    fn or_nanos_accepts_go_durations_and_bare_integers() {
+        assert_eq!(parse_duration_or_nanos("10s").unwrap(), 10 * S);
+        assert_eq!(parse_duration_or_nanos("1h30m").unwrap(), H + 30 * M);
+        assert_eq!(parse_duration_or_nanos("30").unwrap(), 30 * NS);
+        assert_eq!(parse_duration_or_nanos("0").unwrap(), Duration::ZERO);
+        // Whitespace around the value is ignored before parsing.
+        assert_eq!(parse_duration_or_nanos("  42  ").unwrap(), 42 * NS);
+        assert_eq!(
+            parse_duration_or_nanos("9223372036854775807").unwrap(),
+            Duration::from_nanos(9_223_372_036_854_775_807)
+        );
+    }
+
+    #[test]
+    fn or_nanos_rejects_negative_overflow_and_gibberish() {
+        assert!(matches!(
+            parse_duration_or_nanos("-5"),
+            Err(ParseDurationError::Negative)
+        ));
+        assert!(matches!(
+            parse_duration_or_nanos("9223372036854775808"),
+            Err(ParseDurationError::Overflow)
+        ));
+        // A value that is neither a Go duration nor a bare integer returns the strict parser's error.
+        assert!(matches!(
+            parse_duration_or_nanos("abc"),
+            Err(ParseDurationError::Invalid { .. })
+        ));
     }
 }
