@@ -268,3 +268,24 @@ fn normalize_endpoint(endpoint: &str) -> String {
         format!("https://{}", endpoint)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_endpoint;
+
+    #[test]
+    fn normalize_endpoint_prepends_https_only_when_scheme_missing() {
+        // Endpoints that already carry an `http://`/`https://` scheme are passed through untouched; anything else
+        // (a bare host:port, as the Core Agent gRPC endpoint is typically configured) gets an `https://` prefix.
+        let cases = [
+            ("http://localhost:4317", "http://localhost:4317"),
+            ("https://api.datadoghq.com:443", "https://api.datadoghq.com:443"),
+            ("localhost:4317", "https://localhost:4317"),
+            ("127.0.0.1:5003", "https://127.0.0.1:5003"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(expected, normalize_endpoint(input), "normalize_endpoint({input:?})");
+        }
+    }
+}
