@@ -446,11 +446,15 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         let v2_endpoint_config = EndpointConfiguration::new(
             v2_compression_scheme,
             self.max_metrics_per_payload,
+            self.max_series_points_per_payload,
             self.additional_tags.clone(),
         );
         let endpoint_config = EndpointConfiguration::new(
             v3_compression_scheme,
             self.max_metrics_per_payload,
+            // Actually enforced by V3PayloadLimits, required for the
+            // constructor shared between V1/V2/V3.
+            usize::MAX,
             self.additional_tags.clone(),
         );
 
@@ -2104,7 +2108,7 @@ serializer_experimental_use_v3_api:
         assert!(combined_request.compressed_len > single_request.compressed_len);
 
         let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
@@ -2129,7 +2133,7 @@ serializer_experimental_use_v3_api:
         ];
         let single_request = create_v3_test_request(&metrics[..1]).await;
         let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let recorder = TestRecorder::default();
         let _local = metrics::set_default_local_recorder(&recorder);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
@@ -2150,7 +2154,7 @@ serializer_experimental_use_v3_api:
         let metrics = vec![Metric::counter("v3.telemetry.item_too_big", 1.0)];
         let request = create_v3_test_request(&metrics).await;
         let limits = V3PayloadLimits::new(request.compressed_len - 1, usize::MAX, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let recorder = TestRecorder::default();
         let _local = metrics::set_default_local_recorder(&recorder);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
@@ -2178,7 +2182,7 @@ serializer_experimental_use_v3_api:
         assert!(combined_request.uncompressed_len > single_request.uncompressed_len);
 
         let limits = V3PayloadLimits::new(usize::MAX, single_request.uncompressed_len, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
@@ -2200,7 +2204,7 @@ serializer_experimental_use_v3_api:
             Metric::counter("v3.points.split.three", 5.0),
         ];
         let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 3);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
@@ -2219,7 +2223,7 @@ serializer_experimental_use_v3_api:
             Metric::counter("v3.telemetry.max_points.two", [(123, 3.0), (124, 4.0)]),
         ];
         let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 2);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let recorder = TestRecorder::default();
         let _local = metrics::set_default_local_recorder(&recorder);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
@@ -2248,7 +2252,7 @@ serializer_experimental_use_v3_api:
             Metric::counter("v3.points.oversized.after", 7.0),
         ];
         let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 3);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let recorder = TestRecorder::default();
         let _local = metrics::set_default_local_recorder(&recorder);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
@@ -2271,7 +2275,7 @@ serializer_experimental_use_v3_api:
             Metric::counter("v3.points.zero.after", 2.0),
         ];
         let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
@@ -2294,7 +2298,7 @@ serializer_experimental_use_v3_api:
         assert!(combined_request.compressed_len > single_request.compressed_len);
 
         let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let batch_id = Uuid::now_v7();
@@ -2360,7 +2364,7 @@ serializer_experimental_use_v3_api:
         assert!(combined_request.compressed_len > single_request.compressed_len);
 
         let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let batch_id = Uuid::now_v7();
@@ -2564,13 +2568,13 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn validation_split_flush_assigns_batch_id_to_carried_metric() {
-        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 1, None);
+        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 1, usize::MAX, None);
         let v2_series_builder = Some(
             v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
                 .await
                 .expect("V2 request builder should be created"),
         );
-        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let metrics_builder = MetricsBuilder::default();
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
@@ -2647,7 +2651,7 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn authoritative_v3_flushes_previous_point_limit_batch() {
-        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let recorder = TestRecorder::default();
         let _local = metrics::set_default_local_recorder(&recorder);
         let metrics_builder = MetricsBuilder::default();
@@ -2728,7 +2732,7 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn authoritative_v3_sketches_flush_previous_point_limit_batch() {
-        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let recorder = TestRecorder::default();
         let _local = metrics::set_default_local_recorder(&recorder);
         let metrics_builder = MetricsBuilder::default();
@@ -2800,13 +2804,13 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn authoritative_v3_does_not_flush_on_v2_boundary() {
-        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 1, None);
+        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 1, usize::MAX, None);
         let v2_series_builder = Some(
             v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
                 .await
                 .expect("V2 request builder should be created"),
         );
-        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let metrics_builder = MetricsBuilder::default();
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
@@ -2881,13 +2885,13 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn shadow_sampled_series_flush_sends_v2_and_v3_beta_with_same_batch_id() {
-        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let v2_series_builder = Some(
             v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
                 .await
                 .expect("V2 request builder should be created"),
         );
-        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let metrics_builder = MetricsBuilder::default();
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
@@ -2961,13 +2965,13 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn shadow_sample_rate_zero_sends_only_v2_without_validation_headers() {
-        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let v2_series_builder = Some(
             v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
                 .await
                 .expect("V2 request builder should be created"),
         );
-        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, None);
+        let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
         let metrics_builder = MetricsBuilder::default();
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
@@ -3037,6 +3041,58 @@ serializer_experimental_use_v3_api:
 
     fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
         tags.into_iter().map(Tag::from_static).collect()
+    }
+
+    // Regression guard for SMPTNG-765.
+    //
+    // Ensures the v2 series builder enforces both payload series/sketch total
+    // limits and point limits within series.
+    #[tokio::test]
+    async fn v2_series_builder_enforces_max_series_points_per_payload() {
+        let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, 10_000, None);
+        let mut builder = v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
+            .await
+            .expect("V2 request builder should be created");
+        builder
+            .with_len_limits(usize::MAX, usize::MAX)
+            .expect("byte limits should be accepted");
+
+        let mut total_points = 0;
+        for i in 0..6_000u32 {
+            let metric = Metric::gauge(
+                Context::from_parts(MetaString::from(format!("g{i}")), TagSet::default()),
+                [(1u64, 1.0), (2u64, 2.0)],
+            );
+            let mut pending = Some(metric);
+            while let Some(metric) = pending.take() {
+                if let Some(returned) = builder.encode(metric).await.expect("encode should not error") {
+                    for request in builder.flush().await {
+                        let (_, points, _) = request.expect("request should build");
+                        assert!(
+                            points <= 10_000,
+                            "payload carried {} points, over the 10000 limit",
+                            points
+                        );
+                        total_points += points;
+                    }
+                    pending = Some(returned);
+                }
+            }
+        }
+        for request in builder.flush().await {
+            let (_, points, _) = request.expect("request should build");
+            assert!(
+                points <= 10_000,
+                "final payload carried {} points, over the 10000 limit",
+                points
+            );
+            total_points += points;
+        }
+
+        assert_eq!(
+            total_points, 12_000,
+            "all points should be emitted across the split payloads"
+        );
     }
 }
 
