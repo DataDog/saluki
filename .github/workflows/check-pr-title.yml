@@ -42,11 +42,13 @@ jobs:
             api
             apm stats
             app
+            autoscaling failover gateway
             blackhole
             buffered incremental
             chained
             checks ipc
             ci
+            cluster agent
             common
             components
             config
@@ -56,6 +58,10 @@ jobs:
             correctness
             datadog
             datadog-agent-commons
+            datadog-agent-config
+            datadog-agent-config-overlay-model
+            datadog-agent-config-testing
+            datadog-agent-metrics-v3
             datadog-intake
             datadog-protos
             ddsketch
@@ -68,6 +74,7 @@ jobs:
             dsd stats
             env
             error
+            go-duration
             heartbeat
             host enrichment
             integration
@@ -76,6 +83,7 @@ jobs:
             metric router
             metrics
             millstone
+            mrf gateway
             o11y
             otlp
             otlp-protos
@@ -84,7 +92,6 @@ jobs:
             process-memory
             prometheus
             prometheus-exposition
-            resource-accounting
             stele
             stringtheory
             test
