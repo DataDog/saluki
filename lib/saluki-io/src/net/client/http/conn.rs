@@ -421,6 +421,7 @@ pub struct HttpsCapableConnectorBuilder {
     bytes_sent: Option<Counter>,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
+    dns_resolution_disabled: bool,
     http_protocol: HttpProtocol,
     #[cfg(unix)]
     unix_socket_path: Option<PathBuf>,
@@ -476,6 +477,18 @@ impl HttpsCapableConnectorBuilder {
         self
     }
 
+    /// Disables DNS resolution for this connector.
+    ///
+    /// This is intended for clients that only use transports or destinations that do not require
+    /// DNS, such as Unix sockets, vsock, or literal-IP TCP endpoints. Hostname-based TCP
+    /// destinations will fail to resolve when this is enabled.
+    ///
+    /// Defaults to enabled.
+    pub fn without_dns_resolution(mut self) -> Self {
+        self.dns_resolution_disabled = true;
+        self
+    }
+
     /// Sets a Unix domain socket path to route all connections through.
     ///
     /// When set, the connector will connect to this Unix socket instead of performing DNS resolution
@@ -514,7 +527,13 @@ impl HttpsCapableConnectorBuilder {
         #[cfg(not(target_os = "linux"))]
         let vsock_only = false;
 
-        let hickory_resolver = if vsock_only {
+        #[cfg(unix)]
+        let unix_socket_only = self.unix_socket_path.is_some();
+        #[cfg(not(unix))]
+        let unix_socket_only = false;
+
+        let dns_resolution_disabled = self.dns_resolution_disabled || vsock_only || unix_socket_only;
+        let hickory_resolver = if dns_resolution_disabled {
             HickoryResolver::noop()
         } else {
             build_dns_resolver(&self.error_telemetry)?
@@ -611,7 +630,7 @@ pub(super) fn check_connection_state(captured_conn: CaptureConnection) {
 
 #[cfg(test)]
 mod tests {
-    use super::{configure_tls_alpn_for_http_protocol, HttpProtocol};
+    use super::{configure_tls_alpn_for_http_protocol, HttpProtocol, HttpsCapableConnectorBuilder};
 
     fn empty_tls_config() -> rustls::ClientConfig {
         rustls::ClientConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
@@ -633,6 +652,14 @@ mod tests {
         let tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Http1);
 
         assert!(tls_config.alpn_protocols.is_empty());
+    }
+
+    #[test]
+    fn connector_builds_without_dns_resolution() {
+        HttpsCapableConnectorBuilder::default()
+            .without_dns_resolution()
+            .build(empty_tls_config())
+            .expect("connector should build with DNS resolution disabled");
     }
 
     // vsock takes priority over unix when both are configured, matching Agent behavior.
