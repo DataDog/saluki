@@ -69,10 +69,6 @@ impl ADPEnvironmentProvider {
         }
 
         // Otherwise, construct our real providers that will interact directly with the Datadog Agent.
-        //
-        // Each provider's component registry node is created in a single call from the root registry using its
-        // canonical subsystem identifier, rather than by chaining relative `get_or_create` calls to synthesize the
-        // intermediate scopes. The tree de-duplicates the shared `env_provider` prefix.
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
         let host_provider = RemoteAgentHostProvider::from_configuration(config).await?;
