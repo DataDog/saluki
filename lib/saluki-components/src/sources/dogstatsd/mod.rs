@@ -19,7 +19,6 @@ use std::{
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
     task::spawn_traced_named,
@@ -30,6 +29,7 @@ use saluki_context::{
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
 };
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::data_model::event::{
     eventd::EventD,
     metric::{Metric, MetricMetadata, MetricOrigin},

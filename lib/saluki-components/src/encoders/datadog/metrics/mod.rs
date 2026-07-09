@@ -5,7 +5,6 @@ use ddsketch::DDSketch;
 use facet::Facet;
 use http::{HeaderValue, Method, Request};
 use protobuf::{rt::WireType, CodedOutputStream};
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{
     buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
     iter::ReusableDeduplicator,
@@ -13,6 +12,7 @@ use saluki_common::{
 };
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, Tag};
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
     data_model::{

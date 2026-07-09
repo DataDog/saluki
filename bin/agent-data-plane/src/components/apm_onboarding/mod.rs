@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{
     collections::{FastHashSet, PrehashedHashMap},
     strings::unsigned_integer_to_string,
 };
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::trace::{AttributeValue, Span, Trace},

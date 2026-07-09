@@ -5,7 +5,7 @@
 //! unit tests in the crate would theoretically be a fine place to put this, we're simply being extra sure about the
 //! cleanliness of the environment for this test.
 
-use resource_accounting::ResourceGroupRegistry;
+use saluki_common::resource_tracking::ResourceGroupRegistry;
 
 #[test]
 fn detects_allocator_not_installed() {

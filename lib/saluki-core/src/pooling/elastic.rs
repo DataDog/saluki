@@ -14,7 +14,7 @@ use std::{
 };
 
 use pin_project::pin_project;
-use resource_accounting::ResourceGroupToken;
+use saluki_common::resource_tracking::ResourceGroupToken;
 use tokio::{
     sync::{futures::OwnedNotified, Notify, OwnedSemaphorePermit, Semaphore, SemaphorePermit},
     time::sleep,

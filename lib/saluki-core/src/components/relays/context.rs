@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use resource_accounting::ComponentRegistry;
 use saluki_common::sync::shutdown::ShutdownHandle;
 
+use crate::accounting::ComponentRegistry;
 use crate::health::Health;
 use crate::runtime::SupervisorHandle;
 use crate::{

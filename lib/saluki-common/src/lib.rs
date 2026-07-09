@@ -5,6 +5,7 @@ pub mod deser;
 pub mod hash;
 pub mod iter;
 pub mod rate;
+pub mod resource_tracking;
 pub mod scrubber;
 pub mod strings;
 pub mod sync;

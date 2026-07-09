@@ -1,5 +1,4 @@
-use resource_accounting::ComponentRegistry;
-
+use crate::accounting::ComponentRegistry;
 use crate::health::Health;
 use crate::runtime::SupervisorHandle;
 use crate::{

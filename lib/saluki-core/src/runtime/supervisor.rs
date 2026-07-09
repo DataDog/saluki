@@ -660,7 +660,7 @@ impl SupervisorHandle {
 /// # Instrumentation
 ///
 /// Supervisors automatically create their own allocation group
-/// ([`TrackingAllocator`][resource_accounting::TrackingAllocator]), which is used to track both the memory usage of the
+/// ([`TrackingAllocator`][saluki_common::resource_tracking::TrackingAllocator]), which is used to track both the memory usage of the
 /// supervisor itself and its children. Additionally, individual worker processes are wrapped in a dedicated
 /// [`tracing::Span`] to allow tracing the causal relationship between arbitrary code and the worker executing it.
 ///

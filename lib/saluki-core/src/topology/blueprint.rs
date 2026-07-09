@@ -1,7 +1,7 @@
 use std::{collections::HashMap, future::Future, num::NonZeroUsize, pin::Pin, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
-use resource_accounting::{ComponentRegistry, MemoryLimiter, Track as _, UsageExpr};
+use saluki_common::resource_tracking::Track as _;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
@@ -13,6 +13,7 @@ use super::{
     graph::{Graph, GraphError},
     ComponentId,
 };
+use crate::accounting::{ComponentRegistry, MemoryLimiter, UsageExpr};
 use crate::{
     components::{
         decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
@@ -902,12 +903,12 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use async_trait::async_trait;
-    use resource_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
     use saluki_common::sync::shutdown::ShutdownHandle;
     use saluki_error::GenericError;
     use tokio::sync::oneshot;
 
     use super::{TopologyBlueprint, TopologyReady};
+    use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
     use crate::runtime::Name;
     use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
     use crate::{

@@ -24,7 +24,6 @@ iana-time-zone = { workspace = true }
 itoa = { workspace = true }
 metrics = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
-resource-accounting = { workspace = true }
 rustls = { workspace = true, features = ["tls12"] }
 rustls-pki-types = { workspace = true }
 ryu = { workspace = true }

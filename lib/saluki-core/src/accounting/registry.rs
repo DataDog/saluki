@@ -4,10 +4,11 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use crate::UsageExpr;
-use crate::{
-    api::ResourceAPIHandler, BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, ResourceGroupRegistry,
-    ResourceGroupToken, VerifiedBounds, VerifierError,
+use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceGroupToken};
+
+use super::{
+    api::ResourceAPIHandler, BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, UsageExpr, VerifiedBounds,
+    VerifierError,
 };
 
 pub(crate) struct ComponentMetadata {
@@ -124,7 +125,7 @@ impl ComponentMetadata {
 /// A registry for components for tracking memory bounds and runtime memory usage.
 ///
 /// This registry provides a unified interface for declaring the memory bounds of a _component_, as well as registering
-/// that component for runtime memory usage tracking when using the tracking allocator implementation in `resource-accounting`.
+/// that component for runtime memory usage tracking when using the tracking allocator implementation in `saluki-common`.
 ///
 /// ## Components
 ///
@@ -270,7 +271,7 @@ impl ComponentRegistryHandle {
     pub fn memory_snapshot_json(&self) -> String {
         use std::collections::BTreeMap;
 
-        use crate::{ResourceGroupRegistry, ResourceStatsSnapshot};
+        use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStatsSnapshot};
 
         #[derive(serde::Serialize)]
         struct ComponentUsage {

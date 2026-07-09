@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use resource_accounting::MemoryLimiter;
 use tokio::runtime::Handle;
 
+use crate::accounting::MemoryLimiter;
 use crate::health::HealthRegistry;
 use crate::runtime::state::DataspaceRegistry;
 

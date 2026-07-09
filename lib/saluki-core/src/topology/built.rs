@@ -1,9 +1,11 @@
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use resource_accounting::{ComponentRegistry, MemoryLimiter, ResourceGroupToken};
+use saluki_common::resource_tracking::ResourceGroupToken;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tokio::{runtime::Handle, sync::mpsc};
 use tracing::debug;
+
+use crate::accounting::{ComponentRegistry, MemoryLimiter};
 
 /// Period over which the topology supervisor's restart intensity is measured.
 ///

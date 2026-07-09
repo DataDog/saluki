@@ -7,12 +7,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use regex::Regex;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},

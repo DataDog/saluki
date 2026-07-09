@@ -25,7 +25,6 @@ const FIRST_PARTY_LOG_TARGETS: &[&str] = &[
     "datadog_protos",
     "datadog_agent_commons",
     "ddsketch",
-    "resource_accounting",
     "otlp_protos",
     "ottl",
     "process_memory",

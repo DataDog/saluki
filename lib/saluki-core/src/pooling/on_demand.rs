@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use resource_accounting::ResourceGroupToken;
+use saluki_common::resource_tracking::ResourceGroupToken;
 
 use super::{Clearable, ObjectPool, PoolMetrics, Poolable, ReclaimStrategy};
 

@@ -11,11 +11,11 @@ use datadog_protos::checks::{
     service_check::{ServiceCheck as ProtoServiceCheck, Status as ServiceCheckStatus},
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
 use saluki_core::data_model::event::log::Log;
 use saluki_core::data_model::event::metric::Metric;

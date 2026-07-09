@@ -1,9 +1,9 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use arc_swap::ArcSwap;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastHashSet, FastIndexMap};
 use saluki_context::origin::{ExternalData, RawExternalData};
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_metrics::static_metrics;
 use tracing::{debug, trace};
 

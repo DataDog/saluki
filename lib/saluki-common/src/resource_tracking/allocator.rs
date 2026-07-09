@@ -6,7 +6,7 @@
 
 use std::alloc::{GlobalAlloc, Layout};
 
-use crate::{groups::CURRENT_GROUP, ResourceStats};
+use super::{groups::CURRENT_GROUP, stats::ResourceStats};
 
 const STATS_LAYOUT: Layout = Layout::new::<*const ResourceStats>();
 

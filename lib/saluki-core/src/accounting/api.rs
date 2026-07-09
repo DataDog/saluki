@@ -9,9 +9,10 @@ use saluki_api::{
     routing::{get, Router},
     APIHandler,
 };
+use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStatsSnapshot};
 use serde::Serialize;
 
-use crate::{registry::ComponentMetadata, ResourceGroupRegistry, ResourceStatsSnapshot};
+use super::registry::ComponentMetadata;
 
 #[derive(Serialize)]
 struct ComponentUsage {

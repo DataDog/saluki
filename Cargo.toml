@@ -21,7 +21,6 @@ members = [
   "lib/protos/containerd",
   "lib/protos/datadog",
   "lib/protos/otlp",
-  "lib/resource-accounting",
   "lib/saluki-antithesis",
   "lib/saluki-api",
   "lib/saluki-app",
@@ -62,7 +61,6 @@ datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
 go-duration = { path = "lib/go-duration" }
-resource-accounting = { path = "lib/resource-accounting" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }
 saluki-antithesis = { path = "lib/saluki-antithesis" }

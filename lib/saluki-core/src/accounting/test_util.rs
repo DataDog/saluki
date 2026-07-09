@@ -1,6 +1,6 @@
 //! Test-specific helpers.
 
-use crate::{ComponentBounds, MemoryBounds, MemoryBoundsBuilder};
+use super::{ComponentBounds, MemoryBounds, MemoryBoundsBuilder};
 
 /// A generic component mock that can have its bounds configured.
 #[derive(Debug)]

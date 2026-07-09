@@ -9,6 +9,7 @@ pub mod reexport {
     pub use pastey::paste;
 }
 
+pub mod accounting;
 pub mod components;
 pub mod constants;
 pub mod data_model;

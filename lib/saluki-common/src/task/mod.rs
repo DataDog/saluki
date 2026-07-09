@@ -2,12 +2,13 @@
 
 use std::future::Future;
 
-use resource_accounting::Track as _;
 use tokio::{
     runtime::Handle,
     task::{AbortHandle, JoinHandle, JoinSet},
 };
 use tracing::Instrument as _;
+
+use crate::resource_tracking::Track as _;
 
 mod instrument;
 use self::instrument::TaskInstrument as _;
