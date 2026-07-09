@@ -174,6 +174,9 @@ pub(super) struct Metrics {
     connections_active: Gauge,
     packet_receive_success: Counter,
     packet_receive_failure: Counter,
+    datagram_queue_depth: Gauge,
+    datagram_queue_capacity: Gauge,
+    datagram_queue_blocking_latency: Histogram,
     packets_forwarded: Counter,
     bytes_forwarded: Counter,
     packet_forwarding_errors: Counter,
@@ -247,6 +250,18 @@ impl Metrics {
         &self.packet_receive_failure
     }
 
+    pub(super) fn datagram_queue_depth(&self) -> &Gauge {
+        &self.datagram_queue_depth
+    }
+
+    pub(super) fn datagram_queue_capacity(&self) -> &Gauge {
+        &self.datagram_queue_capacity
+    }
+
+    pub(super) fn datagram_queue_blocking_latency(&self) -> &Histogram {
+        &self.datagram_queue_blocking_latency
+    }
+
     pub(super) fn packets_forwarded(&self) -> &Counter {
         &self.packets_forwarded
     }
@@ -317,6 +332,14 @@ pub(super) fn build_metrics(
         packet_receive_failure: builder.register_counter_with_tags(
             "component_packets_received_total",
             [("listener_type", listener_type), ("state", "error")],
+        ),
+        datagram_queue_depth: builder
+            .register_gauge_with_tags("component_datagram_queue_depth", [("listener_type", listener_type)]),
+        datagram_queue_capacity: builder
+            .register_gauge_with_tags("component_datagram_queue_capacity", [("listener_type", listener_type)]),
+        datagram_queue_blocking_latency: builder.register_trace_histogram_with_tags(
+            "component_datagram_queue_blocking_latency",
+            [("listener_type", listener_type)],
         ),
         packets_forwarded: builder.register_counter_with_tags(
             "component_packets_forwarded_total",

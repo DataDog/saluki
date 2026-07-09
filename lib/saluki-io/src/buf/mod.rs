@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use bytes::{Buf, BufMut, Bytes};
 
 mod vec;
-pub use self::vec::{BytesBuffer, FixedSizeVec};
+pub use self::vec::{BytesBuffer, FixedSizeVec, FrozenBytesBuffer};
 
 /// An I/O buffer that can be read from.
 pub trait ReadIoBuffer: Buf {
@@ -19,6 +19,12 @@ impl ReadIoBuffer for &[u8] {
 impl ReadIoBuffer for Bytes {
     fn capacity(&self) -> usize {
         self.len()
+    }
+}
+
+impl ReadIoBuffer for FrozenBytesBuffer {
+    fn capacity(&self) -> usize {
+        self.capacity()
     }
 }
 

@@ -137,6 +137,9 @@ fn prune(properties: &Map<String, Value>, prefix: &str, supported: &HashSet<Stri
             let mut leaf = Map::new();
             for keyword in LEAF_KEYWORDS {
                 if let Some(value) = node.get(*keyword) {
+                    if should_skip_invalid_duration_default(keyword, node, value) {
+                        continue;
+                    }
                     leaf.insert((*keyword).to_string(), value.clone());
                 }
             }
@@ -145,6 +148,13 @@ fn prune(properties: &Map<String, Value>, prefix: &str, supported: &HashSet<Stri
     }
 
     out
+}
+
+fn should_skip_invalid_duration_default(keyword: &str, node: &Value, value: &Value) -> bool {
+    keyword == "default"
+        && matches!(node.get("type"), Some(Value::String(schema_type)) if schema_type == "number")
+        && matches!(node.get("format"), Some(Value::String(format)) if format == "duration")
+        && value.is_string()
 }
 
 /// Run typify over the pruned schema and pretty-print the generated module body.

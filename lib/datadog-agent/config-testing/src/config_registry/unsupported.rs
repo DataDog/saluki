@@ -368,28 +368,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `dogstatsd_packet_buffer_flush_timeout`-Packet buffer flush timeout
-    DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_PACKET_BUFFER_FLUSH_TIMEOUT,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `dogstatsd_packet_buffer_size`-Datagrams per packet buffer
-    DOGSTATSD_PACKET_BUFFER_SIZE = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_PACKET_BUFFER_SIZE,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `dogstatsd_pipeline_autoadjust`-Auto-adjust pipeline workers
     DOGSTATSD_PIPELINE_AUTOADJUST = SalukiAnnotation {
         schema: &schema::DOGSTATSD_PIPELINE_AUTOADJUST,
@@ -404,28 +382,6 @@ crate::declare_annotations! {
     /// `dogstatsd_pipeline_count`-Parallel processing pipelines
     DOGSTATSD_PIPELINE_COUNT = SalukiAnnotation {
         schema: &schema::DOGSTATSD_PIPELINE_COUNT,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `dogstatsd_queue_size`-Packet channel buffer size
-    DOGSTATSD_QUEUE_SIZE = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_QUEUE_SIZE,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `dogstatsd_workers_count`-Number of DSD processing workers
-    DOGSTATSD_WORKERS_COUNT = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_WORKERS_COUNT,
         support_level: SupportLevel::Incompatible(Severity::Low),
         additional_yaml_paths: &[],
         env_var_override: None,

@@ -12,19 +12,23 @@ use std::{
     num::NonZeroUsize,
     path::PathBuf,
     pin::Pin,
-    sync::{Arc, LazyLock},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, LazyLock, Mutex,
+    },
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr};
 use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
     task::spawn_traced_named,
 };
-use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
+use saluki_config::{deserialize_space_separated_or_seq, DurationString, GenericConfiguration};
 use saluki_context::{
     origin::RawOrigin,
     tags::{RawTags, RawTagsFilter},
@@ -38,13 +42,13 @@ use saluki_core::data_model::event::{
 };
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    pooling::ElasticObjectPool,
+    pooling::{ElasticObjectPool, ObjectPool as _},
     topology::{interconnect::EventBufferManager, EventsBuffer, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
-    buf::{BytesBuffer, ClearableIoBuffer as _, FixedSizeVec},
+    buf::{BytesBuffer, ClearableIoBuffer as _, FixedSizeVec, FrozenBytesBuffer},
     deser::{
         codec::dogstatsd::*,
         framing::{Framer as _, FramingError, LengthDelimitedFramer},
@@ -60,7 +64,8 @@ use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
-    time::{interval, MissedTickBehavior},
+    sync::{Notify, OwnedSemaphorePermit, Semaphore},
+    time::{interval, timeout, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -122,6 +127,12 @@ enum Error {
 ///
 /// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
 const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
+const DATAGRAM_PACKET_POOL_NAME: &str = "dsd_datagram_packet_bufs";
+const DATAGRAM_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const DATAGRAM_SHUTDOWN_QUEUE_SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const DOGSTATSD_EVENT_BUFFER_CAPACITY: usize = 1024;
+const DOGSTATSD_EVENT_BUFFER_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+const MIN_AUTO_DATAGRAM_WORKERS: usize = 2;
 
 const fn default_buffer_size() -> usize {
     8192
@@ -133,6 +144,22 @@ const fn default_buffer_count() -> usize {
 
 const fn default_buffer_count_max() -> usize {
     256
+}
+
+const fn default_queue_size() -> usize {
+    1024
+}
+
+const fn default_packet_buffer_size() -> usize {
+    32
+}
+
+const fn default_packet_buffer_flush_timeout() -> DurationString {
+    DurationString::new(Duration::from_millis(100))
+}
+
+const fn default_workers_count() -> usize {
+    0
 }
 
 const fn default_port() -> u16 {
@@ -308,6 +335,47 @@ pub struct DogStatsDConfiguration {
     /// Defaults to 256, or `dogstatsd_buffer_count` if that is larger.
     #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
     buffer_count_max: usize,
+
+    /// The number of UDS datagram packet batches that can wait for parsing.
+    ///
+    /// This queue decouples UDS datagram socket draining from DogStatsD parsing and dispatch. When the queue is full,
+    /// the socket drain task blocks until workers make room, matching Core Agent backpressure behavior. This currently
+    /// applies only to UDS datagram listeners.
+    ///
+    /// Defaults to 1024.
+    #[serde(rename = "dogstatsd_queue_size", default = "default_queue_size")]
+    queue_size: usize,
+
+    /// The number of UDS datagrams held in each queued pre-parse packet batch.
+    ///
+    /// Full batches flush immediately. Partial batches flush after `dogstatsd_packet_buffer_flush_timeout`. This
+    /// currently applies only to UDS datagram listeners.
+    ///
+    /// Defaults to 32.
+    #[serde(rename = "dogstatsd_packet_buffer_size", default = "default_packet_buffer_size")]
+    packet_buffer_size: usize,
+
+    /// The maximum age of a partial UDS datagram packet batch before it is sent to parser workers.
+    ///
+    /// This bounds latency during low-volume traffic when a batch does not reach `dogstatsd_packet_buffer_size`. This
+    /// currently applies only to UDS datagram listeners.
+    ///
+    /// Defaults to 100 ms.
+    #[serde(
+        rename = "dogstatsd_packet_buffer_flush_timeout",
+        default = "default_packet_buffer_flush_timeout"
+    )]
+    packet_buffer_flush_timeout: DurationString,
+
+    /// The number of UDS datagram parser workers.
+    ///
+    /// If set to `0`, ADP chooses a conservative automatic worker count based on available vCPUs, with a minimum of 2.
+    /// Set this to `1` when strict cross-batch processing order is required. This currently applies only to UDS
+    /// datagram listeners.
+    ///
+    /// Defaults to 0.
+    #[serde(rename = "dogstatsd_workers_count", default = "default_workers_count")]
+    workers_count: usize,
 
     /// The port to listen on in UDP mode.
     ///
@@ -785,6 +853,56 @@ impl DogStatsDConfiguration {
         self.buffer_count_max.max(self.buffer_count)
     }
 
+    fn has_uds_datagram_listener(&self) -> bool {
+        self.socket_path.is_some()
+    }
+
+    fn effective_queue_size(&self) -> usize {
+        self.queue_size.max(1)
+    }
+
+    fn effective_packet_buffer_size(&self) -> usize {
+        self.packet_buffer_size.max(1)
+    }
+
+    fn effective_packet_buffer_flush_timeout(&self) -> Duration {
+        self.packet_buffer_flush_timeout
+            .as_duration()
+            .max(Duration::from_millis(1))
+    }
+
+    fn effective_datagram_worker_count(&self) -> usize {
+        if self.workers_count != 0 {
+            return self.workers_count;
+        }
+
+        thread::available_parallelism()
+            .map(NonZeroUsize::get)
+            .unwrap_or(MIN_AUTO_DATAGRAM_WORKERS)
+            .saturating_sub(2)
+            .max(MIN_AUTO_DATAGRAM_WORKERS)
+    }
+
+    fn max_in_flight_datagram_packets(&self) -> usize {
+        let packet_buffer_size = self.effective_packet_buffer_size();
+        self.effective_queue_size()
+            .saturating_mul(packet_buffer_size)
+            .saturating_add(packet_buffer_size)
+            .saturating_add(
+                self.effective_datagram_worker_count()
+                    .saturating_mul(packet_buffer_size),
+            )
+    }
+
+    fn datagram_packet_pool_min_capacity(&self) -> usize {
+        let packet_buffer_size = self.effective_packet_buffer_size();
+        let worker_and_drain_buffers = self
+            .effective_datagram_worker_count()
+            .saturating_add(1)
+            .saturating_mul(packet_buffer_size);
+        worker_and_drain_buffers.min(self.max_in_flight_datagram_packets())
+    }
+
     /// Sets the default hostname used when DogStatsD metrics do not carry an explicit `host:` tag.
     pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
         self.default_hostname = hostname.into();
@@ -1025,11 +1143,37 @@ impl SourceBuilder for DogStatsDConfiguration {
         // capacity instead of being silently reduced to the `dogstatsd_buffer_count_max` default.
         let (io_buffer_pool, io_buffer_pool_shrinker) =
             build_io_buffer_pool(self.buffer_count, max_buffers, self.buffer_size);
+        let has_uds_datagram_listener = listeners
+            .iter()
+            .any(|listener| matches!(listener.listen_address(), ListenAddress::Unixgram(_)));
+        let datagram_packet_batch_size = self.effective_packet_buffer_size();
+        let datagram_queue_size = self.effective_queue_size();
+        let datagram_worker_count = self.effective_datagram_worker_count();
+        let datagram_packet_batch_flush_timeout = self.effective_packet_buffer_flush_timeout();
+        let (datagram_packet_buffer_pool, datagram_packet_buffer_pool_shrinker): (
+            Option<ElasticObjectPool<BytesBuffer>>,
+            Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+        ) = if has_uds_datagram_listener {
+            let (pool, shrinker) = build_datagram_packet_buffer_pool(
+                self.datagram_packet_pool_min_capacity(),
+                self.max_in_flight_datagram_packets(),
+                self.buffer_size,
+            );
+            (Some(pool), Some(Box::pin(shrinker)))
+        } else {
+            (None, None)
+        };
 
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool,
             io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
+            datagram_packet_buffer_pool,
+            datagram_packet_buffer_pool_shrinker,
+            datagram_queue_size,
+            datagram_packet_batch_size,
+            datagram_packet_batch_flush_timeout,
+            datagram_worker_count,
             codec,
             context_resolvers,
             default_hostname: self.default_hostname.clone(),
@@ -1086,6 +1230,17 @@ impl MemoryBounds for DogStatsDConfiguration {
             UsageExpr::constant("dogstatsd_buffer_count_max_extra", additional_buffers),
             UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
         ));
+
+        if self.has_uds_datagram_listener() {
+            builder.firm().with_expr(UsageExpr::product(
+                "datagram packet buffers",
+                UsageExpr::constant(
+                    "dogstatsd_datagram_max_in_flight_packets",
+                    self.max_in_flight_datagram_packets(),
+                ),
+                UsageExpr::config("dogstatsd_buffer_size", adjusted_buffer_size),
+            ));
+        }
     }
 }
 
@@ -1094,6 +1249,12 @@ pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>,
+    datagram_packet_buffer_pool: Option<ElasticObjectPool<BytesBuffer>>,
+    datagram_packet_buffer_pool_shrinker: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
+    datagram_queue_size: usize,
+    datagram_packet_batch_size: usize,
+    datagram_packet_batch_flush_timeout: Duration,
+    datagram_worker_count: usize,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     default_hostname: MetaString,
@@ -1113,6 +1274,11 @@ struct ListenerContext {
     shutdown_handle: ShutdownHandle,
     listener: Listener,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
+    datagram_packet_buffer_pool: Option<ElasticObjectPool<BytesBuffer>>,
+    datagram_queue_size: usize,
+    datagram_packet_batch_size: usize,
+    datagram_packet_batch_flush_timeout: Duration,
+    datagram_worker_count: usize,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     default_hostname: MetaString,
@@ -1130,6 +1296,7 @@ struct ListenerContext {
 struct HandlerContext {
     listen_addr: ListenAddress,
     framer: DsdFramer,
+    eol_required: bool,
     codec: DogStatsDCodec,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     metrics: Metrics,
@@ -1137,6 +1304,165 @@ struct HandlerContext {
     default_hostname: MetaString,
     origin_detection_enabled: bool,
     stream_log_too_big: bool,
+    disable_verbose_logs: bool,
+    additional_tags: Arc<[String]>,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    traffic_capture: TrafficCapture,
+    packet_forwarder: Option<PacketForwarder>,
+}
+
+#[derive(Clone, Copy)]
+struct DatagramQueueConfig {
+    queue_size: usize,
+    packet_batch_size: usize,
+    packet_batch_flush_timeout: Duration,
+    worker_count: usize,
+}
+
+struct DatagramPacket {
+    payload: FrozenBytesBuffer,
+    peer_addr: ConnectionAddress,
+}
+
+type DatagramPacketBatch = Vec<DatagramPacket>;
+type DsdEventBufferManager = EventBufferManager<DOGSTATSD_EVENT_BUFFER_CAPACITY>;
+
+struct QueuedDatagramPacketBatch {
+    batch: DatagramPacketBatch,
+    _permit: OwnedSemaphorePermit,
+}
+
+struct DatagramPacketQueueState {
+    batches: VecDeque<QueuedDatagramPacketBatch>,
+    closed: bool,
+}
+
+struct DatagramPacketQueueInner {
+    state: Mutex<DatagramPacketQueueState>,
+    available: Arc<Semaphore>,
+    notify: Notify,
+    queue_depth: AtomicUsize,
+    queue_capacity: usize,
+}
+
+struct DatagramPacketQueueSender {
+    inner: Arc<DatagramPacketQueueInner>,
+}
+
+impl DatagramPacketQueueSender {
+    fn new(queue_capacity: usize) -> (Self, DatagramPacketQueueReceiver) {
+        let inner = Arc::new(DatagramPacketQueueInner {
+            state: Mutex::new(DatagramPacketQueueState {
+                batches: VecDeque::with_capacity(queue_capacity),
+                closed: false,
+            }),
+            available: Arc::new(Semaphore::new(queue_capacity)),
+            notify: Notify::new(),
+            queue_depth: AtomicUsize::new(0),
+            queue_capacity,
+        });
+
+        (
+            Self {
+                inner: Arc::clone(&inner),
+            },
+            DatagramPacketQueueReceiver { inner },
+        )
+    }
+
+    async fn send(&self, batch: DatagramPacketBatch) -> Result<(), DatagramPacketBatch> {
+        if self.is_closed() {
+            return Err(batch);
+        }
+
+        let permit = match Arc::clone(&self.inner.available).acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => return Err(batch),
+        };
+
+        let mut state = self.inner.state.lock().expect("datagram packet queue mutex poisoned");
+        if state.closed {
+            return Err(batch);
+        }
+
+        state
+            .batches
+            .push_back(QueuedDatagramPacketBatch { batch, _permit: permit });
+        self.inner.queue_depth.fetch_add(1, Ordering::Relaxed);
+        drop(state);
+
+        self.inner.notify.notify_one();
+        Ok(())
+    }
+
+    fn depth(&self) -> usize {
+        self.inner.queue_depth.load(Ordering::Relaxed)
+    }
+
+    fn capacity(&self) -> usize {
+        self.inner.queue_capacity
+    }
+
+    fn close(&self) {
+        let mut state = self.inner.state.lock().expect("datagram packet queue mutex poisoned");
+        state.closed = true;
+        drop(state);
+
+        self.inner.notify.notify_waiters();
+    }
+
+    fn is_closed(&self) -> bool {
+        let state = self.inner.state.lock().expect("datagram packet queue mutex poisoned");
+        state.closed
+    }
+}
+
+impl Drop for DatagramPacketQueueSender {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+#[derive(Clone)]
+struct DatagramPacketQueueReceiver {
+    inner: Arc<DatagramPacketQueueInner>,
+}
+
+impl DatagramPacketQueueReceiver {
+    async fn recv(&self) -> Option<DatagramPacketBatch> {
+        loop {
+            let notified = self.inner.notify.notified();
+            {
+                let mut state = self.inner.state.lock().expect("datagram packet queue mutex poisoned");
+                match state.batches.pop_front() {
+                    Some(queued) => {
+                        self.inner.queue_depth.fetch_sub(1, Ordering::Relaxed);
+                        let QueuedDatagramPacketBatch { batch, _permit } = queued;
+                        return Some(batch);
+                    }
+                    None if state.closed => return None,
+                    None => {}
+                }
+            }
+
+            notified.await;
+        }
+    }
+
+    fn depth(&self) -> usize {
+        self.inner.queue_depth.load(Ordering::Relaxed)
+    }
+}
+
+#[derive(Clone)]
+struct DatagramWorkerContext {
+    listen_addr: ListenAddress,
+    eol_required: bool,
+    codec: DogStatsDCodec,
+    metrics: Metrics,
+    context_resolvers: ContextResolvers,
+    default_hostname: MetaString,
+    origin_detection_enabled: bool,
     disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
@@ -1157,6 +1483,15 @@ impl Source for DogStatsD {
             "dogstatsd-io-buffer-pool-shrinker",
             process_io_buffer_pool_shrinker(self.io_buffer_pool_shrinker, listener_shutdown_coordinator.register()),
         );
+        if let Some(datagram_packet_buffer_pool_shrinker) = self.datagram_packet_buffer_pool_shrinker {
+            spawn_traced_named(
+                "dogstatsd-datagram-packet-buffer-pool-shrinker",
+                process_io_buffer_pool_shrinker(
+                    datagram_packet_buffer_pool_shrinker,
+                    listener_shutdown_coordinator.register(),
+                ),
+            );
+        }
 
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
@@ -1172,6 +1507,11 @@ impl Source for DogStatsD {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
+                datagram_packet_buffer_pool: self.datagram_packet_buffer_pool.clone(),
+                datagram_queue_size: self.datagram_queue_size,
+                datagram_packet_batch_size: self.datagram_packet_batch_size,
+                datagram_packet_batch_flush_timeout: self.datagram_packet_batch_flush_timeout,
+                datagram_worker_count: self.datagram_worker_count,
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
                 default_hostname: self.default_hostname.clone(),
@@ -1237,6 +1577,18 @@ async fn process_io_buffer_pool_shrinker(
 fn build_io_buffer_pool(
     min_buffers: usize, max_buffers: usize, buffer_size: usize,
 ) -> (ElasticObjectPool<BytesBuffer>, impl Future<Output = ()> + Send) {
+    build_buffer_pool("dsd_packet_bufs", min_buffers, max_buffers, buffer_size)
+}
+
+fn build_datagram_packet_buffer_pool(
+    min_buffers: usize, max_buffers: usize, buffer_size: usize,
+) -> (ElasticObjectPool<BytesBuffer>, impl Future<Output = ()> + Send) {
+    build_buffer_pool(DATAGRAM_PACKET_POOL_NAME, min_buffers, max_buffers, buffer_size)
+}
+
+fn build_buffer_pool(
+    name: &'static str, min_buffers: usize, max_buffers: usize, buffer_size: usize,
+) -> (ElasticObjectPool<BytesBuffer>, impl Future<Output = ()> + Send) {
     saluki_antithesis::always_le!(
         buffer_size,
         usize::MAX - 4,
@@ -1244,7 +1596,7 @@ fn build_io_buffer_pool(
         { "buffer_size": buffer_size }
     );
     let adjusted_buffer_size = get_adjusted_buffer_size(buffer_size);
-    ElasticObjectPool::with_builder("dsd_packet_bufs", min_buffers, max_buffers, move || {
+    ElasticObjectPool::with_builder(name, min_buffers, max_buffers, move || {
         FixedSizeVec::with_capacity(adjusted_buffer_size)
     })
 }
@@ -1256,6 +1608,11 @@ async fn process_listener(
         shutdown_handle,
         mut listener,
         io_buffer_pool,
+        datagram_packet_buffer_pool,
+        datagram_queue_size,
+        datagram_packet_batch_size,
+        datagram_packet_batch_flush_timeout,
+        datagram_worker_count,
         codec,
         context_resolvers,
         default_hostname,
@@ -1302,6 +1659,7 @@ async fn process_listener(
                     let handler_context = HandlerContext {
                         listen_addr: listen_addr.clone(),
                         framer: get_framer(&listen_addr, eol_required.for_listener(&listen_addr)),
+                        eol_required: eol_required.for_listener(&listen_addr),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         metrics: metrics.clone(),
@@ -1320,7 +1678,31 @@ async fn process_listener(
                         "dogstatsd-stream-handler-{}",
                         listen_addr.listener_type(),
                     );
-                    spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
+                    if matches!(listen_addr, ListenAddress::Unixgram(_)) {
+                        let datagram_packet_buffer_pool = datagram_packet_buffer_pool
+                            .clone()
+                            .expect("UDS datagram listeners should have a datagram packet buffer pool");
+                        let datagram_queue_config = DatagramQueueConfig {
+                            queue_size: datagram_queue_size,
+                            packet_batch_size: datagram_packet_batch_size,
+                            packet_batch_flush_timeout: datagram_packet_batch_flush_timeout,
+                            worker_count: datagram_worker_count,
+                        };
+                        spawn_traced_named(
+                            task_name,
+                            process_datagram_stream(
+                                stream,
+                                source_context.clone(),
+                                handler_context,
+                                stream_shutdown_coordinator.register(),
+                                enabled_filter,
+                                datagram_packet_buffer_pool.clone(),
+                                datagram_queue_config,
+                            ),
+                        );
+                    } else {
+                        spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
+                    }
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -1347,6 +1729,353 @@ async fn process_stream(
     }
 }
 
+async fn process_datagram_stream(
+    stream: Stream, source_context: SourceContext, handler_context: HandlerContext, shutdown_handle: ShutdownHandle,
+    enabled_filter: EnablePayloadsFilter, datagram_packet_buffer_pool: ElasticObjectPool<BytesBuffer>,
+    queue_config: DatagramQueueConfig,
+) {
+    let HandlerContext {
+        listen_addr,
+        framer: _,
+        eol_required,
+        codec,
+        io_buffer_pool: _,
+        metrics,
+        context_resolvers,
+        default_hostname,
+        origin_detection_enabled,
+        stream_log_too_big: _,
+        disable_verbose_logs,
+        additional_tags,
+        capture_entity_resolver,
+        traffic_capture,
+        packet_forwarder,
+    } = handler_context;
+
+    let worker_context = DatagramWorkerContext {
+        listen_addr: listen_addr.clone(),
+        eol_required,
+        codec,
+        metrics: metrics.clone(),
+        context_resolvers,
+        default_hostname,
+        origin_detection_enabled,
+        disable_verbose_logs,
+        additional_tags,
+        capture_entity_resolver,
+        traffic_capture,
+        packet_forwarder,
+    };
+    let (packet_queue, packet_receiver) = DatagramPacketQueueSender::new(queue_config.queue_size);
+
+    let mut worker_handles = Vec::with_capacity(queue_config.worker_count);
+    for worker_index in 0..queue_config.worker_count {
+        let task_name = format!("dogstatsd-datagram-worker-{worker_index}");
+        let worker_handle = spawn_traced_named(
+            task_name,
+            process_datagram_worker(
+                source_context.clone(),
+                worker_context.clone(),
+                packet_receiver.clone(),
+                enabled_filter,
+            ),
+        );
+        worker_handles.push(worker_handle);
+    }
+
+    metrics.datagram_queue_capacity().set(queue_config.queue_size as f64);
+
+    process_datagram_drain(
+        stream,
+        packet_queue,
+        datagram_packet_buffer_pool,
+        metrics,
+        listen_addr.clone(),
+        origin_detection_enabled,
+        shutdown_handle,
+        queue_config,
+    )
+    .await;
+
+    for mut worker_handle in worker_handles {
+        match timeout(DATAGRAM_WORKER_SHUTDOWN_TIMEOUT, &mut worker_handle).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(%listen_addr, error = %e, "UDS datagram worker stopped unexpectedly."),
+            Err(_) => {
+                worker_handle.abort();
+                warn!(
+                    %listen_addr,
+                    timeout_secs = DATAGRAM_WORKER_SHUTDOWN_TIMEOUT.as_secs(),
+                    "Timed out waiting for UDS datagram worker to stop."
+                );
+            }
+        }
+    }
+}
+
+async fn process_datagram_drain(
+    mut stream: Stream, packet_queue: DatagramPacketQueueSender,
+    datagram_packet_buffer_pool: ElasticObjectPool<BytesBuffer>, metrics: Metrics, listen_addr: ListenAddress,
+    origin_detection_enabled: bool, shutdown_handle: ShutdownHandle, queue_config: DatagramQueueConfig,
+) {
+    debug!(%listen_addr, "UDS datagram drain started.");
+
+    let mut batch = Vec::with_capacity(queue_config.packet_batch_size);
+    let mut batch_flush = interval(queue_config.packet_batch_flush_timeout);
+    batch_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut io_buffer = None;
+    pin!(shutdown_handle);
+
+    loop {
+        if io_buffer.is_none() {
+            select! {
+                _ = &mut shutdown_handle => {
+                    debug!(%listen_addr, "UDS datagram drain received shutdown signal.");
+                    break;
+                },
+                _ = batch_flush.tick() => {
+                    send_datagram_batch(&mut batch, &packet_queue, &metrics).await;
+                },
+                acquired_buffer = datagram_packet_buffer_pool.acquire() => {
+                    io_buffer = Some(acquired_buffer);
+                },
+            }
+            continue;
+        }
+
+        let buffer = io_buffer.as_mut().expect("datagram drain should have an I/O buffer");
+        select! {
+            _ = &mut shutdown_handle => {
+                debug!(%listen_addr, "UDS datagram drain received shutdown signal.");
+                break;
+            },
+            _ = batch_flush.tick() => {
+                send_datagram_batch(&mut batch, &packet_queue, &metrics).await;
+            },
+            read_result = stream.receive(buffer) => {
+                match read_result {
+                    Ok((bytes_read, peer_addr)) => {
+                        let io_buffer = io_buffer.take().expect("datagram drain should own the completed buffer");
+                        let payload = received_payload(&io_buffer, bytes_read);
+
+                        metrics.packet_receive_success().increment(1);
+                        metrics.bytes_received().increment(bytes_read as u64);
+                        metrics.bytes_received_size().record(bytes_read as f64);
+                        if origin_detection_failed_for_telemetry(origin_detection_enabled, bytes_read, &peer_addr) {
+                            metrics.origin_detection_errors().increment(1);
+                        }
+
+                        trace!(
+                            buffer_len = io_buffer.remaining(),
+                            buffer_cap = io_buffer.remaining_mut(),
+                            %listen_addr,
+                            %peer_addr,
+                            "Received {} bytes from UDS datagram socket.",
+                            payload.len()
+                        );
+
+                        batch.push(DatagramPacket {
+                            payload: io_buffer.freeze(),
+                            peer_addr,
+                        });
+
+                        if batch.len() >= queue_config.packet_batch_size {
+                            send_datagram_batch(&mut batch, &packet_queue, &metrics).await;
+                        }
+                    }
+                    Err(e) => {
+                        io_buffer = None;
+                        metrics.packet_receive_failure().increment(1);
+                        warn!(%listen_addr, error = %e, "I/O error while receiving UDS datagram. Continuing stream.");
+                    }
+                }
+            },
+        }
+    }
+
+    if !batch.is_empty() {
+        match timeout(
+            DATAGRAM_SHUTDOWN_QUEUE_SEND_TIMEOUT,
+            send_datagram_batch(&mut batch, &packet_queue, &metrics),
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(_) => warn!(
+                %listen_addr,
+                timeout_secs = DATAGRAM_SHUTDOWN_QUEUE_SEND_TIMEOUT.as_secs(),
+                "Timed out sending final UDS datagram batch during shutdown."
+            ),
+        }
+    }
+    drop(packet_queue);
+
+    metrics.datagram_queue_depth().set(0.0);
+    debug!(%listen_addr, "UDS datagram drain stopped.");
+}
+
+async fn send_datagram_batch(
+    batch: &mut DatagramPacketBatch, packet_queue: &DatagramPacketQueueSender, metrics: &Metrics,
+) {
+    if batch.is_empty() {
+        return;
+    }
+
+    let batch_to_send = std::mem::replace(batch, Vec::with_capacity(batch.capacity()));
+    let blocked_at = Instant::now();
+    if packet_queue.send(batch_to_send).await.is_err() {
+        return;
+    }
+    metrics.datagram_queue_blocking_latency().record(blocked_at.elapsed());
+    metrics
+        .datagram_queue_depth()
+        .set(packet_queue.depth().min(packet_queue.capacity()) as f64);
+}
+
+async fn process_datagram_worker(
+    source_context: SourceContext, worker_context: DatagramWorkerContext, packets_rx: DatagramPacketQueueReceiver,
+    enabled_filter: EnablePayloadsFilter,
+) {
+    let DatagramWorkerContext {
+        listen_addr,
+        eol_required,
+        codec,
+        metrics,
+        mut context_resolvers,
+        default_hostname,
+        origin_detection_enabled,
+        disable_verbose_logs,
+        additional_tags,
+        capture_entity_resolver,
+        traffic_capture,
+        packet_forwarder,
+    } = worker_context;
+
+    let mut framer = get_framer(&listen_addr, eol_required);
+    let mut event_buffer_manager = DsdEventBufferManager::default();
+    let mut buffer_flush = interval(DOGSTATSD_EVENT_BUFFER_FLUSH_INTERVAL);
+    buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    buffer_flush.tick().await;
+    let memory_limiter = source_context.topology_context().memory_limiter();
+
+    loop {
+        select! {
+            next_batch = receive_datagram_batch(&packets_rx, &metrics) => {
+                let Some(batch) = next_batch else {
+                    break;
+                };
+
+                for packet in batch {
+                    process_datagram_packet(
+                        packet,
+                        &listen_addr,
+                        &mut framer,
+                        &codec,
+                        &mut context_resolvers,
+                        &metrics,
+                        capture_entity_resolver.as_deref(),
+                        origin_detection_enabled,
+                        disable_verbose_logs,
+                        &additional_tags,
+                        &default_hostname,
+                        &traffic_capture,
+                        packet_forwarder.as_ref(),
+                        &mut event_buffer_manager,
+                        &source_context,
+                        memory_limiter,
+                        enabled_filter,
+                    )
+                    .await;
+                }
+            },
+            _ = buffer_flush.tick() => {
+                if let Some(event_buffer) = event_buffer_manager.consume() {
+                    dispatch_events(event_buffer, &source_context, &listen_addr).await;
+                }
+            },
+        }
+    }
+
+    if let Some(event_buffer) = event_buffer_manager.consume() {
+        dispatch_events(event_buffer, &source_context, &listen_addr).await;
+    }
+
+    debug!(%listen_addr, "UDS datagram worker stopped.");
+}
+
+async fn receive_datagram_batch(
+    packets_rx: &DatagramPacketQueueReceiver, metrics: &Metrics,
+) -> Option<DatagramPacketBatch> {
+    let batch = packets_rx.recv().await;
+    if batch.is_some() {
+        metrics.datagram_queue_depth().set(packets_rx.depth() as f64);
+    }
+    batch
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn process_datagram_packet(
+    packet: DatagramPacket, listen_addr: &ListenAddress, framer: &mut DsdFramer, codec: &DogStatsDCodec,
+    context_resolvers: &mut ContextResolvers, metrics: &Metrics,
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, origin_detection_enabled: bool,
+    disable_verbose_logs: bool, additional_tags: &[String], default_hostname: &MetaString,
+    traffic_capture: &TrafficCapture, packet_forwarder: Option<&PacketForwarder>,
+    event_buffer_manager: &mut DsdEventBufferManager, source_context: &SourceContext, memory_limiter: &MemoryLimiter,
+    enabled_filter: EnablePayloadsFilter,
+) {
+    let DatagramPacket { mut payload, peer_addr } = packet;
+    let received = payload.chunk();
+    let mut stream_capture = StreamCaptureState::new();
+    capture_uds_traffic(
+        listen_addr,
+        traffic_capture,
+        capture_entity_resolver,
+        &peer_addr,
+        received,
+        &mut stream_capture,
+    );
+
+    'frame: loop {
+        let frame_result = framer.next_frame(&mut payload, true);
+        match frame_result {
+            Ok(Some(frame)) => {
+                trace!(%listen_addr, %peer_addr, ?frame, "Decoded UDS datagram frame.");
+                if let Some(forwarder) = packet_forwarder {
+                    forwarder.forward(frame.clone()).await;
+                }
+                memory_limiter.wait_for_capacity().await;
+                match handle_frame(
+                    &frame[..],
+                    codec,
+                    context_resolvers,
+                    metrics,
+                    capture_entity_resolver,
+                    origin_detection_enabled,
+                    &peer_addr,
+                    enabled_filter,
+                    additional_tags,
+                    default_hostname,
+                ) {
+                    Ok(Some(event)) => {
+                        if let Some(event_buffer) = event_buffer_manager.try_push(event) {
+                            debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
+                            dispatch_events(event_buffer, source_context, listen_addr).await;
+                        }
+                    }
+                    Ok(None) => continue,
+                    Err(e) => log_parse_failure(disable_verbose_logs, listen_addr, &peer_addr, &frame, &e),
+                }
+            }
+            Err(e) => {
+                metrics.framing_errors().increment(1);
+                debug!(%listen_addr, %peer_addr, error = %e, "Error decoding UDS datagram frame.");
+                break 'frame;
+            }
+            Ok(None) => break 'frame,
+        }
+    }
+}
+
 fn origin_detection_failed_for_telemetry(
     origin_detection_enabled: bool, bytes_read: usize, peer_addr: &ConnectionAddress,
 ) -> bool {
@@ -1360,6 +2089,7 @@ async fn drive_stream(
     let HandlerContext {
         listen_addr,
         mut framer,
+        eol_required: _,
         codec,
         io_buffer_pool,
         metrics,
@@ -1383,7 +2113,7 @@ async fn drive_stream(
     let mut stream_capture = StreamCaptureState::new();
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
-    let mut buffer_flush = interval(Duration::from_millis(100));
+    let mut buffer_flush = interval(DOGSTATSD_EVENT_BUFFER_FLUSH_INTERVAL);
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer_manager = EventBufferManager::default();
@@ -2046,9 +2776,10 @@ mod tests {
         time::Duration,
     };
 
-    use bytes::{BufMut as _, Bytes};
+    use bytes::{Buf as _, BufMut as _, Bytes};
     use bytesize::ByteSize;
     use metrics::{Key, Label};
+    use saluki_common::sync::shutdown::ShutdownCoordinator;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::{
@@ -2060,7 +2791,7 @@ mod tests {
     use saluki_io::{
         buf::{BytesBuffer, FixedSizeVec},
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
-        net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
+        net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, Stream},
     };
     use saluki_metrics::test::TestRecorder;
     use serde_json::json;
@@ -2068,15 +2799,17 @@ mod tests {
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
-        build_io_buffer_pool, default_buffer_size, default_windows_pipe_security_descriptor,
+        build_datagram_packet_buffer_pool, build_io_buffer_pool, default_buffer_size,
+        default_windows_pipe_security_descriptor,
         filters::EnablePayloadsFilter,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
         handle_frame, handle_metric_packet,
         metrics::build_metrics,
-        origin_detection_failed_for_telemetry, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
-        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        origin_detection_failed_for_telemetry, process_datagram_drain, resolve_capture_container_id,
+        send_datagram_batch, ContextResolvers, DatagramPacket, DatagramPacketQueueSender, DatagramQueueConfig,
+        DogStatsDConfiguration, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
 
     const LINUX_EAFNOSUPPORT: i32 = 97;
@@ -2135,6 +2868,17 @@ mod tests {
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
         ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver)
+    }
+
+    async fn datagram_packet(
+        pool: &saluki_core::pooling::ElasticObjectPool<BytesBuffer>, payload: &[u8],
+    ) -> DatagramPacket {
+        let mut buffer = pool.acquire().await;
+        buffer.put_slice(payload);
+        DatagramPacket {
+            payload: buffer.freeze(),
+            peer_addr: ConnectionAddress::from("127.0.0.1:8125".parse::<SocketAddr>().unwrap()),
+        }
     }
 
     #[test]
@@ -2417,6 +3161,186 @@ mod tests {
     fn socket_receive_buffer_size_from_config() {
         let config = deser_config(r#"{"dogstatsd_so_rcvbuf": 131072}"#);
         assert_eq!(config.socket_receive_buffer_size, 131_072);
+    }
+
+    #[test]
+    fn datagram_burst_absorption_defaults_match_core_agent() {
+        let config = deser_config("{}");
+
+        assert_eq!(config.queue_size, 1024);
+        assert_eq!(config.packet_buffer_size, 32);
+        assert_eq!(
+            config.packet_buffer_flush_timeout.as_duration(),
+            Duration::from_millis(100)
+        );
+        assert_eq!(config.workers_count, 0);
+    }
+
+    #[test]
+    fn datagram_auto_worker_count_is_at_least_two() {
+        let config = deser_config("{}");
+
+        assert!(config.effective_datagram_worker_count() >= 2);
+    }
+
+    #[test]
+    fn max_in_flight_datagram_packets_includes_queue_drain_and_workers() {
+        let config = deser_config(
+            r#"{
+                "dogstatsd_queue_size": 3,
+                "dogstatsd_packet_buffer_size": 5,
+                "dogstatsd_workers_count": 2
+            }"#,
+        );
+
+        assert_eq!(config.max_in_flight_datagram_packets(), 30);
+    }
+
+    #[test]
+    fn datagram_packet_pool_min_capacity_covers_drain_and_workers() {
+        let config = deser_config(
+            r#"{
+                "dogstatsd_queue_size": 3,
+                "dogstatsd_packet_buffer_size": 5,
+                "dogstatsd_workers_count": 2
+            }"#,
+        );
+
+        assert_eq!(config.datagram_packet_pool_min_capacity(), 15);
+        assert!(config.datagram_packet_pool_min_capacity() <= config.max_in_flight_datagram_packets());
+    }
+
+    #[tokio::test]
+    async fn datagram_queue_full_blocks_instead_of_dropping() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context, false);
+        let (pool, _shrinker) = build_datagram_packet_buffer_pool(2, 2, default_buffer_size());
+        let (packet_queue, packet_receiver) = DatagramPacketQueueSender::new(1);
+
+        let mut initial_batch = vec![datagram_packet(&pool, b"initial:1|c").await];
+        send_datagram_batch(&mut initial_batch, &packet_queue, &metrics).await;
+
+        let blocked_metrics = metrics.clone();
+        let blocked_packet = datagram_packet(&pool, b"blocked:1|c").await;
+        let blocked_send = tokio::spawn(async move {
+            let mut blocked_batch = vec![blocked_packet];
+            send_datagram_batch(&mut blocked_batch, &packet_queue, &blocked_metrics).await;
+            blocked_batch.len()
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !blocked_send.is_finished(),
+            "sending to a full datagram queue should wait for capacity"
+        );
+
+        let first_batch = packet_receiver.recv().await.expect("first batch should be queued");
+        assert_eq!(first_batch.len(), 1);
+
+        let remaining_blocked_packets = timeout(Duration::from_secs(1), blocked_send)
+            .await
+            .expect("blocked send should complete after capacity is released")
+            .expect("blocked send task should not fail");
+        assert_eq!(remaining_blocked_packets, 0);
+
+        let second_batch = packet_receiver.recv().await.expect("second batch should be queued");
+        assert_eq!(second_batch.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn datagram_queue_capacity_is_shared_across_receivers() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context, false);
+        let (pool, _shrinker) = build_datagram_packet_buffer_pool(3, 3, default_buffer_size());
+        let (packet_queue, first_receiver) = DatagramPacketQueueSender::new(2);
+        let second_receiver = first_receiver.clone();
+
+        let mut first_batch = vec![datagram_packet(&pool, b"first:1|c").await];
+        send_datagram_batch(&mut first_batch, &packet_queue, &metrics).await;
+        let mut second_batch = vec![datagram_packet(&pool, b"second:1|c").await];
+        send_datagram_batch(&mut second_batch, &packet_queue, &metrics).await;
+
+        let blocked_metrics = metrics.clone();
+        let blocked_packet = datagram_packet(&pool, b"third:1|c").await;
+        let blocked_send = tokio::spawn(async move {
+            let mut blocked_batch = vec![blocked_packet];
+            send_datagram_batch(&mut blocked_batch, &packet_queue, &blocked_metrics).await;
+            blocked_batch.len()
+        });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            !blocked_send.is_finished(),
+            "sending to a full shared datagram queue should wait for any receiver to free capacity"
+        );
+
+        let received_batch = second_receiver
+            .recv()
+            .await
+            .expect("receiver should get the first queued batch");
+        assert_eq!(received_batch.len(), 1);
+
+        let remaining_blocked_packets = timeout(Duration::from_secs(1), blocked_send)
+            .await
+            .expect("blocked send should complete after shared capacity is released")
+            .expect("blocked send task should not fail");
+        assert_eq!(remaining_blocked_packets, 0);
+
+        assert!(first_receiver.recv().await.is_some());
+        assert!(first_receiver.recv().await.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn datagram_drain_flushes_partial_batch_on_timeout() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let context = ComponentContext::source(ComponentId::try_from("dogstatsd_test").expect("valid component ID"));
+        let metrics = build_metrics(&listen_addr, &context, false);
+        let (pool, _shrinker) = build_datagram_packet_buffer_pool(2, 2, default_buffer_size());
+        let (packet_queue, packet_receiver) = DatagramPacketQueueSender::new(1);
+        let tempdir = tempfile::tempdir().expect("tempdir should be created");
+        let socket_path = tempdir.path().join("dsd.socket");
+        let server = tokio::net::UnixDatagram::bind(&socket_path).expect("server socket should bind");
+        let client = tokio::net::UnixDatagram::unbound().expect("client socket should be created");
+        client.connect(&socket_path).expect("client should connect");
+        let stream = Stream::from(server);
+        let mut shutdown = ShutdownCoordinator::default();
+        let shutdown_handle = shutdown.register();
+        let drain = tokio::spawn(process_datagram_drain(
+            stream,
+            packet_queue,
+            pool,
+            metrics,
+            listen_addr,
+            false,
+            shutdown_handle,
+            DatagramQueueConfig {
+                queue_size: 1,
+                packet_batch_size: 32,
+                packet_batch_flush_timeout: Duration::from_millis(50),
+                worker_count: 1,
+            },
+        ));
+
+        client.send(b"partial:1|c").await.expect("client should send datagram");
+
+        let batch = timeout(Duration::from_secs(1), packet_receiver.recv())
+            .await
+            .expect("partial batch should flush on timeout")
+            .expect("partial batch should be queued");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0].payload.chunk(), b"partial:1|c");
+
+        shutdown.shutdown_and_wait().await;
+        drain.await.expect("drain task should stop");
     }
 
     #[test]

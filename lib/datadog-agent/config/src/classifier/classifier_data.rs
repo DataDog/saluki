@@ -180,20 +180,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("2048"),
     },
     ClassifierEntry {
-        yaml_path: "dogstatsd_packet_buffer_flush_timeout",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::DurationNanos(100000000),
-    },
-    ClassifierEntry {
-        yaml_path: "dogstatsd_packet_buffer_size",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("32"),
-    },
-    ClassifierEntry {
         yaml_path: "dogstatsd_pipeline_autoadjust",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),
@@ -206,13 +192,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Low),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("1"),
-    },
-    ClassifierEntry {
-        yaml_path: "dogstatsd_queue_size",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("1024"),
     },
     ClassifierEntry {
         yaml_path: "dogstatsd_stats_buffer",
@@ -241,13 +220,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
         default: DefaultValue::Json("false"),
-    },
-    ClassifierEntry {
-        yaml_path: "dogstatsd_workers_count",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
     },
     ClassifierEntry {
         yaml_path: "enable_json_stream_shared_compressor_buffers",

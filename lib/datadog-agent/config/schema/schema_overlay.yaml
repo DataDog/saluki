@@ -986,20 +986,24 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   dogstatsd_packet_buffer_flush_timeout:
-    support: none
-    severity: low
-    planned: false
+    support: full
     pipelines: [dogstatsd]
     description: "Packet buffer flush timeout"
-    documentation: "ADP decodes inline."
+    documentation: "Applies to ADP UDS datagram burst absorption. Partial pre-parse packet batches flush after this timeout. UDP, TCP, UDS stream, and named pipe listeners continue to use their existing paths."
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_packet_buffer_size:
-    support: none
-    severity: low
-    planned: false
+    support: full
     pipelines: [dogstatsd]
     description: "Datagrams per packet buffer"
-    documentation: "ADP decodes inline."
+    documentation: "Applies to ADP UDS datagram burst absorption. Controls the number of datagrams in each queued pre-parse packet batch. UDP, TCP, UDS stream, and named pipe listeners continue to use their existing paths."
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_pipe_name:
     support: full
@@ -1037,12 +1041,14 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   dogstatsd_queue_size:
-    support: none
-    severity: low
-    planned: false
+    support: full
     pipelines: [dogstatsd]
     description: "Packet channel buffer size"
-    documentation: "ADP uses async tasks."
+    documentation: "Applies to ADP UDS datagram burst absorption. Controls the number of pre-parse packet batches that can wait for parser workers. When full, the UDS datagram drain task blocks instead of dropping packets. UDP, TCP, UDS stream, and named pipe listeners continue to use their existing paths."
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   dogstatsd_so_rcvbuf:
     support: full
@@ -1183,12 +1189,14 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   dogstatsd_workers_count:
-    support: none
-    severity: low
-    planned: false
+    support: full
     pipelines: [dogstatsd]
     description: "Number of DSD processing workers"
-    documentation: "ADP uses async tasks."
+    documentation: "Applies to ADP UDS datagram burst absorption. If set to 0, ADP chooses a conservative automatic worker count with a minimum of 2. Set to 1 when strict cross-batch processing order is required. UDP, TCP, UDS stream, and named pipe listeners continue to use their existing paths."
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   enable_json_stream_shared_compressor_buffers:
     support: none

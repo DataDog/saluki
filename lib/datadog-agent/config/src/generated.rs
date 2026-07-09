@@ -145,11 +145,20 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::default_bool::<true>")]
     pub dogstatsd_origin_optout_enabled: bool,
 
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    pub dogstatsd_packet_buffer_flush_timeout: Option<f64>,
+
+    #[serde(default = "defaults::default_u64::<i64, 32>")]
+    pub dogstatsd_packet_buffer_size: i64,
+
     #[serde(default)]
     pub dogstatsd_pipe_name: String,
 
     #[serde(default = "defaults::default_u64::<i64, 8125>")]
     pub dogstatsd_port: i64,
+
+    #[serde(default = "defaults::default_u64::<i64, 1024>")]
+    pub dogstatsd_queue_size: i64,
 
     #[serde(default)]
     pub dogstatsd_so_rcvbuf: i64,
@@ -176,6 +185,9 @@ pub struct DatadogConfiguration {
         default = "defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor"
     )]
     pub dogstatsd_windows_pipe_security_descriptor: String,
+
+    #[serde(default)]
+    pub dogstatsd_workers_count: i64,
 
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
     pub enable_payloads: Option<DatadogConfigurationEnablePayloads>,
@@ -421,8 +433,11 @@ impl Default for DatadogConfiguration {
             dogstatsd_origin_detection: Default::default(),
             dogstatsd_origin_detection_client: Default::default(),
             dogstatsd_origin_optout_enabled: defaults::default_bool::<true>(),
+            dogstatsd_packet_buffer_flush_timeout: Default::default(),
+            dogstatsd_packet_buffer_size: defaults::default_u64::<i64, 32>(),
             dogstatsd_pipe_name: Default::default(),
             dogstatsd_port: defaults::default_u64::<i64, 8125>(),
+            dogstatsd_queue_size: defaults::default_u64::<i64, 1024>(),
             dogstatsd_so_rcvbuf: Default::default(),
             dogstatsd_socket: Default::default(),
             dogstatsd_stream_log_too_big: Default::default(),
@@ -431,6 +446,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_tag_cardinality: defaults::datadog_configuration_dogstatsd_tag_cardinality(),
             dogstatsd_tags: Default::default(),
             dogstatsd_windows_pipe_security_descriptor: defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor(),
+            dogstatsd_workers_count: Default::default(),
             enable_payloads: Default::default(),
             env: Default::default(),
             forwarder_apikey_validation_interval: defaults::default_u64::<i64, 60>(),
