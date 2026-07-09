@@ -1,0 +1,51 @@
+# Issue: ADP/Core Agent IPC must not require system DNS.
+#
+# The Core Agent IPC endpoint is a literal loopback address (`https://127.0.0.1:<cmd_port>`),
+# so ADP should not need to load `/etc/resolv.conf` just to register with the Core Agent or
+# receive its initial configuration. This test clears the resolver config at container startup to
+# reproduce hosts where Hickory cannot load system DNS configuration.
+#
+# The test currently runs ADP in standalone mode until converged OTLP proxy endpoint ownership is
+# configurable; see the standalone-mode env comment below.
+
+type: integration
+name: "adp-ipc-no-dns"
+description: "Verifies ADP can start when /etc/resolv.conf has no nameservers"
+timeout: 120s
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-ipc-no-dns"
+  DD_DATA_PLANE_ENABLED: "true"
+  # Run standalone for now because converged mode streams the Core Agent OTLP
+  # receiver endpoints back to ADP. That prevents us from configuring ADP to own
+  # the normal OTLP listener ports while the Core Agent listens on dummy upstream
+  # ports for proxying.
+  DD_DATA_PLANE_STANDALONE_MODE: "true"
+  # OTLP proxy mode keeps ADP running without creating the normal Datadog forwarder,
+  # so this test avoids normal intake DNS while /etc/resolv.conf is empty.
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "false"
+  DD_DATA_PLANE_OTLP_ENABLED: "true"
+  DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
+
+container:
+  files:
+    - "empty-resolv-conf.sh:/etc/cont-init.d/01-empty-resolv-conf.sh"
+  exposed_ports:
+    - "58125/udp"
+
+procedure:
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_contains
+        pattern: "Topology healthy"
+        timeout: 60s
+      - assertion: log_not_contains
+        pattern: "Failed to load system DNS configuration when creating DNS resolver for HTTP client"
+        during: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
