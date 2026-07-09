@@ -1,32 +1,58 @@
 // Protocol Buffers field numbers for series and sketch payload messages in the V3 format.
 //
 // These field numbers come from the Protocol Buffers definitions in `lib/protos/datadog/proto/agent-payload/intake_v3.proto`.
-pub(crate) const DICT_NAME_STR_FIELD_NUMBER: u32 = 1;
-pub(crate) const DICT_TAGS_STR_FIELD_NUMBER: u32 = 2;
-pub(crate) const DICT_TAGSETS_FIELD_NUMBER: u32 = 3;
-pub(crate) const DICT_RESOURCE_STR_FIELD_NUMBER: u32 = 4;
-pub(crate) const DICT_RESOURCE_LEN_FIELD_NUMBER: u32 = 5;
-pub(crate) const DICT_RESOURCE_TYPE_FIELD_NUMBER: u32 = 6;
-pub(crate) const DICT_RESOURCE_NAME_FIELD_NUMBER: u32 = 7;
-pub(crate) const DICT_SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = 8;
-pub(crate) const DICT_ORIGIN_INFO_FIELD_NUMBER: u32 = 9;
-pub(crate) const TYPES_FIELD_NUMBER: u32 = 10;
-pub(crate) const NAMES_FIELD_NUMBER: u32 = 11;
-pub(crate) const TAGS_FIELD_NUMBER: u32 = 12;
-pub(crate) const RESOURCES_FIELD_NUMBER: u32 = 13;
-pub(crate) const INTERVALS_FIELD_NUMBER: u32 = 14;
-pub(crate) const NUM_POINTS_FIELD_NUMBER: u32 = 15;
-pub(crate) const TIMESTAMPS_FIELD_NUMBER: u32 = 16;
-pub(crate) const VALS_SINT64_FIELD_NUMBER: u32 = 17;
-pub(crate) const VALS_FLOAT32_FIELD_NUMBER: u32 = 18;
-pub(crate) const VALS_FLOAT64_FIELD_NUMBER: u32 = 19;
-pub(crate) const SKETCH_NUM_BINS_FIELD_NUMBER: u32 = 20;
-pub(crate) const SKETCH_BIN_KEYS_FIELD_NUMBER: u32 = 21;
-pub(crate) const SKETCH_BIN_CNTS_FIELD_NUMBER: u32 = 22;
-pub(crate) const SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = 23;
-pub(crate) const ORIGIN_INFO_FIELD_NUMBER: u32 = 24;
-pub(crate) const DICT_UNIT_STR_FIELD_NUMBER: u32 = 25;
-pub(crate) const UNIT_REFS_FIELD_NUMBER: u32 = 26;
+/// Field number for the `DictNameStr` column.
+pub const DICT_NAME_STR_FIELD_NUMBER: u32 = 1;
+/// Field number for the `DictTagsStr` column.
+pub const DICT_TAGS_STR_FIELD_NUMBER: u32 = 2;
+/// Field number for the `DictTagsets` column.
+pub const DICT_TAGSETS_FIELD_NUMBER: u32 = 3;
+/// Field number for the `DictResourceStr` column.
+pub const DICT_RESOURCE_STR_FIELD_NUMBER: u32 = 4;
+/// Field number for the `DictResourcesLen` column.
+pub const DICT_RESOURCE_LEN_FIELD_NUMBER: u32 = 5;
+/// Field number for the `DictResourceType` column.
+pub const DICT_RESOURCE_TYPE_FIELD_NUMBER: u32 = 6;
+/// Field number for the `DictResourceName` column.
+pub const DICT_RESOURCE_NAME_FIELD_NUMBER: u32 = 7;
+/// Field number for the `DictSourceTypeName` column.
+pub const DICT_SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = 8;
+/// Field number for the `DictOriginInfo` column.
+pub const DICT_ORIGIN_INFO_FIELD_NUMBER: u32 = 9;
+/// Field number for the `Type` column.
+pub const TYPES_FIELD_NUMBER: u32 = 10;
+/// Field number for the `Name` column.
+pub const NAMES_FIELD_NUMBER: u32 = 11;
+/// Field number for the `Tags` column.
+pub const TAGS_FIELD_NUMBER: u32 = 12;
+/// Field number for the `Resources` column.
+pub const RESOURCES_FIELD_NUMBER: u32 = 13;
+/// Field number for the `Interval` column.
+pub const INTERVALS_FIELD_NUMBER: u32 = 14;
+/// Field number for the `NumPoints` column.
+pub const NUM_POINTS_FIELD_NUMBER: u32 = 15;
+/// Field number for the `Timestamp` column.
+pub const TIMESTAMPS_FIELD_NUMBER: u32 = 16;
+/// Field number for the `ValueSint64` column.
+pub const VALS_SINT64_FIELD_NUMBER: u32 = 17;
+/// Field number for the `ValueFloat32` column.
+pub const VALS_FLOAT32_FIELD_NUMBER: u32 = 18;
+/// Field number for the `ValueFloat64` column.
+pub const VALS_FLOAT64_FIELD_NUMBER: u32 = 19;
+/// Field number for the `SketchNBins` column.
+pub const SKETCH_NUM_BINS_FIELD_NUMBER: u32 = 20;
+/// Field number for the `SketchBinKeys` column.
+pub const SKETCH_BIN_KEYS_FIELD_NUMBER: u32 = 21;
+/// Field number for the `SketchBinCounts` column.
+pub const SKETCH_BIN_CNTS_FIELD_NUMBER: u32 = 22;
+/// Field number for the `SourceTypeName` column.
+pub const SOURCE_TYPE_NAME_FIELD_NUMBER: u32 = 23;
+/// Field number for the `OriginInfo` column.
+pub const ORIGIN_INFO_FIELD_NUMBER: u32 = 24;
+/// Field number for the `DictUnitStr` column.
+pub const DICT_UNIT_STR_FIELD_NUMBER: u32 = 25;
+/// Field number for the `UnitRef` column.
+pub const UNIT_REFS_FIELD_NUMBER: u32 = 26;
 
 /// Display names for the V3 columns, indexed by their Protocol Buffers field number (from
 /// `lib/protos/datadog/proto/agent-payload/intake_v3.proto`, also mirrored in

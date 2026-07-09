@@ -6,6 +6,11 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
-foldhash = { workspace = true }
-protobuf = { workspace = true }
+# Not inherited from the workspace: the workspace default enables foldhash's "std" feature, which
+# would pull `std` back into this otherwise `no_std` crate.
+foldhash = { version = "0.2", default-features = false }
+hashbrown = { workspace = true }

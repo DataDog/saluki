@@ -1,9 +1,10 @@
 //! Generic interning for dictionary deduplication.
 
-use std::{borrow::Borrow, hash::Hash};
+use alloc::borrow::ToOwned;
+use core::{borrow::Borrow, hash::Hash};
 
 type FastBuildHasher = foldhash::quality::RandomState;
-type FastHashMap<K, V> = std::collections::HashMap<K, V, FastBuildHasher>;
+type FastHashMap<K, V> = hashbrown::HashMap<K, V, FastBuildHasher>;
 
 /// Generic interning structure for dictionary deduplication.
 ///

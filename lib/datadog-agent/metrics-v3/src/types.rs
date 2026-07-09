@@ -161,7 +161,7 @@ mod tests {
         assert_eq!(PointKind::for_value(2.75), PointKind::Float32);
 
         // Float64
-        assert_eq!(PointKind::for_value(std::f64::consts::PI), PointKind::Float64);
+        assert_eq!(PointKind::for_value(core::f64::consts::PI), PointKind::Float64);
         let large = ((1i64 << 50) + 1) as f64;
         assert_eq!(PointKind::for_value(large), PointKind::Float64);
     }
@@ -205,11 +205,11 @@ mod tests {
 
         // Float64 value forces Float64
         assert_eq!(
-            value_type_for_values([100.0, std::f64::consts::PI].into_iter()),
+            value_type_for_values([100.0, core::f64::consts::PI].into_iter()),
             V3ValueType::Float64
         );
 
         // Empty iterator
-        assert_eq!(value_type_for_values(std::iter::empty()), V3ValueType::Zero);
+        assert_eq!(value_type_for_values(core::iter::empty()), V3ValueType::Zero);
     }
 }

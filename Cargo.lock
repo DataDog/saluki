@@ -1256,7 +1256,7 @@ name = "datadog-agent-metrics-v3"
 version = "0.1.0"
 dependencies = [
  "foldhash 0.2.0",
- "protobuf",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -4495,6 +4495,7 @@ dependencies = [
  "simdutf8",
  "smallvec",
  "snafu",
+ "stele",
  "stringtheory",
  "tempfile",
  "test-strategy",

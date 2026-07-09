@@ -97,6 +97,7 @@ rcgen = { workspace = true, features = ["crypto", "pem"] }
 rustls = { workspace = true }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
+stele = { workspace = true }
 tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time"] }

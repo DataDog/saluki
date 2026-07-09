@@ -1298,14 +1298,7 @@ async fn encode_v3_payload_requests(
         let event_count = metrics_in_range.len();
         let data_point_count = metrics_in_range.iter().map(|metric| metric.values().len()).sum();
 
-        let encoded = match encode_v3_metrics_batch(metrics_in_range, context.endpoint_config.additional_tags()) {
-            Ok(encoded) => encoded,
-            Err(e) => {
-                error!(error = %e, payload_kind, events = event_count, "Failed to encode V3 metrics payload request.");
-                context.telemetry.events_dropped_encoder().increment(event_count as u64);
-                continue;
-            }
-        };
+        let encoded = encode_v3_metrics_batch(metrics_in_range, context.endpoint_config.additional_tags());
         let encoded_request =
             match create_v3_request(endpoint_uri, encoded, context.endpoint_config.compression_scheme()).await {
                 Ok(request) => request,
@@ -1500,9 +1493,7 @@ async fn flush_payload(
 }
 
 // Encodes a batch of metrics to V3 columnar format.
-fn encode_v3_metrics_batch(
-    metrics: &[Metric], additional_tags: &SharedTagSet,
-) -> Result<V3EncodedMetrics, GenericError> {
+fn encode_v3_metrics_batch(metrics: &[Metric], additional_tags: &SharedTagSet) -> V3EncodedMetrics {
     let mut writer = V3Writer::new();
     let mut tags_deduplicator = ReusableDeduplicator::new();
 
@@ -1510,9 +1501,7 @@ fn encode_v3_metrics_batch(
         write_metric_to_v3(&mut writer, metric, additional_tags, &mut tags_deduplicator);
     }
 
-    writer
-        .finalize()
-        .map_err(|e| generic_error!("Failed to serialize V3 payload: {}", e))
+    writer.finalize()
 }
 
 /// Writes a single metric to the V3 writer.
@@ -1767,6 +1756,8 @@ mod tests {
     use std::io::Cursor;
 
     use bytes::Bytes;
+    use datadog_protos::metrics::v3::Payload as V3Payload;
+    use protobuf::Message as _;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context,
@@ -1903,7 +1894,7 @@ serializer_experimental_use_v3_api:
 
     #[tokio::test]
     async fn create_v3_request_uses_configured_endpoint_uri() {
-        let encoded = V3Writer::new().finalize().expect("empty V3 payload should encode");
+        let encoded = V3Writer::new().finalize();
         let request = create_v3_request("/api/intake/metrics/custom/series", encoded, CompressionScheme::noop())
             .await
             .expect("request should be created");
@@ -1914,7 +1905,7 @@ serializer_experimental_use_v3_api:
     #[tokio::test]
     async fn create_v3_request_uses_single_stream_body_and_column_telemetry() {
         let metrics = vec![Metric::counter("v3.single.stream", 42.0)];
-        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default());
         let expected_payload = encoded.payload.clone();
 
         let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
@@ -1940,7 +1931,7 @@ serializer_experimental_use_v3_api:
     #[tokio::test]
     async fn create_v3_request_zstd_body_decodes_to_metric_payload() {
         let metrics = vec![Metric::counter("v3.single.stream.zstd", 42.0)];
-        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default());
         let expected_payload = encoded.payload.clone();
 
         let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::zstd_default())
@@ -1966,6 +1957,80 @@ serializer_experimental_use_v3_api:
         let decoded_body = zstd::stream::decode_all(Cursor::new(request.request.into_body().into_bytes()))
             .expect("compressed V3 body should decode");
         assert_eq!(decoded_body, expected_body);
+    }
+
+    #[tokio::test]
+    async fn v3_payload_round_trips_through_independent_decoder() {
+        // Every other test in this module asserts against expected bytes built with the same hand-rolled
+        // primitives under test, which risks validating internal self-consistency rather than actual wire-format
+        // correctness. This test instead decodes with the protobuf-crate-generated `Payload` parser and `stele`'s
+        // V3 decoder -- the same tools the real Datadog intake service uses -- to confirm the output is genuinely
+        // spec-compliant.
+        let metrics = vec![
+            Metric::from_parts(
+                Context::from_static_parts("v3.decode.gauge", &["env:prod", "team:core"]),
+                MetricValues::gauge([(1_700_000_000_u64, 42.5_f64)]),
+                MetricMetadata::default(),
+            ),
+            Metric::from_parts(
+                Context::from_static_parts("v3.decode.counter", &["env:prod"]),
+                MetricValues::counter([(1_700_000_000_u64, 1.0_f64), (1_700_000_010_u64, 2.0_f64)]),
+                MetricMetadata::default(),
+            ),
+            Metric::from_parts(
+                Context::from_static_parts("v3.decode.histogram", &[]),
+                MetricValues::histogram((1_700_000_000_u64, [1.0_f64, 2.0, 3.0, 4.0, 5.0])),
+                MetricMetadata::default(),
+            ),
+        ];
+
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default());
+        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+            .await
+            .expect("request should be created");
+        let body = request.request.into_body().into_bytes();
+
+        let payload = V3Payload::parse_from_bytes(&body).expect("real protobuf decoder should parse V3 payload");
+        let decoded = stele::Metric::try_from_v3(payload).expect("V3 payload should decode into metrics");
+        assert_eq!(decoded.len(), metrics.len());
+
+        let find = |name: &str| {
+            decoded
+                .iter()
+                .find(|metric| metric.context().name() == name)
+                .unwrap_or_else(|| panic!("'{name}' should be present in decoded metrics"))
+        };
+
+        let gauge = find("v3.decode.gauge");
+        let mut gauge_tags = gauge.context().tags().to_vec();
+        gauge_tags.sort();
+        assert_eq!(gauge_tags, vec!["env:prod".to_string(), "team:core".to_string()]);
+        assert_eq!(
+            gauge.values(),
+            &[(1_700_000_000_u64, stele::MetricValue::Gauge { value: 42.5 })][..]
+        );
+
+        let counter = find("v3.decode.counter");
+        assert_eq!(counter.context().tags(), &["env:prod".to_string()]);
+        assert_eq!(
+            counter.values(),
+            &[
+                (1_700_000_000_u64, stele::MetricValue::Count { value: 1.0 }),
+                (1_700_000_010_u64, stele::MetricValue::Count { value: 2.0 }),
+            ][..]
+        );
+
+        let histogram = find("v3.decode.histogram");
+        assert_eq!(histogram.values().len(), 1);
+        match &histogram.values()[0].1 {
+            stele::MetricValue::Sketch { sketch } => {
+                assert_eq!(sketch.count(), 5);
+                assert_eq!(sketch.min(), Some(1.0));
+                assert_eq!(sketch.max(), Some(5.0));
+                assert_eq!(sketch.sum(), Some(15.0));
+            }
+            other => panic!("expected a sketch value for the histogram metric, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1995,7 +2060,7 @@ serializer_experimental_use_v3_api:
             Metric::set("v3.finite.set", "alpha"),
         ];
 
-        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default());
         let column = |field_number| {
             encoded
                 .stats
@@ -2025,7 +2090,7 @@ serializer_experimental_use_v3_api:
             Metric::gauge("v3.telemetry.float32", [(123, 1.5), (124, 2.25)]),
             Metric::gauge("v3.telemetry.float64", [(123, (1i64 << 30) as f64), (124, 1.5)]),
         ];
-        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default());
         let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created");
@@ -2074,7 +2139,7 @@ serializer_experimental_use_v3_api:
     }
 
     async fn create_v3_test_request(metrics: &[Metric]) -> V3EncodedRequest {
-        let encoded = encode_v3_metrics_batch(metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
+        let encoded = encode_v3_metrics_batch(metrics, &SharedTagSet::default());
         create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created")
@@ -2418,9 +2483,7 @@ serializer_experimental_use_v3_api:
         let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
         let same_unit = Metric::from_parts(context, MetricValues::gauge([3.0_f64]), metadata);
 
-        let payload = encode_v3_metrics_batch(&[gauge, no_unit, same_unit], &SharedTagSet::default())
-            .expect("V3 metric should encode successfully")
-            .payload;
+        let payload = encode_v3_metrics_batch(&[gauge, no_unit, same_unit], &SharedTagSet::default()).payload;
 
         let expected_unit_dict = [
             0xca, 0x01, // field 25, length-delimited.
@@ -2455,9 +2518,7 @@ serializer_experimental_use_v3_api:
         let metadata = MetricMetadata::default().with_unit(MetaString::from_static("millisecond"));
         let histogram = Metric::from_parts(context, MetricValues::histogram([1.0_f64]), metadata);
 
-        let payload = encode_v3_metrics_batch(&[histogram], &SharedTagSet::default())
-            .expect("V3 sketch metric should encode successfully")
-            .payload;
+        let payload = encode_v3_metrics_batch(&[histogram], &SharedTagSet::default()).payload;
 
         assert!(
             !payload
@@ -2483,9 +2544,7 @@ serializer_experimental_use_v3_api:
         let metadata = MetricMetadata::default();
         let metric = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
 
-        let payload = encode_v3_metrics_batch(&[metric], &SharedTagSet::default())
-            .expect("V3 series should encode successfully")
-            .payload;
+        let payload = encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).payload;
 
         assert_contains_bytes(&payload, b"env:prod");
         assert!(!contains_bytes(&payload, b"device:switch1"));
@@ -2515,9 +2574,7 @@ serializer_experimental_use_v3_api:
         let metadata = MetricMetadata::default();
         let metric = Metric::from_parts(context, MetricValues::gauge([1.0_f64]), metadata);
 
-        let payload = encode_v3_metrics_batch(&[metric], &additional_tags)
-            .expect("V3 series should encode successfully")
-            .payload;
+        let payload = encode_v3_metrics_batch(&[metric], &additional_tags).payload;
 
         assert_contains_bytes(&payload, b"env:prod");
         assert_contains_bytes(&payload, b"team:core");
@@ -2546,9 +2603,7 @@ serializer_experimental_use_v3_api:
         let metadata = MetricMetadata::default();
         let metric = Metric::from_parts(context, MetricValues::histogram([1.0_f64]), metadata);
 
-        let payload = encode_v3_metrics_batch(&[metric], &SharedTagSet::default())
-            .expect("V3 sketch should encode successfully")
-            .payload;
+        let payload = encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).payload;
 
         assert_contains_bytes(&payload, b"env:prod");
         assert_contains_bytes(&payload, b"device:switch1");
