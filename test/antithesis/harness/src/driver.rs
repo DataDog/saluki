@@ -15,74 +15,40 @@ use std::sync::mpsc::sync_channel;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
-use antithesis_sdk::random::{random_choice, AntithesisRng};
-use rand::{rand_core::UnwrapErr, RngExt};
+use rand::seq::IndexedRandom;
+use rand::Rng;
 
 use crate::payload::dogstatsd;
+pub use crate::payload::dogstatsd::Batch;
 
 const SEND_RETRY_BUDGET: Duration = Duration::from_secs(5);
 const SEND_RETRY_BACKOFF: Duration = Duration::from_millis(1);
 
-/// Per-batch composition: 50% clean, 25% feral, 25% mixed.
-#[derive(Clone, Copy, Debug)]
-pub enum Batch {
-    /// Every line clean.
-    Clean,
-    /// Every line feral.
-    Feral,
-    /// A per-line clean-or-feral mix.
-    Mixed,
-}
-
-impl Batch {
-    /// Sample a batch composition: half clean, a quarter feral, a quarter mixed.
-    #[must_use]
-    pub fn sample() -> Self {
-        match random_choice(&[Batch::Clean, Batch::Clean, Batch::Feral, Batch::Mixed]) {
-            Some(Batch::Feral) => Batch::Feral,
-            Some(Batch::Mixed) => Batch::Mixed,
-            _ => Batch::Clean,
-        }
-    }
-
-    /// The vibe for one line drawn from this batch.
-    fn vibe(self) -> dogstatsd::Vibe {
-        match self {
-            Batch::Clean => dogstatsd::Vibe::Clean,
-            Batch::Feral => dogstatsd::Vibe::Feral,
-            Batch::Mixed => dogstatsd::sample_vibe(),
-        }
+/// Sample a line composition: half clean, a quarter feral, a quarter mixed.
+#[must_use]
+pub fn sample<R: Rng + ?Sized>(rng: &mut R) -> Batch {
+    match [Batch::Clean, Batch::Clean, Batch::Feral, Batch::Mixed].choose(rng) {
+        Some(Batch::Feral) => Batch::Feral,
+        Some(Batch::Mixed) => Batch::Mixed,
+        _ => Batch::Clean,
     }
 }
 
-/// A generated dogstatsd line queued for the sockets.
-enum Line {
-    /// A single-value line.
-    Single { bytes: Vec<u8> },
-    /// A multi-value `:`-packed metric.
-    Multi {
-        /// The encoded line.
-        bytes: Vec<u8>,
-        /// The number of values in the packed run.
-        count: usize,
-    },
-}
-
-impl Line {
-    /// The encoded bytes to ship over a socket.
-    fn bytes(&self) -> &[u8] {
-        match self {
-            Line::Single { bytes } | Line::Multi { bytes, .. } => bytes,
-        }
-    }
+/// A generated payload queued for the sockets: the packed bytes and what they hold.
+struct Datagram {
+    /// The `\n`-packed payload bytes to ship over a socket.
+    bytes: Vec<u8>,
+    /// The lines and largest packed run in `bytes`.
+    payload: dogstatsd::Payload,
 }
 
 /// What a driver run shipped, for anchoring assertions.
 #[derive(Clone, Debug)]
 pub struct Stats {
-    /// Lines pulled from the channel, whether or not any send succeeded.
+    /// Payloads pulled from the channel, whether or not any send succeeded.
     pub received: usize,
-    /// Successful sends per socket, indexed as the sockets were passed to [`run`].
+    /// Lines delivered per socket, summed across payloads, indexed as the sockets
+    /// were passed to [`run`].
     pub sent: Vec<usize>,
     /// Largest packed run that reached each socket, indexed likewise. Zero when
     /// no multi-value line reached that socket.
@@ -92,30 +58,29 @@ pub struct Stats {
     pub timed_out: bool,
 }
 
-/// Drive one batch of sampled `DogStatsD` lines to every socket, blocking through
-/// backpressure so on success `sent[i] == received` for all `i`.
+/// Drive `count` sampled `DogStatsD` datagrams to every socket, packing each to
+/// at most `limit_bytes` and blocking through transient backpressure so every
+/// datagram reaches every socket. Both `count` and `limit_bytes` come from a load
+/// generator's [`crate::config::DriverConfig`], so a datagram never truncates on
+/// receive.
+///
+/// A peer that leaves mid-batch, or backpressure that outlasts the retry budget,
+/// ends the run early with a partial [`Stats`] rather than an error.
 ///
 /// # Errors
 ///
-/// Errors if a worker thread panics. Sustained backpressure past the retry budget
-/// is reported via [`Stats::timed_out`], not as an error.
-pub fn run(batch: Batch, sockets: Vec<UnixDatagram>) -> anyhow::Result<Stats> {
-    let count = {
-        let mut rng = UnwrapErr(AntithesisRng);
-        rng.random_range(0..=10_000u64)
-    };
-
-    let (tx, rx) = sync_channel::<Line>(2024);
+/// Errors if a worker thread panics. Sustained backpressure is reported via
+/// [`Stats::timed_out`], not as an error.
+pub fn run<R: Rng + Send + 'static>(
+    mut rng: R, batch: Batch, limit_bytes: usize, count: usize, sockets: Vec<UnixDatagram>,
+) -> anyhow::Result<Stats> {
+    let (tx, rx) = sync_channel::<Datagram>(2024);
 
     let producer = thread::spawn(move || {
-        let mut rng = UnwrapErr(AntithesisRng);
         for _ in 0..count {
             let mut bytes = Vec::new();
-            let line = match dogstatsd::send(&mut rng, &mut bytes, batch.vibe()) {
-                None => Line::Single { bytes },
-                Some(count) => Line::Multi { bytes, count },
-            };
-            if tx.send(line).is_err() {
+            let payload = dogstatsd::write_payload(&mut rng, &mut bytes, batch, limit_bytes);
+            if tx.send(Datagram { bytes, payload }).is_err() {
                 break;
             }
         }
@@ -126,15 +91,13 @@ pub fn run(batch: Batch, sockets: Vec<UnixDatagram>) -> anyhow::Result<Stats> {
         let mut sent = vec![0usize; sockets.len()];
         let mut max_packed = vec![0usize; sockets.len()];
         let mut timed_out = false;
-        'recv: while let Ok(line) = rx.recv() {
+        'recv: while let Ok(datagram) = rx.recv() {
             received += 1;
             for (i, socket) in sockets.iter().enumerate() {
-                match deliver(socket, line.bytes()) {
+                match deliver(socket, &datagram.bytes) {
                     Delivery::Sent => {
-                        sent[i] += 1;
-                        if let Line::Multi { count, .. } = &line {
-                            max_packed[i] = max_packed[i].max(*count);
-                        }
+                        sent[i] += datagram.payload.lines;
+                        max_packed[i] = max_packed[i].max(datagram.payload.max_packed);
                     }
                     // Peer left mid-batch after Antithesis killed the SUT. Stop and
                     // report the partial batch rather than failing the run.

@@ -7,7 +7,9 @@ mod unix_driver {
     use std::path::PathBuf;
 
     use antithesis_sdk::prelude::*;
+    use antithesis_sdk::random::AntithesisRng;
     use clap::Parser;
+    use harness::config::DriverConfig;
     use harness::driver::{self, Batch};
     use serde_json::json;
 
@@ -20,6 +22,10 @@ mod unix_driver {
             default_value = "/var/run/datadog/dsd.socket"
         )]
         dogstatsd_socket: PathBuf,
+        /// Directory holding this timeline's `driver.yaml`, read to cap payloads
+        /// to the SUT's sampled receive buffer.
+        #[arg(long = "config-dir", env = "CONFIG_DIR", default_value = "/agent-config")]
+        config_dir: PathBuf,
     }
 
     pub(super) fn run() -> anyhow::Result<()> {
@@ -32,8 +38,15 @@ mod unix_driver {
             return Ok(());
         };
 
-        let batch = Batch::sample();
-        let stats = driver::run(batch, vec![socket])?;
+        let driver_config = DriverConfig::read(&config.config_dir)?;
+        let batch = driver::sample(&mut AntithesisRng);
+        let stats = driver::run(
+            AntithesisRng,
+            batch,
+            driver_config.payload_byte_limit,
+            driver_config.datagram_count,
+            vec![socket],
+        )?;
         let sent = stats.sent[0];
         let max_packed = stats.max_packed[0];
 

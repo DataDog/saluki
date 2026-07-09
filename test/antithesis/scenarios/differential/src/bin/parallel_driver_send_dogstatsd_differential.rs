@@ -9,8 +9,10 @@ mod unix_driver {
     use std::path::PathBuf;
 
     use antithesis_sdk::prelude::*;
+    use antithesis_sdk::random::AntithesisRng;
     use clap::Parser;
-    use harness::driver::{self, Batch};
+    use harness::config::DriverConfig;
+    use harness::driver;
     use serde_json::json;
 
     #[derive(Debug, Parser)]
@@ -28,6 +30,10 @@ mod unix_driver {
             default_value = "/var/run/adp/dsd.socket"
         )]
         adp_dogstatsd_socket: PathBuf,
+        /// Directory holding this timeline's `driver.yaml`, read to cap payloads
+        /// to the shared sampled receive buffer.
+        #[arg(long = "config-dir", env = "CONFIG_DIR", default_value = "/agent-config")]
+        config_dir: PathBuf,
     }
 
     pub(super) fn run() -> anyhow::Result<()> {
@@ -53,10 +59,18 @@ mod unix_driver {
             return Ok(());
         };
 
+        // Both targets share one receive buffer, so one payload limit keeps neither from truncating.
+        let driver_config = DriverConfig::read(&config.config_dir)?;
         // Agent first, ADP second: `stats.sent` and `stats.max_packed` are indexed in this order.
-        let batch = Batch::sample();
-        let stats = driver::run(batch, vec![agent_socket, adp_socket])?;
-        let received = stats.received;
+        let batch = driver::sample(&mut AntithesisRng);
+        let stats = driver::run(
+            AntithesisRng,
+            batch,
+            driver_config.payload_byte_limit,
+            driver_config.datagram_count,
+            vec![agent_socket, adp_socket],
+        )?;
+        let payloads_received = stats.received;
         let agent_sent = stats.sent[0];
         let adp_sent = stats.sent[1];
         let multi_value_both = stats.max_packed[0] > 0 && stats.max_packed[1] > 0;
@@ -64,7 +78,7 @@ mod unix_driver {
         assert_reachable!(
             "differential workload ran a dogstatsd batch",
             &json!({
-                "received": received,
+                "payloads_received": payloads_received,
                 "agent_sent": agent_sent,
                 "adp_sent": adp_sent,
                 "agent_dogstatsd_socket": config.agent_dogstatsd_socket.display().to_string(),
@@ -74,12 +88,12 @@ mod unix_driver {
         assert_sometimes!(
             agent_sent > 0 && adp_sent > 0,
             "differential workload sent a dogstatsd line to both targets",
-            &json!({ "received": received, "agent_sent": agent_sent, "adp_sent": adp_sent })
+            &json!({ "payloads_received": payloads_received, "agent_sent": agent_sent, "adp_sent": adp_sent })
         );
         assert_sometimes!(
             multi_value_both,
             "differential workload emitted a multi-value metric",
-            &json!({ "received": received, "agent_sent": agent_sent, "adp_sent": adp_sent })
+            &json!({ "payloads_received": payloads_received, "agent_sent": agent_sent, "adp_sent": adp_sent })
         );
 
         Ok(())

@@ -101,13 +101,30 @@ fn choose_message<R: Rng + ?Sized>(rng: &mut R) -> Message {
     }
 }
 
-/// Write one `DogStatsD` message of a sampled type to `buf` at the given vibe.
+/// Ceiling on a generated datagram, the Datadog Agent's default
+/// `dogstatsd_buffer_size`. A run caps each datagram to the smaller of this and
+/// the SUT's sampled receive buffer, so a packed datagram always fits one read
+/// and the SUT never truncates a line mid-token.
+pub const PAYLOAD_BYTE_LIMIT: usize = 8_192;
+
+/// What a generated payload holds, for anchoring assertions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Payload {
+    /// Lines packed into the buffer.
+    pub lines: usize,
+    /// Largest packed multi-value run among those lines. Zero when none.
+    pub max_packed: usize,
+}
+
+/// Append one `DogStatsD` line of a sampled type to `buf`. When a line would
+/// exceed `limit_bytes`, drop it whole rather than shear it, leaving `buf`
+/// unchanged. A non-empty line always ends in `\n`.
 ///
 /// Returns the packed value count when a multi-value metric was emitted, else
 /// `None`.
-pub fn send<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> Option<usize> {
-    buf.clear();
-    match choose_message(rng) {
+pub fn write_line<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe, limit_bytes: usize) -> Option<usize> {
+    let start = buf.len();
+    let packed = match choose_message(rng) {
         Message::Event => {
             events::write(rng, buf, vibe);
             None
@@ -117,5 +134,117 @@ pub fn send<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> Opti
             None
         }
         Message::Metric => metrics::write(rng, buf, vibe),
+    };
+    if buf.len() - start > limit_bytes {
+        // Drop a whole line that exceeds limit_bytes rather than shear it mid-token.
+        // A sheared fragment is exactly the parse-error spew this generator avoids.
+        buf.truncate(start);
+        return None;
+    }
+    packed
+}
+
+/// Per-run line composition: every line clean, every line feral, or a per-line
+/// clean-or-feral mix.
+#[derive(Clone, Copy, Debug)]
+pub enum Batch {
+    /// Every line clean.
+    Clean,
+    /// Every line feral.
+    Feral,
+    /// Each line independently clean or feral.
+    Mixed,
+}
+
+impl Batch {
+    /// The vibe for one line of this batch, sampled per call so `Mixed` interleaves.
+    fn vibe<R: Rng + ?Sized>(self, rng: &mut R) -> Vibe {
+        match self {
+            Batch::Clean => Vibe::Clean,
+            Batch::Feral => Vibe::Feral,
+            Batch::Mixed => sample_vibe(rng),
+        }
+    }
+}
+
+/// Pack whole `\n`-terminated lines into `buf` until the next sampled line does
+/// not fit the space left under `limit_bytes`. That overflowing line is dropped
+/// whole rather than sheared and ends the payload, so the packed datagram never
+/// exceeds `limit_bytes` and holds only whole lines. Each line takes its vibe
+/// from `batch`, so a `Mixed` payload interleaves clean and feral lines. Clears
+/// `buf` first.
+pub fn write_payload<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, batch: Batch, limit_bytes: usize) -> Payload {
+    buf.clear();
+    let mut payload = Payload::default();
+    loop {
+        let vibe = batch.vibe(rng);
+        let start = buf.len();
+        // Pass the budget still free so an overflowing line is dropped whole, not
+        // sheared, and the total stays within `limit_bytes`.
+        let packed = write_line(rng, buf, vibe, limit_bytes - buf.len());
+        if buf.len() == start {
+            // The line did not fit the space left, so the payload is complete.
+            break;
+        }
+        payload.lines += 1;
+        if let Some(count) = packed {
+            payload.max_packed = payload.max_packed.max(count);
+        }
+    }
+    payload
+}
+
+#[cfg(test)]
+mod test {
+    use proptest::prelude::*;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    use super::{write_line, write_payload, Batch, Vibe};
+
+    fn any_vibe() -> impl Strategy<Value = Vibe> {
+        prop_oneof![Just(Vibe::Clean), Just(Vibe::Feral)]
+    }
+
+    fn any_batch() -> impl Strategy<Value = Batch> {
+        prop_oneof![Just(Batch::Clean), Just(Batch::Feral), Just(Batch::Mixed)]
+    }
+
+    /// Lines carry no interior newline and each is `\n`-terminated, so the line
+    /// count equals the newline count.
+    #[allow(clippy::naive_bytecount)]
+    fn newline_count(buf: &[u8]) -> usize {
+        buf.iter().filter(|&&b| b == b'\n').count()
+    }
+
+    proptest! {
+        #[test]
+        fn write_line_stays_within_its_limit(seed: u64, limit_bytes: u16, vibe in any_vibe()) {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let limit_bytes = usize::from(limit_bytes);
+            let mut buf = Vec::new();
+            write_line(&mut rng, &mut buf, vibe, limit_bytes);
+
+            prop_assert!(buf.len() <= limit_bytes);
+            if !buf.is_empty() {
+                prop_assert_eq!(buf[buf.len() - 1], b'\n');
+                prop_assert_eq!(newline_count(&buf), 1);
+            }
+        }
+
+        #[test]
+        fn write_payload_stays_within_its_limit(seed: u64, limit_bytes: u16, batch in any_batch()) {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let limit_bytes = usize::from(limit_bytes);
+            let mut buf = Vec::new();
+            let payload = write_payload(&mut rng, &mut buf, batch, limit_bytes);
+
+            prop_assert!(buf.len() <= limit_bytes);
+            prop_assert_eq!(newline_count(&buf), payload.lines);
+            // Whole lines only: a non-empty datagram ends on a line boundary, never a shorn token.
+            if !buf.is_empty() {
+                prop_assert_eq!(buf[buf.len() - 1], b'\n');
+            }
+        }
     }
 }
