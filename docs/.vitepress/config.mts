@@ -41,6 +41,7 @@ export default defineConfig({
                     { text: "Contributing", link: "/development/contributing" },
                     { text: "Style Guide", link: "/development/style-guide" },
                     { text: "Testing", link: "/development/testing" },
+                    { text: "Testing Patterns", link: "/development/testing-patterns" },
                 ],
             },
             {
