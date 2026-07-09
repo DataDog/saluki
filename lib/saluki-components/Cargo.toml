@@ -99,6 +99,7 @@ proptest = { workspace = true }
 rustls = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
+saluki-env = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
