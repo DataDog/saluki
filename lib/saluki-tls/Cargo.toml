@@ -11,8 +11,12 @@ workspace = true
 [features]
 default = []
 fips = ["aws-lc-rs/fips", "rustls-cng-crypto/fips", "rustls-webpki/aws-lc-rs-fips"]
+# Exposes the self-signed certificate helpers in `test_util` for use by other crates' test suites. Non-default and
+# activated only via `dev-dependencies`, so it never leaks into production builds.
+test-util = ["dep:rcgen"]
 
 [dependencies]
+rcgen = { workspace = true, features = ["crypto", "pem"], optional = true }
 rustls = { workspace = true, features = ["std"] }
 rustls-native-certs = { workspace = true }
 saluki-common = { workspace = true }
@@ -21,18 +25,17 @@ tracing = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 aws-lc-rs = { workspace = true, optional = true }
+rcgen = { workspace = true, features = ["aws_lc_rs"], optional = true }
 rustls = { workspace = true, features = ["aws_lc_rs"] }
 rustls-webpki = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
+rcgen = { workspace = true, features = ["ring"], optional = true }
 rustls-cng-crypto = { workspace = true }
 
 [dev-dependencies]
-rcgen = { workspace = true, features = ["crypto", "pem"] }
+# Self-referential dev-dependency: enables the `test-util` feature for this crate's own unit and integration tests
+# (including the `tests/` directory), which is how the `test_util` helpers and their `rcgen` dependency become
+# available without leaking into production builds.
+saluki-tls = { path = ".", features = ["test-util"] }
 tempfile = { workspace = true }
-
-[target.'cfg(not(windows))'.dev-dependencies]
-rcgen = { workspace = true, features = ["aws_lc_rs"] }
-
-[target.'cfg(windows)'.dev-dependencies]
-rcgen = { workspace = true, features = ["ring"] }

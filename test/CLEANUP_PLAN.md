@@ -44,7 +44,7 @@ otherwise keep hand-rolling the thing it replaces.
     default/overflow branches have zero test coverage.
   - [low/trivial] Repeated per-test setup/construction boilerplate isn't extracted into a shared helper.
 
-- [ ] **G3 — saluki-tls test suite cleanup** (`tobz/test-cleanup-tls-self-signed-test-helper`, `test(tls)`)
+- [x] **G3 — saluki-tls test suite cleanup** (`tobz/test-cleanup-tls-self-signed-test-helper`, `test(tls)`)
   - [medium/small] Self-signed TLS certificate generation via `rcgen` is duplicated across `saluki-tls`, `saluki-app`,
     and `saluki-components`, and the one copy that could be shared is trapped in a `tests/` directory (KI-5).
   - [medium/small] The public root-cert wrapper and TLS builder security/config methods are never exercised.
