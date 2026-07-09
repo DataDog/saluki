@@ -220,7 +220,7 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
             Some(session_id) => {
                 debug!(%session_id, "Refreshing registration with Datadog Agent.");
 
-                if client.refresh_remote_agent_request(&session_id).await.is_err() {
+                if client.refresh_remote_agent(&session_id).await.is_err() {
                     loop_timer.reset_after(REFRESH_FAILED_RETRY_INTERVAL);
                     state.session_id.update(None);
                     warn!("Failed to refresh registration with the Datadog Agent. Resetting session ID and attempting to re-register shortly.");
@@ -230,7 +230,7 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
             }
             None => {
                 match client
-                    .register_remote_agent_request(
+                    .register_remote_agent(
                         state.pid,
                         &state.display_name,
                         &state.flavor,
