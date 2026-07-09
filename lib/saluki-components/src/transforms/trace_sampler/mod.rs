@@ -9,8 +9,6 @@
 //! TODO:
 //!
 //! - add trace metrics: datadog-agent/pkg/trace/sampler/metrics.go
-//! - adding missing samplers (priority, nopriority)
-//! - add error tracking standalone mode
 
 use async_trait::async_trait;
 use saluki_common::collections::FastHashMap;

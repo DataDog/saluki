@@ -218,29 +218,24 @@ mod tests {
     }
 
     #[test]
-    fn test_input_validation() {
-        // Test empty string validation
-        let result = MetricRouter::new(MetricRouterConfiguration {
-            metric_names: vec!["valid.metric".to_string(), "".to_string()],
-        });
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(error.to_string().contains("empty"));
+    fn blank_metric_names_are_rejected() {
+        // Empty and whitespace-only names are both rejected with the same documented error message.
+        for invalid in ["", "   "] {
+            let error = MetricRouter::new(MetricRouterConfiguration {
+                metric_names: vec!["valid.metric".to_string(), invalid.to_string()],
+            })
+            .expect_err("blank metric name must be rejected");
+            assert!(error
+                .to_string()
+                .contains("Metric names cannot be empty or whitespace-only"));
         }
 
-        // Test whitespace-only string validation
-        let result = MetricRouter::new(MetricRouterConfiguration {
-            metric_names: vec!["valid.metric".to_string(), "   ".to_string()],
-        });
-        assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(error.to_string().contains("empty"));
-        }
-
-        // Test valid configuration
-        let result = MetricRouter::new(MetricRouterConfiguration {
+        // A list of non-blank names builds successfully and retains every configured name.
+        let router = MetricRouter::new(MetricRouterConfiguration {
             metric_names: vec!["valid.metric".to_string(), "another.valid".to_string()],
-        });
-        assert!(result.is_ok());
+        })
+        .expect("non-blank metric names must be accepted");
+        assert!(router.metric_names.contains("valid.metric"));
+        assert!(router.metric_names.contains("another.valid"));
     }
 }

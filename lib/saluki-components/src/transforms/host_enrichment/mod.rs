@@ -103,7 +103,12 @@ impl SynchronousTransform for HostEnrichment {
 mod tests {
     use saluki_context::Context;
     use saluki_core::components::transforms::SynchronousTransform;
-    use saluki_core::data_model::event::{metric::Metric, Event};
+    use saluki_core::data_model::event::{
+        eventd::EventD,
+        metric::Metric,
+        service_check::{CheckStatus, ServiceCheck},
+        Event,
+    };
     use saluki_core::topology::EventsBuffer;
     use stringtheory::MetaString;
 
@@ -113,6 +118,26 @@ mod tests {
         HostEnrichment {
             hostname: MetaString::from_static("default-host"),
         }
+    }
+
+    fn eventd_hostnames(events: EventsBuffer) -> Vec<Option<String>> {
+        events
+            .into_iter()
+            .map(|event| match event {
+                Event::EventD(eventd) => eventd.hostname().map(str::to_string),
+                other => panic!("expected eventd event, got {other:?}"),
+            })
+            .collect()
+    }
+
+    fn service_check_hostnames(events: EventsBuffer) -> Vec<Option<String>> {
+        events
+            .into_iter()
+            .map(|event| match event {
+                Event::ServiceCheck(service_check) => service_check.hostname().map(str::to_string),
+                other => panic!("expected service check event, got {other:?}"),
+            })
+            .collect()
     }
 
     #[test]
@@ -136,5 +161,47 @@ mod tests {
             };
             assert_eq!(metric.context().host(), host.as_deref());
         }
+    }
+
+    #[test]
+    fn transform_enriches_eventd_hostname_only_when_absent() {
+        let mut events = EventsBuffer::default();
+        assert!(events.try_push(Event::EventD(EventD::new("title", "text"))).is_none());
+        assert!(events
+            .try_push(Event::EventD(
+                EventD::new("title", "text").with_hostname(MetaString::from_static("existing-host")),
+            ))
+            .is_none());
+
+        host_enrichment().transform_buffer(&mut events);
+
+        // The hostname-less event is filled with the transform's default hostname; the event that already carries a
+        // hostname is left untouched.
+        assert_eq!(
+            eventd_hostnames(events),
+            vec![Some("default-host".to_string()), Some("existing-host".to_string())],
+        );
+    }
+
+    #[test]
+    fn transform_enriches_service_check_hostname_only_when_absent() {
+        let mut events = EventsBuffer::default();
+        assert!(events
+            .try_push(Event::ServiceCheck(ServiceCheck::new("svc", CheckStatus::Ok)))
+            .is_none());
+        assert!(events
+            .try_push(Event::ServiceCheck(
+                ServiceCheck::new("svc", CheckStatus::Ok).with_hostname(MetaString::from_static("existing-host")),
+            ))
+            .is_none());
+
+        host_enrichment().transform_buffer(&mut events);
+
+        // The hostname-less service check is filled with the transform's default hostname; the one that already carries
+        // a hostname is left untouched.
+        assert_eq!(
+            service_check_hostnames(events),
+            vec![Some("default-host".to_string()), Some("existing-host".to_string())],
+        );
     }
 }

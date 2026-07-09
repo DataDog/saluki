@@ -246,4 +246,44 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn try_from_rejects_invalid_aggregates_and_percentiles() {
+        // Each documented failure branch of `TryFrom<RawHistogramConfiguration>` reports a distinct error message: an
+        // unrecognized aggregate name, a non-numeric percentile, and a percentile outside the inclusive 0.0..=1.0 range.
+        let cases = [
+            (
+                RawHistogramConfiguration {
+                    histogram_aggregates: vec!["p99".to_string()],
+                    histogram_percentiles: Vec::new(),
+                    histogram_copy_to_distribution: false,
+                    histogram_copy_to_distribution_prefix: String::new(),
+                },
+                "Unknown histogram aggregate: p99",
+            ),
+            (
+                RawHistogramConfiguration {
+                    histogram_aggregates: Vec::new(),
+                    histogram_percentiles: vec!["abc".to_string()],
+                    histogram_copy_to_distribution: false,
+                    histogram_copy_to_distribution_prefix: String::new(),
+                },
+                "Invalid percentile: abc",
+            ),
+            (
+                RawHistogramConfiguration {
+                    histogram_aggregates: Vec::new(),
+                    histogram_percentiles: vec!["1.5".to_string()],
+                    histogram_copy_to_distribution: false,
+                    histogram_copy_to_distribution_prefix: String::new(),
+                },
+                "Percentile out of range: 1.5",
+            ),
+        ];
+
+        for (raw, expected_error) in cases {
+            let error = HistogramConfiguration::try_from(raw).expect_err("configuration must be rejected");
+            assert_eq!(error, expected_error);
+        }
+    }
 }

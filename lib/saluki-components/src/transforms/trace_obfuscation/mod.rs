@@ -332,3 +332,97 @@ mod config_smoke {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_common::collections::FastHashMap;
+
+    use super::*;
+
+    fn span_with(span_type: &str, resource: &str, attrs: &[(&str, &str)]) -> Span {
+        let mut attributes = FastHashMap::default();
+        for (key, value) in attrs {
+            attributes.insert(MetaString::from(*key), AttributeValue::String(MetaString::from(*value)));
+        }
+        Span::default()
+            .with_span_type(span_type)
+            .with_resource(resource)
+            .with_attributes(attributes)
+    }
+
+    fn string_attr(span: &Span, key: &str) -> Option<String> {
+        span.attributes
+            .get(key)
+            .and_then(AttributeValue::as_string)
+            .map(|value| value.as_ref().to_string())
+    }
+
+    fn obfuscate(config: ObfuscationConfig, mut span: Span) -> Span {
+        let mut transform = TraceObfuscation {
+            obfuscator: Obfuscator::new(config),
+        };
+        transform.obfuscate_span(&mut span);
+        span
+    }
+
+    #[test]
+    fn redis_span_type_quantizes_resource_and_obfuscates_command() {
+        let mut config = ObfuscationConfig::default();
+        config.redis.enabled = true;
+        let span = obfuscate(
+            config,
+            span_with("redis", "GET mykey", &[(tags::REDIS_RAW_COMMAND, "AUTH secret")]),
+        );
+
+        assert_eq!(span.resource(), "GET");
+        assert_eq!(string_attr(&span, tags::REDIS_RAW_COMMAND).as_deref(), Some("AUTH ?"));
+    }
+
+    #[test]
+    fn sql_span_type_obfuscates_resource_and_sets_sql_query() {
+        let span = obfuscate(ObfuscationConfig::default(), span_with("sql", "SELECT 1", &[]));
+
+        assert_eq!(span.resource(), "SELECT ?");
+        assert_eq!(string_attr(&span, tags::SQL_QUERY).as_deref(), Some("SELECT ?"));
+    }
+
+    #[test]
+    fn http_span_type_removes_url_userinfo() {
+        let span = obfuscate(
+            ObfuscationConfig::default(),
+            span_with("web", "GET /", &[(tags::HTTP_URL, "http://user:pass@host/path")]),
+        );
+
+        let url = string_attr(&span, tags::HTTP_URL).expect("http.url should still be present");
+        assert!(!url.contains("user:pass"), "userinfo must be stripped, got {url}");
+        assert!(url.contains("host/path"), "host and path must be preserved, got {url}");
+    }
+
+    #[test]
+    fn unknown_span_type_is_left_untouched() {
+        // A span type that matches no obfuscation handler passes through with resource and attributes unchanged.
+        let span = obfuscate(
+            ObfuscationConfig::default(),
+            span_with("custom", "SELECT 1", &[(tags::HTTP_URL, "http://user:pass@host/path")]),
+        );
+
+        assert_eq!(span.resource(), "SELECT 1");
+        assert_eq!(
+            string_attr(&span, tags::HTTP_URL).as_deref(),
+            Some("http://user:pass@host/path"),
+        );
+    }
+
+    #[test]
+    fn credit_cards_are_obfuscated_regardless_of_span_type() {
+        // Credit-card obfuscation runs before the span-type dispatch, so it applies even to an unrecognized span type.
+        let mut config = ObfuscationConfig::default();
+        config.credit_cards.enabled = true;
+        let span = obfuscate(
+            config,
+            span_with("custom", "noop", &[("card_number", "4532123456789010")]),
+        );
+
+        assert_eq!(string_attr(&span, "card_number").as_deref(), Some("?"));
+    }
+}

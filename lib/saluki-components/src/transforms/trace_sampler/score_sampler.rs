@@ -192,3 +192,36 @@ fn get_global_rate(span: &Span) -> f64 {
         .and_then(AttributeValue::as_num)
         .unwrap_or(1.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span_with_rates(rates: &[(&str, f64)]) -> Span {
+        let mut attributes = FastHashMap::default();
+        for (key, value) in rates {
+            attributes.insert(MetaString::from(*key), AttributeValue::Float(*value));
+        }
+        Span::default().with_attributes(attributes)
+    }
+
+    // Mirrors DataDog/datadog-agent pkg/trace/sampler/coresampler.go weightRoot.
+    #[test]
+    fn weight_root_inverts_the_effective_pre_sample_and_global_rate() {
+        // weight = 1 / (pre_sampler_rate * client_rate); a missing rate is treated as 1.0.
+        assert_eq!(weight_root(&span_with_rates(&[])), 1.0);
+        assert_eq!(weight_root(&span_with_rates(&[(KEY_SAMPLING_RATE_GLOBAL, 0.5)])), 2.0);
+        assert_eq!(
+            weight_root(&span_with_rates(&[
+                (KEY_SAMPLING_RATE_GLOBAL, 0.5),
+                (KEY_SAMPLING_RATE_PRE_SAMPLER, 0.5),
+            ])),
+            4.0,
+        );
+        assert_eq!(weight_root(&span_with_rates(&[(KEY_SAMPLING_RATE_GLOBAL, 0.25)])), 4.0);
+
+        // Rates outside the (0, 1] range are filtered out and fall back to 1.0, yielding a weight of 1.0.
+        assert_eq!(weight_root(&span_with_rates(&[(KEY_SAMPLING_RATE_GLOBAL, 0.0)])), 1.0);
+        assert_eq!(weight_root(&span_with_rates(&[(KEY_SAMPLING_RATE_GLOBAL, 1.5)])), 1.0);
+    }
+}

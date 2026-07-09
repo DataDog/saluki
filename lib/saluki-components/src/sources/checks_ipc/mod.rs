@@ -357,6 +357,7 @@ mod tests {
         metric::{Metric as ProtoMetric, MetricType as ProtoMetricType},
         service_check::{ServiceCheck as ProtoServiceCheck, Status as ProtoServiceCheckStatus},
     };
+    use saluki_config::config_from;
     use saluki_core::data_model::event::metric::MetricValues;
 
     use super::*;
@@ -532,6 +533,32 @@ mod tests {
     }
 
     #[test]
+    fn log_conversion_maps_level_to_status_and_preserves_message() {
+        // Every recognized proto log level maps to a specific `Log` status (notably, Critical maps to Emergency), and
+        // the unspecified level falls back to Info rather than being skipped like an out-of-range level. The proto
+        // message is carried through verbatim.
+        let cases = [
+            (LogLevel::Trace as i32, LogStatus::Trace),
+            (LogLevel::Debug as i32, LogStatus::Debug),
+            (LogLevel::Info as i32, LogStatus::Info),
+            (LogLevel::Warning as i32, LogStatus::Warning),
+            (LogLevel::Error as i32, LogStatus::Error),
+            (LogLevel::Critical as i32, LogStatus::Emergency),
+            (LogLevel::Unspecified as i32, LogStatus::Info),
+        ];
+
+        for (level, expected_status) in cases {
+            let event = check_data_to_event_for_tests(log_data(level, "log body"))
+                .unwrap_or_else(|| panic!("log level {level} should convert"));
+            let Event::Log(log) = event else {
+                panic!("expected Log event for level {level}");
+            };
+            assert_eq!(log.message(), "log body", "message for level {level}");
+            assert_eq!(log.status(), Some(expected_status), "status for level {level}");
+        }
+    }
+
+    #[test]
     fn event_conversion_preserves_fields() {
         let event = check_data_to_event_for_tests(event_data("title", "body", 1234, &["env:prod", "team:foo"], ""))
             .expect("event should convert");
@@ -605,85 +632,80 @@ mod tests {
         assert!(sc.tags().has_tag("env:prod"));
     }
 
+    /// Extracts the resolved hostname from a converted event, regardless of event kind.
+    fn event_hostname(event: &Event) -> Option<String> {
+        match event {
+            Event::Metric(m) => m.context().host().map(str::to_string),
+            Event::EventD(ev) => ev.hostname().map(str::to_string),
+            Event::ServiceCheck(sc) => sc.hostname().map(str::to_string),
+            other => panic!("unexpected event kind for hostname assertion: {other:?}"),
+        }
+    }
+
     #[test]
-    fn metric_hostname_propagates() {
-        let event = check_data_to_event_for_tests(metric_data(
-            ProtoMetricType::Counter as i32,
-            "n",
-            1.0,
-            0,
-            0,
-            &[],
-            "host-a",
-        ))
+    fn hostname_propagation_differs_by_event_kind() {
+        // A non-empty proto hostname always propagates verbatim. When the proto hostname is empty the behavior diverges
+        // by kind: metrics fall back to the configured default host (their context host is always set), while events
+        // and service checks leave the hostname unset.
+        let cases: [(&str, Data, Option<&str>); 6] = [
+            (
+                "metric with hostname",
+                metric_data(ProtoMetricType::Counter as i32, "n", 1.0, 0, 0, &[], "host-a"),
+                Some("host-a"),
+            ),
+            (
+                "metric without hostname falls back to default",
+                metric_data(ProtoMetricType::Counter as i32, "n", 1.0, 0, 0, &[], ""),
+                Some("default-host"),
+            ),
+            (
+                "event with hostname",
+                event_data("title", "body", 0, &[], "host-b"),
+                Some("host-b"),
+            ),
+            (
+                "event without hostname stays unset",
+                event_data("title", "body", 0, &[], ""),
+                None,
+            ),
+            (
+                "service check with hostname",
+                service_check_data(ProtoServiceCheckStatus::Ok as i32, "n", "m", &[], "host-c"),
+                Some("host-c"),
+            ),
+            (
+                "service check without hostname stays unset",
+                service_check_data(ProtoServiceCheckStatus::Ok as i32, "n", "m", &[], ""),
+                None,
+            ),
+        ];
+
+        for (name, data, expected_host) in cases {
+            let event = check_data_to_event_for_tests(data).unwrap_or_else(|| panic!("{name}: should convert"));
+            assert_eq!(event_hostname(&event).as_deref(), expected_host, "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn from_configuration_defaults_endpoint_and_with_default_hostname_sets_fallback() {
+        // The real public constructor deserializes a `GenericConfiguration`, applying the documented default gRPC
+        // endpoint (TCP :5105) when `checks_ipc_endpoint` is absent and leaving the default hostname empty until set.
+        let config = config_from(serde_json::json!({})).await;
+        let checks_config = ChecksIPCConfiguration::from_configuration(&config).expect("empty config should build");
+        assert_eq!(checks_config.grpc_endpoint, default_grpc_endpoint());
+        assert_eq!(checks_config.default_hostname, MetaString::default());
+
+        // `with_default_hostname` installs the fallback host, which is exactly the host a hostname-less check metric
+        // resolves to during conversion.
+        let checks_config = checks_config.with_default_hostname("fallback-host");
+        assert_eq!(checks_config.default_hostname, MetaString::from_static("fallback-host"));
+
+        let event = check_data_to_event(
+            metric_data(ProtoMetricType::Counter as i32, "n", 1.0, 0, 0, &[], ""),
+            &checks_config.default_hostname,
+        )
         .expect("metric should convert");
-        let Event::Metric(m) = event else {
-            panic!("expected Metric event");
-        };
-        assert_eq!(m.context().host(), Some("host-a"));
-    }
-
-    #[test]
-    fn metric_empty_hostname_uses_default_host() {
-        let event =
-            check_data_to_event_for_tests(metric_data(ProtoMetricType::Counter as i32, "n", 1.0, 0, 0, &[], ""))
-                .expect("metric should convert");
-        let Event::Metric(m) = event else {
-            panic!("expected Metric event");
-        };
-        assert_eq!(m.context().host(), Some("default-host"));
-    }
-
-    #[test]
-    fn eventd_hostname_propagates() {
-        let event =
-            check_data_to_event_for_tests(event_data("title", "body", 0, &[], "host-b")).expect("event should convert");
-        let Event::EventD(ev) = event else {
-            panic!("expected EventD event");
-        };
-        assert_eq!(ev.hostname(), Some("host-b"));
-    }
-
-    #[test]
-    fn eventd_empty_hostname_stays_unset() {
-        let event =
-            check_data_to_event_for_tests(event_data("title", "body", 0, &[], "")).expect("event should convert");
-        let Event::EventD(ev) = event else {
-            panic!("expected EventD event");
-        };
-        assert_eq!(ev.hostname(), None);
-    }
-
-    #[test]
-    fn service_check_hostname_propagates() {
-        let event = check_data_to_event_for_tests(service_check_data(
-            ProtoServiceCheckStatus::Ok as i32,
-            "n",
-            "m",
-            &[],
-            "host-c",
-        ))
-        .expect("service check should convert");
-        let Event::ServiceCheck(sc) = event else {
-            panic!("expected ServiceCheck event");
-        };
-        assert_eq!(sc.hostname(), Some("host-c"));
-    }
-
-    #[test]
-    fn service_check_empty_hostname_stays_unset() {
-        let event = check_data_to_event_for_tests(service_check_data(
-            ProtoServiceCheckStatus::Ok as i32,
-            "n",
-            "m",
-            &[],
-            "",
-        ))
-        .expect("service check should convert");
-        let Event::ServiceCheck(sc) = event else {
-            panic!("expected ServiceCheck event");
-        };
-        assert_eq!(sc.hostname(), None);
+        assert_eq!(event_hostname(&event).as_deref(), Some("fallback-host"));
     }
 
     #[test]

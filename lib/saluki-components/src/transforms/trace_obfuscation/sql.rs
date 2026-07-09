@@ -584,4 +584,19 @@ LIMIT 1000"#,
             assert_eq!(result.query, expected, "Failed for query: {}", query);
         }
     }
+
+    #[test]
+    fn table_names_are_collected_only_when_enabled() {
+        // `ObfuscatedSQL.table_names` is a comma-separated, deduplicated list of the tables referenced after
+        // FROM/JOIN, and is only populated when `table_names` is enabled.
+        let mut config = default_config();
+        config.table_names = true;
+        let result = obfuscate_sql_string("SELECT * FROM users JOIN orders ON users.id = orders.user_id", &config)
+            .expect("query should obfuscate");
+        assert_eq!(result.table_names, "users,orders");
+
+        // With the default config (collection disabled) the field stays empty.
+        let result = obfuscate_sql_string("SELECT * FROM users", &default_config()).expect("query should obfuscate");
+        assert_eq!(result.table_names, "");
+    }
 }

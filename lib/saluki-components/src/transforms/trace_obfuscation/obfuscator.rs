@@ -137,3 +137,46 @@ impl Obfuscator {
         Some(self.open_search_obfuscator.as_ref()?.obfuscate(query).into())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_obfuscators_are_gated_on_their_enabled_flag() {
+        // The facade only builds a sub-obfuscator when its `enabled` flag is set, so the mongo/es/opensearch methods
+        // return `None` (leave the query unchanged) when disabled.
+        let disabled = Obfuscator::new(ObfuscationConfig::default());
+        assert_eq!(disabled.obfuscate_mongodb_string(r#"{"foo": 1}"#), None);
+        assert_eq!(disabled.obfuscate_elasticsearch_string(r#"{"foo": 1}"#), None);
+        assert_eq!(disabled.obfuscate_opensearch_string(r#"{"foo": 1}"#), None);
+
+        // Once enabled, the JSON value is obfuscated to a placeholder.
+        let mut config = ObfuscationConfig::default();
+        config.mongo.enabled = true;
+        let enabled = Obfuscator::new(config);
+        let obfuscated = enabled
+            .obfuscate_mongodb_string(r#"{"foo": 1}"#)
+            .expect("mongo obfuscation should run when enabled");
+        assert!(
+            obfuscated.as_ref().contains('?') && !obfuscated.as_ref().contains('1'),
+            "expected the mongo value to be replaced with a placeholder, got {obfuscated}",
+        );
+    }
+
+    #[test]
+    fn credit_card_obfuscation_requires_enabled_flag() {
+        // Without the credit-card obfuscator (disabled), a valid card number is left unchanged.
+        let disabled = Obfuscator::new(ObfuscationConfig::default());
+        assert_eq!(disabled.obfuscate_credit_card_number("card", "4532123456789010"), None);
+
+        // Enabling credit-card obfuscation replaces a detected card number with the "?" placeholder.
+        let mut config = ObfuscationConfig::default();
+        config.credit_cards.enabled = true;
+        let enabled = Obfuscator::new(config);
+        assert_eq!(
+            enabled.obfuscate_credit_card_number("card", "4532123456789010"),
+            Some(MetaString::from("?")),
+        );
+    }
+}

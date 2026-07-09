@@ -4,8 +4,7 @@
 //! to their computed `Signature` hashes. This allows efficient lookup of sampling rates
 //! by service when building the rates-by-service response.
 //!
-//! Note: This module is infrastructure for the priority sampler. The types aren't yet
-//! integrated into the main sampling pipeline.
+//! The priority sampler uses this catalog to build its rates-by-service response.
 use lru_slab::LruSlab;
 use saluki_common::collections::FastHashMap;
 use tracing::warn;

@@ -260,3 +260,37 @@ impl Sampler {
         self.seen.len() as i64
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Mirrors DataDog/datadog-agent pkg/trace/sampler/coresampler.go computeTPSPerSig.
+    #[test]
+    fn compute_tps_per_sig_redistributes_unused_budget() {
+        // The exact worked example from the function's own doc comment: the low-volume signatures (5 and 10 TPS) use
+        // up their share, leaving the remaining budget (15) as the per-signature target for the high-volume one.
+        assert_eq!(compute_tps_per_sig(30.0, &[5.0, 10.0, 100.0]), 15.0);
+
+        // When every signature is above the initial uniform budget, the target is simply target_tps / count.
+        assert_eq!(compute_tps_per_sig(30.0, &[100.0, 100.0, 100.0]), 10.0);
+
+        // No signatures seen yields a zero target.
+        assert_eq!(compute_tps_per_sig(30.0, &[]), 0.0);
+    }
+
+    // Mirrors DataDog/datadog-agent pkg/trace/sampler/coresampler.go zeroAndGetMax.
+    #[test]
+    fn zero_and_get_max_handles_full_rotation_and_window_max() {
+        // A gap larger than the whole window (a "complete rotation") zeroes every bucket and reports a max of zero.
+        let mut buckets = [10.0_f32, 20.0, 30.0, 40.0, 50.0, 60.0];
+        assert_eq!(zero_and_get_max(&mut buckets, 0, 100), 0.0);
+        assert_eq!(buckets, [0.0; NUM_BUCKETS]);
+
+        // Advancing by a single bucket returns the max count across the in-window buckets, and zeroes only the slot of
+        // the new bucket so the next interval starts fresh.
+        let mut buckets = [10.0_f32, 20.0, 30.0, 40.0, 50.0, 60.0];
+        assert_eq!(zero_and_get_max(&mut buckets, 5, 6), 60.0);
+        assert_eq!(buckets[0], 0.0);
+    }
+}

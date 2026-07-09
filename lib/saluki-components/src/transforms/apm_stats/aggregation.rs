@@ -833,4 +833,66 @@ mod tests {
             }
         }
     }
+
+    fn aggregation(service: &str) -> Aggregation {
+        Aggregation {
+            bucket_key: BucketsAggregationKey {
+                service: MetaString::from(service),
+                ..Default::default()
+            },
+            payload_key: PayloadAggregationKey::default(),
+        }
+    }
+
+    // The `AggregationRegistry` is an ADP-specific memory optimization (hash-keyed, ref-counted, shared aggregation
+    // keys) with no direct Go trace-agent counterpart; these tests exercise the ref-counting/eviction/dedup contract
+    // documented on the type. `len()`/`is_empty()` are otherwise production-dead accessors kept for this observation.
+    #[test]
+    fn aggregation_registry_reference_counts_and_evicts_keys() {
+        let mut registry = AggregationRegistry::new();
+        assert!(registry.is_empty());
+
+        let key = aggregation("web");
+        let hash = AggregationRegistry::hash_key(&key);
+
+        // Two buckets referencing the same key store it once (deduplicated) with a reference count of two.
+        registry.insert_or_increment(hash, key.clone());
+        registry.insert_or_increment(hash, key.clone());
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.get(hash), Some(&key));
+
+        // The first decrement drops the count to one, so the key is retained.
+        registry.decrement(hash);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.get(hash), Some(&key));
+
+        // The second decrement drops the count to zero, evicting the key.
+        registry.decrement(hash);
+        assert!(registry.is_empty());
+        assert_eq!(registry.get(hash), None);
+
+        // Decrementing an already-absent key is a saturating no-op, not a panic or underflow.
+        registry.decrement(hash);
+        assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn aggregation_registry_tracks_distinct_keys_independently() {
+        let mut registry = AggregationRegistry::new();
+        let web = aggregation("web");
+        let db = aggregation("db");
+        let web_hash = AggregationRegistry::hash_key(&web);
+        let db_hash = AggregationRegistry::hash_key(&db);
+        assert!(web_hash != db_hash, "distinct aggregation keys must hash distinctly");
+
+        registry.insert_or_increment(web_hash, web);
+        registry.insert_or_increment(db_hash, db.clone());
+        assert_eq!(registry.len(), 2);
+
+        // Evicting one key leaves the other, independently reference-counted, key intact.
+        registry.decrement(web_hash);
+        assert_eq!(registry.len(), 1);
+        assert_eq!(registry.get(web_hash), None);
+        assert_eq!(registry.get(db_hash), Some(&db));
+    }
 }

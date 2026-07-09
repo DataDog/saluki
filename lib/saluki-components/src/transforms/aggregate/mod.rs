@@ -962,13 +962,13 @@ mod tests {
         (dispatcher, DispatcherReceiver { receiver: buffer_rx })
     }
 
-    async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+    async fn flush_state(timestamp: u64, flush_open_buckets: bool, state: &mut AggregationState) -> Vec<Metric> {
         let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
         let mut buffered_dispatcher = dispatcher.buffered().expect("default output should always exist");
 
         // Flush the metrics to an event buffer.
         state
-            .flush(timestamp, true, &mut buffered_dispatcher)
+            .flush(timestamp, flush_open_buckets, &mut buffered_dispatcher)
             .await
             .expect("should not fail to flush aggregation state");
 
@@ -980,6 +980,10 @@ mod tests {
             .expect("should not fail to flush buffered sender");
 
         dispatcher_receiver.collect_next()
+    }
+
+    async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+        flush_state(timestamp, true, state).await
     }
 
     macro_rules! compare_points {
@@ -1097,6 +1101,73 @@ mod tests {
                 flush_open_buckets
             );
         }
+    }
+
+    #[test]
+    fn try_split_timestamped_values_partitions_by_timestamp() {
+        // A fully-timestamped metric is emitted entirely as a passthrough, with nothing left to aggregate.
+        let (passthrough, to_aggregate) = try_split_timestamped_values(Metric::gauge("all.ts", (100u64, 5.0)));
+        assert!(passthrough
+            .expect("fully-timestamped metric must pass through")
+            .values()
+            .all_timestamped());
+        assert!(to_aggregate.is_none());
+
+        // A metric with no timestamped values has nothing to pass through and is aggregated in full.
+        let (passthrough, to_aggregate) = try_split_timestamped_values(Metric::gauge("no.ts", 5.0));
+        assert!(passthrough.is_none());
+        assert!(!to_aggregate
+            .expect("untimestamped metric must be aggregated")
+            .values()
+            .any_timestamped());
+
+        // A mixed metric is split: the timestamped value becomes a passthrough, the untimestamped value stays behind to
+        // be aggregated, and both retain the original context.
+        let mut mixed = Metric::gauge("mixed.ts", 1.0);
+        mixed
+            .values_mut()
+            .merge(MetricValues::Gauge(ScalarPoints::from((200u64, 2.0))));
+        assert!(
+            mixed.values().any_timestamped() && !mixed.values().all_timestamped(),
+            "precondition: the mixed metric carries both a timestamped and an untimestamped value",
+        );
+
+        let (passthrough, to_aggregate) = try_split_timestamped_values(mixed);
+        let passthrough = passthrough.expect("mixed metric must yield a timestamped passthrough");
+        let to_aggregate = to_aggregate.expect("mixed metric must yield an aggregatable remainder");
+        assert!(passthrough.values().all_timestamped());
+        assert!(!to_aggregate.values().any_timestamped());
+        assert_eq!(passthrough.context(), to_aggregate.context());
+        assert_eq!(passthrough.context().name().as_ref(), "mixed.ts");
+    }
+
+    #[tokio::test]
+    async fn flush_retains_open_buckets_when_flush_open_buckets_is_false() {
+        // Exercises the documented default (`flush_open_buckets = false`) end-to-end: a bucket that is still open at
+        // flush time is retained, and only emitted once its window has fully elapsed.
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        let input = Metric::gauge("open.bucket.gauge", 5.0);
+        assert!(state.insert(insert_ts(1), input.clone()));
+
+        // The bucket [10, 20) is still open at insert_ts(1) (=18), so flushing with open buckets excluded emits nothing.
+        let flushed = flush_state(insert_ts(1), false, &mut state).await;
+        assert!(
+            flushed.is_empty(),
+            "an open bucket must be retained when flush_open_buckets is false"
+        );
+
+        // Once current time reaches the next bucket boundary (flush_ts(1) = 20), the bucket has closed and the retained
+        // gauge is emitted at the bucket start timestamp.
+        let flushed = flush_state(flush_ts(1), false, &mut state).await;
+        assert_eq!(flushed.len(), 1);
+        assert_flushed_scalar_metric!(&input, &flushed[0], [bucket_ts(1) => 5.0]);
     }
 
     #[tokio::test]

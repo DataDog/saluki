@@ -608,3 +608,51 @@ fn is_digit(ch: char) -> bool {
 fn is_letter(ch: char) -> bool {
     ch.is_ascii_alphabetic()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scan_all(sql: &str) -> (Vec<(TokenKind, String)>, Option<String>) {
+        let config = SqlObfuscationConfig::default();
+        let mut tokenizer = SQLTokenizer::new(sql, false, &config);
+        let mut tokens = Vec::new();
+        loop {
+            let (kind, buf) = tokenizer.scan();
+            if kind == TokenKind::EndChar || kind == TokenKind::LexError {
+                break;
+            }
+            tokens.push((kind, String::from_utf8_lossy(buf).into_owned()));
+        }
+        (tokens, tokenizer.err().map(str::to_string))
+    }
+
+    #[test]
+    fn tokenizer_recognizes_keywords_identifiers_and_literals() {
+        // SQL keywords are matched case-insensitively and emitted as their dedicated token kinds; other identifiers are
+        // `ID`. Blanks are skipped and scanning stops cleanly at end of input with no lexer error.
+        let (tokens, err) = scan_all("SELECT id FROM users");
+        assert_eq!(
+            tokens,
+            vec![
+                (TokenKind::Select, "SELECT".to_string()),
+                (TokenKind::ID, "id".to_string()),
+                (TokenKind::From, "FROM".to_string()),
+                (TokenKind::ID, "users".to_string()),
+            ],
+        );
+        assert!(err.is_none(), "well-formed SQL should not produce a lexer error");
+
+        // Numeric literals scan as a single `Number` token carrying the digits.
+        let (tokens, _) = scan_all("SELECT 42");
+        assert!(
+            tokens.contains(&(TokenKind::Number, "42".to_string())),
+            "expected a Number token for the literal 42, got {tokens:?}",
+        );
+
+        // A single-quoted string literal scans as a single `String` token.
+        let (tokens, _) = scan_all("'abc'");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].0, TokenKind::String);
+    }
+}

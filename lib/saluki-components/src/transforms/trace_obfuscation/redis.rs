@@ -677,4 +677,52 @@ mod tests {
         let (tok, _, _) = tokenizer.scan();
         assert_eq!(tok, "\"value with spaces\"");
     }
+
+    // Valkey command obfuscation mirrors the Redis path: `obfuscate_valkey_string` is a near-verbatim duplicate of
+    // `obfuscate_redis_string` that differs only in its config type, so these cases mirror `test_redis_obfuscator`
+    // and `test_remove_all_redis_args`.
+    #[test]
+    fn test_valkey_obfuscator() {
+        let config = ValkeyObfuscationConfig {
+            enabled: true,
+            remove_all_args: false,
+        };
+        let cases = [
+            ("AUTH my-secret-password", "AUTH ?"),
+            ("AUTH james my-secret-password", "AUTH ?"),
+            ("AUTH", "AUTH"),
+            ("APPEND key value", "APPEND key ?"),
+            ("SET key value", "SET key ?"),
+            ("CONFIG SET parameter value", "CONFIG SET parameter ?"),
+            ("HSET key field1 value field2 value", "HSET key field1 ? field2 ?"),
+            ("MSET key value key value", "MSET key ? key ?"),
+        ];
+
+        for (input, expected) in cases {
+            let result = obfuscate_valkey_string(input, &config);
+            let final_value = result.as_ref().map(|m| m.as_ref()).unwrap_or(input);
+            assert_eq!(final_value, expected, "failed for valkey command: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_valkey_remove_all_args() {
+        let config = ValkeyObfuscationConfig {
+            enabled: true,
+            remove_all_args: true,
+        };
+        let cases = [
+            ("SET key value", "SET ?"),
+            ("GET k", "GET ?"),
+            ("MGET k1 k2 k3", "MGET ?"),
+            ("AUTH password", "AUTH ?"),
+            ("GET", "GET"),
+        ];
+
+        for (input, expected) in cases {
+            let result = obfuscate_valkey_string(input, &config);
+            let final_value = result.as_ref().map(|m| m.as_ref()).unwrap_or(input);
+            assert_eq!(final_value, expected, "failed for valkey command: {}", input);
+        }
+    }
 }

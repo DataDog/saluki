@@ -114,7 +114,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/small] `DogStatsDMapper`'s public `SynchronousTransform` entry point (`transform_buffer`) is never
     exercised by any test — only its internal helpers are.
 
-- [ ] **G7 — saluki-components transforms test cleanup**
+- [x] **G7 — saluki-components transforms test cleanup**
   (`tobz/test-cleanup-transforms-test-cleanup`, `test(components)`)
   aggregate, host_enrichment, chained, metric_router, checks_ipc, trace_obfuscation, trace_sampler, apm_stats
   - [low/trivial] `metric_router`'s `test_input_validation` inlines three near-identical validation cases instead

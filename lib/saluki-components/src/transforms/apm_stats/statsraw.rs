@@ -283,6 +283,28 @@ fn convert_to_ddsketch_proto_bytes(sketch: &ApmDDSketch) -> Vec<u8> {
 mod tests {
     use super::*;
 
+    /// Builds a `StatSpan` with the fixed service/resource/name used by the grain tests, varying only the three
+    /// fields those tests actually exercise: span kind, status code, and matching peer tags.
+    fn stat_span(span_kind: &str, status_code: u32, matching_peer_tags: Vec<MetaString>) -> StatSpan {
+        StatSpan {
+            service: MetaString::from("thing"),
+            resource: MetaString::from("yo"),
+            name: MetaString::from("other"),
+            typ: MetaString::default(),
+            span_kind: MetaString::from(span_kind),
+            status_code,
+            error: 0,
+            parent_id: 0,
+            start: 0,
+            duration: 0,
+            is_top_level: false,
+            matching_peer_tags,
+            grpc_status_code: MetaString::default(),
+            http_method: MetaString::default(),
+            http_endpoint: MetaString::default(),
+        }
+    }
+
     #[test]
     fn test_ns_timestamp_to_float() {
         let ns: u64 = 1_000_000_000;
@@ -326,23 +348,7 @@ mod tests {
 
     #[test]
     fn test_grain() {
-        let s = StatSpan {
-            service: MetaString::from("thing"),
-            name: MetaString::from("other"),
-            resource: MetaString::from("yo"),
-            typ: MetaString::default(),
-            span_kind: MetaString::default(),
-            status_code: 0,
-            error: 0,
-            parent_id: 0,
-            start: 0,
-            duration: 0,
-            is_top_level: false,
-            matching_peer_tags: Vec::new(),
-            grpc_status_code: MetaString::default(),
-            http_method: MetaString::default(),
-            http_endpoint: MetaString::default(),
-        };
+        let s = stat_span("", 0, Vec::new());
         let aggr = new_aggregation_from_span(
             &s,
             "",
@@ -367,23 +373,7 @@ mod tests {
     fn test_grain_with_peer_tags() {
         // none present - span.kind = client but no peer tags in meta
         {
-            let s = StatSpan {
-                service: MetaString::from("thing"),
-                name: MetaString::from("other"),
-                resource: MetaString::from("yo"),
-                typ: MetaString::default(),
-                span_kind: MetaString::from("client"),
-                status_code: 0,
-                error: 0,
-                parent_id: 0,
-                start: 0,
-                duration: 0,
-                is_top_level: false,
-                matching_peer_tags: Vec::new(), // no peer tags
-                grpc_status_code: MetaString::default(),
-                http_method: MetaString::default(),
-                http_endpoint: MetaString::default(),
-            };
+            let s = stat_span("client", 0, Vec::new());
             let aggr = new_aggregation_from_span(
                 &s,
                 "",
@@ -401,26 +391,14 @@ mod tests {
 
         // partially present - some peer tags
         {
-            let s = StatSpan {
-                service: MetaString::from("thing"),
-                name: MetaString::from("other"),
-                resource: MetaString::from("yo"),
-                typ: MetaString::default(),
-                span_kind: MetaString::from("client"),
-                status_code: 0,
-                error: 0,
-                parent_id: 0,
-                start: 0,
-                duration: 0,
-                is_top_level: false,
-                matching_peer_tags: vec![
+            let s = stat_span(
+                "client",
+                0,
+                vec![
                     MetaString::from("peer.service:aws-s3"),
                     MetaString::from("aws.s3.bucket:bucket-a"),
                 ],
-                grpc_status_code: MetaString::default(),
-                http_method: MetaString::default(),
-                http_endpoint: MetaString::default(),
-            };
+            );
             let aggr = new_aggregation_from_span(
                 &s,
                 "",
@@ -438,27 +416,15 @@ mod tests {
 
         // all present - multiple peer tags
         {
-            let s = StatSpan {
-                service: MetaString::from("thing"),
-                name: MetaString::from("other"),
-                resource: MetaString::from("yo"),
-                typ: MetaString::default(),
-                span_kind: MetaString::from("client"),
-                status_code: 0,
-                error: 0,
-                parent_id: 0,
-                start: 0,
-                duration: 0,
-                is_top_level: false,
-                matching_peer_tags: vec![
+            let s = stat_span(
+                "client",
+                0,
+                vec![
                     MetaString::from("peer.service:aws-dynamodb"),
                     MetaString::from("db.instance:dynamo.test.us1"),
                     MetaString::from("db.system:dynamodb"),
                 ],
-                grpc_status_code: MetaString::default(),
-                http_method: MetaString::default(),
-                http_endpoint: MetaString::default(),
-            };
+            );
             let aggr = new_aggregation_from_span(
                 &s,
                 "",
@@ -477,23 +443,7 @@ mod tests {
 
     #[test]
     fn test_grain_with_synthetics() {
-        let s = StatSpan {
-            service: MetaString::from("thing"),
-            name: MetaString::from("other"),
-            resource: MetaString::from("yo"),
-            typ: MetaString::default(),
-            span_kind: MetaString::default(),
-            status_code: 418,
-            error: 0,
-            parent_id: 0,
-            start: 0,
-            duration: 0,
-            is_top_level: false,
-            matching_peer_tags: Vec::new(),
-            grpc_status_code: MetaString::default(),
-            http_method: MetaString::default(),
-            http_endpoint: MetaString::default(),
-        };
+        let s = stat_span("", 418, Vec::new());
 
         // With synthetics origin
         let aggr = new_aggregation_from_span(
