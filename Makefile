@@ -83,7 +83,7 @@ export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
 export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.80.x
+export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.81.x
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
