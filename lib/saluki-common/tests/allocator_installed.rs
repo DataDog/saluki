@@ -5,7 +5,7 @@
 
 use std::alloc::System;
 
-use resource_accounting::{ResourceGroupRegistry, TrackingAllocator};
+use saluki_common::resource_tracking::{ResourceGroupRegistry, TrackingAllocator};
 
 #[global_allocator]
 static ALLOC: TrackingAllocator<System> = TrackingAllocator::new(System);

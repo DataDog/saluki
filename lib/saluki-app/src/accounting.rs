@@ -4,13 +4,13 @@ use std::{collections::VecDeque, env, fs, time::Duration};
 
 use bytesize::ByteSize;
 use metrics::{counter, gauge, Counter, Gauge, Level};
-use resource_accounting::{
-    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter, ResourceGroupRegistry,
-    ResourceStats, ResourceStatsSnapshot,
-};
 use saluki_api::{DynamicRoute, EndpointType};
+use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceStats, ResourceStatsSnapshot};
 use saluki_common::{collections::FastHashMap, sync::shutdown::ShutdownHandle};
 use saluki_config::GenericConfiguration;
+use saluki_core::accounting::{
+    ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
+};
 use saluki_core::{
     diagnostic::DiagnosticHandle,
     runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},

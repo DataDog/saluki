@@ -7,7 +7,6 @@ use std::{
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
-use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
@@ -34,6 +33,7 @@ use saluki_components::{
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;

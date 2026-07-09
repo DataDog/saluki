@@ -7,7 +7,7 @@ use std::{
 };
 
 use pin_project::{pin_project, pinned_drop};
-use resource_accounting::{ResourceGroupRegistry, ResourceGroupToken, Track as _, Tracked};
+use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceGroupToken, Track as _, Tracked};
 use stringtheory::MetaString;
 use tracing::{debug_span, instrument::Instrumented, Instrument as _};
 

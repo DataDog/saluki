@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_error::GenericError;
 
 use super::OutputDefinition;
+use crate::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use crate::{
     components::{
         decoders::*, destinations::*, encoders::*, forwarders::*, relays::*, sources::*, transforms::*,

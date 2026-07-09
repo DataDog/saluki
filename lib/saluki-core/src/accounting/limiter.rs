@@ -10,7 +10,7 @@ use metrics::gauge;
 use process_memory::Querier;
 use tracing::debug;
 
-use crate::MemoryGrant;
+use super::MemoryGrant;
 
 /// A process-wide memory limiter.
 ///

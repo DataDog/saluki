@@ -29,9 +29,9 @@ use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
 use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
-use resource_accounting::MemoryLimiter;
 use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_common::task::HandleExt as _;
+use saluki_core::accounting::MemoryLimiter;
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_error::{generic_error, GenericError};
@@ -342,7 +342,7 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 mod tests {
     use std::sync::Arc;
 
-    use resource_accounting::MemoryLimiter;
+    use saluki_core::accounting::MemoryLimiter;
     use saluki_core::{components::ComponentContext, support::SubsystemIdentifier, topology::ComponentId};
     use saluki_metrics::test::TestRecorder;
 

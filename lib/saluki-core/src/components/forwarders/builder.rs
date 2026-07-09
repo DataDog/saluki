@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use resource_accounting::MemoryBounds;
 use saluki_error::GenericError;
 
 use super::Forwarder;
+use crate::accounting::MemoryBounds;
 use crate::{components::ComponentContext, data_model::payload::PayloadType};
 
 /// A forwarder builder.

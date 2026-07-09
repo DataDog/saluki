@@ -13,11 +13,11 @@ use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLog
 use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
 use saluki_context::ContextResolver;
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
     components::{

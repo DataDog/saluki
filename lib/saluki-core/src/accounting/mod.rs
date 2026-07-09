@@ -1,110 +1,44 @@
-//! Building blocks for process-level resource accounting, including memory bounds enforcement and
-//! CPU usage tracking.
+//! Process-level memory bounds and limiting for components.
 //!
-//! # Overview
+//! This module lets components declare their expected memory usage and supports enforcing
+//! process-wide memory limits:
 //!
-//! This crate provides a four-pronged approach to process accounting:
+//! - **memory bounds**: components declare their _expected_ memory usage (a minimum required
+//!   amount and a firm limit) via the [`MemoryBounds`] trait and [`MemoryBoundsBuilder`],
+//! - **bounds verification**: [`BoundsVerifier`] checks that the combined bounds of all components
+//!   fit within a [`MemoryGrant`],
+//! - **memory limiting**: [`MemoryLimiter`] applies cooperative backpressure as the process
+//!   approaches a configured memory limit,
+//! - **component registry**: [`ComponentRegistry`] ties these together, providing a nestable
+//!   structure of components that can each declare bounds and register a resource group for
+//!   runtime usage tracking.
 //!
-//! - memory bounds (components declare their _expected_ memory usage)
-//! - allocation tracking (tracking _actual_ memory usage)
-//! - memory limiting (enforcing _maximum_ memory usage)
-//! - CPU tracking (tracking per-component CPU time consumption)
-//!
-//! Through this approach, data planes can be vastly more resilient to memory exhaustion or
-//! exceeding externally applied memory limits, and gain visibility into per-component CPU usage.
-//!
-//! # Memory bounds
-//!
-//! One major problem with resource planning is predicting memory usage. For many applications,
-//! there are a number of factors that can influence memory usage, such as:
-//!
-//! - the workload itself (amount of data coming in)
-//! - application configuration (buffer sizes)
-//! - application changes (new features, bug fixes)
-//!
-//! This requires additional effort by operators, potentially on an ongoing basis, to empirically
-//! determine the right amount of memory to dedicate. What if instead, an application could
-//! determine a reasonable upper bound on its memory usage based on its configuration and report
-//! that to the operator? This is the goal of memory bounds.
-//!
-//! Memory bounds are a way for components to declare their expected memory usage, categorized into
-//! both a minimum required amount and a firm limit. The minimum required amount is the amount of
-//! memory that's required for the component to function correctly, which generally encompasses
-//! things like pre-allocated buffers. The firm limit is meant to indicate the maximum amount of
-//! memory that the component should use, regardless of the workload.
-//!
-//! Providing firm limits does require some additional thought and care, as a component needs to be
-//! able to actually limit itself in order to adhere to those limits. While determining the
-//! bounds themselves is out of scope for this crate, our other two prongs are meant to pick up the
-//! slack where memory bounds fall off.
-//!
-//! # Allocation tracking
-//!
-//! As memory bounds are inherently lossy, and not everything can be fully bounded, we need a way to
-//! track the actual memory used against the expected memory usage. This is where allocation
-//! tracking comes into play and offers a very precise view into per-component memory usage.
-//!
-//! A custom allocator is provided that tracks all memory allocations, and more specifically,
-//! attributes them to a set of registered components. Components register with the allocator and
-//! receive a "token" that can be used to scope allocations to that component.
-//!
-//! By tracking allocations in this way, we end up with the actual usage of each component, which
-//! can then be compared against the memory bounds to determine if a component is exceeding its
-//! bounds or not. In cases where a component is exceeding its bounds, or the application as a whole
-//! is exceeding its configured limit, we need a way to attempt to enforce those limits.
-//!
-//! # Memory limiting
-//!
-//! When the application is approaching its configured memory limit, or is exceeding the limit, a
-//! mechanism is needed to slow down the rate of memory growth. The global memory limiter is a
-//! mechanism for cooperatively applying backpressure in order to limit the rate of work, and
-//! thereby limit the rate of allocations. Components participate by utilizing the global memory
-//! limiter, which conditionally applies small delays in order to artificially generate backpressure.
-//!
-//! # CPU tracking
-//!
-//! CPU tracking provides per-component visibility into CPU time consumption. When running on supported
-//! operating systems, we can granularly track the amount of CPU time spent on a per-thread basis, which
-//! allows us to track CPU usage for resource groups in the same way we track allocations: through the
-//! [`Tracked`] future wrapper.
-//!
-//! This allows operators to understand which components are consuming the most CPU time, aiding in
-//! capacity planning and performance optimization.
-//!
-//! CPU usage tracking is only available on Linux.
-#![deny(warnings)]
-#![deny(missing_docs)]
+//! Actual (as opposed to expected) memory usage and CPU time are tracked separately via the
+//! resource-tracking primitives in [`saluki_common::resource_tracking`]; the tracking allocator
+//! found there must be installed as the global allocator for runtime usage to be attributed to
+//! registered components.
 
 use std::collections::HashMap;
 
 use serde::Serialize;
 
-#[cfg(test)]
-pub mod test_util;
-
-mod allocator;
-pub use self::allocator::TrackingAllocator;
-
 mod api;
 pub use self::api::ResourceAPIHandler;
-
-mod registry;
-pub use self::registry::{ComponentRegistry, ComponentRegistryHandle, MemoryBoundsBuilder};
 
 mod grant;
 pub use self::grant::MemoryGrant;
 
-mod groups;
-pub use self::groups::{ResourceGroupRegistry, ResourceGroupToken, ResourceTrackingGuard, Track, Tracked};
-
 mod limiter;
 pub use self::limiter::MemoryLimiter;
 
-mod stats;
-pub use self::stats::{ResourceStats, ResourceStatsSnapshot};
+mod registry;
+pub use self::registry::{ComponentRegistry, ComponentRegistryHandle, MemoryBoundsBuilder};
 
 mod verifier;
 pub use self::verifier::{BoundsVerifier, VerifiedBounds, VerifierError};
+
+#[cfg(test)]
+pub(crate) mod test_util;
 
 /// Memory bounds for a component.
 ///

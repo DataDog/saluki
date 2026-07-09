@@ -50,7 +50,6 @@ prost = { workspace = true }
 protobuf = { workspace = true }
 rand = { workspace = true, features = ["std", "std_rng"] }
 regex = { workspace = true, features = ["unicode-perl"] }
-resource-accounting = { workspace = true }
 rmp-serde = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-api = { workspace = true }

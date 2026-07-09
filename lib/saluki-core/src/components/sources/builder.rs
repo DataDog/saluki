@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use resource_accounting::MemoryBounds;
 use saluki_error::GenericError;
 
 use super::Source;
+use crate::accounting::MemoryBounds;
 use crate::{components::ComponentContext, data_model::event::EventType, topology::OutputDefinition};
 
 /// A source builder.

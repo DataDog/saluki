@@ -1,7 +1,7 @@
 use bytesize::ByteSize;
 use snafu::Snafu;
 
-use crate::{ComponentBounds, MemoryGrant};
+use super::{ComponentBounds, MemoryGrant};
 
 /// A verification error.
 #[derive(Debug, Eq, PartialEq, Snafu)]
@@ -133,7 +133,7 @@ impl BoundsVerifier {
 #[cfg(test)]
 mod tests {
     use super::{BoundsVerifier, VerifiedBounds, VerifierError};
-    use crate::{
+    use crate::accounting::{
         test_util::{get_component_bounds, BoundedComponent},
         MemoryGrant,
     };

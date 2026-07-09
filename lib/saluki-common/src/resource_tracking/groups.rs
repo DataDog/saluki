@@ -11,8 +11,7 @@ use std::{
 
 use pin_project::pin_project;
 
-use super::stats::thread_cpu_time_nanos;
-use crate::ResourceStats;
+use super::stats::{thread_cpu_time_nanos, ResourceStats};
 
 static REGISTRY: OnceLock<ResourceGroupRegistry> = OnceLock::new();
 static ROOT_GROUP: ResourceStats = ResourceStats::new();
@@ -49,7 +48,7 @@ impl ResourceGroupToken {
     }
 
     /// Returns the token for the root resource group.
-    pub(crate) fn root() -> Self {
+    pub fn root() -> Self {
         Self::new(NonNull::from(&ROOT_GROUP))
     }
 
@@ -165,7 +164,7 @@ pub trait Track: Sized {
     /// # Examples
     ///
     /// ```rust
-    /// use resource_accounting::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
+    /// use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
     ///
     /// # async fn doc() {
     /// let future = async {
@@ -191,7 +190,7 @@ pub trait Track: Sized {
     /// # Examples
     ///
     /// ```rust
-    /// use resource_accounting::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
+    /// use saluki_common::resource_tracking::{ResourceGroupRegistry, ResourceGroupToken, Track as _};
     ///
     /// # mod tokio {
     /// #     pub(super) fn spawn(_: impl std::future::Future) {}
@@ -241,7 +240,7 @@ impl<T: Sized> Track for T {}
 ///
 /// ## Memory usage
 ///
-/// In order for memory usage to be tracked, [`TrackingAllocator`][crate::allocator::TrackingAllocator] must be installed
+/// In order for memory usage to be tracked, [`TrackingAllocator`][super::TrackingAllocator] must be installed
 /// as the global allocator for the process.
 ///
 /// ## CPU usage

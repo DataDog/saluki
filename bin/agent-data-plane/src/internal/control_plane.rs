@@ -1,11 +1,11 @@
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
-use resource_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
     accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,
     logging::LoggingOverrideController,
 };
 use saluki_config::GenericConfiguration;
+use saluki_core::accounting::ComponentRegistry;
 use saluki_core::{
     health::HealthRegistry,
     runtime::{RestartStrategy, RuntimeConfiguration, Supervisor},

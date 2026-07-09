@@ -2,12 +2,12 @@
 
 use std::{future::Future, num::NonZeroUsize, time::Duration};
 
-use resource_accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
     origin::{OriginTagCardinality, RawOrigin},
     tags::SharedTagSet,
 };
+use saluki_core::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     health::{Health, HealthRegistry},
     runtime::{RestartStrategy, Supervisor},
