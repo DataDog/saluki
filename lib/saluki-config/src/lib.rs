@@ -2,7 +2,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, RwLock};
 use std::{borrow::Cow, collections::HashSet};
 
 pub use figment::value;
@@ -448,9 +448,10 @@ impl ConfigurationLoader {
             maybe_sender = Some(sender);
         }
 
-        static ENV_MUTEX: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
-
-        let guard = ENV_MUTEX.get_or_init(|| std::sync::Mutex::new(())).lock().unwrap();
+        // All tests that mutate process-wide environment variables while loading configuration serialize against a
+        // single shared lock (see `test_env_lock`), so that tests in other modules and crates can't race with the
+        // env-var manipulation below.
+        let guard = test_env_lock().lock().unwrap();
 
         if let Some(pairs) = env_vars.as_ref() {
             for (k, v) in pairs.iter() {
@@ -487,6 +488,39 @@ impl ConfigurationLoader {
 
         (cfg, maybe_sender)
     }
+}
+
+/// Returns the process-global lock that serializes tests which mutate environment variables while loading
+/// configuration.
+///
+/// [`ConfigurationLoader::for_tests`] and [`ConfigurationLoader::for_tests_with_provider_factory`] set and unset
+/// process-wide environment variables to simulate `DD_`-prefixed configuration, and providers such as the Datadog
+/// environment-variable remapper read those same variables via [`std::env::vars`]. Because the process environment
+/// is global mutable state, any test in any crate that reads or writes environment variables relevant to
+/// configuration loading MUST hold this lock for the duration of that access, so that all such tests serialize
+/// against each other rather than racing.
+///
+/// This is exposed publicly so that tests in downstream crates can serialize against the same single lock that the
+/// loader itself uses, instead of each hand-rolling an independent (and therefore non-serializing) mutex.
+pub fn test_env_lock() -> &'static std::sync::Mutex<()> {
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    &ENV_MUTEX
+}
+
+/// Builds a [`GenericConfiguration`] from an in-memory JSON body, for use in tests.
+///
+/// This is a thin convenience wrapper around [`ConfigurationLoader::for_tests`] for the common case of a test that
+/// only needs file-based configuration values, with no environment variables and no dynamic configuration. The
+/// dynamic-configuration sender that `for_tests` can optionally return is unused in that case and is discarded here.
+///
+/// Callers that need a typed configuration should build it from the returned [`GenericConfiguration`] (for example,
+/// via a `SomeConfiguration::from_configuration` constructor or [`GenericConfiguration::as_typed`]).
+///
+/// This is exposed publicly so that tests in downstream crates can share a single loader helper instead of
+/// re-implementing it per file.
+pub async fn config_from(file_values: serde_json::Value) -> GenericConfiguration {
+    let (config, _) = ConfigurationLoader::for_tests(Some(file_values), None, false).await;
+    config
 }
 
 fn build_figment_from_sources(sources: &[ProviderSource]) -> Figment {

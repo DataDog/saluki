@@ -204,11 +204,24 @@ pub struct DatadogRemapper {
 }
 
 impl DatadogRemapper {
-    /// Constructs a `DatadogRemapper` by eagerly snapshotting env var remappings.
+    /// Constructs a `DatadogRemapper` by eagerly snapshotting env var remappings from the current process
+    /// environment.
     pub fn new() -> Self {
+        Self::from_env_vars(std::env::vars())
+    }
+
+    /// Constructs a `DatadogRemapper` from an explicit set of environment variable name/value pairs.
+    ///
+    /// Names are matched case-insensitively against [`ENV_REMAPPINGS`]. When more than one name maps to the same
+    /// canonical key (for example, both `HTTP_PROXY` and `http_proxy` map to `proxy_http`), the first matching name
+    /// encountered wins and later matches are ignored.
+    fn from_env_vars<I>(env_vars: I) -> Self
+    where
+        I: IntoIterator<Item = (String, String)>,
+    {
         let mut values = serde_json::Map::new();
 
-        for (env_key, env_value) in std::env::vars() {
+        for (env_key, env_value) in env_vars {
             let lower = env_key.to_lowercase();
             for &(from, to) in ENV_REMAPPINGS {
                 if lower == from && !values.contains_key(to) {
@@ -242,13 +255,15 @@ impl Provider for DatadogRemapper {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use saluki_config::test_env_lock;
 
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::*;
 
     #[test]
     fn env_var_remapped_case_insensitively() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        // Serialize against the single shared lock the configuration loader itself uses, so this process-wide env
+        // mutation can't race with other env-mutating configuration tests in this crate or any other.
+        let _guard = test_env_lock().lock().unwrap();
 
         std::env::set_var("HTTP_PROXY", "http://proxy.example.com");
         let remapper = DatadogRemapper::new();
@@ -262,7 +277,7 @@ mod tests {
 
     #[test]
     fn env_var_not_remapped_when_absent() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = test_env_lock().lock().unwrap();
 
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("http_proxy");
@@ -273,5 +288,22 @@ mod tests {
 
         assert!(remapper.values.get("proxy_http").is_none());
         assert!(remapper.values.get("proxy_https").is_none());
+    }
+
+    #[test]
+    fn first_matching_env_var_wins_for_remapped_key() {
+        // `HTTP_PROXY` and `http_proxy` both remap to the canonical `proxy_http` key. The `!values.contains_key`
+        // guard means the first matching name encountered wins and any later match is ignored. Feeding an
+        // explicitly-ordered iterator makes this deterministic, independent of `std::env::vars` ordering (and so
+        // this case needs no process-env mutation or lock).
+        let remapper = DatadogRemapper::from_env_vars([
+            ("HTTP_PROXY".to_string(), "http://first.example.com".to_string()),
+            ("http_proxy".to_string(), "http://second.example.com".to_string()),
+        ]);
+
+        assert_eq!(
+            remapper.values.get("proxy_http").and_then(|v| v.as_str()),
+            Some("http://first.example.com"),
+        );
     }
 }
