@@ -193,3 +193,113 @@ pub struct RemappedMetric {
     /// The remapped tags in `key:value` (or bare) format.
     pub tags: Vec<MetaString>,
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_context::Context;
+
+    use super::*;
+
+    struct MatchCase {
+        description: &'static str,
+        rule: RemapperRule,
+        context: Context,
+        expected_name: Option<&'static str>,
+    }
+
+    #[test]
+    fn matches_by_name_and_required_tags() {
+        let cases = [
+            MatchCase {
+                description: "by_name matches on the metric name alone",
+                rule: RemapperRule::by_name("src.metric", "dst.metric"),
+                context: Context::from_static_parts("src.metric", &["env:prod"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "by_name rejects a different metric name",
+                rule: RemapperRule::by_name("src.metric", "dst.metric"),
+                context: Context::from_static_parts("other.metric", &["env:prod"]),
+                expected_name: None,
+            },
+            MatchCase {
+                description: "by_name_and_tags matches when every required tag is present",
+                rule: RemapperRule::by_name_and_tags("src.metric", &["env:prod", "role:api"], "dst.metric"),
+                context: Context::from_static_parts("src.metric", &["env:prod", "role:api", "extra:1"]),
+                expected_name: Some("dst.metric"),
+            },
+            MatchCase {
+                description: "by_name_and_tags rejects when a required tag has a different value",
+                rule: RemapperRule::by_name_and_tags("src.metric", &["env:prod"], "dst.metric"),
+                context: Context::from_static_parts("src.metric", &["env:dev"]),
+                expected_name: None,
+            },
+            MatchCase {
+                description: "by_name_and_tags rejects when only one of several required tags is present",
+                rule: RemapperRule::by_name_and_tags("src.metric", &["env:prod", "role:api"], "dst.metric"),
+                context: Context::from_static_parts("src.metric", &["env:prod"]),
+                expected_name: None,
+            },
+        ];
+
+        for case in cases {
+            let actual = case
+                .rule
+                .try_match_no_context(&case.context)
+                .map(|remapped| remapped.name);
+            assert_eq!(actual, case.expected_name, "case: {}", case.description);
+        }
+    }
+
+    fn remapped_tags(rule: &RemapperRule, context: &Context) -> Vec<String> {
+        rule.try_match_no_context(context)
+            .expect("rule should match")
+            .tags
+            .iter()
+            .map(|tag| tag.as_ref().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn copies_original_tags_and_renames_remapped_tags() {
+        // `with_original_tags` copies a tag unchanged; `with_remapped_tags` copies its value under a new
+        // key. Output order follows the rule's configured order, not the source metric's tag order.
+        let rule = RemapperRule::by_name("src.metric", "dst.metric")
+            .with_original_tags(["region"])
+            .with_remapped_tags([("host", "hostname")]);
+        let context = Context::from_static_parts("src.metric", &["region:us-east-1", "host:web01"]);
+
+        assert_eq!(remapped_tags(&rule, &context), ["region:us-east-1", "hostname:web01"]);
+    }
+
+    #[test]
+    fn appends_additional_fixed_tags_after_copied_tags() {
+        let rule = RemapperRule::by_name("src.metric", "dst.metric")
+            .with_original_tags(["region"])
+            .with_additional_tags(["source:internal"]);
+        let context = Context::from_static_parts("src.metric", &["region:us-east-1"]);
+
+        assert_eq!(remapped_tags(&rule, &context), ["region:us-east-1", "source:internal"]);
+    }
+
+    #[test]
+    fn skips_remapped_tags_absent_from_the_source_metric() {
+        // The `host` tag isn't present on the source metric, so it contributes no remapped tag.
+        let rule = RemapperRule::by_name("src.metric", "dst.metric").with_remapped_tags([("host", "hostname")]);
+        let context = Context::from_static_parts("src.metric", &["region:us-east-1"]);
+
+        assert!(remapped_tags(&rule, &context).is_empty());
+    }
+
+    #[test]
+    fn exposes_continue_matching_and_help_text_accessors() {
+        let rule = RemapperRule::by_name("src.metric", "dst.metric");
+        assert_eq!(rule.remapped_name(), "dst.metric");
+        assert!(!rule.should_continue_matching());
+        assert_eq!(rule.help_text(), None);
+
+        let rule = rule.with_continued_matching().with_help_text("some help text");
+        assert!(rule.should_continue_matching());
+        assert_eq!(rule.help_text(), Some("some help text"));
+    }
+}

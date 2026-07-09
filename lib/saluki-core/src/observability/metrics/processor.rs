@@ -167,28 +167,13 @@ fn split_tags(tags: &[MetaString]) -> impl Iterator<Item = (&str, &str)> {
 mod tests {
     use saluki_context::Context;
 
-    use super::super::aggregated::AggregatedMetricsProcessor;
-    use super::super::reflector::Processor as _;
-    use super::super::MetricsSnapshot;
+    use super::super::aggregate_upserts;
     use super::*;
     use crate::data_model::event::{metric::Metric, Event};
 
-    fn process_all(metrics: Vec<Event>) -> AggregatedMetricsState {
-        let processor = AggregatedMetricsProcessor;
-        let state = processor.build_initial_state();
-        processor.process(
-            MetricsSnapshot {
-                upserts: metrics,
-                evictions: Vec::new(),
-            },
-            &state,
-        );
-        state
-    }
-
     #[test]
     fn renders_counter_and_gauge_groups_without_rules() {
-        let state = process_all(vec![
+        let state = aggregate_upserts(vec![
             Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.requests_total", &["method:get"]),
                 10.0,
@@ -214,7 +199,7 @@ mod tests {
 
     #[test]
     fn renders_histogram_groups_without_rules() {
-        let state = process_all(vec![
+        let state = aggregate_upserts(vec![
             Event::Metric(Metric::histogram(
                 Context::from_static_parts("adp.latency_seconds", &["op:read"]),
                 [0.001, 0.002, 0.5],
@@ -238,7 +223,7 @@ mod tests {
 
     #[test]
     fn renders_only_matched_metrics_with_rules() {
-        let state = process_all(vec![
+        let state = aggregate_upserts(vec![
             Event::Metric(Metric::counter(
                 Context::from_static_parts("src.matched", &["component_id:x"]),
                 42.0,
@@ -263,7 +248,7 @@ mod tests {
 
     #[test]
     fn renders_histograms_through_rules() {
-        let state = process_all(vec![Event::Metric(Metric::histogram(
+        let state = aggregate_upserts(vec![Event::Metric(Metric::histogram(
             Context::from_static_parts("src.latency_seconds", &["op:read"]),
             [0.001, 0.5],
         ))]);
