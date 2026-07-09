@@ -628,4 +628,104 @@ mod tests {
         let _ = ComponentInterconnects::from_graph(interconnect_capacity, &topology_id, &graph)
             .expect("should build interconnects successfully");
     }
+
+    /// Builds a component-less `BuiltTopology` carrying only the given worker-pool configuration, for exercising
+    /// [`BuiltTopology::resolve_worker_pool_handle`] in isolation.
+    fn empty_built_topology(worker_pool_config: WorkerPoolConfiguration) -> BuiltTopology {
+        BuiltTopology::from_parts(
+            "test".to_string(),
+            SubsystemIdentifier::from_segments(["test"]),
+            Graph::default(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            HashMap::new(),
+            ComponentRegistry::default().token(),
+            NonZeroUsize::new(128).unwrap(),
+            worker_pool_config,
+        )
+    }
+
+    /// Spawns a task on `handle` and returns the name of the OS thread it ran on.
+    async fn spawned_task_thread_name(handle: Handle) -> Option<String> {
+        handle
+            .spawn(async { std::thread::current().name().map(String::from) })
+            .await
+            .expect("spawned task should complete")
+    }
+
+    #[test]
+    fn explicit_worker_pool_resolves_to_provided_runtime() {
+        // `WorkerPoolConfiguration::Explicit` resolves to the exact handle it was given: a task spawned on the resolved
+        // handle runs on the explicitly-provided runtime's (distinctly named) worker thread.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("explicit-pool")
+            .enable_all()
+            .build()
+            .expect("should build explicit runtime");
+
+        let built = empty_built_topology(WorkerPoolConfiguration::Explicit(rt.handle().clone()));
+        let resolved = built
+            .resolve_worker_pool_handle()
+            .expect("explicit handle should resolve");
+
+        let thread_name = rt.block_on(spawned_task_thread_name(resolved));
+        assert_eq!(thread_name.as_deref(), Some("explicit-pool"));
+    }
+
+    #[test]
+    fn ambient_worker_pool_resolves_to_current_runtime() {
+        // `WorkerPoolConfiguration::Ambient` resolves to `Handle::current()`: a task spawned on the resolved handle
+        // runs on the ambient runtime that was active when it was resolved.
+        let ambient = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("ambient-pool")
+            .enable_all()
+            .build()
+            .expect("should build ambient runtime");
+
+        let thread_name = ambient.block_on(async {
+            let built = empty_built_topology(WorkerPoolConfiguration::Ambient);
+            let resolved = built
+                .resolve_worker_pool_handle()
+                .expect("ambient handle should resolve");
+            spawned_task_thread_name(resolved).await
+        });
+        assert_eq!(thread_name.as_deref(), Some("ambient-pool"));
+    }
+
+    #[test]
+    fn dedicated_worker_pool_resolves_to_new_runtime() {
+        // `WorkerPoolConfiguration::Dedicated` resolves to a *new*, separate multi-threaded Tokio runtime: a task
+        // spawned on the resolved handle runs on that runtime's own (default-named) worker threads, not the ambient
+        // runtime it was resolved from.
+        let ambient = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("ambient-pool")
+            .enable_all()
+            .build()
+            .expect("should build ambient runtime");
+
+        let thread_name = ambient.block_on(async {
+            let built = empty_built_topology(WorkerPoolConfiguration::Dedicated);
+            let resolved = built
+                .resolve_worker_pool_handle()
+                .expect("dedicated handle should resolve");
+            spawned_task_thread_name(resolved).await
+        });
+
+        let thread_name = thread_name.expect("dedicated pool worker threads are named");
+        assert_ne!(
+            thread_name, "ambient-pool",
+            "dedicated pool must not reuse the ambient runtime"
+        );
+        assert!(
+            thread_name.contains("worker"),
+            "dedicated pool should run on its own Tokio worker thread, got {thread_name}"
+        );
+    }
 }

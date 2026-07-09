@@ -67,7 +67,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] Several small test groups differ only by an input value/scenario and duplicate setup —
     table-driven/merge candidates.
 
-- [ ] **G5 — saluki-core runtime supervision & topology test cleanup**
+- [x] **G5 — saluki-core runtime supervision & topology test cleanup**
   (`tobz/test-cleanup-runtime-topology-wait-until`, `test(core)`)
   - [medium/medium] No shared `wait_until`/`assert_eventually` helper exists repo-wide; bespoke polling loops and
     blind fixed-duration sleeps proliferate as startup/shutdown barriers instead of readiness polling (KI-7).

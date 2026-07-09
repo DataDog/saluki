@@ -444,6 +444,34 @@ mod tests {
         assert!(ComponentOutputId::try_from(".one_side_of_named_output_is_empty").is_err());
         assert!(ComponentOutputId::try_from("one_side_of_named_output_is_empty.").is_err());
     }
+
+    #[test]
+    fn component_output_id_from_definition() {
+        use crate::data_model::event::EventType;
+
+        let component_id = ComponentId::try_from("comp").expect("component ID should be valid");
+
+        // A default output yields the bare component ID.
+        let default_def = OutputDefinition::default_output(EventType::EventD);
+        let default_id =
+            ComponentOutputId::from_definition(component_id.clone(), &default_def).expect("default output is valid");
+        assert_eq!(default_id, ComponentOutputId::try_from("comp").unwrap());
+        assert!(default_id.is_default());
+
+        // A valid named output yields the `<component>.<output>` form.
+        let named_def = OutputDefinition::named_output("errors", EventType::EventD);
+        let named_id =
+            ComponentOutputId::from_definition(component_id.clone(), &named_def).expect("named output is valid");
+        assert_eq!(named_id, ComponentOutputId::try_from("comp.errors").unwrap());
+        assert!(!named_id.is_default());
+
+        // The documented `# Errors` branch: a named output whose generated ID is invalid (here, an embedded space) is
+        // rejected, returning the offending generated ID and the reason string.
+        let invalid_def = OutputDefinition::named_output("bad name", EventType::EventD);
+        let err = ComponentOutputId::from_definition(component_id, &invalid_def)
+            .expect_err("an invalid generated output ID must be rejected");
+        assert_eq!(err, ("comp.bad name".to_string(), INVALID_COMPONENT_OUTPUT_ID));
+    }
 }
 
 #[cfg(test)]
