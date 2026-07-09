@@ -149,12 +149,17 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] Forwarders' pure mapping/normalization functions are untested (otlp `normalize_endpoint`; datadog
     `get_dd_endpoint_name`/`transaction_metadata_from_payload_metadata`).
 
-- [ ] **G9 — Split oversized, multi-concern test functions into focused single-behavior tests**
+- [x] **G9 — Split oversized, multi-concern test functions into focused single-behavior tests**
   (`tobz/test-cleanup-split-oversized-multiconcern-tests`, `test(components)`)
   - [low/small] Test functions bundle multiple unrelated concerns/scenarios in one body instead of splitting or
     looping (KI-12), and sibling tests duplicate identical setup/driver/struct-literal scaffolding instead of
     sharing a helper — concretely, three otlp transform tests duplicate an identical `TestCase`-struct-and-loop
     table-driven harness that should itself be shared.
+    _Done: the three `common/otlp/traces/transform.rs` `get_otel_*` tests now share one `AttributeExtractionCase` +
+    `run_attribute_extraction_cases` harness. The encoders/metrics oversized functions (KI-12) were already resolved
+    by G8's request-builder harness extraction. A sweep surfaced a larger body of multi-case/duplicated-scaffold
+    tests in `sources/otlp/metrics/translator.rs` and `cache.rs`, but those are otlp-metrics-translation work and
+    were deferred to G13 (noted there) to keep all otlp-metrics test cleanup in one branch rather than splitting it._
 
 - [ ] **G10 — Fix vacuous/weak/tautological assertions and assertion-free proptests repo-wide**
   (`tobz/test-cleanup-fix-vacuous-assertions-sweep`, `test(repo)`)
@@ -214,6 +219,13 @@ otherwise keep hand-rolling the thing it replaces.
     fallback.
   - [low/trivial] The OTLP metrics config `validate()`'s documented histogram-mode/aggregation rejection rule is
     untested.
+  - [medium/medium] **Surfaced by G9's sweep (belongs here, not G9):** `sources/otlp/metrics/translator.rs` has ~11
+    large `test_map_*_monotonic_*` / `test_map_*_metrics` tests that each bundle 2-4 labeled `// Test Case N` blocks,
+    plus a ~40-way duplicated `Dimensions{..} + TranslationContext{..} + map_*_monotonic_metrics(..)` driver triple
+    that wants a shared `run_monotonic(name, slice)` helper; `sources/otlp/metrics/cache.rs`'s
+    `test_monotonic_diff_known_start` (3 phases in one body) / `test_monotonic_diff_unknown_start` share a duplicated
+    `Point`-table + `monotonic_diff` loop harness. Split the multi-case bodies into focused tests and extract the
+    shared driver.
 
 - [ ] **G14 — agent-data-plane filter components & OTTL processors test cleanup** (AU-25/AU-26)
   (`tobz/test-cleanup-adp-filters-ottl-processors-tests`, `test(agent-data-plane)`)
