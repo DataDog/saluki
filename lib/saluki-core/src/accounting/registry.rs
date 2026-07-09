@@ -10,6 +10,7 @@ use super::{
     api::ResourceAPIHandler, BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, UsageExpr, VerifiedBounds,
     VerifierError,
 };
+use crate::support::SubsystemIdentifier;
 
 pub(crate) struct ComponentMetadata {
     full_name: Option<String>,
@@ -175,19 +176,19 @@ impl ComponentRegistry {
         ComponentRegistryHandle { inner: self.get_root() }
     }
 
-    /// Gets a component by name, or creates it if it doesn't exist.
+    /// Gets the component identified by `id`, or creates it (along with any intermediate components) if it doesn't
+    /// exist.
     ///
-    /// The name provided can be given in a direct (`component_name`) or nested (`path.to.component_name`) form. If the
-    /// nested form is given, each component in the path will be created if it doesn't exist.
+    /// The identifier is resolved **relative to the component this registry is scoped to**: each segment descends one
+    /// level, creating missing levels along the way. Passing a fully qualified identifier to an already-scoped registry
+    /// therefore nests it beneath the current scope, so pass only the segments below the current scope (for the root
+    /// registry, that is the full identity).
     ///
     /// Returns a `ComponentRegistry` scoped to the component.
-    pub fn get_or_create<S>(&self, name: S) -> Self
-    where
-        S: AsRef<str>,
-    {
+    pub fn get_or_create(&self, id: &SubsystemIdentifier) -> Self {
         let mut inner = self.inner.lock().unwrap();
         Self {
-            inner: inner.get_or_create(name),
+            inner: inner.get_or_create(id.to_string()),
             root: Some(self.get_root()),
         }
     }
@@ -409,11 +410,16 @@ impl MemoryBoundsBuilder<'_> {
     ///
     /// This allows for defining the bounds of various subcomponents within a larger component, which are then rolled up
     /// into the calculated bounds for the parent component.
+    ///
+    /// `name` is a relative label (single segment, or a dotted path for further nesting) that is sanitized and appended
+    /// beneath the current component.
     pub fn subcomponent<S>(&mut self, name: S) -> MemoryBoundsBuilder<'_>
     where
         S: AsRef<str>,
     {
-        let component = self.inner.get_or_create(name);
+        let component = self
+            .inner
+            .get_or_create(&SubsystemIdentifier::from_dotted(name.as_ref()));
         MemoryBoundsBuilder {
             inner: component,
             _lt: PhantomData,
@@ -531,7 +537,7 @@ mod tests {
     #[test]
     fn root_handle_from_subcomponent_points_to_root() {
         let registry = ComponentRegistry::default();
-        let child = registry.get_or_create("child");
+        let child = registry.get_or_create(&SubsystemIdentifier::from_dotted("child"));
 
         let handle = child.root();
 
@@ -542,7 +548,9 @@ mod tests {
     #[test]
     fn root_handle_from_deeply_nested_subcomponent_points_to_root() {
         let registry = ComponentRegistry::default();
-        let grandchild = registry.get_or_create("child").get_or_create("grandchild");
+        let grandchild = registry
+            .get_or_create(&SubsystemIdentifier::from_dotted("child"))
+            .get_or_create(&SubsystemIdentifier::from_dotted("grandchild"));
 
         let handle = grandchild.root();
 
@@ -552,7 +560,7 @@ mod tests {
     #[test]
     fn root_handle_from_dotted_path_subcomponent_points_to_root() {
         let registry = ComponentRegistry::default();
-        let nested = registry.get_or_create("a.b.c");
+        let nested = registry.get_or_create(&SubsystemIdentifier::from_dotted("a.b.c"));
 
         let handle = nested.root();
 
@@ -562,7 +570,7 @@ mod tests {
     #[test]
     fn cloned_handle_points_to_root() {
         let registry = ComponentRegistry::default();
-        let child = registry.get_or_create("child");
+        let child = registry.get_or_create(&SubsystemIdentifier::from_dotted("child"));
 
         let handle = child.root();
         let cloned = handle.clone();

@@ -4,6 +4,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::EventType;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
+    support::SubsystemIdentifier,
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
@@ -96,7 +97,10 @@ impl Transform for Chained {
             .into_iter()
             .map(|(subtransform_id, subtransform)| {
                 (
-                    context.component_registry().get_or_create(subtransform_id).token(),
+                    context
+                        .component_registry()
+                        .get_or_create(&SubsystemIdentifier::from_dotted(&subtransform_id))
+                        .token(),
                     subtransform,
                 )
             })

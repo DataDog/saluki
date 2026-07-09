@@ -91,7 +91,7 @@ impl TopologyBlueprint {
     /// Creates an empty `TopologyBlueprint` with the given name.
     pub fn new(name: &str, component_registry: &ComponentRegistry) -> Self {
         let topology_id = topology_identifier(name);
-        let component_registry = component_registry.get_or_create(topology_id.to_string());
+        let component_registry = component_registry.get_or_create(&topology_id);
 
         let build_state = TopologyBuildState {
             topology_id,
@@ -466,7 +466,7 @@ impl TopologyBuildState {
         &self, component_type: ComponentType, component_id: &ComponentId,
     ) -> ComponentRegistry {
         self.component_registry
-            .get_or_create(get_component_relative_identifier(component_type, component_id).to_string())
+            .get_or_create(&get_component_relative_identifier(component_type, component_id))
     }
 
     fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<(), GenericError>
@@ -1538,8 +1538,8 @@ mod tests {
 
             // Resource accounting: when using relative subsystem identifiers in a nested fashion, we should end up with
             // a full name for a component node that matches the canonical identity.
-            let topology_registry = ComponentRegistry::default().get_or_create(topology_root.to_string());
-            let component_node = topology_registry.get_or_create(component_relative_id.to_string());
+            let topology_registry = ComponentRegistry::default().get_or_create(&topology_root);
+            let component_node = topology_registry.get_or_create(&component_relative_id);
             assert_eq!(
                 component_node.full_name().as_deref(),
                 Some(component_canonical_id.as_str()),

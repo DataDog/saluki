@@ -4,6 +4,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
+use saluki_core::support::SubsystemIdentifier;
 use saluki_env::{
     autodiscovery::providers::BoxedAutodiscoveryProvider,
     host::providers::{BoxedHostProvider, FixedHostProvider},
@@ -68,17 +69,21 @@ impl ADPEnvironmentProvider {
         }
 
         // Otherwise, construct our real providers that will interact directly with the Datadog Agent.
-        let mut provider_component = component_registry.get_or_create("env_provider");
+        //
+        // Each provider's component registry node is created in a single call from the root registry using its
+        // canonical subsystem identifier, rather than by chaining relative `get_or_create` calls to synthesize the
+        // intermediate scopes. The tree de-duplicates the shared `env_provider` prefix.
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
         let host_provider = RemoteAgentHostProvider::from_configuration(config).await?;
-        provider_component
+        component_registry
+            .get_or_create(&SubsystemIdentifier::from_segments(["env_provider"]))
             .bounds_builder()
             .with_subcomponent("host", &host_provider);
 
         let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
             config,
-            provider_component.get_or_create("workload"),
+            component_registry.get_or_create(&workload::workload_root()),
             health_registry,
         )
         .await?;
