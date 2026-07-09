@@ -347,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_multiple() {
+    fn aggregate_multiple() {
         let input_metrics = vec![
             Event::Metric(Metric::counter("counter", 14.0)),
             Event::Metric(Metric::gauge("gauge", 28.0)),
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_counters() {
+    fn aggregate_counters() {
         let input_metrics = vec![
             Event::Metric(Metric::counter("counter", 14.0)),
             Event::Metric(Metric::counter("counter", [(123456, 22.0)])),
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_gauges() {
+    fn aggregate_gauges() {
         let input_metrics = vec![
             Event::Metric(Metric::gauge("gauge", 14.0)),
             Event::Metric(Metric::gauge("gauge", [(123458, 44.0)])),
@@ -389,7 +389,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_gauges_bias_incoming() {
+    fn aggregate_gauges_bias_incoming() {
         let input_metrics = vec![
             Event::Metric(Metric::gauge("gauge", [(123456, 33.0)])),
             Event::Metric(Metric::gauge("gauge", [(123456, 66.0)])),
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_type_change() {
+    fn aggregate_type_change() {
         // When aggregating metrics with identical contexts but different types (i.e. counter vs gauge), the aggregated
         // metric should be the last type seen.
         let input_metrics = vec![
@@ -415,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn test_aggregate_histograms() {
+    fn aggregate_histograms() {
         // Histograms with the same context should merge: counts, sums, and per-bucket counts accumulate.
         let input_metrics = vec![
             Event::Metric(Metric::histogram("h", [1.0, 2.0, 3.0])),
@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn test_evict_removes_metric() {
+    fn evict_removes_metric() {
         let processor = AggregatedMetricsProcessor;
         let state = processor.build_initial_state();
 

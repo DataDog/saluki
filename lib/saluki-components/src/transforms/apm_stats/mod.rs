@@ -1484,30 +1484,28 @@ mod tests {
         );
     }
 
-    #[test_strategy::proptest]
-    #[cfg_attr(miri, ignore)]
-    fn property_test_split_respects_max_entries(
-        #[strategy(arb_split_inputs())] inputs: (Vec<ClientStatsPayload>, usize),
-    ) {
-        let (payloads, max_entries_per_event) = inputs;
+    proptest! {
+        #[test]
+        #[cfg_attr(miri, ignore)]
+        fn property_test_split_respects_max_entries((payloads, max_entries_per_event) in arb_split_inputs()) {
+            let input_total: usize = payloads.iter().flat_map(|p| p.stats()).map(|b| b.stats().len()).sum();
 
-        let input_total: usize = payloads.iter().flat_map(|p| p.stats()).map(|b| b.stats().len()).sum();
+            let result = split_into_trace_stats(payloads, max_entries_per_event);
 
-        let result = split_into_trace_stats(payloads, max_entries_per_event);
+            // Property 1: No TraceStats should exceed max_entries_per_event
+            for trace_stats in &result {
+                let count = count_grouped_stats(trace_stats);
+                prop_assert!(
+                    count <= max_entries_per_event,
+                    "TraceStats has {} grouped stats, exceeds max of {}",
+                    count,
+                    max_entries_per_event
+                );
+            }
 
-        // Property 1: No TraceStats should exceed max_entries_per_event
-        for trace_stats in &result {
-            let count = count_grouped_stats(trace_stats);
-            prop_assert!(
-                count <= max_entries_per_event,
-                "TraceStats has {} grouped stats, exceeds max of {}",
-                count,
-                max_entries_per_event
-            );
+            // Property 2: Total stats should be preserved
+            let output_total: usize = result.iter().map(count_grouped_stats).sum();
+            prop_assert_eq!(input_total, output_total, "Total stats count should be preserved");
         }
-
-        // Property 2: Total stats should be preserved
-        let output_total: usize = result.iter().map(count_grouped_stats).sum();
-        prop_assert_eq!(input_total, output_total, "Total stats count should be preserved");
     }
 }

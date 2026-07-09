@@ -511,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn test_as_local_connect_addr() {
+    fn as_local_connect_addr() {
         let tcp_any_addr = ListenAddress::try_from("tcp://0.0.0.0:1234").unwrap();
         assert_eq!(
             tcp_any_addr.as_local_connect_addr(),

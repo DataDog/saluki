@@ -606,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn test_user_priority_detection() {
+    fn user_priority_detection() {
         let sampler = create_test_sampler();
 
         // Test trace with user-set priority = 2 (UserKeep)
@@ -636,7 +636,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trace_level_priority_takes_precedence() {
+    fn trace_level_priority_takes_precedence() {
         let sampler = create_test_sampler();
 
         // Test trace-level priority overrides span priorities (last-seen priority)
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn test_manual_keep_with_trace_level_priority() {
+    fn manual_keep_with_trace_level_priority() {
         let mut sampler = create_test_sampler();
         sampler.probabilistic_sampler_enabled = false; // Use legacy path that checks user priority
 
@@ -706,7 +706,7 @@ mod tests {
     }
 
     #[test]
-    fn test_probabilistic_sampling_known_decisions() {
+    fn probabilistic_sampling_known_decisions() {
         // The bucketed probabilistic sampler is fully deterministic: it hashes the trace ID into one of 0x4000
         // buckets and keeps the trace when `bucket < (rate * 0x4000)`. These cases pin the exact keep/drop decision
         // for known trace IDs at known rates, so a regression in the hash, the bucket mask, or the comparison is
@@ -783,7 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn test_probabilistic_sampling_is_deterministic() {
+    fn probabilistic_sampling_is_deterministic() {
         // Determinism is a documented property of `ProbabilisticSampler::sample` (same trace ID + rate always yields
         // the same decision). This is intentionally a determinism-only check; correctness is covered by
         // `test_probabilistic_sampling_known_decisions`.
@@ -796,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error_detection() {
+    fn error_detection() {
         let sampler = create_test_sampler();
 
         // Test trace with error field set
@@ -811,7 +811,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sampling_priority_order() {
+    fn sampling_priority_order() {
         // Test modern path: error sampler overrides probabilistic drop
         let mut sampler = create_test_sampler();
         sampler.sampling_rate = 0.5; // 50% sampling rate
@@ -844,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_trace_handling() {
+    fn empty_trace_handling() {
         let mut sampler = create_test_sampler();
         let mut trace = create_test_trace(vec![]);
 
@@ -854,7 +854,7 @@ mod tests {
     }
 
     #[test]
-    fn test_root_span_detection() {
+    fn root_span_detection() {
         let sampler = create_test_sampler();
 
         // Test 1: Root span with parent_id = 0 (common case)
@@ -911,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_span_sampling() {
+    fn single_span_sampling() {
         let mut sampler = create_test_sampler();
 
         // Test 1: Trace with SSS tags should be kept even when probabilistic would drop it
@@ -949,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn test_analytics_events() {
+    fn analytics_events() {
         let sampler = create_test_sampler();
 
         // Test 1: Trace with analyzed spans
@@ -992,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn test_probabilistic_sampling_with_prob_rate_key() {
+    fn probabilistic_sampling_with_prob_rate_key() {
         let mut sampler = create_test_sampler();
         sampler.sampling_rate = 0.75; // 75% sampling rate
         sampler.probabilistic_sampler_enabled = true;

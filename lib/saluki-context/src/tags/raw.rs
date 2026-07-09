@@ -286,7 +286,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn property_test_raw_tags_filter_include_exclude_dispoint((inputs, filters) in arb_raw_tags_and_filters()) {
+        fn property_test_raw_tags_filter_include_exclude_disjoint((inputs, filters) in arb_raw_tags_and_filters()) {
             // We handle the raw tags, and the filtered tags, as hash sets.
             //
             // This is because we may have duplicate tags in the input, and so we need to discard all of thos duplicates

@@ -640,7 +640,7 @@ where
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use super::*;
     use crate::topology::test_util::{
         TestDecoderBuilder, TestDestinationBuilder, TestEncoderBuilder, TestForwarderBuilder, TestRelayBuilder,
