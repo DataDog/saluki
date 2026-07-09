@@ -52,7 +52,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/small] `ClientTLSConfigBuilder` methods' documented behavior is never verified end-to-end.
   - [low/trivial] Repeated key-log test setup boilerplate is duplicated across `saluki-tls` tests.
 
-- [ ] **G4 — saluki-core observability/metrics & pooling test cleanup**
+- [x] **G4 — saluki-core observability/metrics & pooling test cleanup**
   (`tobz/test-cleanup-observability-metrics-pooling-tests`, `test(core)`)
   - [low/small] `DebuggingRecorder`/`TestRecorder` metrics-snapshot test helpers are duplicated ad hoc or left unused
     (KI-6) instead of standardizing on one.

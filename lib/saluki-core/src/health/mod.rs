@@ -285,9 +285,9 @@ impl RegistryState {
 /// The health registry emits some internal telemetry about the status of registered components. In particular, three
 /// metrics are emitted:
 ///
-/// - `health.component_ready`: whether or not a component is ready (`gauge`, `0` for not ready, `1` for ready)
-/// - `health.component_alive`: whether or not a component is alive (`gauge`, `0` for not alive/unknown, `1` for alive, `-1` for dead)
-/// - `health.component_liveness_latency_secs`: the response latency of the component for liveness probes (`histogram`,
+/// - `health_component_ready`: whether or not a component is ready (`gauge`, `0` for not ready, `1` for ready)
+/// - `health_component_live`: whether or not a component is alive (`gauge`, `0` for not alive/unknown, `1` for alive, `-1` for dead)
+/// - `health_component_liveness_latency_seconds`: the response latency of the component for liveness probes (`histogram`,
 ///   in seconds)
 ///
 /// All metrics have a `component_id` tag that corresponds to the name of the component that was given when registering it.
@@ -797,6 +797,7 @@ mod tests {
     use std::future::Future;
 
     use futures::FutureExt as _;
+    use saluki_metrics::test::TestRecorder;
     use tokio::sync::oneshot;
     use tokio_test::{
         assert_pending, assert_ready,
@@ -952,6 +953,84 @@ mod tests {
 
         let mut all_ready_fut = spawn(registry.all_ready());
         assert_pending!(all_ready_fut.poll());
+    }
+
+    #[test]
+    fn readiness_telemetry_tracks_component_ready_gauge() {
+        // Verifies the documented `health_component_ready` telemetry: a `component_id`-tagged gauge set
+        // to 1 when the component is ready and 0 when it is not.
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        // Register the component only after installing the recorder so its telemetry binds to it.
+        let registry = HealthRegistry::new();
+        let mut handle = registry
+            .register_component(&SubsystemIdentifier::from_dotted(COMPONENT_ID))
+            .unwrap();
+
+        let ready_gauge = || recorder.gauge((Telemetry::component_ready_name(), &[("component_id", COMPONENT_ID)]));
+
+        // Components start out not ready.
+        assert_eq!(ready_gauge(), Some(0.0));
+
+        handle.mark_ready();
+        assert_eq!(ready_gauge(), Some(1.0));
+
+        handle.mark_not_ready();
+        assert_eq!(ready_gauge(), Some(0.0));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn liveness_telemetry_records_live_gauge_and_latency_histogram() {
+        // Verifies the documented `health_component_live` gauge (1 = alive, 0 = unknown, -1 = dead) and
+        // `health_component_liveness_latency_seconds` histogram, both tagged with `component_id`.
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+
+        // Register and start the runner after installing the recorder so the telemetry binds to it.
+        let registry = HealthRegistry::new();
+        let registry_state = registry.state();
+        let mut handle = registry
+            .register_component(&SubsystemIdentifier::from_dotted(COMPONENT_ID))
+            .unwrap();
+        let runner = registry.into_runner().expect("should not fail to create runner");
+        let mut registry_task = spawn(runner.run(std::future::pending::<()>()));
+
+        let live_gauge = || recorder.gauge((Telemetry::component_live_name(), &[("component_id", COMPONENT_ID)]));
+        let latency_samples = || {
+            recorder.histogram((
+                Telemetry::component_liveness_latency_seconds_name(),
+                &[("component_id", COMPONENT_ID)],
+            ))
+        };
+
+        // Drive the runner so it registers the component and sends the initial liveness probe.
+        let mut live_future = spawn(handle.live());
+        assert_pending!(live_future.poll());
+        drive_until_quiesced(&mut registry_task);
+
+        // No probe response has been handled yet: the component isn't live and no latency was recorded.
+        assert!(!component_live(&registry_state, COMPONENT_ID));
+        assert_eq!(live_gauge(), Some(0.0));
+        assert_eq!(latency_samples(), Some(Vec::new()));
+
+        // Respond to the probe; the runner then observes the response and marks the component live.
+        assert!(live_future.is_woken());
+        assert_ready!(live_future.poll());
+        assert!(registry_task.is_woken());
+        drive_until_quiesced(&mut registry_task);
+
+        assert!(component_live(&registry_state, COMPONENT_ID));
+        assert_eq!(live_gauge(), Some(1.0));
+
+        // Exactly one probe response was handled, so exactly one latency sample was recorded.
+        let samples = latency_samples().expect("liveness latency histogram should be registered");
+        assert_eq!(
+            samples.len(),
+            1,
+            "handling one probe response must record exactly one liveness latency sample"
+        );
+        assert!(samples[0] >= 0.0, "recorded liveness latency must be non-negative");
     }
 
     #[tokio::test(start_paused = true)]
