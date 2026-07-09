@@ -3043,10 +3043,10 @@ serializer_experimental_use_v3_api:
         tags.into_iter().map(Tag::from_static).collect()
     }
 
-    // Regression guard for SMPTNG-765.
+    // Regression test to ensure the V2 series request builder enforces `max_series_points_per_payload`.
     //
-    // Ensures the v2 series builder enforces both payload series/sketch total
-    // limits and point limits within series.
+    // The test encodes more total points than the configured limit and asserts the builder splits them across
+    // multiple payloads without any payload exceeding the limit.
     #[tokio::test]
     async fn v2_series_builder_enforces_max_series_points_per_payload() {
         let v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, 10_000, None);
