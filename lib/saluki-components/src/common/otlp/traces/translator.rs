@@ -295,3 +295,158 @@ fn trace_id_hex_meta(trace_id: &[u8]) -> Option<MetaString> {
 
     Some(MetaString::from(Arc::<str>::from(hex)))
 }
+
+#[cfg(test)]
+mod tests {
+    use otlp_protos::opentelemetry::proto::common::v1::any_value::Value;
+    use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, KeyValue};
+    use otlp_protos::opentelemetry::proto::resource::v1::Resource;
+    use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
+
+    use super::*;
+    use crate::common::otlp::config::TracesConfig;
+    use crate::common::otlp::Metrics;
+
+    fn string_kv(key: &str, value: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+        }
+    }
+
+    fn int_kv(key: &str, value: i64) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::IntValue(value)),
+            }),
+        }
+    }
+
+    fn span(trace_id: [u8; 16], span_id: [u8; 8], attributes: Vec<KeyValue>) -> OtlpSpan {
+        OtlpSpan {
+            trace_id: trace_id.to_vec(),
+            span_id: span_id.to_vec(),
+            name: "span".to_string(),
+            end_time_unix_nano: 2,
+            attributes,
+            ..Default::default()
+        }
+    }
+
+    fn build_resource_spans(resource_attrs: Vec<KeyValue>, spans: Vec<OtlpSpan>) -> ResourceSpans {
+        ResourceSpans {
+            resource: Some(Resource {
+                attributes: resource_attrs,
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                spans,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn translate(resource_spans: ResourceSpans) -> Vec<Trace> {
+        let mut translator = OtlpTracesTranslator::new(TracesConfig::default(), NonZeroUsize::new(64 * 1024).unwrap());
+        let metrics = Metrics::for_tests();
+        translator
+            .translate_spans(resource_spans, &metrics)
+            .filter_map(Event::try_into_trace)
+            .collect()
+    }
+
+    #[test]
+    fn translate_spans_resolves_hostname_from_datadog_host_name() {
+        let rs = build_resource_spans(
+            vec![string_kv("datadog.host.name", "my-host")],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].payload.hostname.as_ref(), "my-host");
+    }
+
+    #[test]
+    fn translate_spans_leaves_hostname_empty_without_datadog_host_name() {
+        // Only `datadog.host.name` is honored here (the single documented fallback); absent it, the
+        // hostname is left empty rather than guessed from other attributes.
+        let rs = build_resource_spans(
+            vec![string_kv("host.name", "ignored")],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        assert!(traces[0].payload.hostname.as_ref().is_empty());
+    }
+
+    #[test]
+    fn translate_spans_groups_spans_by_trace_id() {
+        let trace_a = [0xAAu8; 16];
+        let trace_b = [0xBBu8; 16];
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span(trace_a, [1u8; 8], vec![]),
+                span(trace_a, [2u8; 8], vec![]),
+                span(trace_b, [3u8; 8], vec![]),
+            ],
+        );
+
+        let mut traces = translate(rs);
+        assert_eq!(traces.len(), 2, "expected one trace per distinct trace ID");
+
+        traces.sort_by_key(|t| t.spans().len());
+        assert_eq!(traces[0].spans().len(), 1);
+
+        let grouped = &traces[1];
+        assert_eq!(grouped.spans().len(), 2, "spans sharing a trace ID group together");
+        // Trace ID low/high bytes are captured from the 16-byte OTLP trace ID.
+        assert_eq!(grouped.trace_id_low, u64::from_be_bytes([0xAA; 8]));
+        assert_eq!(grouped.trace_id_high, u64::from_be_bytes([0xAA; 8]));
+    }
+
+    #[test]
+    fn translate_spans_tracks_last_seen_sampling_priority() {
+        let trace = [0xCCu8; 16];
+        let rs = build_resource_spans(
+            vec![],
+            vec![
+                span(trace, [1u8; 8], vec![int_kv("sampling.priority", 1)]),
+                span(trace, [2u8; 8], vec![int_kv("sampling.priority", 2)]),
+            ],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].priority, Some(2), "the last span's sampling priority wins");
+    }
+
+    #[test]
+    fn translate_spans_populates_resource_metadata() {
+        let rs = build_resource_spans(
+            vec![
+                string_kv("deployment.environment", "prod"),
+                string_kv("service.version", "1.2.3"),
+                string_kv("container.id", "abc123"),
+                string_kv("telemetry.sdk.language", "go"),
+                string_kv("telemetry.sdk.version", "1.0"),
+            ],
+            vec![span([1u8; 16], [1u8; 8], vec![])],
+        );
+
+        let traces = translate(rs);
+        assert_eq!(traces.len(), 1);
+        let payload = &traces[0].payload;
+        assert_eq!(payload.env.as_ref(), "prod");
+        assert_eq!(payload.app_version.as_ref(), "1.2.3");
+        assert_eq!(payload.container_id.as_ref(), "abc123");
+        assert_eq!(payload.language_name.as_ref(), "go");
+        assert_eq!(payload.tracer_version.as_ref(), "1.0");
+    }
+}

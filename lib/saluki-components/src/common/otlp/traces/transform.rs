@@ -2410,4 +2410,473 @@ mod tests {
             assert_eq!(meta("otel.scope.version"), None);
         }
     }
+
+    // ===============================================================================================
+    // Branching translation logic: the V2 service/operation-name/resource/span-type resolvers, the
+    // status-to-error mapping, and the full `otel_span_to_dd_span` assembly entry point.
+    //
+    // Ported from the Go trace agent's `GetOTelService`/`GetOTelOperationNameV2`/`GetOTelResourceV2`/
+    // `GetOTelSpanType`/`status2Error` in:
+    // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/traceutil/otel_util.go
+    // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go
+    // ===============================================================================================
+
+    fn extraction_env() -> (GenericMapInterner, StringBuilder<GenericMapInterner>) {
+        let interner = test_interner();
+        let string_builder = StringBuilder::new().with_interner(interner.clone());
+        (interner, string_builder)
+    }
+
+    fn service_for(span_attrs: &[KeyValue], resource_attrs: &[KeyValue]) -> String {
+        let (interner, mut sb) = extraction_env();
+        get_otel_service(span_attrs, resource_attrs, true, &interner, &mut sb)
+            .as_ref()
+            .to_string()
+    }
+
+    fn operation_name_for(kind: SpanKind, span_attrs: &[KeyValue]) -> String {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            kind: kind as i32,
+            ..Default::default()
+        };
+        get_otel_operation_name_v2(&span, span_attrs, &[], &interner, &mut sb)
+            .as_ref()
+            .to_string()
+    }
+
+    fn resource_name_for(kind: SpanKind, span_name: &str, span_attrs: &[KeyValue]) -> String {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            name: span_name.to_string(),
+            kind: kind as i32,
+            ..Default::default()
+        };
+        get_otel_resource_v2(&span, span_attrs, &[], &interner, &mut sb)
+            .as_ref()
+            .to_string()
+    }
+
+    fn span_type_for(kind: SpanKind, span_attrs: &[KeyValue]) -> String {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            kind: kind as i32,
+            ..Default::default()
+        };
+        get_otel_span_type(&span, span_attrs, &[], &interner, &mut sb)
+            .as_ref()
+            .to_string()
+    }
+
+    #[test]
+    fn get_otel_service_resolves_by_precedence_with_default_and_normalization() {
+        // No service anywhere falls back to the documented default.
+        assert_eq!(service_for(&[], &[]), "otlpresourcenoservicename");
+        // Span attributes win over resource attributes.
+        assert_eq!(service_for(&[kv_str(SERVICE_NAME, "span-svc")], &[]), "span-svc");
+        assert_eq!(service_for(&[], &[kv_str(SERVICE_NAME, "res-svc")]), "res-svc");
+        assert_eq!(
+            service_for(&[kv_str(SERVICE_NAME, "span-svc")], &[kv_str(SERVICE_NAME, "res-svc")]),
+            "span-svc"
+        );
+        // The resolved service is normalized (lowercased, illegal-character runs collapsed to `_`).
+        assert_eq!(service_for(&[kv_str(SERVICE_NAME, "My Service!")], &[]), "my_service");
+    }
+
+    #[test]
+    fn get_otel_operation_name_v2_covers_semantic_convention_branches() {
+        struct Case {
+            name: &'static str,
+            kind: SpanKind,
+            attrs: Vec<KeyValue>,
+            expected: &'static str,
+        }
+
+        let cases = vec![
+            Case {
+                name: "operation.name override",
+                kind: SpanKind::Internal,
+                attrs: vec![kv_str("operation.name", "custom.op")],
+                expected: "custom.op",
+            },
+            Case {
+                name: "http server",
+                kind: SpanKind::Server,
+                attrs: vec![kv_str("http.request.method", "GET")],
+                expected: "http.server.request",
+            },
+            Case {
+                name: "http client",
+                kind: SpanKind::Client,
+                attrs: vec![kv_str("http.request.method", "GET")],
+                expected: "http.client.request",
+            },
+            Case {
+                name: "database client",
+                kind: SpanKind::Client,
+                attrs: vec![kv_str("db.system", "postgresql")],
+                expected: "postgresql.query",
+            },
+            Case {
+                name: "messaging producer",
+                kind: SpanKind::Producer,
+                attrs: vec![
+                    kv_str("messaging.system", "kafka"),
+                    kv_str("messaging.operation", "publish"),
+                ],
+                expected: "kafka.publish",
+            },
+            Case {
+                name: "rpc client",
+                kind: SpanKind::Client,
+                attrs: vec![kv_str("rpc.system", "grpc")],
+                expected: "grpc.client.request",
+            },
+            Case {
+                name: "rpc server",
+                kind: SpanKind::Server,
+                attrs: vec![kv_str("rpc.system", "grpc")],
+                expected: "grpc.server.request",
+            },
+            Case {
+                name: "aws rpc client with service",
+                kind: SpanKind::Client,
+                // The RPC service is tag-normalized (lowercased) into the operation name.
+                attrs: vec![kv_str("rpc.system", "aws-api"), kv_str("rpc.service", "S3")],
+                expected: "aws.s3.request",
+            },
+            Case {
+                name: "aws rpc client without service",
+                kind: SpanKind::Client,
+                attrs: vec![kv_str("rpc.system", "aws-api")],
+                expected: "aws.client.request",
+            },
+            Case {
+                name: "faas client",
+                kind: SpanKind::Client,
+                attrs: vec![
+                    kv_str("faas.invoked_provider", "aws"),
+                    kv_str("faas.invoked_name", "lambda"),
+                ],
+                expected: "aws.lambda.invoke",
+            },
+            Case {
+                name: "faas server",
+                kind: SpanKind::Server,
+                attrs: vec![kv_str("faas.trigger", "http")],
+                expected: "http.invoke",
+            },
+            Case {
+                name: "graphql",
+                kind: SpanKind::Server,
+                attrs: vec![kv_str("graphql.operation.type", "query")],
+                expected: "graphql.server.request",
+            },
+            Case {
+                name: "network protocol server",
+                kind: SpanKind::Server,
+                attrs: vec![kv_str("network.protocol.name", "amqp")],
+                expected: "amqp.server.request",
+            },
+            Case {
+                name: "plain server",
+                kind: SpanKind::Server,
+                attrs: vec![],
+                expected: "server.request",
+            },
+            Case {
+                name: "plain client",
+                kind: SpanKind::Client,
+                attrs: vec![],
+                expected: "client.request",
+            },
+            Case {
+                name: "internal fallback uses capitalized span kind",
+                kind: SpanKind::Internal,
+                attrs: vec![],
+                expected: "Internal",
+            },
+        ];
+
+        for case in cases {
+            assert_eq!(
+                operation_name_for(case.kind, &case.attrs),
+                case.expected,
+                "case: {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn get_otel_resource_v2_covers_semantic_convention_branches() {
+        struct Case {
+            name: &'static str,
+            kind: SpanKind,
+            span_name: &'static str,
+            attrs: Vec<KeyValue>,
+            expected: &'static str,
+        }
+
+        let cases = vec![
+            Case {
+                name: "resource.name override",
+                kind: SpanKind::Server,
+                span_name: "span-name",
+                attrs: vec![kv_str("resource.name", "GET /custom")],
+                expected: "GET /custom",
+            },
+            Case {
+                name: "http server with route",
+                kind: SpanKind::Server,
+                span_name: "span-name",
+                attrs: vec![kv_str("http.request.method", "GET"), kv_str("http.route", "/users/:id")],
+                expected: "GET /users/:id",
+            },
+            Case {
+                name: "http client without route",
+                kind: SpanKind::Client,
+                span_name: "span-name",
+                attrs: vec![kv_str("http.request.method", "POST")],
+                expected: "POST",
+            },
+            Case {
+                name: "http _OTHER method",
+                kind: SpanKind::Server,
+                span_name: "span-name",
+                attrs: vec![kv_str("http.request.method", "_OTHER")],
+                expected: "HTTP",
+            },
+            Case {
+                name: "messaging operation with destination",
+                kind: SpanKind::Producer,
+                span_name: "span-name",
+                attrs: vec![
+                    kv_str("messaging.operation", "publish"),
+                    kv_str("messaging.destination", "topic"),
+                ],
+                expected: "publish topic",
+            },
+            Case {
+                name: "rpc method with service",
+                kind: SpanKind::Client,
+                span_name: "span-name",
+                attrs: vec![kv_str("rpc.method", "GetObject"), kv_str("rpc.service", "S3")],
+                expected: "GetObject S3",
+            },
+            Case {
+                name: "database statement is normalized",
+                kind: SpanKind::Client,
+                span_name: "span-name",
+                attrs: vec![kv_str("db.system", "postgresql"), kv_str("db.statement", "SELECT 1")],
+                expected: "select_1",
+            },
+            Case {
+                name: "falls back to span name",
+                kind: SpanKind::Internal,
+                span_name: "my-span",
+                attrs: vec![],
+                expected: "my-span",
+            },
+        ];
+
+        for case in cases {
+            assert_eq!(
+                resource_name_for(case.kind, case.span_name, &case.attrs),
+                case.expected,
+                "case: {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn get_otel_span_type_covers_kind_and_db_system_branches() {
+        struct Case {
+            name: &'static str,
+            kind: SpanKind,
+            attrs: Vec<KeyValue>,
+            expected: &'static str,
+        }
+
+        let cases = vec![
+            Case {
+                name: "span.type override",
+                kind: SpanKind::Client,
+                attrs: vec![kv_str("span.type", "myspantype")],
+                expected: "myspantype",
+            },
+            Case {
+                name: "server is web",
+                kind: SpanKind::Server,
+                attrs: vec![],
+                expected: "web",
+            },
+            Case {
+                name: "client without db is http",
+                kind: SpanKind::Client,
+                attrs: vec![],
+                expected: "http",
+            },
+            Case {
+                name: "client redis",
+                kind: SpanKind::Client,
+                attrs: vec![kv_str("db.system", "redis")],
+                expected: "redis",
+            },
+            Case {
+                name: "client sql-family db",
+                kind: SpanKind::Client,
+                attrs: vec![kv_str("db.system", "postgresql")],
+                expected: "sql",
+            },
+            Case {
+                name: "client unknown db defaults to db",
+                kind: SpanKind::Client,
+                attrs: vec![kv_str("db.system", "some-unknown-store")],
+                expected: "db",
+            },
+            Case {
+                name: "internal is custom",
+                kind: SpanKind::Internal,
+                attrs: vec![],
+                expected: "custom",
+            },
+        ];
+
+        for case in cases {
+            assert_eq!(
+                span_type_for(case.kind, &case.attrs),
+                case.expected,
+                "case: {}",
+                case.name
+            );
+        }
+    }
+
+    fn error_from_status(
+        code: StatusCode, message: &str, events: &[OtlpSpanEvent],
+    ) -> (i32, FastHashMap<MetaString, AttributeValue>) {
+        let status = OtlpStatus {
+            code: code as i32,
+            message: message.to_string(),
+        };
+        let mut attrs = FastHashMap::default();
+        let error = status_to_error(Some(&status), events, &mut attrs);
+        (error, attrs)
+    }
+
+    fn error_attr<'a>(attrs: &'a FastHashMap<MetaString, AttributeValue>, key: &str) -> Option<&'a str> {
+        attrs.get(key).and_then(AttributeValue::as_string).map(|s| s.as_ref())
+    }
+
+    #[test]
+    fn status_to_error_ignores_non_error_status() {
+        let (error, attrs) = error_from_status(StatusCode::Unset, "", &[]);
+        assert_eq!(error, 0);
+        assert!(attrs.is_empty());
+    }
+
+    #[test]
+    fn status_to_error_extracts_exception_event_fields() {
+        let exception = OtlpSpanEvent {
+            name: "exception".to_string(),
+            attributes: vec![
+                kv_str("exception.message", "boom"),
+                kv_str("exception.type", "RuntimeError"),
+                kv_str("exception.stacktrace", "at main()"),
+            ],
+            ..Default::default()
+        };
+
+        let (error, attrs) = error_from_status(StatusCode::Error, "", std::slice::from_ref(&exception));
+        assert_eq!(error, 1);
+        assert_eq!(error_attr(&attrs, "error.msg"), Some("boom"));
+        assert_eq!(error_attr(&attrs, "error.type"), Some("RuntimeError"));
+        assert_eq!(error_attr(&attrs, "error.stack"), Some("at main()"));
+    }
+
+    #[test]
+    fn status_to_error_falls_back_to_status_message() {
+        // No exception event, so the status message becomes error.msg.
+        let (error, attrs) = error_from_status(StatusCode::Error, "db failed", &[]);
+        assert_eq!(error, 1);
+        assert_eq!(error_attr(&attrs, "error.msg"), Some("db failed"));
+    }
+
+    #[test]
+    fn status_to_error_sets_error_without_message_when_none_available() {
+        let (error, attrs) = error_from_status(StatusCode::Error, "", &[]);
+        assert_eq!(error, 1);
+        assert_eq!(error_attr(&attrs, "error.msg"), None);
+    }
+
+    fn build_dd_span(
+        kind: SpanKind, span_attrs: Vec<KeyValue>, status: Option<OtlpStatus>, events: Vec<OtlpSpanEvent>,
+    ) -> DdSpan {
+        let (interner, mut sb) = extraction_env();
+        let span = OtlpSpan {
+            name: "span-name".to_string(),
+            kind: kind as i32,
+            attributes: span_attrs,
+            status,
+            events,
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        otel_span_to_dd_span(&span, &resource, None, false, true, &interner, &mut sb, None)
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_assembles_http_server_span() {
+        let dd_span = build_dd_span(
+            SpanKind::Server,
+            vec![
+                kv_str(SERVICE_NAME, "checkout"),
+                kv_str("http.request.method", "GET"),
+                kv_str("http.route", "/pay"),
+            ],
+            None,
+            vec![],
+        );
+
+        assert_eq!(dd_span.service(), "checkout");
+        assert_eq!(dd_span.name(), "http.server.request");
+        assert_eq!(dd_span.resource(), "GET /pay");
+        assert_eq!(dd_span.span_type(), "web");
+        assert_eq!(dd_span.error(), 0);
+    }
+
+    #[test]
+    fn otel_span_to_dd_span_assembles_db_client_error_span() {
+        let exception = OtlpSpanEvent {
+            name: "exception".to_string(),
+            attributes: vec![kv_str("exception.message", "deadlock")],
+            ..Default::default()
+        };
+        let dd_span = build_dd_span(
+            SpanKind::Client,
+            vec![kv_str("db.system", "postgresql"), kv_str("db.statement", "SELECT 1")],
+            Some(OtlpStatus {
+                code: StatusCode::Error as i32,
+                message: String::new(),
+            }),
+            vec![exception],
+        );
+
+        // No service attribute => documented default service name.
+        assert_eq!(dd_span.service(), "otlpresourcenoservicename");
+        assert_eq!(dd_span.name(), "postgresql.query");
+        assert_eq!(dd_span.resource(), "select_1");
+        assert_eq!(dd_span.span_type(), "sql");
+        assert_eq!(dd_span.error(), 1);
+        assert_eq!(
+            dd_span
+                .attributes
+                .get("error.msg")
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref()),
+            Some("deadlock")
+        );
+    }
 }
