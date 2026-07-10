@@ -6,7 +6,8 @@
 //! efficiently intern strings when possible.
 #![deny(warnings)]
 #![deny(missing_docs)]
-// We only support 64-bit little-endian platforms anyways, so there's no risk of our enum variants having their values truncated.
+// The tag enum values are shifted into one byte of a `usize`, so their values are never truncated on supported
+// platforms.
 #![allow(clippy::enum_clike_unportable_variant)]
 
 use std::{
@@ -26,7 +27,15 @@ use self::interning::{InternedString, InternedStringState, Interner};
 const ZERO_VALUE: usize = 0;
 const TOP_MOST_BIT: usize = usize::MAX & !(isize::MAX as usize);
 const INLINED_STR_DATA_BUF_LEN: usize = std::mem::size_of::<usize>() * 3;
-const INLINED_STR_MAX_LEN: usize = INLINED_STR_DATA_BUF_LEN - 1;
+// MetaString stores its discriminant in the top byte of the third machine word, which lands at a different byte
+// offset in memory depending on endianness.
+const TOP_BYTE_INDEX: usize = if cfg!(target_endian = "little") {
+    std::mem::size_of::<usize>() - 1
+} else {
+    0
+};
+const INLINED_STR_TAG_INDEX: usize = std::mem::size_of::<usize>() * 2 + TOP_BYTE_INDEX;
+const INLINED_STR_MAX_LEN: usize = INLINED_STR_TAG_INDEX;
 const INLINED_STR_MAX_LEN_U8: u8 = INLINED_STR_MAX_LEN as u8;
 
 const UNION_TYPE_TAG_VALUE_STATIC: u8 = get_offset_tag_value(0);
@@ -38,7 +47,7 @@ const fn get_offset_tag_value(tag: u8) -> u8 {
     const UNION_TYPE_TAG_VALUE_BASE: u8 = INLINED_STR_MAX_LEN as u8 + 1;
 
     if tag > (u8::MAX - INLINED_STR_MAX_LEN as u8) {
-        panic!("Union type tag value must be less than 232 to fit.");
+        panic!("Union type tag value must fit in the discriminant byte.");
     }
 
     tag + UNION_TYPE_TAG_VALUE_BASE
@@ -52,9 +61,9 @@ const fn get_scaled_union_tag(tag: u8) -> usize {
 }
 
 // High-level invariant checks to ensure `stringtheory` isn't being used on an unsupported platform.
-#[cfg(not(all(target_pointer_width = "64", target_endian = "little")))]
+#[cfg(not(target_pointer_width = "64"))]
 const _INVARIANTS_CHECK: () = {
-    compile_error!("`stringtheory` is only supported on 64-bit little-endian platforms.");
+    compile_error!("`stringtheory` is only supported on 64-bit platforms.");
 };
 
 const fn is_tagged(cap: u8) -> bool {
@@ -204,7 +213,7 @@ impl SharedUnion {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct InlinedUnion {
-    // Data is arranged as 23 bytes for string data, and the remaining 1 byte for the string length.
+    // Data is arranged as contiguous string data followed by the endian-specific length/discriminant byte.
     data: [u8; INLINED_STR_DATA_BUF_LEN], // Fields one, two, and three.
 }
 
@@ -222,8 +231,8 @@ impl InlinedUnion {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct DiscriminantUnion {
-    unused: [u8; INLINED_STR_DATA_BUF_LEN - 1], // Fields one, two, and three, minus the last byte.
-    tag_byte: u8,                               // Last byte, overlapped with the "highest" byte of field three.
+    // Fields one, two, and three. The active discriminant byte is selected by `INLINED_STR_TAG_INDEX`.
+    data: [u8; INLINED_STR_DATA_BUF_LEN],
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -247,8 +256,9 @@ impl UnionType {
 impl DiscriminantUnion {
     #[inline]
     const fn get_union_type(&self) -> UnionType {
-        // At a high level, we encode the type of the union into the last byte of the struct, which overlaps with the
-        // capacity of owned strings, the length of an inlined string, and the unused field of other string types.
+        // At a high level, we encode the type of the union into one byte of the struct, which overlaps with the
+        // high byte of the third machine word: the capacity of owned strings, the length of an inlined string,
+        // and the unused/tag field of other string types.
         //
         // Our logic is simple here:
         //
@@ -256,34 +266,35 @@ impl DiscriminantUnion {
         //   value would never be used for a valid allocation.
         // - In turn, the length of a string can also only ever be as large as `isize::MAX`, which means that the
         //   top-most bit of the length byte for any string type would never be used
-        // - Inlined strings can only ever be up to 23 bytes long, which means that the top-most bit of the length byte
-        //   for an inlined string would never be used.
+        // - Inlined strings can only ever be as long as the endian-specific inline capacity, which means that the
+        //   top-most bit of the length byte for an inlined string would never be used.
         // - Static strings and interned strings only occupy the first two fields, which means their capacity should not
         //   be used.
         //
         // As such, we encode the possible string types as follows:
         //
         // - when all fields are zero, we have an empty string
-        // - when the last byte does have the top-bit set, we have an owned string
-        // - when the last byte does _not_ have the top-bit set, and the value is less than or equal to 23, we have an
-        //   inlined string
-        // - when the last byte does _not_ have the top-bit set, and the value is greater than 23, we interpret the
-        //   specific value of the last byte as a discriminant for the remaining string types (static, interned, etc)
+        // - when the tag byte has the top bit set, we have an owned string
+        // - when the tag byte does _not_ have the top bit set, and the value is less than or equal to the inline
+        //   capacity, we have an inlined string
+        // - when the tag byte does _not_ have the top bit set, and the value is greater than the inline capacity, we
+        //   interpret the specific value of the tag byte as a discriminant for the remaining string types (static,
+        //   interned, etc)
         //
-        // We abuse the layout of little endian integers here to ensure that the upper-most bits of the capacity
-        // field overlaps with the last byte of an inlined string, and the unused field of a static/interned string.
+        // The tag byte is the byte where the upper-most bits of the third machine word are stored. This overlaps the
+        // high byte of an owned string's capacity, the length byte of an inlined string, and the unused/tag field of
+        // static, interned, and shared strings. The actual byte index differs by endianness: little-endian uses the
+        // last byte of the layout, while big-endian uses the first byte of the third machine word.
         //
-        // In an inlined string, its length byte is situated as the very last byte (data[23]) in its layout. In an
-        // owned string, we instead have a pointer, length, and capacity, in that order. This means that the length
-        // byte of the inlined string and the capacity field of the owned string overlap, as seen below:
+        // The little-endian layout for an inlined string and an owned string looks like this:
         //
         //                ~ an inlined string, "hello, world", with a length of 12 (0C) ~
         //      ┌───────────────────────────────────────────────────────────────────────────────┐
         //      │ 68 65 6C 6C 6F 20 77 6F    72 6C 64 21 ?? ?? ?? ??    ?? ?? ?? ?? ?? ?? ?? 0C │
         //      └───────────────────────────────────────────────────────────────────────────────┘
         //                                                                                    ▲
-        //                                                                                    ├──── overlapping
-        //                          ~ an owned string with a capacity of 64 ~                 ▼         byte
+        //                                                                                    ├──── tag byte
+        //                          ~ an owned string with a capacity of 64 ~                 ▼
         //      ┌─────────────────────────┐┌─────────────────────────┐┌─────────────────────────┐
         //      │ ?? ?? ?? ?? ?? ?? ?? ?? ││ ?? ?? ?? ?? ?? ?? ?? ?? ││ 40 00 00 00 00 00 00 80 │
         //      └─────────────────────────┘└─────────────────────────┘└─────────────────────────┘
@@ -293,46 +304,39 @@ impl DiscriminantUnion {
         //                                                           ▲                        │
         //                     (tag bit) ────────────────────────────┘                        │
         //                                                                                    │
+        //                       inlined tag byte (0x0C)  [0 0 0 0 1 1 0 0] ◀────────────────┤
+        //                       owned tag byte (0x80)    [1 0 0 0 0 0 0 0] ◀────────────────┤
         //                                                                                    │
-        //                       inlined last byte (0x0C)  [0 0 0 0 1 1 0 0] ◀────────────────┤
-        //                       owned last byte (0x80)    [1 0 0 0 0 0 0 0] ◀────────────────┤
-        //                                                                                    │
-        //                       inlined last byte                                            │
-        //                       maximum of 23 (0x17)      [0 0 0 1 0 1 1 1] ◀────────────────┤
+        //                       maximum little-endian inline length                           │
+        //                       23 (0x17)                [0 0 0 1 0 1 1 1] ◀────────────────┤
         //                                                                                    │
         //                       "owned" discriminant                                         │
         //                       bitmask (any X bit)       [X X X ? ? ? ? ?] ◀────────────────┘
         //
-        // As such, the length byte of an inlined string overlaps with the capacity field of an owned string.
-        // Additionally, due to the integer fields being written in little-endian order, the "upper" byte of the
-        // capacity field -- the eight highest bits -- is actually written in the same location as the length byte
-        // of an inlined string.
-        //
-        // Given that we know an inlined string cannot be any longer than 23 bytes, we know that the top-most bit in
-        // the last byte (data[23]) can never be set, as it would imply a length of _at least_ 128. With that, we
+        // Given that we know an inlined string cannot be any longer than the inline capacity, we know that the
+        // top-most bit in the tag byte can never be set, as it would imply a length of _at least_ 128. With that, we
         // utilize invariant #3 of `Inner` -- allocations can never be larger than `isize::MAX` -- which lets us
         // safely "tag" an owned string's capacity -- setting the upper most bit to 1 -- to indicate that it's an
         // owned string.
-        //
-        // An inlined string couldn't possibly have a length that occupied that bit, and so we know if we're down
-        // here, and our pointer field isn't all zeroes and our length field isn't all zeroes, that we _have_ to be
-        // an owned string if our capacity is tagged.
 
         // If the top bit is set, we know we're dealing with an owned string.
-        if is_tagged(self.tag_byte) {
+        let tag_byte = self.data[INLINED_STR_TAG_INDEX];
+
+        if is_tagged(tag_byte) {
             return UnionType::Owned;
         }
 
         // The top-most bit has to be set for an owned string, but isn't set for any other type, so try differentiating
         // at this point.
-        match self.tag_byte {
+        match tag_byte {
             // Empty string. Easy.
             0 => UnionType::Empty,
 
-            // Anything between 1 and INLINED_STR_MAX_LEN (23, inclusive) is an inlined string.
+            // Anything between 1 and INLINED_STR_MAX_LEN, inclusive, is an inlined string.
             1..=INLINED_STR_MAX_LEN_U8 => UnionType::Inlined,
 
-            // These are fixed values between 24 and 128, so we just match them directly.
+            // These are fixed values above the inline capacity and below the owned-string tag bit, so we just match
+            // them directly.
             UNION_TYPE_TAG_VALUE_STATIC => UnionType::Static,
             UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE => UnionType::InternedFixedSize,
             UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP => UnionType::InternedGenericMap,
@@ -356,13 +360,14 @@ impl DiscriminantUnion {
 ///
 /// This code depends on a number of invariants in order to work correctly:
 ///
-/// 1. Only used on 64-bit little-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
+/// 1. Only used on 64-bit little- or big-endian platforms. (checked at compile-time via _INVARIANTS_CHECK)
 /// 2. The data pointers for `String` and `&'static str` can't ever be null when the strings are non-empty.
 /// 3. Allocations can never be larger than `isize::MAX` (see [here][rust_isize_alloc_limit]), meaning that any
 ///    length/capacity field for a string can't ever be larger than `isize::MAX`, implying the highest bit for
 ///    length/capacity should always be 0.
-/// 4. An inlined string can only hold up to 23 bytes of data, meaning that the length byte for that string can never
-///    have a value greater than 23. (_We_ have to provide this invariant, which is handled in `Inner::try_inlined`.)
+/// 4. An inlined string can only hold bytes before the endian-specific tag byte, meaning that the length byte for that
+///    string can never exceed the inline capacity. (_We_ have to provide this invariant, which is handled in
+///    `Inner::try_inlined`.)
 ///
 /// [rust_isize_alloc_limit]: https://doc.rust-lang.org/stable/std/alloc/struct.Layout.html#method.from_size_align
 union Inner {
@@ -467,7 +472,7 @@ impl Inner {
 
                 let mut data = [0; INLINED_STR_DATA_BUF_LEN];
 
-                // SAFETY: We know it fits because we just checked that the string length is 23 or less.
+                // SAFETY: We know it fits because we just checked that the string length is within the inline capacity.
                 data[INLINED_STR_MAX_LEN] = len as u8;
 
                 let buf = value.as_bytes();
@@ -653,8 +658,8 @@ unsafe impl Sync for Inner {}
 ///
 /// Normally, developers will work with either `String` (owned) or `&str` (borrowed) when dealing with strings. In some
 /// cases, though, it can be useful to work with strings that use alternative storage, such as those that are atomically
-/// shared (for example, `InternedString`). While using those string types themselves isn't complex, using them and _also_
-/// supporting normal string types can be complex.
+/// shared (for example, `InternedString`). While using those string types themselves isn't complex, using them and
+/// _also_ supporting normal string types can be complex.
 ///
 /// `MetaString` is an opinionated string type that abstracts over the normal string types like `String` and `&str`
 /// while also supporting alternative storage, such as interned strings from `FixedSizeInterner`, unifying these
@@ -668,7 +673,7 @@ unsafe impl Sync for Inner {}
 /// - static (`&'static str`)
 /// - interned (`InternedString`)
 /// - shared (`Arc<str>`)
-/// - inlined (up to 23 bytes)
+/// - inlined (up to 23 bytes on little-endian platforms, and up to 16 bytes on big-endian platforms)
 ///
 /// ### Owned and borrowed strings
 ///
@@ -702,7 +707,7 @@ unsafe impl Sync for Inner {}
 /// can be stored directly in a string type itself by utilizing a "union"-style layout.
 ///
 /// As `MetaString` utilizes such a layout, we can provide a small string optimization that allows for strings up to 23
-/// bytes in length.
+/// bytes in length on little-endian platforms, and up to 16 bytes in length on big-endian platforms.
 ///
 /// ## Conversion methods
 ///
@@ -938,8 +943,16 @@ mod tests {
 
     use proptest::{prelude::*, proptest};
 
-    use super::{interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType};
+    use super::{
+        interning::GenericMapInterner, CheapMetaString, InlinedUnion, Inner, MetaString, UnionType,
+        INLINED_STR_MAX_LEN, INLINED_STR_TAG_INDEX, UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE,
+        UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP, UNION_TYPE_TAG_VALUE_SHARED, UNION_TYPE_TAG_VALUE_STATIC,
+    };
     use crate::interning::{FixedSizeInterner, Interner as _};
+
+    fn discriminant_byte(inner: &Inner) -> u8 {
+        unsafe { inner.discriminant.data[INLINED_STR_TAG_INDEX] }
+    }
 
     #[test]
     fn struct_sizes() {
@@ -953,8 +966,65 @@ mod tests {
     }
 
     #[test]
+    fn inline_capacity_matches_target_endianness() {
+        let expected_inline_capacity = if cfg!(target_endian = "little") { 23 } else { 16 };
+
+        assert_eq!(INLINED_STR_MAX_LEN, expected_inline_capacity);
+    }
+
+    #[test]
+    fn discriminant_byte_tracks_endian_specific_variant_tags() {
+        let owned = MetaString::from(String::from("owned-value"));
+        assert_eq!(owned.inner.get_union_type(), UnionType::Owned);
+        assert!(discriminant_byte(&owned.inner) & 0b1000_0000 != 0);
+
+        let static_value = MetaString::from_static("static-value");
+        assert_eq!(static_value.inner.get_union_type(), UnionType::Static);
+        assert_eq!(discriminant_byte(&static_value.inner), UNION_TYPE_TAG_VALUE_STATIC);
+
+        let shared = MetaString::from(Arc::<str>::from("shared-value"));
+        assert_eq!(shared.inner.get_union_type(), UnionType::Shared);
+        assert_eq!(discriminant_byte(&shared.inner), UNION_TYPE_TAG_VALUE_SHARED);
+
+        let fixed_size_interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(1024).unwrap());
+        let fixed_size = MetaString::from(fixed_size_interner.try_intern("fixed-size-value").unwrap());
+        assert_eq!(fixed_size.inner.get_union_type(), UnionType::InternedFixedSize);
+        assert_eq!(
+            discriminant_byte(&fixed_size.inner),
+            UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE
+        );
+
+        let generic_map_interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        let generic_map = MetaString::from(generic_map_interner.try_intern("generic-map-value").unwrap());
+        assert_eq!(generic_map.inner.get_union_type(), UnionType::InternedGenericMap);
+        assert_eq!(
+            discriminant_byte(&generic_map.inner),
+            UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP
+        );
+    }
+
+    #[test]
+    fn inlined_string_uses_every_byte_before_tag_byte() {
+        let input = "a".repeat(INLINED_STR_MAX_LEN);
+        let meta = MetaString::try_inline(&input).expect("input should fit exactly in inline storage");
+
+        assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
+        assert_eq!(discriminant_byte(&meta.inner), INLINED_STR_MAX_LEN as u8);
+        let inlined = unsafe { meta.inner.inlined };
+        assert_eq!(&inlined.data[..INLINED_STR_MAX_LEN], input.as_bytes());
+    }
+
+    #[test]
+    fn inlined_string_rejects_one_byte_past_tag_byte() {
+        let input = "a".repeat(INLINED_STR_MAX_LEN + 1);
+
+        assert!(MetaString::try_inline(&input).is_none());
+    }
+
+    #[test]
     fn static_str_inlineable() {
-        // We always use the static variant, even if the string is inlineable, because this lets us make `from_static` const.
+        // We always use the static variant, even if the string is inlineable, because this lets us make
+        // `from_static` const.
         let s = "hello";
         let meta = MetaString::from_static(s);
 
@@ -1028,6 +1098,42 @@ mod tests {
         assert_eq!(shared_str, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Shared);
         assert_eq!(shared_str, meta.into_owned());
+    }
+
+    #[test]
+    fn meta_string_sorts_by_string_value() {
+        let mut values = [
+            MetaString::from("gamma"),
+            MetaString::from("alpha"),
+            MetaString::from("beta"),
+        ];
+        values.sort();
+
+        assert_eq!(
+            values.iter().map(|value| &**value).collect::<Vec<_>>(),
+            ["alpha", "beta", "gamma"]
+        );
+    }
+
+    #[test]
+    fn protobuf_chars_conversions_preserve_value() {
+        let chars: protobuf::Chars = MetaString::from("protobuf-value").into();
+        let chars_ref: &str = chars.as_ref();
+        assert_eq!(chars_ref, "protobuf-value");
+
+        let meta = MetaString::from("protobuf-ref-value");
+        let chars: protobuf::Chars = (&meta).into();
+        let chars_ref: &str = chars.as_ref();
+        assert_eq!(chars_ref, "protobuf-ref-value");
+    }
+
+    #[test]
+    fn cheap_meta_string_trait_reports_cheap_clone_availability() {
+        let shared = MetaString::from(Arc::<str>::from("shared-value"));
+        assert_eq!(shared.try_cheap_clone().as_deref(), Some("shared-value"));
+
+        let owned = MetaString::from(String::from("owned-value"));
+        assert!(owned.try_cheap_clone().is_none());
     }
 
     #[test]
@@ -1155,7 +1261,7 @@ mod tests {
     }
 
     fn arb_unicode_str_max_len(max_len: usize) -> impl Strategy<Value = String> {
-        ".{0,23}".prop_filter("resulting string is too longer", move |s| s.len() <= max_len)
+        ".{0,23}".prop_filter("resulting string is too long", move |s| s.len() <= max_len)
     }
 
     proptest! {
@@ -1164,9 +1270,9 @@ mod tests {
         #[test]
         #[cfg_attr(miri, ignore)]
         fn property_test_inlined_string(
-            input in arb_unicode_str_max_len(23),
+            input in arb_unicode_str_max_len(INLINED_STR_MAX_LEN),
         ) {
-            assert!(input.len() <= 23, "input should be 23 bytes or less");
+            assert!(input.len() <= INLINED_STR_MAX_LEN, "input should fit in the inline buffer");
             let meta = MetaString::try_inline(&input).expect("input should fit");
 
             if input.is_empty() {
