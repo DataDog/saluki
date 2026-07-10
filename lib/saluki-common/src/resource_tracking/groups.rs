@@ -325,7 +325,73 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::ResourceGroupRegistry;
+    use std::{
+        cell::Cell,
+        future::Future,
+        pin::Pin,
+        rc::Rc,
+        sync::Arc,
+        task::{Context, Poll, Wake, Waker},
+    };
+
+    use super::{ResourceGroupRegistry, ResourceGroupToken, Track};
+
+    struct NoopWaker;
+
+    impl Wake for NoopWaker {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    /// Polls a future to completion on the current thread using a no-op waker.
+    fn poll_to_completion<F: Future>(future: F) -> F::Output {
+        let mut future = Box::pin(future);
+        let waker = Waker::from(Arc::new(NoopWaker));
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+                return output;
+            }
+        }
+    }
+
+    /// A future that records, each time it is polled, whether the currently entered resource group is `expected`.
+    struct RecordCurrentGroup {
+        expected: ResourceGroupToken,
+        matched: Rc<Cell<bool>>,
+    }
+
+    impl Future for RecordCurrentGroup {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            self.matched.set(ResourceGroupToken::current().ptr_eq(&self.expected));
+            Poll::Ready(())
+        }
+    }
+
+    // CPU attribution only happens on platforms where per-thread CPU time is available (Linux), so the helpers that
+    // read it back and burn CPU are gated to avoid dead-code warnings elsewhere.
+    #[cfg(target_os = "linux")]
+    fn cpu_time_nanos_for(registry: &ResourceGroupRegistry, target: &str) -> u64 {
+        use crate::resource_tracking::ResourceStatsSnapshot;
+
+        let mut cpu_time_nanos = 0;
+        registry.visit_resource_groups(|name, stats| {
+            if name == target {
+                cpu_time_nanos = stats.snapshot_delta(&ResourceStatsSnapshot::empty()).cpu_time_nanos;
+            }
+        });
+        cpu_time_nanos
+    }
+
+    #[cfg(target_os = "linux")]
+    fn burn_cpu() {
+        let mut sum = 0u64;
+        for i in 0..20_000_000u64 {
+            sum = sum.wrapping_add(i);
+        }
+        std::hint::black_box(sum);
+    }
 
     #[test]
     fn existing_group() {
@@ -351,5 +417,145 @@ mod tests {
         assert_eq!(visited.len(), 2);
         assert_eq!(visited[0], "root");
         assert_eq!(visited[1], "my-group");
+    }
+
+    #[test]
+    fn enter_swaps_current_group_and_restores_previous_on_drop() {
+        let registry = ResourceGroupRegistry::new();
+        let group = registry.register_resource_group("group-a");
+        let previous = ResourceGroupToken::current();
+
+        {
+            let _guard = group.enter();
+            assert!(
+                ResourceGroupToken::current().ptr_eq(&group),
+                "entering a group should make it the current group"
+            );
+        }
+
+        assert!(
+            ResourceGroupToken::current().ptr_eq(&previous),
+            "dropping the guard should restore the previously-entered group"
+        );
+    }
+
+    #[test]
+    fn nested_groups_restore_in_lifo_order() {
+        let registry = ResourceGroupRegistry::new();
+        let outer = registry.register_resource_group("outer");
+        let inner = registry.register_resource_group("inner");
+        let root = ResourceGroupToken::current();
+
+        let outer_guard = outer.enter();
+        assert!(ResourceGroupToken::current().ptr_eq(&outer));
+
+        {
+            let _inner_guard = inner.enter();
+            assert!(ResourceGroupToken::current().ptr_eq(&inner));
+        }
+
+        // Exiting the inner group restores the outer group, not the root.
+        assert!(ResourceGroupToken::current().ptr_eq(&outer));
+
+        drop(outer_guard);
+        assert!(ResourceGroupToken::current().ptr_eq(&root));
+    }
+
+    #[test]
+    fn tracked_future_enters_attached_group_during_poll() {
+        let registry = ResourceGroupRegistry::new();
+        let group = registry.register_resource_group("tracked");
+        let previous = ResourceGroupToken::current();
+
+        let matched = Rc::new(Cell::new(false));
+        let future = RecordCurrentGroup {
+            expected: group,
+            matched: Rc::clone(&matched),
+        }
+        .track_resources(group);
+
+        poll_to_completion(future);
+
+        assert!(
+            matched.get(),
+            "the attached group should be the current group while the future is polled"
+        );
+        assert!(
+            ResourceGroupToken::current().ptr_eq(&previous),
+            "the previous group should be restored once the poll returns"
+        );
+    }
+
+    #[test]
+    fn in_current_resource_group_captures_group_at_attach_time() {
+        let registry = ResourceGroupRegistry::new();
+        let group = registry.register_resource_group("captured");
+
+        let matched = Rc::new(Cell::new(false));
+        let future = {
+            // Attach while `group` is entered; the wrapper should remember it.
+            let _guard = group.enter();
+            RecordCurrentGroup {
+                expected: group,
+                matched: Rc::clone(&matched),
+            }
+            .in_current_resource_group()
+        };
+
+        // The guard has been dropped, so `group` is no longer current...
+        assert!(!ResourceGroupToken::current().ptr_eq(&group));
+
+        // ...yet polling the wrapper still re-enters the group captured at attach time.
+        poll_to_completion(future);
+        assert!(matched.get());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cpu_time_is_attributed_to_the_entered_group() {
+        let registry = ResourceGroupRegistry::new();
+        let busy = registry.register_resource_group("busy");
+        let _idle = registry.register_resource_group("idle");
+
+        {
+            let _guard = busy.enter();
+            burn_cpu();
+        }
+
+        // CPU time consumed while `busy` was entered is attributed to it; `idle` was never entered.
+        assert!(
+            cpu_time_nanos_for(&registry, "busy") > 0,
+            "the entered group should accrue the CPU time spent inside the guard"
+        );
+        assert_eq!(
+            cpu_time_nanos_for(&registry, "idle"),
+            0,
+            "a group that was never entered should accrue no CPU time"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tracked_future_attributes_poll_cpu_time_to_its_group() {
+        let registry = ResourceGroupRegistry::new();
+        let group = registry.register_resource_group("worker");
+
+        struct BurnCpu;
+
+        impl Future for BurnCpu {
+            type Output = ();
+
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+                burn_cpu();
+                Poll::Ready(())
+            }
+        }
+
+        poll_to_completion(BurnCpu.track_resources(group));
+
+        assert!(
+            cpu_time_nanos_for(&registry, "worker") > 0,
+            "CPU time spent polling a tracked future should be attributed to its group"
+        );
     }
 }

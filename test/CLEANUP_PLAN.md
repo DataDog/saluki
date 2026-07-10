@@ -332,8 +332,12 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] Multiple `ProtoConfig`-construction tests hand-build near-identical 17-field struct literals.
   - [low/trivial] `copy_test_file` duplicates `copy_test_file_as`'s body instead of delegating to it.
 
-- [ ] **G19 — resource-accounting, process-memory, prometheus-exposition, saluki-metrics, data_model test cleanup**
+- [x] **G19 — resource-accounting, process-memory, prometheus-exposition, saluki-metrics, data_model test cleanup**
   (`tobz/test-cleanup-resource-accounting-misc-crate-tests`, `test(resource-accounting)`)
+  _process-memory required a minimal behavior-preserving refactor (extracting the inline `/proc` RSS parsing into
+  pure `first_rss_value`/`sum_rss_values`/`parse_statm_rss_bytes`/`select_stat_source` functions) to make the
+  branches testable against synthetic input — permitted per contributing.md's "add abstractions to make code
+  testable." The cross-platform Querier `basic` smoke-test dedup was declined as unverifiable on a single host._
   - [high/small] `resource-accounting`'s `calculate_backoff` has zero tests despite a fully worked numeric example
     in its own doc comment.
   - [high/medium] The core tracking mechanism (`Track` trait, `Tracked` future, group enter/exit, CPU attribution)
