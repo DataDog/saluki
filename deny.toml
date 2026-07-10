@@ -36,6 +36,9 @@ allow-git = [
   # while the crate is consumed from GitHub directly.
   "https://github.com/DataDog/rustls-cng-crypto",
 
+  # libdatadog's heap-profiling global allocator, consumed directly from GitHub while we evaluate it.
+  "https://github.com/DataDog/libdatadog",
+
   # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
   # on a version of `rustls-pemfile` that is no longer maintained and triggers a hit when running `cargo deny`.
   "https://github.com/tobz/hyper-http-proxy.git",

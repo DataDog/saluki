@@ -212,6 +212,8 @@ lading-payload,https://github.com/datadog/lading,MIT,"Brian L. Troutwine <brian.
 lazy_static,https://github.com/rust-lang-nursery/lazy-static.rs,MIT OR Apache-2.0,Marvin Löbel <loebel.marvin@gmail.com>
 leb128fmt,https://github.com/bluk/leb128fmt,MIT OR Apache-2.0,Bryant Luk <code@bryantluk.com>
 libc,https://github.com/rust-lang/libc,MIT OR Apache-2.0,The Rust Project Developers
+libdd-profiling-heap-allocator,https://github.com/DataDog/libdatadog/tree/main/libdd-profiling-heap-allocator,Apache-2.0,The libdd-profiling-heap-allocator Authors
+libdd-profiling-heap-sampler,https://github.com/DataDog/libdatadog/tree/main/libdd-profiling-heap-sampler,Apache-2.0,The libdd-profiling-heap-sampler Authors
 libloading,https://github.com/nagisa/rust_libloading,ISC,Simonas Kazlauskas <libloading@kazlauskas.me>
 libm,https://github.com/rust-lang/compiler-builtins,MIT,"Alex Crichton <alex@alexcrichton.com>, Amanieu d'Antras <amanieu@gmail.com>, Jorge Aparicio <japaricious@gmail.com>, Trevor Gross <tg@trevorgross.com>"
 linkme,https://github.com/dtolnay/linkme,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
