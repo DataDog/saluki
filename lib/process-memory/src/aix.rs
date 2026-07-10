@@ -83,6 +83,24 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_endian = "big")]
+    fn parses_big_endian_resident_set_size() {
+        let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
+        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 7]);
+
+        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some(7168));
+    }
+
+    #[test]
+    #[cfg(target_endian = "little")]
+    fn parses_little_endian_resident_set_size() {
+        let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
+        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&[7, 0, 0, 0, 0, 0, 0, 0]);
+
+        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some(7168));
+    }
+
+    #[test]
     fn accepts_zero_resident_set_size() {
         let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
         psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&0u64.to_ne_bytes());
