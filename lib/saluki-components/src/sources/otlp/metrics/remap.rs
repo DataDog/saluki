@@ -628,3 +628,200 @@ static KAFKA_METRICS_TO_RENAME: LazyLock<HashSet<&'static str>> = LazyLock::new(
     m.insert("kafka.producer.record-error-rate");
     m
 });
+
+#[cfg(test)]
+mod tests {
+    // These tests port the input->output mappings verified by the Go opentelemetry-mapping-go
+    // remapping/renaming suite:
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/remapping_test.go
+    use otlp_protos::opentelemetry::proto::common::v1::AnyValue;
+    use otlp_protos::opentelemetry::proto::metrics::v1::{Gauge, Sum};
+
+    use super::*;
+
+    fn string_attr(key: &str, value: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+        }
+    }
+
+    fn double_dp(value: f64, attrs: &[KeyValue]) -> OtlpNumberDataPoint {
+        OtlpNumberDataPoint {
+            value: Some(OtlpNumberValue::AsDouble(value)),
+            attributes: attrs.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn gauge_metric(name: &str, data_points: Vec<OtlpNumberDataPoint>) -> OtlpMetric {
+        OtlpMetric {
+            name: name.to_string(),
+            data: Some(OtlpMetricData::Gauge(Gauge { data_points })),
+            ..Default::default()
+        }
+    }
+
+    fn sum_metric(name: &str, data_points: Vec<OtlpNumberDataPoint>) -> OtlpMetric {
+        OtlpMetric {
+            name: name.to_string(),
+            data: Some(OtlpMetricData::Sum(Sum {
+                data_points,
+                is_monotonic: true,
+                aggregation_temporality: 0,
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn data_points(metric: &OtlpMetric) -> &[OtlpNumberDataPoint] {
+        match metric.data.as_ref().expect("metric data") {
+            OtlpMetricData::Gauge(g) => &g.data_points,
+            OtlpMetricData::Sum(s) => &s.data_points,
+            _ => panic!("unexpected metric data type"),
+        }
+    }
+
+    fn first_double_value(metric: &OtlpMetric) -> f64 {
+        match data_points(metric)[0].value.as_ref().expect("data point value") {
+            OtlpNumberValue::AsDouble(d) => *d,
+            OtlpNumberValue::AsInt(i) => *i as f64,
+        }
+    }
+
+    fn attr_value<'a>(dp: &'a OtlpNumberDataPoint, key: &str) -> Option<&'a str> {
+        dp.attributes.iter().find(|kv| kv.key == key).and_then(|kv| {
+            match kv.value.as_ref().and_then(|v| v.value.as_ref()) {
+                Some(Value::StringValue(s)) => Some(s.as_str()),
+                _ => None,
+            }
+        })
+    }
+
+    fn remapped_by_name(metric: &OtlpMetric) -> HashMap<String, OtlpMetric> {
+        let mut new_metrics = Vec::new();
+        remap_metrics(&mut new_metrics, metric);
+        new_metrics.into_iter().map(|m| (m.name.clone(), m)).collect()
+    }
+
+    #[test]
+    fn remap_system_load_average_copies_value_unchanged() {
+        let metric = gauge_metric("system.cpu.load_average.1m", vec![double_dp(0.75, &[])]);
+        let remapped = remapped_by_name(&metric);
+
+        assert_eq!(remapped.len(), 1);
+        assert_eq!(first_double_value(&remapped["system.load.1"]), 0.75);
+    }
+
+    #[test]
+    fn remap_cpu_utilization_splits_by_state_and_scales_to_percentage() {
+        // `system.cpu.utilization` is reported as a fraction (0.0-1.0); the Datadog `system.cpu.*`
+        // metrics are percentages, so each state is divided by DIV_PERCENTAGE (0.01), i.e. scaled x100,
+        // and each output keeps only the data point whose `state` attribute matches.
+        let metric = gauge_metric(
+            "system.cpu.utilization",
+            vec![
+                double_dp(0.5, &[string_attr("state", "idle")]),
+                double_dp(0.3, &[string_attr("state", "user")]),
+                double_dp(0.1, &[string_attr("state", "system")]),
+                double_dp(0.05, &[string_attr("state", "wait")]),
+                double_dp(0.04, &[string_attr("state", "steal")]),
+            ],
+        );
+        let remapped = remapped_by_name(&metric);
+
+        assert_eq!(remapped.len(), 5);
+        assert!((first_double_value(&remapped["system.cpu.idle"]) - 50.0).abs() < 1e-9);
+        assert!((first_double_value(&remapped["system.cpu.user"]) - 30.0).abs() < 1e-9);
+        assert!((first_double_value(&remapped["system.cpu.system"]) - 10.0).abs() < 1e-9);
+        assert!((first_double_value(&remapped["system.cpu.iowait"]) - 5.0).abs() < 1e-9);
+        assert!((first_double_value(&remapped["system.cpu.stolen"]) - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remap_container_cpu_usage_sets_nanocore_unit() {
+        let metric = sum_metric("container.cpu.usage.total", vec![double_dp(123.0, &[])]);
+        let remapped = remapped_by_name(&metric);
+
+        assert_eq!(remapped.len(), 1);
+        let usage = &remapped["container.cpu.usage"];
+        assert_eq!(first_double_value(usage), 123.0);
+        assert_eq!(usage.unit, "nanocore");
+    }
+
+    #[test]
+    fn remap_kafka_consumer_lag_copies_group_into_consumer_group() {
+        let metric = gauge_metric(
+            "kafka.consumer.records_lag",
+            vec![double_dp(5.0, &[string_attr("group", "my-group")])],
+        );
+        let remapped = remapped_by_name(&metric);
+
+        assert_eq!(remapped.len(), 1);
+        let lag = &remapped["kafka.consumer_lag"];
+        let dp = &data_points(lag)[0];
+        // The dynamic attribute mapping copies `group` to a new `consumer_group` attribute while
+        // leaving the original in place.
+        assert_eq!(attr_value(dp, "group"), Some("my-group"));
+        assert_eq!(attr_value(dp, "consumer_group"), Some("my-group"));
+    }
+
+    #[test]
+    fn remap_jvm_memory_committed_splits_heap_and_non_heap() {
+        let metric = gauge_metric(
+            "jvm.memory.committed",
+            vec![
+                double_dp(100.0, &[string_attr("pool", "heap")]),
+                double_dp(50.0, &[string_attr("pool", "non-heap")]),
+            ],
+        );
+        let remapped = remapped_by_name(&metric);
+
+        assert_eq!(remapped.len(), 2);
+        assert_eq!(first_double_value(&remapped["jvm.heap_memory_committed"]), 100.0);
+        assert_eq!(first_double_value(&remapped["jvm.non_heap_memory_committed"]), 50.0);
+    }
+
+    #[test]
+    fn remap_ignores_unmapped_metric() {
+        let metric = gauge_metric("custom.app.metric", vec![double_dp(1.0, &[])]);
+        let remapped = remapped_by_name(&metric);
+
+        assert!(remapped.is_empty());
+    }
+
+    #[test]
+    fn rename_host_metrics_add_otel_prefix() {
+        for name in ["system.cpu.time", "process.cpu.time"] {
+            let mut metric = gauge_metric(name, vec![]);
+            rename_metric(&mut metric);
+            assert_eq!(metric.name, format!("otel.{name}"));
+        }
+    }
+
+    #[test]
+    fn rename_listed_kafka_metric_adds_otel_prefix() {
+        let mut metric = gauge_metric("kafka.producer.request-rate", vec![]);
+        rename_metric(&mut metric);
+        assert_eq!(metric.name, "otel.kafka.producer.request-rate");
+    }
+
+    #[test]
+    fn rename_agent_internal_metrics_add_otelcol_prefix() {
+        for name in ["datadog_trace_agent.receiver.spans", "datadog_otlp.something"] {
+            let mut metric = gauge_metric(name, vec![]);
+            rename_metric(&mut metric);
+            assert_eq!(metric.name, format!("otelcol_{name}"));
+        }
+    }
+
+    #[test]
+    fn rename_leaves_unmapped_metric_unchanged() {
+        let mut metric = gauge_metric("kafka.consumer.records_lag", vec![]);
+        rename_metric(&mut metric);
+        // Not a host metric, not in the kafka-rename set, and not agent-internal.
+        assert_eq!(metric.name, "kafka.consumer.records_lag");
+    }
+}

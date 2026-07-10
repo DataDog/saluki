@@ -1486,7 +1486,8 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use otlp_protos::opentelemetry::proto::metrics::v1::{
-        number_data_point::Value as OtlpNumberDataPointValue, NumberDataPoint as OtlpNumberDataPoint,
+        number_data_point::Value as OtlpNumberDataPointValue, summary_data_point::ValueAtQuantile, Gauge,
+        NumberDataPoint as OtlpNumberDataPoint, ScopeMetrics, Sum,
     };
     use saluki_context::tags::Tag;
 
@@ -1704,10 +1705,38 @@ mod tests {
         assert_bucket_events(&cumulative_events, &[3.0, 4.0], 3);
     }
 
-    // Ported from the Go OTLP mapping tests:
+    /// Drives `map_number_monotonic_metrics` for a metric named `name`, hiding the repeated
+    /// `Dimensions` + `TranslationContext` construction shared across the monotonic-mapping tests.
+    fn run_monotonic(
+        translator: &mut OtlpMetricsTranslator, name: &str, data_points: Vec<OtlpNumberDataPoint>, metrics: &Metrics,
+    ) -> Vec<Event> {
+        let dims = Dimensions {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics,
+        };
+        translator.map_number_monotonic_metrics(dims, data_points, &context)
+    }
+
+    /// Drives `map_number_metrics` for the given `dims`/`data_type`, hiding the repeated
+    /// `TranslationContext` construction shared across the number-mapping tests.
+    fn run_number(
+        translator: &mut OtlpMetricsTranslator, dims: Dimensions, data_points: Vec<OtlpNumberDataPoint>,
+        data_type: DataType, metrics: &Metrics,
+    ) -> Vec<Event> {
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics,
+        };
+        translator.map_number_metrics(dims, data_points, data_type, &context)
+    }
+
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2225
     #[test]
-    fn go_float_matches_go_format_float() {
+    fn format_float_matches_go_strconv_formatting() {
         let tests = [
             (0.0, "0"),
             (0.001, "0.001"),
@@ -2374,295 +2403,213 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296
     #[test]
-    fn test_map_int_monotonic_metrics() {
+    fn int_monotonic_diff_emits_one_counter_delta_per_point() {
         let metrics = Metrics::for_tests();
         let deltas = vec![1, 2, 200, 3, 7, 0];
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // Test Case 1: "diff" mode (standard cumulative to delta)
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let slice = build_monotonic_int_points(&deltas);
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
+        let events = run_monotonic(
+            &mut translator,
+            "metric.example",
+            build_monotonic_int_points(&deltas),
+            &metrics,
+        );
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-
-            assert_eq!(events.len(), deltas.len(), "Expected one event for each delta");
-
-            for (i, event) in events.iter().enumerate() {
-                let metric = event.try_as_metric().unwrap();
-                assert_eq!(
-                    metric.values(),
-                    &MetricValues::counter((((i + 1) * 10) as u64, deltas[i] as f64))
-                );
-            }
-        }
-
-        // Test Case 2: "rate" mode
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let slice = build_monotonic_int_points(&deltas);
-            let dims = Dimensions {
-                name: "kafka.net.bytes_out.rate".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-
+        assert_eq!(events.len(), deltas.len(), "Expected one event for each delta");
+        for (i, event) in events.iter().enumerate() {
+            let metric = event.try_as_metric().unwrap();
             assert_eq!(
-                events.len(),
-                deltas.len(),
-                "Expected one event for each delta in rate mode"
+                metric.values(),
+                &MetricValues::counter((((i + 1) * 10) as u64, deltas[i] as f64))
             );
-
-            for (i, event) in events.iter().enumerate() {
-                let metric = event.try_as_metric().unwrap();
-                // The rate is delta / 10s interval
-                assert_eq!(
-                    metric.values(),
-                    &MetricValues::gauge((((i + 1) * 10) as u64, deltas[i] as f64 / 10.0),)
-                );
-            }
         }
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296
+    #[test]
+    fn int_monotonic_rate_emits_per_second_gauge_per_point() {
+        let metrics = Metrics::for_tests();
+        let deltas = vec![1, 2, 200, 3, 7, 0];
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let events = run_monotonic(
+            &mut translator,
+            "kafka.net.bytes_out.rate",
+            build_monotonic_int_points(&deltas),
+            &metrics,
+        );
+
+        assert_eq!(
+            events.len(),
+            deltas.len(),
+            "Expected one event for each delta in rate mode"
+        );
+        for (i, event) in events.iter().enumerate() {
+            let metric = event.try_as_metric().unwrap();
+            // The rate is delta / 10s interval.
+            assert_eq!(
+                metric.values(),
+                &MetricValues::gauge((((i + 1) * 10) as u64, deltas[i] as f64 / 10.0))
+            );
+        }
+    }
+
+    /// Three int data points where the second duplicates the first point's timestamp (dropped).
+    fn int_equal_timestamp_drop_slice(start_ts: u64) -> Vec<OtlpNumberDataPoint> {
+        vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(10)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(2),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(20)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(2),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(40)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(4),
+                ..Default::default()
+            },
+        ]
+    }
+
+    /// Three int data points where the second is older than the first point's timestamp (dropped).
+    fn int_older_timestamp_drop_slice(start_ts: u64) -> Vec<OtlpNumberDataPoint> {
+        vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(10)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(3),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(25)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(2),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(40)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(5),
+                ..Default::default()
+            },
+        ]
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L549
     #[test]
-    fn test_map_int_monotonic_drop_point_within_slice() {
+    fn int_monotonic_diff_drops_equal_timestamp_point() {
         let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
 
-        // Test Case 1: "equal" timestamp.
-        // Verifies that a point is dropped if its timestamp is the same as the previous point.
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
+        let events = run_monotonic(
+            &mut translator,
+            "metric.example",
+            int_equal_timestamp_drop_slice(start_ts),
+            &metrics,
+        );
+        assert_eq!(events.len(), 2, "Expected two metrics after dropping a point");
 
-            let slice = vec![
-                // First point
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(10)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                // Second point - DUPLICATE timestamp. This should be dropped.
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(20)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                // Third point
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(40)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(4),
-                    ..Default::default()
-                },
-            ];
+        // First metric: the initial value of the counter.
+        let metric = events[0].try_as_metric().unwrap();
+        let expected_ts_s = (start_ts + nanos_from_seconds(2)) / 1_000_000_000;
+        assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 10.0)));
 
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        // Second metric: the delta between the third and first points.
+        let metric = events[1].try_as_metric().unwrap();
+        let expected_ts_s = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
+        assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 30.0)));
+    }
 
-            assert_eq!(events.len(), 2, "Expected two metrics after dropping a point");
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L549
+    #[test]
+    fn int_monotonic_rate_drops_equal_timestamp_point() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
 
-            // First metric: the initial value of the counter.
-            let metric = events[0].try_as_metric().unwrap();
-            let expected_ts_s = (start_ts + nanos_from_seconds(2)) / 1_000_000_000;
-            assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 10.0)));
+        // The first point is consumed but produces no rate; the second is dropped; the third
+        // produces a rate based on the delta from the first.
+        let events = run_monotonic(
+            &mut translator,
+            "kafka.net.bytes_out.rate",
+            int_equal_timestamp_drop_slice(start_ts),
+            &metrics,
+        );
+        assert_eq!(events.len(), 1, "Expected one metric for equal-rate test");
 
-            // Second metric: the delta between the third and first points.
-            let metric = events[1].try_as_metric().unwrap();
-            let expected_ts_s = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
-            assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 30.0)));
-        }
+        let metric = events[0].try_as_metric().unwrap();
+        // rate is (40-10) / (4s-2s) = 30 / 2 = 15
+        let expected_ts_s = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
+        assert_eq!(metric.values(), &MetricValues::gauge((expected_ts_s, 15.0)));
+    }
 
-        // Test Case 2: "equal-rate" timestamp.
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L549
+    #[test]
+    fn int_monotonic_diff_drops_older_timestamp_point() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
 
-            let slice = vec![
-                // First point
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(10)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                // Second point - DUPLICATE timestamp. This should be dropped.
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(20)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                // Third point
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(40)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(4),
-                    ..Default::default()
-                },
-            ];
+        let events = run_monotonic(
+            &mut translator,
+            "metric.example",
+            int_older_timestamp_drop_slice(start_ts),
+            &metrics,
+        );
+        assert_eq!(events.len(), 2, "Expected two metrics after dropping an older point");
 
-            let dims = Dimensions {
-                name: "kafka.net.bytes_out.rate".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let metric = events[0].try_as_metric().unwrap();
+        let expected_ts_s = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
+        assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 10.0)));
 
-            // The first point is consumed but produces no metric for rates.
-            // The second is dropped.
-            // The third produces a rate based on the delta from the first.
-            assert_eq!(events.len(), 1, "Expected one metric for equal-rate test");
+        let metric = events[1].try_as_metric().unwrap();
+        let expected_ts_s = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
+        assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 30.0)));
+    }
 
-            let metric = events[0].try_as_metric().unwrap();
-            // rate is (40-10) / (4s-2s) = 30 / 2 = 15
-            let expected_ts_s = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
-            assert_eq!(metric.values(), &MetricValues::gauge((expected_ts_s, 15.0)));
-        }
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L549
+    #[test]
+    fn int_monotonic_rate_drops_older_timestamp_point() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
 
-        // Test Case 3: "older" timestamp.
-        // Verifies that a point is dropped if its timestamp is older than the previous point.
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
+        let events = run_monotonic(
+            &mut translator,
+            "kafka.net.bytes_out.rate",
+            int_older_timestamp_drop_slice(start_ts),
+            &metrics,
+        );
+        assert_eq!(
+            events.len(),
+            1,
+            "Expected one metric after dropping an older rate point"
+        );
 
-            let slice = vec![
-                // First point
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(10)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(3),
-                    ..Default::default()
-                },
-                // Second point - OLDER timestamp. This should be dropped.
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(25)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                // Third point
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(40)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(5),
-                    ..Default::default()
-                },
-            ];
-
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), 2, "Expected two metrics after dropping an older point");
-
-            let metric = events[0].try_as_metric().unwrap();
-            let expected_ts_s = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
-            assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 10.0)));
-
-            let metric = events[1].try_as_metric().unwrap();
-            let expected_ts_s = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
-            assert_eq!(metric.values(), &MetricValues::counter((expected_ts_s, 30.0)));
-        }
-
-        // Test Case 4: "older-rate" timestamp.
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-
-            let slice = vec![
-                // First point
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(10)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(3),
-                    ..Default::default()
-                },
-                // Second point - OLDER timestamp. This should be dropped.
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(25)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                // Third point
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(40)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(5),
-                    ..Default::default()
-                },
-            ];
-
-            let dims = Dimensions {
-                name: "kafka.net.bytes_out.rate".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(
-                events.len(),
-                1,
-                "Expected one metric after dropping an older rate point"
-            );
-
-            let metric = events[0].try_as_metric().unwrap();
-            // rate is (40-10) / (5s-3s) = 30 / 2 = 15
-            let expected_ts_s = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
-            assert_eq!(metric.values(), &MetricValues::gauge((expected_ts_s, 15.0)));
-        }
+        let metric = events[0].try_as_metric().unwrap();
+        // rate is (40-10) / (5s-3s) = 30 / 2 = 15
+        let expected_ts_s = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
+        assert_eq!(metric.values(), &MetricValues::gauge((expected_ts_s, 15.0)));
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L884
     #[test]
-    fn test_map_int_monotonic_report_first_value() {
+    fn int_monotonic_reports_first_value_from_new_series() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        let dims = Dimensions {
-            name: "metric.example".to_string(),
-            ..Default::default()
-        };
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], false);
         let start_ts = slice[0].start_time_unix_nano;
 
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
 
         assert_eq!(events.len(), 3, "Expected three metrics for a new cumulative series");
 
@@ -2684,7 +2631,7 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1411
     #[test]
-    fn test_map_int_monotonic_out_of_order() {
+    fn int_monotonic_drops_out_of_order_point() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
@@ -2700,15 +2647,7 @@ mod tests {
             });
         }
 
-        let dims = Dimensions {
-            name: "metric.example".to_string(),
-            ..Default::default()
-        };
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
 
         // Expected metrics:
         // 1. First valid point is (ts: 1, val: 0). The point at ts: 0 is dropped. The first point is
@@ -2730,7 +2669,7 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L332
     #[test]
-    fn test_map_int_monotonic_different_dimensions() {
+    fn int_monotonic_separates_series_by_dimensions() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
@@ -2789,15 +2728,7 @@ mod tests {
             ..Default::default()
         });
 
-        let dims = Dimensions {
-            name: "metric.example".to_string(),
-            ..Default::default()
-        };
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
         assert_eq!(events.len(), 3, "Expected three distinct metrics");
 
         assert_eq!(
@@ -2818,290 +2749,267 @@ mod tests {
         assert_eq!(metric3.values(), &MetricValues::counter((1, 40.0)));
     }
 
+    /// A single integer data point at "now" and its second-resolution timestamp.
+    fn single_int_point() -> (Vec<OtlpNumberDataPoint>, u64) {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        (
+            vec![OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(17)),
+                time_unix_nano: ts,
+                ..Default::default()
+            }],
+            ts / 1_000_000_000,
+        )
+    }
+
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L201
     #[test]
-    fn test_map_number_metrics() {
+    fn number_gauge_emits_untagged_gauge() {
         let metrics = Metrics::for_tests();
-        // Setup test data that will be reused
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
-        let ts_s = ts / 1_000_000_000;
-
-        let slice = vec![OtlpNumberDataPoint {
-            value: Some(OtlpNumberDataPointValue::AsInt(17)),
-            time_unix_nano: ts,
+        let (slice, ts_s) = single_int_point();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let dims = Dimensions {
+            name: "int64.test".to_string(),
             ..Default::default()
-        }];
+        };
 
-        // Test Case 1: Gauge
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let dims = Dimensions {
-                name: "int64.test".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &context);
+        let events = run_number(&mut translator, dims, slice, DataType::Gauge, &metrics);
 
-            assert_eq!(events.len(), 1, "Expected one event for the gauge test");
-            let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(metric.context().name(), "int64.test");
-            assert_eq!(metric.values(), &MetricValues::gauge((ts_s, 17.0)));
-            assert!(
-                metric.context().tags().is_empty(),
-                "Expected no tags for the simple gauge test"
-            );
-        }
+        assert_eq!(events.len(), 1, "Expected one event for the gauge test");
+        let metric = events[0].try_as_metric().unwrap();
+        assert_eq!(metric.context().name(), "int64.test");
+        assert_eq!(metric.values(), &MetricValues::gauge((ts_s, 17.0)));
+        assert!(
+            metric.context().tags().is_empty(),
+            "Expected no tags for the simple gauge test"
+        );
+    }
 
-        // Test Case 2: Count
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let dims = Dimensions {
-                name: "int64.delta.test".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Count, &context);
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L201
+    #[test]
+    fn number_count_emits_untagged_counter() {
+        let metrics = Metrics::for_tests();
+        let (slice, ts_s) = single_int_point();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let dims = Dimensions {
+            name: "int64.delta.test".to_string(),
+            ..Default::default()
+        };
 
-            assert_eq!(events.len(), 1, "Expected one event for the count test");
-            let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(metric.context().name(), "int64.delta.test");
-            assert_eq!(metric.values(), &MetricValues::counter((ts_s, 17.0)));
-            assert!(
-                metric.context().tags().is_empty(),
-                "Expected no tags for the simple count test"
-            );
-        }
+        let events = run_number(&mut translator, dims, slice, DataType::Count, &metrics);
 
-        // Test Case 3: Gauge with Tags
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let mut tags = TagSet::default();
-            tags.insert_tag("attribute_tag:attribute_value");
-            let dims = Dimensions {
-                name: "int64.test".to_string(),
-                tags: tags.into_shared(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &context);
+        assert_eq!(events.len(), 1, "Expected one event for the count test");
+        let metric = events[0].try_as_metric().unwrap();
+        assert_eq!(metric.context().name(), "int64.delta.test");
+        assert_eq!(metric.values(), &MetricValues::counter((ts_s, 17.0)));
+        assert!(
+            metric.context().tags().is_empty(),
+            "Expected no tags for the simple count test"
+        );
+    }
 
-            assert_eq!(events.len(), 1, "Expected one event for the gauge with tags test");
-            let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(metric.context().name(), "int64.test");
-            assert_eq!(metric.values(), &MetricValues::gauge((ts_s, 17.0)));
-            assert_eq!(
-                metric.context().tags().get_single_tag("attribute_tag"),
-                Some(&Tag::from("attribute_tag:attribute_value"))
-            );
-        }
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L201
+    #[test]
+    fn number_gauge_preserves_dimension_tags() {
+        let metrics = Metrics::for_tests();
+        let (slice, ts_s) = single_int_point();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut tags = TagSet::default();
+        tags.insert_tag("attribute_tag:attribute_value");
+        let dims = Dimensions {
+            name: "int64.test".to_string(),
+            tags: tags.into_shared(),
+            ..Default::default()
+        };
+
+        let events = run_number(&mut translator, dims, slice, DataType::Gauge, &metrics);
+
+        assert_eq!(events.len(), 1, "Expected one event for the gauge with tags test");
+        let metric = events[0].try_as_metric().unwrap();
+        assert_eq!(metric.context().name(), "int64.test");
+        assert_eq!(metric.values(), &MetricValues::gauge((ts_s, 17.0)));
+        assert_eq!(
+            metric.context().tags().get_single_tag("attribute_tag"),
+            Some(&Tag::from("attribute_tag:attribute_value"))
+        );
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L395
     #[test]
-    fn test_map_int_monotonic_with_reboot_within_slice() {
+    fn int_monotonic_diff_handles_reboot_within_slice() {
         let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // Test Case 1: "diff" mode with reset
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let slice = build_monotonic_int_reboot_points();
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
+        let events = run_monotonic(
+            &mut translator,
+            "metric.example",
+            build_monotonic_int_reboot_points(),
+            &metrics,
+        );
+
+        assert_eq!(events.len(), 2, "Expected two metrics after a reboot");
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((10, 30.0))
+        );
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::counter((30, 20.0))
+        );
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L395
+    #[test]
+    fn int_monotonic_rate_handles_reboot_within_slice() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let events = run_monotonic(
+            &mut translator,
+            "kafka.net.bytes_out.rate",
+            build_monotonic_int_reboot_points(),
+            &metrics,
+        );
+
+        assert_eq!(events.len(), 2, "Expected two metrics for rate after a reboot");
+        // 30 / 10s and 20 / 10s.
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::gauge((10, 3.0))
+        );
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::gauge((30, 2.0))
+        );
+    }
+
+    /// A single double data point (`PI`) at "now" and its second-resolution timestamp.
+    fn single_double_point() -> (Vec<OtlpNumberDataPoint>, u64) {
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        (
+            vec![OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(std::f64::consts::PI)),
+                time_unix_nano: ts,
                 ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-
-            assert_eq!(events.len(), 2, "Expected two metrics after a reboot");
-
-            let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(metric.values(), &MetricValues::counter((10, 30.0)));
-
-            let metric = events[1].try_as_metric().unwrap();
-            assert_eq!(metric.values(), &MetricValues::counter((30, 20.0)));
-        }
-
-        // Test Case 2: "rate" mode with reset
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let slice = build_monotonic_int_reboot_points();
-            let dims = Dimensions {
-                name: "kafka.net.bytes_out.rate".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-
-            assert_eq!(events.len(), 2, "Expected two metrics for rate after a reboot");
-
-            let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(
-                metric.values(),
-                &MetricValues::gauge((10, 3.0)) // 30 / 10s
-            );
-
-            let metric = events[1].try_as_metric().unwrap();
-            assert_eq!(
-                metric.values(),
-                &MetricValues::gauge((30, 2.0)) // 20 / 10s
-            );
-        }
+            }],
+            ts / 1_000_000_000,
+        )
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L236
     #[test]
-    fn test_map_double_metrics() {
+    fn double_gauge_emits_gauge() {
         let metrics = Metrics::for_tests();
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
-        let ts_s = ts / 1_000_000_000;
-
-        let slice = vec![OtlpNumberDataPoint {
-            value: Some(OtlpNumberDataPointValue::AsDouble(std::f64::consts::PI)),
-            time_unix_nano: ts,
+        let (slice, ts_s) = single_double_point();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let dims = Dimensions {
+            name: "float64.test".to_string(),
             ..Default::default()
-        }];
+        };
 
-        // Test Case 1: Gauge
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let dims = Dimensions {
-                name: "float64.test".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &context);
+        let events = run_number(&mut translator, dims, slice, DataType::Gauge, &metrics);
 
-            assert_eq!(events.len(), 1, "Expected one event for the gauge test");
-            let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(metric.context().name(), "float64.test");
-            assert_eq!(metric.values(), &MetricValues::gauge((ts_s, std::f64::consts::PI)));
-        }
+        assert_eq!(events.len(), 1, "Expected one event for the gauge test");
+        let metric = events[0].try_as_metric().unwrap();
+        assert_eq!(metric.context().name(), "float64.test");
+        assert_eq!(metric.values(), &MetricValues::gauge((ts_s, std::f64::consts::PI)));
+    }
 
-        // Test Case 2: Count
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let dims = Dimensions {
-                name: "float64.delta.test".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Count, &context);
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L236
+    #[test]
+    fn double_count_emits_counter() {
+        let metrics = Metrics::for_tests();
+        let (slice, ts_s) = single_double_point();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let dims = Dimensions {
+            name: "float64.delta.test".to_string(),
+            ..Default::default()
+        };
 
-            assert_eq!(events.len(), 1, "Expected one event for the count test");
-            let metric = events[0].try_as_metric().unwrap();
-            assert_eq!(metric.context().name(), "float64.delta.test");
-            assert_eq!(metric.values(), &MetricValues::counter((ts_s, std::f64::consts::PI)));
-        }
+        let events = run_number(&mut translator, dims, slice, DataType::Count, &metrics);
 
-        // Test Case 3: Gauge with Tags
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let mut tags = TagSet::default();
-            tags.insert_tag("attribute_tag:attribute_value");
-            let dims = Dimensions {
-                name: "float64.test".to_string(),
-                tags: tags.into_shared(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_metrics(dims, slice.clone(), DataType::Gauge, &context);
+        assert_eq!(events.len(), 1, "Expected one event for the count test");
+        let metric = events[0].try_as_metric().unwrap();
+        assert_eq!(metric.context().name(), "float64.delta.test");
+        assert_eq!(metric.values(), &MetricValues::counter((ts_s, std::f64::consts::PI)));
+    }
 
-            assert_eq!(events.len(), 1, "Expected one event for the gauge with tags test");
-            let metric = events[0].try_as_metric().unwrap();
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L236
+    #[test]
+    fn double_gauge_preserves_dimension_tags() {
+        let metrics = Metrics::for_tests();
+        let (slice, ts_s) = single_double_point();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut tags = TagSet::default();
+        tags.insert_tag("attribute_tag:attribute_value");
+        let dims = Dimensions {
+            name: "float64.test".to_string(),
+            tags: tags.into_shared(),
+            ..Default::default()
+        };
+
+        let events = run_number(&mut translator, dims, slice, DataType::Gauge, &metrics);
+
+        assert_eq!(events.len(), 1, "Expected one event for the gauge with tags test");
+        let metric = events[0].try_as_metric().unwrap();
+        assert_eq!(
+            metric.context().tags().get_single_tag("attribute_tag"),
+            Some(&Tag::from("attribute_tag:attribute_value"))
+        );
+        assert_eq!(metric.values(), &MetricValues::gauge((ts_s, std::f64::consts::PI)));
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1456
+    #[test]
+    fn double_monotonic_diff_emits_one_counter_delta_per_point() {
+        let metrics = Metrics::for_tests();
+        let deltas = vec![1.0, 2.0, 200.0, 3.0, 7.0, 0.0];
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let events = run_monotonic(
+            &mut translator,
+            "metric.example",
+            build_monotonic_double_points(&deltas),
+            &metrics,
+        );
+
+        assert_eq!(events.len(), deltas.len());
+        for (i, event) in events.iter().enumerate() {
+            let metric = event.try_as_metric().unwrap();
             assert_eq!(
-                metric.context().tags().get_single_tag("attribute_tag"),
-                Some(&Tag::from("attribute_tag:attribute_value"))
+                metric.values(),
+                &MetricValues::counter((((i + 1) * 10) as u64, deltas[i]))
             );
-            assert_eq!(metric.values(), &MetricValues::gauge((ts_s, std::f64::consts::PI)));
         }
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1456
     #[test]
-    fn test_map_double_monotonic_metrics() {
+    fn double_monotonic_rate_emits_per_second_gauge_per_point() {
         let metrics = Metrics::for_tests();
         let deltas = vec![1.0, 2.0, 200.0, 3.0, 7.0, 0.0];
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // Test Case 1: "diff" mode
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let slice = build_monotonic_double_points(&deltas);
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
+        let events = run_monotonic(
+            &mut translator,
+            "kafka.net.bytes_out.rate",
+            build_monotonic_double_points(&deltas),
+            &metrics,
+        );
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), deltas.len());
-
-            for (i, event) in events.iter().enumerate() {
-                let metric = event.try_as_metric().unwrap();
-                assert_eq!(
-                    metric.values(),
-                    &MetricValues::counter((((i + 1) * 10) as u64, deltas[i]))
-                );
-            }
-        }
-
-        // Test Case 2: "rate" mode
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let slice = build_monotonic_double_points(&deltas);
-            let dims = Dimensions {
-                name: "kafka.net.bytes_out.rate".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), deltas.len());
-
-            for (i, event) in events.iter().enumerate() {
-                let metric = event.try_as_metric().unwrap();
-                assert_eq!(
-                    metric.values(),
-                    &MetricValues::gauge((((i + 1) * 10) as u64, deltas[i] / 10.0),)
-                );
-            }
+        assert_eq!(events.len(), deltas.len());
+        for (i, event) in events.iter().enumerate() {
+            let metric = event.try_as_metric().unwrap();
+            assert_eq!(
+                metric.values(),
+                &MetricValues::gauge((((i + 1) * 10) as u64, deltas[i] / 10.0))
+            );
         }
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1493
     #[test]
-    fn test_map_double_monotonic_different_dimensions() {
+    fn double_monotonic_separates_series_by_dimensions() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
@@ -3160,15 +3068,7 @@ mod tests {
             ..Default::default()
         });
 
-        let dims = Dimensions {
-            name: "metric.example".to_string(),
-            ..Default::default()
-        };
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
         assert_eq!(events.len(), 3);
 
         assert_eq!(
@@ -3191,165 +3091,143 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1555
     #[test]
-    fn test_map_double_monotonic_with_reboot_within_slice() {
+    fn double_monotonic_diff_handles_reboot_within_slice() {
         let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let slice = build_monotonic_double_reboot_points();
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
+        let events = run_monotonic(
+            &mut translator,
+            "metric.example",
+            build_monotonic_double_reboot_points(),
+            &metrics,
+        );
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), 2);
-            assert_eq!(
-                events[0].try_as_metric().unwrap().values(),
-                &MetricValues::counter((10, 30.0))
-            );
-            assert_eq!(
-                events[1].try_as_metric().unwrap().values(),
-                &MetricValues::counter((30, 20.0))
-            );
-        }
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((10, 30.0))
+        );
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::counter((30, 20.0))
+        );
+    }
 
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let slice = build_monotonic_double_reboot_points();
-            let dims = Dimensions {
-                name: "kafka.net.bytes_out.rate".to_string(),
-                ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1555
+    #[test]
+    fn double_monotonic_rate_handles_reboot_within_slice() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
 
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), 2);
-            assert_eq!(
-                events[0].try_as_metric().unwrap().values(),
-                &MetricValues::gauge((10, 3.0))
-            );
-            assert_eq!(
-                events[1].try_as_metric().unwrap().values(),
-                &MetricValues::gauge((30, 2.0))
-            );
-        }
+        let events = run_monotonic(
+            &mut translator,
+            "kafka.net.bytes_out.rate",
+            build_monotonic_double_reboot_points(),
+            &metrics,
+        );
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::gauge((10, 3.0))
+        );
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::gauge((30, 2.0))
+        );
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1678
     #[test]
-    fn test_map_double_monotonic_drop_point_within_slice() {
+    fn double_monotonic_diff_drops_equal_timestamp_point() {
         let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
 
-        // Test Case 1: "equal" timestamp.
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-
-            let slice = vec![
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(10.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(20.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(4),
-                    ..Default::default()
-                },
-            ];
-
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
+        // The second point duplicates the first point's timestamp and is dropped.
+        let slice = vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(10.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(2),
                 ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), 2);
-
-            let expected_ts_s_1 = (start_ts + nanos_from_seconds(2)) / 1_000_000_000;
-            assert_eq!(
-                events[0].try_as_metric().unwrap().values(),
-                &MetricValues::counter((expected_ts_s_1, 10.0))
-            );
-            let expected_ts_s_2 = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
-            assert_eq!(
-                events[1].try_as_metric().unwrap().values(),
-                &MetricValues::counter((expected_ts_s_2, 30.0))
-            );
-        }
-
-        // Test Case 2: "older" timestamp.
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-
-            let slice = vec![
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(10.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(3),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(25.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(5),
-                    ..Default::default()
-                },
-            ];
-
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(20.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(2),
                 ..Default::default()
-            };
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), 2);
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(4),
+                ..Default::default()
+            },
+        ];
 
-            let expected_ts_s_1 = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
-            assert_eq!(
-                events[0].try_as_metric().unwrap().values(),
-                &MetricValues::counter((expected_ts_s_1, 10.0))
-            );
-            let expected_ts_s_2 = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
-            assert_eq!(
-                events[1].try_as_metric().unwrap().values(),
-                &MetricValues::counter((expected_ts_s_2, 30.0))
-            );
-        }
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
+        assert_eq!(events.len(), 2);
+
+        let expected_ts_s_1 = (start_ts + nanos_from_seconds(2)) / 1_000_000_000;
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((expected_ts_s_1, 10.0))
+        );
+        let expected_ts_s_2 = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::counter((expected_ts_s_2, 30.0))
+        );
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1678
+    #[test]
+    fn double_monotonic_diff_drops_older_timestamp_point() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
+
+        // The second point is older than the first point's timestamp and is dropped.
+        let slice = vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(10.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(3),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(25.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(2),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(5),
+                ..Default::default()
+            },
+        ];
+
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
+        assert_eq!(events.len(), 2);
+
+        let expected_ts_s_1 = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((expected_ts_s_1, 10.0))
+        );
+        let expected_ts_s_2 = (start_ts + nanos_from_seconds(5)) / 1_000_000_000;
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::counter((expected_ts_s_2, 30.0))
+        );
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2033
     #[test]
-    fn test_map_double_monotonic_out_of_order() {
+    fn double_monotonic_drops_out_of_order_point() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
@@ -3365,15 +3243,7 @@ mod tests {
             });
         }
 
-        let dims = Dimensions {
-            name: "metric.example".to_string(),
-            ..Default::default()
-        };
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
         assert_eq!(events.len(), 2);
 
         assert_eq!(
@@ -3388,122 +3258,105 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L464
     #[test]
-    fn test_map_int_monotonic_with_reboot_beginning_of_slice() {
-        let metrics = Metrics::for_tests();
-
-        // Test Case 1: "diff" mode
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-
-            // Prime the cache with a previous point.
-            translator
-                .prev_pts
-                .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
-
-            // Create a new payload where the first point is a reset.
-            let slice = vec![
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(5)), // Reset: 5 < 10
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(3),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(30)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(4),
-                    ..Default::default()
-                },
-            ];
-
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), 2, "Expected two metrics after reset");
-
-            // The reset point should be emitted as a new "first value".
-            let metric1 = events[0].try_as_metric().unwrap();
-            let expected_ts_s_1 = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
-            assert_eq!(metric1.values(), &MetricValues::counter((expected_ts_s_1, 5.0)));
-
-            // The next point should be a delta from the reset value.
-            let metric2 = events[1].try_as_metric().unwrap();
-            let expected_ts_s_2 = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
-            assert_eq!(
-                metric2.values(),
-                &MetricValues::counter((expected_ts_s_2, 25.0)) // 30 - 5
-            );
-        }
-
-        // Test Case 2: "rate" mode
-        {
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-            let dims = Dimensions {
-                name: "kafka.net.bytes_out.rate".to_string(),
-                ..Default::default()
-            };
-
-            // Prime the cache.
-            translator
-                .prev_pts
-                .monotonic_rate(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
-
-            // Create a new payload where the first point is a reset.
-            let slice = vec![
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(5)), // Reset: 5 < 10
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(3),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsInt(30)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(4),
-                    ..Default::default()
-                },
-            ];
-
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-            assert_eq!(events.len(), 1, "Expected one metric for rate after reset");
-
-            let metric = events[0].try_as_metric().unwrap();
-            let expected_ts_s = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
-            // rate = (30 - 5) / (4s - 3s) = 25 / 1 = 25
-            assert_eq!(metric.values(), &MetricValues::gauge((expected_ts_s, 25.0)));
-        }
-    }
-
-    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L901
-    #[test]
-    fn test_map_int_monotonic_rate_dont_report_first_value() {
+    fn int_monotonic_diff_reports_reset_at_beginning_of_slice() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
 
+        // Prime the cache with a previous point so the first point in the slice is a reset (5 < 10).
+        let dims = Dimensions {
+            name: "metric.example".to_string(),
+            ..Default::default()
+        };
+        translator
+            .prev_pts
+            .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
+
+        let slice = vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(5)), // Reset: 5 < 10
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(3),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(30)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(4),
+                ..Default::default()
+            },
+        ];
+
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
+        assert_eq!(events.len(), 2, "Expected two metrics after reset");
+
+        // The reset point should be emitted as a new "first value".
+        let expected_ts_s_1 = (start_ts + nanos_from_seconds(3)) / 1_000_000_000;
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((expected_ts_s_1, 5.0))
+        );
+
+        // The next point should be a delta from the reset value: 30 - 5.
+        let expected_ts_s_2 = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::counter((expected_ts_s_2, 25.0))
+        );
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L464
+    #[test]
+    fn int_monotonic_rate_reports_reset_at_beginning_of_slice() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
+
+        // Prime the cache so the first point in the slice is a reset (5 < 10).
         let dims = Dimensions {
             name: "kafka.net.bytes_out.rate".to_string(),
             ..Default::default()
         };
+        translator
+            .prev_pts
+            .monotonic_rate(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
+
+        let slice = vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(5)), // Reset: 5 < 10
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(3),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsInt(30)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(4),
+                ..Default::default()
+            },
+        ];
+
+        let events = run_monotonic(&mut translator, "kafka.net.bytes_out.rate", slice, &metrics);
+        assert_eq!(events.len(), 1, "Expected one metric for rate after reset");
+
+        let expected_ts_s = (start_ts + nanos_from_seconds(4)) / 1_000_000_000;
+        // rate = (30 - 5) / (4s - 3s) = 25 / 1 = 25
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::gauge((expected_ts_s, 25.0))
+        );
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L901
+    #[test]
+    fn int_monotonic_rate_does_not_report_first_value() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
 
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "kafka.net.bytes_out.rate", slice, &metrics);
 
         // For rates, the first value is consumed by the cache but doesn't produce a metric.
         assert_eq!(events.len(), 2, "Expected two metrics for a new rate series");
@@ -3521,22 +3374,14 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L917
     #[test]
-    fn test_map_int_monotonic_not_report_first_value_if_start_ts_match_ts() {
+    fn int_monotonic_does_not_report_first_value_when_start_ts_matches_ts() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        let dims = Dimensions {
-            name: "metric.example".to_string(),
-            ..Default::default()
-        };
-        // ts_match = true, so start_time_unix_nano will equal time_unix_nano
+        // ts_match = true, so start_time_unix_nano will equal time_unix_nano.
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], true);
 
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
 
         assert!(
             events.is_empty(),
@@ -3546,22 +3391,14 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L926
     #[test]
-    fn test_map_int_monotonic_rate_not_report_first_value_if_start_ts_match_ts() {
+    fn int_monotonic_rate_does_not_report_first_value_when_start_ts_matches_ts() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        let dims = Dimensions {
-            name: "kafka.net.bytes_out.rate".to_string(),
-            ..Default::default()
-        };
-        // ts_match = true, so start_time_unix_nano will equal time_unix_nano
+        // ts_match = true, so start_time_unix_nano will equal time_unix_nano.
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], true);
 
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "kafka.net.bytes_out.rate", slice, &metrics);
 
         assert!(
             events.is_empty(),
@@ -3571,7 +3408,7 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L935
     #[test]
-    fn test_map_int_monotonic_report_diff_for_first_value() {
+    fn int_monotonic_reports_diff_for_first_value_against_cached_point() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
@@ -3589,11 +3426,7 @@ mod tests {
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
 
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
 
         assert_eq!(
             events.len(),
@@ -3619,7 +3452,7 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L955
     #[test]
-    fn test_map_int_monotonic_report_rate_for_first_value() {
+    fn int_monotonic_reports_rate_for_first_value_against_cached_point() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
@@ -3637,11 +3470,7 @@ mod tests {
         let slice = build_test_cumulative_monotonic_int_points(&translator, &[10, 15, 20], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
 
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "kafka.net.bytes_out.rate", slice, &metrics);
 
         assert_eq!(
             events.len(),
@@ -3667,7 +3496,7 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L429
     #[test]
-    fn test_map_int_monotonic_with_no_recorded_value_within_slice() {
+    fn int_monotonic_skips_no_recorded_value_points() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
@@ -3703,15 +3532,7 @@ mod tests {
             },
         ];
 
-        let dims = Dimensions {
-            name: "metric.example".to_string(),
-            ..Default::default()
-        };
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
 
         assert_eq!(
             events.len(),
@@ -3731,208 +3552,183 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1589
     #[test]
-    fn test_map_double_monotonic_with_reboot_beginning_of_slice() {
-        // Test Case 1: "diff" mode
-        {
-            let metrics = Metrics::for_tests();
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-
-            // Pre-populate cache to establish a previous value
-            translator
-                .prev_pts
-                .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
-
-            let slice = vec![
-                // Point is smaller than previous point. This is a reset. Cache this point and submit as new value.
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(5.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(3),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(30.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(4),
-                    ..Default::default()
-                },
-            ];
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-
-            assert_eq!(events.len(), 2, "Expected two metrics for reboot diff test");
-
-            let start_ts_s = start_ts / 1_000_000_000;
-            let metric1 = events[0].try_as_metric().unwrap();
-            assert_eq!(metric1.values(), &MetricValues::counter((start_ts_s + 3, 5.0)));
-
-            let metric2 = events[1].try_as_metric().unwrap();
-            assert_eq!(metric2.values(), &MetricValues::counter((start_ts_s + 4, 25.0)));
-        }
-
-        // Test Case 2: "rate" mode
-        {
-            let metrics = Metrics::for_tests();
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-            let dims = Dimensions {
-                name: "kafka.net.bytes_out.rate".to_string(),
-                ..Default::default()
-            };
-
-            // Pre-populate cache to establish a previous value
-            translator
-                .prev_pts
-                .monotonic_rate(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
-
-            let slice = vec![
-                // Point is smaller than previous point. This is a reset. Cache this point and DON'T submit.
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(5.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(3),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(30.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(4),
-                    ..Default::default()
-                },
-            ];
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-
-            assert_eq!(events.len(), 1, "Expected one metric for reboot rate test");
-
-            let start_ts_s = start_ts / 1_000_000_000;
-            let metric1 = events[0].try_as_metric().unwrap();
-            // Rate is (30-5)/(4-3) = 25
-            assert_eq!(metric1.values(), &MetricValues::gauge((start_ts_s + 4, 25.0)));
-        }
-    }
-
-    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1848
-    #[test]
-    fn test_map_double_monotonic_drop_point_beginning_of_slice() {
-        // Test Case 1: "equal"
-        {
-            let metrics = Metrics::for_tests();
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-
-            // Pre-populate cache
-            translator
-                .prev_pts
-                .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
-
-            let slice = vec![
-                // Duplicate timestamp, should be dropped
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(20.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(4),
-                    ..Default::default()
-                },
-            ];
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-
-            assert_eq!(events.len(), 1, "Expected one metric for drop equal test");
-            let start_ts_s = start_ts / 1_000_000_000;
-            let metric1 = events[0].try_as_metric().unwrap();
-            assert_eq!(
-                metric1.values(),
-                &MetricValues::counter((start_ts_s + 4, 30.0)) // 40 - 10
-            );
-        }
-
-        // Test Case 2: "older"
-        {
-            let metrics = Metrics::for_tests();
-            let mut translator = OtlpMetricsTranslator::for_tests();
-            let start_ts = translator.process_start_time_ns + 1;
-            let dims = Dimensions {
-                name: "metric.example".to_string(),
-                ..Default::default()
-            };
-
-            // Pre-populate cache
-            translator
-                .prev_pts
-                .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(3), 10.0);
-
-            let slice = vec![
-                // Older timestamp, should be dropped
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(20.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(2),
-                    ..Default::default()
-                },
-                OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
-                    start_time_unix_nano: start_ts,
-                    time_unix_nano: start_ts + nanos_from_seconds(5),
-                    ..Default::default()
-                },
-            ];
-            let context = TranslationContext {
-                resource_attributes: &[],
-                metrics: &metrics,
-            };
-            let events = translator.map_number_monotonic_metrics(dims, slice, &context);
-
-            assert_eq!(events.len(), 1, "Expected one metric for drop older test");
-            let start_ts_s = start_ts / 1_000_000_000;
-            let metric1 = events[0].try_as_metric().unwrap();
-            assert_eq!(
-                metric1.values(),
-                &MetricValues::counter((start_ts_s + 5, 30.0)) // 40 - 10
-            );
-        }
-    }
-
-    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1932
-    #[test]
-    fn test_map_double_monotonic_report_first_value() {
+    fn double_monotonic_diff_reports_reset_at_beginning_of_slice() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
+
+        // Pre-populate the cache to establish a previous value so the first point is a reset (5 < 10).
         let dims = Dimensions {
             name: "metric.example".to_string(),
             ..Default::default()
         };
+        translator
+            .prev_pts
+            .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
+
+        let slice = vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(5.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(3),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(30.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(4),
+                ..Default::default()
+            },
+        ];
+
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
+        assert_eq!(events.len(), 2, "Expected two metrics for reboot diff test");
+
+        let start_ts_s = start_ts / 1_000_000_000;
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((start_ts_s + 3, 5.0))
+        );
+        assert_eq!(
+            events[1].try_as_metric().unwrap().values(),
+            &MetricValues::counter((start_ts_s + 4, 25.0))
+        );
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1589
+    #[test]
+    fn double_monotonic_rate_reports_reset_at_beginning_of_slice() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
+
+        // Pre-populate the cache so the first point is a reset (5 < 10).
+        let dims = Dimensions {
+            name: "kafka.net.bytes_out.rate".to_string(),
+            ..Default::default()
+        };
+        translator
+            .prev_pts
+            .monotonic_rate(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
+
+        let slice = vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(5.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(3),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(30.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(4),
+                ..Default::default()
+            },
+        ];
+
+        let events = run_monotonic(&mut translator, "kafka.net.bytes_out.rate", slice, &metrics);
+        assert_eq!(events.len(), 1, "Expected one metric for reboot rate test");
+
+        let start_ts_s = start_ts / 1_000_000_000;
+        // Rate is (30-5)/(4-3) = 25.
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::gauge((start_ts_s + 4, 25.0))
+        );
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1848
+    #[test]
+    fn double_monotonic_diff_drops_equal_timestamp_at_beginning_of_slice() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
+
+        // Pre-populate the cache; the first slice point duplicates the cached timestamp and is dropped.
+        let dims = Dimensions {
+            name: "metric.example".to_string(),
+            ..Default::default()
+        };
+        translator
+            .prev_pts
+            .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(2), 10.0);
+
+        let slice = vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(20.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(2),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(4),
+                ..Default::default()
+            },
+        ];
+
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
+        assert_eq!(events.len(), 1, "Expected one metric for drop equal test");
+
+        let start_ts_s = start_ts / 1_000_000_000;
+        // 40 - 10 (delta from the cached point).
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((start_ts_s + 4, 30.0))
+        );
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1848
+    #[test]
+    fn double_monotonic_diff_drops_older_timestamp_at_beginning_of_slice() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_ts = translator.process_start_time_ns + 1;
+
+        // Pre-populate the cache; the first slice point is older than the cached timestamp and is dropped.
+        let dims = Dimensions {
+            name: "metric.example".to_string(),
+            ..Default::default()
+        };
+        translator
+            .prev_pts
+            .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(3), 10.0);
+
+        let slice = vec![
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(20.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(2),
+                ..Default::default()
+            },
+            OtlpNumberDataPoint {
+                value: Some(OtlpNumberDataPointValue::AsDouble(40.0)),
+                start_time_unix_nano: start_ts,
+                time_unix_nano: start_ts + nanos_from_seconds(5),
+                ..Default::default()
+            },
+        ];
+
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
+        assert_eq!(events.len(), 1, "Expected one metric for drop older test");
+
+        let start_ts_s = start_ts / 1_000_000_000;
+        // 40 - 10 (delta from the cached point).
+        assert_eq!(
+            events[0].try_as_metric().unwrap().values(),
+            &MetricValues::counter((start_ts_s + 5, 30.0))
+        );
+    }
+
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1932
+    #[test]
+    fn double_monotonic_reports_first_value_from_new_series() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
         assert_eq!(events.len(), 3);
         let metric1 = events[0].try_as_metric().unwrap();
         assert_eq!(metric1.values(), &MetricValues::counter((start_ts_s + 2, 10.0)));
@@ -3944,20 +3740,12 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1948
     #[test]
-    fn test_map_double_monotonic_rate_dont_report_first_value() {
+    fn double_monotonic_rate_does_not_report_first_value() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
-        let dims = Dimensions {
-            name: "kafka.net.bytes_out.rate".to_string(),
-            ..Default::default()
-        };
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "kafka.net.bytes_out.rate", slice, &metrics);
         assert_eq!(events.len(), 2);
         let metric1 = events[0].try_as_metric().unwrap();
         assert_eq!(metric1.values(), &MetricValues::gauge((start_ts_s + 3, 5.0)));
@@ -3967,25 +3755,17 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1964
     #[test]
-    fn test_map_double_monotonic_not_report_first_value_if_start_ts_match_ts() {
+    fn double_monotonic_does_not_report_first_value_when_start_ts_matches_ts() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
-        let dims = Dimensions {
-            name: "metric.example".to_string(),
-            ..Default::default()
-        };
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], true);
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
         assert!(events.is_empty());
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L1994
     #[test]
-    fn test_map_double_monotonic_report_diff_for_first_value() {
+    fn double_monotonic_reports_diff_for_first_value_against_cached_point() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
         let dims = Dimensions {
@@ -3998,11 +3778,7 @@ mod tests {
             .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(1), 1.0);
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "metric.example", slice, &metrics);
         assert_eq!(events.len(), 3);
         let metric1 = events[0].try_as_metric().unwrap();
         assert_eq!(metric1.values(), &MetricValues::counter((start_ts_s + 2, 9.0)));
@@ -4014,7 +3790,7 @@ mod tests {
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2013
     #[test]
-    fn test_map_double_monotonic_report_rate_for_first_value() {
+    fn double_monotonic_reports_rate_for_first_value_against_cached_point() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
         let dims = Dimensions {
@@ -4027,11 +3803,7 @@ mod tests {
             .monotonic_diff(&dims, start_ts, start_ts + nanos_from_seconds(1), 1.0);
         let slice = build_test_cumulative_monotonic_double_points(&translator, &[10.0, 15.0, 20.0], false);
         let start_ts_s = slice[0].start_time_unix_nano / 1_000_000_000;
-        let context = TranslationContext {
-            resource_attributes: &[],
-            metrics: &metrics,
-        };
-        let events = translator.map_number_monotonic_metrics(dims, slice, &context);
+        let events = run_monotonic(&mut translator, "kafka.net.bytes_out.rate", slice, &metrics);
         assert_eq!(events.len(), 3);
         let metric1 = events[0].try_as_metric().unwrap();
         assert_eq!(metric1.values(), &MetricValues::gauge((start_ts_s + 2, 9.0)));
@@ -4039,5 +3811,509 @@ mod tests {
         assert_eq!(metric2.values(), &MetricValues::gauge((start_ts_s + 3, 5.0)));
         let metric3 = events[2].try_as_metric().unwrap();
         assert_eq!(metric3.values(), &MetricValues::gauge((start_ts_s + 4, 5.0)));
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Histogram translation (`map_histogram_metrics`).
+    //
+    // Mirrors the Go `mapHistogramMetrics` histogram-mode dispatch:
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go
+    // -----------------------------------------------------------------------------------------------
+
+    fn run_histogram(
+        translator: &mut OtlpMetricsTranslator, name: &str, data_points: Vec<OtlpHistogramDataPoint>, delta: bool,
+        metrics: &Metrics,
+    ) -> Vec<Event> {
+        let dims = Dimensions {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics,
+        };
+        translator.map_histogram_metrics(dims, data_points, delta, &context)
+    }
+
+    fn distribution_sketch(metric: &Metric) -> &DDSketch {
+        match metric.values() {
+            MetricValues::Distribution(points) => {
+                points
+                    .into_iter()
+                    .next()
+                    .expect("distribution should carry one sketch point")
+                    .1
+            }
+            _ => panic!("expected a distribution metric"),
+        }
+    }
+
+    #[test]
+    fn histogram_counters_mode_emits_one_counter_per_bucket() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config = translator.config.with_histogram_mode(HistogramMode::Counters);
+
+        let dp = OtlpHistogramDataPoint {
+            count: 6,
+            sum: Some(10.0),
+            bucket_counts: vec![1, 2, 3],
+            explicit_bounds: vec![1.0, 2.0],
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+
+        let events = run_histogram(&mut translator, "otlp.histogram", vec![dp], true, &metrics);
+        assert_eq!(events.len(), 3, "expected one counter per explicit bucket");
+
+        // (-inf, 1.0], (1.0, 2.0], (2.0, +inf) with counts 1, 2, 3.
+        let expected = [("-inf", "1.0", 1.0), ("1.0", "2.0", 2.0), ("2.0", "inf", 3.0)];
+        for (event, (lower, upper, value)) in events.iter().zip(expected) {
+            let metric = event.try_as_metric().unwrap();
+            assert_eq!(metric.context().name(), "otlp.histogram.bucket");
+            assert_eq!(
+                metric.context().tags().get_single_tag("lower_bound"),
+                Some(&Tag::from(format!("lower_bound:{lower}").as_str()))
+            );
+            assert_eq!(
+                metric.context().tags().get_single_tag("upper_bound"),
+                Some(&Tag::from(format!("upper_bound:{upper}").as_str()))
+            );
+            assert_eq!(metric.values(), &MetricValues::counter((1, value)));
+        }
+    }
+
+    #[test]
+    fn histogram_aggregations_emit_count_sum_min_max() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config = translator
+            .config
+            .with_histogram_mode(HistogramMode::NoBuckets)
+            .with_send_histogram_aggregations(true);
+
+        let dp = OtlpHistogramDataPoint {
+            count: 6,
+            sum: Some(12.0),
+            min: Some(0.5),
+            max: Some(9.0),
+            bucket_counts: vec![1, 2, 3],
+            explicit_bounds: vec![1.0, 2.0],
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+
+        // NoBuckets mode emits only the aggregations (count/sum as counters, min/max as gauges for delta).
+        let events = run_histogram(&mut translator, "otlp.histogram", vec![dp], true, &metrics);
+        assert_eq!(events.len(), 4, "expected count, sum, min, and max aggregations");
+
+        let count = events[0].try_as_metric().unwrap();
+        assert_eq!(count.context().name(), "otlp.histogram.count");
+        assert_eq!(count.values(), &MetricValues::counter((1, 6.0)));
+
+        let sum = events[1].try_as_metric().unwrap();
+        assert_eq!(sum.context().name(), "otlp.histogram.sum");
+        assert_eq!(sum.values(), &MetricValues::counter((1, 12.0)));
+
+        let min = events[2].try_as_metric().unwrap();
+        assert_eq!(min.context().name(), "otlp.histogram.min");
+        assert_eq!(min.values(), &MetricValues::gauge((1, 0.5)));
+
+        let max = events[3].try_as_metric().unwrap();
+        assert_eq!(max.context().name(), "otlp.histogram.max");
+        assert_eq!(max.values(), &MetricValues::gauge((1, 9.0)));
+    }
+
+    #[test]
+    fn histogram_distributions_mode_emits_single_sketch() {
+        let metrics = Metrics::for_tests();
+        // `for_tests` defaults to `HistogramMode::Distributions`.
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let dp = OtlpHistogramDataPoint {
+            count: 6,
+            sum: Some(10.0),
+            bucket_counts: vec![1, 2, 3],
+            explicit_bounds: vec![1.0, 2.0],
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+
+        let events = run_histogram(&mut translator, "otlp.histogram", vec![dp], true, &metrics);
+        assert_eq!(events.len(), 1, "distributions mode emits a single sketch");
+
+        let metric = events[0].try_as_metric().unwrap();
+        assert_eq!(metric.context().name(), "otlp.histogram");
+        assert_eq!(
+            distribution_sketch(metric).count(),
+            6,
+            "sketch count should match the histogram count"
+        );
+    }
+
+    #[test]
+    fn histogram_cumulative_first_point_emits_nothing() {
+        // A cumulative histogram's first point has no previous value to diff against, so neither a
+        // sketch nor aggregations can be produced.
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let dp = OtlpHistogramDataPoint {
+            count: 6,
+            sum: Some(10.0),
+            bucket_counts: vec![1, 2, 3],
+            explicit_bounds: vec![1.0, 2.0],
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+
+        let events = run_histogram(&mut translator, "otlp.histogram", vec![dp], false, &metrics);
+        assert!(events.is_empty());
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Summary translation (`map_summary_metrics`).
+    // -----------------------------------------------------------------------------------------------
+
+    fn run_summary(
+        translator: &mut OtlpMetricsTranslator, name: &str, data_points: Vec<OtlpSummaryDataPoint>, metrics: &Metrics,
+    ) -> Vec<Event> {
+        let dims = Dimensions {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics,
+        };
+        translator.map_summary_metrics(dims, data_points, &context)
+    }
+
+    fn summary_dp(count: u64, sum: f64, ts_secs: u64, quantiles: &[(f64, f64)]) -> OtlpSummaryDataPoint {
+        OtlpSummaryDataPoint {
+            count,
+            sum,
+            time_unix_nano: nanos_from_seconds(ts_secs),
+            quantile_values: quantiles
+                .iter()
+                .map(|&(quantile, value)| ValueAtQuantile { quantile, value })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn summary_count_and_sum_emit_counter_deltas() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // Count is treated as a cumulative monotonic series and sum as a cumulative (non-monotonic)
+        // diff, so the first point only primes the cache and the second yields the deltas.
+        let data_points = vec![summary_dp(5, 100.0, 1, &[]), summary_dp(10, 250.0, 2, &[])];
+        let events = run_summary(&mut translator, "otlp.summary", data_points, &metrics);
+
+        assert_eq!(events.len(), 2);
+        let count = events[0].try_as_metric().unwrap();
+        assert_eq!(count.context().name(), "otlp.summary.count");
+        assert_eq!(count.values(), &MetricValues::counter((2, 5.0))); // 10 - 5
+
+        let sum = events[1].try_as_metric().unwrap();
+        assert_eq!(sum.context().name(), "otlp.summary.sum");
+        assert_eq!(sum.values(), &MetricValues::counter((2, 150.0))); // 250 - 100
+    }
+
+    #[test]
+    fn summary_quantiles_emit_gauges_tagged_with_quantile() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.quantiles = true;
+
+        // A single data point produces no count/sum delta, leaving only the quantile gauges.
+        let data_points = vec![summary_dp(3, 30.0, 1, &[(0.5, 1.0), (0.99, 9.0)])];
+        let events = run_summary(&mut translator, "otlp.summary", data_points, &metrics);
+
+        assert_eq!(events.len(), 2);
+        let q50 = events[0].try_as_metric().unwrap();
+        assert_eq!(q50.context().name(), "otlp.summary.quantile");
+        assert_eq!(
+            q50.context().tags().get_single_tag("quantile"),
+            Some(&Tag::from("quantile:0.5"))
+        );
+        assert_eq!(q50.values(), &MetricValues::gauge((1, 1.0)));
+
+        let q99 = events[1].try_as_metric().unwrap();
+        assert_eq!(
+            q99.context().tags().get_single_tag("quantile"),
+            Some(&Tag::from("quantile:0.99"))
+        );
+        assert_eq!(q99.values(), &MetricValues::gauge((1, 9.0)));
+    }
+
+    #[test]
+    fn summary_skips_no_recorded_value_points() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.quantiles = true;
+
+        let dp = OtlpSummaryDataPoint {
+            count: 5,
+            sum: 100.0,
+            flags: DataPointFlags::NoRecordedValueMask as u32,
+            time_unix_nano: nanos_from_seconds(1),
+            quantile_values: vec![ValueAtQuantile {
+                quantile: 0.5,
+                value: 1.0,
+            }],
+            ..Default::default()
+        };
+
+        let events = run_summary(&mut translator, "otlp.summary", vec![dp], &metrics);
+        assert!(events.is_empty());
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // ExponentialHistogram translation (`map_exponential_histogram_metrics`).
+    // -----------------------------------------------------------------------------------------------
+
+    fn run_exponential_histogram(
+        translator: &mut OtlpMetricsTranslator, name: &str, data_points: Vec<OtlpExponentialHistogramDataPoint>,
+        delta: bool, metrics: &Metrics,
+    ) -> Vec<Event> {
+        let dims = Dimensions {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics,
+        };
+        translator.map_exponential_histogram_metrics(dims, data_points, delta, &context)
+    }
+
+    fn exp_histogram_dp(count: u64, sum: f64, min: Option<f64>, max: Option<f64>) -> OtlpExponentialHistogramDataPoint {
+        OtlpExponentialHistogramDataPoint {
+            count,
+            sum: Some(sum),
+            min,
+            max,
+            scale: 0,
+            zero_count: 0,
+            positive: Some(OtlpExponentialHistogramBuckets {
+                offset: 0,
+                bucket_counts: vec![1, 1, 1],
+            }),
+            negative: None,
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn exponential_histogram_delta_emits_single_sketch() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let dp = exp_histogram_dp(3, 6.0, None, None);
+        let events = run_exponential_histogram(&mut translator, "otlp.exphist", vec![dp], true, &metrics);
+
+        assert_eq!(events.len(), 1, "delta exponential histogram emits a single sketch");
+        let metric = events[0].try_as_metric().unwrap();
+        assert_eq!(metric.context().name(), "otlp.exphist");
+        assert_eq!(
+            distribution_sketch(metric).count(),
+            3,
+            "sketch count should match the histogram count"
+        );
+    }
+
+    #[test]
+    fn exponential_histogram_aggregations_emit_count_sum_min_max_and_sketch() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config = translator.config.with_send_histogram_aggregations(true);
+
+        let dp = exp_histogram_dp(3, 6.0, Some(0.5), Some(4.0));
+        let events = run_exponential_histogram(&mut translator, "otlp.exphist", vec![dp], true, &metrics);
+
+        // count, sum, min, max, then the sketch.
+        assert_eq!(events.len(), 5);
+        let count = events[0].try_as_metric().unwrap();
+        assert_eq!(count.context().name(), "otlp.exphist.count");
+        assert_eq!(count.values(), &MetricValues::counter((1, 3.0)));
+
+        let sum = events[1].try_as_metric().unwrap();
+        assert_eq!(sum.context().name(), "otlp.exphist.sum");
+        assert_eq!(sum.values(), &MetricValues::counter((1, 6.0)));
+
+        let min = events[2].try_as_metric().unwrap();
+        assert_eq!(min.context().name(), "otlp.exphist.min");
+        assert_eq!(min.values(), &MetricValues::gauge((1, 0.5)));
+
+        let max = events[3].try_as_metric().unwrap();
+        assert_eq!(max.context().name(), "otlp.exphist.max");
+        assert_eq!(max.values(), &MetricValues::gauge((1, 4.0)));
+
+        let sketch = events[4].try_as_metric().unwrap();
+        assert_eq!(sketch.context().name(), "otlp.exphist");
+        assert_eq!(distribution_sketch(sketch).count(), 3);
+    }
+
+    #[test]
+    fn exponential_histogram_cumulative_is_dropped() {
+        // Only delta temporality is supported; cumulative exponential histograms are dropped.
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let dp = exp_histogram_dp(3, 6.0, None, None);
+        let events = run_exponential_histogram(&mut translator, "otlp.exphist", vec![dp], false, &metrics);
+
+        assert!(events.is_empty());
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Runtime metric mapping (`runtime_metrics.rs` tables consumed by `translate_metrics` and the
+    // `map_*_runtime_metric_with_attributes` helpers).
+    // -----------------------------------------------------------------------------------------------
+
+    fn resource_metrics_with_metric(metric: OtlpMetric) -> OtlpResourceMetrics {
+        OtlpResourceMetrics {
+            resource: None,
+            scope_metrics: vec![ScopeMetrics {
+                metrics: vec![metric],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn metric_by_name<'a>(events: &'a [Event], name: &str) -> &'a Metric {
+        events
+            .iter()
+            .filter_map(|e| e.try_as_metric())
+            .find(|m| m.context().name() == name)
+            .unwrap_or_else(|| panic!("no metric named {name}"))
+    }
+
+    fn int_dp_with_attr(value: i64, key: &str, attr_value: &str) -> OtlpNumberDataPoint {
+        OtlpNumberDataPoint {
+            value: Some(OtlpNumberDataPointValue::AsInt(value)),
+            time_unix_nano: nanos_from_seconds(1),
+            attributes: vec![OtlpKeyValue {
+                key: key.to_string(),
+                value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                    value: Some(
+                        otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(
+                            attr_value.to_string(),
+                        ),
+                    ),
+                }),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn translate_metrics_renames_runtime_metric_without_attributes() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // `process.runtime.go.goroutines` maps (with no attribute matching) to `runtime.go.num_goroutine`.
+        let metric = OtlpMetric {
+            name: "process.runtime.go.goroutines".to_string(),
+            data: Some(OtlpMetricData::Gauge(Gauge {
+                data_points: vec![OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsInt(5)),
+                    time_unix_nano: nanos_from_seconds(1),
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        };
+
+        let events = translator
+            .translate_metrics(resource_metrics_with_metric(metric), &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let renamed = metric_by_name(&events, "runtime.go.num_goroutine");
+        assert_eq!(renamed.values(), &MetricValues::gauge((1, 5.0)));
+    }
+
+    #[test]
+    fn translate_metrics_maps_runtime_gauge_by_attribute() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // `process.runtime.jvm.memory.usage` fans out by the `type` attribute: heap -> jvm.heap_memory,
+        // non_heap -> jvm.non_heap_memory. The `type` attribute is stripped from the mapped metric.
+        let metric = OtlpMetric {
+            name: "process.runtime.jvm.memory.usage".to_string(),
+            data: Some(OtlpMetricData::Gauge(Gauge {
+                data_points: vec![
+                    int_dp_with_attr(100, "type", "heap"),
+                    int_dp_with_attr(50, "type", "non_heap"),
+                ],
+            })),
+            ..Default::default()
+        };
+
+        let events = translator
+            .translate_metrics(resource_metrics_with_metric(metric), &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let heap = metric_by_name(&events, "jvm.heap_memory");
+        assert_eq!(heap.values(), &MetricValues::gauge((1, 100.0)));
+        assert!(
+            heap.context().tags().get_single_tag("type").is_none(),
+            "the matched `type` attribute should be stripped from the mapped metric"
+        );
+
+        let non_heap = metric_by_name(&events, "jvm.non_heap_memory");
+        assert_eq!(non_heap.values(), &MetricValues::gauge((1, 50.0)));
+    }
+
+    #[test]
+    fn sum_runtime_metric_maps_matching_attribute_and_strips_it() {
+        // `process.runtime.dotnet.gc.heap.size` fans out by the `generation` attribute.
+        let mapping_set = RUNTIME_METRICS_MAPPINGS
+            .get("process.runtime.dotnet.gc.heap.size")
+            .expect("runtime mapping should exist");
+        let gen0_mapping = mapping_set
+            .iter()
+            .find(|m| m.mapped_name == "runtime.dotnet.gc.size.gen0")
+            .expect("gen0 mapping should exist");
+
+        let metric = OtlpMetric {
+            name: "process.runtime.dotnet.gc.heap.size".to_string(),
+            data: Some(OtlpMetricData::Sum(Sum {
+                data_points: vec![
+                    int_dp_with_attr(42, "generation", "gen0"),
+                    int_dp_with_attr(7, "generation", "gen1"),
+                ],
+                is_monotonic: true,
+                aggregation_temporality: AggregationTemporality::Cumulative as i32,
+            })),
+            ..Default::default()
+        };
+
+        let mut new_metrics = Vec::new();
+        map_sum_runtime_metric_with_attributes(&metric, &mut new_metrics, gen0_mapping);
+
+        assert_eq!(new_metrics.len(), 1, "only the gen0 data point should match");
+        assert_eq!(new_metrics[0].name, "runtime.dotnet.gc.size.gen0");
+        let Some(OtlpMetricData::Sum(sum)) = &new_metrics[0].data else {
+            panic!("expected a sum metric");
+        };
+        assert_eq!(sum.data_points.len(), 1);
+        assert_eq!(
+            sum.data_points[0].value,
+            Some(OtlpNumberDataPointValue::AsInt(42)),
+            "the matched data point's value should be preserved"
+        );
+        assert!(
+            sum.data_points[0].attributes.is_empty(),
+            "the matched `generation` attribute should be stripped"
+        );
     }
 }
