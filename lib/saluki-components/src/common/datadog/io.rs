@@ -1726,6 +1726,138 @@ app.datadoghq.com: [key-a, key-b]
         );
     }
 
+    async fn persisted_retry_queue(root_path: &std::path::Path, max_on_disk_bytes: u64) -> RetryQueue<String> {
+        RetryQueue::new("test".to_string(), 1024)
+            .with_disk_persistence(PersistedQueueArgs {
+                root_path: root_path.to_path_buf(),
+                max_on_disk_bytes,
+                storage_max_disk_ratio: 1.0,
+                disk_usage_retriever: Arc::new(DiskUsageRetrieverImpl::new(root_path.to_path_buf())),
+                max_age_days: 10,
+            })
+            .await
+            .expect("disk persistence should initialize")
+    }
+
+    #[tokio::test]
+    async fn flush_without_disk_persistence_drops_pending_transactions() {
+        // Documented shutdown behavior: flush moves high-priority transactions into the low-priority queue
+        // and then flushes it. With no disk persistence configured, all pending transactions are dropped,
+        // and the returned `PushResult` accounts for every dropped item and event.
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
+
+        let _ = pending_txns
+            .push_high_priority("high".to_string())
+            .await
+            .expect("high-priority push should succeed");
+        let _ = pending_txns
+            .push_low_priority("low".to_string())
+            .await
+            .expect("low-priority push should succeed");
+
+        let push_result = pending_txns.flush().await.expect("flush should succeed");
+
+        assert!(push_result.had_drops());
+        assert_eq!(push_result.items_dropped, 2);
+        assert_eq!(push_result.events_dropped, 2);
+    }
+
+    #[tokio::test]
+    async fn flush_with_disk_persistence_persists_pending_transactions() {
+        // Documented shutdown behavior: when disk persistence is enabled, flush persists all pending
+        // transactions (high- and low-priority) to disk instead of dropping them.
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let root_path = temp_dir.path().to_path_buf();
+        let retry_queue = persisted_retry_queue(&root_path, 4096).await;
+        let mut pending_txns = PendingTransactions::new(4, retry_queue, telemetry, domain, 900);
+
+        let _ = pending_txns
+            .push_high_priority("high".to_string())
+            .await
+            .expect("high-priority push should succeed");
+        let _ = pending_txns
+            .push_low_priority("low".to_string())
+            .await
+            .expect("low-priority push should succeed");
+
+        let push_result = pending_txns.flush().await.expect("flush should succeed");
+
+        assert!(
+            !push_result.had_drops(),
+            "disk persistence should retain transactions on flush, not drop them"
+        );
+
+        let mut retry_queue = persisted_retry_queue(&root_path, 4096).await;
+        let mut persisted = Vec::new();
+        while let Some(transaction) = retry_queue
+            .pop()
+            .await
+            .expect("persisted transaction should be readable")
+        {
+            persisted.push(transaction);
+        }
+        persisted.sort();
+
+        assert_eq!(persisted, ["high", "low"]);
+    }
+
+    #[tokio::test]
+    async fn flush_propagates_high_priority_transfer_errors() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1);
+        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
+
+        let _ = pending_txns
+            .push_high_priority("too large".to_string())
+            .await
+            .expect("high-priority queue should accept the transaction");
+
+        let error = match pending_txns.flush().await {
+            Ok(_) => panic!("flush should propagate the low-priority queue size error"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("Entry too large to fit into retry queue"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn flush_propagates_disk_persistence_errors() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let temp_dir = tempfile::tempdir().expect("temporary directory should be created");
+        let retry_queue = persisted_retry_queue(temp_dir.path(), 1).await;
+        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
+
+        let _ = pending_txns
+            .push_low_priority("too large".to_string())
+            .await
+            .expect("in-memory low-priority queue should accept the transaction");
+
+        let error = match pending_txns.flush().await {
+            Ok(_) => panic!("flush should propagate the disk persistence size error"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.to_string().contains("Entry is too large to persist"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn tls_certificate_validation_enabled_by_default() {
         let config = forwarder_config_from_value(serde_json::json!({ "api_key": "test-api-key" }));

@@ -586,4 +586,165 @@ mod tests {
 
         assert_eq!(domain_capacity_snapshot(&shared, "domain"), Some((10.0, 7.0, 70.0)));
     }
+
+    fn component_telemetry() -> ComponentTelemetry {
+        ComponentTelemetry::from_builder(&MetricsBuilder::default())
+    }
+
+    #[test]
+    fn track_successful_transaction_records_events_batch_size_and_data_points() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+
+        let metadata = Metadata::from_event_and_data_point_count(4, 9);
+        telemetry.track_successful_transaction(&metadata, "datadoghq.com");
+
+        assert_eq!(recorder.counter("component_events_sent_total"), Some(4));
+        assert_eq!(recorder.histogram("component_events_sent_batch_size"), Some(vec![4.0]));
+        assert_eq!(
+            recorder.gauge(("component_data_points_sent_total", &[("domain", "datadoghq.com")])),
+            Some(9.0)
+        );
+    }
+
+    #[test]
+    fn track_data_points_sent_and_dropped_ignore_zero_counts() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+
+        // A zero count short-circuits before registering the gauge, so no metric is emitted.
+        telemetry.track_data_points_sent("datadoghq.com", 0);
+        telemetry.track_data_points_dropped("datadoghq.com", 0);
+        assert_eq!(
+            recorder.gauge(("component_data_points_sent_total", &[("domain", "datadoghq.com")])),
+            None
+        );
+        assert_eq!(
+            recorder.gauge(("component_data_points_dropped_total", &[("domain", "datadoghq.com")])),
+            None
+        );
+
+        telemetry.track_data_points_sent("datadoghq.com", 3);
+        telemetry.track_data_points_dropped("datadoghq.eu", 5);
+        assert_eq!(
+            recorder.gauge(("component_data_points_sent_total", &[("domain", "datadoghq.com")])),
+            Some(3.0)
+        );
+        assert_eq!(
+            recorder.gauge(("component_data_points_dropped_total", &[("domain", "datadoghq.eu")])),
+            Some(5.0)
+        );
+    }
+
+    #[test]
+    fn track_failed_transaction_without_status_records_send_failure_and_dropped_events() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+
+        let metadata = Metadata::from_event_and_data_point_count(6, 0);
+        telemetry.track_failed_transaction(&metadata, None);
+
+        assert_eq!(
+            recorder.counter(("component_errors_total", &[("error_type", "http_send")])),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "http_failure")],
+            )),
+            Some(6)
+        );
+    }
+
+    #[test]
+    fn track_failed_transaction_with_status_tags_the_error_code() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+
+        let metadata = Metadata::from_event_and_data_point_count(2, 0);
+        telemetry.track_failed_transaction(&metadata, Some(StatusCode::FORBIDDEN));
+
+        assert_eq!(
+            recorder.counter((
+                "component_errors_total",
+                &[("error_type", "http_send"), ("error_code", "403")],
+            )),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "http_failure")],
+            )),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn track_permanently_failed_transaction_also_drops_data_points() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+
+        let metadata = Metadata::from_event_and_data_point_count(1, 7);
+        telemetry.track_permanently_failed_transaction(&metadata, None, "datadoghq.com");
+
+        assert_eq!(
+            recorder.counter(("component_errors_total", &[("error_type", "http_send")])),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "false"), ("drop_reason", "http_failure")],
+            )),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.gauge(("component_data_points_dropped_total", &[("domain", "datadoghq.com")])),
+            Some(7.0)
+        );
+    }
+
+    #[test]
+    fn track_sent_request_error_records_transaction_scoped_error() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+
+        telemetry.track_sent_request_error();
+        telemetry.track_sent_request_error();
+
+        assert_eq!(
+            recorder.counter((
+                "network_http_requests_errors_total",
+                &[("error_type", "sent_request_error"), ("error_scope", "transaction")],
+            )),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn track_dropped_items_and_events_record_queue_eviction() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = component_telemetry();
+
+        telemetry.track_dropped_items(5);
+        telemetry.track_dropped_events(3);
+
+        assert_eq!(recorder.counter("component_items_dropped_total"), Some(5));
+        assert_eq!(
+            recorder.counter((
+                "component_events_dropped_total",
+                &[("intentional", "true"), ("drop_reason", "queue_limit")],
+            )),
+            Some(3)
+        );
+    }
 }

@@ -727,7 +727,7 @@ fn create_compressor(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, convert::Infallible};
+    use std::collections::VecDeque;
 
     use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
     use http_body_util::BodyExt as _;
@@ -840,7 +840,7 @@ mod tests {
 
     impl EndpointEncoder for TestEncoder {
         type Input = String;
-        type EncodeError = Infallible;
+        type EncodeError = std::io::Error;
 
         fn encoder_name() -> &'static str {
             "test_encoder"
@@ -886,6 +886,52 @@ mod tests {
 
         fn content_type(&self) -> HeaderValue {
             HeaderValue::from_static("application/text")
+        }
+    }
+
+    #[test]
+    fn request_builder_error_only_oversized_payload_is_recoverable() {
+        // Documented recoverability rule: an oversized compressed payload is recoverable, because the
+        // builder simply discards the payload without ending up in an inconsistent state. Every other
+        // variant is unrecoverable (static failure or unrecoverable inconsistent state).
+        let recoverable: RequestBuilderError<TestEncoder> = RequestBuilderError::PayloadTooLarge {
+            compressed_size_bytes: 100,
+            compressed_limit_bytes: 10,
+        };
+        assert!(recoverable.is_recoverable());
+
+        let http_error = http::Request::builder()
+            .header("invalid\nheader", "value")
+            .body(())
+            .expect_err("invalid header should fail to build the request");
+        let unrecoverable: Vec<RequestBuilderError<TestEncoder>> = vec![
+            RequestBuilderError::UncompressedSizeLimitTooLow {
+                uncompressed_size_limit: 1,
+                prefix_len: 1,
+                suffix_len: 1,
+            },
+            RequestBuilderError::InputExceedsUncompressedLimit {
+                encoded_len: 10,
+                uncompressed_len_limit: 5,
+            },
+            RequestBuilderError::InputExceedsDataPointLimit {
+                data_point_count: 10,
+                data_point_limit: 5,
+            },
+            RequestBuilderError::InvalidInput {
+                input: "bad-input".to_string(),
+            },
+            RequestBuilderError::FailedToEncode {
+                source: std::io::Error::other("invalid input"),
+            },
+            RequestBuilderError::Io {
+                source: std::io::Error::other("disk full"),
+            },
+            RequestBuilderError::Http { source: http_error },
+        ];
+
+        for error in &unrecoverable {
+            assert!(!error.is_recoverable(), "{error:?} should not be recoverable");
         }
     }
 
