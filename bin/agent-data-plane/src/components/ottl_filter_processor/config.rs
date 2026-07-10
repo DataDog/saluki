@@ -26,7 +26,7 @@ pub enum ErrorMode {
     Propagate,
 }
 
-/// Traces filter configuration (span and span event conditions).
+/// Traces filter configuration (span conditions).
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TracesFilterConfig {
@@ -66,7 +66,7 @@ pub struct OttlFilterConfig {
     #[serde(default)]
     pub error_mode: ErrorMode,
 
-    /// Trace-level filters (span and span event conditions).
+    /// Trace-level filters (span conditions).
     ///
     /// Defaults to empty (no trace-level filtering).
     #[serde(default)]
