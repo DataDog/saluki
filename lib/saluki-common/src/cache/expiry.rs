@@ -273,3 +273,145 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        atomic::{AtomicU64, Ordering::SeqCst},
+        Arc,
+    };
+
+    use quick_cache::Lifecycle;
+    use saluki_metrics::reexport::metrics::{Counter, CounterFn};
+
+    use super::*;
+
+    /// A `CounterFn` that records the running total so tests can assert the documented
+    /// eviction-counter side effects without installing a full metrics recorder.
+    #[derive(Default)]
+    struct RecordingCounter(AtomicU64);
+
+    impl CounterFn for RecordingCounter {
+        fn increment(&self, value: u64) {
+            self.0.fetch_add(value, SeqCst);
+        }
+
+        fn absolute(&self, value: u64) {
+            self.0.store(value, SeqCst);
+        }
+    }
+
+    /// Builds a `Counter` alongside a handle for reading its current total.
+    fn recording_counter() -> (Counter, Arc<RecordingCounter>) {
+        let storage = Arc::new(RecordingCounter::default());
+        (Counter::from_arc(Arc::clone(&storage)), storage)
+    }
+
+    /// Invokes the lifecycle's `on_evict` for the given key, using `()` as the value type.
+    fn trigger_eviction<K>(lifecycle: &ExpiryCapableLifecycle<K>, key: K)
+    where
+        K: Eq + std::hash::Hash,
+    {
+        <ExpiryCapableLifecycle<K> as Lifecycle<K, ()>>::on_evict(lifecycle, &mut (), key, ());
+    }
+
+    #[test]
+    fn disabled_expiration_never_drains() {
+        let (counter, _storage) = recording_counter();
+        let (expiration, _lifecycle) = ExpirationBuilder::<&str>::new(counter).build();
+
+        expiration.mark_entry_accessed("only");
+
+        let mut expired = Vec::new();
+        expiration.drain_expired_items(&mut expired);
+        assert!(
+            expired.is_empty(),
+            "expiration is disabled, so nothing should ever drain"
+        );
+    }
+
+    #[test]
+    fn time_to_idle_drains_stale_entries_and_retains_fresh() {
+        let (counter, _storage) = recording_counter();
+        let (expiration, _lifecycle) = ExpirationBuilder::<&str>::new(counter)
+            .with_time_to_idle(Duration::from_secs(60))
+            .build();
+
+        expiration.mark_entry_accessed("fresh");
+        expiration.mark_entry_accessed("stale");
+
+        // The first drain flushes the queued access ops into the last-seen map. Both entries were
+        // just accessed, so neither is beyond the 60s time-to-idle window yet.
+        let mut expired = Vec::new();
+        expiration.drain_expired_items(&mut expired);
+        assert!(expired.is_empty(), "freshly accessed entries must not expire");
+
+        // Force one entry's last-access timestamp far into the past, beyond the time-to-idle window,
+        // while leaving the other untouched.
+        {
+            let state = expiration.state.as_ref().expect("expiration is enabled");
+            let mut inner = state.inner.lock().unwrap();
+            inner
+                .last_seen
+                .get_mut("stale")
+                .expect("stale entry is tracked")
+                .last_accessed = 0;
+        }
+
+        expiration.drain_expired_items(&mut expired);
+        assert_eq!(expired, vec!["stale"], "only the idle entry should be drained");
+
+        // The idle entry is removed from tracking; the fresh entry remains tracked.
+        let state = expiration.state.as_ref().unwrap();
+        let inner = state.inner.lock().unwrap();
+        assert!(inner.last_seen.contains_key("fresh"));
+        assert!(!inner.last_seen.contains_key("stale"));
+    }
+
+    #[test]
+    fn eviction_increments_counter_and_untracks_entry() {
+        let (counter, storage) = recording_counter();
+        let (expiration, lifecycle) = ExpirationBuilder::<&str>::new(counter)
+            .with_time_to_idle(Duration::from_secs(60))
+            .build();
+
+        // Track an entry, then flush the queued access op into the last-seen map.
+        expiration.mark_entry_accessed("evicted");
+        let mut expired = Vec::new();
+        expiration.drain_expired_items(&mut expired);
+        assert!(expired.is_empty());
+
+        // Simulate the underlying cache evicting the entry: the counter is bumped and the entry is
+        // queued for removal from expiration tracking.
+        trigger_eviction(&lifecycle, "evicted");
+        assert_eq!(
+            storage.0.load(SeqCst),
+            1,
+            "on_evict must increment the eviction counter"
+        );
+
+        // Draining processes the queued removal, so the evicted key is no longer tracked.
+        expiration.drain_expired_items(&mut expired);
+        assert!(expired.is_empty());
+
+        let state = expiration.state.as_ref().unwrap();
+        let inner = state.inner.lock().unwrap();
+        assert!(
+            !inner.last_seen.contains_key("evicted"),
+            "eviction must untrack the entry"
+        );
+    }
+
+    #[test]
+    fn eviction_counter_increments_even_when_expiration_disabled() {
+        // The documented contract is that `on_evict` counts every capacity-driven eviction, even
+        // when time-to-idle tracking is disabled (the lifecycle then has no state to update).
+        let (counter, storage) = recording_counter();
+        let lifecycle = ExpiryCapableLifecycle::<&str>::disabled(counter);
+
+        trigger_eviction(&lifecycle, "one");
+        trigger_eviction(&lifecycle, "two");
+
+        assert_eq!(storage.0.load(SeqCst), 2);
+    }
+}

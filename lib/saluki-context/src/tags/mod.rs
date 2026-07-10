@@ -190,3 +190,59 @@ impl hash::Hash for BorrowedTag<'_> {
         self.raw.hash(state);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_tag_splits_name_and_value() {
+        // (raw, expected name, expected value)
+        let cases: &[(&str, &str, Option<&str>)] = &[
+            // Key/value tag: split on the first colon.
+            ("service:web", "service", Some("web")),
+            // Bare tag: the whole string is the name, and there is no value.
+            ("production", "production", None),
+            // Empty value: the value is present but empty.
+            ("key:", "key", Some("")),
+            // Multiple colons: only the first colon splits; the rest stays in the value.
+            ("a:b:c", "a", Some("b:c")),
+            // Leading colon: empty name, value is the remainder.
+            (":foo", "", Some("foo")),
+            // Just a colon: empty name and empty value.
+            (":", "", Some("")),
+            // Empty string: empty name, no value.
+            ("", "", None),
+        ];
+
+        for (raw, name, value) in cases {
+            let borrowed = BorrowedTag::from(*raw);
+            assert_eq!(borrowed.name(), *name, "name for {raw:?}");
+            assert_eq!(borrowed.value(), *value, "value for {raw:?}");
+            assert_eq!(borrowed.name_and_value(), (*name, *value), "name_and_value for {raw:?}");
+
+            // `Tag` re-implements the same split independently (via `split_once`), so the two must
+            // agree on every input.
+            let owned = Tag::from(*raw);
+            assert_eq!(owned.name(), *name, "Tag::name for {raw:?}");
+            assert_eq!(owned.value(), *value, "Tag::value for {raw:?}");
+        }
+    }
+
+    #[test]
+    fn borrowed_tag_is_empty_and_len() {
+        let empty = BorrowedTag::from("");
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+
+        let tag = BorrowedTag::from("service:web");
+        assert!(!tag.is_empty());
+        assert_eq!(tag.len(), "service:web".len());
+    }
+
+    #[test]
+    fn tag_display_renders_full_tag_string() {
+        assert_eq!(Tag::from("service:web").to_string(), "service:web");
+        assert_eq!(Tag::from("bare").to_string(), "bare");
+    }
+}

@@ -83,3 +83,16 @@ impl fmt::Display for FrozenTagSet {
         write!(f, "]")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_renders_comma_separated_tags() {
+        let frozen = FrozenTagSet::from_iter([Tag::from("a:1"), Tag::from("b:2")]);
+        assert_eq!(frozen.to_string(), "[a:1,b:2]");
+
+        assert_eq!(FrozenTagSet::default().to_string(), "[]");
+    }
+}

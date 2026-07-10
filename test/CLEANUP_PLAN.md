@@ -261,8 +261,14 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/small] `RollingExponentialBackoffRetryPolicy`'s documented recovery-error-decrease-factor behavior, and
     `StandardHttpRetryLifecycle`'s documented error-categorization/`Display` logic, are both untested.
 
-- [ ] **G16 — saluki-common & saluki-context test cleanup** (AU-30/AU-31)
+- [x] **G16 — saluki-common & saluki-context test cleanup** (AU-30/AU-31)
   (`tobz/test-cleanup-saluki-common-context-test-cleanup`, `test(common)`)
+  _Surfaced 4 latent production defects (pinned by characterization tests + NOTE comments, NOT fixed — a test
+  cleanup pass doesn't change production behavior): `RawOrigin::Display` drops a separator space between
+  `process_id` and `local_data`; `get_caller_location_as_string` doc says `file:line:column` but emits
+  `file-<file>@<line>-<column>`; `task/instrument.rs`'s `poll_count` debug counter is registered but never
+  incremented; `RawExternalData::try_from_str` byte-slices `part[0..3]` which would panic on a non-ASCII char
+  boundary. Worth follow-up production fixes outside this test effort._
   - [high/medium] Cache time-to-idle eviction (`cache/expiry.rs`) and its underlying timestamp primitives
     (`time.rs`) are both untested, including the documented eviction-counter side effects.
   - [medium/medium] `spawn_traced` task-spawning helpers and poll-duration instrumentation

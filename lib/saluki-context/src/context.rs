@@ -1117,4 +1117,44 @@ mod tests {
         assert_eq!(via_two, via_one);
         assert_eq!(via_two, via_direct);
     }
+
+    #[test]
+    fn with_tag_sets_mut_mutates_both_and_recomputes_key() {
+        // `with_tag_sets_mut` mutates both tag sets and recomputes the context key a single time
+        // for the combined change. The observable guarantee is that the result matches a context
+        // built from scratch with the combined tags, and matches applying the same two mutations
+        // via separate `with_tags`/`with_origin_tags` calls (which would each rehash).
+        let mut combined = context_with_origin("metric", &["env:prod"], &["origin:a"]);
+        combined.with_tag_sets_mut(|tags, origin_tags| {
+            tags.insert_tag(Tag::from("service:web"));
+            origin_tags.insert_tag(Tag::from("origin:b"));
+        });
+
+        // Both tag sets were updated in the single call.
+        assert!(combined.tags().has_tag("env:prod"));
+        assert!(combined.tags().has_tag("service:web"));
+        assert!(combined.origin_tags().has_tag("origin:a"));
+        assert!(combined.origin_tags().has_tag("origin:b"));
+
+        // The recomputed key matches a freshly-built context with the same final state.
+        let expected = context_with_origin("metric", &["env:prod", "service:web"], &["origin:a", "origin:b"]);
+        assert_eq!(combined, expected);
+
+        // ...and matches applying the two mutations separately (i.e. via two rehashes).
+        let separate = context_with_origin("metric", &["env:prod"], &["origin:a"])
+            .with_tags(tag_set(&["env:prod", "service:web"]))
+            .with_origin_tags(tag_set(&["origin:a", "origin:b"]));
+        assert_eq!(combined, separate);
+    }
+
+    #[test]
+    fn display_renders_name_and_instrumented_tags() {
+        // With no tags, only the metric name is rendered.
+        assert_eq!(Context::from_static_name("metric").to_string(), "metric");
+
+        // With tags, they are rendered in a brace-delimited, comma-space-separated list in
+        // insertion order. Origin tags are intentionally not part of the `Display` output.
+        let context = Context::from_static_parts("metric", &["env:prod", "service:web"]);
+        assert_eq!(context.to_string(), "metric{env:prod, service:web}");
+    }
 }
