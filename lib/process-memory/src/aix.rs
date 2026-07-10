@@ -1,6 +1,7 @@
 use std::{fs::File, io::Read, path::PathBuf};
 
 const KIB: u64 = 1024;
+// AIX documents /proc data as 64-bit mode-invariant and documents future struct growth as appending fields.
 // Verified against AIX 7.3 <sys/procfs.h>: offsetof(psinfo_t, pr_rssize) == 104.
 const PR_RSSIZE_OFFSET: usize = 104;
 const PR_RSSIZE_SIZE: usize = std::mem::size_of::<u64>();
