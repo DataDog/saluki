@@ -176,3 +176,75 @@ impl DynError for Box<dyn std::error::Error + Send + Sync> {
         &**self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use http::{Response, StatusCode, Uri};
+
+    use super::*;
+
+    type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+    fn categorize(res: Result<Response<()>, BoxError>) -> String {
+        CategorizedError::try_categorize(&res).to_string()
+    }
+
+    #[test]
+    fn categorizes_http_status_response() {
+        // A response (any `Ok`) is categorized by its status code, and non-success codes render with the code value.
+        let res: Result<Response<()>, BoxError> = Ok(Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(())
+            .unwrap());
+        assert_eq!(categorize(res), "Server responded with non-success status code 500.");
+    }
+
+    #[test]
+    fn categorizes_standalone_io_error_as_other() {
+        // A bare transport error that isn't a hyper/rustls/nested error falls through to the generic "Other" bucket.
+        let err: BoxError = Box::new(io::Error::from(io::ErrorKind::ConnectionRefused));
+        assert_eq!(categorize(Err(err)), "Request failed: connection refused");
+    }
+
+    #[test]
+    fn categorizes_rustls_certificate_error_as_tls() {
+        // A rustls certificate error is specialized into a TLS category with a human-readable reason.
+        let err: BoxError = Box::new(rustls::Error::InvalidCertificate(rustls::CertificateError::Expired));
+        assert_eq!(
+            categorize(Err(err)),
+            "Request failed due to a TLS error: peer certificate is invalid: certificate expired (current time is after notAfter time)"
+        );
+    }
+
+    #[test]
+    fn categorizes_io_wrapped_rustls_error_by_unwrapping_source() {
+        // An io::Error that wraps a rustls error is unwrapped via its source and categorized as TLS, not reported as
+        // a generic io failure.
+        let inner = rustls::Error::InvalidCertificate(rustls::CertificateError::Revoked);
+        let err: BoxError = Box::new(io::Error::other(inner));
+        assert_eq!(
+            categorize(Err(err)),
+            "Request failed due to a TLS error: peer certificate is invalid: certificate has been revoked"
+        );
+    }
+
+    #[test]
+    fn sanitized_request_uri_display() {
+        // Scheme, host, explicit port, and path are all rendered.
+        let uri: Uri = "http://localhost:8125/foo/bar".parse().unwrap();
+        assert_eq!(SanitizedRequestUri(&uri).to_string(), "http://localhost:8125/foo/bar");
+
+        // A default (implicit) port is omitted.
+        let uri: Uri = "https://api.datadoghq.com/api/v1/series".parse().unwrap();
+        assert_eq!(
+            SanitizedRequestUri(&uri).to_string(),
+            "https://api.datadoghq.com/api/v1/series"
+        );
+
+        // With neither scheme nor host, only the path is rendered.
+        let uri: Uri = "/health".parse().unwrap();
+        assert_eq!(SanitizedRequestUri(&uri).to_string(), "/health");
+    }
+}

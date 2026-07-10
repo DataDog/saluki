@@ -150,3 +150,82 @@ const fn get_ucred_struct_size() -> usize {
     // down to a bunch of `size_of` calls and arithmetic for ensuring the values take alignment into consideration, etc.
     unsafe { libc::CMSG_SPACE(ucred_raw_size) as usize }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::mem;
+
+    use super::*;
+
+    // Builds an ancillary-data buffer of `len` initialized (zeroed) bytes. Zeroing first keeps the later
+    // `messages()`/CMSG walk from ever reading uninitialized memory when the buffer is deliberately undersized.
+    fn zeroed_ancillary(len: usize) -> SocketCredentialsAncillaryData {
+        let mut ancillary = SocketCredentialsAncillaryData::new();
+        for byte in ancillary.as_mut_uninit() {
+            byte.write(0);
+        }
+
+        // SAFETY: every byte of the buffer was just initialized above, and `len` never exceeds its length.
+        unsafe {
+            ancillary.set_len(len);
+        }
+        ancillary
+    }
+
+    #[test]
+    fn credentials_parsed_from_exact_ucred_payload() {
+        // A control-message payload that's exactly `ucred`-sized is decoded field-for-field. The bytes point at a
+        // real `ucred`, so the reinterpretation in `as_credentials` reads correctly-aligned memory.
+        let creds = libc::ucred {
+            pid: 4242,
+            uid: 1000,
+            gid: 2000,
+        };
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                (&creds as *const libc::ucred).cast::<u8>(),
+                mem::size_of::<libc::ucred>(),
+            )
+        };
+
+        match ControlMessage::as_credentials(bytes) {
+            Some(ControlMessage::Credentials(parsed)) => {
+                assert_eq!(parsed.pid, 4242);
+                assert_eq!(parsed.uid, 1000);
+                assert_eq!(parsed.gid, 2000);
+            }
+            None => panic!("a correctly-sized ucred payload should parse into credentials"),
+        }
+    }
+
+    #[test]
+    fn credentials_rejected_when_payload_length_is_wrong() {
+        // Untrusted, adversarial control data: a payload whose length doesn't exactly match `ucred` must be rejected
+        // (`None`), never reinterpreted as a `ucred` (which would be an out-of-bounds read or a garbage identity).
+        let ucred_len = mem::size_of::<libc::ucred>();
+        for bad_len in [0, 1, ucred_len - 1, ucred_len + 1] {
+            let buf = vec![0u8; bad_len];
+            assert!(
+                ControlMessage::as_credentials(&buf).is_none(),
+                "payload of {bad_len} bytes should be rejected (ucred is {ucred_len} bytes)"
+            );
+        }
+    }
+
+    #[test]
+    fn truncated_ancillary_buffer_yields_no_messages() {
+        // A control buffer too small to hold even a single `cmsghdr` (as can happen with truncated/garbage ancillary
+        // data) must produce zero control messages — `CMSG_FIRSTHDR` returns null — rather than panicking or
+        // fabricating a credential.
+        for len in [0usize, 1, mem::size_of::<libc::cmsghdr>() - 1] {
+            let ancillary = zeroed_ancillary(len);
+
+            // SAFETY: the buffer is fully initialized and its length was set to `len` above.
+            let mut messages = unsafe { ancillary.messages() };
+            assert!(
+                messages.next().is_none(),
+                "a {len}-byte control buffer should yield no control messages"
+            );
+        }
+    }
+}
