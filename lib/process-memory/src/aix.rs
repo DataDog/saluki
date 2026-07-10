@@ -1,9 +1,8 @@
 use std::{fs::File, io::Read, path::PathBuf};
 
 const KIB: u64 = 1024;
-// IBM documents AIX /proc files as 64-bit invariant for all observers. In that psinfo_t layout, pr_rssize
-// follows eight 32-bit fields, four pid64_t fields, dev64_t, prptr64_t, and pr_size.
-const PR_RSSIZE_OFFSET: usize = 88;
+// Verified against AIX 7.3 <sys/procfs.h>: offsetof(psinfo_t, pr_rssize) == 104.
+const PR_RSSIZE_OFFSET: usize = 104;
 const PR_RSSIZE_SIZE: usize = std::mem::size_of::<u64>();
 
 /// A memory usage querier.
@@ -58,6 +57,37 @@ mod tests {
         psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&rss_kib.to_ne_bytes());
 
         assert_eq!(resident_set_size_from_psinfo(&psinfo), Some((rss_kib * KIB) as usize));
+    }
+
+    #[test]
+    fn parses_resident_set_size_from_documented_offset() {
+        const PR_SIZE_OFFSET: usize = 96;
+        const PR_START_OFFSET: usize = 112;
+
+        let rss_kib = 7u64;
+        let mut psinfo = [0; PR_START_OFFSET + PR_RSSIZE_SIZE];
+        psinfo[PR_SIZE_OFFSET..PR_SIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&3u64.to_ne_bytes());
+        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&rss_kib.to_ne_bytes());
+        psinfo[PR_START_OFFSET..PR_START_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&99u64.to_ne_bytes());
+
+        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some((rss_kib * KIB) as usize));
+    }
+
+    #[test]
+    fn converts_resident_set_size_from_kib_not_pages() {
+        let rss_kib = 7u64;
+        let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
+        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&rss_kib.to_ne_bytes());
+
+        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some(7168));
+    }
+
+    #[test]
+    fn accepts_zero_resident_set_size() {
+        let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
+        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&0u64.to_ne_bytes());
+
+        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some(0));
     }
 
     #[test]
