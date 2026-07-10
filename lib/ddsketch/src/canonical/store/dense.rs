@@ -211,106 +211,24 @@ impl Default for DenseStore {
 mod tests {
     use super::*;
 
+    // Shared `Store` trait conformance suite (add/rank/merge/clear/proto round-trip/etc.).
+    crate::canonical::store::store_conformance_tests!(DenseStore);
+
+    // `iter_non_zero_bins` is a `DenseStore`-specific accessor, not part of the `Store` trait, so it's covered here
+    // rather than in the shared conformance suite.
     #[test]
-    fn test_add_single() {
-        let mut store = DenseStore::new();
-        store.add(5, 1);
-
-        assert_eq!(store.total_count(), 1);
-        assert_eq!(store.min_index(), Some(5));
-        assert_eq!(store.max_index(), Some(5));
-    }
-
-    #[test]
-    fn test_add_multiple_same_index() {
-        let mut store = DenseStore::new();
-        store.add(5, 3);
-        store.add(5, 2);
-
-        assert_eq!(store.total_count(), 5);
-        assert_eq!(store.min_index(), Some(5));
-        assert_eq!(store.max_index(), Some(5));
-    }
-
-    #[test]
-    fn test_add_multiple_indices() {
-        let mut store = DenseStore::new();
-        store.add(5, 1);
-        store.add(10, 2);
-        store.add(3, 3);
-
-        assert_eq!(store.total_count(), 6);
-        assert_eq!(store.min_index(), Some(3));
-        assert_eq!(store.max_index(), Some(10));
-    }
-
-    #[test]
-    fn test_iter_non_zero_bins_empty() {
+    fn iter_non_zero_bins_is_empty_for_empty_store() {
         let store = DenseStore::new();
 
         assert_eq!(store.iter_non_zero_bins().collect::<Vec<_>>(), Vec::new());
     }
 
     #[test]
-    fn test_iter_non_zero_bins_skips_zero_counts_and_applies_offset() {
+    fn iter_non_zero_bins_skips_zero_counts_and_applies_offset() {
         let mut store = DenseStore::new();
         store.add(10, 3);
         store.add(12, 5);
 
         assert_eq!(store.iter_non_zero_bins().collect::<Vec<_>>(), vec![(10, 3), (12, 5)]);
-    }
-
-    #[test]
-    fn test_key_at_rank() {
-        let mut store = DenseStore::new();
-        store.add(5, 3);
-        store.add(10, 2);
-
-        assert_eq!(store.key_at_rank(0), Some(5));
-        assert_eq!(store.key_at_rank(2), Some(5));
-        assert_eq!(store.key_at_rank(3), Some(10));
-        assert_eq!(store.key_at_rank(4), Some(10));
-        assert_eq!(store.key_at_rank(5), None);
-    }
-
-    #[test]
-    fn test_merge() {
-        let mut store1 = DenseStore::new();
-        store1.add(5, 2);
-        store1.add(10, 1);
-
-        let mut store2 = DenseStore::new();
-        store2.add(5, 1);
-        store2.add(15, 3);
-
-        store1.merge(&store2);
-
-        assert_eq!(store1.total_count(), 7);
-        assert_eq!(store1.min_index(), Some(5));
-        assert_eq!(store1.max_index(), Some(15));
-    }
-
-    #[test]
-    fn test_clear() {
-        let mut store = DenseStore::new();
-        store.add(5, 2);
-        store.add(10, 1);
-
-        store.clear();
-
-        assert!(store.is_empty());
-        assert_eq!(store.total_count(), 0);
-        assert_eq!(store.min_index(), None);
-    }
-
-    #[test]
-    fn test_negative_indices() {
-        let mut store = DenseStore::new();
-        store.add(-5, 1);
-        store.add(5, 1);
-
-        assert_eq!(store.total_count(), 2);
-        assert_eq!(store.min_index(), Some(-5));
-        assert_eq!(store.max_index(), Some(5));
     }
 }
