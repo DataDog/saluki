@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_sketch() {
+    fn empty_sketch() {
         let sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
 
         assert!(sketch.is_empty());
@@ -667,91 +667,91 @@ mod tests {
     }
 
     #[test]
-    fn test_accuracy_integers_positive_only_even_small() {
+    fn accuracy_integers_positive_only_even_small() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 10));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_positive_only_even_medium() {
+    fn accuracy_integers_positive_only_even_medium() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 250));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_positive_only_even_large() {
+    fn accuracy_integers_positive_only_even_large() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 1000));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_positive_only_odd_small() {
+    fn accuracy_integers_positive_only_odd_small() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 11));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_positive_only_odd_medium() {
+    fn accuracy_integers_positive_only_odd_medium() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 293));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_positive_only_odd_large() {
+    fn accuracy_integers_positive_only_odd_large() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(1, 1023));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_negative_only_even_small() {
+    fn accuracy_integers_negative_only_even_small() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-10, -1));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_negative_only_even_medium() {
+    fn accuracy_integers_negative_only_even_medium() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-250, -1));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_negative_only_even_large() {
+    fn accuracy_integers_negative_only_even_large() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-1000, -1));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_negative_only_odd_small() {
+    fn accuracy_integers_negative_only_odd_small() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-11, -1));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_negative_only_odd_medium() {
+    fn accuracy_integers_negative_only_odd_medium() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-293, -1));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_accuracy_integers_negative_only_odd_large() {
+    fn accuracy_integers_negative_only_odd_large() {
         let index_mapping = LogarithmicMapping::new(0.01).unwrap();
         let dataset = Dataset::<_, CollapsingLowestDenseStore>::new(index_mapping, integers(-1023, -1));
         dataset.validate(&[0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99]);
     }
 
     #[test]
-    fn test_zero_values() {
+    fn zero_values() {
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         sketch.add(0.0);
         sketch.add(0.0);
@@ -762,7 +762,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge() {
+    fn merge() {
         let mut sketch1 = DDSketch::with_relative_accuracy(0.01).unwrap();
         sketch1.add(1.0);
         sketch1.add(2.0);
@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clear() {
+    fn clear() {
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         sketch.add(1.0);
         sketch.add(2.0);
@@ -789,8 +789,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
-    fn test_quantile_bounds() {
+    fn quantile_at_zero_and_one_returns_min_and_max() {
+        // This is a plain correctness test (not a perf/diagnostic test): it verifies that querying the extreme
+        // quantiles returns the sketch's minimum and maximum values within the relative-accuracy bound. It runs
+        // quickly and deterministically, so there is no reason for it to be `#[ignore]`'d.
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         for i in 1..=100 {
             sketch.add(i as f64);
@@ -806,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn test_add_n() {
+    fn add_n() {
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         sketch.add_n(10.0, 5);
 
@@ -814,7 +816,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proto_roundtrip() {
+    fn proto_roundtrip() {
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         sketch.add(1.0);
         sketch.add(2.0);
@@ -844,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proto_roundtrip_with_negatives() {
+    fn proto_roundtrip_with_negatives() {
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         sketch.add(-10.0);
         sketch.add(-5.0);
@@ -861,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proto_roundtrip_empty() {
+    fn proto_roundtrip_empty() {
         let sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
 
         let proto = sketch.to_proto();
@@ -873,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proto_gamma_mismatch() {
+    fn proto_gamma_mismatch() {
         let mut sketch = DDSketch::with_relative_accuracy(0.01).unwrap();
         sketch.add(1.0);
 
@@ -891,7 +893,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proto_missing_mapping() {
+    fn proto_missing_mapping() {
         use datadog_protos::sketches::DDSketch as ProtoDDSketch;
 
         let proto = ProtoDDSketch::new(); // No mapping set
@@ -905,10 +907,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn proto_non_zero_index_offset() {
+        use datadog_protos::sketches::DDSketch as ProtoDDSketch;
+
+        // `LogarithmicMapping::new` always produces a zero index offset, and `validate_proto_mapping` distinguishes a
+        // proto that carries a non-zero offset from a gamma mismatch. Start from a valid proto mapping (matching gamma,
+        // NONE interpolation) and only perturb the index offset, so that the offset check is the branch that fires.
+        let mapping = LogarithmicMapping::new(0.01).unwrap();
+        let mut proto_mapping = mapping.to_proto();
+        proto_mapping.indexOffset = 1.0;
+
+        let mut proto = ProtoDDSketch::new();
+        proto.set_mapping(proto_mapping);
+
+        let result = DDSketch::<_, CollapsingLowestDenseStore>::from_proto(&proto, mapping);
+        match result {
+            Err(crate::canonical::ProtoConversionError::NonZeroIndexOffset { actual }) => {
+                assert_eq!(actual, 1.0);
+            }
+            other => panic!("Expected NonZeroIndexOffset error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn proto_unsupported_interpolation() {
+        use datadog_protos::sketches::{index_mapping::Interpolation, DDSketch as ProtoDDSketch};
+
+        // `LogarithmicMapping` only supports exact (NONE) interpolation. A proto that requests any other interpolation
+        // mode -- here, LINEAR -- must be rejected with `UnsupportedInterpolation` rather than one of the other error
+        // kinds, so we keep the gamma and offset valid and only change the interpolation mode.
+        let mapping = LogarithmicMapping::new(0.01).unwrap();
+        let mut proto_mapping = mapping.to_proto();
+        proto_mapping.interpolation = protobuf::EnumOrUnknown::new(Interpolation::LINEAR);
+
+        let mut proto = ProtoDDSketch::new();
+        proto.set_mapping(proto_mapping);
+
+        let result = DDSketch::<_, CollapsingLowestDenseStore>::from_proto(&proto, mapping);
+        match result {
+            Err(crate::canonical::ProtoConversionError::UnsupportedInterpolation { actual }) => {
+                assert_eq!(actual, Interpolation::LINEAR as i32);
+            }
+            other => panic!("Expected UnsupportedInterpolation error, got {:?}", other),
+        }
+    }
+
     // ==================== PositiveOnlyDDSketch tests ====================
 
     #[test]
-    fn test_positive_only_size() {
+    fn positive_only_size() {
         use crate::canonical::mapping::FixedLogarithmicMapping;
 
         // Verify the memory savings - PositiveOnlyDDSketch should be smaller than DDSketch
@@ -931,7 +979,7 @@ mod tests {
     }
 
     #[test]
-    fn test_positive_only_empty() {
+    fn positive_only_empty() {
         let sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
 
         assert!(sketch.is_empty());
@@ -940,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    fn test_positive_only_add_and_quantile() {
+    fn positive_only_add_and_quantile() {
         let mut sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
 
         for i in 1..=100 {
@@ -955,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn test_positive_only_negative_values_become_zero() {
+    fn positive_only_negative_values_become_zero() {
         let mut sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
 
         sketch.add(-10.0);
@@ -970,7 +1018,7 @@ mod tests {
     }
 
     #[test]
-    fn test_positive_only_merge() {
+    fn positive_only_merge() {
         let mut sketch1: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
         sketch1.add(1.0);
         sketch1.add(2.0);
@@ -985,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn test_positive_only_clear() {
+    fn positive_only_clear() {
         let mut sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
         sketch.add(1.0);
         sketch.add(2.0);
@@ -997,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn test_positive_only_proto_roundtrip() {
+    fn positive_only_proto_roundtrip() {
         let mut sketch: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();
         sketch.add(1.0);
         sketch.add(2.0);
@@ -1030,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn test_positive_only_matches_ddsketch_for_positive_values() {
+    fn positive_only_matches_ddsketch_for_positive_values() {
         // Verify that PositiveOnlyDDSketch produces the same results as DDSketch for positive values
         let mut ddsketch: DDSketch = DDSketch::default();
         let mut positive_only: PositiveOnlyDDSketch = PositiveOnlyDDSketch::default();

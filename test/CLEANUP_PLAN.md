@@ -286,7 +286,7 @@ otherwise keep hand-rolling the thing it replaces.
     is unverified. `Context::with_tag_sets_mut`'s documented single-rehash guarantee is never exercised, and
     `TagSet::merge_shared`/`SharedTagSet::extend_from_shared`'s documented dedup/no-dedup contracts are unexercised.
 
-- [ ] **G17 — ddsketch, stringtheory, ottl crate test cleanup** (`tobz/test-cleanup-ddsketch-stringtheory-ottl-tests`, `test(ddsketch)`)
+- [x] **G17 — ddsketch, stringtheory, ottl crate test cleanup** (`tobz/test-cleanup-ddsketch-stringtheory-ottl-tests`, `test(ddsketch)`)
   - [medium/large] Sibling `Store`/`IndexMapping` trait implementations in ddsketch hand-duplicate parallel test
     suites instead of using a generic conformance helper (also present, smaller scale, per KI-4 in stringtheory).
   - [high/medium] The agent DDSketch's public API has no direct unit tests, despite the sibling canonical DDSketch

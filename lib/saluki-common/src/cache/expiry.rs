@@ -307,7 +307,7 @@ mod tests {
         (Counter::from_arc(Arc::clone(&storage)), storage)
     }
 
-    /// Invokes the lifecycle's `on_evict` for the given key, using `()` as the value type.
+    /// Invokes `on_evict` on the given lifecycle for the given key, using `()` as the value type.
     fn trigger_eviction<K>(lifecycle: &ExpiryCapableLifecycle<K>, key: K)
     where
         K: Eq + std::hash::Hash,

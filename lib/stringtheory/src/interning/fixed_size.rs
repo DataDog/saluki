@@ -737,19 +737,13 @@ fn intern_with_shard_and_hash(shard: &Arc<Mutex<InternerShardState>>, hash: u64,
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::HashSet,
-        ops::{Deref as _, RangeInclusive},
-    };
+    use std::ops::Deref as _;
 
     use prop::sample::Index;
-    use proptest::{
-        collection::{hash_set, vec as arb_vec},
-        prelude::*,
-    };
+    use proptest::{collection::vec as arb_vec, prelude::*};
 
     use super::*;
-    use crate::interning::InternedStringState;
+    use crate::interning::{test_support, InternedStringState};
 
     pub(super) fn create_shard(capacity: NonZeroUsize) -> Arc<Mutex<InternerShardState>> {
         Arc::new(Mutex::new(InternerShardState::with_capacity(capacity)))
@@ -794,23 +788,6 @@ mod tests {
 
     fn entry_len(s: &str) -> usize {
         EntryHeader::len_for(s)
-    }
-
-    fn arb_alphanum_strings(
-        str_len: RangeInclusive<usize>, unique_strs: RangeInclusive<usize>,
-    ) -> impl Strategy<Value = Vec<String>> {
-        // Create characters between 0x20 (32) and 0x7E (126), which are all printable ASCII characters.
-        let char_gen = any::<u8>().prop_map(|c| std::cmp::max(c % 127, 32));
-
-        let str_gen = any::<usize>()
-            .prop_map(move |n| std::cmp::max(n % *str_len.end(), *str_len.start()))
-            .prop_flat_map(move |len| arb_vec(char_gen.clone(), len))
-            // SAFETY: We know our characters are all valid UTF-8 because they're in the ASCII range.
-            .prop_map(|xs| unsafe { String::from_utf8_unchecked(xs) });
-
-        // Create a hash set, which handles the deduplication aspect for us, ensuring we have N unique strings where N
-        // is within the `unique_strs` range... and then convert it to `Vec<String>` for easier consumption.
-        hash_set(str_gen, unique_strs).prop_map(|unique_strs| unique_strs.into_iter().collect::<Vec<_>>())
     }
 
     #[test]
@@ -1046,35 +1023,18 @@ mod tests {
         #[test]
         #[cfg_attr(miri, ignore)]
         fn property_test_entry_count_accurate(
-            strs in arb_alphanum_strings(1..=128, 16..=512),
+            strs in test_support::arb_alphanum_strings(1..=128, 16..=512),
             indices in arb_vec(any::<Index>(), 1..=1000),
         ) {
-            // We ask `proptest` to generate a bunch of unique strings of varying lengths (1-128 bytes, 16-512 unique
-            // strings) which we then randomly select out of those strings which strings we want to intern. The goal
-            // here is to potentially select the same string multiple times, to exercise the actual interning logic...
-            // but practically, to ensure that when we intern a string that has already been interned, we're not
-            // incrementing the entries count again.
-
             // Create an interner with enough capacity to hold all of the strings we've generated. This is the maximum
             // string size multiplied by the number of strings we've generated... plus a little constant factor per
-            // string to account for the entry header.
+            // string to account for the entry header. The header size differs between interner implementations, which
+            // is exactly why the interner construction (and thus this `property_test_`-named entry point) stays
+            // per-implementation while the invariant check is shared.
             const ENTRY_SIZE: usize = 128 + HEADER_LEN;
             let interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(ENTRY_SIZE * indices.len()).unwrap());
 
-            // For each index, pull out the string and both track it in `unique_strs` and intern it. We hold on to the
-            // interned string handle to make sure the interned string is actually kept alive, keeping the entry count
-            // stable.
-            let mut interned = Vec::new();
-            let mut unique_strs = HashSet::new();
-            for index in &indices {
-                let s = index.get(&strs);
-                unique_strs.insert(s);
-
-                let s_interned = interner.try_intern(s).expect("should never fail to intern");
-                interned.push(s_interned);
-            }
-
-            assert_eq!(unique_strs.len(), interner.len());
+            test_support::assert_entry_count_matches_unique_strings(&interner, &strs, &indices)?;
         }
     }
 }
