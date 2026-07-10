@@ -669,6 +669,15 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn readiness_is_ready_when_there_are_no_targets_to_validate() {
+        // With no usable API keys, `validate_targets` short-circuits to `Ready` (and issues no requests)
+        // so that a deployment without validatable keys does not wedge forwarder startup.
+        let mut client = test_client(Duration::from_secs(1));
+
+        assert_eq!(validate_targets(&mut client, &[]).await, ValidationReadiness::Ready);
+    }
+
     fn target_for(base_url: &str) -> ValidationTarget {
         ValidationTarget {
             endpoint: Url::parse(base_url).unwrap(),

@@ -689,17 +689,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn endpoint_concurrency_uses_configured_multiplier() {
-        let config = forwarder_config_from(
-            config_with(serde_json::json!({
-                "forwarder_max_concurrent_requests": 3usize,
-                "forwarder_num_workers": 4usize,
-            })),
-            None,
-        )
-        .await;
+    async fn endpoint_concurrency_multiplies_and_clamps_zero_values_to_one() {
+        // `endpoint_concurrency` multiplies the base concurrency by the multiplier, but a documented zero
+        // for either field is clamped to 1 first (a zero multiplier "is treated as 1", a zero base
+        // concurrency "is clamped to 1").
+        let cases = [
+            ("both configured", 3usize, 4usize, 12usize),
+            ("zero base concurrency clamps to one", 0, 5, 5),
+            ("zero multiplier clamps to one", 10, 0, 10),
+            ("both zero clamp to one", 0, 0, 1),
+        ];
 
-        assert_eq!(config.endpoint_concurrency(), 12);
+        for (name, concurrency, multiplier, expected) in cases {
+            let config = forwarder_config_from(
+                config_with(serde_json::json!({
+                    "forwarder_max_concurrent_requests": concurrency,
+                    "forwarder_num_workers": multiplier,
+                })),
+                None,
+            )
+            .await;
+
+            assert_eq!(config.endpoint_concurrency(), expected, "{name}");
+        }
     }
 
     #[tokio::test]
@@ -799,57 +811,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn min_tls_version_defaults_to_tls12() {
+    async fn sslkeylogfile_defaults_to_none_when_unset() {
+        // The field defaults to empty, and `ssl_key_log_file_path` reports an empty path as "not configured".
         let config = forwarder_config_from(base_config(), None).await;
 
-        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+        assert_eq!(config.ssl_key_log_file_path(), None);
     }
 
     #[tokio::test]
-    async fn min_tls_version_tls12_uses_tls12() {
-        let config =
-            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.2" })), None).await;
+    async fn sslkeylogfile_whitespace_only_is_treated_as_unset() {
+        // `ssl_key_log_file_path` trims the configured value, so a whitespace-only path is reported as unset.
+        let config = forwarder_config_from(config_with(serde_json::json!({ "sslkeylogfile": "   " })), None).await;
 
-        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+        assert_eq!(config.ssl_key_log_file_path(), None);
     }
 
     #[tokio::test]
-    async fn min_tls_version_tls13_uses_tls13() {
-        let config =
-            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.3" })), None).await;
+    async fn min_tls_version_maps_configured_value() {
+        // Documented mapping (see `min_tls_version_from_config_value`): the default and an explicit
+        // tlsv1.2 map to TLS 1.2; tlsv1.3 maps to TLS 1.3 (case-insensitively); tlsv1.0/tlsv1.1 clamp up
+        // to TLS 1.2 because rustls has no older support; and an empty string or any unrecognized value
+        // falls back to TLS 1.2.
+        let cases = [
+            ("default when unset", None, TlsMinimumVersion::Tls12),
+            ("explicit tlsv1.2", Some("tlsv1.2"), TlsMinimumVersion::Tls12),
+            ("tlsv1.3", Some("tlsv1.3"), TlsMinimumVersion::Tls13),
+            ("case-insensitive tlsv1.3", Some("TlSv1.3"), TlsMinimumVersion::Tls13),
+            ("tlsv1.0 clamps up", Some("tlsv1.0"), TlsMinimumVersion::Tls12),
+            ("tlsv1.1 clamps up", Some("tlsv1.1"), TlsMinimumVersion::Tls12),
+            ("empty string falls back", Some(""), TlsMinimumVersion::Tls12),
+            (
+                "unrecognized value falls back",
+                Some("tlsv1.9"),
+                TlsMinimumVersion::Tls12,
+            ),
+        ];
 
-        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls13);
-    }
+        for (name, value, expected) in cases {
+            let file_values = match value {
+                Some(value) => config_with(serde_json::json!({ "min_tls_version": value })),
+                None => base_config(),
+            };
+            let config = forwarder_config_from(file_values, None).await;
 
-    #[tokio::test]
-    async fn min_tls_version_is_case_insensitive() {
-        let config =
-            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "TlSv1.3" })), None).await;
-
-        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls13);
-    }
-
-    #[tokio::test]
-    async fn min_tls_version_tls10_and_tls11_clamp_to_tls12() {
-        for min_tls_version in ["tlsv1.0", "tlsv1.1"] {
-            let config = forwarder_config_from(
-                config_with(serde_json::json!({
-                    "min_tls_version": min_tls_version,
-                })),
-                None,
-            )
-            .await;
-
-            assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
+            assert_eq!(config.min_tls_version(), expected, "{name}");
         }
-    }
-
-    #[tokio::test]
-    async fn min_tls_version_invalid_value_falls_back_to_tls12() {
-        let config =
-            forwarder_config_from(config_with(serde_json::json!({ "min_tls_version": "tlsv1.9" })), None).await;
-
-        assert_eq!(config.min_tls_version(), TlsMinimumVersion::Tls12);
     }
 
     #[tokio::test]

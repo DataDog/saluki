@@ -305,3 +305,39 @@ impl Default for UseV3ApiSeriesConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use super::deserialize_v3_series_mode;
+
+    #[derive(Deserialize)]
+    struct Wrapper {
+        #[serde(deserialize_with = "deserialize_v3_series_mode")]
+        mode: String,
+    }
+
+    fn parse_mode(value: serde_json::Value) -> String {
+        serde_json::from_value::<Wrapper>(serde_json::json!({ "mode": value }))
+            .expect("mode should deserialize")
+            .mode
+    }
+
+    #[test]
+    fn deserialize_v3_series_mode_normalizes_accepted_forms() {
+        // Documented accepted forms: the string values `true`, `false`, and `datadog_only` pass through
+        // unchanged, and YAML/JSON booleans are normalized to their string form for the evaluator.
+        let cases = [
+            (serde_json::json!("true"), "true"),
+            (serde_json::json!("false"), "false"),
+            (serde_json::json!("datadog_only"), "datadog_only"),
+            (serde_json::json!(true), "true"),
+            (serde_json::json!(false), "false"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(parse_mode(input.clone()), expected, "{input}");
+        }
+    }
+}

@@ -194,7 +194,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/trivial] A typo in a proptest function name (`dispoint` instead of `disjoint`) and one integration test
     file whose name diverges from its test function name (saluki-tls).
 
-- [ ] **G12 — datadog-common config/endpoints/request-pipeline test cleanup** (AU-01/AU-02)
+- [x] **G12 — datadog-common config/endpoints/request-pipeline test cleanup** (AU-01/AU-02)
   (`tobz/test-cleanup-datadog-common-config-tests`, `test(components)`)
   - [low/small] Near-identical single-variant config-flag tests, and formulaic input/output variant tests in
     `endpoints.rs`, should collapse into table-driven tests (KI-10, KI-11).
