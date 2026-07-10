@@ -231,7 +231,7 @@ otherwise keep hand-rolling the thing it replaces.
     `Point`-table + `monotonic_diff` loop harness. Split the multi-case bodies into focused tests and extract the
     shared driver.
 
-- [ ] **G14 — agent-data-plane filter components & OTTL processors test cleanup** (AU-25/AU-26)
+- [x] **G14 — agent-data-plane filter components & OTTL processors test cleanup** (AU-25/AU-26)
   (`tobz/test-cleanup-adp-filters-ottl-processors-tests`, `test(agent-data-plane)`)
   - [medium/small] `tag_filterlist`'s `count_*` tests duplicate the distribution-metric tests, differing only by
     metric type and one extra assertion — these should be merged, not kept as separate near-duplicates (KI-10).

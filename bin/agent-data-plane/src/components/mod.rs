@@ -6,3 +6,6 @@ pub mod host_tags;
 pub mod ottl_filter_processor;
 pub mod ottl_transform_processor;
 pub mod tag_filterlist;
+
+#[cfg(test)]
+mod test_support;

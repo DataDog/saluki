@@ -515,12 +515,16 @@ mod tests {
 
     #[test]
     fn invalid_percentiles_are_rejected() {
-        let histogram_aggregates = Vec::new();
-        let histogram_percentiles = vec!["1.1".to_string()];
+        // `HistogramSuffixes::from_configuration` documents two rejection branches: a value that isn't a
+        // number, and a numeric value outside the [0.0, 1.0] range. Both must produce an error.
+        let non_numeric = HistogramSuffixes::from_configuration(&[], &["abc".to_string()]);
+        assert!(non_numeric.is_err(), "a non-numeric percentile must be rejected");
 
-        let result = HistogramSuffixes::from_configuration(&histogram_aggregates, &histogram_percentiles);
+        let above_range = HistogramSuffixes::from_configuration(&[], &["1.1".to_string()]);
+        assert!(above_range.is_err(), "a percentile above 1.0 must be rejected");
 
-        assert!(result.is_err());
+        let below_range = HistogramSuffixes::from_configuration(&[], &["-0.1".to_string()]);
+        assert!(below_range.is_err(), "a percentile below 0.0 must be rejected");
     }
 
     // Mirrors Datadog Agent time-sampler filtering, which filters series while keeping sketches:
