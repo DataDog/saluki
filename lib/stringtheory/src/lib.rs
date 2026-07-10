@@ -27,11 +27,14 @@ use self::interning::{InternedString, InternedStringState, Interner};
 const ZERO_VALUE: usize = 0;
 const TOP_MOST_BIT: usize = usize::MAX & !(isize::MAX as usize);
 const INLINED_STR_DATA_BUF_LEN: usize = std::mem::size_of::<usize>() * 3;
-const INLINED_STR_TAG_INDEX: usize = if cfg!(target_endian = "little") {
-    INLINED_STR_DATA_BUF_LEN - 1
+// MetaString stores its discriminant in the top byte of the third machine word, which lands at a different byte
+// offset in memory depending on endianness.
+const TOP_BYTE_INDEX: usize = if cfg!(target_endian = "little") {
+    std::mem::size_of::<usize>() - 1
 } else {
-    std::mem::size_of::<usize>() * 2
+    0
 };
+const INLINED_STR_TAG_INDEX: usize = std::mem::size_of::<usize>() * 2 + TOP_BYTE_INDEX;
 const INLINED_STR_MAX_LEN: usize = INLINED_STR_TAG_INDEX;
 const INLINED_STR_MAX_LEN_U8: u8 = INLINED_STR_MAX_LEN as u8;
 
@@ -941,8 +944,8 @@ mod tests {
     use proptest::{prelude::*, proptest};
 
     use super::{
-        interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType, INLINED_STR_DATA_BUF_LEN,
-        INLINED_STR_MAX_LEN, INLINED_STR_TAG_INDEX, UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE,
+        interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType, INLINED_STR_MAX_LEN,
+        INLINED_STR_TAG_INDEX, TOP_BYTE_INDEX, UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE,
         UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP, UNION_TYPE_TAG_VALUE_SHARED, UNION_TYPE_TAG_VALUE_STATIC,
     };
     use crate::interning::{FixedSizeInterner, Interner as _};
@@ -964,13 +967,14 @@ mod tests {
 
     #[test]
     fn endian_layout_constants_match_discriminant_strategy() {
-        let third_word_start = std::mem::size_of::<usize>() * 2;
-        let expected_tag_index = if cfg!(target_endian = "little") {
-            INLINED_STR_DATA_BUF_LEN - 1
+        let expected_top_byte_index = if cfg!(target_endian = "little") {
+            std::mem::size_of::<usize>() - 1
         } else {
-            third_word_start
+            0
         };
+        let expected_tag_index = std::mem::size_of::<usize>() * 2 + expected_top_byte_index;
 
+        assert_eq!(TOP_BYTE_INDEX, expected_top_byte_index);
         assert_eq!(INLINED_STR_TAG_INDEX, expected_tag_index);
         assert_eq!(INLINED_STR_MAX_LEN, expected_tag_index);
     }
