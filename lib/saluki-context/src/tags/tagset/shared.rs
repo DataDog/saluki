@@ -243,3 +243,47 @@ impl<'a> Iterator for SharedTagSetIterator<'a> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared_from(tags: &[&str]) -> SharedTagSet {
+        tags.iter().map(|s| Tag::from(*s)).collect()
+    }
+
+    #[test]
+    fn extend_from_shared_skips_structurally_shared_sets() {
+        // Extending with a set that shares the same underlying `FrozenTagSet` (by `Arc` identity)
+        // is a no-op: the identical frozen set is not appended a second time.
+        let base = shared_from(&["x:1", "y:2"]);
+        let mut extended = base.clone();
+        extended.extend_from_shared(&base);
+
+        assert_eq!(extended.len(), 2);
+        assert_eq!(extended, base);
+    }
+
+    #[test]
+    fn extend_from_shared_keeps_duplicate_tags_across_distinct_sets() {
+        // Two independently-built sets don't share an `Arc`, so extending appends the second frozen
+        // set wholesale even when it repeats a tag: there is no cross-set de-duplication of
+        // individual tags (unlike the `Arc`-identity skip above).
+        let mut base = shared_from(&["x:1"]);
+        let other = shared_from(&["x:1", "y:2"]);
+        base.extend_from_shared(&other);
+
+        assert_eq!(base.len(), 3, "the duplicate x:1 is retained across the two sets");
+        assert!(base.has_tag("x:1"));
+        assert!(base.has_tag("y:2"));
+
+        let x_count = base.into_iter().filter(|tag| tag.as_str() == "x:1").count();
+        assert_eq!(x_count, 2, "x:1 appears once per source set");
+    }
+
+    #[test]
+    fn display_renders_comma_space_separated_tags() {
+        assert_eq!(shared_from(&[]).to_string(), "[]");
+        assert_eq!(shared_from(&["a:1", "b:2"]).to_string(), "[a:1, b:2]");
+    }
+}

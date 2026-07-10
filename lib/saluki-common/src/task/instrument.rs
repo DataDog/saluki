@@ -74,3 +74,86 @@ where
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::Arc,
+        task::{Context, Poll, Wake, Waker},
+    };
+
+    use saluki_metrics::test::TestRecorder;
+
+    use super::*;
+
+    /// A future that returns `Pending` a fixed number of times before completing, letting a test
+    /// drive a known number of polls.
+    struct PendsThenReady {
+        pending_polls: usize,
+    }
+
+    impl Future for PendsThenReady {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
+            if self.pending_polls == 0 {
+                Poll::Ready(())
+            } else {
+                self.pending_polls -= 1;
+                Poll::Pending
+            }
+        }
+    }
+
+    struct NoopWaker;
+
+    impl Wake for NoopWaker {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    #[test]
+    fn poll_records_one_duration_sample_per_poll() {
+        let recorder = TestRecorder::default();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        // Two `Pending` polls followed by one `Ready` poll: three polls total.
+        let task = PendsThenReady { pending_polls: 2 }.with_task_instrumentation("poll_duration_test".to_string());
+        let mut task = Box::pin(task);
+
+        let waker = Waker::from(Arc::new(NoopWaker));
+        let mut cx = Context::from_waker(&waker);
+
+        let mut polls = 0;
+        loop {
+            polls += 1;
+            if task.as_mut().poll(&mut cx).is_ready() {
+                break;
+            }
+        }
+        assert_eq!(polls, 3);
+
+        // The documented behavior is that every poll records one `poll_duration_seconds` sample,
+        // tagged with the task name provided to `with_task_instrumentation`.
+        let samples = recorder
+            .histogram((
+                Telemetry::poll_duration_seconds_name(),
+                &[("task_name", "poll_duration_test")],
+            ))
+            .expect("poll-duration histogram should be registered");
+        assert_eq!(samples.len(), 3, "each poll must record one duration sample");
+        assert!(
+            samples.iter().all(|&sample| sample >= 0.0),
+            "recorded poll durations must be non-negative"
+        );
+
+        // NOTE: `poll_count` is declared in the telemetry block but is never incremented by
+        // `InstrumentedTask::poll` (only the histogram is recorded). This assertion pins that
+        // current gap; if poll counting is ever wired up, this test should be updated to match.
+        assert_eq!(
+            recorder.counter((Telemetry::poll_count_name(), &[("task_name", "poll_duration_test")])),
+            Some(0)
+        );
+    }
+}
