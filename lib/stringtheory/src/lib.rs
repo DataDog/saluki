@@ -944,9 +944,9 @@ mod tests {
     use proptest::{prelude::*, proptest};
 
     use super::{
-        interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType, INLINED_STR_MAX_LEN,
-        INLINED_STR_TAG_INDEX, UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE, UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP,
-        UNION_TYPE_TAG_VALUE_SHARED, UNION_TYPE_TAG_VALUE_STATIC,
+        interning::GenericMapInterner, CheapMetaString, InlinedUnion, Inner, MetaString, UnionType,
+        INLINED_STR_MAX_LEN, INLINED_STR_TAG_INDEX, UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE,
+        UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP, UNION_TYPE_TAG_VALUE_SHARED, UNION_TYPE_TAG_VALUE_STATIC,
     };
     use crate::interning::{FixedSizeInterner, Interner as _};
 
@@ -1098,6 +1098,42 @@ mod tests {
         assert_eq!(shared_str, &*meta);
         assert_eq!(meta.inner.get_union_type(), UnionType::Shared);
         assert_eq!(shared_str, meta.into_owned());
+    }
+
+    #[test]
+    fn meta_string_sorts_by_string_value() {
+        let mut values = [
+            MetaString::from("gamma"),
+            MetaString::from("alpha"),
+            MetaString::from("beta"),
+        ];
+        values.sort();
+
+        assert_eq!(
+            values.iter().map(|value| &**value).collect::<Vec<_>>(),
+            ["alpha", "beta", "gamma"]
+        );
+    }
+
+    #[test]
+    fn protobuf_chars_conversions_preserve_value() {
+        let chars: protobuf::Chars = MetaString::from("protobuf-value").into();
+        let chars_ref: &str = chars.as_ref();
+        assert_eq!(chars_ref, "protobuf-value");
+
+        let meta = MetaString::from("protobuf-ref-value");
+        let chars: protobuf::Chars = (&meta).into();
+        let chars_ref: &str = chars.as_ref();
+        assert_eq!(chars_ref, "protobuf-ref-value");
+    }
+
+    #[test]
+    fn cheap_meta_string_trait_reports_cheap_clone_availability() {
+        let shared = MetaString::from(Arc::<str>::from("shared-value"));
+        assert_eq!(shared.try_cheap_clone().as_deref(), Some("shared-value"));
+
+        let owned = MetaString::from(String::from("owned-value"));
+        assert!(owned.try_cheap_clone().is_none());
     }
 
     #[test]
