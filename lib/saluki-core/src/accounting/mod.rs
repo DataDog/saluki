@@ -229,3 +229,45 @@ impl ComponentBounds {
         output
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::UsageExpr;
+
+    #[test]
+    fn leaf_expressions_evaluate_to_their_value() {
+        assert_eq!(UsageExpr::config("cfg", 7).evaluate(), 7);
+        assert_eq!(UsageExpr::constant("const", 11).evaluate(), 11);
+        assert_eq!(
+            UsageExpr::struct_size::<u64>("u64").evaluate(),
+            std::mem::size_of::<u64>()
+        );
+    }
+
+    #[test]
+    fn product_evaluates_to_the_product_of_its_subexpressions() {
+        let expr = UsageExpr::product(
+            "area",
+            UsageExpr::constant("width", 4),
+            UsageExpr::constant("height", 8),
+        );
+        assert_eq!(expr.evaluate(), 32);
+    }
+
+    #[test]
+    fn sum_evaluates_to_the_sum_of_its_subexpressions() {
+        let expr = UsageExpr::sum("total", UsageExpr::constant("a", 4), UsageExpr::constant("b", 8));
+        assert_eq!(expr.evaluate(), 12);
+    }
+
+    #[test]
+    fn products_and_sums_compose_recursively() {
+        // (2 + 3) * 4 = 20
+        let expr = UsageExpr::product(
+            "scaled",
+            UsageExpr::sum("base", UsageExpr::constant("a", 2), UsageExpr::constant("b", 3)),
+            UsageExpr::constant("factor", 4),
+        );
+        assert_eq!(expr.evaluate(), 20);
+    }
+}
