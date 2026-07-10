@@ -1,11 +1,11 @@
 //! Platform-specific settings.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "aix"))]
 mod linux_impl;
 
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "aix"))]
 pub use self::linux_impl::*;
 
 #[cfg(target_os = "macos")]
@@ -19,12 +19,6 @@ mod windows_impl;
 
 #[cfg(windows)]
 pub use self::windows_impl::*;
-
-#[cfg(target_os = "aix")]
-mod aix_impl;
-
-#[cfg(target_os = "aix")]
-pub use self::aix_impl::*;
 
 /// Prefix for all environment variables used by the Datadog Agent.
 pub const DATADOG_AGENT_ENV_VAR_PREFIX: &str = "DD";
