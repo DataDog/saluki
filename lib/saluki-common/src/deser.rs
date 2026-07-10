@@ -119,14 +119,18 @@ mod tests {
         PermissiveBool::deserialize_as(v.into_deserializer())
     }
 
-    // Native boolean
-    #[test]
-    fn native_true() {
-        assert!(parse_bool(true).unwrap());
+    fn parse_uint(v: u64) -> Result<bool, serde::de::value::Error> {
+        PermissiveBool::deserialize_as(v.into_deserializer())
     }
 
+    fn parse_float(v: f64) -> Result<bool, serde::de::value::Error> {
+        PermissiveBool::deserialize_as(v.into_deserializer())
+    }
+
+    // Native boolean
     #[test]
-    fn native_false() {
+    fn native_bool_is_passed_through() {
+        assert!(parse_bool(true).unwrap());
         assert!(!parse_bool(false).unwrap());
     }
 
@@ -154,14 +158,41 @@ mod tests {
         assert!(parse_str("").is_err());
     }
 
-    // Integer variants
+    // Integer variants (both signed and unsigned deserializer paths).
     #[test]
-    fn int_true() {
+    fn integer_accepts_zero_and_one() {
+        assert!(!parse_int(0).unwrap());
         assert!(parse_int(1).unwrap());
+        assert!(!parse_uint(0).unwrap());
+        assert!(parse_uint(1).unwrap());
     }
 
     #[test]
-    fn int_false() {
-        assert!(!parse_int(0).unwrap());
+    fn integer_rejects_values_other_than_zero_or_one() {
+        // Signed values outside {0, 1}, including negatives and extremes, are rejected (visit_i64).
+        for v in [-1, 2, i64::MIN, i64::MAX] {
+            assert!(parse_int(v).is_err(), "expected signed {v} to be rejected");
+        }
+
+        // Unsigned values outside {0, 1} are rejected (visit_u64).
+        for v in [2u64, u64::MAX] {
+            assert!(parse_uint(v).is_err(), "expected unsigned {v} to be rejected");
+        }
+    }
+
+    // Floating-point variants (visit_f64 path).
+    #[test]
+    fn float_accepts_zero_and_one() {
+        assert!(!parse_float(0.0).unwrap());
+        assert!(parse_float(1.0).unwrap());
+    }
+
+    #[test]
+    fn float_rejects_values_other_than_zero_or_one() {
+        // Any floating-point value other than exactly 0.0 or 1.0 is rejected, including fractional,
+        // out-of-range, and non-finite values.
+        for v in [0.5, 2.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(parse_float(v).is_err(), "expected float {v} to be rejected");
+        }
     }
 }

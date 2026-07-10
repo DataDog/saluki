@@ -36,6 +36,8 @@ libc = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+metrics = { workspace = true }
 proptest = { workspace = true }
+saluki-metrics = { workspace = true, features = ["test"] }
 serde_json = { workspace = true }
 tokio-test = { workspace = true }

@@ -4280,6 +4280,7 @@ dependencies = [
  "indexmap",
  "itoa",
  "libc",
+ "metrics",
  "papaya",
  "pin-project",
  "proptest",
