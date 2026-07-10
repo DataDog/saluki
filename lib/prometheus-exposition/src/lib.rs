@@ -323,6 +323,44 @@ mod tests {
     }
 
     #[test]
+    fn normalize_metric_name_enforces_start_character_validity() {
+        // The first character must satisfy `is_valid_name_start_char` (letters, `_`, `:`), while every subsequent
+        // character may also be a digit. A digit is therefore only rewritten to `_` when it is the leading character.
+        let cases = [
+            ("0abc", "_abc"),         // leading digit is invalid at the start...
+            ("a0bc", "a0bc"),         // ...but a digit is valid in any later position
+            ("42", "_2"),             // only the first character is treated as a start character
+            ("_private", "_private"), // `_` is a valid start character and is preserved
+            (":colon", ":colon"),     // `:` is a valid start character and is preserved
+        ];
+
+        let mut renderer = PrometheusRenderer::new();
+        for (input, expected) in cases {
+            assert_eq!(renderer.normalize_metric_name(input), expected, "input: {input}");
+        }
+    }
+
+    #[test]
+    fn render_counter_group_joins_multiple_labels_with_commas() {
+        let mut renderer = PrometheusRenderer::new();
+        renderer.render_scalar_group(
+            "requests_total",
+            MetricType::Counter,
+            None,
+            vec![([("method", "GET"), ("status", "200")], 5.0)],
+        );
+
+        // Multiple labels are rendered inside a single set of braces, joined by commas in iteration order.
+        assert!(
+            renderer
+                .output()
+                .contains("requests_total{method=\"GET\",status=\"200\"} 5\n"),
+            "unexpected output: {}",
+            renderer.output()
+        );
+    }
+
+    #[test]
     fn render_counter_group() {
         let mut renderer = PrometheusRenderer::new();
         renderer.render_scalar_group(
