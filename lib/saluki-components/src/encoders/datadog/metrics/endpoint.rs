@@ -35,17 +35,24 @@ impl MetricsEndpoint {
 
 pub struct EndpointConfiguration {
     compression_scheme: CompressionScheme,
+    // `max_metrics_per_payload` controls the number of series/sketches
+    // per-payload to the endpoint, above which multiple payloads are split.
     max_metrics_per_payload: usize,
+    // `max_series_points_per_payload` controls the number of total points per
+    // payload, across all series. Sketches are not constrained.
+    max_series_points_per_payload: usize,
     additional_tags: SharedTagSet,
 }
 
 impl EndpointConfiguration {
     pub fn new(
-        compression_scheme: CompressionScheme, max_metrics_per_payload: usize, additional_tags: Option<SharedTagSet>,
+        compression_scheme: CompressionScheme, max_metrics_per_payload: usize, max_series_points_per_payload: usize,
+        additional_tags: Option<SharedTagSet>,
     ) -> Self {
         Self {
             compression_scheme,
             max_metrics_per_payload,
+            max_series_points_per_payload,
             additional_tags: additional_tags.unwrap_or_default(),
         }
     }
@@ -56,6 +63,10 @@ impl EndpointConfiguration {
 
     pub fn max_metrics_per_payload(&self) -> usize {
         self.max_metrics_per_payload
+    }
+
+    pub fn max_series_points_per_payload(&self) -> usize {
+        self.max_series_points_per_payload
     }
 
     pub fn additional_tags(&self) -> &SharedTagSet {
