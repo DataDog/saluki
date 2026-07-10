@@ -38,6 +38,9 @@ pub async fn create_v2_request_builder(
     let mut request_builder =
         RequestBuilder::new(encoder, endpoint_config.compression_scheme(), RB_BUFFER_CHUNK_SIZE).await?;
     request_builder.with_max_inputs_per_payload(endpoint_config.max_metrics_per_payload());
+    if matches!(endpoint, MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2) {
+        request_builder.with_max_data_points_per_payload(endpoint_config.max_series_points_per_payload());
+    }
 
     Ok(request_builder)
 }
