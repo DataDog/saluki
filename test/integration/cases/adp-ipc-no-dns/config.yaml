@@ -1,13 +1,3 @@
-# Issue: ADP/Core Agent IPC must not require system DNS.
-#
-# The Core Agent IPC endpoint is a literal loopback address (`https://127.0.0.1:<cmd_port>`),
-# so ADP should not need to load `/etc/resolv.conf` just to register with the Core Agent or
-# receive its initial configuration. This test clears the resolver config at container startup to
-# reproduce hosts where Hickory cannot load system DNS configuration.
-#
-# The test currently runs ADP in standalone mode until converged OTLP proxy endpoint ownership is
-# configurable; see the standalone-mode env comment below.
-
 type: integration
 name: "adp-ipc-no-dns"
 description: "Verifies ADP can start when /etc/resolv.conf has no nameservers"
@@ -35,17 +25,17 @@ container:
   exposed_ports:
     - "58125/udp"
 
-procedure:
+assertions:
   - parallel:
-      - assertion: process_stable_for
+      - type: process_stable_for
         duration: 10s
-      - assertion: log_contains
+      - type: log_contains
         pattern: "Topology healthy"
         timeout: 60s
-      - assertion: log_not_contains
+      - type: log_not_contains
         pattern: "Failed to load system DNS configuration when creating DNS resolver for HTTP client"
         during: 10s
-      - assertion: log_not_contains
+      - type: log_not_contains
         pattern: "panic|PANIC"
         regex: true
         during: 10s
