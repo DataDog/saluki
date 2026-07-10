@@ -63,7 +63,7 @@ impl Querier {
     }
 }
 
-/// Returns the first "Rss:" value (converted to bytes) found by the scanner, or `None` if there is none.
+/// Returns the first `Rss:` value (converted to bytes) found by the scanner, or `None` if there is none.
 ///
 /// This is the `smaps_rollup` strategy: the file is pre-aggregated, so the first matching line is the total RSS.
 fn first_rss_value<T: Read>(scanner: &mut Scanner<T>) -> Option<usize> {
@@ -77,9 +77,9 @@ fn first_rss_value<T: Read>(scanner: &mut Scanner<T>) -> Option<usize> {
     None
 }
 
-/// Returns the sum of every "Rss:" value (converted to bytes) found by the scanner, or `None` if the total is zero.
+/// Returns the sum of every `Rss:` value (converted to bytes) found by the scanner, or `None` if the total is zero.
 ///
-/// This is the `smaps` strategy: each memory mapping contributes its own "Rss:" line, and the process RSS is their sum.
+/// This is the `smaps` strategy: each memory mapping contributes its own `Rss:` line, and the process RSS is their sum.
 fn sum_rss_values<T: Read>(scanner: &mut Scanner<T>) -> Option<usize> {
     let mut total_rss_bytes = 0;
     while let Ok(Some(raw_rss_line)) = scanner.next_matching_line(RSS_LINE_PREFIX) {

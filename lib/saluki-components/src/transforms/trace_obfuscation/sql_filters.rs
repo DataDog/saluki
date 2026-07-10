@@ -335,3 +335,54 @@ fn replace_digits_bytes(b: &[u8]) -> Vec<u8> {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_finder_collects_deduplicated_table_names() {
+        // With table-name collection enabled, an identifier immediately following FROM/JOIN/UPDATE/INTO is tagged as a
+        // `TableName`, recorded once (deduplicated), and joined into a comma-separated list in first-seen order.
+        let config = SqlObfuscationConfig {
+            table_names: true,
+            ..Default::default()
+        };
+        let mut filter = MetadataFinderFilter::new(&config);
+
+        let (kind, _) = filter
+            .filter(TokenKind::ID, TokenKind::From, b"users", b"FROM")
+            .expect("filtering a table name should succeed");
+        assert_eq!(kind, TokenKind::TableName);
+
+        filter
+            .filter(TokenKind::ID, TokenKind::Join, b"orders", b"JOIN")
+            .expect("join table should be collected");
+
+        // A repeat of an already-seen table is not stored twice.
+        filter
+            .filter(TokenKind::ID, TokenKind::From, b"users", b"FROM")
+            .expect("duplicate table should be ignored");
+
+        // A token that does not follow a table-introducing keyword is passed through unchanged and not collected.
+        let (kind, _) = filter
+            .filter(TokenKind::ID, TokenKind::Select, b"id", b"SELECT")
+            .expect("non-table token should pass through");
+        assert_eq!(kind, TokenKind::ID);
+
+        assert_eq!(filter.results().tables_csv, "users,orders");
+    }
+
+    #[test]
+    fn metadata_finder_collects_nothing_when_disabled() {
+        // Table-name collection is off in the default config, so no names are recorded even after FROM.
+        let config = SqlObfuscationConfig::default();
+        let mut filter = MetadataFinderFilter::new(&config);
+
+        let (kind, _) = filter
+            .filter(TokenKind::ID, TokenKind::From, b"users", b"FROM")
+            .expect("token should pass through");
+        assert_eq!(kind, TokenKind::ID);
+        assert_eq!(filter.results().tables_csv, "");
+    }
+}
