@@ -982,61 +982,48 @@ mod tests {
     }
 
     #[test]
-    fn deser_additional_endpoints_json_direct_mapping() {
-        let raw_input = r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#;
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
-
-        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_json_multiple_api_keys() {
-        let raw_input = r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#;
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
-
-        let expected = vec![
+    fn deser_additional_endpoints_accepts_json_string_and_native_yaml_forms() {
+        // `AdditionalEndpoints` accepts either a JSON-encoded string (what the Core Agent emits) or a
+        // native YAML mapping, and each endpoint may map to a single API key or a list of keys.
+        let single = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
+        let multiple = vec![
             "app.datadoghq.com:fake-api-key-1a",
             "app.datadoghq.com:fake-api-key-1b",
             "app.datadoghq.eu:fake-api-key-2a",
             "app.datadoghq.eu:fake-api-key-2b",
         ];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_direct_mapping() {
-        let raw_input = "app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2";
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
-
-        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_multiple_api_keys() {
-        let raw_input = "app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b";
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
-
-        let expected = vec![
-            "app.datadoghq.com:fake-api-key-1a",
-            "app.datadoghq.com:fake-api-key-1b",
-            "app.datadoghq.eu:fake-api-key-2a",
-            "app.datadoghq.eu:fake-api-key-2b",
+        let cases: [(&str, &str, &[&str]); 4] = [
+            (
+                "JSON string, single key per endpoint",
+                r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#,
+                &single,
+            ),
+            (
+                "JSON string, multiple keys per endpoint",
+                r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#,
+                &multiple,
+            ),
+            (
+                "native YAML mapping, single key per endpoint",
+                "app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2",
+                &single,
+            ),
+            (
+                "native YAML mapping, multiple keys per endpoint",
+                "app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b",
+                &multiple,
+            ),
         ];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
+
+        for (name, raw_input, expected) in cases {
+            let result =
+                serde_yaml::from_str::<AdditionalEndpoints>(raw_input).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(
+                expected,
+                additional_endpoints_to_sorted_strings(&result).as_slice(),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1185,43 +1172,42 @@ mod tests {
     }
 
     #[test]
-    fn calculate_api_endpoint_no_override_no_site() {
+    fn calculate_resolved_endpoint_resolves_override_and_site() {
+        // A `dd_url` override is used verbatim (dogpound.io is not a Datadog domain, so it is not
+        // version-prefixed) and always wins over `site`; with no override, the endpoint is derived from
+        // `site` (falling back to the default US site when empty) and gains the data plane version prefix.
         let prefix = get_data_plane_version_prefix();
-        let expected_endpoint = format!("https://{}.{}/", prefix, DEFAULT_SITE);
+        let cases = [
+            (
+                "no override, no site falls back to default site",
+                None,
+                "",
+                format!("https://{prefix}.{DEFAULT_SITE}/"),
+            ),
+            (
+                "no override, custom site",
+                None,
+                "us3.datadoghq.com",
+                format!("https://{prefix}.us3.datadoghq.com/"),
+            ),
+            (
+                "override, no site uses override verbatim",
+                Some("https://dogpound.io/"),
+                "",
+                "https://dogpound.io/".to_string(),
+            ),
+            (
+                "override wins over site",
+                Some("https://dogpound.io/"),
+                "us3.datadoghq.com",
+                "https://dogpound.io/".to_string(),
+            ),
+        ];
 
-        let resolved = calculate_resolved_endpoint(None, "", "").expect("error calculating default API endpoint");
-        assert_eq!(expected_endpoint, resolved.endpoint().to_string());
-    }
-
-    #[test]
-    fn calculate_api_endpoint_no_override() {
-        let site = "us3.datadoghq.com";
-        let prefix = get_data_plane_version_prefix();
-        let expected_endpoint = format!("https://{}.{}/", prefix, site);
-
-        let resolved =
-            calculate_resolved_endpoint(None, "us3.datadoghq.com", "").expect("error calculating custom API endpoint");
-        assert_eq!(expected_endpoint, resolved.endpoint().to_string());
-    }
-
-    #[test]
-    fn calculate_api_endpoint_no_site() {
-        let override_url = "https://dogpound.io/";
-        let expected_endpoint = override_url;
-
-        let resolved =
-            calculate_resolved_endpoint(Some(override_url), "", "").expect("error calculating override API endpoint");
-        assert_eq!(expected_endpoint, resolved.endpoint().to_string());
-    }
-
-    #[test]
-    fn calculate_api_endpoint_override_and_site() {
-        let override_url = "https://dogpound.io/";
-        let expected_endpoint = override_url;
-
-        let resolved = calculate_resolved_endpoint(Some(override_url), "us3.datadoghq.com", "")
-            .expect("error calculating override API endpoint");
-        assert_eq!(expected_endpoint, resolved.endpoint().to_string());
+        for (name, override_url, site, expected_endpoint) in cases {
+            let resolved = calculate_resolved_endpoint(override_url, site, "").expect(name);
+            assert_eq!(expected_endpoint, resolved.endpoint().to_string(), "{name}");
+        }
     }
 
     #[test]
@@ -1239,6 +1225,112 @@ mod tests {
         assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_sketches())));
         assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_sketches())));
         assert!(!settings.should_receive_validation_headers(None));
+    }
+
+    #[test]
+    fn should_receive_payload_covers_all_documented_branches() {
+        // Walks every branch enumerated in `should_receive_payload`'s doc comment:
+        // - V2 series: accept if series V3 is disabled OR series validation mode is enabled
+        // - V2 sketches: accept if sketches V3 is disabled OR sketches validation mode is enabled
+        // - V3 series: accept if series V3 is enabled
+        // - V3 sketches: accept if sketches V3 is enabled
+        // - Non-metrics payloads (None): always accept
+        let cases: [(&str, EndpointV3Settings, Option<MetricsPayloadInfo>, bool); 11] = [
+            (
+                "v2 series accepted when series v3 disabled",
+                EndpointV3Settings::disabled(),
+                Some(MetricsPayloadInfo::v2_series()),
+                true,
+            ),
+            (
+                "v2 series rejected when series v3 enabled without validation",
+                EndpointV3Settings {
+                    use_v3_series: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v2_series()),
+                false,
+            ),
+            (
+                "v2 series accepted when series validation mode duplicates to v2",
+                EndpointV3Settings {
+                    use_v3_series: true,
+                    series_validation_mode: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v2_series()),
+                true,
+            ),
+            (
+                "v2 sketches accepted when sketches v3 disabled",
+                EndpointV3Settings::disabled(),
+                Some(MetricsPayloadInfo::v2_sketches()),
+                true,
+            ),
+            (
+                "v2 sketches rejected when sketches v3 enabled without validation",
+                EndpointV3Settings {
+                    use_v3_sketches: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v2_sketches()),
+                false,
+            ),
+            (
+                "v2 sketches accepted when sketches validation mode duplicates to v2",
+                EndpointV3Settings {
+                    use_v3_sketches: true,
+                    sketches_validation_mode: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v2_sketches()),
+                true,
+            ),
+            (
+                "v3 series accepted when series v3 enabled",
+                EndpointV3Settings {
+                    use_v3_series: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v3_series()),
+                true,
+            ),
+            (
+                "v3 series rejected when series v3 disabled",
+                EndpointV3Settings::disabled(),
+                Some(MetricsPayloadInfo::v3_series()),
+                false,
+            ),
+            (
+                "v3 sketches accepted when sketches v3 enabled",
+                EndpointV3Settings {
+                    use_v3_sketches: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v3_sketches()),
+                true,
+            ),
+            (
+                "v3 sketches rejected when sketches v3 disabled",
+                EndpointV3Settings::disabled(),
+                Some(MetricsPayloadInfo::v3_sketches()),
+                false,
+            ),
+            (
+                "non-metrics payload always accepted",
+                EndpointV3Settings {
+                    use_v3_series: true,
+                    use_v3_sketches: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                None,
+                true,
+            ),
+        ];
+
+        for (name, settings, payload_info, expected) in cases {
+            assert_eq!(settings.should_receive_payload(payload_info), expected, "{name}");
+        }
     }
 
     #[test]
