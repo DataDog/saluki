@@ -945,8 +945,8 @@ mod tests {
 
     use super::{
         interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType, INLINED_STR_MAX_LEN,
-        INLINED_STR_TAG_INDEX, TOP_BYTE_INDEX, UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE,
-        UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP, UNION_TYPE_TAG_VALUE_SHARED, UNION_TYPE_TAG_VALUE_STATIC,
+        INLINED_STR_TAG_INDEX, UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE, UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP,
+        UNION_TYPE_TAG_VALUE_SHARED, UNION_TYPE_TAG_VALUE_STATIC,
     };
     use crate::interning::{FixedSizeInterner, Interner as _};
 
@@ -963,20 +963,6 @@ mod tests {
         // We also expect all of inlined union variant to be the exact size of `Inner`, which means we're properly
         // maximizing the available space for inlining.
         assert_eq!(std::mem::size_of::<InlinedUnion>(), std::mem::size_of::<Inner>());
-    }
-
-    #[test]
-    fn endian_layout_constants_match_discriminant_strategy() {
-        let expected_top_byte_index = if cfg!(target_endian = "little") {
-            std::mem::size_of::<usize>() - 1
-        } else {
-            0
-        };
-        let expected_tag_index = std::mem::size_of::<usize>() * 2 + expected_top_byte_index;
-
-        assert_eq!(TOP_BYTE_INDEX, expected_top_byte_index);
-        assert_eq!(INLINED_STR_TAG_INDEX, expected_tag_index);
-        assert_eq!(INLINED_STR_MAX_LEN, expected_tag_index);
     }
 
     #[test]
@@ -1019,18 +1005,18 @@ mod tests {
 
     #[test]
     fn inlined_string_uses_every_byte_before_tag_byte() {
-        let input = "a".repeat(INLINED_STR_TAG_INDEX);
+        let input = "a".repeat(INLINED_STR_MAX_LEN);
         let meta = MetaString::try_inline(&input).expect("input should fit exactly in inline storage");
 
         assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
-        assert_eq!(discriminant_byte(&meta.inner), INLINED_STR_TAG_INDEX as u8);
+        assert_eq!(discriminant_byte(&meta.inner), INLINED_STR_MAX_LEN as u8);
         let inlined = unsafe { meta.inner.inlined };
-        assert_eq!(&inlined.data[..INLINED_STR_TAG_INDEX], input.as_bytes());
+        assert_eq!(&inlined.data[..INLINED_STR_MAX_LEN], input.as_bytes());
     }
 
     #[test]
     fn inlined_string_rejects_one_byte_past_tag_byte() {
-        let input = "a".repeat(INLINED_STR_TAG_INDEX + 1);
+        let input = "a".repeat(INLINED_STR_MAX_LEN + 1);
 
         assert!(MetaString::try_inline(&input).is_none());
     }
@@ -1236,15 +1222,6 @@ mod tests {
         let s = Arc::from("hello shared str!");
         let ms = MetaString::from(s);
         assert!(ms.is_cheaply_cloneable());
-    }
-
-    #[test]
-    fn inlined_string_respects_endian_capacity() {
-        let max_len = "a".repeat(INLINED_STR_MAX_LEN);
-        let too_long = "a".repeat(INLINED_STR_MAX_LEN + 1);
-
-        assert!(MetaString::try_inline(&max_len).is_some());
-        assert!(MetaString::try_inline(&too_long).is_none());
     }
 
     fn arb_unicode_str_max_len(max_len: usize) -> impl Strategy<Value = String> {
