@@ -9,6 +9,9 @@ pub(crate) mod helpers;
 pub(crate) mod map;
 pub use self::map::GenericMapInterner;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// A string interner.
 pub trait Interner {
     /// Returns `true` if the interner contains no strings.

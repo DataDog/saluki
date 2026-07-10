@@ -5137,6 +5137,7 @@ dependencies = [
  "protobuf",
  "saluki-antithesis",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -64,3 +64,65 @@ pub trait IndexMapping: Clone + Send + Sync {
     /// Converts this mapping to a protobuf `IndexMapping`.
     fn to_proto(&self) -> ProtoIndexMapping;
 }
+
+#[cfg(test)]
+pub(crate) mod conformance {
+    use super::IndexMapping;
+
+    /// Asserts the shared [`IndexMapping`] contract that every mapping implementation must satisfy.
+    ///
+    /// Rather than hand-duplicate the index/value round-trip, bound-ordering, and protobuf self-validation checks
+    /// across each sibling mapping's tests, both implementations call this helper. Constructor-specific behavior
+    /// (accuracy-bound validation, zero-sizedness, cross-implementation agreement) is still tested inline.
+    ///
+    /// `expected_relative_accuracy` is the accuracy the mapping is configured for; it's checked both directly and for
+    /// internal consistency with the mapping's gamma (`alpha = (gamma - 1) / (gamma + 1)`).
+    #[track_caller]
+    pub(crate) fn assert_index_mapping_conformance<M: IndexMapping>(mapping: &M, expected_relative_accuracy: f64) {
+        assert!(
+            (mapping.relative_accuracy() - expected_relative_accuracy).abs() < 1e-10,
+            "relative accuracy {} should match expected {}",
+            mapping.relative_accuracy(),
+            expected_relative_accuracy
+        );
+
+        let gamma = mapping.gamma();
+        let derived_accuracy = (gamma - 1.0) / (gamma + 1.0);
+        assert!(
+            (mapping.relative_accuracy() - derived_accuracy).abs() < 1e-10,
+            "relative accuracy {} should be consistent with gamma {} (derived {})",
+            mapping.relative_accuracy(),
+            gamma,
+            derived_accuracy
+        );
+
+        for i in -100..100 {
+            // The representative value must sit strictly above the bin's lower bound.
+            let lower = mapping.lower_bound(i);
+            let value = mapping.value(i);
+            assert!(
+                lower < value,
+                "lower bound {} should be < value {} at index {}",
+                lower,
+                value,
+                i
+            );
+
+            // Mapping an index to its value and back must recover the index (within one bin, due to floating-point).
+            let recovered = mapping.index(value);
+            assert!(
+                (recovered - i).abs() <= 1,
+                "index {} -> value {} -> index {} should round-trip within one bin",
+                i,
+                value,
+                recovered
+            );
+        }
+
+        // A mapping must accept its own protobuf representation.
+        assert!(
+            mapping.validate_proto_mapping(&mapping.to_proto()).is_ok(),
+            "mapping should validate its own protobuf representation"
+        );
+    }
+}

@@ -134,56 +134,19 @@ impl Default for SparseStore {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_add_single() {
-        let mut store = SparseStore::new();
-        store.add(5, 1);
+    // Shared `Store` trait conformance suite (add/rank/merge/clear/proto round-trip/etc.).
+    crate::canonical::store::store_conformance_tests!(SparseStore);
 
-        assert_eq!(store.total_count(), 1);
-        assert_eq!(store.min_index(), Some(5));
-        assert_eq!(store.max_index(), Some(5));
-    }
-
+    // `SparseStore`'s defining property -- only allocating map entries for occupied bins -- isn't observable through
+    // the `Store` trait, so it's asserted directly here against the private `bins` map.
     #[test]
-    fn test_add_widely_scattered() {
+    fn only_allocates_map_entries_for_occupied_bins() {
         let mut store = SparseStore::new();
         store.add(-1000, 1);
         store.add(0, 2);
         store.add(1000, 3);
 
-        assert_eq!(store.total_count(), 6);
-        assert_eq!(store.min_index(), Some(-1000));
-        assert_eq!(store.max_index(), Some(1000));
-        // Only 3 entries in the map, not 2001
+        // Only 3 entries in the map, not the 2001 that a dense store would span.
         assert_eq!(store.bins.len(), 3);
-    }
-
-    #[test]
-    fn test_key_at_rank() {
-        let mut store = SparseStore::new();
-        store.add(-10, 2);
-        store.add(10, 3);
-
-        assert_eq!(store.key_at_rank(0), Some(-10));
-        assert_eq!(store.key_at_rank(1), Some(-10));
-        assert_eq!(store.key_at_rank(2), Some(10));
-        assert_eq!(store.key_at_rank(4), Some(10));
-        assert_eq!(store.key_at_rank(5), None);
-    }
-
-    #[test]
-    fn test_merge() {
-        let mut store1 = SparseStore::new();
-        store1.add(5, 2);
-
-        let mut store2 = SparseStore::new();
-        store2.add(5, 3);
-        store2.add(100, 1);
-
-        store1.merge(&store2);
-
-        assert_eq!(store1.total_count(), 6);
-        assert_eq!(store1.bins.get(&5), Some(&5));
-        assert_eq!(store1.bins.get(&100), Some(&1));
     }
 }
