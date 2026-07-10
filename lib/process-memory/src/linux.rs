@@ -31,35 +31,14 @@ impl Querier {
                 // As smaps_rollup is a pre-aggregated version of smaps, there's only one "Rss:" line that we need to find, so use
                 // the same scanner-based approach as we do for smaps, but just take the first matching line we find.
                 scanner.reset_with_path(SMAPS_ROLLUP_PATH).ok()?;
-
-                while let Ok(Some(raw_rss_line)) = scanner.next_matching_line(RSS_LINE_PREFIX) {
-                    let raw_rss_value = skip_to_line_value(raw_rss_line)?;
-                    if let Some(rss_bytes) = parse_kb_value_as_bytes(raw_rss_value) {
-                        return Some(rss_bytes);
-                    }
-                }
-
-                None
+                first_rss_value(scanner)
             }
             StatSource::Smaps(scanner) => {
                 // Scan all lines in smaps, looking for lines that start with "Rss:". Each of these lines will contain the resident
                 // set size of a particular memory mapping. We simply need to find all of these lines and aggregate their value to
                 // get the RSS for the process.
                 scanner.reset_with_path(SMAPS_PATH).ok()?;
-
-                let mut total_rss_bytes = 0;
-                while let Ok(Some(raw_rss_line)) = scanner.next_matching_line(RSS_LINE_PREFIX) {
-                    let raw_rss_value = skip_to_line_value(raw_rss_line)?;
-                    if let Some(rss_bytes) = parse_kb_value_as_bytes(raw_rss_value) {
-                        total_rss_bytes += rss_bytes;
-                    }
-                }
-
-                if total_rss_bytes > 0 {
-                    Some(total_rss_bytes)
-                } else {
-                    None
-                }
+                sum_rss_values(scanner)
             }
             StatSource::Statm(maybe_page_size) => {
                 let page_size = maybe_page_size.as_ref().copied()?;
@@ -78,15 +57,56 @@ impl Querier {
                     return None;
                 }
 
-                // Resident set size is the second field, so we need to skip to it.
-                let raw_rss_field = buf.split(|b| *b == b' ').nth(1)?;
-
-                // We need to parse the field as an integer, and then multiply it by the page size to get the value in bytes.
-                let rss_pages = simdutf8::basic::from_utf8(raw_rss_field).ok()?.parse::<usize>().ok()?;
-                Some(rss_pages * page_size)
+                parse_statm_rss_bytes(&buf, page_size)
             }
         }
     }
+}
+
+/// Returns the first "Rss:" value (converted to bytes) found by the scanner, or `None` if there is none.
+///
+/// This is the `smaps_rollup` strategy: the file is pre-aggregated, so the first matching line is the total RSS.
+fn first_rss_value<T: Read>(scanner: &mut Scanner<T>) -> Option<usize> {
+    while let Ok(Some(raw_rss_line)) = scanner.next_matching_line(RSS_LINE_PREFIX) {
+        let raw_rss_value = skip_to_line_value(raw_rss_line)?;
+        if let Some(rss_bytes) = parse_kb_value_as_bytes(raw_rss_value) {
+            return Some(rss_bytes);
+        }
+    }
+
+    None
+}
+
+/// Returns the sum of every "Rss:" value (converted to bytes) found by the scanner, or `None` if the total is zero.
+///
+/// This is the `smaps` strategy: each memory mapping contributes its own "Rss:" line, and the process RSS is their sum.
+fn sum_rss_values<T: Read>(scanner: &mut Scanner<T>) -> Option<usize> {
+    let mut total_rss_bytes = 0;
+    while let Ok(Some(raw_rss_line)) = scanner.next_matching_line(RSS_LINE_PREFIX) {
+        let raw_rss_value = skip_to_line_value(raw_rss_line)?;
+        if let Some(rss_bytes) = parse_kb_value_as_bytes(raw_rss_value) {
+            total_rss_bytes += rss_bytes;
+        }
+    }
+
+    if total_rss_bytes > 0 {
+        Some(total_rss_bytes)
+    } else {
+        None
+    }
+}
+
+/// Parses the resident set size (in bytes) out of the contents of a `statm` file.
+///
+/// The resident set size is the second whitespace-delimited field, expressed in pages, so it is multiplied by the page
+/// size to get a byte count. `None` is returned if the field is missing or non-numeric.
+fn parse_statm_rss_bytes(raw: &[u8], page_size: usize) -> Option<usize> {
+    // Resident set size is the second field, so we need to skip to it.
+    let raw_rss_field = raw.split(|b| *b == b' ').nth(1)?;
+
+    // We need to parse the field as an integer, and then multiply it by the page size to get the value in bytes.
+    let rss_pages = simdutf8::basic::from_utf8(raw_rss_field).ok()?.parse::<usize>().ok()?;
+    Some(rss_pages * page_size)
 }
 
 impl Default for Querier {
@@ -98,12 +118,24 @@ impl Default for Querier {
 }
 
 fn determine_stat_source() -> StatSource {
-    if fs::metadata(SMAPS_ROLLUP_PATH).is_ok() {
+    select_stat_source(
+        fs::metadata(SMAPS_ROLLUP_PATH).is_ok(),
+        fs::metadata(SMAPS_PATH).is_ok(),
+        page_size(),
+    )
+}
+
+/// Selects the RSS data source based on which procfs files are available.
+///
+/// The preference order (documented at the crate level) is `smaps_rollup`, then `smaps`, then `statm`. Splitting the
+/// availability checks from the selection logic keeps the fallback order testable without touching the real filesystem.
+fn select_stat_source(has_smaps_rollup: bool, has_smaps: bool, page_size: Option<usize>) -> StatSource {
+    if has_smaps_rollup {
         StatSource::SmapsRollup(Scanner::new())
-    } else if fs::metadata(SMAPS_PATH).is_ok() {
+    } else if has_smaps {
         StatSource::Smaps(Scanner::new())
     } else {
-        StatSource::Statm(page_size())
+        StatSource::Statm(page_size)
     }
 }
 
@@ -352,5 +384,90 @@ mod tests {
             Some(b"Rss: 1234 kB".as_ref())
         );
         assert_eq!(scanner.next_matching_line(prefix).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_kb_value_as_bytes_converts_kilobytes_to_bytes() {
+        // The procfs values are in kibibytes, so they are multiplied by 1024 to get bytes.
+        assert_eq!(super::parse_kb_value_as_bytes(b"1234 kB"), Some(1234 * 1024));
+        assert_eq!(super::parse_kb_value_as_bytes(b"0 kB"), Some(0));
+
+        // Without a trailing space there is no delimiter, so no value can be extracted.
+        assert_eq!(super::parse_kb_value_as_bytes(b"1234"), None);
+
+        // A non-numeric value fails to parse.
+        assert_eq!(super::parse_kb_value_as_bytes(b"abc kB"), None);
+    }
+
+    #[test]
+    fn smaps_rollup_uses_the_first_rss_line() {
+        // smaps_rollup is pre-aggregated: the first "Rss:" line is the whole-process RSS, converted from kB to bytes.
+        let mut scanner = super::Scanner::new();
+        scanner.reset(b"Pss: 10 kB\nRss: 512 kB\nRss: 999 kB\n".as_slice());
+        assert_eq!(super::first_rss_value(&mut scanner), Some(512 * 1024));
+    }
+
+    #[test]
+    fn smaps_sums_every_rss_line() {
+        // smaps has one "Rss:" line per mapping, so the process RSS is the sum of them all (in bytes).
+        let mut scanner = super::Scanner::new();
+        scanner.reset(b"Rss: 4 kB\nPss: 100 kB\nRss: 8 kB\nRss: 16 kB\n".as_slice());
+        assert_eq!(super::sum_rss_values(&mut scanner), Some((4 + 8 + 16) * 1024));
+    }
+
+    #[test]
+    fn smaps_strategies_return_none_when_no_rss_lines_present() {
+        // The documented `None`-return path: nothing matched, so neither strategy can report a value.
+        let mut scanner = super::Scanner::new();
+        scanner.reset(b"Pss: 4 kB\nShared_Clean: 8 kB\n".as_slice());
+        assert_eq!(super::first_rss_value(&mut scanner), None);
+
+        let mut scanner = super::Scanner::new();
+        scanner.reset(b"Pss: 4 kB\nShared_Clean: 8 kB\n".as_slice());
+        assert_eq!(super::sum_rss_values(&mut scanner), None);
+    }
+
+    #[test]
+    fn parse_statm_rss_bytes_multiplies_resident_pages_by_page_size() {
+        // statm fields are "size resident shared text lib data dt"; resident (the second field) is in pages.
+        assert_eq!(
+            super::parse_statm_rss_bytes(b"1000 42 5 1 0 3 0", 4096),
+            Some(42 * 4096)
+        );
+
+        // A missing resident field, or a non-numeric one, yields `None`.
+        assert_eq!(super::parse_statm_rss_bytes(b"1000", 4096), None);
+        assert_eq!(super::parse_statm_rss_bytes(b"1000 xyz", 4096), None);
+    }
+
+    #[test]
+    fn stat_source_selection_follows_documented_fallback_order() {
+        use super::{select_stat_source, StatSource};
+
+        // smaps_rollup is preferred whenever it is available, regardless of the others.
+        assert!(matches!(
+            select_stat_source(true, true, Some(4096)),
+            StatSource::SmapsRollup(_)
+        ));
+        assert!(matches!(
+            select_stat_source(true, false, None),
+            StatSource::SmapsRollup(_)
+        ));
+
+        // smaps is used only when smaps_rollup is unavailable.
+        assert!(matches!(
+            select_stat_source(false, true, Some(4096)),
+            StatSource::Smaps(_)
+        ));
+
+        // statm is the final fallback, carrying whatever page size was resolved (including `None`).
+        assert!(matches!(
+            select_stat_source(false, false, Some(4096)),
+            StatSource::Statm(Some(4096))
+        ));
+        assert!(matches!(
+            select_stat_source(false, false, None),
+            StatSource::Statm(None)
+        ));
     }
 }

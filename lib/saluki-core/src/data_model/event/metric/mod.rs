@@ -217,3 +217,47 @@ impl TryFrom<f64> for SampleRate {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SampleRate;
+
+    #[test]
+    fn try_from_accepts_the_inclusive_unit_interval() {
+        // The documented valid range is 0.0..=1.0 inclusive, so both endpoints must parse.
+        assert!(SampleRate::try_from(0.0).is_ok());
+        assert!(SampleRate::try_from(0.5).is_ok());
+        assert!(SampleRate::try_from(1.0).is_ok());
+    }
+
+    #[test]
+    fn try_from_rejects_values_outside_the_unit_interval() {
+        assert!(SampleRate::try_from(-0.1).is_err());
+        assert!(SampleRate::try_from(1.1).is_err());
+    }
+
+    #[test]
+    fn weight_is_the_reciprocal_of_the_rate() {
+        // The doc's worked example: a rate of 0.25 means the value stands in for 4 samples (weight 4).
+        let rate = SampleRate::try_from(0.25).unwrap();
+        assert_eq!(rate.rate(), 0.25);
+        assert_eq!(rate.weight(), 4);
+        assert_eq!(rate.raw_weight(), 4.0);
+    }
+
+    #[test]
+    fn integer_weight_truncates_non_integer_reciprocals() {
+        // `weight()` truncates to an integer: 1.0 / 0.3 == 3.333..., which becomes 3. `raw_weight()` keeps the float.
+        let rate = SampleRate::try_from(0.3).unwrap();
+        assert_eq!(rate.weight(), 3);
+        assert!((rate.raw_weight() - (1.0 / 0.3)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn unsampled_has_unit_rate_and_weight() {
+        let rate = SampleRate::unsampled();
+        assert_eq!(rate.rate(), 1.0);
+        assert_eq!(rate.weight(), 1);
+        assert_eq!(rate.raw_weight(), 1.0);
+    }
+}
