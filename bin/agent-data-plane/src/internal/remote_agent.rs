@@ -38,7 +38,7 @@ use tonic::{server::NamedService, Status};
 use tracing::{debug, error, info, warn};
 
 use crate::config::DataPlaneConfiguration;
-use crate::state::metrics::get_datadog_agent_remappings;
+use crate::state::metrics::{emitter_tag, get_datadog_agent_remappings};
 
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const REFRESH_FAILED_RETRY_INTERVAL: Duration = Duration::from_secs(5);
@@ -125,7 +125,11 @@ impl RemoteAgentBootstrap {
         RemoteAgentImpl {
             started: Utc::now(),
             internal_metrics: self.internal_metrics.clone(),
-            processor: Mutex::new(TelemetryProcessor::new().with_remapper_rules(get_datadog_agent_remappings())),
+            processor: Mutex::new(
+                TelemetryProcessor::new()
+                    .with_remapper_rules(get_datadog_agent_remappings())
+                    .with_injected_tags([emitter_tag()]),
+            ),
             session_id: self.session_id.clone(),
             dataspace: Arc::clone(&self.dataspace),
         }

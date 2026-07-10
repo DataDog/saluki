@@ -15,7 +15,7 @@ use saluki_core::{
 use saluki_error::generic_error;
 use tokio::sync::Mutex;
 
-use crate::state::metrics::get_compat_remappings;
+use crate::state::metrics::{emitter_tag, get_compat_remappings};
 
 /// State shared by the telemetry API routes.
 #[derive(Clone)]
@@ -38,7 +38,9 @@ impl InternalTelemetryAPIHandler {
                 metrics,
                 raw: Arc::new(Mutex::new(TelemetryProcessor::new())),
                 compat: Arc::new(Mutex::new(
-                    TelemetryProcessor::new().with_remapper_rules(get_compat_remappings()),
+                    TelemetryProcessor::new()
+                        .with_remapper_rules(get_compat_remappings())
+                        .with_injected_tags([emitter_tag()]),
                 )),
             },
         }

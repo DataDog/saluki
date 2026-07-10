@@ -1,5 +1,5 @@
 mod rules;
-pub use self::rules::{get_compat_remappings, get_datadog_agent_remappings};
+pub use self::rules::{emitter_tag, get_compat_remappings, get_datadog_agent_remappings};
 
 #[cfg(test)]
 mod tests {
@@ -22,6 +22,75 @@ mod tests {
             &state,
         );
         TelemetryProcessor::new().with_remapper_rules(rules).process(&state)
+    }
+
+    fn render_with_emitter(rules: Vec<RemapperRule>, metrics: Vec<Event>) -> String {
+        let processor = AggregatedMetricsProcessor;
+        let state = processor.build_initial_state();
+        processor.process(
+            MetricsSnapshot {
+                upserts: metrics,
+                evictions: Vec::new(),
+            },
+            &state,
+        );
+        TelemetryProcessor::new()
+            .with_remapper_rules(rules)
+            .with_injected_tags([emitter_tag()])
+            .process(&state)
+    }
+
+    #[test]
+    fn test_emitter_tag_matches_agent_sanitization() {
+        // The Datadog Agent sanitizes the display name by lowercasing and replacing spaces with
+        // hyphens; the emitter tag must match so it lines up with the Agent-side fallback.
+        let expected = format!(
+            "emitter:{}",
+            saluki_metadata::get_app_details()
+                .full_name()
+                .to_lowercase()
+                .replace(' ', "-")
+        );
+        assert_eq!(emitter_tag(), expected);
+        assert!(!emitter_tag().contains(' '));
+    }
+
+    #[test]
+    fn test_coat_telemetry_carries_emitter_tag() {
+        let emitter = emitter_tag();
+        let label = emitter.split_once(':').map(|(_, v)| v).expect("emitter tag is key:value");
+
+        // RAR (Remote Agent Registry) telemetry.
+        let output = render_with_emitter(
+            get_datadog_agent_remappings(),
+            vec![Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    "adp.component_data_points_sent_total",
+                    &["domain:https://api.datadoghq.com"],
+                ),
+                12.0,
+            ))],
+        );
+        assert!(
+            output.contains(&format!("emitter=\"{label}\"")),
+            "expected emitter label in RAR output, got:\n{output}"
+        );
+
+        // Compat telemetry.
+        let output = render_with_emitter(
+            get_compat_remappings(),
+            vec![Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.component_events_received_total",
+                    &["component_id:dsd_in", "message_type:metrics"],
+                ),
+                11.0,
+            ))],
+        );
+        assert!(
+            output.contains(&format!("emitter=\"{label}\"")),
+            "expected emitter label in compat output, got:\n{output}"
+        );
     }
 
     #[test]

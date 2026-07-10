@@ -23,6 +23,7 @@ use super::remapper::RemapperRule;
 pub struct TelemetryProcessor {
     renderer: PrometheusRenderer,
     rules: Vec<RemapperRule>,
+    injected_tags: Vec<MetaString>,
 }
 
 impl TelemetryProcessor {
@@ -33,6 +34,7 @@ impl TelemetryProcessor {
         Self {
             renderer: PrometheusRenderer::new(),
             rules: Vec::new(),
+            injected_tags: Vec::new(),
         }
     }
 
@@ -46,20 +48,42 @@ impl TelemetryProcessor {
         self
     }
 
+    /// Configures a set of tags injected into every rendered series.
+    ///
+    /// Each tag must be in `key:value` form; bare tags (without a `:`) are ignored during
+    /// rendering. Injected tags are appended to each metric's tag set at render time, after
+    /// grouping and deduplication, so they do not affect how series are merged.
+    pub fn with_injected_tags<I, T>(mut self, tags: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<MetaString>,
+    {
+        self.injected_tags = tags.into_iter().map(Into::into).collect();
+        self
+    }
+
     /// Processes the given state and returns the resulting Prometheus exposition payload.
     pub fn process(&mut self, state: &AggregatedMetricsState) -> String {
         self.renderer.clear();
 
-        if self.rules.is_empty() {
-            self.process_all(state);
+        // Borrow fields disjointly so the renderer can be mutated while the rules/injected tags
+        // are read.
+        let Self {
+            renderer,
+            rules,
+            injected_tags,
+        } = self;
+
+        if rules.is_empty() {
+            Self::process_all(renderer, injected_tags, state);
         } else {
-            self.process_remapped(state);
+            Self::process_remapped(renderer, rules, injected_tags, state);
         }
 
         self.renderer.output().to_string()
     }
 
-    fn process_all(&mut self, state: &AggregatedMetricsState) {
+    fn process_all(renderer: &mut PrometheusRenderer, injected_tags: &[MetaString], state: &AggregatedMetricsState) {
         // Group metrics first by name, then by sorted tag set. Duplicate (name, tags) entries are
         // merged so counters sum, gauges take the latest, and histograms merge buckets/sum/count.
         let mut groups: BTreeMap<MetaString, BTreeMap<Vec<MetaString>, AggregatedMetricValue>> = BTreeMap::new();
@@ -76,11 +100,14 @@ impl TelemetryProcessor {
         });
 
         for (name, series) in &groups {
-            render_group(&mut self.renderer, name, None, series);
+            render_group(renderer, name, None, injected_tags, series);
         }
     }
 
-    fn process_remapped(&mut self, state: &AggregatedMetricsState) {
+    fn process_remapped(
+        renderer: &mut PrometheusRenderer, rules: &[RemapperRule], injected_tags: &[MetaString],
+        state: &AggregatedMetricsState,
+    ) {
         // Collect, deduplicate, and group matched metrics by their remapped name and tags.
         //
         // Multiple source metrics can remap to the same (name, tags) identity. We merge those via
@@ -90,7 +117,7 @@ impl TelemetryProcessor {
         let mut help_text: BTreeMap<&'static str, &'static str> = BTreeMap::new();
 
         state.visit_metrics(|context, value| {
-            for rule in &self.rules {
+            for rule in rules {
                 if let Some(mut remapped) = rule.try_match_no_context(context) {
                     remapped.tags.sort();
 
@@ -112,7 +139,7 @@ impl TelemetryProcessor {
         });
 
         for (name, series) in &groups {
-            render_group(&mut self.renderer, name, help_text.get(name).copied(), series);
+            render_group(renderer, name, help_text.get(name).copied(), injected_tags, series);
         }
     }
 }
@@ -124,7 +151,7 @@ impl Default for TelemetryProcessor {
 }
 
 fn render_group(
-    renderer: &mut PrometheusRenderer, name: &str, help_text: Option<&str>,
+    renderer: &mut PrometheusRenderer, name: &str, help_text: Option<&str>, injected_tags: &[MetaString],
     series: &BTreeMap<Vec<MetaString>, AggregatedMetricValue>,
 ) {
     // Determine the metric type from the first series value.
@@ -137,7 +164,9 @@ fn render_group(
 
     match metric_type {
         MetricType::Counter | MetricType::Gauge => {
-            let rendered = series.iter().map(|(tags, value)| (split_tags(tags), value.value()));
+            let rendered = series
+                .iter()
+                .map(|(tags, value)| (split_tags(tags).chain(split_tags(injected_tags)), value.value()));
             renderer.render_scalar_group(name, metric_type, help_text, rendered);
         }
         MetricType::Histogram => {
@@ -145,7 +174,7 @@ fn render_group(
             for (tags, value) in series {
                 if let AggregatedMetricValue::Histogram(histogram) = value {
                     renderer.write_histogram_series(
-                        split_tags(tags),
+                        split_tags(tags).chain(split_tags(injected_tags)),
                         histogram.buckets(),
                         histogram.sum(),
                         histogram.count(),
@@ -259,6 +288,42 @@ mod tests {
         assert!(output.contains("dst__renamed 42"));
         // The unmatched counter must not appear.
         assert!(!output.contains("unmatched"));
+    }
+
+    #[test]
+    fn injects_tags_into_every_series() {
+        let state = process_all(vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.requests_total", &["method:get"]),
+                10.0,
+            )),
+            Event::Metric(Metric::gauge("adp.queue_depth", 5.0)),
+        ]);
+
+        let output = TelemetryProcessor::new()
+            .with_injected_tags(["emitter:agent-data-plane"])
+            .process(&state);
+
+        assert!(output.contains("adp__requests_total{method=\"get\",emitter=\"agent-data-plane\"} 10"));
+        // A series with no original tags should still carry the injected tag.
+        assert!(output.contains("adp__queue_depth{emitter=\"agent-data-plane\"} 5"));
+    }
+
+    #[test]
+    fn injects_tags_into_remapped_series() {
+        let state = process_all(vec![Event::Metric(Metric::counter(
+            Context::from_static_parts("src.matched", &["component_id:x"]),
+            42.0,
+        ))]);
+
+        let rules = vec![RemapperRule::by_name("src.matched", "dst.renamed")];
+
+        let output = TelemetryProcessor::new()
+            .with_remapper_rules(rules)
+            .with_injected_tags(["emitter:agent-data-plane"])
+            .process(&state);
+
+        assert!(output.contains("dst__renamed{emitter=\"agent-data-plane\"} 42"));
     }
 
     #[test]
