@@ -249,7 +249,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/trivial] A module doc comment overstates implemented capability (span-event filtering is documented but
     not implemented, hence untestable) — fix the doc, not the test.
 
-- [ ] **G15 — saluki-io test cleanup: dogstatsd codec/compression/framing + unix-socket credentials/retry** (AU-28/AU-29)
+- [x] **G15 — saluki-io test cleanup: dogstatsd codec/compression/framing + unix-socket credentials/retry** (AU-28/AU-29)
   (`tobz/test-cleanup-saluki-io-test-cleanup`, `test(io)`)
   - [medium/medium] `Compressor`, `CompressionScheme`, and `CountingWriter` are fully documented but have zero
     direct test coverage in saluki-io's compression module.
