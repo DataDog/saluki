@@ -424,3 +424,72 @@ impl CgroupMemoryParser {
 fn bytes_to_si_string(bytes: usize) -> bytesize::Display {
     ByteSize::b(bytes as u64).display().si()
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_config::{config_from, test_env_lock};
+
+    use super::*;
+
+    #[test]
+    fn cgroup_memory_parser_converts_raw_limits_to_bytes() {
+        // The cgroup memory files hold a bare byte count, or the literal `max` when no limit is set. `max` and any
+        // unparseable value yield `None`; a numeric value parses to that many bytes (after trimming whitespace).
+        let cases: &[(&str, Option<u64>)] = &[
+            ("max", None),
+            ("1073741824", Some(1_073_741_824)),
+            ("  1048576\n", Some(1_048_576)),
+            ("not-a-number", None),
+        ];
+
+        for (raw, expected) in cases {
+            let actual = CgroupMemoryParser.convert_to_bytesize(raw).map(|bytes| bytes.as_u64());
+            assert_eq!(actual, *expected, "raw input: {raw:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_bounds_configuration_parses_limit_and_slop_factor() {
+        let cfg = config_from(serde_json::json!({
+            "memory_limit": 1_048_576,
+            "memory_slop_factor": 0.25,
+        }))
+        .await;
+
+        let bounds = MemoryBoundsConfiguration::try_from_config(&cfg).expect("valid config should parse");
+        let grant = bounds
+            .get_initial_grant()
+            .expect("a configured memory limit should yield an initial grant");
+
+        assert_eq!(grant.initial_limit_bytes(), 1_048_576);
+        assert_eq!(grant.slop_factor(), 0.25);
+    }
+
+    #[tokio::test]
+    async fn memory_bounds_configuration_rejects_out_of_range_slop_factor() {
+        // `try_from_config` builds a grant as a smoke test, and a slop factor outside `[0.0, 1.0)` makes that fail.
+        let cfg = config_from(serde_json::json!({
+            "memory_limit": 1_048_576,
+            "memory_slop_factor": 1.5,
+        }))
+        .await;
+
+        assert!(
+            MemoryBoundsConfiguration::try_from_config(&cfg).is_err(),
+            "a slop factor of 1.5 should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_bounds_configuration_without_limit_has_no_grant() {
+        let cfg = config_from(serde_json::json!({})).await;
+
+        // With no explicit limit, `try_from_config` consults the `DOCKER_DD_AGENT` environment variable, so serialize
+        // against the shared env lock and ensure it's unset for a deterministic "no limit" result.
+        let _env_guard = test_env_lock();
+        std::env::remove_var("DOCKER_DD_AGENT");
+
+        let bounds = MemoryBoundsConfiguration::try_from_config(&cfg).expect("empty config should parse");
+        assert!(bounds.get_initial_grant().is_none());
+    }
+}

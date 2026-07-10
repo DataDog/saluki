@@ -616,6 +616,42 @@ mod tests {
         assert!(payload["line"].as_u64().expect("line should be numeric") > 0);
     }
 
+    #[test]
+    fn agent_formatter_renders_header_metadata_fields_and_message() {
+        // The default console/file format is: "<time> | <app> | <level> | (<file>:<line>)", followed by the
+        // structured fields and then the message, with each section separated by " | ".
+        let output = render_agent_event(
+            AgentLikeFormatter {
+                app_name: "DATAPLANE".to_string(),
+                rfc3339: false,
+            },
+            || {
+                event!(Level::WARN, answer = 42_i64, enabled = true, message = "agent-message");
+            },
+        );
+
+        assert!(
+            output.contains(" | DATAPLANE | WARN | ("),
+            "unexpected header: {output}"
+        );
+        assert!(output.contains("layer.rs:"));
+        assert!(output.contains(" | answer:42,enabled:true | agent-message"));
+        assert!(output.ends_with('\n'));
+    }
+
+    fn render_agent_event(formatter: AgentLikeFormatter, emit: impl FnOnce()) -> String {
+        let writer = SharedWriter::default();
+        let layer = Layer::new()
+            .event_format(formatter)
+            .with_writer(writer.clone())
+            .with_filter(LevelFilter::TRACE);
+        let subscriber = Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, emit);
+
+        writer.contents()
+    }
+
     fn render_syslog_event(formatter: SyslogFormatter, emit: impl FnOnce()) -> String {
         let writer = SharedWriter::default();
         let layer = Layer::new()

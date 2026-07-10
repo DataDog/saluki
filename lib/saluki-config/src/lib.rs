@@ -1338,4 +1338,52 @@ mod tests {
         // Figment drops null values during deserialization, so they are absent from the output.
         assert!(!map.contains_key("absent"));
     }
+
+    #[tokio::test]
+    async fn from_yaml_loads_configuration_file() {
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().expect("should create temp file");
+        file.write_all(b"top: value\nnested:\n  inner: 7\n")
+            .expect("should write temp file");
+        file.flush().expect("should flush temp file");
+
+        let cfg = ConfigurationLoader::default()
+            .from_yaml(file.path())
+            .expect("YAML file should load")
+            .into_generic()
+            .await
+            .expect("should build generic configuration");
+
+        assert_eq!(cfg.get_typed::<String>("top").unwrap(), "value");
+        assert_eq!(cfg.get_typed::<i64>("nested.inner").unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn try_from_yaml_ignores_unreadable_file() {
+        // `try_from_yaml` swallows load errors (here, a nonexistent path), yielding a config with no values rather
+        // than failing to build.
+        let cfg = ConfigurationLoader::default()
+            .try_from_yaml("/nonexistent/definitely/not/here.yaml")
+            .into_generic()
+            .await
+            .expect("should build generic configuration even when the file is missing");
+
+        assert!(matches!(
+            cfg.get::<String>("anything"),
+            Err(ConfigurationError::MissingField { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn from_json_returns_error_for_invalid_file() {
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().expect("should create temp file");
+        file.write_all(b"{ not valid json ").expect("should write temp file");
+        file.flush().expect("should flush temp file");
+
+        let result = ConfigurationLoader::default().from_json(file.path());
+        assert!(result.is_err(), "invalid JSON should fail to load at the loader level");
+    }
 }
