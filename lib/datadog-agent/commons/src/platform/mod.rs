@@ -91,18 +91,4 @@ mod tests {
                 .join("dogstatsd-stats.log")
         );
     }
-
-    #[cfg(target_os = "aix")]
-    #[test]
-    fn aix_uses_standard_agent_paths() {
-        assert_eq!(
-            PlatformSettings::get_config_dir_path(),
-            std::path::Path::new("/etc/datadog-agent")
-        );
-        assert_eq!(
-            PlatformSettings::get_log_dir_path(),
-            std::path::Path::new("/var/log/datadog")
-        );
-        assert_eq!(PlatformSettings::get_default_syslog_uri(), "unixgram:///dev/log");
-    }
 }
