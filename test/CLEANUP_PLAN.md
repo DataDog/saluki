@@ -306,7 +306,13 @@ otherwise keep hand-rolling the thing it replaces.
     are a table-driven consolidation candidate, not distinct coverage. The `Lexer` struct's `Iterator` impl is
     unreachable dead code with no path to test coverage.
 
-- [ ] **G18 — saluki-app, saluki-config, saluki-env test cleanup** (`tobz/test-cleanup-app-config-env-test-cleanup`, `test(app)`)
+- [x] **G18 — saluki-app, saluki-config, saluki-env test cleanup** (`tobz/test-cleanup-app-config-env-test-cleanup`, `test(app)`)
+  _Item 8 (commented-out entity-alias tests, removed in `6635adbf9f`) restored via hybrid: the old
+  `OriginResolver` alias-redirection API is gone, so adapted tests cover its current field-map/cache contract and
+  fresh `TagStoreQuerier` tests cover alias redirection in its new home. Flagged (not fixed) latent defects:
+  `extract_container_id`'s `.mount`/`crio-conmon-` exclusion filters never fire (applied to the bare-hex regex
+  match, not the full cgroup name); `deserialize_opt_space_separated_or_seq` has zero callers (dead); a dead
+  `if let Schedule` assertion in autodiscovery `local.rs`. Each pinned by a characterization test + NOTE._
   - [high/medium] `metrics/api.rs`'s override/reset worker is untested despite being a structural twin of the
     well-tested `logging/api.rs`.
   - [medium/small] `CgroupMemoryParser` and `MemoryBoundsConfiguration` parsing/validation logic has no unit tests.

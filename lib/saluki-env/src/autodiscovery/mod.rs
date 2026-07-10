@@ -391,6 +391,30 @@ mod tests {
 
     use super::*;
 
+    // Builds a `ProtoConfig` with representative defaults for every field, so tests can override only the fields
+    // they actually exercise (via struct-update syntax) instead of restating the full 17-field literal.
+    fn base_proto_config() -> ProtoConfig {
+        ProtoConfig {
+            name: "test-config".to_string(),
+            event_type: ConfigEventType::Schedule as i32,
+            init_config: b"key: value".to_vec(),
+            instances: vec![],
+            provider: "test-provider".to_string(),
+            ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
+            cluster_check: false,
+            metric_config: b"metric_key: metric_value".to_vec(),
+            logs_config: b"log_key: log_value".to_vec(),
+            advanced_ad_identifiers: vec![],
+            service_id: "service-id".to_string(),
+            tagger_entity: "tagger-entity".to_string(),
+            node_name: "node-name".to_string(),
+            source: "source".to_string(),
+            ignore_autodiscovery_tags: false,
+            metrics_excluded: false,
+            logs_excluded: false,
+        }
+    }
+
     #[test]
     fn test_event_type_from_config_event_type() {
         assert_eq!(EventType::from(ConfigEventType::Schedule), EventType::Schedule);
@@ -412,22 +436,8 @@ mod tests {
     fn test_check_config_instance_id() {
         let proto_config = ProtoConfig {
             name: "test-check".to_string(),
-            event_type: ConfigEventType::Schedule as i32,
-            init_config: b"key: value".to_vec(),
             instances: vec![b"name: test".to_vec(), b"another_key: another_value".to_vec()],
-            provider: "test-provider".to_string(),
-            ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
-            cluster_check: false,
-            metric_config: b"metric_key: metric_value".to_vec(),
-            logs_config: b"log_key: log_value".to_vec(),
-            advanced_ad_identifiers: vec![],
-            service_id: "service-id".to_string(),
-            tagger_entity: "tagger-entity".to_string(),
-            node_name: "node-name".to_string(),
-            source: "source".to_string(),
-            ignore_autodiscovery_tags: false,
-            metrics_excluded: false,
-            logs_excluded: false,
+            ..base_proto_config()
         };
 
         let config = Config::from(proto_config);
@@ -447,26 +457,12 @@ mod tests {
     fn test_config_from_proto_config() {
         // Create a ProtoConfig with test values
         let mut proto_config = ProtoConfig {
-            name: "test-config".to_string(),
-            event_type: ConfigEventType::Schedule as i32,
-            init_config: b"key: value".to_vec(),
             instances: vec![
                 b"instance_key: instance_value".to_vec(),
                 b"another_key: another_value".to_vec(),
             ],
-            provider: "test-provider".to_string(),
-            ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
             cluster_check: true,
-            metric_config: b"metric_key: metric_value".to_vec(),
-            logs_config: b"log_key: log_value".to_vec(),
-            advanced_ad_identifiers: vec![],
-            service_id: "service-id".to_string(),
-            tagger_entity: "tagger-entity".to_string(),
-            node_name: "node-name".to_string(),
-            source: "source".to_string(),
-            ignore_autodiscovery_tags: false,
-            metrics_excluded: false,
-            logs_excluded: false,
+            ..base_proto_config()
         };
 
         let kube_svc = KubeNamespacedName {
@@ -532,23 +528,11 @@ mod tests {
     fn test_autodiscovery_event_from_proto_config() {
         // Create a ProtoConfig with test values
         let mut proto_config = ProtoConfig {
-            name: "test-config".to_string(),
-            event_type: ConfigEventType::Schedule as i32,
             init_config: b"init-data".to_vec(),
-            instances: vec![],
-            provider: "test-provider".to_string(),
-            ad_identifiers: vec!["id1".to_string(), "id2".to_string()],
             cluster_check: true,
             metric_config: vec![],
             logs_config: vec![],
-            advanced_ad_identifiers: vec![],
-            service_id: "service-id".to_string(),
-            tagger_entity: "tagger-entity".to_string(),
-            node_name: "node-name".to_string(),
-            source: "source".to_string(),
-            ignore_autodiscovery_tags: false,
-            metrics_excluded: false,
-            logs_excluded: false,
+            ..base_proto_config()
         };
 
         let kube_svc = KubeNamespacedName {

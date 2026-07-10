@@ -547,4 +547,79 @@ mod tests {
         let high_actual_tags = visit_tags(&querier, &entity_id, OriginTagCardinality::High);
         assert_eq!(sorted_ts(high_actual_tags), sorted_ts(high_expected_tags));
     }
+
+    #[test]
+    fn get_entity_tags_follows_entity_alias() {
+        // Entity-alias redirection: a process-ID entity aliased to a container entity resolves to the container's
+        // tags, even though the process-ID entity has no tags of its own. This is the behavior that used to live in
+        // `OriginResolver` and now lives here.
+        let container_id = EntityId::Container("container-id".into());
+        let pid_id = EntityId::ContainerPid(1234);
+        let (expected_tags, operations) = low_cardinality!(&container_id, tags => ["service" => "foo"]);
+
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        for operation in operations {
+            store.process_operation(operation);
+        }
+        store.process_operation(MetadataOperation::add_alias(pid_id.clone(), container_id.clone()));
+
+        let querier = store.querier();
+
+        let actual_tags = visit_tags(&querier, &pid_id, OriginTagCardinality::Low);
+        assert_eq!(sorted_ts(actual_tags), sorted_ts(expected_tags));
+    }
+
+    #[test]
+    fn get_exact_entity_tags_does_not_follow_alias() {
+        // `get_exact_entity_tags` documents that it does not follow aliases, so the aliased process-ID entity yields
+        // nothing while the alias target's exact tags remain directly retrievable.
+        let container_id = EntityId::Container("container-id".into());
+        let pid_id = EntityId::ContainerPid(1234);
+        let (expected_tags, operations) = low_cardinality!(&container_id, tags => ["service" => "foo"]);
+
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        for operation in operations {
+            store.process_operation(operation);
+        }
+        store.process_operation(MetadataOperation::add_alias(pid_id.clone(), container_id.clone()));
+
+        let querier = store.querier();
+
+        assert!(querier
+            .get_exact_entity_tags(&pid_id, OriginTagCardinality::Low)
+            .is_none());
+
+        let target_tags = querier
+            .get_exact_entity_tags(&container_id, OriginTagCardinality::Low)
+            .expect("alias target should have low-cardinality tags");
+        let target_tags = TagSet::from_iter((&target_tags).into_iter().cloned());
+        assert_eq!(sorted_ts(target_tags), sorted_ts(expected_tags));
+    }
+
+    #[test]
+    fn remove_alias_stops_alias_redirection() {
+        // Removing the alias stops redirection: the process-ID entity, which has no tags of its own, again resolves
+        // to nothing.
+        let container_id = EntityId::Container("container-id".into());
+        let pid_id = EntityId::ContainerPid(1234);
+        let (_, operations) = low_cardinality!(&container_id, tags => ["service" => "foo"]);
+
+        let mut store = TagStore::with_entity_limit(DEFAULT_ENTITY_LIMIT);
+        for operation in operations {
+            store.process_operation(operation);
+        }
+        store.process_operation(MetadataOperation::add_alias(pid_id.clone(), container_id.clone()));
+
+        let querier = store.querier();
+        assert!(
+            !visit_tags(&querier, &pid_id, OriginTagCardinality::Low).is_empty(),
+            "alias should resolve before removal"
+        );
+
+        store.process_operation(MetadataOperation::remove_alias(pid_id.clone(), container_id.clone()));
+        assert!(
+            visit_tags(&querier, &pid_id, OriginTagCardinality::Low).is_empty(),
+            "alias redirection should stop after the alias is removed"
+        );
+    }
 }
