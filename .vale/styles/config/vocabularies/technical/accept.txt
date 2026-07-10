@@ -186,6 +186,7 @@ snapshotting
 stringified
 subexpression(s?)
 subtasks
+subtree(s?)
 supervisable
 swappable
 syslog

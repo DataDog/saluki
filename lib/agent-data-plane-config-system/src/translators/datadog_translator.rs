@@ -15,10 +15,6 @@
 //! [`TranslateError`] via `record_error` and either retain a recoverable value or leave the field
 //! at its default; `drive` returns all recorded errors as a [`TranslateErrors`].
 
-// TODO: remove once ConfigurationSystem consumes the translator; until then it is only exercised by
-// this module's tests.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;

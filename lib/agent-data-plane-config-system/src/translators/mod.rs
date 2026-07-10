@@ -6,6 +6,4 @@
 
 mod datadog_translator;
 
-// TODO: remove the allow once ConfigurationSystem imports this re-export.
-#[allow(unused_imports)]
 pub(crate) use datadog_translator::DatadogTranslator;
