@@ -84,7 +84,7 @@ otlp-protos = { path = "lib/protos/otlp" }
 anymap3 = { version = "1", default-features = false, features = ["std"] }
 async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
-aws-lc-rs = { version = "1.17.1", default-features = false }
+aws-lc-rs = { version = "1", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
 clap = { version = "4", default-features = false, features = [] }
