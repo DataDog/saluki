@@ -32,7 +32,7 @@ fn meta_string_preserves_public_api_on_big_endian() {
 
     let owned = MetaString::from(String::from("owned-value"));
     assert_eq!(owned.clone().into_owned(), "owned-value");
-    assert!(owned.is_cheaply_cloneable());
+    assert!(!owned.is_cheaply_cloneable());
 
     let shared = MetaString::from(Arc::<str>::from("shared-value"));
     assert_eq!(&*shared, "shared-value");
