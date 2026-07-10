@@ -58,7 +58,7 @@ const fn get_scaled_union_tag(tag: u8) -> usize {
 }
 
 // High-level invariant checks to ensure `stringtheory` isn't being used on an unsupported platform.
-#[cfg(not(all(target_pointer_width = "64", any(target_endian = "little", target_endian = "big"))))]
+#[cfg(not(target_pointer_width = "64"))]
 const _INVARIANTS_CHECK: () = {
     compile_error!("`stringtheory` is only supported on 64-bit platforms.");
 };
@@ -942,9 +942,14 @@ mod tests {
 
     use super::{
         interning::GenericMapInterner, InlinedUnion, Inner, MetaString, UnionType, INLINED_STR_DATA_BUF_LEN,
-        INLINED_STR_MAX_LEN, INLINED_STR_TAG_INDEX,
+        INLINED_STR_MAX_LEN, INLINED_STR_TAG_INDEX, UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE,
+        UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP, UNION_TYPE_TAG_VALUE_SHARED, UNION_TYPE_TAG_VALUE_STATIC,
     };
     use crate::interning::{FixedSizeInterner, Interner as _};
+
+    fn discriminant_byte(inner: &Inner) -> u8 {
+        unsafe { inner.discriminant.data[INLINED_STR_TAG_INDEX] }
+    }
 
     #[test]
     fn struct_sizes() {
@@ -968,6 +973,55 @@ mod tests {
 
         assert_eq!(INLINED_STR_TAG_INDEX, expected_tag_index);
         assert_eq!(INLINED_STR_MAX_LEN, expected_tag_index);
+    }
+
+    #[test]
+    fn inline_capacity_matches_target_endianness() {
+        let expected_inline_capacity = if cfg!(target_endian = "little") { 23 } else { 16 };
+
+        assert_eq!(INLINED_STR_MAX_LEN, expected_inline_capacity);
+    }
+
+    #[test]
+    fn discriminant_byte_tracks_endian_specific_variant_tags() {
+        let owned = MetaString::from(String::from("owned-value"));
+        assert_eq!(owned.inner.get_union_type(), UnionType::Owned);
+        assert!(discriminant_byte(&owned.inner) & 0b1000_0000 != 0);
+
+        let static_value = MetaString::from_static("static-value");
+        assert_eq!(static_value.inner.get_union_type(), UnionType::Static);
+        assert_eq!(discriminant_byte(&static_value.inner), UNION_TYPE_TAG_VALUE_STATIC);
+
+        let shared = MetaString::from(Arc::<str>::from("shared-value"));
+        assert_eq!(shared.inner.get_union_type(), UnionType::Shared);
+        assert_eq!(discriminant_byte(&shared.inner), UNION_TYPE_TAG_VALUE_SHARED);
+
+        let fixed_size_interner = FixedSizeInterner::<1>::new(NonZeroUsize::new(1024).unwrap());
+        let fixed_size = MetaString::from(fixed_size_interner.try_intern("fixed-size-value").unwrap());
+        assert_eq!(fixed_size.inner.get_union_type(), UnionType::InternedFixedSize);
+        assert_eq!(
+            discriminant_byte(&fixed_size.inner),
+            UNION_TYPE_TAG_VALUE_INTERNED_FIXED_SIZE
+        );
+
+        let generic_map_interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        let generic_map = MetaString::from(generic_map_interner.try_intern("generic-map-value").unwrap());
+        assert_eq!(generic_map.inner.get_union_type(), UnionType::InternedGenericMap);
+        assert_eq!(
+            discriminant_byte(&generic_map.inner),
+            UNION_TYPE_TAG_VALUE_INTERNED_GENERIC_MAP
+        );
+    }
+
+    #[test]
+    fn inlined_string_uses_contiguous_prefix_before_tag_byte() {
+        let input = "a".repeat(INLINED_STR_MAX_LEN);
+        let meta = MetaString::try_inline(&input).expect("input should fit exactly in inline storage");
+
+        assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
+        assert_eq!(discriminant_byte(&meta.inner), INLINED_STR_MAX_LEN as u8);
+        let inlined = unsafe { meta.inner.inlined };
+        assert_eq!(&inlined.data[..INLINED_STR_MAX_LEN], input.as_bytes());
     }
 
     #[test]
