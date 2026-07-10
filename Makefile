@@ -559,6 +559,10 @@ check-docs: ## Checks prose/code documentation against our style guide
 	@echo "[*] Checking prose/code documentation against our style guide..."
 	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,*datadog_configuration*}' docs lib bin
 
+.PHONY: test-build-adp-aix-script
+test-build-adp-aix-script: ## Tests the AIX ADP build helper dry-run behavior
+	@$(CURDIR)/ci/tooling/test-build-adp-aix.sh
+
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools
 sync-docs-config: ## Synchronizes the Vale configuration, updating configured style packages
@@ -650,6 +654,11 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_VERSION="$(ADP_APP_VERSION)" \
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
+
+.PHONY: build-adp-aix
+build-adp-aix: BUILD_PROFILE ?= devel
+build-adp-aix: ## Builds agent-data-plane natively on AIX (defaults to devel profile, IBM Rust SDK 1.92, and AIX Toolbox GCC)
+	@BUILD_PROFILE="$(BUILD_PROFILE)" $(CURDIR)/ci/tooling/build-adp-aix.sh
 
 .PHONY: package-adp-host
 package-adp-host: BUILD_PROFILE ?= release
