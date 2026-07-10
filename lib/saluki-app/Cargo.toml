@@ -63,6 +63,7 @@ rcgen = { workspace = true, features = ["aws_lc_rs"] }
 rcgen = { workspace = true, features = ["ring"] }
 
 [dev-dependencies]
+futures = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }

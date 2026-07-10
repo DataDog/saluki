@@ -205,3 +205,96 @@ async fn process_override_requests(state: &mut MetricsOverrideWorkerState, proce
         }
     }
 }
+
+// This module mirrors the well-tested override/reset worker in `logging/api.rs`. Unlike the logging worker -- whose
+// effect is observable through a locally-constructed `tracing` reload handle -- the metrics worker's only observable
+// effect is on a `FilterHandle`, which is created by installing the process-global metrics recorder. Because that
+// recorder can only be installed once per process, all of the worker's behaviors are exercised in a single test,
+// observed end-to-end through the real metrics pipeline.
+#[cfg(test)]
+mod tests {
+    use futures::StreamExt as _;
+    use metrics::{counter, Key};
+    use saluki_core::observability::metrics::{delete_counter, initialize_metrics, MetricsStream};
+
+    use super::*;
+
+    // Emits a DEBUG-level counter and immediately evicts it, returning whether the resulting snapshot carried the
+    // counter as an upsert -- i.e. whether a DEBUG-level metric currently passes the runtime filter level.
+    async fn debug_metric_passes_filter(stream: &mut MetricsStream, name: &'static str) -> bool {
+        counter!(level: Level::DEBUG, name).increment(1);
+        assert!(
+            delete_counter(Key::from_name(name)),
+            "the counter should exist before eviction"
+        );
+
+        let snapshot = tokio::time::timeout(Duration::from_secs(1), stream.next())
+            .await
+            .expect("a snapshot should be produced after eviction")
+            .expect("the metrics stream should not close");
+
+        !snapshot.upserts.is_empty()
+    }
+
+    async fn wait_until_filter_passes(stream: &mut MetricsStream, name: &'static str, expected: bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+
+        loop {
+            if debug_metric_passes_filter(stream, name).await == expected {
+                return;
+            }
+
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "filter never reached `passes={expected}`"
+            );
+
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn override_reset_and_expiration_toggle_the_runtime_filter_level() {
+        let (filter_handle, _flusher) = initialize_metrics("test".to_string(), Level::INFO)
+            .await
+            .expect("metrics subsystem should initialize");
+
+        let (override_tx, override_rx) = mpsc::channel(1);
+        let mut state = MetricsOverrideWorkerState {
+            filter_handle,
+            override_rx,
+        };
+        let processor = tokio::spawn(async move {
+            process_override_requests(&mut state, ShutdownHandle::noop()).await;
+        });
+
+        let mut stream = MetricsStream::register();
+        const PROBE: &str = "override_reset_probe";
+
+        // With the default INFO filter, a DEBUG-level metric is filtered out.
+        assert!(!debug_metric_passes_filter(&mut stream, PROBE).await);
+
+        // Overriding to DEBUG lets the DEBUG-level metric through.
+        override_tx
+            .send(Some((Duration::from_secs(60), Level::DEBUG)))
+            .await
+            .expect("send override");
+        wait_until_filter_passes(&mut stream, PROBE, true).await;
+
+        // Resetting restores the INFO default, filtering the DEBUG-level metric out again.
+        override_tx.send(None).await.expect("send reset");
+        wait_until_filter_passes(&mut stream, PROBE, false).await;
+
+        // A time-boxed override auto-expires and restores the default filter without an explicit reset.
+        override_tx
+            .send(Some((Duration::from_millis(250), Level::DEBUG)))
+            .await
+            .expect("send time-boxed override");
+        wait_until_filter_passes(&mut stream, PROBE, true).await;
+        wait_until_filter_passes(&mut stream, PROBE, false).await;
+
+        // Dropping the controller side makes the worker exit cleanly.
+        drop(override_tx);
+        processor.await.expect("override processor should exit cleanly");
+    }
+}

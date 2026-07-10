@@ -206,9 +206,20 @@ fn drop_nested_nulls_json(value: &mut JsonValue) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
+    use figment::Figment;
     use serde_json::json;
+    use tempfile::NamedTempFile;
 
     use super::*;
+
+    fn write_temp_file(contents: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().expect("should create temp file");
+        file.write_all(contents.as_bytes()).expect("should write temp file");
+        file.flush().expect("should flush temp file");
+        file
+    }
 
     #[test]
     fn alias_nested_path_to_flat_key() {
@@ -293,5 +304,109 @@ mod tests {
         let value: YamlValue = serde_yaml::from_str("a:\n  b: val").unwrap();
         assert!(get_nested_yaml(&value, "a.x").is_none());
         assert!(get_nested_yaml(&value, "z").is_none());
+    }
+
+    #[test]
+    fn drop_nested_nulls_json_removes_null_leaves_recursively() {
+        let mut value = json!({
+            "keep": "yes",
+            "drop": null,
+            "nested": { "keep": 1, "drop": null },
+            "list": [ { "keep": true, "drop": null } ],
+        });
+
+        drop_nested_nulls_json(&mut value);
+
+        assert_eq!(
+            value,
+            json!({
+                "keep": "yes",
+                "nested": { "keep": 1 },
+                "list": [ { "keep": true } ],
+            })
+        );
+    }
+
+    #[test]
+    fn drop_nested_nulls_yaml_removes_null_leaves_recursively() {
+        let mut value: YamlValue =
+            serde_yaml::from_str("keep: kept\ndrop: null\nnested:\n  keep: 1\n  drop: null\n").unwrap();
+
+        drop_nested_nulls_yaml(&mut value);
+
+        let expected: YamlValue = serde_yaml::from_str("keep: kept\nnested:\n  keep: 1\n").unwrap();
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn from_yaml_loads_nested_values_drops_nulls_and_applies_aliases() {
+        let file = write_temp_file("proxy:\n  http: http://proxy.example.com\nempty:\nkept: value\n");
+
+        let provider =
+            ResolvedProvider::from_yaml(file.path(), &[("proxy.http", "proxy_http")]).expect("valid YAML should load");
+        let figment = Figment::new().merge(provider);
+
+        // Nested value is preserved.
+        assert_eq!(
+            figment.extract_inner::<String>("proxy.http").unwrap(),
+            "http://proxy.example.com"
+        );
+        // The alias is flattened to a top-level key.
+        assert_eq!(
+            figment.extract_inner::<String>("proxy_http").unwrap(),
+            "http://proxy.example.com"
+        );
+        // A non-null value is preserved.
+        assert_eq!(figment.extract_inner::<String>("kept").unwrap(), "value");
+        // A null value is dropped entirely.
+        assert!(figment.find_value("empty").is_err());
+    }
+
+    #[test]
+    fn from_json_loads_nested_values_and_drops_nested_nulls() {
+        let file = write_temp_file(r#"{"outer": {"kept": 1, "empty": null}, "top": null}"#);
+
+        let provider = ResolvedProvider::from_json(file.path(), &[]).expect("valid JSON should load");
+        let figment = Figment::new().merge(provider);
+
+        assert_eq!(figment.extract_inner::<i64>("outer.kept").unwrap(), 1);
+        assert!(figment.find_value("outer.empty").is_err());
+        assert!(figment.find_value("top").is_err());
+    }
+
+    #[test]
+    fn from_yaml_empty_file_yields_empty_map() {
+        let file = write_temp_file("");
+
+        let provider =
+            ResolvedProvider::from_yaml(file.path(), &[]).expect("empty YAML should normalize to an empty map");
+        let figment = Figment::new().merge(provider);
+
+        assert!(figment.find_value("anything").is_err());
+    }
+
+    #[test]
+    fn from_yaml_returns_error_for_invalid_yaml() {
+        let file = write_temp_file("foo: [unclosed");
+
+        let result = ResolvedProvider::from_yaml(file.path(), &[]);
+        assert!(result.is_err(), "invalid YAML should fail to load");
+    }
+
+    #[test]
+    fn from_json_returns_error_for_invalid_json() {
+        let file = write_temp_file("{ not valid json ");
+
+        let result = ResolvedProvider::from_json(file.path(), &[]);
+        assert!(result.is_err(), "invalid JSON should fail to load");
+    }
+
+    #[test]
+    fn from_json_returns_error_for_non_object_root() {
+        // A scalar root can't be represented as a configuration map, so `from_serialized` rejects it.
+        let file = write_temp_file(r#""just a string""#);
+
+        let result = ResolvedProvider::from_json(file.path(), &[]);
+        assert!(result.is_err(), "a non-object JSON root should fail to load");
     }
 }

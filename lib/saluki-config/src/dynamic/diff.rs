@@ -3,6 +3,9 @@
 use super::event::ConfigChangeEvent;
 
 /// Diffs two configuration values and returns a list of changes.
+///
+/// Only keys present in `new_config` are considered: a key that exists in `old_config` but is absent from
+/// `new_config` is silently treated as unchanged, and no [`ConfigChangeEvent`] is emitted for its removal.
 pub fn diff_config(old_config: &figment::value::Value, new_config: &figment::value::Value) -> Vec<ConfigChangeEvent> {
     let mut changes = Vec::new();
     diff_recursive(old_config, new_config, "", &mut changes);
@@ -61,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_config_basic() {
+    fn diff_config_detects_modified_added_and_nested_changes() {
         let old_json = json!({
             "a": "original",
             "nested": {
@@ -88,8 +91,6 @@ mod tests {
         // We expect 4 changes in total.
         assert_eq!(changes.len(), 4);
 
-        println!("changes: {:?}", changes);
-
         assert!(changes.contains(&ConfigChangeEvent {
             key: "a".to_string(),
             old_value: Some("original".into()),
@@ -113,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn test_diff_config_no_change() {
+    fn diff_config_reports_no_changes_for_identical_configs() {
         let old_json = json!({
             "a": "original",
             "nested": {
@@ -129,5 +130,38 @@ mod tests {
         let changes = diff_config(&old_config, &new_config);
 
         assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn diff_config_ignores_keys_removed_from_new_config() {
+        // `diff_config` only walks keys present in `new_config`, so a key that disappears between snapshots produces
+        // no change event at all. This test pins that silent-drop behavior (documented on `diff_config`): a consumer
+        // watching a removed key will never be told it went away.
+        let old_json = json!({
+            "kept": "same",
+            "removed": "gone",
+            "nested": {
+                "kept": 1,
+                "removed": 2
+            }
+        });
+
+        let new_json = json!({
+            "kept": "same",
+            "nested": {
+                "kept": 1
+            }
+        });
+
+        let old_config = to_figment_value(old_json);
+        let new_config = to_figment_value(new_json);
+
+        let changes = diff_config(&old_config, &new_config);
+
+        assert!(
+            changes.is_empty(),
+            "removed keys should produce no change events, got: {:?}",
+            changes
+        );
     }
 }
