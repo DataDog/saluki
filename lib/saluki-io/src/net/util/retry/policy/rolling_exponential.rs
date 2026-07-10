@@ -139,3 +139,70 @@ where
         Some(req.clone())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{sync::atomic::Ordering::Relaxed, time::Duration};
+
+    use tower::retry::Policy;
+
+    use super::*;
+    use crate::net::util::retry::ExponentialBackoff;
+
+    // Classifier that retries iff the response is an `Err`, letting a single test drive both the failure path
+    // (error-count increment) and the success path (decrease/reset) via the response value it passes in.
+    struct ErrIsRetriable;
+
+    impl RetryClassifier<(), ()> for ErrIsRetriable {
+        fn should_retry(&self, response: &Result<(), ()>) -> bool {
+            response.is_err()
+        }
+    }
+
+    type TestPolicy = RollingExponentialBackoffRetryPolicy<ErrIsRetriable, DefaultDebugRetryLifecycle>;
+
+    fn test_policy(recovery_error_decrease_factor: Option<u32>) -> TestPolicy {
+        let backoff = ExponentialBackoff::new(Duration::from_millis(1), Duration::from_millis(100));
+        RollingExponentialBackoffRetryPolicy::new(ErrIsRetriable, backoff)
+            .with_recovery_error_decrease_factor(recovery_error_decrease_factor)
+    }
+
+    // Drives one classification and returns whether a retry (backoff sleep) was requested.
+    fn drive(policy: &mut TestPolicy, mut response: Result<(), ()>) -> bool {
+        Policy::<(), (), ()>::retry(policy, &mut (), &mut response).is_some()
+    }
+
+    #[tokio::test]
+    async fn recovery_decrease_factor_reduces_error_count_by_fixed_amount() {
+        let mut policy = test_policy(Some(3));
+
+        // Each failure increments the error count by one and requests a retry.
+        for expected in 1..=5u32 {
+            assert!(drive(&mut policy, Err(())), "a failure should request a retry");
+            assert_eq!(policy.error_count.load(Relaxed), expected);
+        }
+
+        // A success decreases the count by the factor (5 -> 2), not all the way back to zero, so a subsequent
+        // failure still backs off from near where it left off.
+        assert!(!drive(&mut policy, Ok(())), "a success should not request a retry");
+        assert_eq!(policy.error_count.load(Relaxed), 2);
+
+        // A second success saturates at zero (2 - 3 -> 0) rather than underflowing.
+        assert!(!drive(&mut policy, Ok(())));
+        assert_eq!(policy.error_count.load(Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn no_recovery_factor_resets_error_count_to_zero_on_success() {
+        let mut policy = test_policy(None);
+
+        for _ in 0..4 {
+            assert!(drive(&mut policy, Err(())));
+        }
+        assert_eq!(policy.error_count.load(Relaxed), 4);
+
+        // Without a recovery factor, a single success resets the count all the way to zero.
+        assert!(!drive(&mut policy, Ok(())));
+        assert_eq!(policy.error_count.load(Relaxed), 0);
+    }
+}

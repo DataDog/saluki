@@ -164,6 +164,35 @@ mod tests {
     }
 
     #[test]
+    fn newline_framing_retains_carriage_returns() {
+        // Documented behavior: only the line-feed (0x0A) delimits frames. Any carriage-return (0x0D) bytes are part
+        // of the frame contents and must be preserved, not stripped, so a CRLF-delimited stream yields frames that
+        // still carry the trailing `\r`.
+        let mut buf: VecDeque<u8> = b"foo\r\nbar\r\n".iter().copied().collect();
+        let mut framer = NewlineFramer::default();
+
+        let first = framer
+            .next_frame(&mut buf, false)
+            .expect("should not fail to read from payload")
+            .expect("should extract first frame");
+        assert_eq!(&first[..], b"foo\r");
+
+        let second = framer
+            .next_frame(&mut buf, false)
+            .expect("should not fail to read from payload")
+            .expect("should extract second frame");
+        assert_eq!(&second[..], b"bar\r");
+
+        assert!(buf.is_empty());
+        assert_eq!(
+            framer
+                .next_frame(&mut buf, false)
+                .expect("should not fail to read from empty payload"),
+            None
+        );
+    }
+
+    #[test]
     fn no_newline_eof_required_on_eof() {
         let payload = b"hello, world!";
         let mut buf = get_delimited_payload(payload, false);
