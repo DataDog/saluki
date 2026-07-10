@@ -209,7 +209,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] `PendingTransactions::flush`'s shutdown/disk-persistence path, and `transaction.rs`'s `size_bytes`
     and consumed-body panic/error paths, are untested.
 
-- [ ] **G13 — otlp traces & metrics translation test cleanup** (AU-03/AU-06)
+- [x] **G13 — otlp traces & metrics translation test cleanup** (AU-03/AU-06)
   (`tobz/test-cleanup-otlp-translation-test-cleanup`, `test(components)`)
   - [medium/medium] `traces/transform.rs`'s ported Go-agent branching translation logic is largely untested;
     `otlp/traces/translator.rs`'s documented single-fallback hostname resolution and trace-grouping entry point are

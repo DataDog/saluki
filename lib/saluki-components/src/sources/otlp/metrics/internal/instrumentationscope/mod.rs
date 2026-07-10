@@ -29,3 +29,75 @@ pub fn tags_from_empty_instrumentation_scope() -> Vec<String> {
         utils::format_key_value_tag(SCOPE_VERSION_TAG, ""),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    use otlp_protos::opentelemetry::proto::common::v1::{AnyValue, InstrumentationScope, KeyValue};
+
+    use super::*;
+
+    fn string_kv(key: &str, value: &str) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+        }
+    }
+
+    fn int_kv(key: &str, value: i64) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::IntValue(value)),
+            }),
+        }
+    }
+
+    #[test]
+    fn populated_scope_emits_name_version_and_string_attributes() {
+        let scope = InstrumentationScope {
+            name: "my.instrumentation".to_string(),
+            version: "1.2.3".to_string(),
+            // The int attribute is deliberately included to confirm non-string attributes are skipped,
+            // matching the Go implementation which only converts string-valued scope attributes to tags.
+            attributes: vec![string_kv("build.id", "abc"), int_kv("workers", 4)],
+            ..Default::default()
+        };
+
+        let tags = tags_from_instrumentation_scope_metadata(&scope);
+        assert_eq!(
+            tags,
+            vec![
+                "instrumentation_scope:my.instrumentation".to_string(),
+                "instrumentation_scope_version:1.2.3".to_string(),
+                "build.id:abc".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn populated_scope_with_empty_name_and_version_uses_na_placeholders() {
+        let scope = InstrumentationScope::default();
+
+        let tags = tags_from_instrumentation_scope_metadata(&scope);
+        assert_eq!(
+            tags,
+            vec![
+                "instrumentation_scope:n/a".to_string(),
+                "instrumentation_scope_version:n/a".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_scope_fallback_uses_na_placeholders() {
+        assert_eq!(
+            tags_from_empty_instrumentation_scope(),
+            vec![
+                "instrumentation_scope:n/a".to_string(),
+                "instrumentation_scope_version:n/a".to_string(),
+            ]
+        );
+    }
+}

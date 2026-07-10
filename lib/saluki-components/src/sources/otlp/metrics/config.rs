@@ -137,3 +137,51 @@ impl Default for OtlpMetricsTranslatorConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Ports the `TestConfig`/`(*Config).validate` rejection rule from the Go
+    // opentelemetry-mapping-go implementation: "no buckets" histogram mode is only valid when
+    // count/sum aggregations are also being sent.
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go
+    #[test]
+    fn validate_rejects_no_buckets_mode_without_histogram_aggregations() {
+        let config = OtlpMetricsTranslatorConfig::default()
+            .with_histogram_mode(HistogramMode::NoBuckets)
+            .with_send_histogram_aggregations(false);
+
+        let err = config
+            .validate()
+            .expect_err("no-buckets histogram mode without aggregations must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "no buckets mode and no send count sum are incompatible"
+        );
+    }
+
+    #[test]
+    fn validate_allows_no_buckets_mode_with_histogram_aggregations() {
+        // The rejection is specific to the missing aggregations: enabling them makes the same
+        // histogram mode valid.
+        let config = OtlpMetricsTranslatorConfig::default()
+            .with_histogram_mode(HistogramMode::NoBuckets)
+            .with_send_histogram_aggregations(true);
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_allows_bucketed_modes_regardless_of_aggregations() {
+        // Only the `NoBuckets`/`!send_histogram_aggregations` pair is incompatible; the bucketed
+        // modes are accepted even without aggregations.
+        for hist_mode in [HistogramMode::Counters, HistogramMode::Distributions] {
+            let config = OtlpMetricsTranslatorConfig::default()
+                .with_histogram_mode(hist_mode)
+                .with_send_histogram_aggregations(false);
+
+            assert!(config.validate().is_ok(), "expected {hist_mode:?} to validate");
+        }
+    }
+}
