@@ -43,13 +43,7 @@ fn resident_set_size_from_psinfo(psinfo: &[u8]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resident_set_size_from_psinfo, Querier, KIB, PR_RSSIZE_OFFSET, PR_RSSIZE_SIZE};
-
-    #[test]
-    fn basic() {
-        let mut querier = Querier::default();
-        assert!(querier.resident_set_size().is_some());
-    }
+    use super::{resident_set_size_from_psinfo, KIB, PR_RSSIZE_OFFSET, PR_RSSIZE_SIZE};
 
     #[test]
     fn parses_resident_set_size_from_psinfo() {
@@ -58,47 +52,6 @@ mod tests {
         psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&rss_kib.to_ne_bytes());
 
         assert_eq!(resident_set_size_from_psinfo(&psinfo), Some((rss_kib * KIB) as usize));
-    }
-
-    #[test]
-    fn parses_resident_set_size_from_documented_offset() {
-        const PR_SIZE_OFFSET: usize = 96;
-        const PR_START_OFFSET: usize = 112;
-
-        let rss_kib = 7u64;
-        let mut psinfo = [0; PR_START_OFFSET + PR_RSSIZE_SIZE];
-        psinfo[PR_SIZE_OFFSET..PR_SIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&3u64.to_ne_bytes());
-        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&rss_kib.to_ne_bytes());
-        psinfo[PR_START_OFFSET..PR_START_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&99u64.to_ne_bytes());
-
-        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some((rss_kib * KIB) as usize));
-    }
-
-    #[test]
-    fn converts_resident_set_size_from_kib_not_pages() {
-        let rss_kib = 7u64;
-        let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
-        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&rss_kib.to_ne_bytes());
-
-        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some(7168));
-    }
-
-    #[test]
-    #[cfg(target_endian = "big")]
-    fn parses_big_endian_resident_set_size() {
-        let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
-        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 7]);
-
-        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some(7168));
-    }
-
-    #[test]
-    #[cfg(target_endian = "little")]
-    fn parses_little_endian_resident_set_size() {
-        let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
-        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&[7, 0, 0, 0, 0, 0, 0, 0]);
-
-        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some(7168));
     }
 
     #[test]

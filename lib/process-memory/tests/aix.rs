@@ -9,16 +9,6 @@ const PR_RSSIZE_OFFSET: usize = 104;
 const PR_RSSIZE_SIZE: usize = std::mem::size_of::<u64>();
 
 #[test]
-fn resident_set_size_returns_nonzero_value() {
-    let mut querier = Querier::default();
-    let rss = querier
-        .resident_set_size()
-        .expect("resident set size should be available on AIX");
-
-    assert!(rss > 0, "resident set size should be greater than zero");
-}
-
-#[test]
 fn resident_set_size_is_close_to_proc_psinfo_rss_field() {
     let expected_before = current_process_psinfo_rss_bytes().expect("resident set size should parse from AIX psinfo");
 
@@ -31,6 +21,7 @@ fn resident_set_size_is_close_to_proc_psinfo_rss_field() {
     let lower_bound = expected_before.min(expected_after).saturating_sub(4 * 1024 * 1024);
     let upper_bound = expected_before.max(expected_after).saturating_add(4 * 1024 * 1024);
 
+    assert!(actual > 0, "resident set size should be greater than zero");
     assert!(
         (lower_bound..=upper_bound).contains(&actual),
         "queried RSS {actual} should be close to raw psinfo RSS range {expected_before}..={expected_after}"
