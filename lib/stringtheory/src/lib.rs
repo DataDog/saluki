@@ -1014,14 +1014,21 @@ mod tests {
     }
 
     #[test]
-    fn inlined_string_uses_contiguous_prefix_before_tag_byte() {
-        let input = "a".repeat(INLINED_STR_MAX_LEN);
+    fn inlined_string_uses_every_byte_before_tag_byte() {
+        let input = "a".repeat(INLINED_STR_TAG_INDEX);
         let meta = MetaString::try_inline(&input).expect("input should fit exactly in inline storage");
 
         assert_eq!(meta.inner.get_union_type(), UnionType::Inlined);
-        assert_eq!(discriminant_byte(&meta.inner), INLINED_STR_MAX_LEN as u8);
+        assert_eq!(discriminant_byte(&meta.inner), INLINED_STR_TAG_INDEX as u8);
         let inlined = unsafe { meta.inner.inlined };
-        assert_eq!(&inlined.data[..INLINED_STR_MAX_LEN], input.as_bytes());
+        assert_eq!(&inlined.data[..INLINED_STR_TAG_INDEX], input.as_bytes());
+    }
+
+    #[test]
+    fn inlined_string_rejects_one_byte_past_tag_byte() {
+        let input = "a".repeat(INLINED_STR_TAG_INDEX + 1);
+
+        assert!(MetaString::try_inline(&input).is_none());
     }
 
     #[test]
