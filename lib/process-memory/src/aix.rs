@@ -1,8 +1,10 @@
 use std::{fs::File, io::Read, path::PathBuf};
 
-// Offset of `pr_rssize` in the 64-bit AIX 7.3 `psinfo_t` structure.
-const PR_RSSIZE_OFFSET: usize = 104;
-const PR_RSSIZE_SIZE: usize = std::mem::size_of::<i64>();
+const KIB: u64 = 1024;
+// IBM documents AIX /proc files as 64-bit invariant for all observers. In that psinfo_t layout, pr_rssize
+// follows eight 32-bit fields, four pid64_t fields, dev64_t, prptr64_t, and pr_size.
+const PR_RSSIZE_OFFSET: usize = 88;
+const PR_RSSIZE_SIZE: usize = std::mem::size_of::<u64>();
 
 /// A memory usage querier.
 pub struct Querier {
@@ -19,7 +21,7 @@ impl Querier {
         let mut buf = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
         file.read_exact(&mut buf).ok()?;
 
-        resident_set_size_from_psinfo(&buf, page_size()?)
+        resident_set_size_from_psinfo(&buf)
     }
 }
 
@@ -31,26 +33,17 @@ impl Default for Querier {
     }
 }
 
-fn page_size() -> Option<usize> {
-    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    if page_size <= 0 {
-        None
-    } else {
-        Some(page_size as usize)
-    }
-}
+fn resident_set_size_from_psinfo(psinfo: &[u8]) -> Option<usize> {
+    let raw_rss_kib = psinfo.get(PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE)?;
+    let rss_kib = u64::from_ne_bytes(raw_rss_kib.try_into().ok()?);
+    let rss_bytes = rss_kib.checked_mul(KIB)?;
 
-fn resident_set_size_from_psinfo(psinfo: &[u8], page_size: usize) -> Option<usize> {
-    let raw_rss_pages = psinfo.get(PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE)?;
-    let rss_pages = i64::from_ne_bytes(raw_rss_pages.try_into().ok()?);
-    let rss_pages = usize::try_from(rss_pages).ok()?;
-
-    rss_pages.checked_mul(page_size)
+    usize::try_from(rss_bytes).ok()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{resident_set_size_from_psinfo, Querier, PR_RSSIZE_OFFSET, PR_RSSIZE_SIZE};
+    use super::{resident_set_size_from_psinfo, Querier, KIB, PR_RSSIZE_OFFSET, PR_RSSIZE_SIZE};
 
     #[test]
     fn basic() {
@@ -60,24 +53,23 @@ mod tests {
 
     #[test]
     fn parses_resident_set_size_from_psinfo() {
-        let page_size = 4096;
-        let rss_pages = 7i64;
+        let rss_kib = 7u64;
         let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
-        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&rss_pages.to_ne_bytes());
+        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&rss_kib.to_ne_bytes());
 
-        assert_eq!(resident_set_size_from_psinfo(&psinfo, page_size), Some(28672));
+        assert_eq!(resident_set_size_from_psinfo(&psinfo), Some((rss_kib * KIB) as usize));
     }
 
     #[test]
     fn rejects_truncated_psinfo() {
-        assert_eq!(resident_set_size_from_psinfo(&[], 4096), None);
+        assert_eq!(resident_set_size_from_psinfo(&[]), None);
     }
 
     #[test]
-    fn rejects_negative_resident_set_size() {
+    fn rejects_overflowing_resident_set_size() {
         let mut psinfo = [0; PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE];
-        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&(-1i64).to_ne_bytes());
+        psinfo[PR_RSSIZE_OFFSET..PR_RSSIZE_OFFSET + PR_RSSIZE_SIZE].copy_from_slice(&u64::MAX.to_ne_bytes());
 
-        assert_eq!(resident_set_size_from_psinfo(&psinfo, 4096), None);
+        assert_eq!(resident_set_size_from_psinfo(&psinfo), None);
     }
 }
