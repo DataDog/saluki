@@ -1,12 +1,17 @@
 //! A type-erased, async-aware dataspace registry for inter-process coordination.
 //!
-//! The [`DataspaceRegistry`] allows processes to assert and retract typed values by identifier, and subscribe to
-//! receive notifications of those assertions and retractions. Multiple subscribers can observe the same updates.
+//! The [`DataspaceRegistry`] allows processes to assert and retract typed values by identifier, send transient
+//! messages, and subscribe to receive notifications of all three. Multiple subscribers can observe the same updates.
 //!
 //! - **Assertion**: a value of type `T` becomes available, associated with a given identifier.
 //! - **Retraction**: the value of type `T` associated with a given identifier is withdrawn.
+//! - **Message**: a transient value of type `T` sent for a given identifier.
 //!
 //! Subscribers can listen for updates matching a specific identifier, a prefix, or all identifiers for a given type.
+//!
+//! Assertions are *persistent*: they are stored, tied to the asserting process's lifecycle (automatically retracted
+//! when that process exits), and replayed to subscribers that appear later. Messages are *transient*: they are
+//! delivered only to the subscribers present at the time of sending, and are never stored or replayed.
 //!
 //! This enables decoupled coordination where processes don't need to know about each other, only the identifier and
 //! type of the values they're exchanging.
@@ -14,7 +19,7 @@
 //! # Example
 //!
 //! ```
-//! use saluki_core::runtime::state::{AssertionUpdate, Identifier, IdentifierFilter, DataspaceRegistry};
+//! use saluki_core::runtime::state::{DataspaceUpdate, Identifier, IdentifierFilter, DataspaceRegistry};
 //!
 //! # #[tokio::main]
 //! # async fn main() {
@@ -29,7 +34,7 @@
 //!
 //! // Receive the assertion:
 //! let value = sub.recv().await;
-//! assert_eq!(value, Some(AssertionUpdate::Asserted(id, 42)));
+//! assert_eq!(value, Some(DataspaceUpdate::Asserted(id, 42)));
 //! # }
 //! ```
 
@@ -51,14 +56,21 @@ tokio::task_local! {
     pub(crate) static CURRENT_DATASPACE: DataspaceRegistry;
 }
 
-/// An update received by a subscription, indicating that a value was asserted or retracted.
+/// An update received by a subscription, indicating that a value was asserted, retracted, or sent as a transient
+/// message.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AssertionUpdate<T> {
+pub enum DataspaceUpdate<T> {
     /// A value was asserted (made available), along with the identifier it's associated with.
     Asserted(Identifier, T),
 
     /// The value associated with the given identifier was retracted (withdrawn).
     Retracted(Identifier),
+
+    /// A transient message was sent for the given identifier.
+    ///
+    /// Unlike assertions, messages are delivered only to subscribers present at the time the message is sent; they are
+    /// never stored or replayed to future subscribers.
+    Message(Identifier, T),
 }
 
 /// Internal key combining type and identifier.
@@ -86,14 +98,14 @@ trait AnyChannel: Send + Sync {
     fn as_any(&self) -> &dyn Any;
 }
 
-/// Concrete implementation of [`AnyChannel`] that wraps a `broadcast::Sender<AssertionUpdate<T>>`.
+/// Concrete implementation of [`AnyChannel`] that wraps a `broadcast::Sender<DataspaceUpdate<T>>`.
 struct TypedChannel<T: Clone + Send + Sync + 'static> {
-    tx: broadcast::Sender<AssertionUpdate<T>>,
+    tx: broadcast::Sender<DataspaceUpdate<T>>,
 }
 
 impl<T: Clone + Send + Sync + 'static> AnyChannel for TypedChannel<T> {
     fn send_retraction(&self, id: &Identifier) {
-        let _ = self.tx.send(AssertionUpdate::Retracted(id.clone()));
+        let _ = self.tx.send(DataspaceUpdate::Retracted(id.clone()));
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -146,12 +158,12 @@ impl RegistryState {
     }
 
     /// Gets or creates a broadcast sender for the given key, returning a new receiver.
-    fn get_or_create_exact_sender<T>(&mut self, key: StorageKey) -> broadcast::Receiver<AssertionUpdate<T>>
+    fn get_or_create_exact_sender<T>(&mut self, key: StorageKey) -> broadcast::Receiver<DataspaceUpdate<T>>
     where
         T: Clone + Send + Sync + 'static,
     {
         let channel = self.channels.entry(key).or_insert_with(|| {
-            let (tx, _) = broadcast::channel::<AssertionUpdate<T>>(self.channel_capacity);
+            let (tx, _) = broadcast::channel::<DataspaceUpdate<T>>(self.channel_capacity);
             Box::new(TypedChannel { tx })
         });
 
@@ -166,11 +178,11 @@ impl RegistryState {
     }
 
     /// Creates a new filtered subscription channel, returning a new receiver.
-    fn create_filtered_sender<T>(&mut self, filter: IdentifierFilter) -> broadcast::Receiver<AssertionUpdate<T>>
+    fn create_filtered_sender<T>(&mut self, filter: IdentifierFilter) -> broadcast::Receiver<DataspaceUpdate<T>>
     where
         T: Clone + Send + Sync + 'static,
     {
-        let (tx, rx) = broadcast::channel::<AssertionUpdate<T>>(self.channel_capacity);
+        let (tx, rx) = broadcast::channel::<DataspaceUpdate<T>>(self.channel_capacity);
 
         self.filtered_channels.push(FilteredChannel {
             type_id: TypeId::of::<T>(),
@@ -181,7 +193,35 @@ impl RegistryState {
         rx
     }
 
+    /// Sends the given typed update on all channels (exact + filtered) matching the given key.
+    ///
+    /// Used to dispatch assertions and messages, both of which carry a concrete value `T`. The update is cloned once
+    /// per matching channel, as each channel is a separate broadcast sender.
+    fn notify_typed<T>(&self, key: &StorageKey, update: &DataspaceUpdate<T>)
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        if let Some(ch) = self.channels.get(key) {
+            if let Some(typed) = ch.as_any().downcast_ref::<TypedChannel<T>>() {
+                let _ = typed.tx.send(update.clone());
+            }
+        }
+
+        for channel in &self.filtered_channels {
+            if channel.type_id == key.type_id && channel.filter.matches(&key.identifier) {
+                if let Some(typed) = channel.sender.as_any().downcast_ref::<TypedChannel<T>>() {
+                    let _ = typed.tx.send(update.clone());
+                }
+            }
+        }
+    }
+
     /// Sends a retraction notification on all channels (exact + filtered) matching the given key.
+    ///
+    /// This is kept separate from [`notify_typed`](Self::notify_typed) because retractions carry no value: they are
+    /// dispatched via the type-erased [`AnyChannel::send_retraction`] path. That path is required by
+    /// [`retract_all_for_process`](DataspaceRegistry::retract_all_for_process), which iterates storage keys that carry
+    /// only a `TypeId`, with no concrete `T` in scope to downcast against.
     fn notify_retraction(&self, key: &StorageKey) {
         if let Some(ch) = self.channels.get(key) {
             ch.send_retraction(&key.identifier);
@@ -278,22 +318,9 @@ impl DataspaceRegistry {
         // Track this assertion against the owning process.
         state.process_assertions.entry(caller).or_default().insert(key.clone());
 
-        // Notify exact-match subscribers.
-        if let Some(ch) = state.channels.get(&key) {
-            if let Some(typed) = ch.as_any().downcast_ref::<TypedChannel<T>>() {
-                let _ = typed.tx.send(AssertionUpdate::Asserted(id.clone(), value.clone()));
-            }
-        }
-
-        // Notify filtered subscribers.
-        let type_id = TypeId::of::<T>();
-        for channel in &state.filtered_channels {
-            if channel.type_id == type_id && channel.filter.matches(&id) {
-                if let Some(typed) = channel.sender.as_any().downcast_ref::<TypedChannel<T>>() {
-                    let _ = typed.tx.send(AssertionUpdate::Asserted(id.clone(), value.clone()));
-                }
-            }
-        }
+        // Notify all matching subscribers, exact and filtered.
+        let update = DataspaceUpdate::Asserted(id, value);
+        state.notify_typed::<T>(&key, &update);
     }
 
     /// Retracts the value of the given type and identifier, notifying all matching subscribers.
@@ -335,6 +362,35 @@ impl DataspaceRegistry {
         state.notify_retraction(&key);
     }
 
+    /// Sends a transient message with the given identifier to all subscribers matching it right now.
+    ///
+    /// Unlike [`assert`](Self::assert), a message is not stored, is not replayed to future subscribers, and is not
+    /// tied to the current process's lifecycle: any process may send a message for any type/identifier, and messages
+    /// are never automatically retracted. If there are no matching subscribers at the time of sending, the message is
+    /// dropped.
+    ///
+    /// Messages, assertions, and retractions for the same type and identifier are delivered to a subscription in send
+    /// order over the same channel.
+    ///
+    /// # Delivery
+    ///
+    /// Messages share the same fixed-capacity broadcast channel as assertions and retractions. A subscriber that falls
+    /// behind may miss messages (see [`Subscription::recv`]); a high volume of messages can also evict pending
+    /// assertions or retractions for a lagging subscriber. Use [`with_channel_capacity`](Self::with_channel_capacity)
+    /// to size the channel for message-heavy identifiers.
+    pub fn send<T>(&self, value: T, id: impl Into<Identifier>)
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        let id = id.into();
+        let key = StorageKey::new::<T>(id.clone());
+        let state = self.inner.state.lock().unwrap();
+
+        // Messages are transient: notify only the subscribers matching right now, without storing anything.
+        let update = DataspaceUpdate::Message(id, value);
+        state.notify_typed::<T>(&key, &update);
+    }
+
     /// Retracts all assertions made by the given process.
     ///
     /// This is called automatically when a process exits (via [`FutureProcess`] drop) to ensure that no stale
@@ -370,11 +426,12 @@ impl DataspaceRegistry {
             .collect()
     }
 
-    /// Subscribes to assertion and retraction updates matching the given filter.
+    /// Subscribes to assertion, retraction, and message updates matching the given filter.
     ///
     /// Returns a [`Subscription`] that can be used to asynchronously receive updates. Any
     /// assertions that match the filter at the time of subscribing will be immediately replayed
-    /// into the subscription's pending queue.
+    /// into the subscription's pending queue. Messages are never replayed, so only those sent
+    /// after subscribing are delivered.
     pub fn subscribe<T>(&self, filter: IdentifierFilter) -> Subscription<T>
     where
         T: Clone + Send + Sync + 'static,
@@ -391,7 +448,7 @@ impl DataspaceRegistry {
                     .current_values
                     .get(&key)
                     .and_then(|stored| stored.value.downcast_ref::<T>())
-                    .map(|value| AssertionUpdate::Asserted(id.clone(), value.clone()))
+                    .map(|value| DataspaceUpdate::Asserted(id.clone(), value.clone()))
                     .into_iter()
                     .collect();
 
@@ -410,7 +467,7 @@ impl DataspaceRegistry {
                         stored
                             .value
                             .downcast_ref::<T>()
-                            .map(|value| AssertionUpdate::Asserted(key.identifier.clone(), value.clone()))
+                            .map(|value| DataspaceUpdate::Asserted(key.identifier.clone(), value.clone()))
                     })
                     .collect();
 
@@ -422,21 +479,21 @@ impl DataspaceRegistry {
 
 /// A subscription to updates for a specific type/identifier combination.
 pub struct Subscription<T> {
-    pending: VecDeque<AssertionUpdate<T>>,
-    rx: broadcast::Receiver<AssertionUpdate<T>>,
+    pending: VecDeque<DataspaceUpdate<T>>,
+    rx: broadcast::Receiver<DataspaceUpdate<T>>,
 }
 
 impl<T> Subscription<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    /// Receives the next assertion or retraction update.
+    /// Receives the next assertion, retraction, or message update.
     ///
     /// Returns `Some(update)` when an update is available, or `None` if the channel has been closed (all senders
-    /// dropped). If messages were missed due to the subscriber falling behind, the missed messages are skipped and the
+    /// dropped). If updates were missed due to the subscriber falling behind, the missed updates are skipped and the
     /// next available update is returned.
-    pub async fn recv(&mut self) -> Option<AssertionUpdate<T>> {
-        // TODO: Switch to bounded MPSC channels for delivering assertion/retraction updates.
+    pub async fn recv(&mut self) -> Option<DataspaceUpdate<T>> {
+        // TODO: Switch to bounded MPSC channels for delivering updates.
 
         if let Some(value) = self.pending.pop_front() {
             return Some(value);
@@ -470,7 +527,7 @@ mod tests {
         registry.assert(42u32, id.clone());
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 42)));
     }
 
     #[test]
@@ -484,10 +541,10 @@ mod tests {
         registry.assert(42u32, id.clone());
 
         let mut recv1 = test_spawn(sub1.recv());
-        assert_ready_eq!(recv1.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv1.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
 
         let mut recv2 = test_spawn(sub2.recv());
-        assert_ready_eq!(recv2.poll(), Some(AssertionUpdate::Asserted(id, 42)));
+        assert_ready_eq!(recv2.poll(), Some(DataspaceUpdate::Asserted(id, 42)));
     }
 
     #[test]
@@ -501,7 +558,7 @@ mod tests {
         // A later subscriber should receive the current value.
         let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 42)));
     }
 
     #[test]
@@ -516,12 +573,12 @@ mod tests {
         registry.assert("hello".to_string(), id.clone());
 
         let mut recv_u32 = test_spawn(sub_u32.recv());
-        assert_ready_eq!(recv_u32.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv_u32.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
 
         let mut recv_string = test_spawn(sub_string.recv());
         assert_ready_eq!(
             recv_string.poll(),
-            Some(AssertionUpdate::Asserted(id, "hello".to_string()))
+            Some(DataspaceUpdate::Asserted(id, "hello".to_string()))
         );
     }
 
@@ -535,7 +592,7 @@ mod tests {
         registry.assert(42u32, id.clone());
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 42)));
     }
 
     #[test]
@@ -583,15 +640,15 @@ mod tests {
         registry.assert(3u32, id.clone());
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 1)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 1)));
         drop(recv);
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 2)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 2)));
         drop(recv);
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 3)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 3)));
     }
 
     #[test]
@@ -605,11 +662,11 @@ mod tests {
         registry.retract::<u32>(id.clone());
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
         drop(recv);
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Retracted(id)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Retracted(id)));
     }
 
     #[test]
@@ -634,19 +691,19 @@ mod tests {
 
         // Drain assertion notifications.
         let mut recv1 = test_spawn(sub1.recv());
-        assert_ready_eq!(recv1.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv1.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
         drop(recv1);
 
         let mut recv2 = test_spawn(sub2.recv());
-        assert_ready_eq!(recv2.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv2.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
         drop(recv2);
 
         // Check retraction notifications.
         let mut recv1 = test_spawn(sub1.recv());
-        assert_ready_eq!(recv1.poll(), Some(AssertionUpdate::Retracted(id.clone())));
+        assert_ready_eq!(recv1.poll(), Some(DataspaceUpdate::Retracted(id.clone())));
 
         let mut recv2 = test_spawn(sub2.recv());
-        assert_ready_eq!(recv2.poll(), Some(AssertionUpdate::Retracted(id)));
+        assert_ready_eq!(recv2.poll(), Some(DataspaceUpdate::Retracted(id)));
     }
 
     #[test]
@@ -661,15 +718,15 @@ mod tests {
         registry.assert(2u32, id.clone());
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 1)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 1)));
         drop(recv);
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Retracted(id.clone())));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Retracted(id.clone())));
         drop(recv);
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 2)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 2)));
     }
 
     #[test]
@@ -684,11 +741,11 @@ mod tests {
         registry.assert(2u32, id2.clone());
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id1, 1)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id1, 1)));
         drop(recv);
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id2, 2)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id2, 2)));
     }
 
     #[test]
@@ -702,11 +759,11 @@ mod tests {
         registry.retract::<u32>(id.clone());
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
         drop(recv);
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Retracted(id)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Retracted(id)));
     }
 
     #[test]
@@ -720,10 +777,10 @@ mod tests {
         registry.assert(42u32, id.clone());
 
         let mut recv_specific = test_spawn(specific.recv());
-        assert_ready_eq!(recv_specific.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv_specific.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
 
         let mut recv_all = test_spawn(all.recv());
-        assert_ready_eq!(recv_all.poll(), Some(AssertionUpdate::Asserted(id, 42)));
+        assert_ready_eq!(recv_all.poll(), Some(DataspaceUpdate::Asserted(id, 42)));
     }
 
     #[test]
@@ -737,7 +794,7 @@ mod tests {
         registry.assert(42u32, id.clone());
 
         let mut recv = test_spawn(all.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 42)));
     }
 
     #[test]
@@ -751,7 +808,7 @@ mod tests {
         // Subscribe after asserting -- should immediately get the current value.
         let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 42)));
     }
 
     #[test]
@@ -794,12 +851,12 @@ mod tests {
 
         let mut received = [v1.unwrap(), v2.unwrap()];
         received.sort_by_key(|update| match update {
-            AssertionUpdate::Asserted(_, v) => *v,
-            AssertionUpdate::Retracted(_) => 0,
+            DataspaceUpdate::Asserted(_, v) | DataspaceUpdate::Message(_, v) => *v,
+            DataspaceUpdate::Retracted(_) => 0,
         });
 
-        assert_eq!(received[0], AssertionUpdate::Asserted(id1, 1));
-        assert_eq!(received[1], AssertionUpdate::Asserted(id2, 2));
+        assert_eq!(received[0], DataspaceUpdate::Asserted(id1, 1));
+        assert_eq!(received[1], DataspaceUpdate::Asserted(id2, 2));
     }
 
     #[test]
@@ -817,11 +874,11 @@ mod tests {
 
         // First recv should return the initial value, second should return the broadcast value.
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 1)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 1)));
         drop(recv);
 
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 2)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 2)));
     }
 
     #[test]
@@ -847,12 +904,12 @@ mod tests {
 
         let mut received = [v1.unwrap(), v2.unwrap()];
         received.sort_by_key(|update| match update {
-            AssertionUpdate::Asserted(_, v) => *v,
-            AssertionUpdate::Retracted(_) => 0,
+            DataspaceUpdate::Asserted(_, v) | DataspaceUpdate::Message(_, v) => *v,
+            DataspaceUpdate::Retracted(_) => 0,
         });
 
-        assert_eq!(received[0], AssertionUpdate::Asserted(id1, 1));
-        assert_eq!(received[1], AssertionUpdate::Asserted(id2, 2));
+        assert_eq!(received[0], DataspaceUpdate::Asserted(id1, 1));
+        assert_eq!(received[1], DataspaceUpdate::Asserted(id2, 2));
     }
 
     #[test]
@@ -895,12 +952,12 @@ mod tests {
 
         let mut received = [v1.unwrap(), v2.unwrap()];
         received.sort_by_key(|update| match update {
-            AssertionUpdate::Asserted(_, v) => *v,
-            AssertionUpdate::Retracted(_) => 0,
+            DataspaceUpdate::Asserted(_, v) | DataspaceUpdate::Message(_, v) => *v,
+            DataspaceUpdate::Retracted(_) => 0,
         });
 
-        assert_eq!(received[0], AssertionUpdate::Asserted(id1, 1));
-        assert_eq!(received[1], AssertionUpdate::Asserted(id2, 2));
+        assert_eq!(received[0], DataspaceUpdate::Asserted(id1, 1));
+        assert_eq!(received[1], DataspaceUpdate::Asserted(id2, 2));
     }
 
     #[test]
@@ -924,7 +981,7 @@ mod tests {
 
             let mut sub = registry_clone.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
             let value = sub.recv().await;
-            assert_eq!(value, Some(AssertionUpdate::Asserted(id, 42)));
+            assert_eq!(value, Some(DataspaceUpdate::Asserted(id, 42)));
         }));
         assert_ready!(scope_fut.poll());
     }
@@ -960,11 +1017,11 @@ mod tests {
 
         // Both subscribers should receive retraction notifications.
         let mut recv = test_spawn(sub1.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Retracted(id1)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Retracted(id1)));
         drop(recv);
 
         let mut recv = test_spawn(sub2.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Retracted(id2)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Retracted(id2)));
     }
 
     #[test]
@@ -988,7 +1045,7 @@ mod tests {
         // Process B's value should still be available to new subscribers.
         let mut sub_b = registry.subscribe::<u32>(IdentifierFilter::exact(id_b.clone()));
         let mut recv = test_spawn(sub_b.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id_b, 2)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id_b, 2)));
         drop(recv);
 
         // Process A's value should not be available.
@@ -1012,7 +1069,7 @@ mod tests {
 
         // Receive the assertion.
         let mut recv = test_spawn(all_sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
         drop(recv);
 
         // Retract all for the process.
@@ -1020,7 +1077,7 @@ mod tests {
 
         // Should receive the retraction on the wildcard subscription.
         let mut recv = test_spawn(all_sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Retracted(id)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Retracted(id)));
     }
 
     #[test]
@@ -1090,7 +1147,7 @@ mod tests {
 
         // The subscriber should now be woken and have the assertion update.
         assert!(recv_fut.is_woken());
-        assert_ready_eq!(recv_fut.poll(), Some(AssertionUpdate::Asserted(id.into(), 42)));
+        assert_ready_eq!(recv_fut.poll(), Some(DataspaceUpdate::Asserted(id.into(), 42)));
 
         drop(recv_fut);
 
@@ -1104,7 +1161,7 @@ mod tests {
 
         // The drop should have woken the subscriber.
         assert!(recv_fut.is_woken());
-        assert_ready_eq!(recv_fut.poll(), Some(AssertionUpdate::Retracted(id.into())));
+        assert_ready_eq!(recv_fut.poll(), Some(DataspaceUpdate::Retracted(id.into())));
     }
 
     #[test]
@@ -1133,7 +1190,7 @@ mod tests {
 
         // The subscriber should now be woken and have the assertion update.
         assert!(recv_fut.is_woken());
-        assert_ready_eq!(recv_fut.poll(), Some(AssertionUpdate::Asserted(id.into(), 42)));
+        assert_ready_eq!(recv_fut.poll(), Some(DataspaceUpdate::Asserted(id.into(), 42)));
 
         drop(recv_fut);
 
@@ -1147,7 +1204,7 @@ mod tests {
 
         // The drop should have woken the subscriber with a retraction.
         assert!(recv_fut.is_woken());
-        assert_ready_eq!(recv_fut.poll(), Some(AssertionUpdate::Retracted(id.into())));
+        assert_ready_eq!(recv_fut.poll(), Some(DataspaceUpdate::Retracted(id.into())));
     }
 
     #[test]
@@ -1182,10 +1239,10 @@ mod tests {
         // Both subscribers should now be woken and have the assertion updates.
         assert!(recv_u32_fut.is_woken());
         assert!(recv_str_fut.is_woken());
-        assert_ready_eq!(recv_u32_fut.poll(), Some(AssertionUpdate::Asserted(id_num.into(), 42)));
+        assert_ready_eq!(recv_u32_fut.poll(), Some(DataspaceUpdate::Asserted(id_num.into(), 42)));
         assert_ready_eq!(
             recv_str_fut.poll(),
-            Some(AssertionUpdate::Asserted(id_str.into(), "hello".to_string()))
+            Some(DataspaceUpdate::Asserted(id_str.into(), "hello".to_string()))
         );
 
         drop(recv_u32_fut);
@@ -1204,8 +1261,8 @@ mod tests {
 
         assert!(recv_u32.is_woken());
         assert!(recv_str.is_woken());
-        assert_ready_eq!(recv_u32.poll(), Some(AssertionUpdate::Retracted(id_num.into())));
-        assert_ready_eq!(recv_str.poll(), Some(AssertionUpdate::Retracted(id_str.into())));
+        assert_ready_eq!(recv_u32.poll(), Some(DataspaceUpdate::Retracted(id_num.into())));
+        assert_ready_eq!(recv_str.poll(), Some(DataspaceUpdate::Retracted(id_str.into())));
     }
 
     #[test]
@@ -1229,7 +1286,7 @@ mod tests {
         // Value should still be present for new subscribers.
         let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
         drop(recv);
 
         // Retract as process A -- should succeed.
@@ -1239,7 +1296,7 @@ mod tests {
 
         // Subscriber should receive the retraction.
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Retracted(id)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Retracted(id)));
     }
 
     #[test]
@@ -1281,7 +1338,7 @@ mod tests {
         // Value should still be the original.
         let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id.clone(), 42)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 42)));
         drop(recv);
 
         // Update as process A -- should succeed.
@@ -1291,7 +1348,7 @@ mod tests {
 
         // Subscriber should receive the update.
         let mut recv = test_spawn(sub.recv());
-        assert_ready_eq!(recv.poll(), Some(AssertionUpdate::Asserted(id, 100)));
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id, 100)));
     }
 
     #[test]
@@ -1310,5 +1367,189 @@ mod tests {
         crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_b, || {
             registry.assert(99u32, id.clone());
         });
+    }
+
+    #[test]
+    fn message_delivered_to_current_subscriber() {
+        let registry = DataspaceRegistry::new();
+        let id = Identifier::numeric(1);
+
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
+        registry.send(7u32, id.clone());
+
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Message(id, 7)));
+    }
+
+    #[test]
+    fn message_not_replayed_to_late_subscriber() {
+        let registry = DataspaceRegistry::new();
+        let id = Identifier::numeric(1);
+
+        // Send a message before anyone subscribes -- it should be dropped, not stored.
+        registry.send(7u32, id.clone());
+
+        // The message must not have been stored as a current value.
+        assert!(registry.current_values::<u32>(IdentifierFilter::all()).is_empty());
+
+        // A subscriber that turns up afterward receives nothing; dropping the registry closes the channel.
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id));
+        drop(registry);
+
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), None);
+    }
+
+    #[test]
+    fn message_delivered_to_all_filter() {
+        let registry = DataspaceRegistry::new();
+        let id = Identifier::numeric(1);
+
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::all());
+        registry.send(7u32, id.clone());
+
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Message(id, 7)));
+    }
+
+    #[test]
+    fn message_delivered_to_prefix_filter() {
+        let registry = DataspaceRegistry::new();
+        let matching = Identifier::named("svc.alpha");
+        let non_matching = Identifier::named("other.beta");
+
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::prefix("svc."));
+
+        // A message to a non-matching identifier must not be delivered; a matching one must be.
+        registry.send(1u32, non_matching);
+        registry.send(2u32, matching.clone());
+
+        // The first (and only) update received is the matching message, proving the non-matching one was filtered out.
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Message(matching, 2)));
+    }
+
+    #[test]
+    fn subscription_interleaves_assert_message_retract_in_order() {
+        let registry = DataspaceRegistry::new();
+        let id = Identifier::numeric(1);
+
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
+
+        registry.assert(1u32, id.clone());
+        registry.send(2u32, id.clone());
+        registry.retract::<u32>(id.clone());
+
+        // A single subscription observes all three kinds of update, in send order, over the same channel.
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 1)));
+        drop(recv);
+
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Message(id.clone(), 2)));
+        drop(recv);
+
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Retracted(id)));
+    }
+
+    #[test]
+    fn message_without_subscribers_is_noop() {
+        let registry = DataspaceRegistry::new();
+        let id = Identifier::numeric(1);
+
+        // Sending with no subscribers must not panic and must not store anything.
+        registry.send(7u32, id.clone());
+        assert!(registry.current_values::<u32>(IdentifierFilter::all()).is_empty());
+
+        // A later subscriber receives nothing (no replay); dropping the registry closes the channel.
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id));
+        drop(registry);
+
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), None);
+    }
+
+    #[test]
+    fn message_does_not_clobber_current_assertion() {
+        let registry = DataspaceRegistry::new();
+        let id = Identifier::numeric(1);
+
+        // A pre-existing subscriber, to observe live updates in order.
+        let mut existing = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
+
+        registry.assert(1u32, id.clone());
+        registry.send(2u32, id.clone());
+
+        // The stored current value is still the assertion, unaffected by the message.
+        assert_eq!(
+            registry.current_values::<u32>(IdentifierFilter::exact(id.clone())),
+            vec![1]
+        );
+
+        // A new subscriber replays only the assertion (messages are never replayed).
+        let mut late = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
+        let mut recv = test_spawn(late.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 1)));
+        drop(recv);
+
+        // The pre-existing subscriber sees the assertion, then the message.
+        let mut recv = test_spawn(existing.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 1)));
+        drop(recv);
+
+        let mut recv = test_spawn(existing.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Message(id, 2)));
+    }
+
+    #[test]
+    fn message_delivered_to_multiple_subscribers() {
+        let registry = DataspaceRegistry::new();
+        let id = Identifier::numeric(1);
+
+        // One exact and one wildcard subscriber, to exercise both dispatch paths.
+        let mut sub_exact = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
+        let mut sub_all = registry.subscribe::<u32>(IdentifierFilter::all());
+
+        registry.send(7u32, id.clone());
+
+        let mut recv = test_spawn(sub_exact.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Message(id.clone(), 7)));
+
+        let mut recv = test_spawn(sub_all.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Message(id, 7)));
+    }
+
+    #[test]
+    fn send_from_non_owner_process_succeeds() {
+        let registry = DataspaceRegistry::new();
+        let pid_a = Id::new();
+        let pid_b = Id::new();
+        let id = Identifier::named("owned_by_a");
+
+        let mut sub = registry.subscribe::<u32>(IdentifierFilter::exact(id.clone()));
+
+        // Process A asserts a value.
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_a, || {
+            registry.assert(1u32, id.clone());
+        });
+
+        // Process B sends a message for the same type/identifier -- messages bypass the ownership check and do not
+        // panic, even in debug builds.
+        crate::runtime::process::CURRENT_PROCESS_ID.sync_scope(pid_b, || {
+            registry.send(2u32, id.clone());
+        });
+
+        // The subscriber receives A's assertion, then B's message.
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Asserted(id.clone(), 1)));
+        drop(recv);
+
+        let mut recv = test_spawn(sub.recv());
+        assert_ready_eq!(recv.poll(), Some(DataspaceUpdate::Message(id.clone(), 2)));
+        drop(recv);
+
+        // The assertion's stored value is untouched by the message.
+        assert_eq!(registry.current_values::<u32>(IdentifierFilter::exact(id)), vec![1]);
     }
 }
