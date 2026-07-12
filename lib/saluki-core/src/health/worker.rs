@@ -5,8 +5,9 @@ use saluki_error::generic_error;
 
 use super::HealthRegistry;
 use crate::{
-    diagnostic::DiagnosticHandle,
+    diagnostic::DiagnosticsEmitter,
     runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
+    support::SubsystemIdentifier,
 };
 
 /// A worker that runs the health registry.
@@ -36,15 +37,18 @@ impl Supervisable for HealthRegistryWorker {
         let health_routes = DynamicRoute::http(EndpointType::Unprivileged, self.health_registry.api_handler());
 
         let health_registry = self.health_registry.clone();
-        let flare_handle = DiagnosticHandle::new("health.json", move || health_registry.snapshot_json().into_bytes());
 
         Ok(Box::pin(async move {
             let dataspace =
                 DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
-            // Register our API routes and diagnostic artifact handle before we actually start running.
+            // Register our API routes before we actually start running.
             dataspace.assert(health_routes, "health-registry-api");
-            dataspace.assert(flare_handle, "diag-health");
+
+            // Expose our diagnostic artifact via the diagnostics control surface.
+            let diagnostics =
+                DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["health-registry"]), dataspace);
+            diagnostics.register_collector("health.json", move || health_registry.snapshot_json().into_bytes());
 
             // We pass the shutdown handle into the runner here, instead of our usual `select! { shutdown => ...,
             // main_loop_future => ... }` pattern because we try to ensure that we give back the liveness receiver

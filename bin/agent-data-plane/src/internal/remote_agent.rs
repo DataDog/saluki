@@ -20,7 +20,7 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
 use saluki_core::{
-    diagnostic::DiagnosticHandle,
+    diagnostic::DiagnosticCollector,
     observability::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor},
     runtime::{
         state::{DataspaceRegistry, IdentifierFilter},
@@ -585,7 +585,7 @@ impl FlareProvider for RemoteAgentImpl {
 
                 // Grab and collect all asserted diagnostic handles
                 if let Some(dataspace) = self.dataspace.get() {
-                    let handles = dataspace.current_values::<DiagnosticHandle>(IdentifierFilter::all());
+                    let handles = dataspace.current_values::<DiagnosticCollector>(IdentifierFilter::all());
                     let total_handles = handles.len();
                     let deadline = tokio::time::Instant::now() + DIAGNOSTIC_COLLECT_TIMEOUT;
 

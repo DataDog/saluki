@@ -11,8 +11,9 @@ use saluki_api::{
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_config::GenericConfiguration;
 use saluki_core::{
-    diagnostic::DiagnosticHandle,
+    diagnostic::DiagnosticsEmitter,
     runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
+    support::SubsystemIdentifier,
 };
 use saluki_error::generic_error;
 use serde_json::Value;
@@ -91,19 +92,21 @@ impl Supervisable for ConfigWorker {
         let config_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
         let config = self.handler.state.config.clone();
-        let flare_handle = DiagnosticHandle::new("runtime_config_dump.yaml", move || {
-            config
-                .as_typed::<serde_json::Value>()
-                .map(|v| serde_json::to_vec_pretty(&v).unwrap_or_default())
-                .unwrap_or_default()
-        });
 
         Ok(Box::pin(async move {
             let dataspace =
                 DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
             dataspace.assert(config_route, "config-api");
-            dataspace.assert(flare_handle, "diag-config");
+
+            let diagnostics =
+                DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["config-api"]), dataspace);
+            diagnostics.register_collector("runtime_config_dump.yaml", move || {
+                config
+                    .as_typed::<serde_json::Value>()
+                    .map(|v| serde_json::to_vec_pretty(&v).unwrap_or_default())
+                    .unwrap_or_default()
+            });
 
             process_shutdown.await;
             Ok(())
