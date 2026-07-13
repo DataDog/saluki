@@ -198,28 +198,20 @@ pub fn otel_span_to_dd_span(
 
     if let Some(scope) = instrumentation_scope {
         if !scope.name.is_empty() {
-            attrs.insert(
-                MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY),
-                AttributeValue::String(scope.name.as_str().into()),
-            );
+            // Build the value once and reuse it for both the deprecated `otel.library.*` and current `otel.scope.*`
+            // keys; cloning a `MetaString`-backed `AttributeValue` is cheaper than re-converting the source string.
+            let name = AttributeValue::String(scope.name.as_str().into());
             if EMIT_OTEL_SCOPE_META {
-                attrs.insert(
-                    MetaString::from_static(OTEL_SCOPE_NAME_META_KEY),
-                    AttributeValue::String(scope.name.as_str().into()),
-                );
+                attrs.insert(MetaString::from_static(OTEL_SCOPE_NAME_META_KEY), name.clone());
             }
+            attrs.insert(MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY), name);
         }
         if !scope.version.is_empty() {
-            attrs.insert(
-                MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY),
-                AttributeValue::String(scope.version.as_str().into()),
-            );
+            let version = AttributeValue::String(scope.version.as_str().into());
             if EMIT_OTEL_SCOPE_META {
-                attrs.insert(
-                    MetaString::from_static(OTEL_SCOPE_VERSION_META_KEY),
-                    AttributeValue::String(scope.version.as_str().into()),
-                );
+                attrs.insert(MetaString::from_static(OTEL_SCOPE_VERSION_META_KEY), version.clone());
             }
+            attrs.insert(MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY), version);
         }
     }
 
