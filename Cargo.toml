@@ -281,6 +281,7 @@ codegen-units = 1
 inherits = "release"
 debug-assertions = false
 overflow-checks = false
+# IBM Open SDK for Rust 1.92 on AIX fails LTO during final linking with `Can't find section .ipa`.
 lto = false
 codegen-units = 1
 
