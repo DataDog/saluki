@@ -420,15 +420,27 @@ impl OtlpMetricsTranslator {
         let resource = resource_metrics.resource.unwrap_or_default();
         let source = self.attribute_translator.resource_to_source(&resource);
 
-        let attribute_tags = self.attribute_translator.tags_from_attributes(&resource.attributes);
+        let attribute_tags = self
+            .attribute_translator
+            .tags_from_attributes(&resource.attributes)
+            .into_shared();
 
         // When `resource_attributes_as_tags` is enabled, the Agent copies every resource attribute
         // onto each data point as a raw tag, in addition to the semantic-convention mappings above.
         let raw_resource_tags = if self.config.resource_attributes_as_tags {
-            self.attribute_translator.raw_tags_from_attributes(&resource.attributes)
+            self.attribute_translator
+                .raw_tags_from_attributes(&resource.attributes)
+                .into_shared()
         } else {
-            TagSet::default()
+            SharedTagSet::default()
         };
+
+        // Keep configured and resource-derived tags in shared chunks. The context resolver
+        // deduplicates exact tag values when it materializes a cached tag set, while this avoids
+        // rebuilding the resource tags for every instrumentation scope.
+        let mut resource_tags = self.metric_tags.clone();
+        resource_tags.extend_from_shared(&attribute_tags);
+        resource_tags.extend_from_shared(&raw_resource_tags);
 
         // TODO: https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L736-L753
         let host = match source {
@@ -440,17 +452,8 @@ impl OtlpMetricsTranslator {
         };
 
         for scope_metrics in resource_metrics.scope_metrics {
-            let tags = {
-                let mut mutable_tags = TagSet::default();
-                for tag in &self.metric_tags {
-                    mutable_tags.insert_tag(tag.clone());
-                }
-                for tag in &attribute_tags {
-                    mutable_tags.insert_tag(tag.clone());
-                }
-                for tag in &raw_resource_tags {
-                    mutable_tags.insert_tag(tag.clone());
-                }
+            let scope_tags = {
+                let mut tags = TagSet::default();
 
                 if self.config.instrumentation_scope_metadata_as_tags {
                     // Always add instrumentation scope tags, even if scope is `None`
@@ -460,17 +463,21 @@ impl OtlpMetricsTranslator {
                         None => instrumentationscope::tags_from_empty_instrumentation_scope(),
                     };
                     for tag in scope_tags {
-                        mutable_tags.insert_tag(tag);
+                        tags.insert_tag(tag);
                     }
                 } else if self.config.instrumentation_library_metadata_as_tags {
                     if let Some(scope) = &scope_metrics.scope {
                         for tag in instrumentationlibrary::tags_from_instrumentation_library_metadata(scope) {
-                            mutable_tags.insert_tag(tag);
+                            tags.insert_tag(tag);
                         }
                     }
                 }
-                mutable_tags.into_shared()
+
+                tags.into_shared()
             };
+
+            let mut tags = resource_tags.clone();
+            tags.extend_from_shared(&scope_tags);
 
             let mut new_metrics: Vec<OtlpMetric> = Vec::new();
             for mut metric in scope_metrics.metrics {
@@ -1609,6 +1616,13 @@ mod tests {
         let mut translator = OtlpMetricsTranslator::for_tests();
         translator.config.resource_attributes_as_tags = true;
 
+        // Configured tags and resource tags may be stored in separate shared chunks. Exact
+        // duplicates must still resolve to one tag in the metric context.
+        let mut configured_tags = TagSet::default();
+        configured_tags.insert_tag("service:otlp-test");
+        configured_tags.insert_tag("custom.resource.attribute:present");
+        translator.metric_tags = configured_tags.into_shared();
+
         let resource_metrics = single_gauge_with_resource_attributes(vec![
             string_attribute("service.name", "otlp-test"),
             string_attribute("custom.resource.attribute", "present"),
@@ -1632,6 +1646,13 @@ mod tests {
         assert_eq!(
             tags.get_single_tag("custom.resource.attribute"),
             Some(&Tag::from("custom.resource.attribute:present"))
+        );
+        assert_eq!(tags.into_iter().filter(|tag| tag.name() == "service").count(), 1);
+        assert_eq!(
+            tags.into_iter()
+                .filter(|tag| tag.name() == "custom.resource.attribute")
+                .count(),
+            1
         );
     }
 
