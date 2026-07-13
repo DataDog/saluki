@@ -256,7 +256,7 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
-    /// `otlp_config.metrics.resource_attributes_as_tags`-Add resource attributes as raw metric tags.
+    /// `otlp_config.metrics.resource_attributes_as_tags`-Add scalar resource attributes as raw tags.
     OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS,
         support_level: SupportLevel::Full,
@@ -267,7 +267,7 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
-    /// `otlp_config.metrics.tags`-Tags added to all OTLP metrics.
+    /// `otlp_config.metrics.tags`-Comma-separated tags for all OTLP metrics.
     OTLP_CONFIG_METRICS_TAGS = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_TAGS,
         support_level: SupportLevel::Full,

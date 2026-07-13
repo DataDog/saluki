@@ -52,6 +52,19 @@ use self::resolver::build_context_resolver;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 
+/// Parses `otlp_config.metrics.tags` into a set of tags added to every emitted metric.
+///
+/// The value is a comma-separated list. An empty configuration yields no tags.
+fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
+    let mut tags = TagSet::default();
+    if !raw.is_empty() {
+        for tag in raw.split(',') {
+            tags.insert_tag(tag);
+        }
+    }
+    tags.into_shared()
+}
+
 const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
 }
@@ -206,16 +219,7 @@ impl SourceBuilder for OtlpConfiguration {
             .with_quantiles(true)
             .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags);
 
-        // `otlp_config.metrics.tags` is a comma-separated list added to every emitted metric.
-        let metric_tags = {
-            let mut tags = TagSet::default();
-            if !self.otlp_config.metrics.tags.is_empty() {
-                for tag in self.otlp_config.metrics.tags.split(',') {
-                    tags.insert_tag(tag);
-                }
-            }
-            tags.into_shared()
-        };
+        let metric_tags = parse_configured_metric_tags(&self.otlp_config.metrics.tags);
         let traces_interner_size =
             std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
                 .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
@@ -543,5 +547,40 @@ mod config_smoke {
             DatadogRemapper::new,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_configured_metric_tags;
+
+    fn tags(raw: &str) -> Vec<String> {
+        parse_configured_metric_tags(raw)
+            .into_iter()
+            .map(|t| t.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn empty_configuration_yields_no_tags() {
+        assert!(tags("").is_empty());
+    }
+
+    #[test]
+    fn single_tag_is_parsed() {
+        assert_eq!(tags("env:prod"), vec!["env:prod".to_string()]);
+    }
+
+    #[test]
+    fn multiple_tags_are_split_on_comma() {
+        assert_eq!(
+            tags("env:prod,team:core"),
+            vec!["env:prod".to_string(), "team:core".to_string()]
+        );
+    }
+
+    #[test]
+    fn duplicate_tags_are_deduplicated() {
+        assert_eq!(tags("env:prod,env:prod"), vec!["env:prod".to_string()]);
     }
 }

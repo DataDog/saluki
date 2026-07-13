@@ -2002,7 +2002,7 @@ inventory:
   otlp_config.metrics.resource_attributes_as_tags:
     support: full
     pipelines: [otlp]
-    description: "Add resource attributes as raw metric tags."
+    description: "Add scalar resource attributes as raw tags."
     test_support:
       used_by: [OtlpConfiguration]
       additional_attributes:
@@ -2011,7 +2011,7 @@ inventory:
   otlp_config.metrics.tags:
     support: full
     pipelines: [otlp]
-    description: "Tags added to all OTLP metrics."
+    description: "Comma-separated tags for all OTLP metrics."
     test_support:
       used_by: [OtlpConfiguration]
       additional_attributes:

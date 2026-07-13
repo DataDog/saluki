@@ -14,9 +14,12 @@ pub mod translator;
 /// Controls which resource attributes are converted into tags.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceAttributeTagMode {
-    /// Add only recognized semantic-convention and Datadog mappings.
+    /// Add only recognized mappings (semantic-convention, Kubernetes, Datadog, and container).
     Mapped,
-    /// Add recognized mappings and every scalar resource attribute under its original key.
+    /// Add recognized mappings plus every scalar attribute under its original key.
+    ///
+    /// Strings, booleans, integers, and floating-point values are supported; bytes, arrays, and
+    /// key-value lists are omitted.
     All,
 }
 
@@ -201,6 +204,8 @@ pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: Resource
         if mode == ResourceAttributeTagMode::All {
             if let Some(value) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
                 if let Some(value) = raw_tag_value(value) {
+                    // Empty values render as `n/a`, matching the Agent's `FormatKeyValueTag`.
+                    let value = if value.is_empty() { "n/a" } else { value.as_str() };
                     tags.insert_tag(format!("{}:{}", kv.key, value));
                 }
             }
@@ -213,13 +218,15 @@ pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: Resource
     tags
 }
 
+/// Renders a scalar attribute value as a tag value string.
+///
+/// Bytes, arrays, and key-value lists return `None` and are not converted to tags.
 fn raw_tag_value(value: &Value) -> Option<String> {
     match value {
         Value::StringValue(value) => Some(value.clone()),
         Value::BoolValue(value) => Some(value.to_string()),
         Value::IntValue(value) => Some(value.to_string()),
         Value::DoubleValue(value) => Some(value.to_string()),
-        // Other types (bytes, array, kvlist) are not converted to tags.
         _ => None,
     }
 }
@@ -303,4 +310,96 @@ pub fn get_int_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str)
             None
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use otlp_common::any_value::Value;
+    use otlp_common::{AnyValue, KeyValue};
+
+    use super::*;
+
+    fn attr(key: &str, value: Value) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue { value: Some(value) }),
+        }
+    }
+
+    fn has(tags: &TagSet, tag: &str) -> bool {
+        tags.into_iter().any(|t| t.as_str() == tag)
+    }
+
+    #[test]
+    fn mapped_mode_emits_only_recognized_mappings() {
+        let attributes = vec![
+            attr("service.name", Value::StringValue("api".into())),
+            attr("custom.resource.attribute", Value::StringValue("present".into())),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(has(&tags, "service:api"));
+        assert!(!has(&tags, "service.name:api"));
+        assert!(!has(&tags, "custom.resource.attribute:present"));
+    }
+
+    #[test]
+    fn all_mode_emits_scalar_types_and_preserves_mappings() {
+        let attributes = vec![
+            attr("service.name", Value::StringValue("api".into())),
+            attr("custom.string", Value::StringValue("s".into())),
+            attr("custom.bool", Value::BoolValue(true)),
+            attr("custom.int", Value::IntValue(42)),
+            attr("custom.double", Value::DoubleValue(1.5)),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::All);
+
+        // Recognized mapping is preserved alongside the raw attribute.
+        assert!(has(&tags, "service:api"));
+        assert!(has(&tags, "service.name:api"));
+
+        assert!(has(&tags, "custom.string:s"));
+        assert!(has(&tags, "custom.bool:true"));
+        assert!(has(&tags, "custom.int:42"));
+        assert!(has(&tags, "custom.double:1.5"));
+    }
+
+    #[test]
+    fn all_mode_skips_non_scalar_values() {
+        let attributes = vec![
+            attr("custom.bytes", Value::BytesValue(vec![1, 2, 3])),
+            attr(
+                "custom.array",
+                Value::ArrayValue(otlp_common::ArrayValue { values: vec![] }),
+            ),
+            attr(
+                "custom.kvlist",
+                Value::KvlistValue(otlp_common::KeyValueList { values: vec![] }),
+            ),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::All);
+
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn all_mode_renders_empty_value_as_na() {
+        let attributes = vec![attr("custom.empty", Value::StringValue(String::new()))];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::All);
+
+        assert!(has(&tags, "custom.empty:n/a"));
+    }
+
+    #[test]
+    fn mapped_mode_skips_empty_recognized_value() {
+        let attributes = vec![attr("service.name", Value::StringValue(String::new()))];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(tags.is_empty());
+    }
 }

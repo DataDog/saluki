@@ -46,8 +46,8 @@ pub struct OtlpMetricsTranslatorConfig {
     pub initial_cumul_mono_value_mode: InitialCumulMonoValueMode,
     pub instrumentation_scope_metadata_as_tags: bool,
     pub instrumentation_library_metadata_as_tags: bool,
-    // Reports whether all resource attributes should be added as raw tags on emitted metrics, in
-    // addition to the semantic-convention mappings that are always applied.
+    // Whether scalar resource attributes should be added as raw tags on emitted metrics, in
+    // addition to the recognized mappings that are always applied.
     pub resource_attributes_as_tags: bool,
     // Reports whether certain metrics that are only available when using
     // the Datadog Agent should be obtained by remapping from OTEL counterparts (for example,

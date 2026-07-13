@@ -166,19 +166,19 @@ pub struct MetricsConfig {
     #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
 
-    /// Whether to add all resource attributes as tags on emitted metrics.
+    /// Whether to add scalar resource attributes as raw tags on emitted metrics.
     ///
-    /// When enabled, every resource attribute is emitted as a raw `key:value` tag, in addition to
-    /// the semantic-convention mappings that are always applied. Mirrors the Agent's
-    /// `otlp_config.metrics.resource_attributes_as_tags`.
+    /// Recognized mappings are always applied. When enabled, supported scalar resource attributes
+    /// (string, bool, integer, float) are also emitted as raw `key:value` tags under their original
+    /// keys. Corresponds to `otlp_config.metrics.resource_attributes_as_tags`.
     ///
     /// Defaults to `false`.
     #[serde(default)]
     pub resource_attributes_as_tags: bool,
 
-    /// Comma-separated list of tags to add to every emitted metric.
+    /// Comma-separated tags added to every emitted metric.
     ///
-    /// Mirrors the Agent's `otlp_config.metrics.tags`.
+    /// Corresponds to `otlp_config.metrics.tags`.
     ///
     /// Defaults to empty.
     #[serde(default)]
