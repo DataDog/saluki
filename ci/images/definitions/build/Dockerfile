@@ -20,6 +20,7 @@ COPY bin/agent-data-plane/Cargo.toml /tmp/bin/agent-data-plane/Cargo.toml
 FROM ${BASE_IMAGE}
 
 ARG RUST_VERSION=1.94.0
+ARG TARGETARCH
 
 # The Agent build image runs as a non-root `dd` user by default; switch to root for all install steps.
 USER root
