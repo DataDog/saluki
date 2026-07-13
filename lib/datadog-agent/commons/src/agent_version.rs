@@ -22,7 +22,7 @@ include!(concat!(env!("OUT_DIR"), "/details.rs"));
 
 /// Raw Agent version string that ADP was built against, as detected at build time.
 ///
-/// This is the verbatim `DD_AGENT_VERSION` value (e.g. `"7.81.0-full"` or `"nightly"`), suitable for display in
+/// This is the verbatim `DD_AGENT_VERSION` value (for example, `"7.81.0-full"` or `"nightly"`), suitable for display in
 /// diagnostics. Returns `None` when `DD_AGENT_VERSION` was not set at build time.
 pub fn version_string() -> Option<&'static str> {
     if DETECTED_AGENT_VERSION.is_empty() {
@@ -49,7 +49,7 @@ pub fn version() -> Option<AgentVersion> {
 
 /// Returns `true` if the Agent version is at least `major.minor.patch`.
 ///
-/// When the Agent version is unknown (i.e. `DD_AGENT_VERSION` was not set at build time), this returns `true`:
+/// When the Agent version is unknown (that is, `DD_AGENT_VERSION` was not set at build time), this returns `true`:
 /// absent an explicit older-version signal, ADP defaults to the most recent behavior.
 pub fn meets(major: u64, minor: u64, patch: u64) -> bool {
     version().is_none_or(|v| v.meets(major, minor, patch))
@@ -71,7 +71,7 @@ impl AgentVersion {
     /// Development/pre-release builds (identified by a `devel`, `dev`, `nightly`, or `master` marker) are considered
     /// newer than every numbered release, since they track the bleeding edge of Agent behavior.
     ///
-    /// Returns `None` if the string is empty or carries neither a parseable `MAJOR` component nor a development marker.
+    /// Returns `None` if the string is empty or carries neither a numeric `MAJOR` component nor a development marker.
     pub fn parse(raw: &str) -> Option<Self> {
         let raw = raw.trim();
         if raw.is_empty() {
