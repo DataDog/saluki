@@ -19,11 +19,38 @@ jobs:
           scope: DataDog/saluki
           policy: self.bump-adp-version.create-pr
 
+      - name: Determine release type and target branch
+        id: release-info
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+
+          if [[ "$TAG_NAME" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+
+            if [[ "$PATCH" == "0" ]]; then
+              TARGET_BRANCH="main"
+              RELEASE_TYPE="minor"
+            else
+              TARGET_BRANCH="release/${MAJOR}.${MINOR}.x"
+              RELEASE_TYPE="patch"
+            fi
+          else
+            # workflow_dispatch without a version tag: default to minor bump on main
+            TARGET_BRANCH="main"
+            RELEASE_TYPE="minor"
+          fi
+
+          echo "Release type: $RELEASE_TYPE, target branch: $TARGET_BRANCH"
+          echo "target_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+          echo "release_type=$RELEASE_TYPE" >> $GITHUB_OUTPUT
+
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           token: "${{ steps.octo-sts.outputs.token }}"
-          ref: main
+          ref: ${{ steps.release-info.outputs.target_branch }}
 
       - name: Configure Git
         run: |
@@ -38,8 +65,15 @@ jobs:
 
           MAJOR=$(echo $CURRENT_VERSION | cut -d '.' -f 1)
           MINOR=$(echo $CURRENT_VERSION | cut -d '.' -f 2)
-          NEW_MINOR=$((MINOR + 1))
-          NEW_VERSION="${MAJOR}.${NEW_MINOR}.0"
+          PATCH=$(echo $CURRENT_VERSION | cut -d '.' -f 3)
+
+          if [[ "${{ steps.release-info.outputs.release_type }}" == "minor" ]]; then
+            NEW_MINOR=$((MINOR + 1))
+            NEW_VERSION="${MAJOR}.${NEW_MINOR}.0"
+          else
+            NEW_PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          fi
 
           echo "New version: $NEW_VERSION"
           echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
@@ -103,6 +137,7 @@ jobs:
             - [x] Non-functional (chore, refactoring, docs)
             - [ ] Performance`;
             const prLabel = 'ci/bump-adp-version';
+            const targetBranch = '${{ steps.release-info.outputs.target_branch }}';
 
             // Make sure we don't have an open PR for the exact same change.
             const { data: exactPRData } = await github.rest.search.issuesAndPullRequests({
@@ -122,7 +157,7 @@ jobs:
               repo: context.repo.repo,
               title: prTitle,
               head: branchName,
-              base: 'main',
+              base: targetBranch,
               body: prBody,
             });
             console.log(`Pull request created: ${updatePR.data.html_url}`);
@@ -135,9 +170,11 @@ jobs:
               labels: [prLabel, 'automated']
             });
 
-            // Look for other open PRs for bumping the ADP version, and close them out so this one takes precedence.
+            // Look for other open PRs bumping the ADP version on the same target branch, and close them out so this
+            // one takes precedence. Scoping by base branch keeps minor bumps (main) and patch bumps (release/*)
+            // from closing each other.
             const { data: labeledPRData } = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open label:"${prLabel}"`
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open label:"${prLabel}" base:${targetBranch}`
             });
 
             const obsoleteUpdatePRs = labeledPRData.items;
