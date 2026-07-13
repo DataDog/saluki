@@ -278,13 +278,10 @@ lto = "fat"
 codegen-units = 1
 
 [profile.aix-optimized-release]
-inherits = "release"
-debug-assertions = false
-overflow-checks = false
+inherits = "optimized-release"
 # IBM Open SDK for Rust 1.92 on AIX fails LTO during final linking with `Can't find section .ipa`,
 # even for a minimal hello-world crate. Keep the other optimized-release settings while disabling LTO.
 lto = false
-codegen-units = 1
 
 [workspace.lints.clippy]
 new_without_default = "allow"
