@@ -1,6 +1,7 @@
 //! Subsystem diagnostics.
 //!
-//! This module provides a generalized system for exposing diagnostic information from a subsystem, both in a pull and push fashion.
+//! This module provides a generalized system for exposing diagnostic information from a subsystem, both in a pull and
+//! push fashion.
 
 mod collector;
 pub use self::collector::DiagnosticCollector;
