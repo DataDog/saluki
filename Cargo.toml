@@ -213,7 +213,7 @@ bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
 lading-payload = { git = "https://github.com/DataDog/lading", rev = "576129489df44ae0e71c4871c51910837c919b90" }
-libdd-profiling-heap-allocator = { git = "https://github.com/DataDog/libdatadog", rev = "a41a0f480b265e57fd7d70d998c5ccd3e7690248" }
+libdd-profiling-heap-allocator = { git = "https://github.com/DataDog/libdatadog", branch = "sgg/fix-saluki" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.18.0", default-features = false, features = [
   "macros",

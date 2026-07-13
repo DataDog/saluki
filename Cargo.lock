@@ -2758,7 +2758,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 [[package]]
 name = "libdd-profiling-heap-allocator"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=a41a0f480b265e57fd7d70d998c5ccd3e7690248#a41a0f480b265e57fd7d70d998c5ccd3e7690248"
+source = "git+https://github.com/DataDog/libdatadog?branch=sgg%2Ffix-saluki#f5f496dac5f1330f32d1601f841a1b0ffd4efcf2"
 dependencies = [
  "libdd-profiling-heap-sampler",
 ]
@@ -2766,7 +2766,7 @@ dependencies = [
 [[package]]
 name = "libdd-profiling-heap-sampler"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/libdatadog?rev=a41a0f480b265e57fd7d70d998c5ccd3e7690248#a41a0f480b265e57fd7d70d998c5ccd3e7690248"
+source = "git+https://github.com/DataDog/libdatadog?branch=sgg%2Ffix-saluki#f5f496dac5f1330f32d1601f841a1b0ffd4efcf2"
 dependencies = [
  "bindgen 0.71.1",
  "cc",
