@@ -223,7 +223,7 @@ mod tests {
         emitter.register_collector("state.json", || vec![0]);
         emitter.unregister_collector("state.json");
 
-        // First update: the assertion, under the derived `<subsystem>.<artifact>` identifier.
+        // First update: the assertion, under the derived `<subsystem>-<artifact>` identifier.
         let mut recv = test_spawn(sub.recv());
         match assert_ready!(recv.poll()) {
             Some(DataspaceUpdate::Asserted(id, collector)) => {

@@ -30,6 +30,8 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::GrpcTargetAddress;
 use serde_json::{Map, Value};
+use tokio::task::spawn_blocking;
+use tokio::time::{timeout, Instant};
 use tokio::{
     sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
@@ -529,13 +531,13 @@ const DIAGNOSTIC_ARTIFACT_MAX_BYTES: usize = 5 * 1024 * 1024; // 5 MiB
 /// Truncation marker appended to diagnostic artifacts that exceed [`DIAGNOSTIC_ARTIFACT_MAX_BYTES`] in size.
 const DIAGNOSTIC_TRUNCATION_MARKER: &[u8] = b"\n\n[... truncated: artifact exceeded the 5 MiB per-file limit ...]\n";
 
-/// Caps `bytes` to [`DIAGNOSTIC_ARTIFACT_MAX_BYTES`], appending [`DIAGNOSTIC_TRUNCATION_MARKER`] if truncated.
-fn cap_artifact(mut bytes: Vec<u8>) -> Vec<u8> {
-    if bytes.len() > DIAGNOSTIC_ARTIFACT_MAX_BYTES {
-        bytes.truncate(DIAGNOSTIC_ARTIFACT_MAX_BYTES);
-        bytes.extend_from_slice(DIAGNOSTIC_TRUNCATION_MARKER);
+/// Caps `data` to [`DIAGNOSTIC_ARTIFACT_MAX_BYTES`], appending [`DIAGNOSTIC_TRUNCATION_MARKER`] if truncated.
+fn cap_artifact_data(mut data: Vec<u8>) -> Vec<u8> {
+    if data.len() > DIAGNOSTIC_ARTIFACT_MAX_BYTES {
+        data.truncate(DIAGNOSTIC_ARTIFACT_MAX_BYTES);
+        data.extend_from_slice(DIAGNOSTIC_TRUNCATION_MARKER);
     }
-    bytes
+    data
 }
 
 /// Returns the number of open file descriptors for the current process.
@@ -585,34 +587,33 @@ impl FlareProvider for RemoteAgentImpl {
 
                 // Grab and collect all asserted diagnostic handles
                 if let Some(dataspace) = self.dataspace.get() {
-                    let handles = dataspace.current_values::<DiagnosticCollector>(IdentifierFilter::all());
-                    let total_handles = handles.len();
-                    let deadline = tokio::time::Instant::now() + DIAGNOSTIC_COLLECT_TIMEOUT;
+                    let collectors = dataspace.current_values::<DiagnosticCollector>(IdentifierFilter::all());
+                    let total_collectors = collectors.len();
+                    let deadline = Instant::now() + DIAGNOSTIC_COLLECT_TIMEOUT;
 
-                    for handle in handles {
-                        if tokio::time::Instant::now() >= deadline {
+                    for collector in collectors {
+                        if Instant::now() >= deadline {
                             break;
                         }
 
-                        let artifact_name = handle.artifact_name().to_string();
-                        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                        let artifact_name = collector.artifact_name().to_string();
+                        let remaining = deadline.saturating_duration_since(Instant::now());
 
-                        let bytes = match tokio::time::timeout(
+                        let collect = timeout(
                             remaining,
-                            tokio::task::spawn_blocking(move || handle.collect()),
-                        )
-                        .await
-                        {
-                            Ok(Ok(bytes)) => bytes,
+                            spawn_blocking(move || collector.collect()),
+                        );
+                        let artifact_data = match collect.await {
+                            Ok(Ok(data)) => data,
                             Ok(Err(e)) => format!("collection panicked for '{artifact_name}': {e}").into_bytes(),
                             Err(_) => format!("collection timed out for '{artifact_name}'").into_bytes(),
                         };
 
-                        files.insert(artifact_name, cap_artifact(bytes));
+                        files.insert(artifact_name, cap_artifact_data(artifact_data));
                     }
 
-                    if files.len() < total_handles {
-                        warn!("Diagnostic artifact collection timed out; collected {}/{total_handles} artifacts.", files.len());
+                    if files.len() < total_collectors {
+                        warn!("Diagnostic artifact collection timed out; collected {}/{total_collectors} artifacts.", files.len());
                     }
                 }
 
@@ -636,7 +637,7 @@ impl FlareProvider for RemoteAgentImpl {
                     fd_count = fd_count(),
                     thread_count = thread_count(),
                 );
-                files.insert("runtime_debug_info.log".to_string(), cap_artifact(process_info.into_bytes()));
+                files.insert("runtime_debug_info.log".to_string(), cap_artifact_data(process_info.into_bytes()));
 
                 // Tokio task dump (Linux-only).
                 //
@@ -645,7 +646,7 @@ impl FlareProvider for RemoteAgentImpl {
                 // more than 250ms
                 #[cfg(target_os = "linux")]
                 {
-                    let task_dump = match tokio::time::timeout(
+                    let task_dump = match timeout(
                         TASK_DUMP_TIMEOUT,
                         tokio::runtime::Handle::current().dump(),
                     )
@@ -663,7 +664,7 @@ impl FlareProvider for RemoteAgentImpl {
                             TASK_DUMP_TIMEOUT.as_millis()
                         ),
                     };
-                    files.insert("runtime-dump.txt".to_string(), cap_artifact(task_dump.into_bytes()));
+                    files.insert("runtime-dump.txt".to_string(), cap_artifact_data(task_dump.into_bytes()));
                 }
 
                 Ok(tonic::Response::new(GetFlareFilesResponse { files }))
@@ -757,16 +758,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cap_artifact_leaves_small_payloads_unchanged() {
+    fn cap_artifact_data_leaves_small_payloads_unchanged() {
         let input = b"hello world".to_vec();
-        let output = cap_artifact(input.clone());
+        let output = cap_artifact_data(input.clone());
         assert_eq!(output, input);
     }
 
     #[test]
-    fn cap_artifact_truncates_at_limit_and_appends_marker() {
+    fn cap_artifact_data_truncates_at_limit_and_appends_marker() {
         let input = vec![b'x'; DIAGNOSTIC_ARTIFACT_MAX_BYTES + 1024];
-        let output = cap_artifact(input);
+        let output = cap_artifact_data(input);
 
         // Total length is capped at the limit plus the marker.
         assert_eq!(
@@ -782,9 +783,9 @@ mod tests {
     }
 
     #[test]
-    fn cap_artifact_at_exact_limit_is_not_truncated() {
+    fn cap_artifact_data_at_exact_limit_is_not_truncated() {
         let input = vec![b'y'; DIAGNOSTIC_ARTIFACT_MAX_BYTES];
-        let output = cap_artifact(input.clone());
+        let output = cap_artifact_data(input.clone());
         assert_eq!(output, input);
     }
 }
