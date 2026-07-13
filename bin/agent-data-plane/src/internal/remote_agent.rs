@@ -585,7 +585,7 @@ impl FlareProvider for RemoteAgentImpl {
             .session_id_middleware(async || {
                 let mut files: HashMap<String, Vec<u8>> = HashMap::new();
 
-                // Grab and collect all asserted diagnostic handles
+                // Grab and runn all asserted diagnostic collectors.
                 if let Some(dataspace) = self.dataspace.get() {
                     let collectors = dataspace.current_values::<DiagnosticCollector>(IdentifierFilter::all());
                     let total_collectors = collectors.len();
