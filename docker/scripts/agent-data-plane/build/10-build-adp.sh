@@ -5,9 +5,9 @@
 # This is the single entrypoint for the build. It resolves BUILD_TARGET to a per-target profile under
 # `targets/`, sets up the shared build cache and credentials, then runs the one cargo invocation used
 # for every target. ALL target-specific knowledge -- `rustup target add`, C/linker toolchain routing,
-# CFLAGS, RUSTFLAGS, and the output path -- lives in the per-target profile, not here. To support a
-# new target, add a `targets/<triple>.sh` profile; no change to this script or the Dockerfile is
-# needed.
+# CFLAGS, RUSTFLAGS, the output path, and the glibc floor -- lives in the per-target profile, not here.
+# To support a new target, add a `targets/<triple>.sh` profile; no change to this script or the
+# Dockerfile is needed.
 
 set -eu
 

@@ -22,6 +22,9 @@ if [ -d /opt/toolchains/x86_64 ]; then
     export CC_x86_64_unknown_linux_gnu="${_ctng}-gcc"
     export CXX_x86_64_unknown_linux_gnu="${_ctng}-g++"
     export AR_x86_64_unknown_linux_gnu="${_ctng}-ar"
+    # Enforce the glibc floor only when the crosstool-NG toolchain is actually in use; 10-build-adp.sh
+    # verifies the produced binary requires no glibc symbol newer than this.
+    TARGET_MAX_GLIBC="2.17"
 fi
 
 TARGET_CARGO_ARGS="--target x86_64-unknown-linux-gnu"
