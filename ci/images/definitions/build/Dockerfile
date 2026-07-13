@@ -20,7 +20,6 @@ COPY bin/agent-data-plane/Cargo.toml /tmp/bin/agent-data-plane/Cargo.toml
 FROM ${BASE_IMAGE}
 
 ARG RUST_VERSION=1.94.0
-ARG TARGETARCH
 
 # The Agent build image runs as a non-root `dd` user by default; switch to root for all install steps.
 USER root
@@ -51,11 +50,8 @@ RUN --mount=type=bind,from=ci-scripts,target=/scripts \
     /scripts/install-kind.sh && \
     /scripts/clean-temporary-caches.sh
 
-# Install Go, which we need to build AWS-LC in FIPS-compliant mode.
-ENV PATH="/usr/local/go/bin:${PATH}"
-RUN curl -s -L -o /tmp/go-1.23.0.tar.gz https://go.dev/dl/go1.23.0.linux-${TARGETARCH}.tar.gz && \
-    tar -C /usr/local -xzf /tmp/go-1.23.0.tar.gz && \
-    rm -f /tmp/go-1.23.0.tar.gz
+# Go (needed to build AWS-LC in FIPS mode) is provided by the Datadog Agent build image at
+# /usr/local/go and is already on PATH, so we deliberately do not install our own.
 
 # Install protoc.
 RUN --mount=type=bind,from=ci-scripts,target=/scripts \
