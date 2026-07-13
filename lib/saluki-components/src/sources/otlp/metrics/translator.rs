@@ -34,8 +34,8 @@ use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
-use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::translator::AttributeTranslator;
+use crate::common::otlp::attributes::{raw_origin_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
 use crate::sources::otlp::Metrics;
@@ -420,27 +420,21 @@ impl OtlpMetricsTranslator {
         let resource = resource_metrics.resource.unwrap_or_default();
         let source = self.attribute_translator.resource_to_source(&resource);
 
-        let attribute_tags = self
-            .attribute_translator
-            .tags_from_attributes(&resource.attributes)
-            .into_shared();
-
-        // When `resource_attributes_as_tags` is enabled, the Agent copies every resource attribute
-        // onto each data point as a raw tag, in addition to the semantic-convention mappings above.
-        let raw_resource_tags = if self.config.resource_attributes_as_tags {
-            self.attribute_translator
-                .raw_tags_from_attributes(&resource.attributes)
-                .into_shared()
+        let resource_tag_mode = if self.config.resource_attributes_as_tags {
+            ResourceAttributeTagMode::All
         } else {
-            SharedTagSet::default()
+            ResourceAttributeTagMode::Mapped
         };
+        let resource_attribute_tags = self
+            .attribute_translator
+            .tags_from_attributes(&resource.attributes, resource_tag_mode)
+            .into_shared();
 
         // Keep configured and resource-derived tags in shared chunks. The context resolver
         // deduplicates exact tag values when it materializes a cached tag set, while this avoids
         // rebuilding the resource tags for every instrumentation scope.
         let mut resource_tags = self.metric_tags.clone();
-        resource_tags.extend_from_shared(&attribute_tags);
-        resource_tags.extend_from_shared(&raw_resource_tags);
+        resource_tags.extend_from_shared(&resource_attribute_tags);
 
         // TODO: https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L736-L753
         let host = match source {

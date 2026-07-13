@@ -10,7 +10,7 @@ use saluki_core::data_model::event::Event;
 use stringtheory::MetaString;
 
 use crate::common::otlp::attributes::raw_origin_from_attributes;
-use crate::common::otlp::attributes::tags_from_attributes;
+use crate::common::otlp::attributes::{tags_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::util::{get_string_attribute, resource_to_source, SourceKind};
 use crate::sources::otlp::logs::transform::transform_log_record;
@@ -41,7 +41,7 @@ impl OtlpLogsTranslator {
         };
 
         let service = get_string_attribute(&resource.attributes, SERVICE_NAME).map(MetaString::from);
-        let mut attribute_tags = tags_from_attributes(&resource.attributes);
+        let mut attribute_tags = tags_from_attributes(&resource.attributes, ResourceAttributeTagMode::Mapped);
         attribute_tags.insert_tag(OTEL_SOURCE_TAG.clone());
         let origin = raw_origin_from_attributes(&resource.attributes);
         if let Some(resolver) = origin_tag_resolver {

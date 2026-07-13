@@ -11,6 +11,15 @@ use crate::common::otlp::util::extract_container_tags_from_resource_attributes;
 
 pub mod translator;
 
+/// Controls which resource attributes are converted into tags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceAttributeTagMode {
+    /// Add only recognized semantic-convention and Datadog mappings.
+    Mapped,
+    /// Add recognized mappings and every scalar resource attribute under its original key.
+    All,
+}
+
 static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLock::new(|| {
     let mut m = FastHashMap::default();
     m.insert("deployment.environment", "env"); // For older semconv versions
@@ -137,7 +146,7 @@ pub static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = La
     m
 });
 
-pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
+pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: ResourceAttributeTagMode) -> TagSet {
     let mut tags = TagSet::default();
 
     for kv in attributes {
@@ -169,26 +178,32 @@ pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
 
             // Other mappings
             (key, Some(Value::StringValue(s_val))) => {
-                if s_val.is_empty() {
-                    continue;
-                }
+                if !s_val.is_empty() {
+                    // core attributes mapping
+                    if let Some(datadog_key) = CORE_MAPPING.get(key) {
+                        tags.insert_tag(format!("{}:{}", datadog_key, s_val));
+                    }
 
-                // core attributes mapping
-                if let Some(datadog_key) = CORE_MAPPING.get(key) {
-                    tags.insert_tag(format!("{}:{}", datadog_key, s_val));
-                }
+                    // Kubernetes labels mapping
+                    if let Some(datadog_key) = KUBERNETES_MAPPING.get(key) {
+                        tags.insert_tag(format!("{}:{}", datadog_key, s_val));
+                    }
 
-                // Kubernetes labels mapping
-                if let Some(datadog_key) = KUBERNETES_MAPPING.get(key) {
-                    tags.insert_tag(format!("{}:{}", datadog_key, s_val));
-                }
-
-                // Kubernetes DD tags
-                if KUBERNETES_DD_TAGS.contains(key) {
-                    tags.insert_tag(format!("{}:{}", key, s_val));
+                    // Kubernetes DD tags
+                    if KUBERNETES_DD_TAGS.contains(key) {
+                        tags.insert_tag(format!("{}:{}", key, s_val));
+                    }
                 }
             }
             _ => {}
+        }
+
+        if mode == ResourceAttributeTagMode::All {
+            if let Some(value) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
+                if let Some(value) = raw_tag_value(value) {
+                    tags.insert_tag(format!("{}:{}", kv.key, value));
+                }
+            }
         }
     }
 
@@ -198,31 +213,15 @@ pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
     tags
 }
 
-/// Renders every attribute as a raw `key:value` tag.
-///
-/// This mirrors the Agent's `resource_attributes_as_tags` behavior, where the `resourcetotelemetry`
-/// wrapper copies all resource attributes onto each data point before translation. Only scalar
-/// values (string, bool, int, double) are emitted, matching the data-point attribute conversion in
-/// `Dimensions::with_attribute_map`.
-pub fn raw_tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
-    let mut tags = TagSet::default();
-
-    for kv in attributes {
-        if let Some(value) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
-            let v_str = match value {
-                Value::StringValue(s) => s.clone(),
-                Value::BoolValue(b) => b.to_string(),
-                Value::IntValue(i) => i.to_string(),
-                Value::DoubleValue(d) => d.to_string(),
-                // Other types (bytes, array, kvlist) are not converted to tags, matching the
-                // data-point attribute conversion.
-                _ => continue,
-            };
-            tags.insert_tag(format!("{}:{}", kv.key, v_str));
-        }
+fn raw_tag_value(value: &Value) -> Option<String> {
+    match value {
+        Value::StringValue(value) => Some(value.clone()),
+        Value::BoolValue(value) => Some(value.to_string()),
+        Value::IntValue(value) => Some(value.to_string()),
+        Value::DoubleValue(value) => Some(value.to_string()),
+        // Other types (bytes, array, kvlist) are not converted to tags.
+        _ => None,
     }
-
-    tags
 }
 
 #[allow(dead_code)]
