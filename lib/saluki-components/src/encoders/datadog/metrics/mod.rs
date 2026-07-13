@@ -309,11 +309,16 @@ pub struct DatadogMetricsConfiguration {
     )]
     compressor_kind: String,
 
-    /// Compressor level to use when the compressor kind is `zstd`.
+    /// Compressor level to use when the compressor kind is `zstd` (ADP-specific).
+    ///
+    /// ADP defaults to level 3 to achieve ~6% smaller payloads compared to level 1, without a net
+    /// CPU increase (ADP is more efficient than the Agent, so it can afford higher compression).
+    /// The Agent sends `serializer_zstd_compressor_level` (defaulting to 1), which is ignored;
+    /// users configure compression via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL`.
     ///
     /// Defaults to 3.
     #[serde(
-        rename = "serializer_zstd_compressor_level",
+        rename = "data_plane_serializer_zstd_compressor_level",
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,

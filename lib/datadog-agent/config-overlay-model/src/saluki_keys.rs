@@ -42,6 +42,27 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         filename: "data_plane.rs",
     },
     SalukiKey {
+        yaml_path: "data_plane.serializer_zstd_compressor_level",
+        description: "ADP zstd compression level",
+        default: "3",
+        documentation: Some(
+            "ADP-specific zstd compression level. ADP defaults to level 3 instead of the Agent's level 1, \
+             achieving ~6% smaller payloads (65.3 MB vs 69.3 MB) without a net CPU increase (ADP is more \
+             efficient than the Agent and can afford higher compression). Users configure this via \
+             `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` environment variable or in ADP-specific \
+             configuration.",
+        ),
+        value_type: "ValueType::Integer",
+        schema_default: Some("3"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["DATADOG_METRICS_CONFIGURATION", "DATADOG_EVENTS_CONFIGURATION", "DATADOG_LOGS_CONFIGURATION", "DATADOG_SERVICE_CHECKS_CONFIGURATION", "DATADOG_TRACE_CONFIGURATION"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::CrossCutting",
+        filename: "data_plane.rs",
+    },
+    SalukiKey {
         yaml_path: "data_plane.stop_timeout",
         description: "ADP graceful shutdown timeout (s)",
         default: "derived",

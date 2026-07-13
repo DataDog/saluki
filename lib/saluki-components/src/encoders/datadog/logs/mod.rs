@@ -53,9 +53,9 @@ pub struct DatadogLogsConfiguration {
     )]
     compressor_kind: String,
 
-    /// Compressor level to use when the compressor kind is `zstd`. Defaults to 3.
+    /// Compressor level to use when the compressor kind is `zstd` (ADP-specific). Defaults to 3.
     #[serde(
-        rename = "serializer_zstd_compressor_level",
+        rename = "data_plane_serializer_zstd_compressor_level",
         default = "default_zstd_compressor_level"
     )]
     zstd_compressor_level: i32,

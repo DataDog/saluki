@@ -233,7 +233,7 @@ default values.
 | `log_level`                            | Log verbosity directives                  |
 | `min_tls_version`                      | Minimum TLS version for HTTPS connections |
 | `multi_region_failover.enabled`        | Enable multi-region failover mode         |
-| `serializer_zstd_compressor_level`     | Zstd compression level                    |
+| `serializer_zstd_compressor_level`     | Zstd compression level (Agent)            |
 | `skip_ssl_validation`                  | Skip TLS cert validation                  |
 | `statsd_forward_host`                  | UDP packet forwarding destination host    |
 
@@ -372,7 +372,7 @@ is enabled.
 
 ### `serializer_zstd_compressor_level`
 
-ADP defaults to level 3 vs Agent level 1. ADP intentionally compresses better. Key is recognized by both; default divergence is intentional.
+Agent-side compression level. ADP ignores this in favor of `data_plane.serializer_zstd_compressor_level`.
 
 ### `skip_ssl_validation`
 
@@ -426,6 +426,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |         |
 | `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300     |
 | `data_plane.metrics.v3.series.enabled`                          | Enable ADP V3 series                       | false   |
+| `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3       |
 | `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |         |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |         |
@@ -454,6 +455,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 ### `data_plane.metrics.v3.series.enabled`
 
 ADP requires this flag before it generates or forwards authoritative V3 series payloads. This is separate from `use_v3_api.series.*`, which matches the Core Agent V3 routing configuration.
+
+### `data_plane.serializer_zstd_compressor_level`
+
+ADP-specific zstd compression level. ADP defaults to level 3 instead of the Agent's level 1, achieving ~6% smaller payloads (65.3 MB vs 69.3 MB) without a net CPU increase (ADP is more efficient than the Agent and can afford higher compression). Users configure this via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` environment variable or in ADP-specific configuration.
 
 ### `data_plane.stop_timeout`
 
