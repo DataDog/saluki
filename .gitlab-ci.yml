@@ -49,7 +49,9 @@ variables:
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_PREFIX: "saluki"
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/${SALUKI_IMAGE_REPO_PREFIX}"
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
+  # TEMPORARY (branch testing): pinned to the branch-built build-ci image so this pipeline exercises the
+  # glibc/crosstool-NG rebase before it is promoted to :latest. REVERT to `:latest` before merge.
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v124353691-8f7fb5aa"
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
   SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
