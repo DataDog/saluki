@@ -13,6 +13,10 @@ ADP_AIX_AR="${ADP_AIX_AR:-/usr/bin/ar}"
 ADP_AIX_RANLIB="${ADP_AIX_RANLIB:-/usr/bin/ranlib}"
 CARGO_HOME="${CARGO_HOME:-/opt/cargo-home}"
 CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/opt/saluki/target}"
+ADP_AIX_EXPECTED_CARGO_PREFIX="${ADP_AIX_EXPECTED_CARGO_PREFIX:-cargo 1.92.}"
+ADP_AIX_EXPECTED_RUSTC_PREFIX="${ADP_AIX_EXPECTED_RUSTC_PREFIX:-rustc 1.92.}"
+ADP_AIX_EXPECTED_GCC_PREFIX="${ADP_AIX_EXPECTED_GCC_PREFIX:-gcc (GCC) 13.}"
+ADP_AIX_EXPECTED_GXX_PREFIX="${ADP_AIX_EXPECTED_GXX_PREFIX:-g++ (GCC) 13.}"
 ADP_AIX_BUILD_DRY_RUN="${ADP_AIX_BUILD_DRY_RUN:-false}"
 
 export PATH="${AIX_RUST_SDK_DIR}/bin:/opt/freeware/bin:/usr/sbin:/usr/bin:/bin:${PATH:-}"
@@ -49,6 +53,27 @@ require_command() {
     fi
 }
 
+check_version_prefix() {
+    local executable="$1"
+    local label="$2"
+    local expected_prefix="$3"
+    local version
+
+    if [[ -z "${expected_prefix}" ]]; then
+        echo "[*] ${label}: version check skipped"
+        return
+    fi
+
+    version="$(${executable} --version | head -n 1)"
+    if [[ "${version}" != "${expected_prefix}"* ]]; then
+        echo "build-adp-aix: ${label} version '${version}' does not match expected prefix '${expected_prefix}'" >&2
+        echo "build-adp-aix: set the corresponding ADP_AIX_EXPECTED_*_PREFIX variable if this toolchain change is intentional" >&2
+        exit 1
+    fi
+
+    echo "[*] ${label}: ${version}"
+}
+
 print_environment() {
     echo "AIX_RUST_SDK_DIR=${AIX_RUST_SDK_DIR}"
     echo "CC=${CC}"
@@ -57,6 +82,10 @@ print_environment() {
     echo "RANLIB=${RANLIB}"
     echo "CARGO_HOME=${CARGO_HOME}"
     echo "CARGO_TARGET_DIR=${CARGO_TARGET_DIR}"
+    echo "ADP_AIX_EXPECTED_CARGO_PREFIX=${ADP_AIX_EXPECTED_CARGO_PREFIX}"
+    echo "ADP_AIX_EXPECTED_RUSTC_PREFIX=${ADP_AIX_EXPECTED_RUSTC_PREFIX}"
+    echo "ADP_AIX_EXPECTED_GCC_PREFIX=${ADP_AIX_EXPECTED_GCC_PREFIX}"
+    echo "ADP_AIX_EXPECTED_GXX_PREFIX=${ADP_AIX_EXPECTED_GXX_PREFIX}"
     echo "BUILD_PROFILE=${BUILD_PROFILE}"
     echo "cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane"
 }
@@ -78,6 +107,11 @@ require_executable "${CXX}" "AIX Toolbox GCC C++ compiler"
 require_executable "${AR}" "AIX system ar"
 require_executable "${RANLIB}" "AIX system ranlib"
 require_command protoc
+
+check_version_prefix "${AIX_RUST_SDK_DIR}/bin/cargo" "cargo" "${ADP_AIX_EXPECTED_CARGO_PREFIX}"
+check_version_prefix "${AIX_RUST_SDK_DIR}/bin/rustc" "rustc" "${ADP_AIX_EXPECTED_RUSTC_PREFIX}"
+check_version_prefix "${CC}" "gcc" "${ADP_AIX_EXPECTED_GCC_PREFIX}"
+check_version_prefix "${CXX}" "g++" "${ADP_AIX_EXPECTED_GXX_PREFIX}"
 
 mkdir -p "${CARGO_HOME}" "${CARGO_TARGET_DIR}"
 
