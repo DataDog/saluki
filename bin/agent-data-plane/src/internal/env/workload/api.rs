@@ -222,12 +222,8 @@ impl Supervisable for RemoteAgentWorkloadAPIWorker {
 
             let diagnostics =
                 DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["workload-api"]), dataspace);
-            diagnostics.register_collector("workload-tags-dump.json", move || {
-                tags_state.tags_dump_json().into_bytes()
-            });
-            diagnostics.register_collector("workload-external-data-dump.json", move || {
-                eds_state.eds_dump_json().into_bytes()
-            });
+            diagnostics.register_collector("workload-tags-dump.json", move || tags_state.tags_dump_json());
+            diagnostics.register_collector("workload-external-data-dump.json", move || eds_state.eds_dump_json());
 
             process_shutdown.await;
             Ok(())

@@ -48,7 +48,7 @@ impl Supervisable for HealthRegistryWorker {
             // Expose our diagnostic artifact via the diagnostics control surface.
             let diagnostics =
                 DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["health-registry"]), dataspace);
-            diagnostics.register_collector("health.json", move || health_registry.snapshot_json().into_bytes());
+            diagnostics.register_collector("health.json", move || health_registry.snapshot_json());
 
             // We pass the shutdown handle into the runner here, instead of our usual `select! { shutdown => ...,
             // main_loop_future => ... }` pattern because we try to ensure that we give back the liveness receiver

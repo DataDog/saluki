@@ -1,6 +1,11 @@
 //! Subsystem-scoped diagnostics control surface.
 
+// TODO: probably rework process name construction to use `SubsystemIdentifier` under the hood,
+// and expose that, in addition to process ID, as a task-local we can access so that we can
+// make `DiagnosticEmitter::new` require no parameters at all while still doing the right thing
+
 use snafu::{OptionExt as _, Snafu};
+use stringtheory::MetaString;
 
 use super::{DiagnosticCollector, DiagnosticEvent};
 use crate::{
@@ -8,7 +13,7 @@ use crate::{
     support::SubsystemIdentifier,
 };
 
-/// An error that can occur when creating a [`DiagnosticsEmitter`] from the current context.
+/// Errors that can occur when creating a [`DiagnosticsEmitter`].
 #[derive(Debug, Snafu)]
 #[snafu(context(suffix(false)))]
 pub enum DiagnosticsEmitterError {
@@ -22,8 +27,8 @@ pub enum DiagnosticsEmitterError {
 
 /// A subsystem-scoped control surface for exposing diagnostics.
 ///
-/// A `DiagnosticsEmitter` is created for a single subsystem, identified by a [`SubsystemIdentifier`], and attaches to
-/// the current dataspace. It hides the boilerplate of interacting with the dataspace directly, while still using it
+/// A `DiagnosticsEmitter` is created for a single subsystem, identified by a [`SubsystemIdentifier`], and is attached
+/// to a specific dataspace. It hides the boilerplate of interacting with the dataspace directly, while still using it
 /// under the hood so that other subsystems can subscribe to what is exposed in a decoupled, eventually consistent way.
 ///
 /// It exposes two capabilities:
@@ -49,16 +54,15 @@ pub enum DiagnosticsEmitterError {
 ///     dataspace,
 /// );
 ///
-/// // Expose an artifact that is produced on demand.
-/// emitter.register_collector("state.json", || b"{}".to_vec());
+/// // Expose an artifact that is produced on demand:
+/// emitter.register_collector("state.json", || b"{}");
 ///
-/// // Emit a point-in-time event.
+/// // Emit a point-in-time event:
 /// emitter.emit(DiagnosticEvent::new("credentials rejected", DiagnosticDetails::InvalidApiKey));
 /// ```
 #[derive(Clone)]
 pub struct DiagnosticsEmitter {
-    id: SubsystemIdentifier,
-    event_id: Identifier,
+    base_id: MetaString,
     dataspace: DataspaceRegistry,
 }
 
@@ -67,65 +71,63 @@ impl DiagnosticsEmitter {
     ///
     /// # Errors
     ///
-    /// Returns [`DiagnosticsEmitterError::NoDataspace`] if no dataspace is available in the current context (that is,
-    /// when not running inside a supervision tree).
+    /// If no dataspace is available, an error is returned.
     pub fn from_current(id: SubsystemIdentifier) -> Result<Self, DiagnosticsEmitterError> {
         let dataspace = DataspaceRegistry::try_current().context(NoDataspace)?;
         Ok(Self::from_dataspace(id, dataspace))
     }
 
     /// Creates an emitter for the given subsystem from an already-held dataspace handle.
-    ///
-    /// This avoids a second task-local lookup when the caller already holds a [`DataspaceRegistry`]. Holding one
-    /// already proves a dataspace exists, so this is infallible.
     pub fn from_dataspace(id: SubsystemIdentifier, dataspace: DataspaceRegistry) -> Self {
-        let event_id = Identifier::named(id.to_string());
+        let base_id = id.to_string();
         Self {
-            id,
-            event_id,
+            base_id: base_id.into(),
             dataspace,
         }
     }
 
-    /// Registers a named collector whose bytes are gathered into diagnostic artifacts on demand.
+    /// Registers a collector for a given artifact.
     ///
     /// The collector is exposed until it is explicitly removed via [`unregister_collector`], or until the owning
     /// process exits, whichever comes first. Registering a collector with an artifact name that is already registered
     /// by this subsystem replaces the previous one.
     ///
-    /// `collect_fn` runs synchronously and must return promptly, as it can delay the collection of artifacts for the
-    /// whole system.
+    /// Care should be taken when registering a collector:
+    ///
+    /// - the given artifact name _should_ be unique within the overall system, and should be generally suitable as a
+    ///   file name when possible (artifact names are sanitized/normalized where necessary, but may lose useful
+    ///   information in the process)
+    /// - the collection function (`collect_fn`) will be run synchronously and should return promptly, as it can delay
+    ///   the collection of artifacts for the whole system
     ///
     /// [`unregister_collector`]: Self::unregister_collector
-    pub fn register_collector<F>(&self, artifact_name: impl Into<String>, collect_fn: F)
+    pub fn register_collector<F, T>(&self, artifact_name: impl Into<String>, collect_fn: F)
     where
-        F: Fn() -> Vec<u8> + Send + Sync + 'static,
+        F: Fn() -> T + Send + Sync + 'static,
+        T: Into<Vec<u8>>,
     {
         let collector = DiagnosticCollector::new(artifact_name, collect_fn);
-        let id = self.collector_identifier(collector.artifact_name());
+        let id = self.build_collector_identifier(collector.artifact_name());
         self.dataspace.assert(collector, id);
     }
 
-    /// Removes a previously registered collector by artifact name.
+    /// Removes a previously registered collector by name
     ///
     /// Does nothing if no collector with that name is currently registered by this subsystem.
     pub fn unregister_collector(&self, artifact_name: impl AsRef<str>) {
-        let id = self.collector_identifier(artifact_name.as_ref());
+        let id = self.build_collector_identifier(artifact_name.as_ref());
         self.dataspace.retract::<DiagnosticCollector>(id);
     }
 
     /// Emits a diagnostic event.
     ///
-    /// The event is sent as a transient dataspace message keyed by this subsystem's identifier: it is delivered only to
-    /// subscribers present at the time of emission, is never stored or replayed, and is dropped if there are no
-    /// matching subscribers.
+    /// Diagnostics events are transient and only delivered to active listeners.
     pub fn emit(&self, event: DiagnosticEvent) {
-        self.dataspace.send(event, self.event_id.clone());
+        self.dataspace.send(event, self.base_id.clone());
     }
 
-    /// Returns the dataspace identifier for a collector with the given artifact name.
-    fn collector_identifier(&self, artifact_name: &str) -> Identifier {
-        Identifier::named(self.id.clone().child(artifact_name).to_string())
+    fn build_collector_identifier(&self, artifact_name: &str) -> Identifier {
+        Identifier::named(format!("{}-{}", self.base_id, artifact_name))
     }
 }
 
@@ -136,7 +138,7 @@ impl DiagnosticsEmitter {
 ///
 /// # Errors
 ///
-/// Returns [`DiagnosticsEmitterError::NoDataspace`] if no dataspace is available in the current context.
+/// If no dataspace is available, an error is returned.
 pub fn subscribe_events(filter: IdentifierFilter) -> Result<Subscription<DiagnosticEvent>, DiagnosticsEmitterError> {
     let dataspace = DataspaceRegistry::try_current().context(NoDataspace)?;
     Ok(dataspace.subscribe::<DiagnosticEvent>(filter))
@@ -176,7 +178,7 @@ mod tests {
     #[test]
     fn register_collector_is_discoverable() {
         let registry = DataspaceRegistry::new();
-        emitter(registry.clone()).register_collector("state.json", || b"hello".to_vec());
+        emitter(registry.clone()).register_collector("state.json", || b"hello");
 
         let collectors = registry.current_values::<DiagnosticCollector>(IdentifierFilter::all());
         assert_eq!(collectors.len(), 1);
@@ -204,8 +206,8 @@ mod tests {
     fn reregister_same_artifact_updates() {
         let registry = DataspaceRegistry::new();
         let emitter = emitter(registry.clone());
-        emitter.register_collector("state.json", || b"v1".to_vec());
-        emitter.register_collector("state.json", || b"v2".to_vec());
+        emitter.register_collector("state.json", || b"v1");
+        emitter.register_collector("state.json", || b"v2");
 
         let collectors = registry.current_values::<DiagnosticCollector>(IdentifierFilter::all());
         assert_eq!(collectors.len(), 1);
@@ -225,7 +227,7 @@ mod tests {
         let mut recv = test_spawn(sub.recv());
         match assert_ready!(recv.poll()) {
             Some(DataspaceUpdate::Asserted(id, collector)) => {
-                assert_eq!(id, Identifier::named("sub.state_json"));
+                assert_eq!(id, Identifier::named("sub-state.json"));
                 assert_eq!(collector.artifact_name(), "state.json");
             }
             _ => panic!("expected an assertion first"),
@@ -235,7 +237,7 @@ mod tests {
         // Second update: the retraction.
         let mut recv = test_spawn(sub.recv());
         match assert_ready!(recv.poll()) {
-            Some(DataspaceUpdate::Retracted(id)) => assert_eq!(id, Identifier::named("sub.state_json")),
+            Some(DataspaceUpdate::Retracted(id)) => assert_eq!(id, Identifier::named("sub-state.json")),
             _ => panic!("expected a retraction second"),
         }
     }

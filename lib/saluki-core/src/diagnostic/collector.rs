@@ -20,10 +20,13 @@ impl DiagnosticCollector {
     ///
     /// `collect_fn` runs synchronously and must return promptly, as it can delay the collection of artifacts for the
     /// whole system.
-    pub fn new(artifact_name: impl Into<String>, collect_fn: impl Fn() -> Vec<u8> + Send + Sync + 'static) -> Self {
+    pub fn new<T>(artifact_name: impl Into<String>, collect_fn: impl Fn() -> T + Send + Sync + 'static) -> Self
+    where
+        T: Into<Vec<u8>>,
+    {
         Self {
             artifact_name: artifact_name.into(),
-            collect_fn: Arc::new(collect_fn),
+            collect_fn: Arc::new(move || collect_fn().into()),
         }
     }
 
