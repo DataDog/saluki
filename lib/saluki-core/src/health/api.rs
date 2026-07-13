@@ -38,7 +38,7 @@ impl HealthRegistryState {
                     live: component_state.is_live(),
                     ready: component_state.is_ready(),
                 };
-                health_state.insert(component_state.name.clone(), simple_state);
+                health_state.insert(component_state.name.to_string(), simple_state);
             }
 
             health_state
