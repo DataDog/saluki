@@ -25,7 +25,7 @@ use rustls_pki_types::PrivatePkcs8KeyDer;
 use saluki_api::{APIHandler, DynamicRoute, EndpointProtocol, EndpointType};
 use saluki_common::{collections::FastIndexMap, sync::shutdown::ShutdownHandle};
 use saluki_core::runtime::{
-    state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter, Subscription},
+    state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter, Subscription},
     InitializationError, Supervisable, SupervisorFuture,
 };
 use saluki_error::{generic_error, GenericError};
@@ -296,7 +296,7 @@ async fn run_event_loop(
         let mut rebuild_grpc = false;
 
         match update {
-            AssertionUpdate::Asserted(id, route) => {
+            DataspaceUpdate::Asserted(id, route) => {
                 if route.endpoint_type() != endpoint_type {
                     continue;
                 }
@@ -316,7 +316,7 @@ async fn run_event_loop(
                     }
                 }
             }
-            AssertionUpdate::Retracted(id) => {
+            DataspaceUpdate::Retracted(id) => {
                 if http_handlers.swap_remove(&id).is_some() {
                     debug!(?id, "Withdrawing dynamic HTTP handler.");
                     rebuild_http = true;
@@ -327,6 +327,8 @@ async fn run_event_loop(
                     rebuild_grpc = true;
                 }
             }
+            // Routes are modeled as assertions; transient messages are not meaningful here.
+            DataspaceUpdate::Message(..) => continue,
         }
 
         if rebuild_http {
@@ -429,7 +431,7 @@ mod tests {
     use hyper_util::{client::legacy::Client, rt::TokioExecutor};
     use saluki_api::{APIHandler, DynamicRoute, EndpointType};
     use saluki_core::runtime::{
-        state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter},
+        state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter},
         InitializationError, Supervisable, Supervisor, SupervisorFuture,
     };
     use tokio::{
@@ -499,7 +501,7 @@ mod tests {
                     dataspace.subscribe::<BoundApiAddress>(IdentifierFilter::exact(Identifier::named(bound_addr_name)));
 
                 let addr = match addr_sub.recv().await {
-                    Some(AssertionUpdate::Asserted(_, BoundApiAddress(mut addr))) => {
+                    Some(DataspaceUpdate::Asserted(_, BoundApiAddress(mut addr))) => {
                         // Convert 0.0.0.0 to 127.0.0.1 so the test client can connect.
                         if addr.ip().is_unspecified() {
                             addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
