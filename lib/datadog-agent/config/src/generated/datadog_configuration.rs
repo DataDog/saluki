@@ -105,6 +105,7 @@ pub struct DatadogConfiguration {
     pub dogstatsd_entity_id_precedence: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub dogstatsd_eol_required: Vec<String>,
 
     #[serde(default = "defaults::default_u64::<i64, 300>")]
@@ -176,6 +177,7 @@ pub struct DatadogConfiguration {
     pub dogstatsd_tag_cardinality: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub dogstatsd_tags: Vec<String>,
 
     #[serde(
@@ -264,6 +266,7 @@ pub struct DatadogConfiguration {
     pub forwarder_timeout: i64,
 
     #[serde(default = "defaults::datadog_configuration_histogram_aggregates")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub histogram_aggregates: Vec<String>,
 
     #[serde(default)]
@@ -273,6 +276,7 @@ pub struct DatadogConfiguration {
     pub histogram_copy_to_distribution_prefix: String,
 
     #[serde(default = "defaults::datadog_configuration_histogram_percentiles")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub histogram_percentiles: Vec<String>,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
@@ -300,6 +304,7 @@ pub struct DatadogConfiguration {
     pub log_to_syslog: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub metric_filterlist: Vec<String>,
 
     #[serde(default)]
@@ -372,6 +377,7 @@ pub struct DatadogConfiguration {
     pub statsd_forward_port: i64,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub statsd_metric_blocklist: Vec<String>,
 
     #[serde(default)]
@@ -385,6 +391,7 @@ pub struct DatadogConfiguration {
     )]
     /// Alias defined in schema overlay.
     #[serde(alias = "statsd_metric_namespace_blocklist")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub statsd_metric_namespace_blacklist: Vec<String>,
 
     #[serde(default)]
@@ -584,6 +591,7 @@ pub struct ApmConfig {
     pub obfuscation: ApmConfigObfuscation,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub peer_tags: Vec<String>,
 
     #[serde(default = "defaults::default_bool::<true>")]
@@ -676,6 +684,7 @@ pub struct ApmConfigObfuscationCreditCards {
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub keep_values: Vec<String>,
 
     #[serde(default)]
@@ -698,9 +707,11 @@ pub struct ApmConfigObfuscationElasticsearch {
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub keep_values: Vec<String>,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub obfuscate_sql_values: Vec<String>,
 }
 
@@ -756,9 +767,11 @@ pub struct ApmConfigObfuscationMongodb {
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub keep_values: Vec<String>,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub obfuscate_sql_values: Vec<String>,
 }
 
@@ -778,9 +791,11 @@ pub struct ApmConfigObfuscationOpensearch {
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub keep_values: Vec<String>,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub obfuscate_sql_values: Vec<String>,
 }
 
@@ -870,6 +885,7 @@ pub struct AutoscalingFailover {
     pub enabled: bool,
 
     #[serde(default = "defaults::datadog_configuration_autoscaling_failover_metrics")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub metrics: Vec<String>,
 }
 
@@ -1145,6 +1161,7 @@ pub struct MultiRegionFailover {
     pub failover_metrics: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub metric_allowlist: Vec<String>,
 
     #[serde(default)]
@@ -1387,6 +1404,7 @@ pub struct Proxy {
     pub https: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub no_proxy: Vec<String>,
 }
 
@@ -1430,6 +1448,7 @@ pub struct SerializerExperimentalUseV3ApiSeries {
     pub beta_route: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
 
     #[serde(
@@ -1440,6 +1459,7 @@ pub struct SerializerExperimentalUseV3ApiSeries {
     #[serde(
         default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sites"
     )]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub shadow_sites: Vec<String>,
 
     #[serde(default)]
@@ -1465,6 +1485,7 @@ impl Default for SerializerExperimentalUseV3ApiSeries {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct SerializerExperimentalUseV3ApiSketches {
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
 
     #[serde(default)]

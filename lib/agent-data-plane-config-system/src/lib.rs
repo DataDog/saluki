@@ -13,8 +13,10 @@
 //! only ADP production crate that bridges the source configuration to the model; it constructs no
 //! components and does not depend on `saluki-components`.
 
+mod saluki_env_overlay;
 mod saluki_only;
 mod system;
 mod translators;
 
+pub use datadog_agent_config::EnvOverlayMode;
 pub use system::{ConfigurationSystem, Error};

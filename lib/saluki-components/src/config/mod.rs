@@ -19,6 +19,11 @@ pub use self::mrf::MrfConfiguration;
 /// config file, its value is also emitted under the flat key—but only if the flat key isn't already
 /// explicitly set. This ensures both YAML nested format and flat env var format produce the same Figment key,
 /// so source precedence (env vars > file) works correctly.
+///
+// TODO: delete once every consumer reads the typed nested `DatadogConfiguration`. This table
+// bridges nested YAML to the flat keys the legacy flat-reading wrappers deserialize. The typed
+// model gets the same env reachability from the generated `ENV_OVERLAY_KEYS` table (which derives
+// the same flat forms from the schema), so once no consumer reads the flat keys this is dead.
 pub const KEY_ALIASES: &[(&str, &str)] = &[
     // The Datadog Agent config file uses `proxy: http:` and `proxy: https:` (nested), while env
     // vars produce `proxy_http` and `proxy_https` (flat). Figment treats these as different keys,
