@@ -1,20 +1,24 @@
 # Differential scenario
 
-This scenario tests that ADP and the Datadog Agent emit the same metric contexts
-for the same DogStatsD input. Values for contexts are not compared.
+This scenario tests that the Datadog Agent emits the same metric contexts for the
+same DogStatsD input whether its embedded data plane (ADP) is off or on. Values
+for contexts are not compared.
 
 ## How it works
 
 This scenario comprises the following components:
 
-* Datadog Agent
-* ADP
+* Datadog Agent, ADP-off
+* Datadog Agent, ADP-on
 * `intake`
 * parallel drivers
 
-The Datadog Agent and ADP are the systems under test. They are driven from the
-same, equivalently applicable configuration. That is, a configuration option
-that only affects ADP will not be present, as an example.
+Both lanes are the same converged Datadog Agent image, differing only in whether
+`DD_DATA_PLANE_ENABLED` hands DogStatsD to ADP. They are the systems under test,
+driven from the same, equivalently applicable configuration. That is, a
+configuration option that only affects one lane will not be present, as an
+example. References below to "ADP" mean the data-plane-on lane and "Datadog
+Agent" the data-plane-off lane.
 
 The drivers emit into both SUTs. We take as 'transmitted' that the send has
 reached kernel buffers and is 'durable'. This is the pattern we advertise to

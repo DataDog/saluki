@@ -10,7 +10,7 @@ services:
       context: ../../../..
       dockerfile: test/antithesis/scenarios/general/Dockerfile
       target: intake
-    image: intake:latest
+    image: intake:${ANTITHESIS_IMAGE_TAG:-latest}
     environment:
       NO_COLOR: "1"
     healthcheck:
@@ -20,23 +20,27 @@ services:
       timeout: 2s
       retries: 30
 
-  adp:
-    container_name: adp
-    hostname: adp
+  # Single SUT: converged Datadog Agent with the data plane ON, so the embedded
+  # instrumented ADP owns DogStatsD. The workload points the liveness check at
+  # `agent` via ADP_API_ADDR.
+  agent:
+    container_name: agent
+    hostname: agent
     platform: linux/amd64
-    init: true
     build:
       context: ../../../..
       dockerfile: test/antithesis/scenarios/general/Dockerfile
-      target: adp
-    image: adp:latest
-    command: ["run"]
+      target: datadog-agent
+    image: datadog-agent:${ANTITHESIS_IMAGE_TAG:-latest}
     environment:
       NO_COLOR: "1"
       DD_API_KEY: "antithesis-test-api-key"
+      DD_DD_URL: "http://intake:2049"
+      ADP_DD_DD_URL: "http://intake:2049"
+      DD_HOSTNAME: "antithesis-adp"
       DD_DATA_PLANE_ENABLED: "true"
-      DD_DATA_PLANE_STANDALONE_MODE: "true"
       DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+      AGENT_CONFIG_DIR: "/agent-config"
     volumes:
       - dogstatsd-socket:/var/run/datadog
       # first_sample_config (workload) writes this timeline's datadog.yaml + ready sentinel here.
@@ -54,11 +58,12 @@ services:
       context: ../../../..
       dockerfile: test/antithesis/scenarios/general/Dockerfile
       target: workload
-    image: workload:latest
+    image: workload:${ANTITHESIS_IMAGE_TAG:-latest}
     environment:
       NO_COLOR: "1"
       ADP_DOGSTATSD_SOCKET: "/var/run/datadog/dsd.socket"
       INTAKE_ADDR: "intake:2049"
+      ADP_API_ADDR: "agent:5100"
     volumes:
       - dogstatsd-socket:/var/run/datadog
       - agent-config:/agent-config
