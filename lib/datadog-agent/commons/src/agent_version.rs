@@ -5,26 +5,55 @@
 //! that an earlier version did not. To stay byte-for-byte compatible with the Agent it is bundled with, ADP needs to
 //! know which Agent version it is paired with.
 //!
-//! The Agent version is provided via the `DD_AGENT_VERSION` environment variable, which is baked into the
-//! bundled Agent image at build time. When the variable is absent (for example, when ADP runs standalone without a
-//! bundled Agent), the version is treated as unknown and version gates default to the most recent behavior.
+//! The Agent version is provided via the `DD_AGENT_VERSION` environment variable at *build time*, baked into the
+//! binary by `build.rs`. The converged Agent image build passes it as a Docker build argument, so every ADP binary
+//! carries a fixed, immutable version string that reflects the Agent it was compiled alongside.
+//!
+//! When `DD_AGENT_VERSION` is absent at build time (for example, in local development or standalone builds without a
+//! bundled Agent), the version is treated as unknown and all version gates default to the most recent behavior.
 //!
 //! # Design
 //!
 //! This is intentionally a lightweight, hand-rolled version parser rather than a full semantic-versioning
 //! implementation: the values we compare against are simple `MAJOR.MINOR.PATCH` release tags (optionally carrying a
 //! flavor or pre-release suffix such as `-full` or `-devel`), and we only ever need a "meets this minimum" comparison.
-//!
-//! # Missing
-//!
-//! The version is currently read directly from the environment. A cleaner long-term approach would thread it through
-//! the configuration system (or have the Core Agent hand it to ADP over IPC during bootstrap), so that components do
-//! not read process environment state directly.
 
-use std::sync::OnceLock;
+include!(concat!(env!("OUT_DIR"), "/details.rs"));
 
-/// Environment variable carrying the version of the companion Datadog Agent.
-pub const DD_AGENT_VERSION_ENV_VAR: &str = "DD_AGENT_VERSION";
+/// Raw Agent version string that ADP was built against, as detected at build time.
+///
+/// This is the verbatim `DD_AGENT_VERSION` value (for example, `"7.81.0-full"` or `"nightly"`), suitable for display in
+/// diagnostics. Returns `None` when `DD_AGENT_VERSION` was not set at build time.
+pub fn version_string() -> Option<&'static str> {
+    if DETECTED_AGENT_VERSION.is_empty() {
+        None
+    } else {
+        Some(DETECTED_AGENT_VERSION)
+    }
+}
+
+/// Version of the Datadog Agent that ADP is paired with, as detected at build time.
+///
+/// Returns `None` when `DD_AGENT_VERSION` was not set at build time.
+pub fn version() -> Option<AgentVersion> {
+    if DETECTED_AGENT_VERSION.is_empty() {
+        return None;
+    }
+    Some(AgentVersion {
+        major: DETECTED_AGENT_VERSION_MAJOR,
+        minor: DETECTED_AGENT_VERSION_MINOR,
+        patch: DETECTED_AGENT_VERSION_PATCH,
+        is_dev: DETECTED_AGENT_IS_DEV,
+    })
+}
+
+/// Returns `true` if the Agent version is at least `major.minor.patch`.
+///
+/// When the Agent version is unknown (that is, `DD_AGENT_VERSION` was not set at build time), this returns `true`:
+/// absent an explicit older-version signal, ADP defaults to the most recent behavior.
+pub fn meets(major: u64, minor: u64, patch: u64) -> bool {
+    version().is_none_or(|v| v.meets(major, minor, patch))
+}
 
 /// Version of the Datadog Agent that ADP is paired with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,13 +65,13 @@ pub struct AgentVersion {
 }
 
 impl AgentVersion {
-    /// Parses a companion Agent version from a version string.
+    /// Parses an Agent version from a version string.
     ///
     /// Accepts values such as `7.81.0`, `7.81.0-full`, `7.83.0-devel`, and bare development markers such as `nightly`.
     /// Development/pre-release builds (identified by a `devel`, `dev`, `nightly`, or `master` marker) are considered
     /// newer than every numbered release, since they track the bleeding edge of Agent behavior.
     ///
-    /// Returns `None` if the string is empty or carries neither a parseable `MAJOR` component nor a development marker.
+    /// Returns `None` if the string is empty or carries neither a numeric `MAJOR` component nor a development marker.
     pub fn parse(raw: &str) -> Option<Self> {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -89,27 +118,6 @@ impl AgentVersion {
         }
         (self.major, self.minor, self.patch) >= (major, minor, patch)
     }
-}
-
-/// Returns the Agent version, if known.
-///
-/// The value is read once from the [`DD_AGENT_VERSION_ENV_VAR`] environment variable and cached. Returns `None` if the
-/// variable is unset or cannot be parsed.
-pub fn version() -> Option<AgentVersion> {
-    static VERSION: OnceLock<Option<AgentVersion>> = OnceLock::new();
-    *VERSION.get_or_init(|| {
-        std::env::var(DD_AGENT_VERSION_ENV_VAR)
-            .ok()
-            .and_then(|raw| AgentVersion::parse(&raw))
-    })
-}
-
-/// Returns `true` if the Agent version is at least `major.minor.patch`.
-///
-/// When the Agent version is unknown (the environment variable is unset or unparseable), this returns `true`:
-/// absent an explicit older-version signal, ADP defaults to the most recent behavior.
-pub fn meets(major: u64, minor: u64, patch: u64) -> bool {
-    version().is_none_or(|v| v.meets(major, minor, patch))
 }
 
 #[cfg(test)]
