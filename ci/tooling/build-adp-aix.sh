@@ -5,7 +5,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-BUILD_PROFILE="${BUILD_PROFILE:-devel}"
+BUILD_PROFILE="${BUILD_PROFILE:-aix-optimized-release}"
+BUILD_FEATURES="${BUILD_FEATURES:-default}"
 AIX_RUST_SDK_DIR="${AIX_RUST_SDK_DIR:-/opt/freeware/lib/RustSDK/1.92}"
 ADP_AIX_CC="${ADP_AIX_CC:-/opt/freeware/bin/gcc}"
 ADP_AIX_CXX="${ADP_AIX_CXX:-/opt/freeware/bin/g++}"
@@ -19,7 +20,7 @@ ADP_AIX_EXPECTED_GCC_PREFIX="${ADP_AIX_EXPECTED_GCC_PREFIX:-gcc (GCC) 13.}"
 ADP_AIX_EXPECTED_GXX_PREFIX="${ADP_AIX_EXPECTED_GXX_PREFIX:-g++ (GCC) 13.}"
 ADP_AIX_BUILD_DRY_RUN="${ADP_AIX_BUILD_DRY_RUN:-false}"
 
-export PATH="${AIX_RUST_SDK_DIR}/bin:/opt/freeware/bin:/usr/sbin:/usr/bin:/bin:${PATH:-}"
+export PATH="${AIX_RUST_SDK_DIR}/bin:${CARGO_HOME}/bin:/opt/freeware/bin:/usr/sbin:/usr/bin:/bin:${PATH:-}"
 export CC="${ADP_AIX_CC}"
 export CXX="${ADP_AIX_CXX}"
 export AR="${ADP_AIX_AR}"
@@ -27,12 +28,16 @@ export RANLIB="${ADP_AIX_RANLIB}"
 export CARGO_HOME
 export CARGO_TARGET_DIR
 
+ADP_APP_VERSION_AUTO="$(grep -E '^version = "' "${repo_root}/bin/agent-data-plane/Cargo.toml" | head -n 1 | cut -d '"' -f 2)"
+APP_GIT_HASH_AUTO="$(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo not-in-git)"
+
 export APP_FULL_NAME="${APP_FULL_NAME:-${ADP_APP_FULL_NAME:-Agent Data Plane}}"
 export APP_SHORT_NAME="${APP_SHORT_NAME:-${ADP_APP_SHORT_NAME:-data-plane}}"
 export APP_IDENTIFIER="${APP_IDENTIFIER:-${ADP_APP_IDENTIFIER:-adp}}"
-export APP_GIT_HASH="${APP_GIT_HASH:-${ADP_APP_GIT_HASH:-unknown}}"
-export APP_VERSION="${APP_VERSION:-${ADP_APP_VERSION:-0.0.0}}"
-export APP_BUILD_DATE="${APP_BUILD_DATE:-${ADP_APP_BUILD_DATE:-0000-00-00T00:00:00-00:00}}"
+export APP_GIT_HASH="${APP_GIT_HASH:-${ADP_APP_GIT_HASH:-${APP_GIT_HASH_AUTO}}}"
+export APP_VERSION="${APP_VERSION:-${ADP_APP_VERSION:-${ADP_APP_VERSION_AUTO}}}"
+export APP_BUILD_TIME="${APP_BUILD_TIME:-${ADP_APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-0000-00-00T00:00:00-00:00}}}"
+export APP_DEV_BUILD="${APP_DEV_BUILD:-${ADP_APP_DEV_BUILD:-false}}"
 
 require_executable() {
     local path="$1"
@@ -87,7 +92,15 @@ print_environment() {
     echo "ADP_AIX_EXPECTED_GCC_PREFIX=${ADP_AIX_EXPECTED_GCC_PREFIX}"
     echo "ADP_AIX_EXPECTED_GXX_PREFIX=${ADP_AIX_EXPECTED_GXX_PREFIX}"
     echo "BUILD_PROFILE=${BUILD_PROFILE}"
-    echo "cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane"
+    echo "BUILD_FEATURES=${BUILD_FEATURES}"
+    echo "APP_FULL_NAME=${APP_FULL_NAME}"
+    echo "APP_SHORT_NAME=${APP_SHORT_NAME}"
+    echo "APP_IDENTIFIER=${APP_IDENTIFIER}"
+    echo "APP_VERSION=${APP_VERSION}"
+    echo "APP_GIT_HASH=${APP_GIT_HASH}"
+    echo "APP_BUILD_TIME=${APP_BUILD_TIME}"
+    echo "APP_DEV_BUILD=${APP_DEV_BUILD}"
+    echo "cargo build --profile ${BUILD_PROFILE} --bin agent-data-plane --features ${BUILD_FEATURES}"
 }
 
 if [[ "${ADP_AIX_BUILD_DRY_RUN}" == "true" ]]; then
@@ -123,6 +136,6 @@ echo "[*] Fetching Cargo dependencies..."
 cargo fetch
 
 echo "[*] Building agent-data-plane for AIX..."
-cargo build --profile "${BUILD_PROFILE}" --bin agent-data-plane
+cargo build --profile "${BUILD_PROFILE}" --bin agent-data-plane --features "${BUILD_FEATURES}"
 
 echo "[*] AIX ADP binary ready at ${CARGO_TARGET_DIR}/${BUILD_PROFILE}/agent-data-plane"

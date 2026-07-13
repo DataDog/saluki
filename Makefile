@@ -656,8 +656,8 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
 .PHONY: build-adp-aix
-build-adp-aix: BUILD_PROFILE ?= devel
-build-adp-aix: ## Builds agent-data-plane natively on AIX (defaults to devel profile, IBM Rust SDK 1.92, and AIX Toolbox GCC)
+build-adp-aix: BUILD_PROFILE ?= aix-optimized-release
+build-adp-aix: ## Builds a release agent-data-plane binary natively on AIX (optimized settings without LTO)
 	@BUILD_PROFILE="$(BUILD_PROFILE)" $(CURDIR)/ci/tooling/build-adp-aix.sh
 
 .PHONY: package-adp-host

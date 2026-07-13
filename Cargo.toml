@@ -277,6 +277,13 @@ overflow-checks = false
 lto = "fat"
 codegen-units = 1
 
+[profile.aix-optimized-release]
+inherits = "release"
+debug-assertions = false
+overflow-checks = false
+lto = false
+codegen-units = 1
+
 [workspace.lints.clippy]
 new_without_default = "allow"
 uninlined_format_args = "allow"
