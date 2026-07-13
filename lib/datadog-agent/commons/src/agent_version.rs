@@ -35,7 +35,10 @@ pub fn version_string() -> Option<&'static str> {
 /// Version of the Datadog Agent that ADP is paired with, as detected at build time.
 ///
 /// Returns `None` when `DD_AGENT_VERSION` was not set at build time.
-pub fn version() -> Option<AgentVersion> {
+///
+/// This is a `const fn`: because the version is baked in at build time, callers can evaluate version gates in a
+/// `const` context so the compiler resolves the outcome statically.
+pub const fn version() -> Option<AgentVersion> {
     if DETECTED_AGENT_VERSION.is_empty() {
         return None;
     }
@@ -51,8 +54,13 @@ pub fn version() -> Option<AgentVersion> {
 ///
 /// When the Agent version is unknown (that is, `DD_AGENT_VERSION` was not set at build time), this returns `true`:
 /// absent an explicit older-version signal, ADP defaults to the most recent behavior.
-pub fn meets(major: u64, minor: u64, patch: u64) -> bool {
-    version().is_none_or(|v| v.meets(major, minor, patch))
+///
+/// This is a `const fn` so version gates can be evaluated at compile time (see [`version`]).
+pub const fn meets(major: u64, minor: u64, patch: u64) -> bool {
+    match version() {
+        Some(v) => v.meets(major, minor, patch),
+        None => true,
+    }
 }
 
 /// Version of the Datadog Agent that ADP is paired with.
@@ -112,11 +120,18 @@ impl AgentVersion {
     /// Returns `true` if this version is at least `major.minor.patch`.
     ///
     /// Development/pre-release builds always satisfy the check, as they track behavior ahead of any numbered release.
-    pub fn meets(&self, major: u64, minor: u64, patch: u64) -> bool {
+    pub const fn meets(&self, major: u64, minor: u64, patch: u64) -> bool {
         if self.is_dev {
             return true;
         }
-        (self.major, self.minor, self.patch) >= (major, minor, patch)
+        // Manual lexicographic comparison of (major, minor, patch); tuple `PartialOrd` is not usable in `const fn`.
+        if self.major != major {
+            return self.major > major;
+        }
+        if self.minor != minor {
+            return self.minor > minor;
+        }
+        self.patch >= patch
     }
 }
 
