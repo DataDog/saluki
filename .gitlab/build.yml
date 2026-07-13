@@ -18,7 +18,7 @@
     - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
     # Bake the Agent version into the binary so version gates work without a runtime env var.
     # Use "nightly" for nightly CI (dev Agent); the pinned public release version otherwise.
-    - DD_AGENT_VERSION="${AGENT_NIGHTLY:+nightly}"; DD_AGENT_VERSION="${DD_AGENT_VERSION:-${PUBLIC_DD_AGENT_VERSION}}"
+    - if [ -n "${AGENT_NIGHTLY}" ]; then DD_AGENT_VERSION="nightly"; else DD_AGENT_VERSION="${PUBLIC_DD_AGENT_VERSION}"; fi
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true
