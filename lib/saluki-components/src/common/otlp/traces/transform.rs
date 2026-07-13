@@ -83,6 +83,8 @@ const GRPC_STATUS_CODE_META_KEY: &str = "rpc.grpc.status_code";
 const W3C_TRACESTATE_META_KEY: &str = "w3c.tracestate";
 const OTEL_LIBRARY_NAME_META_KEY: &str = "otel.library.name";
 const OTEL_LIBRARY_VERSION_META_KEY: &str = "otel.library.version";
+const OTEL_SCOPE_NAME_META_KEY: &str = "otel.scope.name";
+const OTEL_SCOPE_VERSION_META_KEY: &str = "otel.scope.version";
 const OTEL_STATUS_CODE_META_KEY: &str = "otel.status_code";
 const OTEL_STATUS_DESCRIPTION_META_KEY: &str = "otel.status_description";
 const INTERNAL_DD_HOSTNAME_KEY: &str = "_dd.hostname";
@@ -195,12 +197,26 @@ pub fn otel_span_to_dd_span(
                 MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY),
                 AttributeValue::String(scope.name.as_str().into()),
             );
+            // otel.scope.name was added in Agent 7.82+. Emit it when the Agent version meets that threshold.
+            if datadog_agent_commons::agent_version::meets(7, 82, 0) {
+                attrs.insert(
+                    MetaString::from_static(OTEL_SCOPE_NAME_META_KEY),
+                    AttributeValue::String(scope.name.as_str().into()),
+                );
+            }
         }
         if !scope.version.is_empty() {
             attrs.insert(
                 MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY),
                 AttributeValue::String(scope.version.as_str().into()),
             );
+            // otel.scope.version was added in Agent 7.82+. Emit it when the Agent version meets that threshold.
+            if datadog_agent_commons::agent_version::meets(7, 82, 0) {
+                attrs.insert(
+                    MetaString::from_static(OTEL_SCOPE_VERSION_META_KEY),
+                    AttributeValue::String(scope.version.as_str().into()),
+                );
+            }
         }
     }
 
@@ -2360,5 +2376,56 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_otel_span_to_dd_span_scope_name_version_meta() {
+        let interner = test_interner();
+        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
+
+        let span = OtlpSpan {
+            name: "scoped-span".to_string(),
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        let scope = OtlpInstrumentationScope {
+            name: "com.example.products".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        };
+
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &resource,
+            Some(&scope),
+            false,
+            true,
+            &interner,
+            &mut string_builder,
+            None,
+        );
+
+        use saluki_core::data_model::event::trace::AttributeValue;
+        let meta = |key: &str| {
+            dd_span
+                .attributes
+                .get(key)
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref().to_string())
+        };
+
+        // The deprecated `otel.library.*` keys are always emitted.
+        assert_eq!(meta("otel.library.name").as_deref(), Some("com.example.products"));
+        assert_eq!(meta("otel.library.version").as_deref(), Some("1.0.0"));
+
+        // The `otel.scope.*` keys are emitted only when the Agent version meets 7.82.0+.
+        // When DD_AGENT_VERSION is unset (test environment), the default is to emit them (version unknown → latest behavior).
+        let has_scope_keys = meta("otel.scope.name").is_some();
+        let has_scope_version = meta("otel.scope.version").is_some();
+        // In unit tests with no explicit DD_AGENT_VERSION, both keys should be present (default to latest behavior).
+        assert!(
+            has_scope_keys && has_scope_version,
+            "otel.scope.* keys should be present when Agent version is unknown (defaults to latest)"
+        );
     }
 }

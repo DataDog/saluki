@@ -20,6 +20,7 @@ base64 = { workspace = true, features = ["std"] }
 bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
+datadog-agent-commons = { workspace = true }
 datadog-agent-metrics-v3 = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch = { workspace = true }
