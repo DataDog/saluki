@@ -3,7 +3,7 @@
 # target an old glibc (x86_64 -> glibc 2.17, aarch64 -> glibc 2.23). ADP is built against those
 # toolchains (see docker/scripts/agent-data-plane/build/targets/*-unknown-linux-gnu.sh) so its glibc
 # floor matches the Agent's supported-OS matrix by construction, and tracks it automatically over time.
-ARG BASE_IMAGE=registry.ddbuild.io/ci/datadog-agent-buildimages/linux:v120029388-43933fee
+ARG BASE_IMAGE=registry.ddbuild.io/ci/datadog-agent-buildimages/linux:v123467524-627631bf
 
 # Create a helper image with all of our CI scripts that we'll bindmount on `RUN` commands as needed.
 #
