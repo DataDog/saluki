@@ -85,6 +85,11 @@ const OTEL_LIBRARY_NAME_META_KEY: &str = "otel.library.name";
 const OTEL_LIBRARY_VERSION_META_KEY: &str = "otel.library.version";
 const OTEL_SCOPE_NAME_META_KEY: &str = "otel.scope.name";
 const OTEL_SCOPE_VERSION_META_KEY: &str = "otel.scope.version";
+
+// Whether to emit the `otel.scope.*` span meta keys. These were added to the Datadog Agent's OTLP trace conversion in
+// 7.82+, so we only emit them when the Agent version ADP was built against meets that threshold. The Agent version is
+// baked in at build time, so this resolves to a compile-time constant and the unused branch is eliminated.
+const EMIT_OTEL_SCOPE_META: bool = datadog_agent_commons::agent_version::meets(7, 82, 0);
 const OTEL_STATUS_CODE_META_KEY: &str = "otel.status_code";
 const OTEL_STATUS_DESCRIPTION_META_KEY: &str = "otel.status_description";
 const INTERNAL_DD_HOSTNAME_KEY: &str = "_dd.hostname";
@@ -197,8 +202,7 @@ pub fn otel_span_to_dd_span(
                 MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY),
                 AttributeValue::String(scope.name.as_str().into()),
             );
-            // otel.scope.name was added in Agent 7.82+. Emit it when the Agent version meets that threshold.
-            if datadog_agent_commons::agent_version::meets(7, 82, 0) {
+            if EMIT_OTEL_SCOPE_META {
                 attrs.insert(
                     MetaString::from_static(OTEL_SCOPE_NAME_META_KEY),
                     AttributeValue::String(scope.name.as_str().into()),
@@ -210,8 +214,7 @@ pub fn otel_span_to_dd_span(
                 MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY),
                 AttributeValue::String(scope.version.as_str().into()),
             );
-            // otel.scope.version was added in Agent 7.82+. Emit it when the Agent version meets that threshold.
-            if datadog_agent_commons::agent_version::meets(7, 82, 0) {
+            if EMIT_OTEL_SCOPE_META {
                 attrs.insert(
                     MetaString::from_static(OTEL_SCOPE_VERSION_META_KEY),
                     AttributeValue::String(scope.version.as_str().into()),
@@ -2418,14 +2421,14 @@ mod tests {
         assert_eq!(meta("otel.library.name").as_deref(), Some("com.example.products"));
         assert_eq!(meta("otel.library.version").as_deref(), Some("1.0.0"));
 
-        // The `otel.scope.*` keys are emitted only when the Agent version meets 7.82.0+.
-        // When DD_AGENT_VERSION is unset (test environment), the default is to emit them (version unknown → latest behavior).
-        let has_scope_keys = meta("otel.scope.name").is_some();
-        let has_scope_version = meta("otel.scope.version").is_some();
-        // In unit tests with no explicit DD_AGENT_VERSION, both keys should be present (default to latest behavior).
-        assert!(
-            has_scope_keys && has_scope_version,
-            "otel.scope.* keys should be present when Agent version is unknown (defaults to latest)"
-        );
+        // The `otel.scope.*` keys are gated on the Agent version this crate was built against (7.82.0+). Since the gate
+        // is resolved at build time, key the expectation off the same constant rather than assuming a build config.
+        if EMIT_OTEL_SCOPE_META {
+            assert_eq!(meta("otel.scope.name").as_deref(), Some("com.example.products"));
+            assert_eq!(meta("otel.scope.version").as_deref(), Some("1.0.0"));
+        } else {
+            assert_eq!(meta("otel.scope.name"), None);
+            assert_eq!(meta("otel.scope.version"), None);
+        }
     }
 }
