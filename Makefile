@@ -651,6 +651,11 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
+.PHONY: build-adp-aix
+build-adp-aix: BUILD_PROFILE ?= aix-optimized-release
+build-adp-aix: ## Builds a release agent-data-plane binary natively on AIX (optimized settings without LTO)
+	@BUILD_PROFILE="$(BUILD_PROFILE)" $(CURDIR)/ci/tooling/build-adp-aix.sh
+
 .PHONY: package-adp-host
 package-adp-host: BUILD_PROFILE ?= release
 # Tarball-filename version. Defaults to Cargo.toml; CI overrides with $$ADP_IMAGE_VERSION.
