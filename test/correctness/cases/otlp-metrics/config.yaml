@@ -4,7 +4,7 @@ analysis_mode: metrics
 baseline:
   image: saluki-images/datadog-agent:testing-release
   files:
-    - datadog.yaml:/etc/datadog-agent/datadog.yaml
+    - datadog-baseline.yaml:/etc/datadog-agent/datadog.yaml
   additional_env_vars:
     - DD_API_KEY=correctness-test
 comparison:

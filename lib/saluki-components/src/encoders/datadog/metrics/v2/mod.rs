@@ -254,6 +254,11 @@ fn encode_single_metric(
     secondary_scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
     tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) -> Result<(), protobuf::Error> {
+    if !metric_has_emittable_values(metric) {
+        warn!(metric_name = %metric.context().name(), "Skipping metric with no emittable values.");
+        return Ok(());
+    }
+
     let mut output_stream = CodedOutputStream::vec(output_buf);
     let field_number = field_number_for_metric_type(metric);
 
@@ -273,6 +278,23 @@ fn encode_single_metric(
             ),
         }
     })
+}
+
+fn metric_has_emittable_values(metric: &Metric) -> bool {
+    match metric.values() {
+        MetricValues::Counter(points) | MetricValues::Rate(points, _) | MetricValues::Gauge(points) => {
+            points.into_iter().any(|(_, value)| emittable(value))
+        }
+        MetricValues::Set(points) => points.into_iter().any(|(_, value)| emittable(value)),
+        MetricValues::Distribution(sketches) => sketches
+            .into_iter()
+            .any(|(_, sketch)| sketch_has_emittable_values(sketch)),
+        MetricValues::Histogram(points) => points.into_iter().any(|(_, histogram)| !histogram.samples().is_empty()),
+    }
+}
+
+fn sketch_has_emittable_values(sketch: &DDSketch) -> bool {
+    !sketch.is_empty() || !sketch.bins().is_empty()
 }
 
 fn encode_series_metric(
@@ -485,8 +507,8 @@ fn write_dogsketch(
     output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
     timestamp: Option<NonZeroU64>, sketch: &DDSketch,
 ) -> Result<(), protobuf::Error> {
-    // If the sketch is empty, we don't write it out.
-    if sketch.is_empty() {
+    // If the sketch has neither exact samples nor bins, we don't write it out.
+    if !sketch_has_emittable_values(sketch) {
         warn!("Attempted to write an empty sketch to sketches payload, skipping.");
         return Ok(());
     }
@@ -501,10 +523,10 @@ fn write_dogsketch(
                 timestamp.map_or(0, |ts| ts.get() as i64),
             )?;
             os.write_int64(constants::DOGSKETCH_CNT_FIELD_NUMBER, sketch.count() as i64)?;
-            os.write_double(constants::DOGSKETCH_MIN_FIELD_NUMBER, sketch.min().unwrap())?;
-            os.write_double(constants::DOGSKETCH_MAX_FIELD_NUMBER, sketch.max().unwrap())?;
-            os.write_double(constants::DOGSKETCH_AVG_FIELD_NUMBER, sketch.avg().unwrap())?;
-            os.write_double(constants::DOGSKETCH_SUM_FIELD_NUMBER, sketch.sum().unwrap())?;
+            os.write_double(constants::DOGSKETCH_MIN_FIELD_NUMBER, sketch.raw_min())?;
+            os.write_double(constants::DOGSKETCH_MAX_FIELD_NUMBER, sketch.raw_max())?;
+            os.write_double(constants::DOGSKETCH_AVG_FIELD_NUMBER, sketch.raw_avg())?;
+            os.write_double(constants::DOGSKETCH_SUM_FIELD_NUMBER, sketch.raw_sum())?;
 
             let bin_keys = sketch.bins().iter().map(|bin| bin.key());
             write_repeated_packed_from_iter(
@@ -644,13 +666,18 @@ where
 mod tests {
     use std::time::Duration;
 
+    use datadog_protos::metrics::Sketch;
+    use ddsketch::DDSketch;
     use protobuf::{CodedOutputStream, Message};
     use saluki_common::iter::ReusableDeduplicator;
     use saluki_context::{tags::SharedTagSet, Context};
     use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
     use stringtheory::MetaString;
 
-    use super::{encode_series_metric, encode_sketch_metric, v1, MetricsEndpoint, MetricsEndpointEncoder};
+    use super::{
+        encode_series_metric, encode_sketch_metric, metric_has_emittable_values, v1, MetricsEndpoint,
+        MetricsEndpointEncoder,
+    };
     use crate::common::datadog::request_builder::EndpointEncoder as _;
 
     #[test]
@@ -698,6 +725,58 @@ mod tests {
         }
 
         assert_eq!(histogram_payload, distribution_payload);
+    }
+
+    #[test]
+    fn encodes_zero_count_distribution_with_bins() {
+        let mut sketch = DDSketch::default();
+        sketch.insert_n(42.0, 10);
+        sketch.set_count(0);
+        sketch.set_sum(123.0);
+        sketch.set_avg(f64::INFINITY);
+        sketch.set_min(40.0);
+        sketch.set_max(45.0);
+
+        let metric = Metric::from_parts(
+            Context::from_static_parts("zero.count.distribution", &[]),
+            MetricValues::distribution((123_u64, sketch)),
+            MetricMetadata::default(),
+        );
+
+        assert!(metric_has_emittable_values(&metric));
+
+        let host_tags = SharedTagSet::default();
+        let mut scratch_buf = Vec::new();
+        let mut packed_scratch_buf = Vec::new();
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        let mut payload = Vec::new();
+        {
+            let mut writer = CodedOutputStream::vec(&mut payload);
+            encode_sketch_metric(
+                &metric,
+                &host_tags,
+                &mut writer,
+                &mut scratch_buf,
+                &mut packed_scratch_buf,
+                &mut tags_deduplicator,
+            )
+            .expect("Failed to encode zero-count distribution as sketch");
+            writer.flush().expect("Failed to flush");
+        }
+
+        let sketch_payload = Sketch::parse_from_bytes(&payload).expect("payload should decode");
+        let dogsketches = sketch_payload.dogsketches();
+        assert_eq!(dogsketches.len(), 1);
+
+        let dogsketch = &dogsketches[0];
+        assert_eq!(dogsketch.ts(), 123);
+        assert_eq!(dogsketch.cnt(), 0);
+        assert_eq!(dogsketch.sum(), 123.0);
+        assert!(dogsketch.avg().is_infinite());
+        assert_eq!(dogsketch.min(), 40.0);
+        assert_eq!(dogsketch.max(), 45.0);
+        assert!(!dogsketch.k().is_empty());
+        assert!(!dogsketch.n().is_empty());
     }
 
     #[test]

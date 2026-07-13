@@ -24,6 +24,23 @@ static SKETCH_CONFIG: Config = Config::new(
 );
 const MAX_BIN_WIDTH: u32 = u32::MAX;
 
+#[cfg(feature = "serde")]
+mod serde_helpers {
+    use serde::{Deserialize, Deserializer};
+
+    /// Deserializes an `f64` field, treating JSON `null` as `0.0`.
+    ///
+    /// The Go Agent can produce `NaN` values in sketch summaries (e.g. `avg = sum / count` when
+    /// `count == 0`), and `serde_json` serializes `NaN` as `null`. This helper maps `null` back
+    /// to `0.0` so round-trip deserialization does not fail.
+    pub(super) fn null_as_zero<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or(0.0))
+    }
+}
+
 /// [DDSketch][ddsketch] implementation based on the [Datadog Agent][ddagent].
 ///
 /// This implementation is subtly different from the open-source implementations of `DDSketch`, as Datadog made some
@@ -62,15 +79,19 @@ pub struct DDSketch {
     count: u64,
 
     /// The minimum value of all observations within the sketch.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_zero"))]
     min: f64,
 
     /// The maximum value of all observations within the sketch.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_zero"))]
     max: f64,
 
     /// The sum of all observations within the sketch.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_zero"))]
     sum: f64,
 
     /// The average value of all observations within the sketch.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_zero"))]
     avg: f64,
 }
 
@@ -159,6 +180,14 @@ impl DDSketch {
         }
     }
 
+    /// Returns the raw sum summary field, even when the exact sample count is zero.
+    ///
+    /// This is intended for wire-format compatibility with producers that can emit sketches with non-empty bins but an
+    /// exact count of zero. Most callers should use [`DDSketch::sum`] instead.
+    pub fn raw_sum(&self) -> f64 {
+        self.sum
+    }
+
     /// Average value seen by this sketch.
     ///
     /// Returns `None` if the sketch is empty.
@@ -168,6 +197,30 @@ impl DDSketch {
         } else {
             Some(self.avg)
         }
+    }
+
+    /// Returns the raw average summary field, even when the exact sample count is zero.
+    ///
+    /// This is intended for wire-format compatibility with producers that can emit sketches with non-empty bins but an
+    /// exact count of zero. Most callers should use [`DDSketch::avg`] instead.
+    pub fn raw_avg(&self) -> f64 {
+        self.avg
+    }
+
+    /// Returns the raw minimum summary field, even when the exact sample count is zero.
+    ///
+    /// This is intended for wire-format compatibility with producers that can emit sketches with non-empty bins but an
+    /// exact count of zero. Most callers should use [`DDSketch::min`] instead.
+    pub fn raw_min(&self) -> f64 {
+        self.min
+    }
+
+    /// Returns the raw maximum summary field, even when the exact sample count is zero.
+    ///
+    /// This is intended for wire-format compatibility with producers that can emit sketches with non-empty bins but an
+    /// exact count of zero. Most callers should use [`DDSketch::max`] instead.
+    pub fn raw_max(&self) -> f64 {
+        self.max
     }
 
     /// Returns the current bins of this sketch.
@@ -478,15 +531,21 @@ impl DDSketch {
         }
 
         for bucket in buckets {
+            let original_upper = bucket.upper_limit;
             let mut upper = bucket.upper_limit;
             if upper.is_sign_positive() && upper.is_infinite() {
                 upper = lower;
             } else if lower.is_sign_negative() && lower.is_infinite() {
                 lower = upper;
+            } else if lower == 0.0 && upper > 0.0 {
+                // OpenTelemetry explicit buckets use (lower, upper] intervals, so a (0, B] bucket cannot contain zero.
+                // Match the Core Agent's interpolation behavior and avoid seeding DDSketch's zero bin from the
+                // degenerate lower bound.
+                lower = upper;
             }
 
             self.insert_interpolate_bucket(lower, upper, bucket.count);
-            lower = bucket.upper_limit;
+            lower = original_upper;
         }
 
         Ok(())
@@ -857,6 +916,30 @@ mod tests {
                 weight,
             );
         }
+    }
+
+    #[test]
+    fn interpolate_buckets_does_not_seed_zero_bin_for_positive_bucket_after_zero_bound() {
+        let mut sketch = DDSketch::default();
+
+        sketch
+            .insert_interpolate_buckets(vec![
+                Bucket {
+                    upper_limit: 0.0,
+                    count: 0,
+                },
+                Bucket {
+                    upper_limit: 10.0,
+                    count: 10,
+                },
+            ])
+            .expect("buckets should interpolate");
+
+        assert_eq!(sketch.count(), 10);
+        assert!(
+            sketch.min().expect("sketch should not be empty") > 0.0,
+            "positive bucket after a zero lower bound must not seed a zero minimum"
+        );
     }
 
     /// When the accumulated missing mass plus the first kept bin's existing count exceeds

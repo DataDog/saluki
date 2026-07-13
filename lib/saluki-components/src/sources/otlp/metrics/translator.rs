@@ -952,13 +952,15 @@ impl OtlpMetricsTranslator {
         if hist_info.has_min_from_last_time_window {
             qa.set_min(p.min.unwrap_or(0.0));
         } else if let Some(min) = p.min {
-            qa.set_min(f64::max(min, qa.min().unwrap()));
+            // The exact count override above can set the sketch count to zero even when bucket interpolation produced
+            // bins. Use the raw interpolated minimum so the count-sensitive accessor does not discard it.
+            qa.set_min(f64::max(min, qa.raw_min()));
         }
 
         if hist_info.has_max_from_last_time_window {
             qa.set_max(p.max.unwrap_or(0.0));
         } else if let Some(max) = p.max {
-            qa.set_max(f64::min(max, qa.max().unwrap()));
+            qa.set_max(f64::min(max, qa.raw_max()));
         }
 
         let mut interval: i64 = 0;
@@ -1906,6 +1908,83 @@ mod tests {
         assert_eq!(sketch.count(), 256);
         assert!(sketch.bin_count() > 1);
         assert!(sketch.min().unwrap() < sketch.max().unwrap());
+    }
+
+    #[test]
+    fn cumulative_histogram_preserves_interpolated_min_when_exact_count_is_zero() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let dims = Dimensions {
+            name: "metric.example".to_string(),
+            ..Default::default()
+        };
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let start_ts = translator.process_start_time_ns + 1;
+        let mut events = Vec::new();
+
+        let seed = OtlpHistogramDataPoint {
+            start_time_unix_nano: start_ts,
+            time_unix_nano: start_ts + nanos_from_seconds(1),
+            count: 0,
+            sum: Some(0.0),
+            bucket_counts: vec![0, 0],
+            explicit_bounds: vec![100.0],
+            min: Some(0.0),
+            max: Some(100.0),
+            ..Default::default()
+        };
+        translator
+            .get_sketch_buckets(
+                &context,
+                dims.clone(),
+                &seed,
+                false,
+                &mut events,
+                HistogramInfo::default(),
+            )
+            .expect("seeding cumulative bucket state should succeed");
+        assert!(events.is_empty());
+
+        let point = OtlpHistogramDataPoint {
+            start_time_unix_nano: start_ts,
+            time_unix_nano: start_ts + nanos_from_seconds(2),
+            count: 0,
+            sum: Some(0.0),
+            bucket_counts: vec![0, 10],
+            explicit_bounds: vec![100.0],
+            min: Some(0.0),
+            max: Some(100.0),
+            ..Default::default()
+        };
+        translator
+            .get_sketch_buckets(
+                &context,
+                dims,
+                &point,
+                false,
+                &mut events,
+                HistogramInfo {
+                    ok: true,
+                    count: 0,
+                    sum: 0.0,
+                    ..Default::default()
+                },
+            )
+            .expect("translating cumulative bucket deltas should succeed");
+
+        assert_eq!(events.len(), 1);
+        let metric = events[0].try_as_metric().expect("event should be a metric");
+        let MetricValues::Distribution(points) = metric.values() else {
+            panic!("cumulative histogram should produce a distribution");
+        };
+        let (_, sketch) = points.into_iter().next().expect("distribution should contain a sketch");
+        assert_eq!(sketch.count(), 0);
+        assert!(!sketch.bins().is_empty());
+        assert_eq!(sketch.raw_min(), 100.0);
+        assert!(sketch.raw_max() > 0.0 && sketch.raw_max() < 100.0);
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296
