@@ -20,6 +20,18 @@
 
 include!(concat!(env!("OUT_DIR"), "/details.rs"));
 
+/// Raw Agent version string that ADP was built against, as detected at build time.
+///
+/// This is the verbatim `DD_AGENT_VERSION` value (e.g. `"7.81.0-full"` or `"nightly"`), suitable for display in
+/// diagnostics. Returns `None` when `DD_AGENT_VERSION` was not set at build time.
+pub fn version_string() -> Option<&'static str> {
+    if DETECTED_AGENT_VERSION.is_empty() {
+        None
+    } else {
+        Some(DETECTED_AGENT_VERSION)
+    }
+}
+
 /// Version of the Datadog Agent that ADP is paired with, as detected at build time.
 ///
 /// Returns `None` when `DD_AGENT_VERSION` was not set at build time.
