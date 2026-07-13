@@ -1,7 +1,7 @@
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use saluki_context::tags::TagSet;
 
-use super::{origin_id_from_attributes, tags_from_attributes};
+use super::{origin_id_from_attributes, raw_tags_from_attributes, tags_from_attributes};
 use crate::common::otlp::util::{resource_to_source, Source};
 
 pub struct AttributeTranslator {}
@@ -13,6 +13,10 @@ impl AttributeTranslator {
 
     pub fn tags_from_attributes(&self, attributes: &[otlp_common::KeyValue]) -> TagSet {
         tags_from_attributes(attributes)
+    }
+
+    pub fn raw_tags_from_attributes(&self, attributes: &[otlp_common::KeyValue]) -> TagSet {
+        raw_tags_from_attributes(attributes)
     }
 
     #[allow(dead_code)]

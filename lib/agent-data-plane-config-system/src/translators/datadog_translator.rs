@@ -875,6 +875,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.receiver.metrics_enabled = value;
     }
 
+    fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool) {
+        self.config.domains.otlp.metrics.resource_attributes_as_tags = value;
+    }
+
+    fn consume_otlp_config_metrics_tags(&mut self, value: String) {
+        self.config.domains.otlp.metrics.tags = value;
+    }
+
     fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String) {
         self.config.domains.otlp.receiver.grpc.endpoint = value;
     }

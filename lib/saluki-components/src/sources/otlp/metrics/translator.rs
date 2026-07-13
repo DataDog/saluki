@@ -80,6 +80,8 @@ pub struct OtlpMetricsTranslator {
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
     attribute_translator: AttributeTranslator,
+    // Configured tags (`otlp_config.metrics.tags`) added to every emitted metric.
+    metric_tags: SharedTagSet,
 }
 
 #[derive(Debug, Default)]
@@ -390,6 +392,7 @@ impl OtlpMetricsTranslator {
     /// Creates a new, empty `OtlpMetricsTranslator`.
     pub fn new(
         config: OtlpMetricsTranslatorConfig, default_hostname: MetaString, context_resolver: ContextResolver,
+        metric_tags: SharedTagSet,
     ) -> Result<Self, GenericError> {
         config
             .validate()
@@ -404,6 +407,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
+            metric_tags,
         })
     }
 
@@ -418,6 +422,14 @@ impl OtlpMetricsTranslator {
 
         let attribute_tags = self.attribute_translator.tags_from_attributes(&resource.attributes);
 
+        // When `resource_attributes_as_tags` is enabled, the Agent copies every resource attribute
+        // onto each data point as a raw tag, in addition to the semantic-convention mappings above.
+        let raw_resource_tags = if self.config.resource_attributes_as_tags {
+            self.attribute_translator.raw_tags_from_attributes(&resource.attributes)
+        } else {
+            TagSet::default()
+        };
+
         // TODO: https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L736-L753
         let host = match source {
             Some(Source {
@@ -430,7 +442,13 @@ impl OtlpMetricsTranslator {
         for scope_metrics in resource_metrics.scope_metrics {
             let tags = {
                 let mut mutable_tags = TagSet::default();
+                for tag in &self.metric_tags {
+                    mutable_tags.insert_tag(tag.clone());
+                }
                 for tag in &attribute_tags {
+                    mutable_tags.insert_tag(tag.clone());
+                }
+                for tag in &raw_resource_tags {
                     mutable_tags.insert_tag(tag.clone());
                 }
 
@@ -530,6 +548,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::for_tests(),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
+            metric_tags: SharedTagSet::default(),
         }
     }
 
@@ -1519,6 +1538,122 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), Some("resource-host"));
+    }
+
+    fn string_attribute(key: &str, value: &str) -> OtlpKeyValue {
+        OtlpKeyValue {
+            key: key.to_string(),
+            value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                value: Some(
+                    otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value.to_string()),
+                ),
+            }),
+        }
+    }
+
+    fn single_gauge_with_resource_attributes(attributes: Vec<OtlpKeyValue>) -> OtlpResourceMetrics {
+        OtlpResourceMetrics {
+            resource: Some(otlp_protos::opentelemetry::proto::resource::v1::Resource {
+                attributes,
+                ..Default::default()
+            }),
+            scope_metrics: vec![otlp_protos::opentelemetry::proto::metrics::v1::ScopeMetrics {
+                metrics: vec![OtlpMetric {
+                    name: "otlpresource.metric".to_string(),
+                    data: Some(OtlpMetricData::Gauge(
+                        otlp_protos::opentelemetry::proto::metrics::v1::Gauge {
+                            data_points: vec![OtlpNumberDataPoint {
+                                value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
+                                time_unix_nano: nanos_from_seconds(1),
+                                ..Default::default()
+                            }],
+                        },
+                    )),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resource_attributes_as_tags_disabled_keeps_only_semantic_mapping() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        assert!(!translator.config.resource_attributes_as_tags);
+
+        let resource_metrics = single_gauge_with_resource_attributes(vec![
+            string_attribute("service.name", "otlp-test"),
+            string_attribute("custom.resource.attribute", "present"),
+        ]);
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let tags = events[0].try_as_metric().expect("metric event").context().tags();
+
+        // The semantic-convention mapping is always applied.
+        assert_eq!(tags.get_single_tag("service"), Some(&Tag::from("service:otlp-test")));
+
+        // The raw resource attributes are not added when the flag is disabled.
+        assert_eq!(tags.get_single_tag("service.name"), None);
+        assert_eq!(tags.get_single_tag("custom.resource.attribute"), None);
+    }
+
+    #[test]
+    fn resource_attributes_as_tags_enabled_adds_raw_attributes() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.resource_attributes_as_tags = true;
+
+        let resource_metrics = single_gauge_with_resource_attributes(vec![
+            string_attribute("service.name", "otlp-test"),
+            string_attribute("custom.resource.attribute", "present"),
+        ]);
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let tags = events[0].try_as_metric().expect("metric event").context().tags();
+
+        // The semantic-convention mapping remains intact.
+        assert_eq!(tags.get_single_tag("service"), Some(&Tag::from("service:otlp-test")));
+
+        // Every resource attribute is also emitted as a raw tag.
+        assert_eq!(
+            tags.get_single_tag("service.name"),
+            Some(&Tag::from("service.name:otlp-test"))
+        );
+        assert_eq!(
+            tags.get_single_tag("custom.resource.attribute"),
+            Some(&Tag::from("custom.resource.attribute:present"))
+        );
+    }
+
+    #[test]
+    fn configured_metric_tags_are_added_to_every_metric() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let mut configured = TagSet::default();
+        configured.insert_tag("correctness:configured");
+        translator.metric_tags = configured.into_shared();
+
+        let events = translator
+            .translate_metrics(single_gauge_with_resource_attributes(vec![]), &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let tags = events[0].try_as_metric().expect("metric event").context().tags();
+        assert_eq!(
+            tags.get_single_tag("correctness"),
+            Some(&Tag::from("correctness:configured"))
+        );
     }
 
     fn build_test_cumulative_monotonic_double_points(

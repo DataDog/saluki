@@ -46,6 +46,9 @@ pub struct OtlpMetricsTranslatorConfig {
     pub initial_cumul_mono_value_mode: InitialCumulMonoValueMode,
     pub instrumentation_scope_metadata_as_tags: bool,
     pub instrumentation_library_metadata_as_tags: bool,
+    // Reports whether all resource attributes should be added as raw tags on emitted metrics, in
+    // addition to the semantic-convention mappings that are always applied.
+    pub resource_attributes_as_tags: bool,
     // Reports whether certain metrics that are only available when using
     // the Datadog Agent should be obtained by remapping from OTEL counterparts (for example,
     // container.* and system.* metrics). This configuration also enables with_otel_prefix.
@@ -127,6 +130,11 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
+    pub fn with_resource_attributes_as_tags(mut self, resource_attributes_as_tags: bool) -> Self {
+        self.resource_attributes_as_tags = resource_attributes_as_tags;
+        self
+    }
+
     pub fn with_delta_ttl(mut self, ttl: Duration) -> Self {
         self.delta_ttl = ttl;
         self
@@ -147,6 +155,7 @@ impl Default for OtlpMetricsTranslatorConfig {
             initial_cumul_mono_value_mode: InitialCumulMonoValueMode::default(),
             instrumentation_scope_metadata_as_tags: true,
             instrumentation_library_metadata_as_tags: false,
+            resource_attributes_as_tags: false,
             with_remapping: false,
             with_otel_prefix: false,
             quantiles: false,

@@ -16,6 +16,7 @@ use prost::Message;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
+use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::topology::interconnect::BufferedDispatcher;
@@ -202,7 +203,19 @@ impl SourceBuilder for OtlpConfiguration {
         let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
         let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default()
             .with_remapping(true)
-            .with_quantiles(true);
+            .with_quantiles(true)
+            .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags);
+
+        // `otlp_config.metrics.tags` is a comma-separated list added to every emitted metric.
+        let metric_tags = {
+            let mut tags = TagSet::default();
+            if !self.otlp_config.metrics.tags.is_empty() {
+                for tag in self.otlp_config.metrics.tags.split(',') {
+                    tags.insert_tag(tag);
+                }
+            }
+            tags.into_shared()
+        };
         let traces_interner_size =
             std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
                 .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
@@ -218,6 +231,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
+            metric_tags,
             default_hostname: self.default_hostname.clone(),
             traces_translator,
             metrics,
@@ -241,6 +255,7 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
+    metric_tags: SharedTagSet,
     default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
@@ -256,6 +271,7 @@ impl Source for Otlp {
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
+            metric_tags,
             default_hostname,
             traces_translator,
             metrics,
@@ -272,8 +288,12 @@ impl Source for Otlp {
 
         let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
 
-        let metrics_translator =
-            OtlpMetricsTranslator::new(metrics_translator_config, default_hostname, context_resolver)?;
+        let metrics_translator = OtlpMetricsTranslator::new(
+            metrics_translator_config,
+            default_hostname,
+            context_resolver,
+            metric_tags,
+        )?;
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 

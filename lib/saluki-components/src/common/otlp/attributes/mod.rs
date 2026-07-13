@@ -198,6 +198,33 @@ pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
     tags
 }
 
+/// Renders every attribute as a raw `key:value` tag.
+///
+/// This mirrors the Agent's `resource_attributes_as_tags` behavior, where the `resourcetotelemetry`
+/// wrapper copies all resource attributes onto each data point before translation. Only scalar
+/// values (string, bool, int, double) are emitted, matching the data-point attribute conversion in
+/// `Dimensions::with_attribute_map`.
+pub fn raw_tags_from_attributes(attributes: &[otlp_common::KeyValue]) -> TagSet {
+    let mut tags = TagSet::default();
+
+    for kv in attributes {
+        if let Some(value) = kv.value.as_ref().and_then(|v| v.value.as_ref()) {
+            let v_str = match value {
+                Value::StringValue(s) => s.clone(),
+                Value::BoolValue(b) => b.to_string(),
+                Value::IntValue(i) => i.to_string(),
+                Value::DoubleValue(d) => d.to_string(),
+                // Other types (bytes, array, kvlist) are not converted to tags, matching the
+                // data-point attribute conversion.
+                _ => continue,
+            };
+            tags.insert_tag(format!("{}:{}", kv.key, v_str));
+        }
+    }
+
+    tags
+}
+
 #[allow(dead_code)]
 pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let mut pod_uid = None;

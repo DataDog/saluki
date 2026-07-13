@@ -1999,6 +1999,24 @@ inventory:
       additional_attributes:
         config_registry_filename: otlp.rs
 
+  otlp_config.metrics.resource_attributes_as_tags:
+    support: full
+    pipelines: [otlp]
+    description: "Add resource attributes as raw metric tags."
+    test_support:
+      used_by: [OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.tags:
+    support: full
+    pipelines: [otlp]
+    description: "Tags added to all OTLP metrics."
+    test_support:
+      used_by: [OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   otlp_config.receiver.protocols.grpc.endpoint:
     support: full
     pipelines: [otlp]
@@ -3876,12 +3894,10 @@ excluded:
   otlp_config.metrics.histograms.send_aggregation_metrics: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.resource_attributes_as_tags: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.summaries.mode: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.sums.cumulative_monotonic_mode: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.sums.initial_cumulative_monotonic_value: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.tag_cardinality: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.tags: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.include_metadata: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.max_concurrent_streams: "ignored in initial audit 2026-04-23"

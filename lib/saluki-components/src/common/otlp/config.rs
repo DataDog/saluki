@@ -165,6 +165,24 @@ pub struct MetricsConfig {
     /// Defaults to `true`.
     #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
+
+    /// Whether to add all resource attributes as tags on emitted metrics.
+    ///
+    /// When enabled, every resource attribute is emitted as a raw `key:value` tag, in addition to
+    /// the semantic-convention mappings that are always applied. Mirrors the Agent's
+    /// `otlp_config.metrics.resource_attributes_as_tags`.
+    ///
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub resource_attributes_as_tags: bool,
+
+    /// Comma-separated list of tags to add to every emitted metric.
+    ///
+    /// Mirrors the Agent's `otlp_config.metrics.tags`.
+    ///
+    /// Defaults to empty.
+    #[serde(default)]
+    pub tags: String,
 }
 
 fn default_metrics_enabled() -> bool {
@@ -175,6 +193,8 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             enabled: default_metrics_enabled(),
+            resource_attributes_as_tags: false,
+            tags: String::new(),
         }
     }
 }
