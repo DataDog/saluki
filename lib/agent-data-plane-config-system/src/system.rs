@@ -508,7 +508,7 @@ mod tests {
 
         // A small Saluki-only source setting one seeded field.
         let saluki: SalukiOnly = serde_json::from_value(json!({
-            "dogstatsd": { "tcp_port": 8126 },
+            "dogstatsd_tcp_port": 8126,
         }))
         .expect("saluki-only source deserializes");
 
