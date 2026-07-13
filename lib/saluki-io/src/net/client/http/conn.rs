@@ -483,7 +483,7 @@ impl HttpsCapableConnectorBuilder {
     /// DNS, such as Unix sockets, vsock, or literal-IP TCP endpoints. Hostname-based TCP
     /// destinations will fail to resolve when this is enabled.
     ///
-    /// DNS resolution is enabled by default.
+    /// Defaults to enabled.
     pub fn without_dns_resolution(mut self) -> Self {
         self.dns_resolution_disabled = true;
         self

@@ -1,6 +1,6 @@
 //! Helpers for interacting with the Datadog Agent.
 
-use std::{net::IpAddr, time::Duration};
+use std::time::Duration;
 
 use backon::Retryable as _;
 use datadog_protos::agent::v1::{
@@ -18,7 +18,7 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::HttpsCapableConnectorBuilder;
 use tonic::{
     service::interceptor::InterceptedService,
-    transport::{Channel, Endpoint, Uri},
+    transport::{Channel, Endpoint},
     Code, Request, Response,
 };
 use tracing::warn;
@@ -72,13 +72,7 @@ impl RemoteAgentClient {
             let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth().auth_token_file_path()).await?;
             let ipc_cert_file_path = config.auth().ipc_cert_file_path();
             let client_tls_config = build_ipc_client_ipc_tls_config(ipc_cert_file_path).await?;
-            let endpoint = config.endpoint()?;
-            let connector_builder = HttpsCapableConnectorBuilder::default();
-            let connector_builder = if endpoint_requires_dns_resolution(&endpoint) {
-                connector_builder
-            } else {
-                connector_builder.without_dns_resolution()
-            };
+            let connector_builder = HttpsCapableConnectorBuilder::default().without_dns_resolution();
             #[cfg(target_os = "linux")]
             let connector_builder = if let Some(addr) = config.vsock_addr()? {
                 connector_builder.with_vsock_addr(addr)
@@ -86,6 +80,7 @@ impl RemoteAgentClient {
                 connector_builder
             };
             let https_connector = connector_builder.build(client_tls_config)?;
+            let endpoint = config.endpoint()?;
             let channel = Endpoint::from(endpoint.clone())
                 .connect_timeout(Duration::from_secs(2))
                 .connect_with_connector(https_connector)
@@ -268,19 +263,6 @@ impl RemoteAgentClient {
     }
 }
 
-fn endpoint_requires_dns_resolution(endpoint: &Uri) -> bool {
-    match endpoint.host() {
-        Some(host) => {
-            let host = host
-                .strip_prefix('[')
-                .and_then(|host| host.strip_suffix(']'))
-                .unwrap_or(host);
-            host.parse::<IpAddr>().is_err()
-        }
-        None => false,
-    }
-}
-
 async fn try_query_agent_api(
     client: &mut AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
 ) -> Result<(), GenericError> {
@@ -299,27 +281,5 @@ async fn try_query_agent_api(
             )),
             _ => Err(e.into()),
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use tonic::transport::Uri;
-
-    use super::endpoint_requires_dns_resolution;
-
-    #[test]
-    fn hostname_endpoint_requires_dns_resolution() {
-        let endpoint = "https://datadog-agent:5001".parse::<Uri>().expect("valid URI");
-        assert!(endpoint_requires_dns_resolution(&endpoint));
-    }
-
-    #[test]
-    fn literal_ip_endpoints_do_not_require_dns_resolution() {
-        let ipv4_endpoint = "https://127.0.0.1:5001".parse::<Uri>().expect("valid URI");
-        assert!(!endpoint_requires_dns_resolution(&ipv4_endpoint));
-
-        let ipv6_endpoint = "https://[::1]:5001".parse::<Uri>().expect("valid URI");
-        assert!(!endpoint_requires_dns_resolution(&ipv6_endpoint));
     }
 }
