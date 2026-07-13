@@ -85,11 +85,6 @@ const OTEL_LIBRARY_NAME_META_KEY: &str = "otel.library.name";
 const OTEL_LIBRARY_VERSION_META_KEY: &str = "otel.library.version";
 const OTEL_SCOPE_NAME_META_KEY: &str = "otel.scope.name";
 const OTEL_SCOPE_VERSION_META_KEY: &str = "otel.scope.version";
-
-// Whether to emit the `otel.scope.*` span meta keys. These were added to the Datadog Agent's OTLP trace conversion in
-// 7.82+, so we only emit them when the Agent version ADP was built against meets that threshold. The Agent version is
-// baked in at build time, so this resolves to a compile-time constant and the unused branch is eliminated.
-const EMIT_OTEL_SCOPE_META: bool = datadog_agent_commons::agent_version::meets(7, 82, 0);
 const OTEL_STATUS_CODE_META_KEY: &str = "otel.status_code";
 const OTEL_STATUS_DESCRIPTION_META_KEY: &str = "otel.status_description";
 const INTERNAL_DD_HOSTNAME_KEY: &str = "_dd.hostname";
@@ -106,6 +101,14 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
     (KEY_DATADOG_ERROR_STACK, "error.stack"),
     (KEY_DATADOG_HTTP_STATUS_CODE, HTTP_STATUS_CODE_KEY),
 ];
+
+// Behavior gated on the Datadog Agent version ADP was built against. The Agent version is baked in at build time (see
+// `datadog_agent_commons::agent_version`), so each gate resolves to a compile-time constant and the unused branch is
+// eliminated. Add further version-gated toggles here as the Agent's output evolves.
+
+// `otel.scope.{name,version}` span meta were added to the Agent's OTLP trace conversion in 7.82; only emit them when
+// the Agent version meets that threshold.
+const EMIT_OTEL_SCOPE_META: bool = datadog_agent_commons::agent_version::meets(7, 82, 0);
 
 // otel_span_to_dd_span converts an OTLP span to DD span and is based on the logic defined in the agent.
 // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go#L357
