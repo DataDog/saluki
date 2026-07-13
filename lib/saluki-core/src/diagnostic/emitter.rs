@@ -1,8 +1,8 @@
 //! Subsystem-scoped diagnostics control surface.
 
-// TODO: probably rework process name construction to use `SubsystemIdentifier` under the hood,
-// and expose that, in addition to process ID, as a task-local we can access so that we can
-// make `DiagnosticEmitter::new` require no parameters at all while still doing the right thing
+// TODO: probably rework process name construction to use `SubsystemIdentifier` under the hood, and expose that, in
+// addition to process ID, as a task-local we can access so that we can make `DiagnosticEmitter::from_current` require
+// no parameters at all while still doing the right thing
 
 use snafu::{OptionExt as _, Snafu};
 use stringtheory::MetaString;
