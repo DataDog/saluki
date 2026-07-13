@@ -136,6 +136,8 @@ echo "[*] Fetching Cargo dependencies..."
 cargo fetch
 
 echo "[*] Building agent-data-plane for AIX..."
+# cargo-auditable currently emits ELF/generic Unix linker inputs and flags that AIX's XCOFF
+# linker rejects.
 cargo build --profile "${BUILD_PROFILE}" --bin agent-data-plane --features "${BUILD_FEATURES}"
 
 echo "[*] AIX ADP binary ready at ${CARGO_TARGET_DIR}/${BUILD_PROFILE}/agent-data-plane"

@@ -559,10 +559,6 @@ check-docs: ## Checks prose/code documentation against our style guide
 	@echo "[*] Checking prose/code documentation against our style guide..."
 	@vale --minAlertLevel=error --glob='!{lib/*/target/*,docs/.vitepress/*,*datadog_configuration*}' docs lib bin
 
-.PHONY: test-build-adp-aix-script
-test-build-adp-aix-script: ## Tests the AIX ADP build helper dry-run behavior
-	@$(CURDIR)/ci/tooling/test-build-adp-aix.sh
-
 .PHONY: sync-docs-config
 sync-docs-config: check-lint-tools
 sync-docs-config: ## Synchronizes the Vale configuration, updating configured style packages
