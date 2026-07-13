@@ -2,8 +2,9 @@
 #
 # A wrapper for invoking a process through `ddprof` if internal profiling is enabled.
 #
-# We use this to directly run ADP via `ddprof` when profiling is enabled, as the `LD_PRELOAD`-based approach taken by
-# SMP itself is not compatible with statically linked binaries like ADP.
+# We use this to directly run ADP via `ddprof` when profiling is enabled, instead of the `LD_PRELOAD`-based approach
+# SMP uses by default. This dates back to when ADP was a statically linked musl binary, which `LD_PRELOAD` could not
+# instrument; ADP is now glibc-dynamic, but we keep the direct-`ddprof` path as-is.
 
 set -eu
 
