@@ -362,22 +362,10 @@ impl DataspaceRegistry {
         state.notify_retraction(&key);
     }
 
-    /// Sends a transient message with the given identifier to all subscribers matching it right now.
+    /// Sends a transient message with the given identifier to all matching subscribers.
     ///
-    /// Unlike [`assert`](Self::assert), a message is not stored, is not replayed to future subscribers, and is not
-    /// tied to the current process's lifecycle: any process may send a message for any type/identifier, and messages
-    /// are never automatically retracted. If there are no matching subscribers at the time of sending, the message is
-    /// dropped.
-    ///
-    /// Messages, assertions, and retractions for the same type and identifier are delivered to a subscription in send
-    /// order over the same channel.
-    ///
-    /// # Delivery
-    ///
-    /// Messages share the same fixed-capacity broadcast channel as assertions and retractions. A subscriber that falls
-    /// behind may miss messages (see [`Subscription::recv`]); a high volume of messages can also evict pending
-    /// assertions or retractions for a lagging subscriber. Use [`with_channel_capacity`](Self::with_channel_capacity)
-    /// to size the channel for message-heavy identifiers.
+    /// Unlike [`assert`](Self::assert), only the _current_ matching subscribers are notified: messages are never stored
+    /// or replayed. If not matching subscribers exist, the message is dropped.
     pub fn send<T>(&self, value: T, id: impl Into<Identifier>)
     where
         T: Clone + Send + Sync + 'static,
@@ -426,12 +414,11 @@ impl DataspaceRegistry {
             .collect()
     }
 
-    /// Subscribes to assertion, retraction, and message updates matching the given filter.
+    /// Subscribes to updates matching the given filter.
     ///
-    /// Returns a [`Subscription`] that can be used to asynchronously receive updates. Any
-    /// assertions that match the filter at the time of subscribing will be immediately replayed
-    /// into the subscription's pending queue. Messages are never replayed, so only those sent
-    /// after subscribing are delivered.
+    /// Returns a [`Subscription`] that can be used to asynchronously receive updates. Any updates to assertions that
+    /// match the filter at the time of subscribing will be immediately replayed into the subscription's pending queue.
+    /// Messages are never replayed, so only those sent after subscribing are delivered.
     pub fn subscribe<T>(&self, filter: IdentifierFilter) -> Subscription<T>
     where
         T: Clone + Send + Sync + 'static,
