@@ -34,7 +34,7 @@ use tokio::{
     sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
 };
-use tonic::{server::NamedService, Status};
+use tonic::{server::NamedService, Code, Status};
 use tracing::{debug, error, info, warn};
 
 use crate::config::DataPlaneConfiguration;
@@ -72,12 +72,14 @@ pub struct RemoteAgentBootstrap {
 impl RemoteAgentBootstrap {
     /// Creates a new `RemoteAgentBootstrap` from the given configurations.
     ///
-    /// A remote agent client is created and immediately attempts to register with the Core Agent. This function does
-    /// not return until registration finishes, whether successful or not.
+    /// A remote agent client is created and immediately attempts to register with the Core Agent. This function waits
+    /// for the first registration attempt to finish. A transient failure is not fatal and the background loop keeps
+    /// retrying.
     ///
     /// # Errors
     ///
-    /// If the configuration is invalid, an error is returned.
+    /// Returns an error if the configuration is invalid, the client cannot be created, or the first registration
+    /// attempt is rejected as permanent. See [`is_permanent_registration_error`].
     pub async fn from_configuration(
         config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
     ) -> Result<Self, GenericError> {
@@ -103,14 +105,12 @@ impl RemoteAgentBootstrap {
             run_remote_agent_registration_loop(client.clone(), state),
         );
 
-        match init_reg_rx.await {
-            Ok(Ok(())) => (),
-            Ok(Err(e)) => return Err(e),
-            Err(_) => {
-                return Err(generic_error!(
-                    "Failed to initialize remote agent state. Registration task failed unexpectedly."
-                ))
+        match classify_initial_registration(init_reg_rx.await) {
+            InitialRegistration::Proceed => {}
+            InitialRegistration::RetryInBackground(e) => {
+                warn!(error = %e, "Initial remote agent registration failed. Retrying in background.");
             }
+            InitialRegistration::Fatal(e) => return Err(e),
         }
 
         Ok(Self {
@@ -205,6 +205,42 @@ impl RemoteAgentState {
 
         (state, init_reg_rx)
     }
+}
+
+/// The boot decision `from_configuration` takes from the first registration attempt.
+enum InitialRegistration {
+    /// Registration succeeded. Boot proceeds.
+    Proceed,
+    /// Registration failed transiently. Log it and let the background loop retry.
+    RetryInBackground(GenericError),
+    /// Registration cannot recover. Abort boot.
+    Fatal(GenericError),
+}
+
+/// Maps the first registration attempt to a boot decision.
+fn classify_initial_registration(
+    result: Result<Result<(), GenericError>, oneshot::error::RecvError>,
+) -> InitialRegistration {
+    match result {
+        Ok(Ok(())) => InitialRegistration::Proceed,
+        // ADP ships in the same converged image as the Core Agent, so `UNIMPLEMENTED`/`INVALID_ARGUMENT` mean the
+        // request or the paired Agent is broken. Retrying would hang boot forever in `dynamic_config.ready()`, so
+        // fail fast.
+        Ok(Err(e)) if is_permanent_registration_error(&e) => InitialRegistration::Fatal(e),
+        Ok(Err(e)) => InitialRegistration::RetryInBackground(e),
+        Err(_) => InitialRegistration::Fatal(generic_error!(
+            "Failed to initialize remote agent state. Registration task failed unexpectedly."
+        )),
+    }
+}
+
+/// Returns `true` for an unrecoverable registration failure.
+///
+/// `UNIMPLEMENTED` and `INVALID_ARGUMENT` are deterministic rejections from the paired Core Agent.
+/// Connectivity, timeout, and auth failures stay transient for the background loop to retry.
+fn is_permanent_registration_error(e: &GenericError) -> bool {
+    e.downcast_ref::<Status>()
+        .is_some_and(|s| matches!(s.code(), Code::Unimplemented | Code::InvalidArgument))
 }
 
 async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut state: RemoteAgentState) {
@@ -786,5 +822,78 @@ mod tests {
         let input = vec![b'y'; DIAGNOSTIC_ARTIFACT_MAX_BYTES];
         let output = cap_artifact(input.clone());
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn unimplemented_and_invalid_argument_are_permanent() {
+        assert!(is_permanent_registration_error(
+            &Status::unimplemented("no such method").into()
+        ));
+        assert!(is_permanent_registration_error(
+            &Status::invalid_argument("bad endpoint uri").into()
+        ));
+    }
+
+    #[test]
+    fn connectivity_and_auth_failures_are_not_permanent() {
+        // Partition and boot-race failures must stay retryable so the background loop can recover.
+        assert!(!is_permanent_registration_error(
+            &Status::unavailable("connection refused").into()
+        ));
+        assert!(!is_permanent_registration_error(
+            &Status::deadline_exceeded("timed out").into()
+        ));
+        // Auth failures can be a cert-not-ready-yet race at container start, so they stay retryable too.
+        assert!(!is_permanent_registration_error(
+            &Status::unauthenticated("bad token").into()
+        ));
+        assert!(!is_permanent_registration_error(
+            &Status::permission_denied("denied").into()
+        ));
+    }
+
+    #[test]
+    fn non_status_errors_are_not_permanent() {
+        assert!(!is_permanent_registration_error(&generic_error!(
+            "some non-grpc failure"
+        )));
+    }
+
+    #[test]
+    fn classify_proceeds_on_successful_registration() {
+        assert!(matches!(
+            classify_initial_registration(Ok(Ok(()))),
+            InitialRegistration::Proceed
+        ));
+    }
+
+    #[test]
+    fn classify_is_fatal_on_permanent_registration_error() {
+        let result = Ok(Err(Status::unimplemented("no such method").into()));
+        assert!(matches!(
+            classify_initial_registration(result),
+            InitialRegistration::Fatal(_)
+        ));
+    }
+
+    #[test]
+    fn classify_retries_transient_registration_error_in_background() {
+        let result = Ok(Err(Status::unavailable("connection refused").into()));
+        assert!(matches!(
+            classify_initial_registration(result),
+            InitialRegistration::RetryInBackground(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn classify_is_fatal_when_registration_task_dies() {
+        // A dropped sender is the only way to build a `RecvError`, so drive one through a closed channel.
+        let (tx, rx) = oneshot::channel::<Result<(), GenericError>>();
+        drop(tx);
+        let recv_err = rx.await.unwrap_err();
+        assert!(matches!(
+            classify_initial_registration(Err(recv_err)),
+            InitialRegistration::Fatal(_)
+        ));
     }
 }

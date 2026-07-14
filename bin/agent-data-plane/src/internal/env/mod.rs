@@ -71,21 +71,38 @@ impl ADPEnvironmentProvider {
         let mut provider_component = component_registry.get_or_create("env_provider");
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
-        let host_provider = RemoteAgentHostProvider::from_configuration(config).await?;
+        let host_provider = RemoteAgentHostProvider::from_configuration(config).await;
+        saluki_antithesis::always!(
+            host_provider.is_ok(),
+            "ADP env-provider host connected to Core Agent at boot",
+            { "error": host_provider.as_ref().err().map(|e| format!("{e:?}")) }
+        );
+        let host_provider = host_provider?;
         provider_component
             .bounds_builder()
             .with_subcomponent("host", &host_provider);
 
-        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
+        let workload = RemoteAgentWorkloadProvider::from_configuration(
             config,
             provider_component.get_or_create("workload"),
             health_registry,
         )
-        .await?;
+        .await;
+        saluki_antithesis::always!(
+            workload.is_ok(),
+            "ADP env-provider workload connected to Core Agent at boot",
+            { "error": workload.as_ref().err().map(|e| format!("{e:?}")) }
+        );
+        let (workload_provider, workload_supervisor) = workload?;
         env_supervisor.add_worker(workload_supervisor);
 
-        let (autodiscovery_provider, autodiscovery_supervisor) =
-            RemoteAgentAutodiscoveryProvider::from_configuration(config).await?;
+        let autodiscovery = RemoteAgentAutodiscoveryProvider::from_configuration(config).await;
+        saluki_antithesis::always!(
+            autodiscovery.is_ok(),
+            "ADP env-provider autodiscovery connected to Core Agent at boot",
+            { "error": autodiscovery.as_ref().err().map(|e| format!("{e:?}")) }
+        );
+        let (autodiscovery_provider, autodiscovery_supervisor) = autodiscovery?;
         env_supervisor.add_worker(autodiscovery_supervisor);
 
         let env = Self {
