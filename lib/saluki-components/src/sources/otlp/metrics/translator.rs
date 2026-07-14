@@ -1987,10 +1987,10 @@ mod tests {
         let (_, sketch) = points.into_iter().next().expect("distribution should contain a sketch");
         assert_eq!(sketch.count(), 0);
         assert!(!sketch.bins().is_empty());
-        assert!(sketch.raw_min() > 0.0);
-        assert!(sketch.raw_max() >= sketch.raw_min());
-        assert!(sketch.raw_sum() > 0.0);
-        assert!(sketch.raw_avg() > 0.0);
+        assert!(sketch.stored_min() > 0.0);
+        assert!(sketch.stored_max() >= sketch.stored_min());
+        assert!(sketch.stored_sum() > 0.0);
+        assert!(sketch.stored_avg() > 0.0);
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296

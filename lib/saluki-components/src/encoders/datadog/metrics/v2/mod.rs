@@ -522,10 +522,10 @@ fn write_dogsketch(
                 timestamp.map_or(0, |ts| ts.get() as i64),
             )?;
             os.write_int64(constants::DOGSKETCH_CNT_FIELD_NUMBER, sketch.count() as i64)?;
-            os.write_double(constants::DOGSKETCH_MIN_FIELD_NUMBER, sketch.raw_min())?;
-            os.write_double(constants::DOGSKETCH_MAX_FIELD_NUMBER, sketch.raw_max())?;
-            os.write_double(constants::DOGSKETCH_AVG_FIELD_NUMBER, sketch.raw_avg())?;
-            os.write_double(constants::DOGSKETCH_SUM_FIELD_NUMBER, sketch.raw_sum())?;
+            os.write_double(constants::DOGSKETCH_MIN_FIELD_NUMBER, sketch.stored_min())?;
+            os.write_double(constants::DOGSKETCH_MAX_FIELD_NUMBER, sketch.stored_max())?;
+            os.write_double(constants::DOGSKETCH_AVG_FIELD_NUMBER, sketch.stored_avg())?;
+            os.write_double(constants::DOGSKETCH_SUM_FIELD_NUMBER, sketch.stored_sum())?;
 
             let bin_keys = sketch.bins().iter().map(|bin| bin.key());
             write_repeated_packed_from_iter(

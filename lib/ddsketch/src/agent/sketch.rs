@@ -179,8 +179,8 @@ impl DDSketch {
         }
     }
 
-    /// Returns the raw sum summary field.
-    pub fn raw_sum(&self) -> f64 {
+    /// Returns the stored sum summary field without considering the sample count.
+    pub fn stored_sum(&self) -> f64 {
         self.sum
     }
 
@@ -195,18 +195,18 @@ impl DDSketch {
         }
     }
 
-    /// Returns the raw average summary field.
-    pub fn raw_avg(&self) -> f64 {
+    /// Returns the stored average summary field without considering the sample count.
+    pub fn stored_avg(&self) -> f64 {
         self.avg
     }
 
-    /// Returns the raw minimum summary field.
-    pub fn raw_min(&self) -> f64 {
+    /// Returns the stored minimum summary field without considering the sample count.
+    pub fn stored_min(&self) -> f64 {
         self.min
     }
 
-    /// Returns the raw maximum summary field.
-    pub fn raw_max(&self) -> f64 {
+    /// Returns the stored maximum summary field without considering the sample count.
+    pub fn stored_max(&self) -> f64 {
         self.max
     }
 
@@ -525,9 +525,9 @@ impl DDSketch {
             } else if lower.is_sign_negative() && lower.is_infinite() {
                 lower = upper;
             } else if lower == 0.0 && upper > 0.0 {
-                // OpenTelemetry explicit buckets use (lower, upper] intervals, so a (0, B] bucket cannot contain zero.
-                // Match the Core Agent's interpolation behavior and avoid seeding DDSketch's zero bin from the
-                // degenerate lower bound.
+                // OpenTelemetry explicit buckets use (lower, upper]. After a zero boundary, the
+                // next bucket is (0, upper] and excludes zero. Collapse interpolation to `upper`
+                // so it does not add samples at zero.
                 lower = upper;
             }
 
@@ -599,8 +599,7 @@ impl DDSketch {
     /// describe samples in the current interval, so they do not contribute to the merged summary. Its bins are still
     /// merged.
     pub fn merge(&mut self, other: &DDSketch) {
-        // Match the Core Agent summary merge semantics: a zero-count destination adopts the other summary, while a
-        // zero-count source does not affect an existing summary.
+        // Zero-count destination matches other summary but does not affect an existing summary
         if self.count == 0 {
             self.count = other.count;
             self.min = other.min;
@@ -988,49 +987,42 @@ mod tests {
     }
 
     #[test]
-    fn merge_ignores_summary_from_zero_count_source_but_retains_its_bins() {
-        let mut destination = DDSketch::default();
-        destination.insert(10.0);
+    fn merge_handles_zero_count_summaries_without_dropping_bins() {
+        for (name, destination_is_zero_count, source_is_zero_count, expected_summary) in [
+            ("zero-count source", false, true, 10.0),
+            ("zero-count destination", true, false, 20.0),
+        ] {
+            let mut destination = DDSketch::default();
+            destination.insert(10.0);
 
-        let mut source = DDSketch::default();
-        source.insert(20.0);
-        source.set_count(0);
-        source.set_min(-1.0);
-        source.set_max(100.0);
-        source.set_sum(999.0);
-        source.set_avg(f64::NAN);
+            let mut source = DDSketch::default();
+            source.insert(20.0);
 
-        destination.merge(&source);
+            if destination_is_zero_count {
+                destination.set_count(0);
+                destination.set_min(-1.0);
+                destination.set_max(100.0);
+                destination.set_sum(999.0);
+                destination.set_avg(f64::NAN);
+            }
 
-        assert_eq!(destination.count(), 1);
-        assert_eq!(destination.raw_min(), 10.0);
-        assert_eq!(destination.raw_max(), 10.0);
-        assert_eq!(destination.raw_sum(), 10.0);
-        assert_eq!(destination.raw_avg(), 10.0);
-        assert_eq!(destination.bin_count(), 2);
-    }
+            if source_is_zero_count {
+                source.set_count(0);
+                source.set_min(-1.0);
+                source.set_max(100.0);
+                source.set_sum(999.0);
+                source.set_avg(f64::NAN);
+            }
 
-    #[test]
-    fn merge_zero_count_destination_adopts_source_summary_and_retains_its_bins() {
-        let mut destination = DDSketch::default();
-        destination.insert(10.0);
-        destination.set_count(0);
-        destination.set_min(-1.0);
-        destination.set_max(100.0);
-        destination.set_sum(999.0);
-        destination.set_avg(f64::NAN);
+            destination.merge(&source);
 
-        let mut source = DDSketch::default();
-        source.insert(20.0);
-
-        destination.merge(&source);
-
-        assert_eq!(destination.count(), 1);
-        assert_eq!(destination.raw_min(), 20.0);
-        assert_eq!(destination.raw_max(), 20.0);
-        assert_eq!(destination.raw_sum(), 20.0);
-        assert_eq!(destination.raw_avg(), 20.0);
-        assert_eq!(destination.bin_count(), 2);
+            assert_eq!(destination.count(), 1, "{name}");
+            assert_eq!(destination.stored_min(), expected_summary, "{name}");
+            assert_eq!(destination.stored_max(), expected_summary, "{name}");
+            assert_eq!(destination.stored_sum(), expected_summary, "{name}");
+            assert_eq!(destination.stored_avg(), expected_summary, "{name}");
+            assert_eq!(destination.bin_count(), 2, "{name}");
+        }
     }
 
     #[cfg(feature = "serde")]
