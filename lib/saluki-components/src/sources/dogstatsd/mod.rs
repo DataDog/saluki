@@ -1965,13 +1965,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
         {
             error!(%listen_addr, error = %e, "Failed to dispatch eventd events.");
 
-            // Dispatch failure increments no counter, so this assertion is the only in-SUT signal that the failure
-            // path ran.
-            saluki_antithesis::sometimes!(
-                true,
-                "dsd dispatch failed mid-buffer",
-                { "stream": "events" }
-            );
+            saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "events" });
         }
     }
 
@@ -1991,11 +1985,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
         {
             error!(%listen_addr, error = %e, "Failed to dispatch service check events.");
 
-            saluki_antithesis::sometimes!(
-                true,
-                "dsd dispatch failed mid-buffer",
-                { "stream": "service_checks" }
-            );
+            saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "service_checks" });
         }
     }
 
@@ -2008,11 +1998,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
         {
             error!(%listen_addr, error = %e, "Failed to dispatch metric events.");
 
-            saluki_antithesis::sometimes!(
-                true,
-                "dsd dispatch failed mid-buffer",
-                { "stream": "metrics" }
-            );
+            saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "metrics" });
         }
     }
 }

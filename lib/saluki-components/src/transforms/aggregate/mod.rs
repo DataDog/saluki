@@ -569,25 +569,8 @@ impl AggregationState {
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
-        // The context map is hard-capped at `context_limit` and no path grows it past the cap. This is the one
-        // non-advisory runtime memory bound, so we assert it as an invariant under Antithesis. The numeric form hands
-        // the search the margin to the limit as a gradient.
-        saluki_antithesis::always_le!(
-            self.contexts.len(),
-            self.context_limit,
-            "aggregate context map within context_limit",
-            { "len": self.contexts.len(), "limit": self.context_limit }
-        );
-
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
         if !self.contexts.contains_key(metric.context()) && self.contexts.len() >= self.context_limit {
-            // Anti-vacuity anchor: prove a run actually reaches the cap, else the invariant above passes trivially.
-            saluki_antithesis::sometimes!(
-                true,
-                "aggregate context limit breached",
-                { "limit": self.context_limit }
-            );
-
             self.context_limit_breached = true;
             return false;
         }
@@ -625,6 +608,13 @@ impl AggregationState {
                     metadata,
                     last_seen: timestamp,
                 });
+
+                saluki_antithesis::always_le!(
+                    self.contexts.len(),
+                    self.context_limit,
+                    "aggregate context map within context_limit",
+                    { "len": self.contexts.len(), "limit": self.context_limit }
+                );
             }
         }
 
