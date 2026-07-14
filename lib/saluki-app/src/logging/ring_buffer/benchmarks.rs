@@ -111,30 +111,263 @@ impl tracing::callsite::Callsite for BenchCallsite {
     }
 }
 
+/// Log-generation locality mode.
+///
+/// - `Iid`: every event picks its target, level, file, and message independently -- there is no
+///   temporal locality. This is the original generator and remains the reference for all previously
+///   recorded numbers.
+/// - `Bursty`: models how real components actually log. A fixed set of callsites is drawn up front
+///   (each with a stable target, level, file, message template, and field shape); events are then
+///   emitted in contiguous *bursts* from a single callsite -- with sub-millisecond inter-event
+///   spacing and a stable level -- before switching to another callsite. This exercises the RLE
+///   columns (callsite/template/field-count indices), the millisecond timestamp quantization, and
+///   verbatim field-value repetition the way production traffic does. See the "benchmark fidelity"
+///   trial in `optimization_field_notes.md` for why the i.i.d. generator understates these wins.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GenMode {
+    Iid,
+    Bursty,
+}
+
+/// Number of distinct callsites modeled in `Bursty` mode.
+const BENCH_BURSTY_CALLSITES: usize = 48;
+/// Burst length range: consecutive events emitted from one callsite before switching. The upper
+/// bound is exclusive, so the mean burst is ~21 events.
+const BENCH_BURST_MIN: usize = 4;
+const BENCH_BURST_MAX: usize = 40;
+/// Within-burst inter-event spacing (nanoseconds). Sub-millisecond (mean ~0.15 ms), so a burst's
+/// events span only a handful of adjacent millisecond buckets and their quantized timestamp deltas
+/// are mostly 0 (with the occasional 1) -- i.e. long RLE-friendly runs, matching a real tight
+/// logging burst.
+const BENCH_BURST_DELTA_MIN_NS: u128 = 5_000;
+const BENCH_BURST_DELTA_MAX_NS: u128 = 300_000;
+/// Between-burst gap (nanoseconds): the quiet interval before another callsite logs.
+const BENCH_BURST_GAP_MIN_NS: u128 = 1_000_000;
+const BENCH_BURST_GAP_MAX_NS: u128 = 40_000_000;
+
+/// The message shape emitted by one bursty callsite. Numeric slots vary per event; any embedded
+/// endpoint is fixed for the callsite, because a given log statement always names the same endpoint
+/// (the Drain clusterer therefore keeps it as static template text, not a wildcard).
+#[derive(Clone, Copy)]
+enum MessageArchetype {
+    Static(&'static str),
+    ProcessedEvents,
+    BufferCapacity,
+    Forwarding(&'static str),
+    Retry(&'static str),
+}
+
+/// One fixed callsite used by `Bursty` mode: a leaked `&'static Metadata` (so pointer-identity
+/// interning behaves exactly as in production) plus the message template and field shape this
+/// callsite always emits. Each `field_specs` entry pairs a fixed field key with either a fixed
+/// value (stable for the life of the callsite) or `None` (a per-event random number).
+struct BurstyCallsite {
+    metadata: &'static Metadata<'static>,
+    message: MessageArchetype,
+    field_specs: Vec<(&'static str, Option<&'static str>)>,
+}
+
+/// Draws the fixed callsite table used by `Bursty` mode. Deterministic given the RNG state.
+fn build_bursty_callsites(rng: &mut SmallRng) -> Vec<BurstyCallsite> {
+    let mut callsites = Vec::with_capacity(BENCH_BURSTY_CALLSITES);
+    for _ in 0..BENCH_BURSTY_CALLSITES {
+        let target = BENCH_TARGETS[rng.random_range(0..BENCH_TARGETS.len())];
+        let file = BENCH_FILES[rng.random_range(0..BENCH_FILES.len())];
+        let level = weighted_level(rng);
+        let metadata = bench_metadata(target, level, file);
+
+        // 60% short static message, 40% a formatted template -- matching the Iid message mix.
+        let message = if rng.random_range(0..100u32) < 60 {
+            MessageArchetype::Static(BENCH_SHORT_MESSAGES[rng.random_range(0..BENCH_SHORT_MESSAGES.len())])
+        } else {
+            match rng.random_range(0..4u32) {
+                0 => MessageArchetype::ProcessedEvents,
+                1 => MessageArchetype::BufferCapacity,
+                2 => MessageArchetype::Forwarding(BENCH_FIELD_VALUES[rng.random_range(0..BENCH_FIELD_VALUES.len())]),
+                _ => MessageArchetype::Retry(BENCH_FIELD_VALUES[rng.random_range(0..BENCH_FIELD_VALUES.len())]),
+            }
+        };
+
+        // Fixed field shape for the callsite: same key set on every event, same count weighting as
+        // the Iid generator. Half the values are fixed strings (stable per callsite), half are
+        // per-event random numbers.
+        let num_fields = weighted_field_count(rng);
+        let mut field_specs = Vec::with_capacity(num_fields);
+        for _ in 0..num_fields {
+            let key = BENCH_FIELD_KEYS[rng.random_range(0..BENCH_FIELD_KEYS.len())];
+            let fixed = if rng.random_range(0..2u32) == 0 {
+                Some(BENCH_FIELD_VALUES[rng.random_range(0..BENCH_FIELD_VALUES.len())])
+            } else {
+                None
+            };
+            field_specs.push((key, fixed));
+        }
+
+        callsites.push(BurstyCallsite {
+            metadata,
+            message,
+            field_specs,
+        });
+    }
+    callsites
+}
+
+/// Picks a level using the same weighting as the Iid generator (40% DEBUG, 30% INFO, 20% WARN,
+/// 10% ERROR). Used only by the bursty callsite builder.
+fn weighted_level(rng: &mut SmallRng) -> tracing::Level {
+    let roll: u32 = rng.random_range(0..100);
+    if roll < 40 {
+        tracing::Level::DEBUG
+    } else if roll < 70 {
+        tracing::Level::INFO
+    } else if roll < 90 {
+        tracing::Level::WARN
+    } else {
+        tracing::Level::ERROR
+    }
+}
+
+/// Picks a field count using the same weighting as the Iid generator (30% 0, 30% 1, 20% 2, 10% 3,
+/// 5% 4, 5% 5). Used only by the bursty callsite builder.
+fn weighted_field_count(rng: &mut SmallRng) -> usize {
+    let roll: u32 = rng.random_range(0..100);
+    if roll < 30 {
+        0
+    } else if roll < 60 {
+        1
+    } else if roll < 80 {
+        2
+    } else if roll < 90 {
+        3
+    } else if roll < 95 {
+        4
+    } else {
+        5
+    }
+}
+
+/// Renders a callsite's message, drawing fresh numeric variables while keeping fixed endpoints
+/// stable.
+fn render_bursty_message(rng: &mut SmallRng, archetype: MessageArchetype) -> String {
+    match archetype {
+        MessageArchetype::Static(s) => s.to_string(),
+        MessageArchetype::ProcessedEvents => format!(
+            "Processed {} events in {}ms",
+            rng.random_range(1u64..100_000),
+            rng.random_range(1u32..5000)
+        ),
+        MessageArchetype::BufferCapacity => format!(
+            "Buffer capacity at {}%, {} bytes used of {}",
+            rng.random_range(10u32..100),
+            rng.random_range(1024u64..1_048_576),
+            rng.random_range(1_048_576u64..10_485_760)
+        ),
+        MessageArchetype::Forwarding(ep) => {
+            format!("Forwarding {} metric(s) to {}", rng.random_range(1u32..10_000), ep)
+        }
+        MessageArchetype::Retry(ep) => format!(
+            "Retry attempt {} of {} for endpoint {}",
+            rng.random_range(1u32..5),
+            rng.random_range(3u32..10),
+            ep
+        ),
+    }
+}
+
 struct EventGenerator {
     rng: SmallRng,
     timestamp_nanos: u128,
+    mode: GenMode,
+    // Iid mode: one metadata entry per (target, level) combination, picked independently per event.
     metadata_table: Vec<&'static Metadata<'static>>,
+    // Bursty mode: the fixed callsite table plus the currently-active burst.
+    callsites: Vec<BurstyCallsite>,
+    current_callsite: usize,
+    burst_remaining: usize,
 }
 
 impl EventGenerator {
-    fn new(seed: u64) -> Self {
-        // Pre-build a metadata entry for each (target, level) combination.
+    fn with_mode(seed: u64, mode: GenMode) -> Self {
+        let mut rng = SmallRng::seed_from_u64(seed);
+
+        // Note: the Iid branch consumes no RNG during construction, so the Iid draw sequence (and
+        // every previously recorded Iid number) is unchanged from the original generator.
         let mut metadata_table = Vec::new();
-        for &target in BENCH_TARGETS {
-            let file = BENCH_FILES[metadata_table.len() % BENCH_FILES.len()];
-            for &level in BENCH_LEVELS {
-                metadata_table.push(bench_metadata(target, level, file));
+        let mut callsites = Vec::new();
+        match mode {
+            GenMode::Iid => {
+                // Pre-build a metadata entry for each (target, level) combination.
+                for &target in BENCH_TARGETS {
+                    let file = BENCH_FILES[metadata_table.len() % BENCH_FILES.len()];
+                    for &level in BENCH_LEVELS {
+                        metadata_table.push(bench_metadata(target, level, file));
+                    }
+                }
+            }
+            GenMode::Bursty => {
+                callsites = build_bursty_callsites(&mut rng);
             }
         }
+
         Self {
-            rng: SmallRng::seed_from_u64(seed),
+            rng,
             timestamp_nanos: 1_700_000_000_000_000_000, // ~Nov 2023
+            mode,
             metadata_table,
+            callsites,
+            current_callsite: 0,
+            burst_remaining: 0,
         }
     }
 
     fn next_event(&mut self) -> CondensedEvent {
+        match self.mode {
+            GenMode::Iid => self.next_event_iid(),
+            GenMode::Bursty => self.next_event_bursty(),
+        }
+    }
+
+    /// Emits the next event in `Bursty` mode: continue the current burst (sub-ms spacing) or, when
+    /// it is exhausted, switch to a new callsite after a larger inter-burst gap.
+    fn next_event_bursty(&mut self) -> CondensedEvent {
+        if self.burst_remaining == 0 {
+            self.current_callsite = self.rng.random_range(0..self.callsites.len());
+            self.burst_remaining = self.rng.random_range(BENCH_BURST_MIN..BENCH_BURST_MAX);
+            self.timestamp_nanos += self.rng.random_range(BENCH_BURST_GAP_MIN_NS..BENCH_BURST_GAP_MAX_NS);
+        } else {
+            self.timestamp_nanos += self
+                .rng
+                .random_range(BENCH_BURST_DELTA_MIN_NS..BENCH_BURST_DELTA_MAX_NS);
+        }
+        self.burst_remaining -= 1;
+
+        // Copy the small Copy fields out so the callsite borrow does not conflict with `self.rng`.
+        let cc = self.current_callsite;
+        let metadata = self.callsites[cc].metadata;
+        let message_arch = self.callsites[cc].message;
+        let message = render_bursty_message(&mut self.rng, message_arch);
+
+        let num_fields = self.callsites[cc].field_specs.len();
+        let mut fields = Vec::new();
+        for fi in 0..num_fields {
+            let (key, fixed) = self.callsites[cc].field_specs[fi];
+            let value: String = match fixed {
+                Some(v) => v.to_string(),
+                None => format!("{}", self.rng.random_range(0u64..1_000_000)),
+            };
+            write_length_prefixed(&mut fields, key.as_bytes());
+            write_length_prefixed(&mut fields, value.as_bytes());
+        }
+
+        CondensedEvent {
+            timestamp_nanos: self.timestamp_nanos,
+            metadata: Some(metadata),
+            message,
+            fields,
+        }
+    }
+
+    fn next_event_iid(&mut self) -> CondensedEvent {
         // Advance timestamp by 1-50ms.
         self.timestamp_nanos += self.rng.random_range(1_000_000u128..50_000_000u128);
 
@@ -241,9 +474,11 @@ struct BenchmarkResult {
     per_segment: Vec<SegmentStats>,
 }
 
-fn run_benchmark(config: RingBufferConfig, config_desc: &str, seed: u64, num_events: usize) -> BenchmarkResult {
+fn run_benchmark(
+    config: RingBufferConfig, config_desc: &str, seed: u64, num_events: usize, mode: GenMode,
+) -> BenchmarkResult {
     let mut state = ProcessorState::new(config);
-    let mut gen = EventGenerator::new(seed);
+    let mut gen = EventGenerator::with_mode(seed, mode);
 
     for _ in 0..num_events {
         let event = gen.next_event();
@@ -419,10 +654,10 @@ const STABILITY_EARLY_WARMUP_DROPS: u64 = 1;
 const STABILITY_STEADY_WARMUP_DROPS: u64 = 50;
 
 fn run_stability_benchmark(
-    config: RingBufferConfig, config_desc: &str, seed: u64, num_events: usize,
+    config: RingBufferConfig, config_desc: &str, seed: u64, num_events: usize, mode: GenMode,
 ) -> StabilityResult {
     let mut state = ProcessorState::new(config);
-    let mut gen = EventGenerator::new(seed);
+    let mut gen = EventGenerator::with_mode(seed, mode);
 
     // Collect samples at all phases.
     let mut early_retained: Vec<u32> = Vec::with_capacity(num_events);
@@ -667,6 +902,25 @@ fn ring_buffer_stability_bench() {
         "default: max=2MiB, min_segment=128KiB, zstd=19",
         seed,
         num_events,
+        GenMode::Iid,
+    );
+    print_stability_report(&result);
+}
+
+#[test]
+#[ignore]
+fn ring_buffer_stability_bench_bursty() {
+    let seed = 0xDEAD_BEEF_CAFE;
+    let num_events = 1_500_000;
+
+    let config = RingBufferConfig::default().with_max_ring_buffer_size_bytes(2 * 1024 * 1024);
+
+    let result = run_stability_benchmark(
+        config,
+        "BURSTY: max=2MiB, min_segment=128KiB, zstd=19",
+        seed,
+        num_events,
+        GenMode::Bursty,
     );
     print_stability_report(&result);
 }
@@ -716,7 +970,7 @@ fn ring_buffer_stability_sweep() {
 
     let mut results = Vec::new();
     for (name, config) in configs {
-        let result = run_stability_benchmark(config, name, seed, num_events);
+        let result = run_stability_benchmark(config, name, seed, num_events, GenMode::Iid);
         print_stability_report(&result);
         results.push(result);
     }
@@ -774,11 +1028,21 @@ fn ring_buffer_stability_sweep() {
 #[test]
 #[ignore]
 fn ring_buffer_column_breakdown() {
+    run_column_breakdown(GenMode::Iid);
+}
+
+#[test]
+#[ignore]
+fn ring_buffer_column_breakdown_bursty() {
+    run_column_breakdown(GenMode::Bursty);
+}
+
+fn run_column_breakdown(mode: GenMode) {
     let seed = 0xDEAD_BEEF_CAFE;
     let min_segment = 128 * 1024;
 
     let mut buffer = EventBuffer::from_compression_level(19);
-    let mut gen = EventGenerator::new(seed);
+    let mut gen = EventGenerator::with_mode(seed, mode);
 
     // Feed events until the buffer reaches the flush threshold.
     let mut fed = 0usize;
@@ -792,7 +1056,11 @@ fn ring_buffer_column_breakdown() {
     let total_compressed = bd.meta_compressed + bd.content_compressed;
 
     println!();
-    println!("=== Column Breakdown (single segment) ===");
+    let mode_label = match mode {
+        GenMode::Iid => "i.i.d.",
+        GenMode::Bursty => "bursty",
+    };
+    println!("=== Column Breakdown (single segment, {} generator) ===", mode_label);
     println!(
         "Events: {} | string table entries: {}",
         bd.event_count, bd.string_table_entries
@@ -837,6 +1105,93 @@ fn ring_buffer_column_breakdown() {
     println!();
 }
 
+/// Diagnostic: measures an **overfit-proof upper bound** on how much a zstd dictionary (or any
+/// cross-segment shared-context scheme) could save.
+///
+/// Each segment is currently compressed as an independent zstd frame, so every segment re-learns the
+/// common content vocabulary (repeated field values, message fragments) from scratch. A trained
+/// dictionary front-loads that shared context -- but training one on this synthetic generator would
+/// overfit and post a fake number. Instead we bound the opportunity with **zero training**: compress
+/// N segments' frames independently (current behavior) versus concatenated into a single frame.
+/// Concatenation lets each segment reference *all* prior segments (strictly more context than any
+/// fixed-size dictionary), so `(independent_sum - concatenated) / independent_sum` is an upper bound
+/// on any dictionary's benefit. If that ceiling is small, a dictionary is not worth the complexity.
+#[test]
+#[ignore]
+fn ring_buffer_dictionary_ceiling() {
+    let seed = 0xDEAD_BEEF_CAFE;
+    let level = 19;
+    let min_segment = 128 * 1024;
+    let num_segments = 16;
+
+    let zc = |data: &[u8]| -> usize {
+        use std::io::Write as _;
+        let mut enc = zstd::Encoder::new(Vec::new(), level).unwrap();
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap().len()
+    };
+
+    for (mode_label, mode) in [("i.i.d.", GenMode::Iid), ("bursty", GenMode::Bursty)] {
+        let mut gen = EventGenerator::with_mode(seed, mode);
+        let mut meta_frames: Vec<Vec<u8>> = Vec::new();
+        let mut content_frames: Vec<Vec<u8>> = Vec::new();
+        let mut total_events = 0usize;
+
+        for _ in 0..num_segments {
+            let mut buffer = EventBuffer::from_compression_level(level);
+            while buffer.size_bytes() < min_segment {
+                buffer.encode_event(&gen.next_event()).unwrap();
+                total_events += 1;
+            }
+            let (meta, content) = buffer.uncompressed_frames();
+            meta_frames.push(meta);
+            content_frames.push(content);
+        }
+
+        // Independent (current behavior): each frame compressed alone.
+        let meta_indep: usize = meta_frames.iter().map(|f| zc(f)).sum();
+        let content_indep: usize = content_frames.iter().map(|f| zc(f)).sum();
+
+        // Concatenated (upper bound on shared-context / dictionary schemes).
+        let meta_all: Vec<u8> = meta_frames.concat();
+        let content_all: Vec<u8> = content_frames.concat();
+        let meta_concat = zc(&meta_all);
+        let content_concat = zc(&content_all);
+
+        let indep = meta_indep + content_indep;
+        let concat = meta_concat + content_concat;
+        let ceiling = if indep > 0 {
+            100.0 * (indep as i64 - concat as i64) as f64 / indep as f64
+        } else {
+            0.0
+        };
+
+        println!();
+        println!(
+            "=== Dictionary Ceiling ({} generator, {} segments) ===",
+            mode_label, num_segments
+        );
+        println!("Events: {}", total_events);
+        println!(
+            "  meta:    independent {} -> concatenated {} ({:+.1}%)",
+            meta_indep,
+            meta_concat,
+            100.0 * (meta_indep as i64 - meta_concat as i64) as f64 / meta_indep.max(1) as f64
+        );
+        println!(
+            "  content: independent {} -> concatenated {} ({:+.1}%)",
+            content_indep,
+            content_concat,
+            100.0 * (content_indep as i64 - content_concat as i64) as f64 / content_indep.max(1) as f64
+        );
+        println!(
+            "  TOTAL:   independent {} -> concatenated {}  =>  dictionary ceiling {:.1}%",
+            indep, concat, ceiling
+        );
+    }
+    println!();
+}
+
 #[test]
 #[ignore]
 fn ring_buffer_capacity_bench() {
@@ -845,7 +1200,31 @@ fn ring_buffer_capacity_bench() {
 
     let config = RingBufferConfig::default().with_max_ring_buffer_size_bytes(2 * 1024 * 1024);
 
-    let result = run_benchmark(config, "max=2MiB, min_segment=128KiB, zstd_level=19", seed, num_events);
+    let result = run_benchmark(
+        config,
+        "max=2MiB, min_segment=128KiB, zstd_level=19",
+        seed,
+        num_events,
+        GenMode::Iid,
+    );
+    print_report(&result);
+}
+
+#[test]
+#[ignore]
+fn ring_buffer_capacity_bench_bursty() {
+    let seed = 0xDEAD_BEEF_CAFE;
+    let num_events = 500_000;
+
+    let config = RingBufferConfig::default().with_max_ring_buffer_size_bytes(2 * 1024 * 1024);
+
+    let result = run_benchmark(
+        config,
+        "BURSTY: max=2MiB, min_segment=128KiB, zstd_level=19",
+        seed,
+        num_events,
+        GenMode::Bursty,
+    );
     print_report(&result);
 }
 
@@ -888,7 +1267,7 @@ fn ring_buffer_capacity_sweep() {
 
     let mut results = Vec::new();
     for (name, config) in configs {
-        let result = run_benchmark(config, name, seed, num_events);
+        let result = run_benchmark(config, name, seed, num_events, GenMode::Iid);
         print_report(&result);
         results.push(result);
     }

@@ -918,7 +918,10 @@ stability characteristics.
    leave alone. If still material, delta-or-move-to-front could help.
 4. **Timestamp precision as config**: currently a module const. If any consumer needs finer than ms,
    promote to `RingBufferConfig` AND write the granularity into the segment header (decoder must
-   scale by it). Left as a const for now (simplest; ms is the right default).
+   scale by it). Left as a const for now (simplest; ms is the right default). **DECIDED 2026-07-14**:
+   the human confirmed lossy millisecond precision is acceptable — keep it as the default const; do
+   not promote to config unless a concrete consumer needs sub-ms. (See "Decisions confirmed" at the
+   end of the Benchmark Fidelity Round.)
 5. **`msg_template_indices` (8%)**: RLE of skeleton-table indices; random here, runs in production.
    Tied to the Drain clustering quality (Trial D). Revisit only after fidelity fix.
 
@@ -930,3 +933,275 @@ stability characteristics.
 - Sweeps: `ring_buffer_capacity_sweep`, `ring_buffer_stability_sweep`.
 - Retained count is quantized by whole-segment eviction (±~4k ≈ ±2%); use the breakdown's real
   combined `bytes/event` as the sensitive metric for sub-2% changes.
+
+### New tools added this round (2026-07, benchmark-fidelity)
+- **`GenMode::Bursty`** in `benchmarks.rs`: the realistic locality generator. Every benchmark now has
+  a bursty variant — `ring_buffer_column_breakdown_bursty`, `ring_buffer_capacity_bench_bursty`,
+  `ring_buffer_stability_bench_bursty`. **Evaluate all future content-column levers against the bursty
+  variant, never the i.i.d. one.**
+- **`ring_buffer_dictionary_ceiling`**: overfit-proof upper bound on any cross-segment / zstd-dictionary
+  scheme (independent vs concatenated frame compression), for both modes.
+- The i.i.d. tests are unchanged and still reproduce every historical number exactly.
+
+---
+
+# Benchmark Fidelity Round (2026-07)
+
+The open-items list flagged this as the gating task: the `EventGenerator` picked target/level/file/
+message **i.i.d. per event**, so it had zero temporal locality. Real components log in *bursts* from a
+small set of callsites, each with a fixed level and message template. Without modeling that, the
+benchmark structurally understated every locality-dependent win (RLE columns, ms-timestamp
+quantization, verbatim field-value repetition) and risked overfitting content-column experiments to
+synthetic random data (Trial FV nearly was overfit this way).
+
+## Trial BF: add a `bursty`/locality mode to `EventGenerator`
+
+**Approach**: Added a `GenMode { Iid, Bursty }` to `EventGenerator` (`benchmarks.rs`). The **Iid path
+is byte-for-byte unchanged** — it consumes no RNG during construction, so every previously recorded
+i.i.d. number still reproduces exactly (verified: column_breakdown still 9.17 b/evt, capacity still
+213,298). Bursty mode:
+
+- Draws a fixed table of `BENCH_BURSTY_CALLSITES = 48` callsites up front. Each callsite has a stable
+  `&'static Metadata` (leaked, so pointer-identity interning works exactly as in production), a fixed
+  level (weighted 40/30/20/10 like Iid), a fixed message template (60% a static short message, 40% a
+  formatted archetype — any embedded endpoint is **fixed per callsite**, so Drain keeps it as static
+  text), and a fixed field shape (same key set every event; each field value is either a fixed string
+  stable per callsite, or a per-event random number).
+- Emits events in **contiguous bursts**: pick a callsite, emit a run of 4–39 events from it, then
+  switch. Within a burst, timestamps advance by only 5–300 µs (sub-ms → deltas quantize to mostly 0);
+  between bursts, a 1–40 ms gap.
+
+New ignored tests: `ring_buffer_column_breakdown_bursty`, `ring_buffer_capacity_bench_bursty`,
+`ring_buffer_stability_bench_bursty`. The Iid tests and sweeps are untouched.
+
+**Design note — bursts are contiguous.** Real production traffic interleaves bursts from concurrent
+tasks, so reality sits *between* fully-i.i.d. (pessimistic: no runs) and fully-contiguous bursts
+(optimistic: maximal runs). Bursty mode is the optimistic bound; i.i.d. is the pessimistic one. The
+truth is bracketed by the two, and both are now measurable.
+
+### Result: the two content columns are ~87% of realistic footprint
+
+Column breakdown, single ~128 KiB segment, zstd=19:
+
+| Column | i.i.d. b/evt(c) | i.i.d. % | **bursty b/evt(c)** | **bursty %** |
+|--------|----------------:|---------:|--------------------:|-------------:|
+| **field_values** | 3.34 | 36.8% | **2.78** | **58.3%** |
+| **msg_variables** | 2.24 | 24.6% | **1.36** | **28.5%** |
+| timestamps | 0.73 | 8.0% | 0.17 | 3.6% |
+| string_table | 0.14 | 1.5% | 0.15 | 3.1% |
+| field_key_indices | 0.56 | 6.2% | 0.08 | 1.7% |
+| callsite_indices | 0.95 | 10.4% | 0.07 | 1.5% |
+| msg_template_indices | 0.71 | 7.8% | 0.07 | 1.4% |
+| field_counts | 0.40 | 4.4% | 0.06 | 1.2% |
+| callsite_table | 0.03 | 0.3% | 0.03 | 0.6% |
+| **combined total** | **9.17** | | **4.75** | |
+
+Every prediction in the open-items list is confirmed:
+
+- **All metadata/RLE columns collapse under locality.** `callsite_indices` 0.95 → 0.07 (−93%),
+  `msg_template_indices` 0.71 → 0.07, `field_counts` 0.40 → 0.06, `field_key_indices` 0.56 → 0.08:
+  each now forms long runs / repeats verbatim. `timestamps` 0.73 → 0.17 (sub-ms deltas quantize to 0).
+  Callsite interning (Trial CS) and ms timestamps (Trial T1) win *far* more here than the i.i.d.
+  numbers showed — exactly as predicted.
+- **`field_values` + `msg_variables` are now 86.8% of the compressed segment** (up from 61% i.i.d.).
+  Everything else combined is ~13%. **These two columns are the entire optimization game under
+  realistic data.** `field_values` alone is 58.3%.
+- `field_values` still doesn't fully collapse (2.78 vs 3.34) because half its values are per-event
+  random numbers by construction; the fixed-string half does dedup well. Real workloads likely repeat
+  more, so this is still a conservative floor.
+
+### Capacity and stability under bursty data
+
+| Metric | i.i.d. | bursty |
+|--------|-------:|-------:|
+| Capacity retained (500k fed, 2 MiB) | 213,298 (42.7%) | **410,879 (82.2%)** |
+| Overall compression ratio | 4.01x | 6.18x |
+| Avg compressed bytes/event | 9.3 | 4.8 |
+| Stability min retained (1.5M fed) | 209,809 | **399,550** |
+| Stability min/avg ratio | 98.7% | 98.0% |
+| Stability max drop amplitude | 4,126 | 5,387 |
+
+The fixed 2 MiB buffer holds **~93% more events** under realistic locality than the i.i.d. generator
+suggested. Trial I's "no monster segments, uniform eviction" stability property is fully preserved
+(min/avg 98.0%). Drop amplitude is slightly higher in absolute events only because each 128 KiB
+segment now packs ~2x more events (they compress to ~4.8 B/evt); as a fraction of retained it is
+~1.3%.
+
+> **Coverage-duration caveat**: bursty mode's synthetic event *rate* is much higher than i.i.d.
+> (bursts of ~21 events over a few ms, then a ~20 ms gap ≈ ~1 ms/event, vs i.i.d.'s ~25 ms/event), so
+> the reported coverage minutes are not comparable across modes. Only the retention **count**
+> distribution is a like-for-like comparison; coverage is a function of the (arbitrary) synthetic rate.
+
+### Consequences for the remaining levers (re-ranked against bursty data)
+
+The i.i.d. ranking put `field_values` at 37% and `msg_variables` at 25%. The realistic ranking makes
+them **58% and 29%** — everything else is noise. Therefore:
+
+- **`field_values` (58%) is now the overwhelming target**, not merely the largest of several. Numeric
+  field-value specialization and field-value interning both act here and are worth the most.
+- **`msg_variables` (29%) is second.** Same techniques (numeric specialization, interning of repeated
+  verbatim tokens) apply.
+- **All the RLE/index columns are dead as optimization targets** under realistic data — they already
+  cost ~0.06–0.08 b/evt. Do not spend effort there; the i.i.d. numbers that made them look like 6–10%
+  targets were an artifact of the broken generator.
+- A **zstd dictionary** (Approach B) looked attractive here (with locality the metadata frame is tiny
+  and the content frame carries almost everything, so cross-segment shared context seemed promising) —
+  but Trial DC below *measured* the ceiling at ≤4% (content-frame ceiling only 1.4%) and rules it out.
+
+**Verification**: all 32 ring-buffer unit tests pass; `cargo check --release -p saluki-app --lib
+--tests` clean. Iid reproducibility re-confirmed (9.17 b/evt, 213,298 retained). No production code
+changed — this trial only touches `benchmarks.rs` (test-only).
+
+## Trial NG: numeric field-value specialization (REJECTED — regression on both modes)
+
+**Hypothesis (Approach G, re-tested against bursty data)**: `field_values` is 58% of the realistic
+footprint; half its values are integers. Parsing canonical `u64` values and storing them as a varint
+(tagged `varint(0) varint(n)`, everything else `varint(len+1) bytes`, co-located to preserve zstd
+matching) shrinks e.g. a 6-digit `"948576"` from 7 bytes (length + digits) to a 3-byte varint
+uncompressed.
+
+**Approach**: strict round-trip-safe `parse_canonical_u64` (rejects leading zeros, non-digits,
+>u64); `write_value`/tagged decode in the field-value stream. Full unit-test coverage of the
+round-trip (37 tests passed).
+
+**Result**: **regression on both modes.** Uncompressed `field_values` shrank as expected, but
+*compressed* size grew:
+
+| Metric | before | after NG |
+|--------|-------:|---------:|
+| i.i.d. capacity retained | 213,298 | 210,714 (**−1.2%**) |
+| bursty capacity retained | 410,879 | 403,115 (**−1.9%**) |
+| i.i.d. breakdown total b/evt | 9.17 | 9.33 |
+| bursty breakdown total b/evt | 4.75 | 4.84 |
+
+**Why it hurt (confirms the open-item's suspicion — "measure, don't assume")**: the benchmark's
+integers are uniform-random in `[0, 1e6)` (~19.9 bits ≈ 2.5 bytes of information; a 6-digit string is
+6·log2(10) = 19.9 bits by construction). zstd's FSE literal coder already crushes digit strings —
+which use only 10 of 256 byte symbols, ~3.32 bits each, a *concentrated* distribution — to near that
+2.5-byte floor. The varint bytes are *not* incompressible (FSE still entropy-codes them), but a varint
+smears three different byte-position distributions (two continuation bytes near-uniform over
+`[128,255]`, one final byte over a smaller range) into a single FSE context, coding at ≈2.8 bytes
+rather than 2.5 — plus a tag byte. So the loss comes from FSE's lack of per-position context on the
+mixed varint stream, not from the bytes being random. Varint specialization can only win when either
+(a) the integers are small enough that the varint is shorter than the entropy-coded digits, or (b)
+they repeat *at long distances* where an explicit code would beat zstd's LZ (see Trial IV — but that
+is the interning lever, not varint width). Uniform-random 6-digit numbers hit neither. **Reverted;
+not in the tree.**
+
+**Note for a future numeric-heavy workload**: if a real deployment's numeric field values are
+dominated by small (`< ~2^14`) or highly-repeated integers, revisit — but gate on a
+production-representative benchmark, never the uniform-random synthetic values.
+
+## Trial IV: selective field-value interning (REJECTED — overfit; large regression on high-cardinality)
+
+**Hypothesis (re-test of Trial 5 under realistic data, per open-item #2)**: `field_values` is 58% of
+the bursty footprint. Interning *non-numeric* values (which repeat verbatim in real logs) into the
+shared string table — storing `varint(0) varint(index)` instead of the bytes — while keeping
+canonical integers inline (they are unique per event; interning them was Trial 5's failure mode)
+should beat zstd's LZ matching for the repeated strings.
+
+**Approach**: `is_canonical_integer` gate; non-integer values interned into `StringTable`, integers
+inlined; tagged decode in the field-value stream (tag 0 = interned index, else `len+1` = verbatim).
+
+**Result on the standard bench**: a large apparent win — bursty capacity **410,879 → 441,596
+(+7.5%)**, i.i.d. **213,298 → 229,187 (+7.4%)**, and the breakdown's total b/evt fell on both modes.
+Interning is inherently locality-independent (it deduplicates globally over the whole-segment table),
+so gaining in i.i.d. as well is *expected*, not itself proof of anything — it only rules out locality
+as the source and points at value cardinality. (If anything, i.i.d.'s scattered repeats mean larger
+LZ offsets, so zstd's own matching is weaker there and interning "should" win slightly *more* in
+i.i.d.; that it roughly ties bursty is a minor curiosity, not load-bearing.) The decisive question —
+is the win an artifact of the value *cardinality*? — needs the experiment below.
+
+**Cardinality-sensitivity experiment (the decisive test)**: the generator draws non-numeric field
+values from a pool of **8** fixed strings, so each appears hundreds of times per segment — interning's
+best case. I added a temporary toggle making string field values **unique per event** (a request-ID /
+UUID-like worst case) and ran the 2×2 (bursty capacity retained):
+
+| string cardinality | intern OFF | intern ON | Δ |
+|---------------------|-----------:|----------:|------:|
+| low (8-value pool)  | 410,879    | 441,596   | **+7.5%** |
+| high (unique/event) | 249,613    | 205,674   | **−17.6%** |
+
+Interning is a **coin-flip on the real workload**: it helps when string field values are
+low-cardinality and *badly hurts* (−17.6%) when they are high-cardinality. Interning a value that
+appears once costs a table entry (bytes stored anyway) **plus** a multi-byte index **plus** cross-frame
+splitting — strictly worse than inlining, and it bloats the (currently uncounted) string table. Real
+debug logs mix both kinds (component/status/level-ish fields repeat; request IDs, unique paths, and
+specific error strings do not), so the sign of the effect is workload-dependent and unknowable from
+the synthetic benchmark.
+
+**Verdict: REJECTED and reverted** *for the unguarded form*, because its sign on a real workload is
+unknowable from this benchmark: the +7.5% is dominated by the unrealistically small (8-value)
+synthetic string pool, and unguarded it regresses −17.6% on high-cardinality fields (Trial 5 rejected
+interning for the same underlying reason). Two additional problems surfaced even in the best case:
+(1) `EventBuffer::size_bytes()` does not count the string table, so interned bytes move into an
+*uncounted* accumulator — the encoder then over-fills each segment by event count (the flush gate
+fires late), which is why the stability run showed segments holding far more events and drop amplitude
+rising to 9,665 (bursty min/avg 98.0% → 96.7%). That drop-amplitude jump is an artifact of the
+accounting gap, **not** a consequence of the +7.5% compression gain (a genuine +7.5% would raise
+events/segment ~7.5%, not ~2×); it is a symptom of problem (1), and would have to be fixed first.
+(2) For high-cardinality values, interning is *strictly worse* than inlining (table entry + index +
+cross-frame split, for a value that never repeats).
+
+**Not fully dead — a guarded version is the defensible follow-up, but only against real logs.** A
+cardinality-guarded interner (intern a value only once it has actually repeated, or cap the interned
+table and inline the overflow) converts the coin-flip into win-or-neutral and directly targets the
+58%-of-footprint column. It is *not* pursued here for one reason: its benefit and the guard's
+threshold cannot be honestly calibrated on an 8-value synthetic pool — doing so would just re-encode
+the generator's structure into the heuristic (the exact overfitting this round exists to prevent).
+The prerequisites for a real attempt are: the `size_bytes()` accounting fix, the frequency/size
+guard, and a **production-representative log corpus** to tune and validate against.
+
+## Lever re-evaluation summary (against bursty data)
+
+All three content-column levers from the open-items list were tested against the realistic (bursty)
+benchmark and **rejected**; the current encoding is at/near the achievable frontier for this workload
+without workload-specific training or lossy transforms:
+
+| Lever | Result | Disposition |
+|-------|--------|-------------|
+| Numeric field-value specialization (Trial NG) | −1.2%/−1.9% | rejected — zstd's entropy coder already codes uniform-random digit strings near their information floor; a fixed varint is *less* compressible |
+| Selective field-value interning (Trial IV) | +7.5% low-card / **−17.6% high-card** | rejected (unguarded) — overfit to the 8-value pool; a guarded version needs real logs |
+| zstd dictionary (Approach B, Trial DC) | **≤4% ceiling** (content frame only 1.4%) | not worth the complexity; see below |
+
+**On the zstd dictionary (Approach B) — now measured, not assumed (Trial DC).** Earlier notes called
+this "the one remaining lever" on the assumption that per-segment re-learning of the common content
+vocabulary is costly. That assumption was never measured — so `ring_buffer_dictionary_ceiling`
+measures an **overfit-proof upper bound** with zero training: compress N=16 segments' frames
+independently (current behavior) versus concatenated into one frame. Concatenation lets each segment
+reference *all* prior segments — strictly more shared context than any fixed-size dictionary — so the
+saving is a hard ceiling on any dictionary scheme, and it involves no memorization of the generator's
+vocabulary (which is why a *trained* dictionary was correctly never prototyped: it would post a fake
+win).
+
+Result: the ceiling is **~3.0% (i.i.d.) / ~4.2% (bursty)** of total compressed bytes. Crucially, under
+bursty the **content frame** — which is 87% of the footprint — has a ceiling of only **1.4%**; the
+`content` is already at its cross-segment entropy floor (repeated verbatim values are matched
+*within* a segment; there is little cross-segment structure left). The bursty meta frame shows a 22%
+ceiling, but the meta frame is only ~13% of the total (and already just ~2.7 KB compressed/segment),
+so it contributes ≤3% overall.
+
+**Conclusion**: a zstd dictionary is **not worth its complexity** (training corpus, embed-vs-config
+storage decision, retraining as log shapes drift) for a ≤4% ceiling that lives mostly in the
+already-tiny meta frame. This also closes out the "sub-segment-granularity stability via shared
+context" idea from Trial I — there isn't enough shared context to exploit.
+
+**Net outcome of this round**: the benchmark-fidelity fix (Trial BF, bursty generator) is the shipped
+deliverable. It corrected the entire prioritization (content columns are ~87% of realistic footprint,
+not 61%) and then let us *disprove*, with data, that any of the content-column levers pay off on a
+realistic workload: numeric specialization regresses, unguarded interning is overfit/coin-flip, and
+the dictionary ceiling is ≤4%. **The current encoding is at/near the achievable frontier for this
+workload; no production encoding change is recommended.** The only remaining paths both require
+production log data: a cardinality-guarded field-value interner (Trial IV follow-up) and/or revisiting
+numeric specialization *if* real numeric values turn out to be small/repetitive.
+
+### Decisions confirmed (human, 2026-07-14)
+
+1. **Lossy millisecond timestamp precision is accepted** as the default (`TIMESTAMP_GRANULARITY_NS =
+   1_000_000`). ms is the standard resolution for human-facing log output; sub-ms event ordering is
+   preserved by storage order regardless. Not promoted to `RingBufferConfig`; revisit only if a
+   concrete consumer needs sub-ms (then also write the granularity into the segment header).
+2. **This round ships as the benchmark-fidelity fix only** (bursty generator + dictionary-ceiling
+   tool + these notes); no production encoding change. The next real gain requires a
+   production-representative log corpus, at which point the guarded-interning follow-up is the
+   first thing to evaluate.

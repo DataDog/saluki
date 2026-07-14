@@ -248,6 +248,28 @@ impl EventBuffer {
         Ok(compressed_segment)
     }
 
+    /// Diagnostic: builds the uncompressed `(meta, content)` frames exactly as [`flush`](Self::flush)
+    /// would, but without compressing or clearing. Used by the dictionary-ceiling benchmark to
+    /// recompress many segments' frames together.
+    #[cfg(test)]
+    pub fn uncompressed_frames(&self) -> (Vec<u8>, Vec<u8>) {
+        let mut meta = Vec::with_capacity(4096);
+        self.string_table.encode(&mut meta);
+        encode_varint(self.event_count, &mut meta);
+        write_length_prefixed(&mut meta, &self.col_timestamps);
+        self.callsite_table.encode(&mut meta);
+        rle_encode(&self.col_callsite_indices, &mut meta);
+        rle_encode(&self.col_field_counts, &mut meta);
+        write_length_prefixed(&mut meta, &self.col_field_key_indices);
+        rle_encode(&self.col_msg_template_indices, &mut meta);
+
+        let mut content = Vec::with_capacity(self.col_msg_variables.len() + self.col_field_values.len() + 16);
+        write_length_prefixed(&mut content, &self.col_msg_variables);
+        content.extend_from_slice(&self.col_field_values);
+
+        (meta, content)
+    }
+
     /// Diagnostic: reports the per-column uncompressed and independently-compressed byte sizes for the
     /// current (un-flushed) contents. Used only by benchmarks to see where the bytes actually go.
     #[cfg(test)]
