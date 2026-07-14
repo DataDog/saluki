@@ -1205,3 +1205,204 @@ numeric specialization *if* real numeric values turn out to be small/repetitive.
    tool + these notes); no production encoding change. The next real gain requires a
    production-representative log corpus, at which point the guarded-interning follow-up is the
    first thing to evaluate.
+
+---
+
+# Real-data harvest round (2026-07): the bottleneck was a single DEBUG callsite
+
+The open item "next gain requires production log data" was acted on by building a **capture -> replay
+harness** and harvesting a real corpus from `agent-data-plane` under a DogStatsD workload. The result
+overturned the synthetic conclusions entirely: on real traffic the dominant cost was not an encoding
+detail at all, but **one verbose log statement**.
+
+## The harness (harvest half)
+
+> **The harness tooling described here was one-time scaffolding and was removed from the tree once
+> the optimization concluded** (it was not part of the shipping feature, and its capture tap was
+> dormant code in the production binary). It is recorded here as the *method* that produced the
+> finding below; the recipe in "Reproduce" is enough to rebuild it if a future harvest is needed.
+
+The harvest half was:
+
+- **A development-only capture tap** (`capture.rs`, gated by a `SALUKI_RING_BUFFER_CAPTURE_PATH` env
+  var, off / zero-overhead otherwise) that teed every structured `CondensedEvent` the processor saw
+  to a JSON-Lines file. It wrote the *structured* event (callsite + message + separated key/value
+  fields), not a rendered line, so replay was faithful.
+- **A container harness** (`test/ring-buffer-harvest/harvest.sh`) that ran the converged Datadog
+  Agent + ADP image (`make build-datadog-agent-image-release`) under `lading`
+  (`ghcr.io/datadog/lading:0.31.2`) driving a fixed-rate DSD workload (SMP
+  `quality_gates_rss_dsd_medium` shape, ~10k contexts, 10 MiB/s) for a short fixed period, then
+  stopped gracefully and dropped out the corpus.
+- **A replay half** (`ring_buffer_replay_*` benches) that reconstructed `CondensedEvent`s from a
+  corpus -- interning one `&'static Metadata` per distinct `(target, level, file, line)` -- and ran
+  the same measurement tooling as the synthetic benches, with a round-trip test proving the
+  capture->corpus->replay reconstruction was byte-faithful.
+
+## Finding: 87% of the DEBUG stream was one callsite dumping a huge field
+
+A 40 s DSD harvest produced **11,845 events / 28 MB**. Breakdown of where it went:
+
+- **10,336 of 11,845 events (87%)** came from `saluki_context::resolver` logging
+  `"Resolved new context."` at DEBUG, each with `?context` -- a full `Debug`-dump of the `Context`
+  struct (name + every tag), ~2.4 KB mean, up to 5.3 KB.
+- Steady-state single-segment breakdown: **`field_values` = 99.8%** of the footprint, ~2,298
+  uncompressed / **1,432 compressed** bytes/event, compressing only **1.6x** (each context is unique
+  high-entropy text). Everything else (timestamps, callsite, message, keys) was rounding error.
+- Capacity: only **2,117 / 11,845 retained (17.9%)** in the 2 MiB buffer; 1.59x overall.
+
+This is ~100x larger `field_values` than the synthetic generator modeled (21 uncompressed b/evt),
+and it is a workload the synthetic bench structurally *could not* surface. It also confirms, on real
+data, that the rejected encoding levers were the right calls here: interning a unique 2.4 KB context
+dump is strictly worse (Trial IV high-cardinality case), and it is not numeric.
+
+## Fix: move the context-resolution logs to TRACE
+
+The ring buffer captures DEBUG-and-above (`LevelFilter::DEBUG`), so the single highest-leverage change
+was **logging-side, not encoding-side**: `lib/saluki-context/src/resolver.rs` lines 541 + 570 changed
+from `debug!` to `trace!` (`"Resolved new non-cached context."` and `"Resolved new context."`; both
+dump the full `?context`). TRACE is below the ring buffer's filter, so these drop out of the buffer
+entirely. (Human-approved 2026-07-14.)
+
+### Effect (re-harvested with the change, same workload)
+
+| metric | before (DEBUG) | after (TRACE) |
+|--------|---------------:|--------------:|
+| events captured in 40 s | 11,845 | **1,693** (−86%) |
+| corpus size | 28 MB | **444 KB** (−98%) |
+| steady-state compressed b/evt | 1,432 | **3.17** (~450x smaller) |
+| content-frame compression | 1.6x | **20.7x** |
+| `field_values` share | 99.8% | 26% (no column dominates) |
+| 40 s workload vs 2 MiB buffer | overflowed to 17.9% | fits whole, <1 segment used |
+
+With the giant field gone, the residue is exactly what the columnar encoding is built for: a diverse
+mix of small, highly repetitive operational logs (`"Found expired items."`, `"Forwarding events."`,
+transaction-queue IO, ...), compressing to **3.17 b/evt** -- *better* than the synthetic bursty bench
+(4.75), because real operational logs repeat more. The buffer's effective time-coverage for this
+workload improved by roughly 1-2 orders of magnitude.
+
+## Takeaways
+
+1. **The single biggest real-world lever for ring-buffer coverage was a logging-volume decision at
+   one callsite**, invisible to every encoding trial. The harvest->replay harness is what surfaced it;
+   the synthetic benchmark could not have.
+2. **Fidelity-first paid off twice**: the bursty generator corrected the *relative* column ranking,
+   and the real corpus corrected the *absolute* magnitudes (and found the outlier callsite).
+3. **Caveat**: this is one workload (DSD, high context-churn) in a churn-heavy phase; other
+   workloads/phases differ. The `trace!` change also removes these lines from DEBUG-level *console*
+   output -- anyone who relied on them must now use TRACE. Worth harvesting OTLP / steady-context DSD
+   profiles before further encoding work; with the context dump gone, no single column dominates, so
+   remaining encoding gains look incremental.
+
+### Rebuilding the harness (if a future harvest is ever needed)
+The tooling was removed after use; to reconstruct it:
+1. Re-add a dev-gated capture tap on the processor thread that tees each `CondensedEvent` (its
+   structured fields, not a rendered line) to a JSON-Lines file when an env var is set.
+2. Build the converged image (`make build-datadog-agent-image-release`) and run it with the capture
+   env var set and an output dir mounted; drive DSD with `lading` (`ghcr.io/datadog/lading:0.31.2`,
+   entrypoint `lading`) using a `dogstatsd` `unix_datagram` generator over a shared socket volume
+   (`--no-target`, `--warmup-duration-seconds 0 --experiment-duration-seconds N`, a `--prometheus-addr`
+   to satisfy its mandatory telemetry; `bytes_per_second` is a sibling of `variant`, not inside the
+   payload). Mirror the SMP `quality_gates_rss_dsd_medium` payload shape. Stop the container
+   gracefully to flush the capture.
+3. Replay offline: reconstruct `CondensedEvent`s (one leaked `&'static Metadata` per distinct
+   `(target, level, file, line)`), feed `ProcessorState`, and reuse `EventBuffer::column_breakdown()`.
+
+## Optimization hunt against the real corpus (post-trace-fix)
+
+Harvested a larger, steady-state corpus (300 s DSD, **12,800 events / 3.3 MB**) and re-ran the hunt
+against it. Real steady-state (128 KiB segment, 5,616 events): **1.59 compressed b/evt**, content frame
+**28x**. Column ranking (very different from synthetic): `field_values` 41% (0.65 b/evt), `timestamps`
+16% (0.26), `string_table` 10%, `msg_template_indices`/`callsite_indices` ~9% each. Everything is tiny;
+the trace fix was the real win.
+
+**Two model-correcting findings from the real data:**
+- **Real logging is *interleaved*, not bursty**: consecutive-event callsite/template run length averages
+  **1.1** (65 distinct callsites, ~113 distinct messages, all concurrently active). The bursty generator
+  (mean run ~21) therefore *over-states* the RLE/locality wins; for the index columns reality is near the
+  i.i.d. end of the bracket, not the bursty end.
+- **Out-of-order timestamps occur** (min inter-event delta **−1 ms**; concurrent writer threads stamp
+  before the MPSC channel). The encoder's `saturating_sub` delta then stores 0 and the decoder drifts
+  upward for the rest of the segment. Magnitude is ~ms and bounded per segment, so it is a minor fidelity
+  nit, not a serious bug — but the (always-monotonic) synthetic generator never exercised it. A signed
+  (zig-zag) delta would fix it if ever deemed worth it.
+
+**Levers measured against the real corpus** (zstd-19, isolation, same 5,616-event window):
+
+| Lever | current | candidate | verdict |
+|-------|--------:|----------:|---------|
+| Numeric field-value specialization | 0.654 | 0.683 b/evt (**+4.4%**) | **Reject** — same as synthetic (Trial NG); zstd codes the high-card numerics (`compressed_len`, `uncompressed_len`, …) near their entropy floor. |
+| RLE → raw for index columns | 0.147 | 0.125 b/evt (**−15% of col, ~−2.8% total**) | **Not worth it** — a real but tiny win from the interleaving; RLE is more robust (wins big if a workload *is* bursty). |
+| **Selective field-value interning** (non-numeric → table, numeric inline) | 0.654 | 0.571 b/evt (**−12.7% of col, ~−5% total**) | **Real win, candidate to pursue.** |
+
+**The interning result reframes Trial IV.** On synthetic I rejected it as "overfit to the 8-value
+pool." But the real DSD corpus has only **9 distinct non-numeric field values** (addresses, endpoints,
+encoder names, statuses) repeated thousands of times — real ADP operational logs genuinely have
+low-cardinality string fields. So the synthetic +7.5% was *predictive for this workload class*, not
+overfit. The −17.6% high-cardinality case (Trial IV) is still the risk for workloads with unique string
+fields (request IDs, unique paths) — ADP's operational logs seem not to have those, but other workloads
+might. So the shippable form is the **guarded** selective interner (intern non-numeric values, but cap
+the intern table / only intern values seen ≥ 2× so an unexpected high-card workload degrades to inline),
+plus the `EventBuffer::size_bytes()` accounting fix (interned bytes move to the currently-uncounted
+string table).
+
+**Recommendation.** Post-trace-fix the buffer already covers a very long window (1.59 b/evt, hours of
+coverage on this workload), so every remaining encoding lever is marginal in practice. The single
+worthwhile candidate is **guarded selective field-value interning (~5%)**; numeric specialization is
+confirmed-rejected on real data, and RLE→raw is too small/non-robust. The out-of-order-timestamp drift
+is a separate minor correctness nit. None is urgent; all are ~single-digit-% of an already-tiny footprint.
+
+---
+
+# Capstone: where we started, where we went, and why
+
+**Decision: stop here.** The compressed ring buffer's encoding is near-optimal on real ADP traffic;
+no further encoding change is worth its complexity.
+
+## Where we started
+A row-oriented `musli` + zstd ring buffer retaining **68,708** events (500k-event synthetic bench).
+Successive *encoding* rounds — hand-rolled columnar encoding, per-segment string + callsite interning,
+RLE, split meta/content frames, Drain-style message templating, millisecond timestamps, and the
+stability flush-gate — roughly **tripled** that to **213,298 (+210%)**. Every number was measured
+against a generator that picked target/level/file/message **i.i.d.**, with no temporal locality.
+
+## Where we went (this arc)
+1. **Made the benchmark honest before optimizing further.** Added a *bursty* generator modeling how
+   components actually log (runs from one callsite). It changed no encoding — it changed the *picture*:
+   the two high-entropy content columns are ~87% of a realistic segment; the RLE/index columns collapse.
+   This corrected the whole prioritization and prevented over-fitting to i.i.d. artifacts.
+2. **Re-evaluated every content-column lever against realistic data — and rejected them all.** Numeric
+   specialization regressed (zstd already codes digit strings near their entropy floor); unguarded
+   interning was workload-dependent (+7.5% low-card / −17.6% high-card); the zstd-dictionary ceiling was
+   an overfit-proof **≤4%**. On the synthetic bench, the encoding was already at its frontier.
+3. **Got real data.** Built a (throwaway) capture→replay harness — a dev-gated event tee, a
+   converged-image + `lading` DSD harvest, and deterministic offline replay — exactly what the notes
+   said the remaining levers needed. (Removed after use; see "The harness" above.)
+4. **Real data found the actual bottleneck — and it was not the encoding.** 87% of the real DEBUG
+   stream (98% of bytes) was one callsite, `saluki_context::resolver` "Resolved new context.", dumping
+   the full `Context` struct as a field value. Moving it to `trace!` cut steady-state cost ~450× on a
+   matched sample and lifted coverage ~1–2 orders of magnitude. No encoding trial could have found it.
+5. **Re-ran the hunt on real data.** Post-fix the encoding is near-optimal (**1.59 b/evt**, content
+   frame 28×). Numeric-spec stayed rejected; the one real lever (guarded field-value interning) is ~5%
+   and marginal. Also learned real logging is **interleaved, not bursty** (the bursty bench over-states
+   RLE wins) and carries **out-of-order timestamps** (a minor delta-drift nit).
+
+## Why
+One principle throughout: **optimize against data that looks like production, or you optimize the wrong
+thing.** The i.i.d. generator hid locality; the synthetic field values understated real sizes ~100×;
+neither contained the one verbose callsite that dominated reality. The biggest wins of the whole effort
+were the early encoding rounds (≈3×) and then — once the measurement finally matched reality — a
+*one-line log-level change*. Investing in benchmark fidelity, and then in real data, paid off more at
+the end than any further encoding cleverness could have.
+
+## Where we ended
+- **Kept:** the `debug!`→`trace!` fix (the real win), the synthetic bursty benchmark suite (the
+  `GenMode::Bursty` generator + `ring_buffer_column_breakdown` / `dictionary_ceiling` diagnostics, for
+  future perf work), and these notes.
+- **Removed after use:** the real-data capture→harvest→replay harness (dev-gated capture tap, the
+  `test/ring-buffer-harvest/` container harness, and the replay benches). It was one-time scaffolding,
+  not part of the shipping feature; the method + rebuild recipe are preserved above.
+- **Deliberately not shipped:** numeric specialization, field-value interning (net-negative or
+  marginal/workload-risky), a trained zstd dictionary (≤4% ceiling, overfit risk).
+- **Open, low-priority (only if the memory budget tightens):** a *guarded* selective interner (~5%),
+  and a zig-zag timestamp delta to remove the out-of-order drift. Evaluate both against a fresh real
+  corpus, never the synthetic generator.
