@@ -233,6 +233,8 @@ dependencies = [
  "anyhow",
  "clap",
  "harness",
+ "reqwest",
+ "rustls",
  "ryu",
  "serde_json",
 ]
@@ -4278,6 +4280,7 @@ dependencies = [
  "proptest",
  "quick_cache",
  "regex",
+ "saluki-antithesis",
  "saluki-error",
  "saluki-metrics",
  "serde",

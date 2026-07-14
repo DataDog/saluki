@@ -156,6 +156,10 @@ impl RestartState {
         let now = Instant::now();
         if self.restart_history.len() == self.strategy.intensity {
             let oldest = self.restart_history.front().expect("restart history cannot be empty");
+            saluki_antithesis::always_or_unreachable!(
+                now >= *oldest,
+                "restart-intensity window clock did not move backward"
+            );
             if now.saturating_duration_since(*oldest) < self.strategy.period {
                 debug!(
                     "Restart limit exceeded ({} in {:?}), shutting down.",

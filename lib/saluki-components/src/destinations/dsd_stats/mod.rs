@@ -113,7 +113,7 @@ impl Destination for DogStatsDStats {
         let mut stats_response_tx: Option<tokio::sync::oneshot::Sender<StatsResponse>> = None;
         let mut current_stats: Option<HashMap<ContextNoOrigin, MetricSample>> = None;
         let mut stats_collection_start_time = 0;
-        let mut stats_collection_end_time = 0;
+        let mut stats_collection_end_time: u64 = 0;
         let collection_done = sleep(std::time::Duration::ZERO);
         pin!(collection_done);
 
@@ -128,7 +128,13 @@ impl Destination for DogStatsDStats {
                     if collection_active {
                         // We're already collecting statistics for another stats request
                         // so inform the caller they need to try again later.
-                        let try_after = stats_collection_end_time - get_coarse_unix_timestamp();
+                        let now = get_coarse_unix_timestamp();
+                        saluki_antithesis::always_or_unreachable!(
+                            now >= stats_collection_start_time,
+                            "dsd_stats collection clock did not move backward",
+                            { "now": now, "start_time": stats_collection_start_time }
+                        );
+                        let try_after = stats_collection_end_time.saturating_sub(now);
 
                         // We don't care if we can successfully send back a response or not.
                         let _ = response_tx.send(StatsResponse::AlreadyRunning { try_after });
