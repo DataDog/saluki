@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["HickoryResolver","SocketAddrs"],"type":["HickoryHttpConnector"]};
+window.SIDEBAR_ITEMS = {"struct":["DnsError","SystemResolver"],"type":["SystemHttpConnector"]};
