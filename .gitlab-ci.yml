@@ -49,7 +49,11 @@ variables:
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_PREFIX: "saluki"
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/${SALUKI_IMAGE_REPO_PREFIX}"
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
+  # Temporarily pinned to the branch-built `build-ci` image so this pipeline exercises the glibc/crosstool-NG rebase.
+  #
+  # The `build-ci` image must be rebuilt on `main` after this change is merged, and then promoted, and a follow-up PR
+  # made to switch us back to using the `latest` tag here for weekly image rebuild updates.
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v124381425-b616d9fd"
   SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
   SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
   SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
@@ -65,8 +69,9 @@ variables:
   ADP_INTERNAL_BASE_IMAGE: "${GBI_BASE_IMAGE}"
   ADP_PUBLIC_BASE_IMAGE: "${PUBLIC_BASE_IMAGE}"
 
-  # We use our specific build image as it's built to have the right (specifically: old enough) version of glibc, and
-  # other necessary tooling, to build ADP for the target platforms we need it to be able to run on.
+  # Our build image (see ci/images/definitions/build/Dockerfile) is based on the Datadog Agent's Linux build image,
+  # which ships crosstool-NG cross-toolchains targeting an old glibc (x86_64 -> 2.17, aarch64 -> 2.23). ADP links and
+  # compiles against those toolchains so it runs on every OS the Datadog Agent supports.
   ADP_BUILD_IMAGE: "${SALUKI_BUILD_CI_IMAGE}"
 
   ADP_IMAGE_REPO_NAME: "${SALUKI_IMAGE_REPO_PREFIX}/agent-data-plane"
@@ -126,14 +131,12 @@ default:
 .build-amd64-variables:
   variables:
     BUILD_ARCH: amd64
-    BUILD_TARGET: x86_64-unknown-linux-musl
+    BUILD_TARGET: x86_64-unknown-linux-gnu
 
 .build-arm64-variables:
   variables:
     BUILD_ARCH: arm64
-    BUILD_TARGET: aarch64-unknown-linux-musl
-    # NOTE: aarch64 musl needs `-mno-outline-atomics` (otherwise jemalloc fails to build). That flag
-    # now lives with the target it applies to, in docker/scripts/build/targets/aarch64-unknown-linux-musl.sh.
+    BUILD_TARGET: aarch64-unknown-linux-gnu
 
 .linux-test-job:
   image: "${SALUKI_BUILD_CI_IMAGE}"
