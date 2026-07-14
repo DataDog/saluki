@@ -50,6 +50,7 @@ use crate::{
         io::RB_BUFFER_CHUNK_SIZE,
         protocol::{MetricsPayloadInfo, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::RequestBuilder,
+        resolve_zstd_compressor_level,
         telemetry::ComponentTelemetry,
         DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_V3_PATH,
@@ -94,10 +95,6 @@ const fn default_max_series_points_per_payload() -> usize {
 
 const fn default_flush_timeout_secs() -> u64 {
     2
-}
-
-const fn default_zstd_compressor_level() -> i32 {
-    3
 }
 
 const fn default_use_v2_api_series() -> bool {
@@ -309,14 +306,18 @@ pub struct DatadogMetricsConfiguration {
     )]
     compressor_kind: String,
 
-    /// Compressor level to use when the compressor kind is `zstd`.
+    /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
     ///
-    /// Defaults to 3.
-    #[serde(
-        rename = "serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
-    zstd_compressor_level: i32,
+    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
+    #[serde(rename = "data_plane_serializer_zstd_compressor_level", default)]
+    data_plane_zstd_compressor_level: Option<i32>,
+
+    /// The Core Agent's zstd compression level. Used only when set to a non-default value (not 1),
+    /// since the Agent forwards its default over the config stream.
+    ///
+    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
+    #[serde(rename = "serializer_zstd_compressor_level", default)]
+    serializer_zstd_compressor_level: Option<i32>,
 
     /// Whether to use the V2 API for series metrics.
     ///
@@ -429,7 +430,11 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let v3_serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
 
-        let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let zstd_compressor_level = resolve_zstd_compressor_level(
+            self.data_plane_zstd_compressor_level,
+            self.serializer_zstd_compressor_level,
+        );
+        let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
         let v3_compression_scheme = if self.v3_api.compression_level > 0 {
             CompressionScheme::new(&self.compressor_kind, self.v3_api.compression_level)
         } else {

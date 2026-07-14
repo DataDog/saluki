@@ -2273,8 +2273,11 @@ inventory:
   serializer_zstd_compressor_level:
     support: partial
     pipelines: [cross_cutting]
-    description: "Zstd compression level"
-    documentation: "ADP defaults to level 3 vs Agent level 1. ADP intentionally compresses better. Key is recognized by both; default divergence is intentional."
+    description: "Zstd compression level (Agent)"
+    documentation: >
+      The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`;
+      when that is unset, ADP applies this value if it has been changed from the Agent default of 1,
+      otherwise it uses its own default of 3.
     test_support:
       used_by:
         [

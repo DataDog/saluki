@@ -173,6 +173,13 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
         "data_plane.metrics.v3.series.enabled",
         "data_plane_metrics_v3_series_enabled",
     ),
+    // ADP-specific zstd compression level: YAML `data_plane.serializer_zstd_compressor_level` →
+    // flat key `data_plane_serializer_zstd_compressor_level`. This lets both YAML and env-var
+    // sources feed the shared encoder config structs with correct precedence.
+    (
+        "data_plane.serializer_zstd_compressor_level",
+        "data_plane_serializer_zstd_compressor_level",
+    ),
 ];
 
 /// Remappings from environment variable names to canonical config keys.

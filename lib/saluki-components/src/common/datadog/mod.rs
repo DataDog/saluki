@@ -39,6 +39,29 @@ pub(crate) fn default_serializer_compressor_kind() -> String {
     DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
 }
 
+/// The Datadog Agent's default zstd compression level. Because the Agent forwards its full config
+/// (including this default) over the config stream, this is indistinguishable from a user who
+/// explicitly set the level to 1, so we treat it as "unset" when resolving the level for ADP.
+pub(crate) const AGENT_DEFAULT_ZSTD_COMPRESSOR_LEVEL: i32 = 1;
+
+/// ADP's default zstd compression level. Higher than the Agent's default of 1 because ADP is more
+/// efficient and can afford better compression: level 3 yields ~6% smaller payloads without a net
+/// CPU increase.
+pub(crate) const DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL: i32 = 3;
+
+/// Resolves the effective zstd compression level for an ADP encoder.
+///
+/// Precedence:
+/// 1. `data_plane.serializer_zstd_compressor_level` (ADP-specific) when set.
+/// 2. `serializer_zstd_compressor_level` (Core Agent) when set to a non-default value, so a user who
+///    raised the Agent's level still gets it applied to ADP.
+/// 3. ADP's default of 3.
+pub(crate) fn resolve_zstd_compressor_level(data_plane_level: Option<i32>, agent_level: Option<i32>) -> i32 {
+    data_plane_level
+        .or_else(|| agent_level.filter(|&level| level != AGENT_DEFAULT_ZSTD_COMPRESSOR_LEVEL))
+        .unwrap_or(DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL)
+}
+
 /// Returns payload limits capped to the provided upper bounds.
 pub fn clamp_payload_limits(
     uncompressed_len_limit: usize, compressed_len_limit: usize, max_uncompressed_len_limit: usize,
@@ -131,4 +154,40 @@ pub fn get_trace_env(trace: &Trace, root_span_idx: usize) -> Option<&MetaString>
         return Some(&trace.payload.env);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_zstd_compressor_level, DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL};
+
+    #[test]
+    fn zstd_level_defaults_to_adp_default_when_nothing_set() {
+        assert_eq!(
+            resolve_zstd_compressor_level(None, None),
+            DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL
+        );
+    }
+
+    #[test]
+    fn zstd_level_ignores_agent_default_of_one() {
+        // The Agent forwards its default of 1, which we can't distinguish from an explicit 1, so it
+        // does not override ADP's own default.
+        assert_eq!(
+            resolve_zstd_compressor_level(None, Some(1)),
+            DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL
+        );
+    }
+
+    #[test]
+    fn zstd_level_uses_agent_value_when_changed_from_default() {
+        assert_eq!(resolve_zstd_compressor_level(None, Some(5)), 5);
+    }
+
+    #[test]
+    fn zstd_level_data_plane_takes_precedence() {
+        // The ADP-specific key wins over the Agent value, even a non-default one.
+        assert_eq!(resolve_zstd_compressor_level(Some(4), Some(5)), 4);
+        // And even when it matches the Agent default of 1.
+        assert_eq!(resolve_zstd_compressor_level(Some(1), Some(5)), 1);
+    }
 }
