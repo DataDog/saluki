@@ -51,4 +51,7 @@ tracing-subscriber = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+async-compression = { workspace = true, features = ["zstd", "tokio"] }
 proptest = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+zstd = { workspace = true }

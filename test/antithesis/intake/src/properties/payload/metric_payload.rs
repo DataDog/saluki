@@ -7,12 +7,16 @@ use serde_json::json;
 use super::constants::MAX_POINTS_PER_PAYLOAD;
 use crate::capture::Target;
 
-/// Pyld07 -- the body decodes as a v2 `MetricPayload`.
-pub(crate) fn decode_success(target: Target, decoded_ok: bool, body_len: usize, decompression_applied: bool) {
+/// Pyld07 -- the intake's decode decision matches production. Production accepts a payload,
+/// or rejects it for a non-UTF-8 non-tag string field. Either is production-faithful. Only
+/// genuinely malformed protobuf wire, which no real producer emits, fails this.
+pub(crate) fn decode_production_faithful(
+    target: Target, production_faithful: bool, outcome: &str, body_len: usize, decompression_applied: bool,
+) {
     assert_always!(
-        decoded_ok,
+        production_faithful,
         "Pyld07.decode_success",
-        &json!({ "lane": target, "body_len": body_len, "decompression_applied": decompression_applied })
+        &json!({ "lane": target, "outcome": outcome, "body_len": body_len, "decompression_applied": decompression_applied })
     );
 }
 

@@ -4,11 +4,10 @@ use std::sync::OnceLock;
 
 use antithesis_sdk::prelude::*;
 use datadog_protos::metrics::{metric_payload::MetricSeries, MetricPayload};
-use protobuf::Message;
 use serde_json::json;
-use tracing::error;
 
 use crate::capture::Target;
+use crate::lenient_decode::Rejection;
 use crate::properties::payload::{metric_payload, point, resource, series};
 
 /// A decoded `/api/v2/series` payload.
@@ -18,17 +17,28 @@ pub(crate) struct SeriesObservation {
 }
 
 impl SeriesObservation {
-    /// Decode a raw `/api/v2/series` body and fire the decode-success assertion.
+    /// Decode a raw `/api/v2/series` body and fire the Pyld07 production-faithful decode assertion.
+    ///
+    /// Returns the observation when the body decoded, and whether the intake accepted it.
+    /// A non-UTF-8 non-tag field is rejected exactly as production rejects it, so it is not
+    /// a decode defect — only genuinely malformed wire fails Pyld07.
     pub(crate) fn decode(target: Target, body_bytes: &[u8], decompression_applied: bool) -> (Option<Self>, bool) {
-        let decode_result = MetricPayload::parse_from_bytes(body_bytes);
-        metric_payload::decode_success(target, decode_result.is_ok(), body_bytes.len(), decompression_applied);
-        let decode_ok = decode_result.is_ok();
-        let observation = decode_result
-            .map(Self::from_payload)
-            .map_err(|e| error!(error = %e, "Failed to parse /api/v2/series MetricPayload."))
-            .ok();
+        let outcome = crate::lenient_decode::decode_metric_payload(body_bytes);
+        let (production_faithful, label) = match &outcome {
+            Ok(_) => (true, "accepted"),
+            Err(Rejection::NonUtf8StrictField) => (true, "rejected_non_utf8_field"),
+            Err(Rejection::MalformedWire) => (false, "malformed_wire"),
+        };
+        metric_payload::decode_production_faithful(
+            target,
+            production_faithful,
+            label,
+            body_bytes.len(),
+            decompression_applied,
+        );
 
-        (observation, decode_ok)
+        let accepted = outcome.is_ok();
+        (outcome.ok().map(Self::from_payload), accepted)
     }
 
     /// Create an observation from an already-decoded payload.
@@ -57,7 +67,12 @@ impl SeriesObservation {
         metric_payload::point_count(target, &self.payload);
         resource::host_consistent(target, &self.payload, established_host);
         for ms in &self.payload.series {
-            evaluate_series(target, ms, now_secs);
+            // Only series production keeps get per-series property checks. Production drops a
+            // series with an invalid name or a tag or resource flood, so asserting well-formedness
+            // on those would flag payloads the intake itself treats as acceptable and discards.
+            if crate::capture::series_kept_by_intake(ms) {
+                evaluate_series(target, ms, now_secs);
+            }
         }
     }
 
