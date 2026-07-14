@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ConfigProfile"],"struct":["DatadogConfig"]};
+window.SIDEBAR_ITEMS = {"struct":["DatadogConfig","DriverConfig"]};

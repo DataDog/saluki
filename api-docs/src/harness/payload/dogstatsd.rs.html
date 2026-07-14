@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `test/antithesis/harness/src/payload/dogstatsd.rs`."><title>dogstatsd.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="harness" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (4c9d2bfe4 2026-07-01)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">harness/payload/</div>dogstatsd.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! `DogStatsD` payload generation.
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `test/antithesis/harness/src/payload/dogstatsd.rs`."><title>dogstatsd.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../" data-static-root-path="../../../static.files/" data-current-crate="harness" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../static.files/src-script-813739b1.js"></script><script defer src="../../../src-files.js"></script><script defer src="../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">harness/payload/</div>dogstatsd.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! `DogStatsD` payload generation.
 <a href=#2 id=2 data-nosnippet>2</a>//!
 <a href=#3 id=3 data-nosnippet>3</a>//! Dogstatsd is three message types: metric, event, service check.
 <a href=#4 id=4 data-nosnippet>4</a>//!
@@ -101,21 +101,151 @@
 <a href=#101 id=101 data-nosnippet>101</a>    }
 <a href=#102 id=102 data-nosnippet>102</a>}
 <a href=#103 id=103 data-nosnippet>103</a>
-<a href=#104 id=104 data-nosnippet>104</a><span class="doccomment">/// Write one `DogStatsD` message of a sampled type to `buf` at the given vibe.
-<a href=#105 id=105 data-nosnippet>105</a>/// Returns the packed value count when a multi-value metric was emitted, else
-<a href=#106 id=106 data-nosnippet>106</a>/// `None`.
-<a href=#107 id=107 data-nosnippet>107</a></span><span class="kw">pub fn </span>send&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, vibe: Vibe) -&gt; <span class="prelude-ty">Option</span>&lt;usize&gt; {
-<a href=#108 id=108 data-nosnippet>108</a>    buf.clear();
-<a href=#109 id=109 data-nosnippet>109</a>    <span class="kw">match </span>choose_message(rng) {
-<a href=#110 id=110 data-nosnippet>110</a>        Message::Event =&gt; {
-<a href=#111 id=111 data-nosnippet>111</a>            events::write(rng, buf, vibe);
-<a href=#112 id=112 data-nosnippet>112</a>            <span class="prelude-val">None
-<a href=#113 id=113 data-nosnippet>113</a>        </span>}
-<a href=#114 id=114 data-nosnippet>114</a>        Message::ServiceCheck =&gt; {
-<a href=#115 id=115 data-nosnippet>115</a>            service_checks::write(rng, buf, vibe);
-<a href=#116 id=116 data-nosnippet>116</a>            <span class="prelude-val">None
-<a href=#117 id=117 data-nosnippet>117</a>        </span>}
-<a href=#118 id=118 data-nosnippet>118</a>        Message::Metric =&gt; metrics::write(rng, buf, vibe),
-<a href=#119 id=119 data-nosnippet>119</a>    }
-<a href=#120 id=120 data-nosnippet>120</a>}
+<a href=#104 id=104 data-nosnippet>104</a><span class="doccomment">/// Ceiling on a generated datagram, the Datadog Agent's default
+<a href=#105 id=105 data-nosnippet>105</a>/// `dogstatsd_buffer_size`. A run caps each datagram to the smaller of this and
+<a href=#106 id=106 data-nosnippet>106</a>/// the SUT's sampled receive buffer, so a packed datagram always fits one read
+<a href=#107 id=107 data-nosnippet>107</a>/// and the SUT never truncates a line mid-token.
+<a href=#108 id=108 data-nosnippet>108</a></span><span class="kw">pub const </span>PAYLOAD_BYTE_LIMIT: usize = <span class="number">8_192</span>;
+<a href=#109 id=109 data-nosnippet>109</a>
+<a href=#110 id=110 data-nosnippet>110</a><span class="doccomment">/// What a generated payload holds, for anchoring assertions.
+<a href=#111 id=111 data-nosnippet>111</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default)]
+<a href=#112 id=112 data-nosnippet>112</a></span><span class="kw">pub struct </span>Payload {
+<a href=#113 id=113 data-nosnippet>113</a>    <span class="doccomment">/// Lines packed into the buffer.
+<a href=#114 id=114 data-nosnippet>114</a>    </span><span class="kw">pub </span>lines: usize,
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="doccomment">/// Largest packed multi-value run among those lines. Zero when none.
+<a href=#116 id=116 data-nosnippet>116</a>    </span><span class="kw">pub </span>max_packed: usize,
+<a href=#117 id=117 data-nosnippet>117</a>}
+<a href=#118 id=118 data-nosnippet>118</a>
+<a href=#119 id=119 data-nosnippet>119</a><span class="doccomment">/// Append one `DogStatsD` line of a sampled type to `buf`. When a line would
+<a href=#120 id=120 data-nosnippet>120</a>/// exceed `limit_bytes`, drop it whole rather than shear it, leaving `buf`
+<a href=#121 id=121 data-nosnippet>121</a>/// unchanged. A non-empty line always ends in `\n`.
+<a href=#122 id=122 data-nosnippet>122</a>///
+<a href=#123 id=123 data-nosnippet>123</a>/// Returns the packed value count when a multi-value metric was emitted, else
+<a href=#124 id=124 data-nosnippet>124</a>/// `None`.
+<a href=#125 id=125 data-nosnippet>125</a></span><span class="kw">pub fn </span>write_line&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, vibe: Vibe, limit_bytes: usize) -&gt; <span class="prelude-ty">Option</span>&lt;usize&gt; {
+<a href=#126 id=126 data-nosnippet>126</a>    <span class="kw">let </span>start = buf.len();
+<a href=#127 id=127 data-nosnippet>127</a>    <span class="kw">let </span>packed = <span class="kw">match </span>choose_message(rng) {
+<a href=#128 id=128 data-nosnippet>128</a>        Message::Event =&gt; {
+<a href=#129 id=129 data-nosnippet>129</a>            events::write(rng, buf, vibe);
+<a href=#130 id=130 data-nosnippet>130</a>            <span class="prelude-val">None
+<a href=#131 id=131 data-nosnippet>131</a>        </span>}
+<a href=#132 id=132 data-nosnippet>132</a>        Message::ServiceCheck =&gt; {
+<a href=#133 id=133 data-nosnippet>133</a>            service_checks::write(rng, buf, vibe);
+<a href=#134 id=134 data-nosnippet>134</a>            <span class="prelude-val">None
+<a href=#135 id=135 data-nosnippet>135</a>        </span>}
+<a href=#136 id=136 data-nosnippet>136</a>        Message::Metric =&gt; metrics::write(rng, buf, vibe),
+<a href=#137 id=137 data-nosnippet>137</a>    };
+<a href=#138 id=138 data-nosnippet>138</a>    <span class="kw">if </span>buf.len() - start &gt; limit_bytes {
+<a href=#139 id=139 data-nosnippet>139</a>        <span class="comment">// Drop a whole line that exceeds limit_bytes rather than shear it mid-token.
+<a href=#140 id=140 data-nosnippet>140</a>        // A sheared fragment is exactly the parse-error spew this generator avoids.
+<a href=#141 id=141 data-nosnippet>141</a>        </span>buf.truncate(start);
+<a href=#142 id=142 data-nosnippet>142</a>        <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#143 id=143 data-nosnippet>143</a>    }
+<a href=#144 id=144 data-nosnippet>144</a>    packed
+<a href=#145 id=145 data-nosnippet>145</a>}
+<a href=#146 id=146 data-nosnippet>146</a>
+<a href=#147 id=147 data-nosnippet>147</a><span class="doccomment">/// Per-run line composition: every line clean, every line feral, or a per-line
+<a href=#148 id=148 data-nosnippet>148</a>/// clean-or-feral mix.
+<a href=#149 id=149 data-nosnippet>149</a></span><span class="attr">#[derive(Clone, Copy, Debug)]
+<a href=#150 id=150 data-nosnippet>150</a></span><span class="kw">pub enum </span>Batch {
+<a href=#151 id=151 data-nosnippet>151</a>    <span class="doccomment">/// Every line clean.
+<a href=#152 id=152 data-nosnippet>152</a>    </span>Clean,
+<a href=#153 id=153 data-nosnippet>153</a>    <span class="doccomment">/// Every line feral.
+<a href=#154 id=154 data-nosnippet>154</a>    </span>Feral,
+<a href=#155 id=155 data-nosnippet>155</a>    <span class="doccomment">/// Each line independently clean or feral.
+<a href=#156 id=156 data-nosnippet>156</a>    </span>Mixed,
+<a href=#157 id=157 data-nosnippet>157</a>}
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a><span class="kw">impl </span>Batch {
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="doccomment">/// The vibe for one line of this batch, sampled per call so `Mixed` interleaves.
+<a href=#161 id=161 data-nosnippet>161</a>    </span><span class="kw">fn </span>vibe&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(<span class="self">self</span>, rng: <span class="kw-2">&amp;mut </span>R) -&gt; Vibe {
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#163 id=163 data-nosnippet>163</a>            Batch::Clean =&gt; Vibe::Clean,
+<a href=#164 id=164 data-nosnippet>164</a>            Batch::Feral =&gt; Vibe::Feral,
+<a href=#165 id=165 data-nosnippet>165</a>            Batch::Mixed =&gt; sample_vibe(rng),
+<a href=#166 id=166 data-nosnippet>166</a>        }
+<a href=#167 id=167 data-nosnippet>167</a>    }
+<a href=#168 id=168 data-nosnippet>168</a>}
+<a href=#169 id=169 data-nosnippet>169</a>
+<a href=#170 id=170 data-nosnippet>170</a><span class="doccomment">/// Pack whole `\n`-terminated lines into `buf` until the next sampled line does
+<a href=#171 id=171 data-nosnippet>171</a>/// not fit the space left under `limit_bytes`. That overflowing line is dropped
+<a href=#172 id=172 data-nosnippet>172</a>/// whole rather than sheared and ends the payload, so the packed datagram never
+<a href=#173 id=173 data-nosnippet>173</a>/// exceeds `limit_bytes` and holds only whole lines. Each line takes its vibe
+<a href=#174 id=174 data-nosnippet>174</a>/// from `batch`, so a `Mixed` payload interleaves clean and feral lines. Clears
+<a href=#175 id=175 data-nosnippet>175</a>/// `buf` first.
+<a href=#176 id=176 data-nosnippet>176</a></span><span class="kw">pub fn </span>write_payload&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, batch: Batch, limit_bytes: usize) -&gt; Payload {
+<a href=#177 id=177 data-nosnippet>177</a>    buf.clear();
+<a href=#178 id=178 data-nosnippet>178</a>    <span class="kw">let </span><span class="kw-2">mut </span>payload = Payload::default();
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="kw">loop </span>{
+<a href=#180 id=180 data-nosnippet>180</a>        <span class="kw">let </span>vibe = batch.vibe(rng);
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="kw">let </span>start = buf.len();
+<a href=#182 id=182 data-nosnippet>182</a>        <span class="comment">// Pass the budget still free so an overflowing line is dropped whole, not
+<a href=#183 id=183 data-nosnippet>183</a>        // sheared, and the total stays within `limit_bytes`.
+<a href=#184 id=184 data-nosnippet>184</a>        </span><span class="kw">let </span>packed = write_line(rng, buf, vibe, limit_bytes - buf.len());
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">if </span>buf.len() == start {
+<a href=#186 id=186 data-nosnippet>186</a>            <span class="comment">// The line did not fit the space left, so the payload is complete.
+<a href=#187 id=187 data-nosnippet>187</a>            </span><span class="kw">break</span>;
+<a href=#188 id=188 data-nosnippet>188</a>        }
+<a href=#189 id=189 data-nosnippet>189</a>        payload.lines += <span class="number">1</span>;
+<a href=#190 id=190 data-nosnippet>190</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(count) = packed {
+<a href=#191 id=191 data-nosnippet>191</a>            payload.max_packed = payload.max_packed.max(count);
+<a href=#192 id=192 data-nosnippet>192</a>        }
+<a href=#193 id=193 data-nosnippet>193</a>    }
+<a href=#194 id=194 data-nosnippet>194</a>    payload
+<a href=#195 id=195 data-nosnippet>195</a>}
+<a href=#196 id=196 data-nosnippet>196</a>
+<a href=#197 id=197 data-nosnippet>197</a><span class="attr">#[cfg(test)]
+<a href=#198 id=198 data-nosnippet>198</a></span><span class="kw">mod </span>test {
+<a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">use </span>proptest::prelude::<span class="kw-2">*</span>;
+<a href=#200 id=200 data-nosnippet>200</a>    <span class="kw">use </span>rand::rngs::SmallRng;
+<a href=#201 id=201 data-nosnippet>201</a>    <span class="kw">use </span>rand::SeedableRng;
+<a href=#202 id=202 data-nosnippet>202</a>
+<a href=#203 id=203 data-nosnippet>203</a>    <span class="kw">use </span>super::{write_line, write_payload, Batch, Vibe};
+<a href=#204 id=204 data-nosnippet>204</a>
+<a href=#205 id=205 data-nosnippet>205</a>    <span class="kw">fn </span>any_vibe() -&gt; <span class="kw">impl </span>Strategy&lt;Value = Vibe&gt; {
+<a href=#206 id=206 data-nosnippet>206</a>        <span class="macro">prop_oneof!</span>[Just(Vibe::Clean), Just(Vibe::Feral)]
+<a href=#207 id=207 data-nosnippet>207</a>    }
+<a href=#208 id=208 data-nosnippet>208</a>
+<a href=#209 id=209 data-nosnippet>209</a>    <span class="kw">fn </span>any_batch() -&gt; <span class="kw">impl </span>Strategy&lt;Value = Batch&gt; {
+<a href=#210 id=210 data-nosnippet>210</a>        <span class="macro">prop_oneof!</span>[Just(Batch::Clean), Just(Batch::Feral), Just(Batch::Mixed)]
+<a href=#211 id=211 data-nosnippet>211</a>    }
+<a href=#212 id=212 data-nosnippet>212</a>
+<a href=#213 id=213 data-nosnippet>213</a>    <span class="doccomment">/// Lines carry no interior newline and each is `\n`-terminated, so the line
+<a href=#214 id=214 data-nosnippet>214</a>    /// count equals the newline count.
+<a href=#215 id=215 data-nosnippet>215</a>    </span><span class="attr">#[allow(clippy::naive_bytecount)]
+<a href=#216 id=216 data-nosnippet>216</a>    </span><span class="kw">fn </span>newline_count(buf: <span class="kw-2">&amp;</span>[u8]) -&gt; usize {
+<a href=#217 id=217 data-nosnippet>217</a>        buf.iter().filter(|&amp;&amp;b| b == <span class="string">b'\n'</span>).count()
+<a href=#218 id=218 data-nosnippet>218</a>    }
+<a href=#219 id=219 data-nosnippet>219</a>
+<a href=#220 id=220 data-nosnippet>220</a>    <span class="macro">proptest!</span> {
+<a href=#221 id=221 data-nosnippet>221</a>        <span class="attr">#[test]
+<a href=#222 id=222 data-nosnippet>222</a>        </span><span class="kw">fn </span>write_line_stays_within_its_limit(seed: u64, limit_bytes: u16, vibe <span class="kw">in </span>any_vibe()) {
+<a href=#223 id=223 data-nosnippet>223</a>            <span class="kw">let </span><span class="kw-2">mut </span>rng = SmallRng::seed_from_u64(seed);
+<a href=#224 id=224 data-nosnippet>224</a>            <span class="kw">let </span>limit_bytes = usize::from(limit_bytes);
+<a href=#225 id=225 data-nosnippet>225</a>            <span class="kw">let </span><span class="kw-2">mut </span>buf = Vec::new();
+<a href=#226 id=226 data-nosnippet>226</a>            write_line(<span class="kw-2">&amp;mut </span>rng, <span class="kw-2">&amp;mut </span>buf, vibe, limit_bytes);
+<a href=#227 id=227 data-nosnippet>227</a>
+<a href=#228 id=228 data-nosnippet>228</a>            <span class="macro">prop_assert!</span>(buf.len() &lt;= limit_bytes);
+<a href=#229 id=229 data-nosnippet>229</a>            <span class="kw">if </span>!buf.is_empty() {
+<a href=#230 id=230 data-nosnippet>230</a>                <span class="macro">prop_assert_eq!</span>(buf[buf.len() - <span class="number">1</span>], <span class="string">b'\n'</span>);
+<a href=#231 id=231 data-nosnippet>231</a>                <span class="macro">prop_assert_eq!</span>(newline_count(<span class="kw-2">&amp;</span>buf), <span class="number">1</span>);
+<a href=#232 id=232 data-nosnippet>232</a>            }
+<a href=#233 id=233 data-nosnippet>233</a>        }
+<a href=#234 id=234 data-nosnippet>234</a>
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="attr">#[test]
+<a href=#236 id=236 data-nosnippet>236</a>        </span><span class="kw">fn </span>write_payload_stays_within_its_limit(seed: u64, limit_bytes: u16, batch <span class="kw">in </span>any_batch()) {
+<a href=#237 id=237 data-nosnippet>237</a>            <span class="kw">let </span><span class="kw-2">mut </span>rng = SmallRng::seed_from_u64(seed);
+<a href=#238 id=238 data-nosnippet>238</a>            <span class="kw">let </span>limit_bytes = usize::from(limit_bytes);
+<a href=#239 id=239 data-nosnippet>239</a>            <span class="kw">let </span><span class="kw-2">mut </span>buf = Vec::new();
+<a href=#240 id=240 data-nosnippet>240</a>            <span class="kw">let </span>payload = write_payload(<span class="kw-2">&amp;mut </span>rng, <span class="kw-2">&amp;mut </span>buf, batch, limit_bytes);
+<a href=#241 id=241 data-nosnippet>241</a>
+<a href=#242 id=242 data-nosnippet>242</a>            <span class="macro">prop_assert!</span>(buf.len() &lt;= limit_bytes);
+<a href=#243 id=243 data-nosnippet>243</a>            <span class="macro">prop_assert_eq!</span>(newline_count(<span class="kw-2">&amp;</span>buf), payload.lines);
+<a href=#244 id=244 data-nosnippet>244</a>            <span class="comment">// Whole lines only: a non-empty datagram ends on a line boundary, never a shorn token.
+<a href=#245 id=245 data-nosnippet>245</a>            </span><span class="kw">if </span>!buf.is_empty() {
+<a href=#246 id=246 data-nosnippet>246</a>                <span class="macro">prop_assert_eq!</span>(buf[buf.len() - <span class="number">1</span>], <span class="string">b'\n'</span>);
+<a href=#247 id=247 data-nosnippet>247</a>            }
+<a href=#248 id=248 data-nosnippet>248</a>        }
+<a href=#249 id=249 data-nosnippet>249</a>    }
+<a href=#250 id=250 data-nosnippet>250</a>}
 </code></pre></div></section></main></body></html>

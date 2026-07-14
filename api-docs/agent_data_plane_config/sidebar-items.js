@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["control","domains","live","shared"],"struct":["SalukiConfiguration"]};

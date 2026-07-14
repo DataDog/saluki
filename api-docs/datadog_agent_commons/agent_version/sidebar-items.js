@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DETECTED_AGENT_IS_DEV","DETECTED_AGENT_VERSION","DETECTED_AGENT_VERSION_MAJOR","DETECTED_AGENT_VERSION_MINOR","DETECTED_AGENT_VERSION_PATCH"],"fn":["meets","version","version_string"],"struct":["AgentVersion"]};

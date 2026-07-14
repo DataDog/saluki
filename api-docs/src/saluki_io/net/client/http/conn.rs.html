@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-io/src/net/client/http/conn.rs`."><title>conn.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../../../../" data-static-root-path="../../../../../static.files/" data-current-crate="saluki_io" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (4c9d2bfe4 2026-07-01)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../../src-files.js"></script><script defer src="../../../../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_io/net/client/http/</div>conn.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::{
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-io/src/net/client/http/conn.rs`."><title>conn.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../../../" data-static-root-path="../../../../../static.files/" data-current-crate="saluki_io" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../../src-files.js"></script><script defer src="../../../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_io/net/client/http/</div>conn.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>std::{
 <a href=#2 id=2 data-nosnippet>2</a>    future::Future,
 <a href=#3 id=3 data-nosnippet>3</a>    io,
 <a href=#4 id=4 data-nosnippet>4</a>    pin::Pin,
@@ -506,174 +506,179 @@
 <a href=#506 id=506 data-nosnippet>506</a>    </span><span class="kw">pub fn </span>build(<span class="self">self</span>, tls_config: ClientConfig) -&gt; <span class="prelude-ty">Result</span>&lt;HttpsCapableConnector, GenericError&gt; {
 <a href=#507 id=507 data-nosnippet>507</a>        <span class="kw">let </span>connect_timeout = <span class="self">self</span>.connect_timeout.unwrap_or(Duration::from_secs(<span class="number">30</span>));
 <a href=#508 id=508 data-nosnippet>508</a>
-<a href=#509 id=509 data-nosnippet>509</a>        <span class="comment">// On Linux with vsock configured, the DNS resolver is never called — vsock connections
-<a href=#510 id=510 data-nosnippet>510</a>        // bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures in environments
-<a href=#511 id=511 data-nosnippet>511</a>        // without system DNS configuration (for example, Nitro Enclaves).
+<a href=#509 id=509 data-nosnippet>509</a>        <span class="comment">// When all traffic is routed over vsock or a Unix socket, the DNS resolver is never called —
+<a href=#510 id=510 data-nosnippet>510</a>        // those connections bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures
+<a href=#511 id=511 data-nosnippet>511</a>        // in environments without system DNS configuration (for example, Nitro Enclaves).
 <a href=#512 id=512 data-nosnippet>512</a>        </span><span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
 <a href=#513 id=513 data-nosnippet>513</a>        </span><span class="kw">let </span>vsock_only = <span class="self">self</span>.vsock_addr.is_some();
 <a href=#514 id=514 data-nosnippet>514</a>        <span class="attr">#[cfg(not(target_os = <span class="string">"linux"</span>))]
 <a href=#515 id=515 data-nosnippet>515</a>        </span><span class="kw">let </span>vsock_only = <span class="bool-val">false</span>;
 <a href=#516 id=516 data-nosnippet>516</a>
-<a href=#517 id=517 data-nosnippet>517</a>        <span class="kw">let </span>hickory_resolver = <span class="kw">if </span>vsock_only {
-<a href=#518 id=518 data-nosnippet>518</a>            HickoryResolver::noop()
-<a href=#519 id=519 data-nosnippet>519</a>        } <span class="kw">else </span>{
-<a href=#520 id=520 data-nosnippet>520</a>            build_dns_resolver(<span class="kw-2">&amp;</span><span class="self">self</span>.error_telemetry)<span class="question-mark">?
-<a href=#521 id=521 data-nosnippet>521</a>        </span>};
-<a href=#522 id=522 data-nosnippet>522</a>
-<a href=#523 id=523 data-nosnippet>523</a>        <span class="comment">// Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to
-<a href=#524 id=524 data-nosnippet>524</a>        // wrap this in an HTTPS connector.
-<a href=#525 id=525 data-nosnippet>525</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>http_connector = HttpConnector::new_with_resolver(hickory_resolver);
-<a href=#526 id=526 data-nosnippet>526</a>        http_connector.set_connect_timeout(<span class="prelude-val">Some</span>(connect_timeout));
-<a href=#527 id=527 data-nosnippet>527</a>        http_connector.enforce_http(<span class="bool-val">false</span>);
-<a href=#528 id=528 data-nosnippet>528</a>
-<a href=#529 id=529 data-nosnippet>529</a>        <span class="kw">let </span>inner_connector = InnerConnector {
-<a href=#530 id=530 data-nosnippet>530</a>            http: http_connector,
-<a href=#531 id=531 data-nosnippet>531</a>            <span class="attr">#[cfg(unix)]
-<a href=#532 id=532 data-nosnippet>532</a>            </span>connect_timeout,
-<a href=#533 id=533 data-nosnippet>533</a>            error_telemetry: <span class="self">self</span>.error_telemetry.clone(),
-<a href=#534 id=534 data-nosnippet>534</a>            <span class="attr">#[cfg(unix)]
-<a href=#535 id=535 data-nosnippet>535</a>            </span>unix_socket_path: <span class="self">self</span>.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
-<a href=#536 id=536 data-nosnippet>536</a>            <span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
-<a href=#537 id=537 data-nosnippet>537</a>            </span>vsock_addr: <span class="self">self</span>.vsock_addr,
-<a href=#538 id=538 data-nosnippet>538</a>        };
-<a href=#539 id=539 data-nosnippet>539</a>
-<a href=#540 id=540 data-nosnippet>540</a>        <span class="comment">// Create the HTTPS connector.
-<a href=#541 id=541 data-nosnippet>541</a>        </span><span class="kw">let </span>https_connector_builder = HttpsConnectorBuilder::new().with_tls_config(tls_config).https_or_http();
-<a href=#542 id=542 data-nosnippet>542</a>        <span class="kw">let </span>https_connector = <span class="kw">match </span><span class="self">self</span>.http_protocol {
-<a href=#543 id=543 data-nosnippet>543</a>            HttpProtocol::Auto =&gt; https_connector_builder
-<a href=#544 id=544 data-nosnippet>544</a>                .enable_all_versions()
-<a href=#545 id=545 data-nosnippet>545</a>                .wrap_connector(inner_connector),
-<a href=#546 id=546 data-nosnippet>546</a>            HttpProtocol::Http1 =&gt; https_connector_builder.enable_http1().wrap_connector(inner_connector),
-<a href=#547 id=547 data-nosnippet>547</a>        };
-<a href=#548 id=548 data-nosnippet>548</a>
-<a href=#549 id=549 data-nosnippet>549</a>        <span class="prelude-val">Ok</span>(HttpsCapableConnector {
-<a href=#550 id=550 data-nosnippet>550</a>            inner: https_connector,
-<a href=#551 id=551 data-nosnippet>551</a>            bytes_sent: <span class="self">self</span>.bytes_sent,
-<a href=#552 id=552 data-nosnippet>552</a>            error_telemetry: <span class="self">self</span>.error_telemetry,
-<a href=#553 id=553 data-nosnippet>553</a>            conn_age_limit: <span class="self">self</span>.conn_age_limit,
-<a href=#554 id=554 data-nosnippet>554</a>        })
-<a href=#555 id=555 data-nosnippet>555</a>    }
-<a href=#556 id=556 data-nosnippet>556</a>}
-<a href=#557 id=557 data-nosnippet>557</a>
-<a href=#558 id=558 data-nosnippet>558</a><span class="attr">#[cfg(test)]
-<a href=#559 id=559 data-nosnippet>559</a></span><span class="kw">fn </span>configure_tls_alpn_for_http_protocol(<span class="kw-2">mut </span>tls_config: ClientConfig, protocol: HttpProtocol) -&gt; ClientConfig {
-<a href=#560 id=560 data-nosnippet>560</a>    <span class="kw">match </span>protocol {
-<a href=#561 id=561 data-nosnippet>561</a>        HttpProtocol::Auto =&gt; {
-<a href=#562 id=562 data-nosnippet>562</a>            tls_config.alpn_protocols = <span class="macro">vec!</span>[<span class="string">b"h2"</span>.to_vec(), <span class="string">b"http/1.1"</span>.to_vec()];
-<a href=#563 id=563 data-nosnippet>563</a>        }
-<a href=#564 id=564 data-nosnippet>564</a>        HttpProtocol::Http1 =&gt; {
-<a href=#565 id=565 data-nosnippet>565</a>            tls_config.alpn_protocols.clear();
-<a href=#566 id=566 data-nosnippet>566</a>        }
-<a href=#567 id=567 data-nosnippet>567</a>    }
-<a href=#568 id=568 data-nosnippet>568</a>
-<a href=#569 id=569 data-nosnippet>569</a>    tls_config
-<a href=#570 id=570 data-nosnippet>570</a>}
-<a href=#571 id=571 data-nosnippet>571</a>
-<a href=#572 id=572 data-nosnippet>572</a><span class="kw">fn </span>is_tls_error(error: <span class="kw-2">&amp;</span>(<span class="kw">dyn </span>std::error::Error + <span class="lifetime">'static</span>)) -&gt; bool {
-<a href=#573 id=573 data-nosnippet>573</a>    <span class="kw">let </span><span class="kw-2">mut </span>current = <span class="prelude-val">Some</span>(error);
-<a href=#574 id=574 data-nosnippet>574</a>    <span class="kw">while let </span><span class="prelude-val">Some</span>(error) = current {
-<a href=#575 id=575 data-nosnippet>575</a>        <span class="kw">if </span>error.downcast_ref::&lt;rustls::Error&gt;().is_some() {
-<a href=#576 id=576 data-nosnippet>576</a>            <span class="kw">return </span><span class="bool-val">true</span>;
-<a href=#577 id=577 data-nosnippet>577</a>        }
-<a href=#578 id=578 data-nosnippet>578</a>        current = error.source();
-<a href=#579 id=579 data-nosnippet>579</a>    }
-<a href=#580 id=580 data-nosnippet>580</a>    <span class="bool-val">false
-<a href=#581 id=581 data-nosnippet>581</a></span>}
-<a href=#582 id=582 data-nosnippet>582</a>
-<a href=#583 id=583 data-nosnippet>583</a><span class="kw">fn </span>is_dns_error(error: <span class="kw-2">&amp;</span>(<span class="kw">dyn </span>std::error::Error + <span class="lifetime">'static</span>)) -&gt; bool {
-<a href=#584 id=584 data-nosnippet>584</a>    <span class="kw">let </span><span class="kw-2">mut </span>current = <span class="prelude-val">Some</span>(error);
-<a href=#585 id=585 data-nosnippet>585</a>    <span class="kw">while let </span><span class="prelude-val">Some</span>(error) = current {
-<a href=#586 id=586 data-nosnippet>586</a>        <span class="kw">if </span>error.downcast_ref::&lt;NetError&gt;().is_some() {
-<a href=#587 id=587 data-nosnippet>587</a>            <span class="kw">return </span><span class="bool-val">true</span>;
-<a href=#588 id=588 data-nosnippet>588</a>        }
-<a href=#589 id=589 data-nosnippet>589</a>        current = error.source();
-<a href=#590 id=590 data-nosnippet>590</a>    }
-<a href=#591 id=591 data-nosnippet>591</a>    <span class="bool-val">false
-<a href=#592 id=592 data-nosnippet>592</a></span>}
-<a href=#593 id=593 data-nosnippet>593</a>
-<a href=#594 id=594 data-nosnippet>594</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>check_connection_state(captured_conn: CaptureConnection) {
-<a href=#595 id=595 data-nosnippet>595</a>    <span class="kw">let </span>maybe_conn_metadata = captured_conn.connection_metadata();
-<a href=#596 id=596 data-nosnippet>596</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(conn_metadata) = maybe_conn_metadata.as_ref() {
-<a href=#597 id=597 data-nosnippet>597</a>        <span class="kw">let </span><span class="kw-2">mut </span>extensions = Extensions::new();
-<a href=#598 id=598 data-nosnippet>598</a>        conn_metadata.get_extras(<span class="kw-2">&amp;mut </span>extensions);
-<a href=#599 id=599 data-nosnippet>599</a>
-<a href=#600 id=600 data-nosnippet>600</a>        <span class="comment">// If the connection has an age limit, check to see if the connection is expired (i.e. too old) and "poison"
-<a href=#601 id=601 data-nosnippet>601</a>        // it if so. Poisoning indicates to `hyper` that the connection should be closed/dropped instead of
-<a href=#602 id=602 data-nosnippet>602</a>        // returning it back to the idle connection pool.
-<a href=#603 id=603 data-nosnippet>603</a>        </span><span class="kw">if let </span><span class="prelude-val">Some</span>(conn_age_limit) = extensions.get::&lt;ConnectionAgeLimit&gt;() {
-<a href=#604 id=604 data-nosnippet>604</a>            <span class="kw">if </span>conn_age_limit.is_expired() {
-<a href=#605 id=605 data-nosnippet>605</a>                <span class="macro">debug!</span>(<span class="string">"connection is expired; poisoning it"</span>);
-<a href=#606 id=606 data-nosnippet>606</a>                conn_metadata.poison();
-<a href=#607 id=607 data-nosnippet>607</a>            }
-<a href=#608 id=608 data-nosnippet>608</a>        }
-<a href=#609 id=609 data-nosnippet>609</a>    }
-<a href=#610 id=610 data-nosnippet>610</a>}
-<a href=#611 id=611 data-nosnippet>611</a>
-<a href=#612 id=612 data-nosnippet>612</a><span class="attr">#[cfg(test)]
-<a href=#613 id=613 data-nosnippet>613</a></span><span class="kw">mod </span>tests {
-<a href=#614 id=614 data-nosnippet>614</a>    <span class="kw">use super</span>::{configure_tls_alpn_for_http_protocol, HttpProtocol};
-<a href=#615 id=615 data-nosnippet>615</a>
-<a href=#616 id=616 data-nosnippet>616</a>    <span class="kw">fn </span>empty_tls_config() -&gt; rustls::ClientConfig {
-<a href=#617 id=617 data-nosnippet>617</a>        rustls::ClientConfig::builder_with_provider(default_crypto_provider().into())
-<a href=#618 id=618 data-nosnippet>618</a>            .with_safe_default_protocol_versions()
-<a href=#619 id=619 data-nosnippet>619</a>            .expect(<span class="string">"default protocol versions should be valid"</span>)
-<a href=#620 id=620 data-nosnippet>620</a>            .with_root_certificates(rustls::RootCertStore::empty())
-<a href=#621 id=621 data-nosnippet>621</a>            .with_no_client_auth()
-<a href=#622 id=622 data-nosnippet>622</a>    }
-<a href=#623 id=623 data-nosnippet>623</a>
-<a href=#624 id=624 data-nosnippet>624</a>    <span class="attr">#[cfg(not(windows))]
-<a href=#625 id=625 data-nosnippet>625</a>    </span><span class="kw">fn </span>default_crypto_provider() -&gt; rustls::crypto::CryptoProvider {
-<a href=#626 id=626 data-nosnippet>626</a>        rustls::crypto::aws_lc_rs::default_provider()
+<a href=#517 id=517 data-nosnippet>517</a>        <span class="attr">#[cfg(unix)]
+<a href=#518 id=518 data-nosnippet>518</a>        </span><span class="kw">let </span>unix_socket_only = <span class="self">self</span>.unix_socket_path.is_some();
+<a href=#519 id=519 data-nosnippet>519</a>        <span class="attr">#[cfg(not(unix))]
+<a href=#520 id=520 data-nosnippet>520</a>        </span><span class="kw">let </span>unix_socket_only = <span class="bool-val">false</span>;
+<a href=#521 id=521 data-nosnippet>521</a>
+<a href=#522 id=522 data-nosnippet>522</a>        <span class="kw">let </span>hickory_resolver = <span class="kw">if </span>vsock_only || unix_socket_only {
+<a href=#523 id=523 data-nosnippet>523</a>            HickoryResolver::noop()
+<a href=#524 id=524 data-nosnippet>524</a>        } <span class="kw">else </span>{
+<a href=#525 id=525 data-nosnippet>525</a>            build_dns_resolver(<span class="kw-2">&amp;</span><span class="self">self</span>.error_telemetry)<span class="question-mark">?
+<a href=#526 id=526 data-nosnippet>526</a>        </span>};
+<a href=#527 id=527 data-nosnippet>527</a>
+<a href=#528 id=528 data-nosnippet>528</a>        <span class="comment">// Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to
+<a href=#529 id=529 data-nosnippet>529</a>        // wrap this in an HTTPS connector.
+<a href=#530 id=530 data-nosnippet>530</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>http_connector = HttpConnector::new_with_resolver(hickory_resolver);
+<a href=#531 id=531 data-nosnippet>531</a>        http_connector.set_connect_timeout(<span class="prelude-val">Some</span>(connect_timeout));
+<a href=#532 id=532 data-nosnippet>532</a>        http_connector.enforce_http(<span class="bool-val">false</span>);
+<a href=#533 id=533 data-nosnippet>533</a>
+<a href=#534 id=534 data-nosnippet>534</a>        <span class="kw">let </span>inner_connector = InnerConnector {
+<a href=#535 id=535 data-nosnippet>535</a>            http: http_connector,
+<a href=#536 id=536 data-nosnippet>536</a>            <span class="attr">#[cfg(unix)]
+<a href=#537 id=537 data-nosnippet>537</a>            </span>connect_timeout,
+<a href=#538 id=538 data-nosnippet>538</a>            error_telemetry: <span class="self">self</span>.error_telemetry.clone(),
+<a href=#539 id=539 data-nosnippet>539</a>            <span class="attr">#[cfg(unix)]
+<a href=#540 id=540 data-nosnippet>540</a>            </span>unix_socket_path: <span class="self">self</span>.unix_socket_path.map(PathBuf::into_boxed_path).map(Arc::from),
+<a href=#541 id=541 data-nosnippet>541</a>            <span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
+<a href=#542 id=542 data-nosnippet>542</a>            </span>vsock_addr: <span class="self">self</span>.vsock_addr,
+<a href=#543 id=543 data-nosnippet>543</a>        };
+<a href=#544 id=544 data-nosnippet>544</a>
+<a href=#545 id=545 data-nosnippet>545</a>        <span class="comment">// Create the HTTPS connector.
+<a href=#546 id=546 data-nosnippet>546</a>        </span><span class="kw">let </span>https_connector_builder = HttpsConnectorBuilder::new().with_tls_config(tls_config).https_or_http();
+<a href=#547 id=547 data-nosnippet>547</a>        <span class="kw">let </span>https_connector = <span class="kw">match </span><span class="self">self</span>.http_protocol {
+<a href=#548 id=548 data-nosnippet>548</a>            HttpProtocol::Auto =&gt; https_connector_builder
+<a href=#549 id=549 data-nosnippet>549</a>                .enable_all_versions()
+<a href=#550 id=550 data-nosnippet>550</a>                .wrap_connector(inner_connector),
+<a href=#551 id=551 data-nosnippet>551</a>            HttpProtocol::Http1 =&gt; https_connector_builder.enable_http1().wrap_connector(inner_connector),
+<a href=#552 id=552 data-nosnippet>552</a>        };
+<a href=#553 id=553 data-nosnippet>553</a>
+<a href=#554 id=554 data-nosnippet>554</a>        <span class="prelude-val">Ok</span>(HttpsCapableConnector {
+<a href=#555 id=555 data-nosnippet>555</a>            inner: https_connector,
+<a href=#556 id=556 data-nosnippet>556</a>            bytes_sent: <span class="self">self</span>.bytes_sent,
+<a href=#557 id=557 data-nosnippet>557</a>            error_telemetry: <span class="self">self</span>.error_telemetry,
+<a href=#558 id=558 data-nosnippet>558</a>            conn_age_limit: <span class="self">self</span>.conn_age_limit,
+<a href=#559 id=559 data-nosnippet>559</a>        })
+<a href=#560 id=560 data-nosnippet>560</a>    }
+<a href=#561 id=561 data-nosnippet>561</a>}
+<a href=#562 id=562 data-nosnippet>562</a>
+<a href=#563 id=563 data-nosnippet>563</a><span class="attr">#[cfg(test)]
+<a href=#564 id=564 data-nosnippet>564</a></span><span class="kw">fn </span>configure_tls_alpn_for_http_protocol(<span class="kw-2">mut </span>tls_config: ClientConfig, protocol: HttpProtocol) -&gt; ClientConfig {
+<a href=#565 id=565 data-nosnippet>565</a>    <span class="kw">match </span>protocol {
+<a href=#566 id=566 data-nosnippet>566</a>        HttpProtocol::Auto =&gt; {
+<a href=#567 id=567 data-nosnippet>567</a>            tls_config.alpn_protocols = <span class="macro">vec!</span>[<span class="string">b"h2"</span>.to_vec(), <span class="string">b"http/1.1"</span>.to_vec()];
+<a href=#568 id=568 data-nosnippet>568</a>        }
+<a href=#569 id=569 data-nosnippet>569</a>        HttpProtocol::Http1 =&gt; {
+<a href=#570 id=570 data-nosnippet>570</a>            tls_config.alpn_protocols.clear();
+<a href=#571 id=571 data-nosnippet>571</a>        }
+<a href=#572 id=572 data-nosnippet>572</a>    }
+<a href=#573 id=573 data-nosnippet>573</a>
+<a href=#574 id=574 data-nosnippet>574</a>    tls_config
+<a href=#575 id=575 data-nosnippet>575</a>}
+<a href=#576 id=576 data-nosnippet>576</a>
+<a href=#577 id=577 data-nosnippet>577</a><span class="kw">fn </span>is_tls_error(error: <span class="kw-2">&amp;</span>(<span class="kw">dyn </span>std::error::Error + <span class="lifetime">'static</span>)) -&gt; bool {
+<a href=#578 id=578 data-nosnippet>578</a>    <span class="kw">let </span><span class="kw-2">mut </span>current = <span class="prelude-val">Some</span>(error);
+<a href=#579 id=579 data-nosnippet>579</a>    <span class="kw">while let </span><span class="prelude-val">Some</span>(error) = current {
+<a href=#580 id=580 data-nosnippet>580</a>        <span class="kw">if </span>error.downcast_ref::&lt;rustls::Error&gt;().is_some() {
+<a href=#581 id=581 data-nosnippet>581</a>            <span class="kw">return </span><span class="bool-val">true</span>;
+<a href=#582 id=582 data-nosnippet>582</a>        }
+<a href=#583 id=583 data-nosnippet>583</a>        current = error.source();
+<a href=#584 id=584 data-nosnippet>584</a>    }
+<a href=#585 id=585 data-nosnippet>585</a>    <span class="bool-val">false
+<a href=#586 id=586 data-nosnippet>586</a></span>}
+<a href=#587 id=587 data-nosnippet>587</a>
+<a href=#588 id=588 data-nosnippet>588</a><span class="kw">fn </span>is_dns_error(error: <span class="kw-2">&amp;</span>(<span class="kw">dyn </span>std::error::Error + <span class="lifetime">'static</span>)) -&gt; bool {
+<a href=#589 id=589 data-nosnippet>589</a>    <span class="kw">let </span><span class="kw-2">mut </span>current = <span class="prelude-val">Some</span>(error);
+<a href=#590 id=590 data-nosnippet>590</a>    <span class="kw">while let </span><span class="prelude-val">Some</span>(error) = current {
+<a href=#591 id=591 data-nosnippet>591</a>        <span class="kw">if </span>error.downcast_ref::&lt;NetError&gt;().is_some() {
+<a href=#592 id=592 data-nosnippet>592</a>            <span class="kw">return </span><span class="bool-val">true</span>;
+<a href=#593 id=593 data-nosnippet>593</a>        }
+<a href=#594 id=594 data-nosnippet>594</a>        current = error.source();
+<a href=#595 id=595 data-nosnippet>595</a>    }
+<a href=#596 id=596 data-nosnippet>596</a>    <span class="bool-val">false
+<a href=#597 id=597 data-nosnippet>597</a></span>}
+<a href=#598 id=598 data-nosnippet>598</a>
+<a href=#599 id=599 data-nosnippet>599</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>check_connection_state(captured_conn: CaptureConnection) {
+<a href=#600 id=600 data-nosnippet>600</a>    <span class="kw">let </span>maybe_conn_metadata = captured_conn.connection_metadata();
+<a href=#601 id=601 data-nosnippet>601</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(conn_metadata) = maybe_conn_metadata.as_ref() {
+<a href=#602 id=602 data-nosnippet>602</a>        <span class="kw">let </span><span class="kw-2">mut </span>extensions = Extensions::new();
+<a href=#603 id=603 data-nosnippet>603</a>        conn_metadata.get_extras(<span class="kw-2">&amp;mut </span>extensions);
+<a href=#604 id=604 data-nosnippet>604</a>
+<a href=#605 id=605 data-nosnippet>605</a>        <span class="comment">// If the connection has an age limit, check to see if the connection is expired (i.e. too old) and "poison"
+<a href=#606 id=606 data-nosnippet>606</a>        // it if so. Poisoning indicates to `hyper` that the connection should be closed/dropped instead of
+<a href=#607 id=607 data-nosnippet>607</a>        // returning it back to the idle connection pool.
+<a href=#608 id=608 data-nosnippet>608</a>        </span><span class="kw">if let </span><span class="prelude-val">Some</span>(conn_age_limit) = extensions.get::&lt;ConnectionAgeLimit&gt;() {
+<a href=#609 id=609 data-nosnippet>609</a>            <span class="kw">if </span>conn_age_limit.is_expired() {
+<a href=#610 id=610 data-nosnippet>610</a>                <span class="macro">debug!</span>(<span class="string">"connection is expired; poisoning it"</span>);
+<a href=#611 id=611 data-nosnippet>611</a>                conn_metadata.poison();
+<a href=#612 id=612 data-nosnippet>612</a>            }
+<a href=#613 id=613 data-nosnippet>613</a>        }
+<a href=#614 id=614 data-nosnippet>614</a>    }
+<a href=#615 id=615 data-nosnippet>615</a>}
+<a href=#616 id=616 data-nosnippet>616</a>
+<a href=#617 id=617 data-nosnippet>617</a><span class="attr">#[cfg(test)]
+<a href=#618 id=618 data-nosnippet>618</a></span><span class="kw">mod </span>tests {
+<a href=#619 id=619 data-nosnippet>619</a>    <span class="kw">use </span>super::{configure_tls_alpn_for_http_protocol, HttpProtocol};
+<a href=#620 id=620 data-nosnippet>620</a>
+<a href=#621 id=621 data-nosnippet>621</a>    <span class="kw">fn </span>empty_tls_config() -&gt; rustls::ClientConfig {
+<a href=#622 id=622 data-nosnippet>622</a>        rustls::ClientConfig::builder_with_provider(default_crypto_provider().into())
+<a href=#623 id=623 data-nosnippet>623</a>            .with_safe_default_protocol_versions()
+<a href=#624 id=624 data-nosnippet>624</a>            .expect(<span class="string">"default protocol versions should be valid"</span>)
+<a href=#625 id=625 data-nosnippet>625</a>            .with_root_certificates(rustls::RootCertStore::empty())
+<a href=#626 id=626 data-nosnippet>626</a>            .with_no_client_auth()
 <a href=#627 id=627 data-nosnippet>627</a>    }
 <a href=#628 id=628 data-nosnippet>628</a>
-<a href=#629 id=629 data-nosnippet>629</a>    <span class="attr">#[cfg(windows)]
+<a href=#629 id=629 data-nosnippet>629</a>    <span class="attr">#[cfg(not(windows))]
 <a href=#630 id=630 data-nosnippet>630</a>    </span><span class="kw">fn </span>default_crypto_provider() -&gt; rustls::crypto::CryptoProvider {
-<a href=#631 id=631 data-nosnippet>631</a>        rustls_cng_crypto::default_provider()
+<a href=#631 id=631 data-nosnippet>631</a>        rustls::crypto::aws_lc_rs::default_provider()
 <a href=#632 id=632 data-nosnippet>632</a>    }
 <a href=#633 id=633 data-nosnippet>633</a>
-<a href=#634 id=634 data-nosnippet>634</a>    <span class="attr">#[test]
-<a href=#635 id=635 data-nosnippet>635</a>    </span><span class="kw">fn </span>auto_protocol_advertises_h2_and_http1_alpn() {
-<a href=#636 id=636 data-nosnippet>636</a>        <span class="kw">let </span>tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Auto);
-<a href=#637 id=637 data-nosnippet>637</a>
-<a href=#638 id=638 data-nosnippet>638</a>        <span class="macro">assert_eq!</span>(tls_config.alpn_protocols, <span class="macro">vec!</span>[<span class="string">b"h2"</span>.to_vec(), <span class="string">b"http/1.1"</span>.to_vec()]);
-<a href=#639 id=639 data-nosnippet>639</a>    }
-<a href=#640 id=640 data-nosnippet>640</a>
-<a href=#641 id=641 data-nosnippet>641</a>    <span class="attr">#[test]
-<a href=#642 id=642 data-nosnippet>642</a>    </span><span class="kw">fn </span>http1_protocol_leaves_alpn_empty() {
-<a href=#643 id=643 data-nosnippet>643</a>        <span class="kw">let </span>tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Http1);
-<a href=#644 id=644 data-nosnippet>644</a>
-<a href=#645 id=645 data-nosnippet>645</a>        <span class="macro">assert!</span>(tls_config.alpn_protocols.is_empty());
-<a href=#646 id=646 data-nosnippet>646</a>    }
-<a href=#647 id=647 data-nosnippet>647</a>
-<a href=#648 id=648 data-nosnippet>648</a>    <span class="comment">// vsock takes priority over unix when both are configured, matching Agent behavior.
-<a href=#649 id=649 data-nosnippet>649</a>    // We verify by checking the error does not mention "unix" — if unix had priority it would
-<a href=#650 id=650 data-nosnippet>650</a>    // fail with a socket-path error; vsock produces a connection or device error instead.
-<a href=#651 id=651 data-nosnippet>651</a>    </span><span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
-<a href=#652 id=652 data-nosnippet>652</a>    #[tokio::test]
-<a href=#653 id=653 data-nosnippet>653</a>    </span><span class="kw">async fn </span>vsock_takes_priority_over_unix_when_both_set() {
-<a href=#654 id=654 data-nosnippet>654</a>        <span class="kw">use </span>std::sync::Arc;
-<a href=#655 id=655 data-nosnippet>655</a>
-<a href=#656 id=656 data-nosnippet>656</a>        <span class="kw">use </span>tower::Service <span class="kw">as _</span>;
-<a href=#657 id=657 data-nosnippet>657</a>
-<a href=#658 id=658 data-nosnippet>658</a>        <span class="kw">use super</span>::{InnerConnector, VsockAddr};
-<a href=#659 id=659 data-nosnippet>659</a>        <span class="kw">use </span><span class="kw">crate</span>::net::dns::HickoryResolver;
+<a href=#634 id=634 data-nosnippet>634</a>    <span class="attr">#[cfg(windows)]
+<a href=#635 id=635 data-nosnippet>635</a>    </span><span class="kw">fn </span>default_crypto_provider() -&gt; rustls::crypto::CryptoProvider {
+<a href=#636 id=636 data-nosnippet>636</a>        rustls_cng_crypto::default_provider()
+<a href=#637 id=637 data-nosnippet>637</a>    }
+<a href=#638 id=638 data-nosnippet>638</a>
+<a href=#639 id=639 data-nosnippet>639</a>    <span class="attr">#[test]
+<a href=#640 id=640 data-nosnippet>640</a>    </span><span class="kw">fn </span>auto_protocol_advertises_h2_and_http1_alpn() {
+<a href=#641 id=641 data-nosnippet>641</a>        <span class="kw">let </span>tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Auto);
+<a href=#642 id=642 data-nosnippet>642</a>
+<a href=#643 id=643 data-nosnippet>643</a>        <span class="macro">assert_eq!</span>(tls_config.alpn_protocols, <span class="macro">vec!</span>[<span class="string">b"h2"</span>.to_vec(), <span class="string">b"http/1.1"</span>.to_vec()]);
+<a href=#644 id=644 data-nosnippet>644</a>    }
+<a href=#645 id=645 data-nosnippet>645</a>
+<a href=#646 id=646 data-nosnippet>646</a>    <span class="attr">#[test]
+<a href=#647 id=647 data-nosnippet>647</a>    </span><span class="kw">fn </span>http1_protocol_leaves_alpn_empty() {
+<a href=#648 id=648 data-nosnippet>648</a>        <span class="kw">let </span>tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Http1);
+<a href=#649 id=649 data-nosnippet>649</a>
+<a href=#650 id=650 data-nosnippet>650</a>        <span class="macro">assert!</span>(tls_config.alpn_protocols.is_empty());
+<a href=#651 id=651 data-nosnippet>651</a>    }
+<a href=#652 id=652 data-nosnippet>652</a>
+<a href=#653 id=653 data-nosnippet>653</a>    <span class="comment">// vsock takes priority over unix when both are configured, matching Agent behavior.
+<a href=#654 id=654 data-nosnippet>654</a>    // We verify by checking the error does not mention "unix" — if unix had priority it would
+<a href=#655 id=655 data-nosnippet>655</a>    // fail with a socket-path error; vsock produces a connection or device error instead.
+<a href=#656 id=656 data-nosnippet>656</a>    </span><span class="attr">#[cfg(target_os = <span class="string">"linux"</span>)]
+<a href=#657 id=657 data-nosnippet>657</a>    #[tokio::test]
+<a href=#658 id=658 data-nosnippet>658</a>    </span><span class="kw">async fn </span>vsock_takes_priority_over_unix_when_both_set() {
+<a href=#659 id=659 data-nosnippet>659</a>        <span class="kw">use </span>std::sync::Arc;
 <a href=#660 id=660 data-nosnippet>660</a>
-<a href=#661 id=661 data-nosnippet>661</a>        <span class="kw">let </span><span class="kw-2">mut </span>connector = InnerConnector {
-<a href=#662 id=662 data-nosnippet>662</a>            http: HickoryResolver::noop().into_http_connector(),
-<a href=#663 id=663 data-nosnippet>663</a>            connect_timeout: std::time::Duration::from_secs(<span class="number">1</span>),
-<a href=#664 id=664 data-nosnippet>664</a>            error_telemetry: <span class="prelude-val">None</span>,
-<a href=#665 id=665 data-nosnippet>665</a>            unix_socket_path: <span class="prelude-val">Some</span>(Arc::from(std::path::Path::new(<span class="string">"/tmp/test.sock"</span>))),
-<a href=#666 id=666 data-nosnippet>666</a>            vsock_addr: <span class="prelude-val">Some</span>(VsockAddr::new(<span class="number">2</span>, <span class="number">5001</span>)),
-<a href=#667 id=667 data-nosnippet>667</a>        };
-<a href=#668 id=668 data-nosnippet>668</a>
-<a href=#669 id=669 data-nosnippet>669</a>        <span class="comment">// Verify vsock path was taken: if unix had priority the error would mention the socket
-<a href=#670 id=670 data-nosnippet>670</a>        // path or "unix"; a vsock attempt produces a connection or device error instead.
-<a href=#671 id=671 data-nosnippet>671</a>        </span><span class="kw">let </span>uri: http::Uri = <span class="string">"https://127.0.0.1:5001/"</span>.parse().unwrap();
-<a href=#672 id=672 data-nosnippet>672</a>        <span class="kw">let </span>err = connector.call(uri).<span class="kw">await</span>.err().expect(<span class="string">"expected a connection error"</span>);
-<a href=#673 id=673 data-nosnippet>673</a>        <span class="macro">assert!</span>(
-<a href=#674 id=674 data-nosnippet>674</a>            !err.to_string().contains(<span class="string">"unix"</span>),
-<a href=#675 id=675 data-nosnippet>675</a>            <span class="string">"expected vsock error (not unix socket error), got: {err}"
-<a href=#676 id=676 data-nosnippet>676</a>        </span>);
-<a href=#677 id=677 data-nosnippet>677</a>    }
-<a href=#678 id=678 data-nosnippet>678</a>}
+<a href=#661 id=661 data-nosnippet>661</a>        <span class="kw">use </span>tower::Service <span class="kw">as _</span>;
+<a href=#662 id=662 data-nosnippet>662</a>
+<a href=#663 id=663 data-nosnippet>663</a>        <span class="kw">use </span>super::{InnerConnector, VsockAddr};
+<a href=#664 id=664 data-nosnippet>664</a>        <span class="kw">use </span><span class="kw">crate</span>::net::dns::HickoryResolver;
+<a href=#665 id=665 data-nosnippet>665</a>
+<a href=#666 id=666 data-nosnippet>666</a>        <span class="kw">let </span><span class="kw-2">mut </span>connector = InnerConnector {
+<a href=#667 id=667 data-nosnippet>667</a>            http: HickoryResolver::noop().into_http_connector(),
+<a href=#668 id=668 data-nosnippet>668</a>            connect_timeout: std::time::Duration::from_secs(<span class="number">1</span>),
+<a href=#669 id=669 data-nosnippet>669</a>            error_telemetry: <span class="prelude-val">None</span>,
+<a href=#670 id=670 data-nosnippet>670</a>            unix_socket_path: <span class="prelude-val">Some</span>(Arc::from(std::path::Path::new(<span class="string">"/tmp/test.sock"</span>))),
+<a href=#671 id=671 data-nosnippet>671</a>            vsock_addr: <span class="prelude-val">Some</span>(VsockAddr::new(<span class="number">2</span>, <span class="number">5001</span>)),
+<a href=#672 id=672 data-nosnippet>672</a>        };
+<a href=#673 id=673 data-nosnippet>673</a>
+<a href=#674 id=674 data-nosnippet>674</a>        <span class="comment">// Verify vsock path was taken: if unix had priority the error would mention the socket
+<a href=#675 id=675 data-nosnippet>675</a>        // path or "unix"; a vsock attempt produces a connection or device error instead.
+<a href=#676 id=676 data-nosnippet>676</a>        </span><span class="kw">let </span>uri: http::Uri = <span class="string">"https://127.0.0.1:5001/"</span>.parse().unwrap();
+<a href=#677 id=677 data-nosnippet>677</a>        <span class="kw">let </span>err = connector.call(uri).<span class="kw">await</span>.err().expect(<span class="string">"expected a connection error"</span>);
+<a href=#678 id=678 data-nosnippet>678</a>        <span class="macro">assert!</span>(
+<a href=#679 id=679 data-nosnippet>679</a>            !err.to_string().contains(<span class="string">"unix"</span>),
+<a href=#680 id=680 data-nosnippet>680</a>            <span class="string">"expected vsock error (not unix socket error), got: {err}"
+<a href=#681 id=681 data-nosnippet>681</a>        </span>);
+<a href=#682 id=682 data-nosnippet>682</a>    }
+<a href=#683 id=683 data-nosnippet>683</a>}
 </code></pre></div></section></main></body></html>

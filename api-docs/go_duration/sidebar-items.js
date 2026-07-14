@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ParseDurationError"],"fn":["parse_duration"]};
+window.SIDEBAR_ITEMS = {"constant":["MAX_DURATION_NANOS"],"enum":["ParseDurationError"],"fn":["parse_duration","parse_duration_or_nanos"]};

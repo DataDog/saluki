@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["build_router"]};
+window.SIDEBAR_ITEMS = {"fn":["build_router"],"mod":["state"]};

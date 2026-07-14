@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["OttlErrorMode"],"struct":["CacheObfuscation","CreditCardObfuscation","Domain","HttpObfuscation","JsonQueryObfuscation","MemcachedObfuscation","Obfuscation","OtlpTraces","OttlFilter","OttlTransform","ProbabilisticSampler","RareSampler","SqlObfuscation"]};

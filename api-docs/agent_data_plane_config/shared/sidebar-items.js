@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["ForwarderHttpProtocol"],"struct":["AltMetricsIntake","AutoscalingFailover","ClusterAgent","Compression","Endpoints","Forwarder","GlobalTags","HistogramEncoding","MetricsEncoding","Proxy","SharedConfiguration","Tls","V3ApiEncoding","V3ApiSettings","V3SeriesMode"]};

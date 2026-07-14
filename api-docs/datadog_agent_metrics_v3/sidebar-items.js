@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["COLUMN_NAMES"],"enum":["V3MetricType"],"struct":["V3EncodeError","V3EncodedMetrics","V3EncoderStats","V3MetricBuilder","V3ValueEncodingStats","V3Writer"]};

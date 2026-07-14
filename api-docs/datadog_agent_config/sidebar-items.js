@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["classifier","generated"]};
+window.SIDEBAR_ITEMS = {"fn":["drive"],"mod":["classifier"],"struct":["DatadogConfiguration","TranslateError","TranslateErrors"],"trait":["DatadogConfigWitness"]};

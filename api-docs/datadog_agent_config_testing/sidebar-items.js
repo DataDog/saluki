@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["run_config_smoke_tests"],"macro":[["declare_annotations",1]],"mod":["config_registry"]};
+window.SIDEBAR_ITEMS = {"fn":["run_config_smoke_tests"],"macro":["declare_annotations"],"mod":["config_registry"]};

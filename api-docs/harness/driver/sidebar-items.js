@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Batch"],"fn":["connect_with_retry","run"],"struct":["Stats"]};
+window.SIDEBAR_ITEMS = {"fn":["connect_with_retry","run","sample"],"struct":["Stats"]};

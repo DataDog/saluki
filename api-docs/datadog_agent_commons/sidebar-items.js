@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["ipc","platform"]};
+window.SIDEBAR_ITEMS = {"mod":["agent_version","ipc","platform"]};

@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-io/src/deser/codec/dogstatsd/event.rs`."><title>event.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../../static.files/rustdoc-1ed95124.css"><meta name="rustdoc-vars" data-root-path="../../../../../" data-static-root-path="../../../../../static.files/" data-current-crate="saluki_io" data-themes="" data-resource-suffix="" data-rustdoc-version="1.98.0-nightly (4c9d2bfe4 2026-07-01)" data-channel="nightly" data-search-js="search-9944d736.js" data-stringdex-js="stringdex-2da4960a.js" data-settings-js="settings-170eb4bf.js" ><script src="../../../../../static.files/storage-41dd4d93.js"></script><script defer src="../../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../../src-files.js"></script><script defer src="../../../../../static.files/main-417ebf0a.js"></script><noscript><link rel="stylesheet" href="../../../../../static.files/noscript-f7c3ffd8.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><a class="skip-main-content" href="#main-content">Skip to main content</a><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content" tabindex="-1"><div class="main-heading"><h1><div class="sub-heading">saluki_io/deser/codec/dogstatsd/</div>event.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>nom::{
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `lib/saluki-io/src/deser/codec/dogstatsd/event.rs`."><title>event.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../../../" data-static-root-path="../../../../../static.files/" data-current-crate="saluki_io" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../../src-files.js"></script><script defer src="../../../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">saluki_io/deser/codec/dogstatsd/</div>event.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="kw">use </span>nom::{
 <a href=#2 id=2 data-nosnippet>2</a>    bytes::complete::{tag, take},
 <a href=#3 id=3 data-nosnippet>3</a>    character::complete::u32 <span class="kw">as </span>parse_u32,
 <a href=#4 id=4 data-nosnippet>4</a>    combinator::all_consuming,
@@ -10,7 +10,7 @@
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>saluki_core::data_model::event::eventd::<span class="kw-2">*</span>;
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>stringtheory::MetaString;
 <a href=#12 id=12 data-nosnippet>12</a>
-<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use super</span>::{helpers::<span class="kw-2">*</span>, DogStatsDCodecConfiguration};
+<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>super::{helpers::<span class="kw-2">*</span>, DogStatsDCodecConfiguration};
 <a href=#14 id=14 data-nosnippet>14</a>
 <a href=#15 id=15 data-nosnippet>15</a><span class="doccomment">/// A DogStatsD event packet.
 <a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">pub struct </span>EventPacket&lt;<span class="lifetime">'a</span>&gt; {
@@ -89,13 +89,13 @@
 <a href=#89 id=89 data-nosnippet>89</a>                    maybe_timestamp = <span class="prelude-val">Some</span>(timestamp);
 <a href=#90 id=90 data-nosnippet>90</a>                }
 <a href=#91 id=91 data-nosnippet>91</a>                <span class="comment">// Hostname: client-provided hostname for the host that this event originated from.
-<a href=#92 id=92 data-nosnippet>92</a>                </span>HOSTNAME_PREFIX <span class="kw">if </span>chunk != HOSTNAME_PREFIX =&gt; {
+<a href=#92 id=92 data-nosnippet>92</a>                </span>HOSTNAME_PREFIX <span class="kw">if </span><span class="macro">chunk !</span>= HOSTNAME_PREFIX =&gt; {
 <a href=#93 id=93 data-nosnippet>93</a>                    <span class="kw">let </span>(<span class="kw">_</span>, hostname) =
 <a href=#94 id=94 data-nosnippet>94</a>                        all_consuming(preceded(tag(HOSTNAME_PREFIX), ascii_alphanum_and_seps)).parse(chunk)<span class="question-mark">?</span>;
 <a href=#95 id=95 data-nosnippet>95</a>                    maybe_hostname = <span class="prelude-val">Some</span>(hostname);
 <a href=#96 id=96 data-nosnippet>96</a>                }
 <a href=#97 id=97 data-nosnippet>97</a>                <span class="comment">// Aggregation key: key to be used to group this event with others that have the same key.
-<a href=#98 id=98 data-nosnippet>98</a>                </span>AGGREGATION_KEY_PREFIX <span class="kw">if </span>chunk != AGGREGATION_KEY_PREFIX =&gt; {
+<a href=#98 id=98 data-nosnippet>98</a>                </span>AGGREGATION_KEY_PREFIX <span class="kw">if </span><span class="macro">chunk !</span>= AGGREGATION_KEY_PREFIX =&gt; {
 <a href=#99 id=99 data-nosnippet>99</a>                    <span class="kw">let </span>(<span class="kw">_</span>, aggregation_key) =
 <a href=#100 id=100 data-nosnippet>100</a>                        all_consuming(preceded(tag(AGGREGATION_KEY_PREFIX), ascii_alphanum_and_seps)).parse(chunk)<span class="question-mark">?</span>;
 <a href=#101 id=101 data-nosnippet>101</a>                    maybe_aggregation_key = <span class="prelude-val">Some</span>(aggregation_key);
@@ -107,7 +107,7 @@
 <a href=#107 id=107 data-nosnippet>107</a>                    maybe_priority = Priority::try_from_string(priority);
 <a href=#108 id=108 data-nosnippet>108</a>                }
 <a href=#109 id=109 data-nosnippet>109</a>                <span class="comment">// Source type name: client-provided source type name of the event.
-<a href=#110 id=110 data-nosnippet>110</a>                </span>SOURCE_TYPE_PREFIX <span class="kw">if </span>chunk != SOURCE_TYPE_PREFIX =&gt; {
+<a href=#110 id=110 data-nosnippet>110</a>                </span>SOURCE_TYPE_PREFIX <span class="kw">if </span><span class="macro">chunk !</span>= SOURCE_TYPE_PREFIX =&gt; {
 <a href=#111 id=111 data-nosnippet>111</a>                    <span class="kw">let </span>(<span class="kw">_</span>, source_type) =
 <a href=#112 id=112 data-nosnippet>112</a>                        all_consuming(preceded(tag(SOURCE_TYPE_PREFIX), ascii_alphanum_and_seps)).parse(chunk)<span class="question-mark">?</span>;
 <a href=#113 id=113 data-nosnippet>113</a>                    maybe_source_type = <span class="prelude-val">Some</span>(source_type);
@@ -119,12 +119,12 @@
 <a href=#119 id=119 data-nosnippet>119</a>                    maybe_alert_type = AlertType::try_from_string(alert_type);
 <a href=#120 id=120 data-nosnippet>120</a>                }
 <a href=#121 id=121 data-nosnippet>121</a>                <span class="comment">// Local Data: client-provided data used for resolving the entity ID that this event originated from.
-<a href=#122 id=122 data-nosnippet>122</a>                </span>LOCAL_DATA_PREFIX <span class="kw">if </span>config.client_origin_detection &amp;&amp; chunk != LOCAL_DATA_PREFIX =&gt; {
+<a href=#122 id=122 data-nosnippet>122</a>                </span>LOCAL_DATA_PREFIX <span class="kw">if </span>config.client_origin_detection &amp;&amp; <span class="macro">chunk !</span>= LOCAL_DATA_PREFIX =&gt; {
 <a href=#123 id=123 data-nosnippet>123</a>                    <span class="kw">let </span>(<span class="kw">_</span>, local_data) = all_consuming(preceded(tag(LOCAL_DATA_PREFIX), local_data)).parse(chunk)<span class="question-mark">?</span>;
 <a href=#124 id=124 data-nosnippet>124</a>                    maybe_local_data = <span class="prelude-val">Some</span>(local_data);
 <a href=#125 id=125 data-nosnippet>125</a>                }
 <a href=#126 id=126 data-nosnippet>126</a>                <span class="comment">// External Data: client-provided data used for resolving the entity ID that this event originated from.
-<a href=#127 id=127 data-nosnippet>127</a>                </span>EXTERNAL_DATA_PREFIX <span class="kw">if </span>config.client_origin_detection &amp;&amp; chunk != EXTERNAL_DATA_PREFIX =&gt; {
+<a href=#127 id=127 data-nosnippet>127</a>                </span>EXTERNAL_DATA_PREFIX <span class="kw">if </span>config.client_origin_detection &amp;&amp; <span class="macro">chunk !</span>= EXTERNAL_DATA_PREFIX =&gt; {
 <a href=#128 id=128 data-nosnippet>128</a>                    <span class="kw">let </span>(<span class="kw">_</span>, external_data) =
 <a href=#129 id=129 data-nosnippet>129</a>                        all_consuming(preceded(tag(EXTERNAL_DATA_PREFIX), external_data)).parse(chunk)<span class="question-mark">?</span>;
 <a href=#130 id=130 data-nosnippet>130</a>                    maybe_external_data = <span class="prelude-val">Some</span>(external_data);
@@ -132,13 +132,13 @@
 <a href=#132 id=132 data-nosnippet>132</a>                <span class="comment">// Cardinality: client-provided cardinality for the event.
 <a href=#133 id=133 data-nosnippet>133</a>                </span><span class="kw">_ if </span>chunk.starts_with(CARDINALITY_PREFIX)
 <a href=#134 id=134 data-nosnippet>134</a>                    &amp;&amp; config.client_origin_detection
-<a href=#135 id=135 data-nosnippet>135</a>                    &amp;&amp; chunk != CARDINALITY_PREFIX =&gt;
+<a href=#135 id=135 data-nosnippet>135</a>                    &amp;&amp; <span class="macro">chunk !</span>= CARDINALITY_PREFIX =&gt;
 <a href=#136 id=136 data-nosnippet>136</a>                {
 <a href=#137 id=137 data-nosnippet>137</a>                    <span class="kw">let </span>(<span class="kw">_</span>, cardinality) = cardinality(chunk)<span class="question-mark">?</span>;
 <a href=#138 id=138 data-nosnippet>138</a>                    maybe_cardinality = cardinality;
 <a href=#139 id=139 data-nosnippet>139</a>                }
 <a href=#140 id=140 data-nosnippet>140</a>                <span class="comment">// Tags: additional tags to be added to the event.
-<a href=#141 id=141 data-nosnippet>141</a>                </span><span class="kw">_ if </span>chunk.starts_with(TAGS_PREFIX) &amp;&amp; chunk != TAGS_PREFIX =&gt; {
+<a href=#141 id=141 data-nosnippet>141</a>                </span><span class="kw">_ if </span>chunk.starts_with(TAGS_PREFIX) &amp;&amp; <span class="macro">chunk !</span>= TAGS_PREFIX =&gt; {
 <a href=#142 id=142 data-nosnippet>142</a>                    <span class="kw">let </span>(<span class="kw">_</span>, tags) = all_consuming(preceded(tag(<span class="string">"#"</span>), tags(config))).parse(chunk)<span class="question-mark">?</span>;
 <a href=#143 id=143 data-nosnippet>143</a>                    maybe_tags = <span class="prelude-val">Some</span>(tags);
 <a href=#144 id=144 data-nosnippet>144</a>                }
@@ -184,7 +184,7 @@
 <a href=#184 id=184 data-nosnippet>184</a>    <span class="kw">use </span>saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
 <a href=#185 id=185 data-nosnippet>185</a>    <span class="kw">use </span>stringtheory::MetaString;
 <a href=#186 id=186 data-nosnippet>186</a>
-<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">use super</span>::{parse_dogstatsd_event, DogStatsDCodecConfiguration};
+<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">use </span>super::{parse_dogstatsd_event, DogStatsDCodecConfiguration};
 <a href=#188 id=188 data-nosnippet>188</a>
 <a href=#189 id=189 data-nosnippet>189</a>    <span class="kw">type </span>NomResult&lt;<span class="lifetime">'input</span>, T&gt; = <span class="prelude-ty">Result</span>&lt;T, nom::Err&lt;nom::error::Error&lt;<span class="kw-2">&amp;</span><span class="lifetime">'input </span>[u8]&gt;&gt;&gt;;
 <a href=#190 id=190 data-nosnippet>190</a>

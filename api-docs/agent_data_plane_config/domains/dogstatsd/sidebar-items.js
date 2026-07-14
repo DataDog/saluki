@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["FilterAction","OriginTagCardinality"],"struct":["Aggregation","Contexts","DebugLog","Domain","EnablePayloads","Listeners","Mapper","MapperProfile","MetricMapping","MetricTagFilterEntry","OriginDetection","PrefixFilter","Telemetry"]};

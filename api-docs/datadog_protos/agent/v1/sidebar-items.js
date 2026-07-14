@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["RefreshRemoteAgentRequest","RefreshRemoteAgentResponse","RegisterRemoteAgentRequest","RegisterRemoteAgentResponse"]};
+window.SIDEBAR_ITEMS = {"mod":["event","remote_agent_client","remote_agent_server"],"struct":["Event","InvalidApiKeyEvent","RefreshRemoteAgentRequest","RefreshRemoteAgentResponse","RegisterRemoteAgentRequest","RegisterRemoteAgentResponse","ReportRemoteAgentEventRequest","ReportRemoteAgentEventResponse"]};

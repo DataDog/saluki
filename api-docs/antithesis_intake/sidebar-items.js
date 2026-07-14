@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["http"]};
+window.SIDEBAR_ITEMS = {"mod":["capture","http"]};

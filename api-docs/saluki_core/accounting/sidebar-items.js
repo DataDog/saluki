@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["UsageExpr","VerifierError"],"struct":["BoundsVerifier","ComponentBounds","ComponentRegistry","ComponentRegistryHandle","MemoryBoundsBuilder","MemoryGrant","MemoryLimiter","ResourceAPIHandler","VerifiedBounds"],"trait":["MemoryBounds"]};
