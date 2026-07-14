@@ -16,6 +16,7 @@ use datadog_protos::agent::{
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::client::http::HttpsCapableConnectorBuilder;
+use tokio::time::sleep;
 use tonic::{
     service::interceptor::InterceptedService,
     transport::{Channel, Endpoint},
@@ -125,13 +126,31 @@ impl RemoteAgentClient {
     ///
     /// If there is an error querying the Agent API, an error will be returned.
     pub async fn get_hostname(&mut self) -> Result<String, GenericError> {
-        let response = self
-            .client
-            .get_hostname(HostnameRequest {})
-            .await
-            .map(|r| r.into_inner())?;
-
-        Ok(response.hostname)
+        // Survive a transient partition. We bound to keep boot from hanging
+        // forever.
+        //
+        // `backoff` and `attempts_left` are arbitrary.
+        let mut backoff = Duration::from_millis(250);
+        let mut attempts_left = 10;
+        loop {
+            match self.client.get_hostname(HostnameRequest {}).await {
+                Ok(response) => return Ok(response.into_inner().hostname),
+                Err(e) => {
+                    // A permanent status never recovers, so fail fast rather than
+                    // waste the backoff budget on it.
+                    if !is_transient(e.code()) {
+                        return Err(e.into());
+                    }
+                    attempts_left -= 1;
+                    if attempts_left == 0 {
+                        return Err(e.into());
+                    }
+                    warn!(error = %e, "Failed to fetch hostname from Datadog Agent. Retrying in {:?}...", backoff);
+                    sleep(backoff).await;
+                    backoff *= 2;
+                }
+            }
+        }
     }
 
     /// Gets a stream of tagger entities at the given cardinality.
@@ -266,6 +285,17 @@ impl RemoteAgentClient {
 
         StreamingResponse::from_response_future(async move { client.stream_config_events(request).await })
     }
+}
+
+/// Reports whether a gRPC status is worth retrying.
+///
+/// A transient status can clear on its own. Any other status is permanent and
+/// should fail fast.
+fn is_transient(code: Code) -> bool {
+    matches!(
+        code,
+        Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted
+    )
 }
 
 async fn try_query_agent_api(

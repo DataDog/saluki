@@ -33,13 +33,22 @@ impl RemoteAgentHostProvider {
     }
 
     async fn get_or_fetch_hostname(&self) -> Result<String, GenericError> {
-        self.cached_hostname
+        let result = self
+            .cached_hostname
             .get_or_try_init(|| {
                 let mut client = self.client.clone();
                 async move { client.get_hostname().await }
             })
             .await
-            .cloned()
+            .cloned();
+
+        saluki_antithesis::always_or_unreachable!(
+            result.is_ok(),
+            "ADP resolved the Core Agent hostname at boot",
+            { "error": result.as_ref().err().map(|e| format!("{e:?}")) }
+        );
+
+        result
     }
 }
 
