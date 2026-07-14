@@ -4394,6 +4394,7 @@ dependencies = [
  "saluki-tls",
  "serde",
  "serde_json",
+ "simdutf8",
  "thingbuf",
  "tokio",
  "tonic",

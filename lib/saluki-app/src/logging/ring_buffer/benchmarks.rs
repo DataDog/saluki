@@ -1,4 +1,5 @@
-use rand::{rngs::SmallRng, Rng, SeedableRng};
+use rand::RngExt as _;
+use rand::{rngs::SmallRng, SeedableRng};
 use tracing::Metadata;
 
 use super::codec::write_length_prefixed;
@@ -486,61 +487,57 @@ fn run_stability_benchmark(
     let early_drops_observed = state.compressed_segments.segments_dropped_total() - early_drops_at_start;
     let steady_drops_observed = state.compressed_segments.segments_dropped_total() - steady_drops_at_start;
 
-    let build_phase_stats = |retained: &[u32],
-                             coverage: &[u64],
-                             drops: &[u32],
-                             warmup_events: usize,
-                             drops_observed: u64|
-     -> PhaseStats {
-        let (min_r, max_r, avg_r, stddev_r, p1_r, p10_r, p50_r, p90_r, p99_r) = stats_u32(retained);
-        let (min_c, avg_c, p1_c, p50_c) = {
-            if coverage.is_empty() {
-                (0u128, 0.0, 0u128, 0u128)
-            } else {
-                let min = *coverage.iter().min().unwrap() as u128;
-                let sum: u128 = coverage.iter().map(|&x| x as u128).sum();
-                let avg = sum as f64 / coverage.len() as f64;
-                let mut sorted = coverage.to_vec();
-                sorted.sort_unstable();
-                let p = |pct: usize| -> u128 { sorted.get(sorted.len() * pct / 100).copied().unwrap_or(0) as u128 };
-                (min, avg, p(1), p(50))
+    let build_phase_stats =
+        |retained: &[u32], coverage: &[u64], drops: &[u32], warmup_events: usize, drops_observed: u64| -> PhaseStats {
+            let (min_r, max_r, avg_r, stddev_r, p1_r, p10_r, p50_r, p90_r, p99_r) = stats_u32(retained);
+            let (min_c, avg_c, p1_c, p50_c) = {
+                if coverage.is_empty() {
+                    (0u128, 0.0, 0u128, 0u128)
+                } else {
+                    let min = *coverage.iter().min().unwrap() as u128;
+                    let sum: u128 = coverage.iter().map(|&x| x as u128).sum();
+                    let avg = sum as f64 / coverage.len() as f64;
+                    let mut sorted = coverage.to_vec();
+                    sorted.sort_unstable();
+                    let p = |pct: usize| -> u128 { sorted.get(sorted.len() * pct / 100).copied().unwrap_or(0) as u128 };
+                    (min, avg, p(1), p(50))
+                }
+            };
+            let (max_d, avg_d, p99_d) = {
+                if drops.is_empty() {
+                    (0u32, 0.0, 0u32)
+                } else {
+                    let max = *drops.iter().max().unwrap();
+                    let sum: u64 = drops.iter().map(|&x| x as u64).sum();
+                    let avg = sum as f64 / drops.len() as f64;
+                    let mut sorted = drops.to_vec();
+                    sorted.sort_unstable();
+                    let p99 = sorted[(sorted.len() * 99) / 100];
+                    (max, avg, p99)
+                }
+            };
+            PhaseStats {
+                warmup_events,
+                samples_count: retained.len(),
+                drops_observed,
+                min_retained: min_r as usize,
+                max_retained: max_r as usize,
+                avg_retained: avg_r,
+                stddev_retained: stddev_r,
+                p1_retained: p1_r as usize,
+                p10_retained: p10_r as usize,
+                p50_retained: p50_r as usize,
+                p90_retained: p90_r as usize,
+                p99_retained: p99_r as usize,
+                min_coverage_ns: min_c,
+                avg_coverage_ns: avg_c,
+                p1_coverage_ns: p1_c,
+                p50_coverage_ns: p50_c,
+                max_drop_amplitude: max_d as usize,
+                avg_drop_amplitude: avg_d,
+                p99_drop_amplitude: p99_d as usize,
             }
         };
-        let (max_d, avg_d, p99_d) = {
-            if drops.is_empty() {
-                (0u32, 0.0, 0u32)
-            } else {
-                let max = *drops.iter().max().unwrap();
-                let sum: u64 = drops.iter().map(|&x| x as u64).sum();
-                let avg = sum as f64 / drops.len() as f64;
-                let mut sorted = drops.to_vec();
-                sorted.sort_unstable();
-                let p99 = sorted[(sorted.len() * 99) / 100];
-                (max, avg, p99)
-            }
-        };
-        PhaseStats {
-            warmup_events,
-            samples_count: retained.len(),
-            drops_observed,
-            min_retained: min_r as usize,
-            max_retained: max_r as usize,
-            avg_retained: avg_r,
-            stddev_retained: stddev_r,
-            p1_retained: p1_r as usize,
-            p10_retained: p10_r as usize,
-            p50_retained: p50_r as usize,
-            p90_retained: p90_r as usize,
-            p99_retained: p99_r as usize,
-            min_coverage_ns: min_c,
-            avg_coverage_ns: avg_c,
-            p1_coverage_ns: p1_c,
-            p50_coverage_ns: p50_c,
-            max_drop_amplitude: max_d as usize,
-            avg_drop_amplitude: avg_d,
-            p99_drop_amplitude: p99_d as usize,
-        }
-    };
     let early = build_phase_stats(
         &early_retained,
         &early_coverage,
@@ -664,7 +661,12 @@ fn ring_buffer_stability_bench() {
 
     let config = RingBufferConfig::default().with_max_ring_buffer_size_bytes(2 * 1024 * 1024);
 
-    let result = run_stability_benchmark(config, "default: max=2MiB, min_segment=128KiB, zstd=19", seed, num_events);
+    let result = run_stability_benchmark(
+        config,
+        "default: max=2MiB, min_segment=128KiB, zstd=19",
+        seed,
+        num_events,
+    );
     print_stability_report(&result);
 }
 

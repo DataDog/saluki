@@ -38,6 +38,7 @@ saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+simdutf8 = { workspace = true }
 thingbuf = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "sync"] }
 tonic = { workspace = true, features = ["router"] }
@@ -68,5 +69,5 @@ rcgen = { workspace = true, features = ["ring"] }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 rand = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

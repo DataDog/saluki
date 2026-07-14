@@ -99,7 +99,7 @@ impl<'a> Iterator for FieldIter<'a> {
         if self.idx + key_len > self.buf.len() {
             return None;
         }
-        let key = std::str::from_utf8(&self.buf[self.idx..self.idx + key_len]).ok()?;
+        let key = simdutf8::basic::from_utf8(&self.buf[self.idx..self.idx + key_len]).ok()?;
         self.idx += key_len;
 
         // Read value.
@@ -108,7 +108,7 @@ impl<'a> Iterator for FieldIter<'a> {
         if self.idx + val_len > self.buf.len() {
             return None;
         }
-        let val = std::str::from_utf8(&self.buf[self.idx..self.idx + val_len]).ok()?;
+        let val = simdutf8::basic::from_utf8(&self.buf[self.idx..self.idx + val_len]).ok()?;
         self.idx += val_len;
 
         Some((key, val))

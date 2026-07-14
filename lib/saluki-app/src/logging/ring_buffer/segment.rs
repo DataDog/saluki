@@ -227,7 +227,7 @@ impl CompressedSegmentReader {
             .string_table_ranges
             .get(target_idx)
             .ok_or_else(|| generic_error!("Target string table index {} out of range", target_idx))?;
-        let target = std::str::from_utf8(&self.meta[t_start..t_end])
+        let target = simdutf8::basic::from_utf8(&self.meta[t_start..t_end])
             .map_err(|e| generic_error!("Invalid UTF-8 in target: {}", e))?;
 
         // Message: reconstruct from template (meta) + variables (content).
@@ -236,7 +236,7 @@ impl CompressedSegmentReader {
             .string_table_ranges
             .get(tpl_idx)
             .ok_or_else(|| generic_error!("Message template index {} out of range", tpl_idx))?;
-        let template = std::str::from_utf8(&self.meta[tpl_start..tpl_end])
+        let template = simdutf8::basic::from_utf8(&self.meta[tpl_start..tpl_end])
             .map_err(|e| generic_error!("Invalid UTF-8 in message template: {}", e))?;
 
         // Read variable count and tokens.
@@ -253,7 +253,7 @@ impl CompressedSegmentReader {
                 let (vlen, consumed) = decode_varint(&self.content, self.msg_vars_cursor)
                     .ok_or_else(|| generic_error!("Failed to decode message variable"))?;
                 self.msg_vars_cursor += consumed;
-                let v = std::str::from_utf8(&self.content[self.msg_vars_cursor..self.msg_vars_cursor + vlen])
+                let v = simdutf8::basic::from_utf8(&self.content[self.msg_vars_cursor..self.msg_vars_cursor + vlen])
                     .map_err(|e| generic_error!("Invalid UTF-8 in message variable: {}", e))?;
                 self.msg_vars_cursor += vlen;
                 vars.push(v);
@@ -306,7 +306,7 @@ impl CompressedSegmentReader {
                 .get(file_idx)
                 .ok_or_else(|| generic_error!("File string table index {} out of range", file_idx))?;
             Some(
-                std::str::from_utf8(&self.meta[f_start..f_end])
+                simdutf8::basic::from_utf8(&self.meta[f_start..f_end])
                     .map_err(|e| generic_error!("Invalid UTF-8 in file: {}", e))?,
             )
         };
