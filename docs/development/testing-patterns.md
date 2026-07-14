@@ -51,9 +51,9 @@ Two decisions govern how you write a proptest in this repository: the prefix, an
 
 Two authoring styles for the test body coexist in the codebase: the classic `proptest! { ... }` block macro (used in
 roughly a dozen files) and the `#[test_strategy::proptest(async = "tokio")]` attribute macro. You **SHOULD** default to
-the classic block macro. Reach for the attribute-macro style only when the property test itself needs to be `async` —
-for example, because it drives a Tokio-based component under test — since that's the concrete problem the attribute
-style solves that the block macro doesn't.
+the classic block macro. Reach for the attribute macro style only when the property test itself needs to be `async` (for
+example, because it drives a Tokio-based component under test) since that's the concrete problem the attribute style
+solves that the block macro doesn't.
 
 Property test **SHOULD** contain at least one `prop_assert!`/`prop_assert_eq!` that encodes a real invariant. A proptest
 with no assertion at all can only ever fail via an internal panic, never by catching a genuinely violated property. Some
@@ -70,9 +70,9 @@ shape and differs only in one input value and its expected output, collapse the 
 over a small array of cases instead of adding another near-duplicate function.
 
 **Exercise restraint**, though: for only two or three closely related scenarios, a single test with a few named local
-variables or sequential assertions against shared setup is lighter-weight and just as clear. Reach for a full case-array
-loop once you have four or more near-identical variants, or when the case table itself documents something worth naming
-— for example, porting a reference implementation's own test table.
+variables or sequential assertions against shared setup is simpler and just as clear. Reach for a full blown "array of
+test cases" loop once you have four or more near-identical variants, or when the case table itself documents something
+worth naming: for example, porting a reference implementation's own test table.
 
 ## Assertion density
 
@@ -85,14 +85,14 @@ a reviewer into thinking the behavior is covered. Watch for these shapes when yo
 - **Tautologies.** A test that calls a pure function twice with the same input and asserts the two results are equal
   proves only that the function is deterministic, not that it's correct. These are OK if determinism is the intended
   property to test, but the test function should be named to reflect this intent.
-- **Silently-skipped assertions.** `if let Some(x) = maybe_thing() { assert!(...) }` with no `else`/`expect` branch
-  means a regression that makes `maybe_thing()` always return `None` causes the assertion to never execute — and the
+- **Silently skipped assertions.** `if let Some(x) = maybe_thing() { assert!(...) }` with no `else`/`expect` branch
+  means a regression that makes `maybe_thing()` always return `None` causes the assertion to never execute... and the
   test still passes. Prefer full match blocks (`match maybe_thing() { ... }`, or `if let Some(x) = maybe_thing() { ... }
   else { ... }`) to avoid silent failures.
 - **Weak bound-only assertions.** We **SHOULD** prefer assertions that check not only quantitatively but qualitatively.
   For example, checking that a cache implementation properly evicts items when the cache is full can be done just by
   checking that the cache length is less than or equal to the maximum capacity. However, such a check doesn't address
-  whether or not the _intended_/_expected_ items were evicted. These two things _can_ be split into seperate test
+  whether or not the _intended_/_expected_ items were evicted. These two things _can_ be split into separate test
   functions, but it is often more concise/succinct to check them together.
 - **Shallow success-only checks.** Asserting `.is_some()`/`.is_ok()` on a value the documentation specifies precisely (a
   percentage, a byte count, a status mapping) throws away the one thing worth testing. If the doc comment gives you an
@@ -110,10 +110,18 @@ item against an actual test before you consider the function covered.
 
 ## Shared test fixtures belong behind a Cargo feature, not `#[cfg(test)]`
 
-When you write a constructor, mock, or fixture builder that other test modules — possibly in other crates — will
+When you write a constructor, mock, or fixture builder that other test modules (possibly in other crates) will
 need, don't gate it with `#[cfg(test)]`. `#[cfg(test)]` only compiles when *that crate itself* is built as a test
 target; it's invisible to every downstream crate. The predictable result is that each consumer hand-rolls an
 equivalent construction instead of reusing yours, and the duplicates quietly drift apart from each other.
+
+Instead, create a crate feature, `test-util`, which _additionally_ exposes the helper on top of just `cfg(test)`,
+like so:
+
+```rust
+#[cfg(any(test, feature = "test-util"))]
+pub fn some_helper_function(...) {}
+```
 
 > [!IMPORTANT]
 > Before you write `#[cfg(test)] pub fn make_foo(...)`, ask whether another crate might need the same fixture. If the
@@ -133,9 +141,8 @@ harness, extract a small, well-named helper rather than repeating the code inlin
 - **Configurable scenario harnesses** that replace a family of near-duplicate test doubles with one parameterized one.
 
 > [!NOTE]
-> When dealing with a large number of near-identical checks, you can reach for a domain-specific assertion macro over ad
-  hoc
-> `assert_eq!` calls.
+> When dealing with a large number of near-identical checks, you can reach for a domain-specific assertion macro over
+> ad-hoc `assert_eq!` calls.
 
 Don't over-apply this: for a small pure function with only a handful of branches, one plain test walking every branch
 inline is clearer than introducing a helper or a table for its own sake.
@@ -146,12 +153,12 @@ When your test suite owns both the producer and the consumer of a protocol, wire
 driving the real implementation on both sides over mocking one side or assuming a byte layout. A mock only tests that
 your code agrees with your own assumptions about the dependency; a real round-trip tests that your code actually
 works. Reserve mocks and test doubles for the specific branch or failure mode that real infrastructure genuinely cannot
-trigger deterministically — not as a default first choice.
+trigger deterministically, but not as a default first choice.
 
 ## Regression tests and ported tests should name their source
 
 When you add a regression test for a bug you just fixed, write a comment that names the exact historical failure mode,
-the code path, and the fix — don't just add the assertion. A future reader — including future you — needs that context
+the code path, and the fix... don't _just_ add the assertion. A future reader (including future _you_) needs that context
 to know whether a refactor might reintroduce the bug.
 
 When you port a test from an upstream reference implementation (the Go trace agent, a reference DDSketch implementation,
