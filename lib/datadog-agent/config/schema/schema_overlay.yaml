@@ -2256,12 +2256,22 @@ inventory:
     support: partial
     pipelines: [cross_cutting]
     description: "Zstd compression level (Agent)"
-    documentation: "Agent-side compression level. ADP ignores this in favor of `data_plane.serializer_zstd_compressor_level`."
+    documentation: >
+      The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`;
+      when that is unset, ADP applies this value if it has been changed from the Agent default of 1,
+      otherwise it uses its own default of 3.
     test_support:
-      used_by: [get_typed]
+      used_by:
+        [
+          DatadogEventsConfiguration,
+          DatadogLogsConfiguration,
+          DatadogMetricsConfiguration,
+          DatadogServiceChecksConfiguration,
+          DatadogTraceConfiguration,
+        ]
       value_type_override: integer
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: encoders.rs
 
   site:
     support: full

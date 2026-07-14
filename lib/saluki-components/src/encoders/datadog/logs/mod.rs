@@ -25,6 +25,7 @@ use tracing::{error, warn};
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
+    resolve_zstd_compressor_level,
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
@@ -38,10 +39,6 @@ fn default_serializer_compressor_kind() -> String {
     DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
 }
 
-const fn default_zstd_compressor_level() -> i32 {
-    3
-}
-
 /// Datadog Logs incremental encoder.
 #[derive(Deserialize, Debug, Facet)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -53,12 +50,15 @@ pub struct DatadogLogsConfiguration {
     )]
     compressor_kind: String,
 
-    /// Compressor level to use when the compressor kind is `zstd` (ADP-specific). Defaults to 3.
-    #[serde(
-        rename = "data_plane_serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
-    zstd_compressor_level: i32,
+    /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
+    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
+    #[serde(rename = "data_plane_serializer_zstd_compressor_level", default)]
+    data_plane_zstd_compressor_level: Option<i32>,
+
+    /// The Core Agent's zstd compression level, used only when set to a non-default value (not 1).
+    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
+    #[serde(rename = "serializer_zstd_compressor_level", default)]
+    serializer_zstd_compressor_level: Option<i32>,
 }
 
 impl DatadogLogsConfiguration {
@@ -83,7 +83,11 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let zstd_compressor_level = resolve_zstd_compressor_level(
+            self.data_plane_zstd_compressor_level,
+            self.serializer_zstd_compressor_level,
+        );
+        let compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
 
         let mut request_builder =
             RequestBuilder::new(LogsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
