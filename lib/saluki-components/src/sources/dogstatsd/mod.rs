@@ -2040,8 +2040,6 @@ mod tests {
     use saluki_core::{
         components::ComponentContext,
         pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
-        support::SubsystemIdentifier,
-        topology::ComponentId,
     };
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     use saluki_io::{
@@ -2075,10 +2073,7 @@ mod tests {
     }
 
     fn test_component_context() -> ComponentContext {
-        ComponentContext::source(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("dogstatsd_test").unwrap(),
-        )
+        ComponentContext::test_source("dogstatsd_test")
     }
 
     #[derive(Default)]

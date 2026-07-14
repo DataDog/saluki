@@ -989,7 +989,7 @@ mod tests {
     };
     use saluki_common::buf::FrozenChunkedBytesBuffer;
     use saluki_config::ConfigurationLoader;
-    use saluki_core::{observability::ComponentMetricsExt as _, support::SubsystemIdentifier, topology::ComponentId};
+    use saluki_core::observability::ComponentMetricsExt as _;
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
     use serde_json::json;
@@ -1010,10 +1010,7 @@ mod tests {
     };
 
     fn test_component_context() -> ComponentContext {
-        ComponentContext::forwarder(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("test_forwarder").unwrap(),
-        )
+        ComponentContext::test_forwarder("test_forwarder")
     }
 
     fn uri(path: &'static str) -> Uri {

@@ -93,3 +93,49 @@ impl MemoryBounds for HeartbeatConfiguration {
         builder.minimum().with_single_value::<Heartbeat>("component struct");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::mem::size_of;
+
+    use saluki_core::accounting::ComponentRegistry;
+
+    use super::*;
+
+    #[test]
+    fn default_configuration_uses_ten_second_interval() {
+        let config = HeartbeatConfiguration::default();
+        assert_eq!(config.heartbeat_interval_secs, 10);
+    }
+
+    #[test]
+    fn declares_single_default_output_for_metrics() {
+        // The source's documented behavior is to emit a heartbeat metric, so it must declare exactly one output --
+        // the default (unnamed) one -- carrying metric events.
+        let config = HeartbeatConfiguration::default();
+        let outputs = config.outputs();
+
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(
+            outputs[0].output_name(),
+            None,
+            "heartbeat emits on the default (unnamed) output"
+        );
+        assert_eq!(outputs[0].data_ty(), EventType::Metric);
+    }
+
+    #[test]
+    fn specify_bounds_accounts_only_for_the_boxed_component_struct() {
+        // The bounds are documented as a "minimal memory footprint": a single boxed `Heartbeat` value and nothing
+        // else. The firm limit includes the minimum, so with no additional firm usage both totals equal the struct
+        // size.
+        let config = HeartbeatConfiguration::default();
+
+        let mut registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder());
+        let bounds = registry.as_bounds();
+
+        assert_eq!(bounds.total_minimum_required_bytes(), size_of::<Heartbeat>());
+        assert_eq!(bounds.total_firm_limit_bytes(), size_of::<Heartbeat>());
+    }
+}
