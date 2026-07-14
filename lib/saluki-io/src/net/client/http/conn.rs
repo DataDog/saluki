@@ -506,15 +506,20 @@ impl HttpsCapableConnectorBuilder {
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
 
-        // On Linux with vsock configured, the DNS resolver is never called — vsock connections
-        // bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures in environments
-        // without system DNS configuration (for example, Nitro Enclaves).
+        // When all traffic is routed over vsock or a Unix socket, the DNS resolver is never called —
+        // those connections bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures
+        // in environments without system DNS configuration (for example, Nitro Enclaves).
         #[cfg(target_os = "linux")]
         let vsock_only = self.vsock_addr.is_some();
         #[cfg(not(target_os = "linux"))]
         let vsock_only = false;
 
-        let hickory_resolver = if vsock_only {
+        #[cfg(unix)]
+        let unix_socket_only = self.unix_socket_path.is_some();
+        #[cfg(not(unix))]
+        let unix_socket_only = false;
+
+        let hickory_resolver = if vsock_only || unix_socket_only {
             HickoryResolver::noop()
         } else {
             build_dns_resolver(&self.error_telemetry)?
