@@ -87,7 +87,15 @@ impl RemoteAgentClient {
                 .await
                 .with_error_context(|| format!("Failed to connect to Datadog Agent API at '{}'.", endpoint))?;
 
-            Ok::<_, GenericError>(InterceptedService::new(channel, auth_interceptor))
+            let service = InterceptedService::new(channel, auth_interceptor);
+
+            // Health check inside the retried region. A transient partition can let the TCP connect succeed but break
+            // this first RPC stream, so retrying here keeps a boot-time blip from failing client construction.
+            let mut secure_client =
+                AgentSecureClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size());
+            try_query_agent_api(&mut secure_client).await?;
+
+            Ok::<_, GenericError>(service)
         };
 
         let service = service_builder
@@ -99,13 +107,10 @@ impl RemoteAgentClient {
             .error_context("Failed to create Datadog Agent API client.")?;
 
         let client = AgentClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size());
-        let mut secure_client =
+        let secure_client =
             AgentSecureClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size());
         let remote_agent_client =
             RemoteAgentServiceClient::new(service).max_decoding_message_size(config.grpc_max_message_size());
-
-        // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
-        try_query_agent_api(&mut secure_client).await?;
 
         Ok(Self {
             client,
