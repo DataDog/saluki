@@ -15,7 +15,8 @@ The Saluki testing strategy consists of four main pillars:
 
 These are found throughout the Rust codebase as you would expect. You can run them with `cargo test` or you can use
 `make test` which will run them with `cargo nextest` for more parallelization. Platform-specific unit tests should be
-skipped or compiled-out for platforms they're incompatible with.
+skipped or compiled-out for platforms they're incompatible with. For conventions on test naming, table-driven tests,
+shared fixtures, and assertion density, see [Testing patterns](./testing-patterns.md).
 
 CI: `.gitlab/test.yml`—runs on both Linux (amd64/arm64) and macOS (amd64/arm64).
 
@@ -123,6 +124,14 @@ development, lean on CI.
 
 A fifth type of testing is fuzzing. We aren't doing a lot with fuzzing right now, but what we've uses `cargo-fuzz` and
 operates at the function-level. More fuzzing coverage will likely come in the future.
+
+## Loom and Miri testing
+
+A sixth type of testing targets concurrency and memory-model correctness rather than business logic. **Loom**
+exhaustively explores how concurrent operations can interleave, to catch ordering bugs that are hard to hit through
+normal test runs. Run it with `make test-loom`. **Miri** runs tests under an interpreter that catches undefined
+behavior—data races, use-after-free, invalid memory access—that a normal test run wouldn't detect. Run it with `make
+test-miri`.
 
 ## Directory index
 

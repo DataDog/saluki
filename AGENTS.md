@@ -37,6 +37,13 @@ of software projects, in addition to making them harder to maintain and debug ov
   - `schema_overlay.yaml` is a hand-edited file for our inventory of supported Datadog config
   - The Datadog config schema is vendored under `lib/datadog-agent/config/schema/core`
   - See `.claude/skills/config-management/SKILL.md`
+- Name every proptest function with the literal `property_test_` prefix: the `test`/`test-property` Make targets run
+  tests by including/excluding that prefix, so a differently named property test still runs, just in the debug-mode
+  `test` job instead of the dedicated release-mode `test-property` job.
+- `bin/correctness/panoramic`/`bin/correctness/stele` are homegrown black-box correctness/integration tools, not a
+  substitute for unit-testing branches inside a crate; see `docs/development/testing.md` and
+  `docs/development/testing-patterns.md`. They also aren't the literal Antithesis platform; that integration lives
+  separately at `test/antithesis/AGENTS.md`.
 
 ## Building and Testing
 
