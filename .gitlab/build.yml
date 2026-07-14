@@ -16,6 +16,9 @@
     - echo "Acquiring temporary AWS credentials..."
     - ci/tooling/get-temporary-aws-credentials.sh
     - 'echo "Building ADP image. (version: ${ADP_IMAGE_VERSION}, target: ${BUILD_TARGET}, profile: ${BUILD_PROFILE})"'
+    # Bake the Agent version into the binary so version gates work without a runtime env var.
+    # Use "nightly" for nightly CI (dev Agent); the pinned public release version otherwise.
+    - if [ -n "${AGENT_NIGHTLY}" ]; then DD_AGENT_VERSION="nightly"; else DD_AGENT_VERSION="${PUBLIC_DD_AGENT_VERSION}"; fi
     - docker buildx build
       --file ./docker/Dockerfile.agent-data-plane
       --output push-by-digest=true,type=image,push=true
@@ -38,6 +41,7 @@
       --build-arg APP_GIT_HASH=${APP_GIT_HASH}
       --build-arg APP_BUILD_TIME=${APP_BUILD_TIME}
       --build-arg APP_DEV_BUILD=${APP_DEV_BUILD}
+      --build-arg DD_AGENT_VERSION="${DD_AGENT_VERSION}"
       --label "org.opencontainers.image.authors=Datadog <package@datadoghq.com>"
       --label "org.opencontainers.image.base.name=${APP_IMAGE}"
       --label "org.opencontainers.image.created=${CI_PIPELINE_CREATED_AT}"

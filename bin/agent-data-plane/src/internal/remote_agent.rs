@@ -470,6 +470,13 @@ impl StatusProvider for RemoteAgentImpl {
                     .set_field("Architecture", app_details.target_arch())
                     .set_field("Started", self.started.to_rfc3339());
 
+                // Surface the Agent version this build was compiled against, for debugging version-gated behavior.
+                if let Some(agent_version) = datadog_agent_commons::agent_version::version_string() {
+                    builder
+                        .main_section()
+                        .set_field("Built Against Agent Version", agent_version);
+                }
+
                 self.write_dsd_metrics(&mut builder);
 
                 Ok(tonic::Response::new(builder.into_response()))
