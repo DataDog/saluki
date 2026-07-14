@@ -8,7 +8,6 @@ use std::{
 #[cfg(unix)]
 use std::{path::PathBuf, sync::Arc};
 
-use hickory_resolver::net::NetError;
 use http::{Extensions, Uri};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder, MaybeHttpsStream};
 use hyper_util::{
@@ -18,7 +17,7 @@ use hyper_util::{
 use metrics::Counter;
 use pin_project_lite::pin_project;
 use rustls::ClientConfig;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::GenericError;
 use tokio::net::TcpStream;
 #[cfg(target_os = "linux")]
 use tokio_vsock::{VsockAddr, VsockStream};
@@ -26,7 +25,7 @@ use tower::{BoxError, Service};
 use tracing::debug;
 
 use super::telemetry::HttpTransactionErrorTelemetry;
-use crate::net::dns::{HickoryHttpConnector, HickoryResolver};
+use crate::net::dns::{DnsError, SystemHttpConnector, SystemResolver};
 
 /// Imposes a limit on the age of a connection.
 ///
@@ -253,7 +252,7 @@ impl hyper::rt::Write for HttpsCapableConnection {
 /// TCP path.
 #[derive(Clone)]
 struct InnerConnector {
-    http: HickoryHttpConnector,
+    http: SystemHttpConnector,
     #[cfg(unix)]
     connect_timeout: Duration,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
@@ -403,15 +402,12 @@ impl Service<Uri> for HttpsCapableConnector {
     }
 }
 
-fn build_dns_resolver(
-    error_telemetry: &Option<HttpTransactionErrorTelemetry>,
-) -> Result<HickoryResolver, GenericError> {
-    let mut r = HickoryResolver::from_system_conf()
-        .error_context("Failed to load system DNS configuration when creating DNS resolver for HTTP client.")?;
+fn build_dns_resolver(error_telemetry: &Option<HttpTransactionErrorTelemetry>) -> SystemResolver {
+    let mut r = SystemResolver::new();
     if let Some(et) = error_telemetry {
         r = r.with_lookup_errors_counter(et.dns_errors());
     }
-    Ok(r)
+    r
 }
 
 /// A builder for `HttpsCapableConnector`.
@@ -506,28 +502,9 @@ impl HttpsCapableConnectorBuilder {
     pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
 
-        // When all traffic is routed over vsock or a Unix socket, the DNS resolver is never called —
-        // those connections bypass the TCP/DNS stack entirely. Use a noop resolver to avoid failures
-        // in environments without system DNS configuration (for example, Nitro Enclaves).
-        #[cfg(target_os = "linux")]
-        let vsock_only = self.vsock_addr.is_some();
-        #[cfg(not(target_os = "linux"))]
-        let vsock_only = false;
-
-        #[cfg(unix)]
-        let unix_socket_only = self.unix_socket_path.is_some();
-        #[cfg(not(unix))]
-        let unix_socket_only = false;
-
-        let hickory_resolver = if vsock_only || unix_socket_only {
-            HickoryResolver::noop()
-        } else {
-            build_dns_resolver(&self.error_telemetry)?
-        };
-
         // Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to
         // wrap this in an HTTPS connector.
-        let mut http_connector = HttpConnector::new_with_resolver(hickory_resolver);
+        let mut http_connector = HttpConnector::new_with_resolver(build_dns_resolver(&self.error_telemetry));
         http_connector.set_connect_timeout(Some(connect_timeout));
         http_connector.enforce_http(false);
 
@@ -588,7 +565,7 @@ fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
 fn is_dns_error(error: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(error);
     while let Some(error) = current {
-        if error.downcast_ref::<NetError>().is_some() {
+        if error.downcast_ref::<DnsError>().is_some() {
             return true;
         }
         current = error.source();
@@ -661,10 +638,10 @@ mod tests {
         use tower::Service as _;
 
         use super::{InnerConnector, VsockAddr};
-        use crate::net::dns::HickoryResolver;
+        use crate::net::dns::SystemResolver;
 
         let mut connector = InnerConnector {
-            http: HickoryResolver::noop().into_http_connector(),
+            http: SystemResolver::new().into_http_connector(),
             connect_timeout: std::time::Duration::from_secs(1),
             error_telemetry: None,
             unix_socket_path: Some(Arc::from(std::path::Path::new("/tmp/test.sock"))),
