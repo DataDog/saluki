@@ -38,6 +38,7 @@ saluki-metrics = { workspace = true }
 saluki-tls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+thingbuf = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "sync"] }
 tonic = { workspace = true, features = ["router"] }
 tower = { workspace = true, features = ["util"] }
@@ -55,6 +56,7 @@ tracing-subscriber = { workspace = true, features = [
   "tracing-log",
 ] }
 url = { workspace = true, features = ["std"] }
+zstd = { workspace = true }
 
 [target.'cfg(not(windows))'.dependencies]
 rcgen = { workspace = true, features = ["aws_lc_rs"] }
@@ -67,3 +69,4 @@ http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true, features = ["client", "client-legacy", "http1", "tokio"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+rand = { workspace = true }

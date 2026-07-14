@@ -11,6 +11,7 @@
 use std::io::Write;
 
 use saluki_error::{generic_error, GenericError};
+use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::RollingFileAppenderBase;
 use tracing_subscriber::{layer::SubscriberExt as _, reload, util::SubscriberInitExt as _, Layer, Registry};
@@ -23,6 +24,9 @@ pub use self::config::{LogLevel, LoggingConfiguration};
 
 mod layer;
 use self::layer::{build_formatting_layer, build_syslog_formatting_layer};
+
+mod ring_buffer;
+pub use self::ring_buffer::{CompressedRingBuffer, RingBufferConfig};
 
 mod syslog;
 use self::syslog::SyslogWriter;
@@ -115,8 +119,13 @@ pub(crate) async fn initialize_logging(
     // runtime `log_level` watcher) wired up via [`LoggingGuard::controller`].
     let (override_worker, controller) = LoggingOverrideWorker::new(filter_handle);
 
+    // Set up our compressed debug logging ring buffer layer.
+    let ring_buffer_config = RingBufferConfig::default().with_max_ring_buffer_size_bytes(2_048_576);
+    let ring_buffer = CompressedRingBuffer::with_config(ring_buffer_config);
+
     tracing_subscriber::registry()
         .with(output_layer.with_filter(filter_layer))
+        .with(ring_buffer.with_filter(LevelFilter::DEBUG))
         .try_init()?;
 
     Ok((
