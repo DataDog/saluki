@@ -83,6 +83,8 @@ const GRPC_STATUS_CODE_META_KEY: &str = "rpc.grpc.status_code";
 const W3C_TRACESTATE_META_KEY: &str = "w3c.tracestate";
 const OTEL_LIBRARY_NAME_META_KEY: &str = "otel.library.name";
 const OTEL_LIBRARY_VERSION_META_KEY: &str = "otel.library.version";
+const OTEL_SCOPE_NAME_META_KEY: &str = "otel.scope.name";
+const OTEL_SCOPE_VERSION_META_KEY: &str = "otel.scope.version";
 const OTEL_STATUS_CODE_META_KEY: &str = "otel.status_code";
 const OTEL_STATUS_DESCRIPTION_META_KEY: &str = "otel.status_description";
 const INTERNAL_DD_HOSTNAME_KEY: &str = "_dd.hostname";
@@ -99,6 +101,14 @@ const DD_NAMESPACED_TO_APM_CONVENTIONS: &[(&str, &str)] = &[
     (KEY_DATADOG_ERROR_STACK, "error.stack"),
     (KEY_DATADOG_HTTP_STATUS_CODE, HTTP_STATUS_CODE_KEY),
 ];
+
+// Behavior gated on the Datadog Agent version ADP was built against. The Agent version is baked in at build time (see
+// `datadog_agent_commons::agent_version`), so each gate resolves to a compile-time constant and the unused branch is
+// eliminated. Add further version-gated toggles here as the Agent's output evolves.
+
+// `otel.scope.{name,version}` span meta were added to the Agent's OTLP trace conversion in 7.82; only emit them when
+// the Agent version meets that threshold.
+const EMIT_OTEL_SCOPE_META: bool = datadog_agent_commons::agent_version::meets(7, 82, 0);
 
 // otel_span_to_dd_span converts an OTLP span to DD span and is based on the logic defined in the agent.
 // https://github.com/DataDog/datadog-agent/blob/instrument-otlp-traffic/pkg/trace/transform/transform.go#L357
@@ -191,16 +201,20 @@ pub fn otel_span_to_dd_span(
 
     if let Some(scope) = instrumentation_scope {
         if !scope.name.is_empty() {
-            attrs.insert(
-                MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY),
-                AttributeValue::String(scope.name.as_str().into()),
-            );
+            // Build the value once and reuse it for both the deprecated `otel.library.*` and current `otel.scope.*`
+            // keys; cloning a `MetaString`-backed `AttributeValue` is cheaper than re-converting the source string.
+            let name = AttributeValue::String(scope.name.as_str().into());
+            if EMIT_OTEL_SCOPE_META {
+                attrs.insert(MetaString::from_static(OTEL_SCOPE_NAME_META_KEY), name.clone());
+            }
+            attrs.insert(MetaString::from_static(OTEL_LIBRARY_NAME_META_KEY), name);
         }
         if !scope.version.is_empty() {
-            attrs.insert(
-                MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY),
-                AttributeValue::String(scope.version.as_str().into()),
-            );
+            let version = AttributeValue::String(scope.version.as_str().into());
+            if EMIT_OTEL_SCOPE_META {
+                attrs.insert(MetaString::from_static(OTEL_SCOPE_VERSION_META_KEY), version.clone());
+            }
+            attrs.insert(MetaString::from_static(OTEL_LIBRARY_VERSION_META_KEY), version);
         }
     }
 
@@ -2359,6 +2373,57 @@ mod tests {
                     tc.name
                 );
             }
+        }
+    }
+
+    #[test]
+    fn test_otel_span_to_dd_span_scope_name_version_meta() {
+        let interner = test_interner();
+        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
+
+        let span = OtlpSpan {
+            name: "scoped-span".to_string(),
+            ..Default::default()
+        };
+        let resource = Resource::default();
+        let scope = OtlpInstrumentationScope {
+            name: "com.example.products".to_string(),
+            version: "1.0.0".to_string(),
+            ..Default::default()
+        };
+
+        let dd_span = otel_span_to_dd_span(
+            &span,
+            &resource,
+            Some(&scope),
+            false,
+            true,
+            &interner,
+            &mut string_builder,
+            None,
+        );
+
+        use saluki_core::data_model::event::trace::AttributeValue;
+        let meta = |key: &str| {
+            dd_span
+                .attributes
+                .get(key)
+                .and_then(AttributeValue::as_string)
+                .map(|s| s.as_ref().to_string())
+        };
+
+        // The deprecated `otel.library.*` keys are always emitted.
+        assert_eq!(meta("otel.library.name").as_deref(), Some("com.example.products"));
+        assert_eq!(meta("otel.library.version").as_deref(), Some("1.0.0"));
+
+        // The `otel.scope.*` keys are gated on the Agent version this crate was built against (7.82.0+). Since the gate
+        // is resolved at build time, key the expectation off the same constant rather than assuming a build config.
+        if EMIT_OTEL_SCOPE_META {
+            assert_eq!(meta("otel.scope.name").as_deref(), Some("com.example.products"));
+            assert_eq!(meta("otel.scope.version").as_deref(), Some("1.0.0"));
+        } else {
+            assert_eq!(meta("otel.scope.name"), None);
+            assert_eq!(meta("otel.scope.version"), None);
         }
     }
 }
