@@ -407,6 +407,7 @@ impl ConfigurationLoader {
     /// If `enable_dynamic_configuration` is true, a dynamic configuration sender is returned.
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
+    #[cfg(any(test, feature = "test-util"))]
     pub async fn for_tests(
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
         enable_dynamic_configuration: bool,
@@ -425,6 +426,7 @@ impl ConfigurationLoader {
     /// (for example, in `DatadogRemapper`) are consistent with the test's env setup.
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
+    #[cfg(any(test, feature = "test-util"))]
     pub async fn for_tests_with_provider_factory<P, F>(
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
         enable_dynamic_configuration: bool, key_aliases: &'static [(&'static str, &'static str)], provider_factory: F,
@@ -502,6 +504,7 @@ impl ConfigurationLoader {
 ///
 /// This is exposed publicly so that tests in downstream crates can serialize against the same single lock that the
 /// loader itself uses, instead of each hand-rolling an independent (and therefore non-serializing) mutex.
+#[cfg(any(test, feature = "test-util"))]
 pub fn test_env_lock() -> &'static std::sync::Mutex<()> {
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
     &ENV_MUTEX
@@ -518,6 +521,7 @@ pub fn test_env_lock() -> &'static std::sync::Mutex<()> {
 ///
 /// This is exposed publicly so that tests in downstream crates can share a single loader helper instead of
 /// re-implementing it per file.
+#[cfg(any(test, feature = "test-util"))]
 pub async fn config_from(file_values: serde_json::Value) -> GenericConfiguration {
     let (config, _) = ConfigurationLoader::for_tests(Some(file_values), None, false).await;
     config
