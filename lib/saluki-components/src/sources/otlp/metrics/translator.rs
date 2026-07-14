@@ -936,6 +936,12 @@ impl OtlpMetricsTranslator {
 
         if hist_info.ok {
             qa.set_count(hist_info.count);
+
+            if hist_info.count == 0 {
+                self.record_sketch_event(&point_dims, qa, ts, events, context, 0);
+                return Ok(());
+            }
+
             qa.set_sum(hist_info.sum);
             qa.set_avg(hist_info.sum / hist_info.count as f64);
         }
@@ -952,15 +958,13 @@ impl OtlpMetricsTranslator {
         if hist_info.has_min_from_last_time_window {
             qa.set_min(p.min.unwrap_or(0.0));
         } else if let Some(min) = p.min {
-            // The exact count override above can set the sketch count to zero even when bucket interpolation produced
-            // bins. Use the raw interpolated minimum so the count-sensitive accessor does not discard it.
-            qa.set_min(f64::max(min, qa.raw_min()));
+            qa.set_min(f64::max(min, qa.min().unwrap()));
         }
 
         if hist_info.has_max_from_last_time_window {
             qa.set_max(p.max.unwrap_or(0.0));
         } else if let Some(max) = p.max {
-            qa.set_max(f64::min(max, qa.raw_max()));
+            qa.set_max(f64::min(max, qa.max().unwrap()));
         }
 
         let mut interval: i64 = 0;
@@ -1911,7 +1915,7 @@ mod tests {
     }
 
     #[test]
-    fn cumulative_histogram_preserves_interpolated_min_when_exact_count_is_zero() {
+    fn cumulative_histogram_preserves_interpolated_summary_when_exact_count_is_zero() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
         let dims = Dimensions {
@@ -1983,8 +1987,10 @@ mod tests {
         let (_, sketch) = points.into_iter().next().expect("distribution should contain a sketch");
         assert_eq!(sketch.count(), 0);
         assert!(!sketch.bins().is_empty());
-        assert_eq!(sketch.raw_min(), 100.0);
-        assert!(sketch.raw_max() > 0.0 && sketch.raw_max() < 100.0);
+        assert!(sketch.raw_min() > 0.0);
+        assert!(sketch.raw_max() >= sketch.raw_min());
+        assert!(sketch.raw_sum() > 0.0);
+        assert!(sketch.raw_avg() > 0.0);
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296

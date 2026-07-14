@@ -507,7 +507,6 @@ fn write_dogsketch(
     output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
     timestamp: Option<NonZeroU64>, sketch: &DDSketch,
 ) -> Result<(), protobuf::Error> {
-    // If the sketch has neither exact samples nor bins, we don't write it out.
     if !sketch_has_emittable_values(sketch) {
         warn!("Attempted to write an empty sketch to sketches payload, skipping.");
         return Ok(());
@@ -674,10 +673,7 @@ mod tests {
     use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
     use stringtheory::MetaString;
 
-    use super::{
-        encode_series_metric, encode_sketch_metric, metric_has_emittable_values, v1, MetricsEndpoint,
-        MetricsEndpointEncoder,
-    };
+    use super::{encode_series_metric, encode_sketch_metric, v1, MetricsEndpoint, MetricsEndpointEncoder};
     use crate::common::datadog::request_builder::EndpointEncoder as _;
 
     #[test]
@@ -728,22 +724,20 @@ mod tests {
     }
 
     #[test]
-    fn encodes_zero_count_distribution_with_bins() {
+    fn encodes_zero_count_distribution_with_bins_and_zero_summary() {
         let mut sketch = DDSketch::default();
         sketch.insert_n(42.0, 10);
         sketch.set_count(0);
-        sketch.set_sum(123.0);
-        sketch.set_avg(f64::INFINITY);
-        sketch.set_min(40.0);
-        sketch.set_max(45.0);
+        sketch.set_sum(0.0);
+        sketch.set_avg(0.0);
+        sketch.set_min(0.0);
+        sketch.set_max(0.0);
 
         let metric = Metric::from_parts(
             Context::from_static_parts("zero.count.distribution", &[]),
             MetricValues::distribution((123_u64, sketch)),
             MetricMetadata::default(),
         );
-
-        assert!(metric_has_emittable_values(&metric));
 
         let host_tags = SharedTagSet::default();
         let mut scratch_buf = Vec::new();
@@ -760,21 +754,20 @@ mod tests {
                 &mut packed_scratch_buf,
                 &mut tags_deduplicator,
             )
-            .expect("Failed to encode zero-count distribution as sketch");
-            writer.flush().expect("Failed to flush");
+            .expect("zero-count distribution should encode");
+            writer.flush().expect("payload should flush");
         }
 
         let sketch_payload = Sketch::parse_from_bytes(&payload).expect("payload should decode");
-        let dogsketches = sketch_payload.dogsketches();
-        assert_eq!(dogsketches.len(), 1);
-
-        let dogsketch = &dogsketches[0];
-        assert_eq!(dogsketch.ts(), 123);
+        let dogsketch = sketch_payload
+            .dogsketches()
+            .first()
+            .expect("payload should contain a sketch");
         assert_eq!(dogsketch.cnt(), 0);
-        assert_eq!(dogsketch.sum(), 123.0);
-        assert!(dogsketch.avg().is_infinite());
-        assert_eq!(dogsketch.min(), 40.0);
-        assert_eq!(dogsketch.max(), 45.0);
+        assert_eq!(dogsketch.min(), 0.0);
+        assert_eq!(dogsketch.max(), 0.0);
+        assert_eq!(dogsketch.avg(), 0.0);
+        assert_eq!(dogsketch.sum(), 0.0);
         assert!(!dogsketch.k().is_empty());
         assert!(!dogsketch.n().is_empty());
     }

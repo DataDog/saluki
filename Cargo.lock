@@ -1342,6 +1342,7 @@ dependencies = [
  "rand_distr",
  "saluki-antithesis",
  "serde",
+ "serde_json",
  "smallvec",
 ]
 

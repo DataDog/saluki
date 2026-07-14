@@ -28,16 +28,15 @@ const MAX_BIN_WIDTH: u32 = u32::MAX;
 mod serde_helpers {
     use serde::{Deserialize, Deserializer};
 
-    /// Deserializes an `f64` field, treating JSON `null` as `0.0`.
+    /// Deserializes an `f64` field, restoring JSON `null` to `NaN`.
     ///
-    /// The Go Agent can produce `NaN` values in sketch summaries (e.g. `avg = sum / count` when
-    /// `count == 0`), and `serde_json` serializes `NaN` as `null`. This helper maps `null` back
-    /// to `0.0` so round-trip deserialization does not fail.
-    pub(super) fn null_as_zero<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    /// `serde_json` serializes non-finite floating-point values as `null`. This preserves the value's non-finite
+    /// semantics when a sketch is round-tripped through JSON without fabricating a zero value.
+    pub(super) fn null_as_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or(0.0))
+        Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or(f64::NAN))
     }
 }
 
@@ -79,19 +78,19 @@ pub struct DDSketch {
     count: u64,
 
     /// The minimum value of all observations within the sketch.
-    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_zero"))]
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_nan"))]
     min: f64,
 
     /// The maximum value of all observations within the sketch.
-    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_zero"))]
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_nan"))]
     max: f64,
 
     /// The sum of all observations within the sketch.
-    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_zero"))]
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_nan"))]
     sum: f64,
 
     /// The average value of all observations within the sketch.
-    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_zero"))]
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_nan"))]
     avg: f64,
 }
 
@@ -180,10 +179,7 @@ impl DDSketch {
         }
     }
 
-    /// Returns the raw sum summary field, even when the exact sample count is zero.
-    ///
-    /// This is intended for wire-format compatibility with producers that can emit sketches with non-empty bins but an
-    /// exact count of zero. Most callers should use [`DDSketch::sum`] instead.
+    /// Returns the raw sum summary field.
     pub fn raw_sum(&self) -> f64 {
         self.sum
     }
@@ -199,26 +195,17 @@ impl DDSketch {
         }
     }
 
-    /// Returns the raw average summary field, even when the exact sample count is zero.
-    ///
-    /// This is intended for wire-format compatibility with producers that can emit sketches with non-empty bins but an
-    /// exact count of zero. Most callers should use [`DDSketch::avg`] instead.
+    /// Returns the raw average summary field.
     pub fn raw_avg(&self) -> f64 {
         self.avg
     }
 
-    /// Returns the raw minimum summary field, even when the exact sample count is zero.
-    ///
-    /// This is intended for wire-format compatibility with producers that can emit sketches with non-empty bins but an
-    /// exact count of zero. Most callers should use [`DDSketch::min`] instead.
+    /// Returns the raw minimum summary field.
     pub fn raw_min(&self) -> f64 {
         self.min
     }
 
-    /// Returns the raw maximum summary field, even when the exact sample count is zero.
-    ///
-    /// This is intended for wire-format compatibility with producers that can emit sketches with non-empty bins but an
-    /// exact count of zero. Most callers should use [`DDSketch::max`] instead.
+    /// Returns the raw maximum summary field.
     pub fn raw_max(&self) -> f64 {
         self.max
     }
@@ -607,19 +594,32 @@ impl DDSketch {
     ///
     /// All samples present in the other sketch will be correctly represented in this sketch, and summary statistics
     /// such as the sum, average, count, min, and max, will represent the sum of samples from both sketches.
+    ///
+    /// A zero-count sketch can retain bins after an upstream cumulative-to-delta conversion. Its summary fields do not
+    /// describe samples in the current interval, so they do not contribute to the merged summary. Its bins are still
+    /// merged.
     pub fn merge(&mut self, other: &DDSketch) {
-        // Merge the basic statistics together.
-        self.count += other.count;
-        if other.max > self.max {
-            self.max = other.max;
-        }
-        if other.min < self.min {
+        // Match the Core Agent summary merge semantics: a zero-count destination adopts the other summary, while a
+        // zero-count source does not affect an existing summary.
+        if self.count == 0 {
+            self.count = other.count;
             self.min = other.min;
+            self.max = other.max;
+            self.sum = other.sum;
+            self.avg = other.avg;
+        } else if other.count > 0 {
+            self.count += other.count;
+            if other.max > self.max {
+                self.max = other.max;
+            }
+            if other.min < self.min {
+                self.min = other.min;
+            }
+            self.sum += other.sum;
+            self.avg = self.avg + (other.avg - self.avg) * other.count as f64 / self.count as f64;
         }
-        self.sum += other.sum;
-        self.avg = self.avg + (other.avg - self.avg) * other.count as f64 / self.count as f64;
 
-        // Now merge the bins.
+        // Merge the bins regardless of the summary count.
         let mut temp = SmallVec::<[Bin; 4]>::new();
 
         let mut bins_idx = 0;
@@ -985,6 +985,66 @@ mod tests {
         let mut bins = make_bins(&pairs);
         trim_left(&mut bins, 4);
         assert_eq!(to_pairs(&bins), vec![(6, 7), (7, 1), (8, 1), (9, 1)]);
+    }
+
+    #[test]
+    fn merge_ignores_summary_from_zero_count_source_but_retains_its_bins() {
+        let mut destination = DDSketch::default();
+        destination.insert(10.0);
+
+        let mut source = DDSketch::default();
+        source.insert(20.0);
+        source.set_count(0);
+        source.set_min(-1.0);
+        source.set_max(100.0);
+        source.set_sum(999.0);
+        source.set_avg(f64::NAN);
+
+        destination.merge(&source);
+
+        assert_eq!(destination.count(), 1);
+        assert_eq!(destination.raw_min(), 10.0);
+        assert_eq!(destination.raw_max(), 10.0);
+        assert_eq!(destination.raw_sum(), 10.0);
+        assert_eq!(destination.raw_avg(), 10.0);
+        assert_eq!(destination.bin_count(), 2);
+    }
+
+    #[test]
+    fn merge_zero_count_destination_adopts_source_summary_and_retains_its_bins() {
+        let mut destination = DDSketch::default();
+        destination.insert(10.0);
+        destination.set_count(0);
+        destination.set_min(-1.0);
+        destination.set_max(100.0);
+        destination.set_sum(999.0);
+        destination.set_avg(f64::NAN);
+
+        let mut source = DDSketch::default();
+        source.insert(20.0);
+
+        destination.merge(&source);
+
+        assert_eq!(destination.count(), 1);
+        assert_eq!(destination.raw_min(), 20.0);
+        assert_eq!(destination.raw_max(), 20.0);
+        assert_eq!(destination.raw_sum(), 20.0);
+        assert_eq!(destination.raw_avg(), 20.0);
+        assert_eq!(destination.bin_count(), 2);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn json_null_summary_round_trips_as_nan() {
+        let mut sketch = DDSketch::default();
+        sketch.insert(42.0);
+        sketch.set_avg(f64::NAN);
+
+        let encoded = serde_json::to_string(&sketch).expect("sketch should serialize");
+        assert!(encoded.contains("\"avg\":null"));
+
+        let decoded: DDSketch = serde_json::from_str(&encoded).expect("sketch should deserialize");
+        assert!(decoded.avg().expect("sketch should not be empty").is_nan());
     }
 }
 
