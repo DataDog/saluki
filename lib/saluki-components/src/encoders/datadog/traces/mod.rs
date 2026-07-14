@@ -1031,10 +1031,6 @@ mod tests {
         (k_ref, v_str_ref)
     }
 
-    // ---------------------------------------------------------------------------
-    // Test fixtures
-    // ---------------------------------------------------------------------------
-
     async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
         let env_vars: Vec<(String, String)> = if ets_enabled {
             vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())]
@@ -1092,10 +1088,6 @@ mod tests {
         trace.priority = Some(1);
         trace
     }
-
-    // ---------------------------------------------------------------------------
-    // Tests
-    // ---------------------------------------------------------------------------
 
     #[tokio::test]
     async fn ets_header_present_when_enabled() {
