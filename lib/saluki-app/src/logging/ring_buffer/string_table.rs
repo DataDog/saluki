@@ -36,4 +36,10 @@ impl StringTable {
         self.strings.clear();
         self.index.clear();
     }
+
+    /// Returns the number of interned strings.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.strings.len()
+    }
 }

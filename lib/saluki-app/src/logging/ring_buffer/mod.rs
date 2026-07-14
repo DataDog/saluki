@@ -2,6 +2,7 @@
 use tracing::{Event, Subscriber};
 use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 
+mod callsite_table;
 mod codec;
 mod event;
 mod event_buffer;
@@ -364,10 +365,8 @@ mod tests {
         encode_varint(0, &mut meta); // string table: 0 entries
         encode_varint(0, &mut meta); // event count: 0
         encode_varint(0, &mut meta); // timestamps column: 0 bytes
-        rle_encode(&[], &mut meta); // levels: empty RLE
-        rle_encode(&[], &mut meta); // target_indices: empty RLE
-        rle_encode(&[], &mut meta); // file_indices: empty RLE
-        encode_varint(0, &mut meta); // lines column: 0 bytes
+        encode_varint(0, &mut meta); // callsite table: 0 entries
+        rle_encode(&[], &mut meta); // callsite_indices: empty RLE
         rle_encode(&[], &mut meta); // field_counts: empty RLE
         encode_varint(0, &mut meta); // field_key_indices: 0 bytes
         rle_encode(&[], &mut meta); // msg_template_indices: empty RLE

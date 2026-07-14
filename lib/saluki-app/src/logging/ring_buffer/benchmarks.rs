@@ -4,6 +4,7 @@ use tracing::Metadata;
 
 use super::codec::write_length_prefixed;
 use super::event::CondensedEvent;
+use super::event_buffer::EventBuffer;
 use super::processor::ProcessorState;
 use super::RingBufferConfig;
 
@@ -765,6 +766,74 @@ fn ring_buffer_stability_sweep() {
             min_pct,
         );
     }
+    println!();
+}
+
+/// Diagnostic: fill one ~128KiB segment's worth of events and report where the compressed bytes go,
+/// column by column. This is the ground-truth map for deciding which columns are worth optimizing.
+#[test]
+#[ignore]
+fn ring_buffer_column_breakdown() {
+    let seed = 0xDEAD_BEEF_CAFE;
+    let min_segment = 128 * 1024;
+
+    let mut buffer = EventBuffer::from_compression_level(19);
+    let mut gen = EventGenerator::new(seed);
+
+    // Feed events until the buffer reaches the flush threshold.
+    let mut fed = 0usize;
+    while buffer.size_bytes() < min_segment {
+        let event = gen.next_event();
+        buffer.encode_event(&event).unwrap();
+        fed += 1;
+    }
+
+    let bd = buffer.column_breakdown();
+    let total_compressed = bd.meta_compressed + bd.content_compressed;
+
+    println!();
+    println!("=== Column Breakdown (single segment) ===");
+    println!(
+        "Events: {} | string table entries: {}",
+        bd.event_count, bd.string_table_entries
+    );
+    println!(
+        "Meta frame:    {} -> {} ({:.2}x)",
+        bd.meta_uncompressed,
+        bd.meta_compressed,
+        bd.meta_uncompressed as f64 / bd.meta_compressed.max(1) as f64
+    );
+    println!(
+        "Content frame: {} -> {} ({:.2}x)",
+        bd.content_uncompressed,
+        bd.content_compressed,
+        bd.content_uncompressed as f64 / bd.content_compressed.max(1) as f64
+    );
+    println!(
+        "Total compressed: {} | bytes/event: {:.2}",
+        total_compressed,
+        total_compressed as f64 / bd.event_count.max(1) as f64
+    );
+    println!();
+    println!(
+        "  {:<22} | {:>10} | {:>10} | {:>10} | {:>7} | {:>7}",
+        "column", "uncompr", "compr*", "b/evt(u)", "b/evt(c)", "%oftot"
+    );
+    // Note: compr* is each column compressed in ISOLATION, so the sum exceeds the real
+    // meta+content totals (which share a zstd context). Useful for relative comparison only.
+    let sum_alone: usize = bd.entries.iter().map(|e| e.compressed_alone).sum();
+    for e in &bd.entries {
+        println!(
+            "  {:<22} | {:>10} | {:>10} | {:>10.2} | {:>7.2} | {:>6.1}%",
+            e.name,
+            e.uncompressed,
+            e.compressed_alone,
+            e.uncompressed as f64 / bd.event_count.max(1) as f64,
+            e.compressed_alone as f64 / bd.event_count.max(1) as f64,
+            100.0 * e.compressed_alone as f64 / sum_alone.max(1) as f64,
+        );
+    }
+    println!("  (fed {} events to reach {} KiB estimate)", fed, min_segment / 1024);
     println!();
 }
 

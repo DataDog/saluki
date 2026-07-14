@@ -1,3 +1,14 @@
+/// Granularity, in nanoseconds, at which event timestamps are stored.
+///
+/// Inter-event timestamp deltas are quantized to this unit before delta-encoding; any
+/// sub-granularity precision is discarded. Both the encoder and decoder operate on integer
+/// granularity units, so reconstruction is drift-free (errors do not accumulate across a segment).
+///
+/// Millisecond granularity (`1_000_000` ns) keeps the timestamps column tiny -- most inter-event
+/// deltas then fit in a single varint byte -- while remaining far more precise than needed for
+/// post-mortem inspection of debug logs. Set to `1` for full nanosecond precision.
+pub const TIMESTAMP_GRANULARITY_NS: u128 = 1_000_000;
+
 /// Encodes a `usize` as a variable-length integer (LEB128) into `buf`.
 pub fn encode_varint(mut value: usize, buf: &mut Vec<u8>) {
     loop {

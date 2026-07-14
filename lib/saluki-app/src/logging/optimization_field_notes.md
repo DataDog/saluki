@@ -657,3 +657,276 @@ whole-segment eviction allows.
 | Min coverage duration     | 47.6m            | 63.8m   | +34%   |
 
 The optimization is almost free at steady state and massively improves transient behavior.
+
+---
+
+# Fresh Optimization Round (2026-07)
+
+A from-scratch re-evaluation of the full implementation, driven by a **per-column byte breakdown**
+rather than intuition. The prior rounds optimized message structure and column splitting, but never
+measured where the compressed bytes actually landed once all of that was in place.
+
+## Methodology: per-column breakdown
+
+Added `EventBuffer::column_breakdown()` (test-only) and the `ring_buffer_column_breakdown` benchmark.
+It fills one ~128 KiB segment, then reports, per column: uncompressed bytes, bytes when compressed
+*in isolation* at the configured level, and share of the total. Compressing each column alone
+overstates absolute sizes (no shared zstd context) but gives a reliable *relative* ranking.
+
+### Breakdown at the pre-round baseline (ns timestamps, 151,682 cap)
+
+| Column | compressed b/evt | % of total |
+|--------|-----------------:|-----------:|
+| **timestamps** | 3.66 | **29.1%** |
+| **field_values** | 3.34 | 26.6% |
+| **msg_variables** | 2.52 | 20.1% |
+| target_indices | 0.69 | 5.5% |
+| msg_template_indices | 0.69 | 5.5% |
+| field_key_indices | 0.56 | 4.4% |
+| field_counts | 0.40 | 3.2% |
+| levels | 0.33 | 2.6% |
+| file_indices | 0.21 | 1.7% |
+| string_table | 0.17 | 1.3% |
+| lines | 0.01 | 0.0% |
+
+**Headline finding**: the timestamps column was the single largest cost (29%) and compressed at only
+**1.09x** -- the delta varints are uniform-random nanosecond values (1-50 ms inter-event) and thus
+near-incompressible. Trial A had dismissed timestamp work as a 2-4% lossless bit-packing gain. That
+analysis missed the far bigger, *lossy* lever: **precision**.
+
+## Trial T1/T2: reduce timestamp precision (quantize deltas)
+
+**Hypothesis**: Debug-log post-mortem does not need nanosecond timestamps. Quantizing each event's
+timestamp to a coarser unit before delta-encoding shrinks the delta from a 4-byte high-entropy varint
+to a 1-byte value, and the smaller values also compress better.
+
+**Approach**: Added `TIMESTAMP_GRANULARITY_NS`. Encoder computes `ts_units = ts_nanos / GRAN`,
+delta-encodes `ts_units`; decoder reconstructs `ts_units` and scales back (`* GRAN`). Both sides work
+on integer units, so reconstruction is **drift-free** (rounding does not accumulate across a segment).
+Sub-granularity precision is discarded; event *ordering* is preserved (events are stored in arrival
+order regardless).
+
+**Result** (default config, 500k events):
+
+| Granularity | Retained | b/evt | vs ns baseline |
+|-------------|---------:|------:|---------------:|
+| ns (1) -- original | 151,682 | 13.0 | -- |
+| µs (1,000) | 170,586 | 11.7 | +12.5% |
+| **ms (1,000,000)** | **198,268** | **9.9** | **+30.7%** |
+
+Chose **ms** as the default. The timestamps column drops from 3.66 → 0.73 compressed b/evt (29% →
+7.6% of total). This is the largest single-optimization gain in the project's history and was
+entirely missed by prior rounds.
+
+**Trade-off flagged for the user**: this is lossy. Two events <1 ms apart may reconstruct to the same
+wall-clock millisecond (their relative order is still preserved by storage order). ms is the standard
+resolution for human-facing log output, so this is expected to be fine, but the granularity is a
+one-line constant (`TIMESTAMP_GRANULARITY_NS`) and could be promoted to `RingBufferConfig` if any
+consumer needs finer resolution. If it becomes configurable, the granularity must be written into the
+segment header so the decoder can scale correctly.
+
+### Breakdown after T1 (ms timestamps) -- new priority ranking
+
+| Column | compressed b/evt | % of total |
+|--------|-----------------:|-----------:|
+| **field_values** | 3.34 | **34.7%** |
+| **msg_variables** | 2.53 | 26.2% |
+| timestamps | 0.73 | 7.6% |
+| target_indices | 0.69 | 7.2% |
+| msg_template_indices | 0.69 | 7.2% |
+| field_key_indices | 0.56 | 5.8% |
+| field_counts | 0.40 | 4.1% |
+| levels | 0.32 | 3.4% |
+| file_indices | 0.20 | 2.1% |
+| string_table | 0.16 | 1.6% |
+| lines | 0.01 | 0.1% |
+
+The two high-entropy content columns (`field_values` + `msg_variables`) are now **61%** of the
+compressed footprint. That is where the next rounds must focus.
+
+## Trial V: drop the redundant per-event message variable count
+
+**Hypothesis**: The content frame stored `varint(var_count)` before each event's variable tokens, but
+`var_count` is fully determined by the number of `\0` placeholders in that event's template skeleton
+(which the decoder already has). It is pure redundancy.
+
+**Approach**: Stop writing the count on encode. On decode, compute
+`var_count = template.bytes().filter(|&b| b == 0).count()`.
+
+**Result**: **204,434 events** (+3.1% over T1). Larger than the naive "1 byte/event" estimate because
+removing the interleaved count also de-fragments the token byte stream, which zstd likes.
+
+**Safety note**: This relies on the existing invariant that message text never contains a literal
+`\0` (already assumed -- the skeleton uses `\0` as its placeholder delimiter, and reconstruction
+splits on it).
+
+## Trial S: split message variable tokens into length + byte columns (TRIED, then REVERTED)
+
+**Hypothesis**: `msg_variables` interleaved token lengths (low-entropy small ints) with token bytes
+(high-entropy text). Trial F showed splitting the *field* column this way helped; the message column
+had never been split the same way.
+
+**Approach**: Two columns -- `msg_var_lens` (varint lengths, meta frame) and `msg_var_bytes`
+(concatenated token bytes, content frame).
+
+**Result**: **204,434 events** -- flat on retained count. The isolated message-variable cost fell
+slightly (2.53 → 2.21 combined b/evt), but on the real combined frame the effect was within noise.
+**Reverted** after Trial FV (below) showed the analogous field split was an outright regression: the
+same co-location mechanism that hurt field values applies to any column with repeated verbatim values,
+and real message variables (hostnames, service names, endpoints) repeat verbatim even though this
+synthetic generator's variables are mostly random numbers. Kept the codebase on the simpler,
+production-safer single-column form; zero measured benchmark cost (still 213,298 with Trial CS).
+
+> **Measurement note**: the capacity benchmark's integer "events retained" is quantized by whole-
+> segment eviction (±~4k events ≈ ±2%), so sub-2% wins are invisible there. From here on, the
+> **real combined-frame `bytes/event` from `ring_buffer_column_breakdown`** is used as the sensitive
+> primary metric, with capacity retained as confirmation.
+
+## Trial FV: split field values into length + byte columns (REJECTED -- regression)
+
+**Hypothesis**: Same as Trial S, applied to `field_values` (the single largest column, ~37%).
+
+**Approach**: `field_value_lens` (varint lengths, meta) + `field_values` (pure bytes, content).
+
+**Result**: **209,392 events (-1.8%)**; real b/evt 9.21 → 9.43. The field column's *combined* isolated
+cost rose 3.34 → 3.52. **Rejected and reverted.**
+
+**Why it hurt (important general lesson)**: field values have strong length↔value correlation because
+many are fixed-length strings drawn from a small pool (e.g. `"dogstatsd"` is always 9 bytes). With the
+length co-located, zstd matches the whole `\x09dogstatsd` sequence as one repeated unit. Splitting the
+length into a separate column breaks that match and scatters the (otherwise very compressible) length
+byte into a stream mixed with unrelated lengths. **Takeaway: length/byte splitting only helps when
+values do NOT repeat verbatim (random numbers); it hurts whenever they do. Since verbatim repetition
+is the common, compressible case in real logs, do not split length from bytes for text columns.**
+
+## Trial CS: callsite interning (collapse target/file/line/level)
+
+**Hypothesis**: `target`, `file`, `line`, and `level` are *all* fixed properties of a log callsite
+(the `&'static tracing::Metadata`). Encoding them as four independent per-event columns re-derives,
+per event, information that is constant per callsite. Interning the callsite (keyed by `Metadata`
+pointer identity -- already available on `CondensedEvent`) into a small per-segment table, and
+storing one index per event, removes that redundancy.
+
+**Approach**: New `callsite_table` module. `EventBuffer` interns each distinct callsite into a
+`CallsiteTable` holding `(target_idx, file_idx, line, level)` and pushes the resulting index to a new
+`col_callsite_indices` (RLE). Removed `col_levels`, `col_target_indices`, `col_file_indices`,
+`col_lines`. The decoder reads the callsite table once, then resolves every field from the per-event
+index.
+
+**Result**: **213,298 events** (+4.3% over Trial S; **+40.6% over the pre-round 151,682 baseline**).
+Real combined b/evt: 9.52 → 9.21.
+
+**Why the synthetic gain understates production**: the benchmark builds 60 distinct callsites (15
+targets × 4 levels) and picks target and level *independently* per event, so `callsite_indices`
+carries the full target×level entropy (0.95 b/evt) and never forms runs. In production a callsite has
+*one* level and emits events in bursts, so `callsite_indices` forms long RLE runs (→ near-zero) and
+the four collapsed columns cost essentially nothing. The +4.3% here is a conservative floor; the
+production win is materially larger. This is also the architecturally correct model -- a log event's
+provenance *is* its callsite.
+
+### Breakdown after Trial CS (final: msg-var split reverted, single `msg_variables` column)
+
+| Column | compressed b/evt | % of total |
+|--------|-----------------:|-----------:|
+| **field_values** | 3.34 | **36.8%** |
+| **msg_variables** | 2.24 | 24.6% |
+| callsite_indices | 0.95 | 10.4% |
+| timestamps | 0.73 | 8.0% |
+| msg_template_indices | 0.71 | 7.8% |
+| field_key_indices | 0.56 | 6.2% |
+| field_counts | 0.40 | 4.4% |
+| string_table | 0.14 | 1.5% |
+| callsite_table | 0.03 | 0.3% |
+
+(Real combined-frame total: **9.17 b/evt**; meta 15,090 + content 23,009 compressed over 4,153 events.)
+
+`field_values` and `msg_variables` (the raw high-entropy text) are now ~61% of the footprint. For
+the *synthetic* generator these are near their entropy floor (half the field values are uniform-random
+6-digit numbers), so further column-structure wins are small; the remaining levers are workload-
+dependent and covered under benchmark-fidelity below.
+
+## Stability re-check (Trial I property preserved)
+
+`ring_buffer_stability_bench` (1.5M events, default config) after Trials T1+V+CS (splits reverted):
+
+| Metric (128k segments) | Trial I (pre-round) | This round | Change |
+|------------------------|--------------------:|-----------:|-------:|
+| Min retained           | 150,246             | 209,655    | +39.5% |
+| Avg retained           | 152,368             | 212,366    | +39.4% |
+| Min / avg ratio        | 98.6%               | 98.7%      | flat   |
+| Max drop amplitude      | 3,411               | 4,126      | +21%   |
+| Min coverage duration   | 63.8m               | 89.1m      | +40%   |
+
+The min/avg ratio is unchanged, so Trial I's "no monster segments, uniform eviction" property is
+fully preserved. Drop amplitude rose slightly in *absolute events* only because each 128 KiB segment
+now packs ~30% more events (they are smaller); as a fraction of retained it is still ~2%. Net: the
+fixed 2 MiB buffer now holds ~40% more logs and covers ~40% more wall-clock time, with identical
+stability characteristics.
+
+---
+
+## Fresh-round summary (2026-07)
+
+| Stage | Retained (500k cap bench) | vs pre-round |
+|-------|--------------------------:|-------------:|
+| Pre-round baseline (post-Trial-I: ms→ns timestamps, row of columns) | 151,682 | -- |
+| + T1: millisecond timestamp precision | 198,268 | +30.7% |
+| + V: drop redundant per-event `var_count` | 204,434 | +34.8% |
+| + CS: callsite interning (target/file/line/level → table + index) | **213,298** | **+40.6%** |
+
+**Applied and kept** (all composing with the pre-existing Trial I stability gate):
+1. `TIMESTAMP_GRANULARITY_NS = 1_000_000` -- ms-quantized, drift-free delta timestamps (`codec.rs`).
+   **This is lossy** (sub-ms precision discarded; ordering preserved) and is the single biggest win.
+2. `var_count` no longer stored per event; derived from the template's `\0` count.
+3. Callsite interning: new `callsite_table.rs`; `EventBuffer` holds a `CallsiteTable` +
+   `col_callsite_indices`; four per-event columns removed.
+
+**Tried and reverted** (kept out of the tree):
+- Trial S (split message-variable length/bytes): neutral on this benchmark, reverted for
+  consistency + production safety (see Trial FV lesson).
+- Trial FV (split field-value length/bytes): **-1.8% regression** -- length↔value co-location matters.
+
+**Verification state**: 32 ring-buffer unit tests pass; `cargo check --workspace --tests` clean;
+`make fmt` applied. Stability bench: min retained 150,246 → 209,655, min/avg 98.7%.
+
+### Open items / next levers (ranked, for the next session)
+
+1. **Benchmark fidelity (do this FIRST -- it gates the value of everything below).** The generator
+   (`benchmarks.rs::EventGenerator`) picks target/level/file/message i.i.d. per event -- *no temporal
+   locality*. Real components log in bursts from a few callsites. Consequences:
+   - RLE columns (`callsite_indices`, `msg_template_indices`, `field_counts`) show `(count=1,value)`
+     overhead here instead of long runs, so their true production cost is far lower and callsite
+     interning wins much more than the measured +4.3%.
+   - Timestamp deltas here are uniform 1-50 ms; real bursts give sub-ms deltas that quantize to 0
+     (RLE-friendly), so ms timestamps win even more in production.
+   - Field values here are 50% uniform-random numbers (near-incompressible); real field values repeat
+     more, so `field_values` compresses better in production.
+   Action: add a `bursty`/locality mode to `EventGenerator` (pick a "current callsite" and emit a run
+   of N events from it with small ts deltas and a stable level before switching) and re-run
+   `ring_buffer_column_breakdown` + capacity. Then re-evaluate the levers below against realistic data.
+   Do NOT optimize further against the i.i.d. generator -- risk of overfitting (Trial FV nearly was).
+2. **`field_values` (37%) and `msg_variables` (25%)** are the remaining bulk. Options, all
+   workload-dependent (validate on the bursty bench first):
+   - Numeric field-value specialization (Approach G): parse all-digit values to varint. NOTE the
+     earlier analysis in "Approach G" is now suspect -- zstd already codes digit strings near their
+     entropy; a raw varint may be *less* compressible. Measure, don't assume.
+   - Field-value interning was rejected long ago (Trial 5) but under realistic (repetitive) values it
+     may now pay off -- worth re-testing on the bursty bench.
+   - Zstd dictionary trained on representative segments (Approach B): would help the many small
+     high-entropy frames share context; also the only path to sub-segment-granularity stability.
+3. **`callsite_indices` (10%)**: in production this RLEs to near-zero; confirm on bursty bench, then
+   leave alone. If still material, delta-or-move-to-front could help.
+4. **Timestamp precision as config**: currently a module const. If any consumer needs finer than ms,
+   promote to `RingBufferConfig` AND write the granularity into the segment header (decoder must
+   scale by it). Left as a const for now (simplest; ms is the right default).
+5. **`msg_template_indices` (8%)**: RLE of skeleton-table indices; random here, runs in production.
+   Tied to the Drain clustering quality (Trial D). Revisit only after fidelity fix.
+
+### How to reproduce the measurements
+- Capacity: `cargo test --release -p saluki-app --lib ring_buffer_capacity_bench -- --ignored --nocapture`
+- Per-column map: `... ring_buffer_column_breakdown ...` (the ground-truth prioritization tool;
+  backed by `EventBuffer::column_breakdown()`, test-only).
+- Stability (min retention, the metric that actually matters): `... ring_buffer_stability_bench ...`
+- Sweeps: `ring_buffer_capacity_sweep`, `ring_buffer_stability_sweep`.
+- Retained count is quantized by whole-segment eviction (±~4k ≈ ±2%); use the breakdown's real
+  combined `bytes/event` as the sensitive metric for sub-2% changes.

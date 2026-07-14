@@ -3,9 +3,11 @@ use std::{collections::VecDeque, io::Read as _};
 
 use saluki_error::{generic_error, GenericError};
 
-use super::codec::{decode_level, decode_varint, decode_varint_u128, rle_decode, write_length_prefixed};
+use super::callsite_table::{decode_callsite_table, CallsiteEntry, FILE_INDEX_NONE};
+use super::codec::{
+    decode_level, decode_varint, decode_varint_u128, rle_decode, write_length_prefixed, TIMESTAMP_GRANULARITY_NS,
+};
 use super::event::DecodedEvent;
-use super::event_buffer::FILE_INDEX_NONE;
 
 /// A compressed segment containing a batch of log events.
 #[derive(Clone, Debug)]
@@ -84,11 +86,10 @@ pub struct CompressedSegmentReader {
 
     // Cursors into `meta`.
     ts_cursor: usize,
-    last_timestamp: u128,
-    levels: Vec<usize>,
-    target_indices: Vec<usize>,
-    file_indices: Vec<usize>,
-    line_cursor: usize,
+    last_timestamp_units: u128,
+    // Callsite table (target/file/line/level) and per-event indices into it.
+    callsites: Vec<CallsiteEntry>,
+    callsite_indices: Vec<usize>,
 
     // Field sub-columns (from meta).
     field_counts: Vec<usize>,
@@ -110,11 +111,9 @@ impl CompressedSegmentReader {
             event_count: 0,
             event_idx: 0,
             ts_cursor: 0,
-            last_timestamp: 0,
-            levels: Vec::new(),
-            target_indices: Vec::new(),
-            file_indices: Vec::new(),
-            line_cursor: 0,
+            last_timestamp_units: 0,
+            callsites: Vec::new(),
+            callsite_indices: Vec::new(),
             field_counts: Vec::new(),
             field_keys_cursor: 0,
             msg_template_indices: Vec::new(),
@@ -157,25 +156,12 @@ impl CompressedSegmentReader {
         self.ts_cursor = idx;
         idx += ts_len;
 
-        // Levels column (RLE).
-        self.levels =
-            rle_decode(&self.meta, &mut idx).ok_or_else(|| generic_error!("Failed to decode levels column"))?;
+        // Callsite table (target/file/line/level, interned once per segment).
+        self.callsites = decode_callsite_table(&self.meta, &mut idx)?;
 
-        // Target indices column (RLE).
-        self.target_indices =
-            rle_decode(&self.meta, &mut idx).ok_or_else(|| generic_error!("Failed to decode target indices column"))?;
-
-        // File indices column (RLE).
-        self.file_indices =
-            rle_decode(&self.meta, &mut idx).ok_or_else(|| generic_error!("Failed to decode file indices column"))?;
-
-        // Lines column.
-        let (lines_len, consumed) =
-            decode_varint(&self.meta, idx).ok_or_else(|| generic_error!("Failed to decode lines column length"))?;
-        idx += consumed;
-        self.line_cursor = idx;
-        let _ = lines_len; // cursor advances during iteration
-        idx += lines_len;
+        // Callsite indices column (RLE).
+        self.callsite_indices = rle_decode(&self.meta, &mut idx)
+            .ok_or_else(|| generic_error!("Failed to decode callsite indices column"))?;
 
         // Field counts (RLE, in meta).
         self.field_counts =
@@ -211,18 +197,30 @@ impl CompressedSegmentReader {
         let i = self.event_idx;
         self.event_idx += 1;
 
-        // Timestamp (from meta).
-        let (ts_delta, consumed) = decode_varint_u128(&self.meta, self.ts_cursor)
+        // Timestamp (from meta): delta is in granularity units; reconstruct the absolute unit count
+        // then scale back to nanoseconds.
+        let (delta_units, consumed) = decode_varint_u128(&self.meta, self.ts_cursor)
             .ok_or_else(|| generic_error!("Failed to decode timestamp delta for event {}", i))?;
         self.ts_cursor += consumed;
-        let timestamp_nanos = self.last_timestamp + ts_delta;
-        self.last_timestamp = timestamp_nanos;
+        let ts_units = self.last_timestamp_units + delta_units;
+        self.last_timestamp_units = ts_units;
+        let timestamp_nanos = ts_units * TIMESTAMP_GRANULARITY_NS;
 
-        // Level (pre-decoded RLE).
-        let level = decode_level(self.levels[i] as u8);
+        // Callsite: a single index resolves target, file, line, and level (all interned per segment
+        // in the callsite table). Copy the small Copy fields out so the table borrow does not outlive
+        // the per-event cursor mutations further down.
+        let callsite_idx = self.callsite_indices[i];
+        let (target_idx, file_idx, line, level_byte) = {
+            let cs = self
+                .callsites
+                .get(callsite_idx)
+                .ok_or_else(|| generic_error!("Callsite index {} out of range", callsite_idx))?;
+            (cs.target_idx, cs.file_idx, cs.line, cs.level)
+        };
 
-        // Target (pre-decoded RLE → string table in meta).
-        let target_idx = self.target_indices[i];
+        let level = decode_level(level_byte);
+
+        // Target (string table in meta).
         let &(t_start, t_end) = self
             .string_table_ranges
             .get(target_idx)
@@ -239,19 +237,18 @@ impl CompressedSegmentReader {
         let template = simdutf8::basic::from_utf8(&self.meta[tpl_start..tpl_end])
             .map_err(|e| generic_error!("Invalid UTF-8 in message template: {}", e))?;
 
-        // Read variable count and tokens.
-        let (var_count, consumed) = decode_varint(&self.content, self.msg_vars_cursor)
-            .ok_or_else(|| generic_error!("Failed to decode message variable count for event {}", i))?;
-        self.msg_vars_cursor += consumed;
+        // The number of variables is not stored per-event: it equals the number of `\0` placeholders
+        // in the template skeleton.
+        let var_count = template.bytes().filter(|&b| b == 0).count();
 
         let message = if var_count == 0 {
             template.to_string()
         } else {
-            // Collect variable tokens.
+            // Collect variable tokens (length-prefixed inline) from the content frame.
             let mut vars = Vec::with_capacity(var_count);
             for _ in 0..var_count {
                 let (vlen, consumed) = decode_varint(&self.content, self.msg_vars_cursor)
-                    .ok_or_else(|| generic_error!("Failed to decode message variable"))?;
+                    .ok_or_else(|| generic_error!("Failed to decode message variable length"))?;
                 self.msg_vars_cursor += consumed;
                 let v = simdutf8::basic::from_utf8(&self.content[self.msg_vars_cursor..self.msg_vars_cursor + vlen])
                     .map_err(|e| generic_error!("Invalid UTF-8 in message variable: {}", e))?;
@@ -285,7 +282,7 @@ impl CompressedSegmentReader {
                 .ok_or_else(|| generic_error!("Field key string table index {} out of range", key_idx))?;
             write_length_prefixed(&mut fields, &self.meta[k_start..k_end]);
 
-            // Value from content.
+            // Value from content (length-prefixed inline).
             let (val_len, consumed) = decode_varint(&self.content, self.field_values_cursor)
                 .ok_or_else(|| generic_error!("Failed to decode field value length"))?;
             self.field_values_cursor += consumed;
@@ -296,8 +293,7 @@ impl CompressedSegmentReader {
             self.field_values_cursor += val_len;
         }
 
-        // File (pre-decoded RLE → string table in meta).
-        let file_idx = self.file_indices[i];
+        // File (string table in meta); line comes directly from the callsite entry resolved above.
         let file = if file_idx == FILE_INDEX_NONE {
             None
         } else {
@@ -309,16 +305,6 @@ impl CompressedSegmentReader {
                 simdutf8::basic::from_utf8(&self.meta[f_start..f_end])
                     .map_err(|e| generic_error!("Invalid UTF-8 in file: {}", e))?,
             )
-        };
-
-        // Line (from meta).
-        let (line_enc, consumed) = decode_varint(&self.meta, self.line_cursor)
-            .ok_or_else(|| generic_error!("Failed to decode line for event {}", i))?;
-        self.line_cursor += consumed;
-        let line = if line_enc == 0 {
-            None
-        } else {
-            Some((line_enc - 1) as u32)
         };
 
         Ok(Some(DecodedEvent {
