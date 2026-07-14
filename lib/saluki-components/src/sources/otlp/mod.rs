@@ -57,8 +57,9 @@ use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 /// The value is a comma-separated list. An empty configuration yields no tags.
 fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
     let mut tags = TagSet::default();
-    if !raw.is_empty() {
-        for tag in raw.split(',') {
+    for tag in raw.split(',') {
+        let tag = tag.trim();
+        if !tag.is_empty() {
             tags.insert_tag(tag);
         }
     }
@@ -582,5 +583,22 @@ mod tests {
     #[test]
     fn duplicate_tags_are_deduplicated() {
         assert_eq!(tags("env:prod,env:prod"), vec!["env:prod".to_string()]);
+    }
+
+    #[test]
+    fn whitespace_around_commas_is_stripped() {
+        assert_eq!(
+            tags("env:prod, team:core"),
+            vec!["env:prod".to_string(), "team:core".to_string()]
+        );
+    }
+
+    #[test]
+    fn trailing_and_doubled_commas_produce_no_empty_tags() {
+        assert_eq!(tags("env:prod,"), vec!["env:prod".to_string()]);
+        assert_eq!(
+            tags("env:prod,,team:core"),
+            vec!["env:prod".to_string(), "team:core".to_string()]
+        );
     }
 }
