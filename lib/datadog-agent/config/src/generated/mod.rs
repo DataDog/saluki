@@ -9,6 +9,14 @@ pub(crate) mod classifier_data;
 /// inventoried as `support: full` or `support: partial`.
 pub mod datadog_configuration;
 
+/// Table of supported multi-segment keys whose flat environment form must be relocated into their
+/// nested slot before the typed deserializer runs.
+pub(crate) mod env_overlay_keys;
+
+/// Table of every modeled key's real environment variable names, nested path, and decode
+/// strategy, driving the figment-free `env_reader`.
+pub(crate) mod env_keys;
+
 /// Witness trait and fallible driver over the supported Datadog configuration keys.
 pub mod witness;
 
