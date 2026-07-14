@@ -2,12 +2,12 @@ use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_protos::agent::{EntityId as RemoteEntityId, EventType, TagCardinality as RemoteTagCardinality};
 use futures::{StreamExt as _, TryStreamExt as _};
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{
     origin::OriginTagCardinality,
     tags::{Tag, TagSet},
 };
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataAction, MetadataOperation};
 use saluki_error::GenericError;
@@ -106,7 +106,7 @@ impl RemoteAgentTaggerMetadataCollector {
 #[async_trait]
 impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
     fn name(&self) -> &'static str {
-        "remote-agent-tags"
+        "remote_agent_tags"
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {

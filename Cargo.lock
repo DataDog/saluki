@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-data-plane"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "antithesis-instrumentation",
  "argh",
@@ -41,9 +41,9 @@ dependencies = [
  "hyper",
  "metrics",
  "ottl",
+ "process-memory",
  "prost",
  "prost-types",
- "resource-accounting",
  "saluki-antithesis",
  "saluki-api",
  "saluki-app",
@@ -67,6 +67,31 @@ dependencies = [
  "tonic",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "agent-data-plane-config"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "serde",
+ "tokio",
+]
+
+[[package]]
+name = "agent-data-plane-config-system"
+version = "0.1.0"
+dependencies = [
+ "agent-data-plane-config",
+ "arc-swap",
+ "bytesize",
+ "datadog-agent-config",
+ "saluki-config",
+ "serde",
+ "serde_json",
+ "snafu",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -172,14 +197,29 @@ dependencies = [
  "datadog-protos",
  "headers",
  "mime",
+ "proptest",
  "protobuf",
  "serde",
  "serde_json",
+ "stele",
  "tokio",
  "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "antithesis-scenario-differential"
+version = "0.1.0"
+dependencies = [
+ "antithesis_sdk",
+ "anyhow",
+ "clap",
+ "harness",
+ "reqwest",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -392,9 +432,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.17.0"
+version = "1.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
+checksum = "4342d8937fc7e5dd9b1c60292261c0670c882a2cd1719cfc11b1af41731e32ad"
 dependencies = [
  "aws-lc-fips-sys",
  "aws-lc-sys",
@@ -404,14 +444,15 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.41.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
+checksum = "6d9ceb1da931507a12f4fccea479dccd00da1943e1b4ae72d8e502d707361444"
 dependencies = [
  "cc",
  "cmake",
  "dunce",
  "fs_extra",
+ "pkg-config",
 ]
 
 [[package]]
@@ -1057,9 +1098,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1184,6 +1225,7 @@ dependencies = [
  "saluki-error",
  "saluki-io",
  "saluki-metadata",
+ "saluki-tls",
  "serde",
  "serde_json",
  "tokio",
@@ -1198,6 +1240,7 @@ name = "datadog-agent-config"
 version = "0.1.0"
 dependencies = [
  "datadog-agent-config-overlay-model",
+ "go-duration",
  "indexmap",
  "prettyplease",
  "schemars",
@@ -1231,6 +1274,14 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tinytemplate",
+]
+
+[[package]]
+name = "datadog-agent-metrics-v3"
+version = "0.1.0"
+dependencies = [
+ "foldhash 0.2.0",
+ "protobuf",
 ]
 
 [[package]]
@@ -1833,6 +1884,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "go-duration"
+version = "0.1.0"
+
+[[package]]
 name = "granit-parser"
 version = "0.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1880,7 +1935,9 @@ dependencies = [
  "anyhow",
  "clap",
  "itoa",
+ "libc",
  "num-traits",
+ "proptest",
  "rand 0.10.1",
  "ryu",
  "serde",
@@ -2646,7 +2703,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?rev=e98e30524c8caa31d585703da790e15fd6f92573#e98e30524c8caa31d585703da790e15fd6f92573"
+source = "git+https://github.com/DataDog/lading?rev=576129489df44ae0e71c4871c51910837c919b90#576129489df44ae0e71c4871c51910837c919b90"
 dependencies = [
  "byte-unit",
  "bytes",
@@ -2890,6 +2947,7 @@ dependencies = [
 name = "millstone"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "bytesize",
  "lading-payload",
@@ -4032,7 +4090,9 @@ checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
  "base64",
  "bytes",
+ "futures-channel",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -4066,25 +4126,6 @@ name = "resolv-conf"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
-
-[[package]]
-name = "resource-accounting"
-version = "0.1.0"
-dependencies = [
- "bytesize",
- "libc",
- "metrics",
- "ordered-float 5.3.0",
- "pin-project",
- "process-memory",
- "proptest",
- "saluki-api",
- "serde",
- "serde_json",
- "snafu",
- "tokio",
- "tracing",
-]
 
 [[package]]
 name = "ring"
@@ -4338,7 +4379,6 @@ dependencies = [
  "itoa",
  "metrics",
  "rcgen",
- "resource-accounting",
  "rustls",
  "rustls-pki-types",
  "ryu",
@@ -4374,12 +4414,12 @@ dependencies = [
  "http-body-util",
  "indexmap",
  "itoa",
+ "libc",
  "papaya",
  "pin-project",
  "proptest",
  "quick_cache",
  "regex",
- "resource-accounting",
  "saluki-error",
  "saluki-metrics",
  "serde",
@@ -4405,7 +4445,9 @@ dependencies = [
  "bytes",
  "bytesize",
  "chrono",
+ "datadog-agent-commons",
  "datadog-agent-config-testing",
+ "datadog-agent-metrics-v3",
  "datadog-protos",
  "ddsketch",
  "derive-where",
@@ -4425,6 +4467,7 @@ dependencies = [
  "hyper",
  "hyper-http-proxy",
  "lru-slab",
+ "memchr",
  "metrics",
  "opentelemetry-semantic-conventions",
  "otlp-protos",
@@ -4437,7 +4480,6 @@ dependencies = [
  "rand 0.10.1",
  "rcgen",
  "regex",
- "resource-accounting",
  "rmp-serde",
  "rustls",
  "saluki-antithesis",
@@ -4480,6 +4522,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "figment",
+ "go-duration",
  "saluki-antithesis",
  "saluki-error",
  "serde",
@@ -4519,6 +4562,7 @@ dependencies = [
  "anymap3",
  "async-trait",
  "bitmask-enum",
+ "bytesize",
  "ddsketch",
  "futures",
  "http",
@@ -4530,9 +4574,9 @@ dependencies = [
  "papaya",
  "pastey",
  "pin-project",
+ "process-memory",
  "prometheus-exposition",
  "proptest",
- "resource-accounting",
  "saluki-antithesis",
  "saluki-api",
  "saluki-common",
@@ -4567,7 +4611,6 @@ dependencies = [
  "proptest",
  "prost",
  "regex",
- "resource-accounting",
  "saluki-common",
  "saluki-config",
  "saluki-context",
@@ -4646,6 +4689,7 @@ dependencies = [
  "tracing",
  "triomphe",
  "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5515,6 +5559,7 @@ version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
+ "backtrace",
  "bytes",
  "libc",
  "mio",

@@ -28,9 +28,6 @@ tracking.
 | -------------------------------------------- | ----------------------------------------------- | ------- |
 | `dogstatsd_experimental_http.enabled`        | Enable experimental HTTP/H2C DSD listener       | [#1682] |
 | `dogstatsd_experimental_http.listen_address` | Bind address for experimental HTTP DSD listener | [#1682] |
-| `dogstatsd_pipe_name`                        | Windows named pipe path                         | [#1466] |
-| `dogstatsd_windows_pipe_security_descriptor` | Windows named pipe ACL descriptor               | [#1466] |
-| `telemetry.dogstatsd_origin`                 | Per-origin processed-metrics telemetry          | [#1679] |
 | `tls_handshake_timeout`                      | HTTP TLS handshake timeout                      | [#178]  |
 
 <!-- section:unsupported-not-planned -->
@@ -491,6 +488,22 @@ while syslog logging is enabled, ADP uses the platform default local syslog sock
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
 when the receiving syslog daemon expects the Agent's RFC-style header.
 
+### UDS origin detection on macOS
+
+ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
+Unix socket credentials do not expose the sender PID: `LOCAL_PEERCRED` and `getpeereid()` provide
+UID and GID only. ADP still accepts DogStatsD traffic over UDS on those platforms, but it cannot
+derive a process ID from the socket and therefore cannot use that path for origin enrichment.
+
+When `dogstatsd_origin_detection` is enabled with a UDS listener on a non-Linux platform, ADP logs a
+startup warning and treats the missing PID as a static platform limitation rather than a per-packet
+origin detection error.
+
+The on-demand PID resolver is also Linux-only because it reads procfs and cgroups. Containerd
+metadata can still populate `ContainerPid` aliases in the tag store on Unix platforms, which covers
+steady-state tagging when another source provides a PID, but macOS UDS origin detection cannot
+obtain that PID from the socket.
+
 ### DogStatsD metric debug log
 
 ADP supports the core agent's DogStatsD metric debug log. To write this file, set
@@ -543,6 +556,10 @@ compressed wire payload bytes.
 | `agent_ipc.grpc_max_message_size`                              | Max inbound gRPC message size for IPC client       |
 | `allow_arbitrary_tags`                                         | Relax backend tag validation via HTTP header       |
 | `api_key`                                                      | API key for endpoint auth                          |
+| `apm_config.compute_stats_by_span_kind`                        | Compute APM stats per span kind                    |
+| `apm_config.enable_rare_sampler`                               | Enable the APM rare-span sampler                   |
+| `apm_config.error_tracking_standalone.enabled`                 | Enable Error Tracking standalone                   |
+| `apm_config.errors_per_second`                                 | APM error-span sampling rate (per sec)             |
 | `apm_config.obfuscation.credit_cards.enabled`                  | apm_config.obfuscation.credit_cards.enabled        |
 | `apm_config.obfuscation.credit_cards.keep_values`              | apm_config.obfuscation.credit_cards.keep_values    |
 | `apm_config.obfuscation.credit_cards.luhn`                     | apm_config.obfuscation.credit_cards.luhn           |
@@ -563,6 +580,11 @@ compressed wire payload bytes.
 | `apm_config.obfuscation.redis.remove_all_args`                 | apm_config.obfuscation.redis.remove_all_args       |
 | `apm_config.obfuscation.valkey.enabled`                        | apm_config.obfuscation.valkey.enabled              |
 | `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
+| `apm_config.peer_tags`                                         | Extra peer tags for stats aggregation              |
+| `apm_config.peer_tags_aggregation`                             | Aggregate APM stats by peer tags                   |
+| `apm_config.probabilistic_sampler.enabled`                     | Enable APM probabilistic sampler                   |
+| `apm_config.probabilistic_sampler.sampling_percentage`         | Probabilistic sampler percentage                   |
+| `apm_config.target_traces_per_second`                          | Target sampled traces per second                   |
 | `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
 | `bind_host`                                                    | Global listen host fallback                        |
@@ -575,14 +597,20 @@ compressed wire payload bytes.
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
 | `data_plane.api_listen_address`                                | Unprivileged API listen address                    |
 | `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`    | Tag-filter deduplication cache size                |
+| `data_plane.dogstatsd.enabled`                                 | Enable the DogStatsD pipeline                      |
+| `data_plane.enabled`                                           | Enable the data plane                              |
 | `data_plane.log_file`                                          | ADP log file path                                  |
+| `data_plane.otlp.enabled`                                      | Enable the OTLP pipeline                           |
+| `data_plane.otlp.proxy.enabled`                                | Enable OTLP proxy to Core Agent                    |
 | `data_plane.otlp.proxy.logs.enabled`                           | Proxy OTLP logs to Core Agent                      |
 | `data_plane.otlp.proxy.metrics.enabled`                        | Proxy OTLP metrics to Core Agent                   |
+| `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`       | OTLP proxy gRPC receiver endpoint                  |
 | `data_plane.otlp.proxy.traces.enabled`                         | Proxy OTLP traces to Core Agent                    |
 | `data_plane.remote_agent_enabled`                              | Enable remote agent mode                           |
 | `data_plane.secure_api_listen_address`                         | Privileged API listen address                      |
 | `data_plane.use_new_config_stream_endpoint`                    | Use new config stream endpoint                     |
 | `dd_url`                                                       | Override intake endpoint URL                       |
+| `disable_file_logging`                                         | Disable writing logs to a file                     |
 | `dogstatsd_buffer_size`                                        | Receive buffer size (bytes)                        |
 | `dogstatsd_capture_depth`                                      | Traffic capture channel depth                      |
 | `dogstatsd_capture_path`                                       | Traffic capture file location                      |
@@ -590,6 +618,7 @@ compressed wire payload bytes.
 | `dogstatsd_disable_verbose_logs`                               | Suppress noisy parse error logs                    |
 | `dogstatsd_entity_id_precedence`                               | Entity ID over auto-detection                      |
 | `dogstatsd_eol_required`                                       | Require newline-terminated messages                |
+| `dogstatsd_expiry_seconds`                                     | Counter value expiry (seconds)                     |
 | `dogstatsd_flush_incomplete_buckets`                           | Flush open buckets on shutdown                     |
 | `dogstatsd_log_file`                                           | DSD dedicated log file path                        |
 | `dogstatsd_log_file_max_rolls`                                 | DSD log file max roll count                        |
@@ -601,6 +630,7 @@ compressed wire payload bytes.
 | `dogstatsd_origin_detection`                                   | Enable UDS origin detection                        |
 | `dogstatsd_origin_detection_client`                            | Honor client origin proto fields                   |
 | `dogstatsd_origin_optout_enabled`                              | Allow clients to opt out origin                    |
+| `dogstatsd_pipe_name`                                          | Windows named pipe path                            |
 | `dogstatsd_port`                                               | UDP listen port                                    |
 | `dogstatsd_so_rcvbuf`                                          | Socket receive buffer size                         |
 | `dogstatsd_socket`                                             | UDS datagram socket path                           |
@@ -609,11 +639,13 @@ compressed wire payload bytes.
 | `dogstatsd_string_interner_size`                               | String interner capacity                           |
 | `dogstatsd_tag_cardinality`                                    | Default tag cardinality level                      |
 | `dogstatsd_tags`                                               | Extra tags added to all DSD data                   |
+| `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor                  |
 | `enable_payloads.events`                                       | Allow sending event payloads                       |
 | `enable_payloads.series`                                       | Allow sending series payloads                      |
 | `enable_payloads.service_checks`                               | Allow sending service check payloads               |
 | `enable_payloads.sketches`                                     | Allow sending sketch payloads                      |
 | `env`                                                          | Agent environment name                             |
+| `expected_tags_duration`                                       | How long startup host tags are attached            |
 | `forwarder_backoff_base`                                       | Retry backoff base (secs)                          |
 | `forwarder_backoff_factor`                                     | Retry backoff jitter factor                        |
 | `forwarder_backoff_max`                                        | Retry backoff ceiling (secs)                       |
@@ -634,10 +666,17 @@ compressed wire payload bytes.
 | `histogram_aggregates`                                         | Histogram aggregate statistics                     |
 | `histogram_copy_to_distribution`                               | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                        | Prefix for hist-to-dist copies                     |
+| `histogram_percentiles`                                        | Histogram percentile aggregates                    |
+| `log_file_max_rolls`                                           | Max rolled log files to retain                     |
+| `log_file_max_size`                                            | Max log file size before rolling                   |
+| `log_format_json`                                              | Emit logs as JSON                                  |
 | `log_format_rfc3339`                                           | Use RFC 3339 timestamps in log output              |
 | `log_payloads`                                                 | Debug-log decoded payload contents before encoding |
+| `log_to_console`                                               | Write logs to the console                          |
+| `log_to_syslog`                                                | Write logs to syslog                               |
 | `metric_filterlist`                                            | Metric name blocklist                              |
 | `metric_filterlist_match_prefix`                               | Blocklist uses prefix matching                     |
+| `metric_tag_filterlist`                                        | Per-metric tag allow/deny filter list              |
 | `multi_region_failover.api_key`                                | API key for the failover-region endpoint           |
 | `multi_region_failover.dd_url`                                 | Failover intake URL                                |
 | `multi_region_failover.failover_metrics`                       | Enable metrics forwarding to failover region       |
@@ -650,6 +689,8 @@ compressed wire payload bytes.
 | `origin_detection_unified`                                     | Unified origin detection mode                      |
 | `otlp_config.logs.enabled`                                     | otlp_config.logs.enabled                           |
 | `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
+| `otlp_config.metrics.resource_attributes_as_tags`              | Add scalar resource attributes as raw tags.        |
+| `otlp_config.metrics.tags`                                     | Comma-separated tags for all OTLP metrics.         |
 | `otlp_config.receiver.protocols.grpc.endpoint`                 | otlp_config.receiver.protocols.grpc.endpoint       |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`    | Max OTLP inbound gRPC message size (MiB)           |
 | `otlp_config.receiver.protocols.grpc.transport`                | otlp_config.receiver.protocols.grpc.transport      |
@@ -685,6 +726,7 @@ compressed wire payload bytes.
 | `statsd_metric_namespace_blacklist`                            | Prefixes exempt from namespace                     |
 | `syslog_rfc`                                                   | Use RFC-style syslog header                        |
 | `syslog_uri`                                                   | Syslog destination URI                             |
+| `telemetry.dogstatsd_origin`                                   | Per-origin processed-metrics telemetry             |
 | `use_proxy_for_cloud_metadata`                                 | Proxy cloud metadata endpoints                     |
 | `use_v2_api.series`                                            | Send series via V2 protobuf endpoint               |
 | `use_v3_api.series.enabled`                                    | Global V3 series mode                              |
@@ -705,7 +747,6 @@ compressed wire payload bytes.
 [#1363]: https://github.com/DataDog/saluki/issues/1363
 [#1365]: https://github.com/DataDog/saluki/issues/1365
 [#1381]: https://github.com/DataDog/saluki/issues/1381
-[#1466]: https://github.com/DataDog/saluki/issues/1466
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
 [#1682]: https://github.com/DataDog/saluki/issues/1682

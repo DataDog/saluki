@@ -139,6 +139,22 @@ pub enum SupportLevel {
     Unrecognized,
 }
 
+/// The default value for a config key, as resolved at build time from the Agent schema.
+///
+/// Durations are normalized to nanoseconds during codegen (the build fails if a `format:
+/// duration` default isn't a valid Go duration), so the runtime default check never has to parse a
+/// schema default. Other keys keep their JSON-literal default and are compared structurally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultValue {
+    /// The schema declares no default for this key.
+    Missing,
+    /// A JSON-encoded default value (for example, `"\"tlsv1.2\""` or `"1"`).
+    Json(&'static str),
+    /// A `format: duration` default, already parsed to nanoseconds. The Agent transmits durations
+    /// as integer nanoseconds, so the incoming value is normalized the same way before comparing.
+    DurationNanos(u64),
+}
+
 /// Slim per-key data generated at build time for the classifier.
 ///
 /// Carries only what the classifier needs: enough to look up a key, determine its support level,
@@ -152,9 +168,8 @@ pub struct ClassifierEntry {
     pub support_level: SupportLevel,
     /// Which pipelines this key affects.
     pub pipeline_affinity: PipelineAffinity,
-    /// JSON-encoded default value from the Agent schema, if present.
-    pub default: Option<&'static str>,
+    /// Default value from the Agent schema (normalized at build time).
+    pub default: DefaultValue,
 }
 
-mod classifier_data;
-use classifier_data::CLASSIFIER_ENTRIES;
+use crate::generated::classifier_data::CLASSIFIER_ENTRIES;

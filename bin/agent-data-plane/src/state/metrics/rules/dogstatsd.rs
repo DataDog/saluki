@@ -129,7 +129,7 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
             &["component_id:dsd_in"],
             "dogstatsd.processed",
         )
-        .with_original_tags(["message_type"])
+        .with_original_tags(["message_type", "origin"])
         .with_additional_tags(["state:ok"])
         .with_help_text("Count of service checks/events/metrics processed by dogstatsd"),
         RemapperRule::by_name_and_tags(
@@ -137,7 +137,7 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
             &["component_id:dsd_in", "error_type:decode"],
             "dogstatsd.processed",
         )
-        .with_original_tags(["message_type"])
+        .with_original_tags(["message_type", "origin"])
         .with_additional_tags(["state:error"])
         .with_help_text("Count of service checks/events/metrics processed by dogstatsd"),
     ]

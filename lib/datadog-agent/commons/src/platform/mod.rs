@@ -1,11 +1,11 @@
 //! Platform-specific settings.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "aix"))]
 mod linux_impl;
 
 use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "aix"))]
 pub use self::linux_impl::*;
 
 #[cfg(target_os = "macos")]

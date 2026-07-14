@@ -15,7 +15,6 @@ use std::{
 use futures::StreamExt as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::static_metrics;
-use stringtheory::MetaString;
 use tokio::{pin, time::Instant};
 use tokio::{
     select,
@@ -26,6 +25,8 @@ use tokio::{
 };
 use tokio_util::time::{delay_queue::Key, DelayQueue};
 use tracing::{debug, info, trace};
+
+use crate::support::SubsystemIdentifier;
 
 mod api;
 pub use self::api::HealthAPIHandler;
@@ -98,7 +99,7 @@ static_metrics!(
 );
 
 impl Telemetry {
-    fn from_name(name: &str) -> Self {
+    fn from_name(name: String) -> Self {
         Self::new(Arc::from(name))
     }
 
@@ -125,7 +126,7 @@ struct SharedComponentState {
 }
 
 struct ComponentState {
-    name: MetaString,
+    name: SubsystemIdentifier,
     health: HealthState,
     shared: Arc<SharedComponentState>,
     request_tx: mpsc::Sender<LivenessRequest>,
@@ -135,11 +136,11 @@ struct ComponentState {
 
 impl ComponentState {
     fn new(
-        name: MetaString, response_tx: mpsc::Sender<LivenessResponse>, readiness_notify: Arc<Notify>,
+        name: SubsystemIdentifier, response_tx: mpsc::Sender<LivenessResponse>, readiness_notify: Arc<Notify>,
     ) -> (Self, Health) {
         let shared = Arc::new(SharedComponentState {
             ready: AtomicBool::new(false),
-            telemetry: Telemetry::from_name(&name),
+            telemetry: Telemetry::from_name(name.to_string()),
         });
         let (request_tx, request_rx) = mpsc::channel(1);
 
@@ -248,7 +249,7 @@ impl HealthUpdate {
 }
 
 struct RegistryState {
-    registered_components: HashSet<MetaString>,
+    registered_components: HashSet<SubsystemIdentifier>,
     component_state: Vec<ComponentState>,
     responses_tx: mpsc::Sender<LivenessResponse>,
     responses_rx: Option<mpsc::Receiver<LivenessResponse>>,
@@ -308,26 +309,26 @@ impl HealthRegistry {
         Arc::clone(&self.inner)
     }
 
-    /// Registers a component with the registry.
+    /// Registers a component with the registry, keyed by its canonical [`SubsystemIdentifier`].
     ///
-    /// A handle is returned that must be used by the component to set its readiness as well as respond to liveness
-    /// probes. See [`Health::mark_ready`], [`Health::mark_not_ready`], and [`Health::live`] for more information.
-    pub fn register_component<S: Into<MetaString>>(&self, name: S) -> Option<Health> {
+    /// Returns `None` if a component with the same identifier is already registered. Otherwise, a handle is returned
+    /// that must be used by the component to set its readiness as well as respond to liveness probes. See
+    /// [`Health::mark_ready`], [`Health::mark_not_ready`], and [`Health::live`] for more information.
+    pub fn register_component(&self, id: &SubsystemIdentifier) -> Option<Health> {
         let mut inner = self.inner.lock().unwrap();
 
         // Make sure we don't already have this component registered.
-        let name = name.into();
-        if !inner.registered_components.insert(name.clone()) {
+        if !inner.registered_components.insert(id.clone()) {
             return None;
         }
 
         // Add the component state.
         let readiness_notify = Arc::clone(&inner.readiness_notify);
-        let (state, handle) = ComponentState::new(name.clone(), inner.responses_tx.clone(), readiness_notify);
+        let (state, handle) = ComponentState::new(id.clone(), inner.responses_tx.clone(), readiness_notify);
         let component_id = inner.component_state.len();
         inner.component_state.push(state);
 
-        debug!(component_id, "Registered component '{}'.", name);
+        debug!(component_id, "Registered component '{}'.", id);
 
         // Mark ourselves as having a pending component that needs to be scheduled.
         inner.pending_components.push(component_id);
@@ -366,7 +367,7 @@ impl HealthRegistry {
     /// ensure all components they care about have been registered before calling this method.
     pub async fn all_ready_matching<F>(&self, predicate: F)
     where
-        F: Fn(&str) -> bool,
+        F: Fn(&SubsystemIdentifier) -> bool,
     {
         let readiness_notify = {
             let inner = self.inner.lock().unwrap();
@@ -385,9 +386,19 @@ impl HealthRegistry {
         }
     }
 
+    /// Waits until all currently registered components that are strict descendants of `root` are ready.
+    ///
+    /// This is a convenience wrapper over [`all_ready_matching`][Self::all_ready_matching] for the common case of
+    /// waiting on a single subsystem: it matches exactly the components whose identifier is a strict descendant of
+    /// `root` (see [`SubsystemIdentifier::is_ancestor_of`]). The same registration caveats as
+    /// [`all_ready`][Self::all_ready] apply.
+    pub async fn all_ready_under(&self, root: SubsystemIdentifier) {
+        self.all_ready_matching(move |id| root.is_ancestor_of(id)).await
+    }
+
     fn check_ready_matching<F>(&self, predicate: &F) -> bool
     where
-        F: Fn(&str) -> bool,
+        F: Fn(&SubsystemIdentifier) -> bool,
     {
         let inner = self.inner.lock().unwrap();
         inner
@@ -395,6 +406,33 @@ impl HealthRegistry {
             .iter()
             .filter(|component| predicate(&component.name))
             .all(|component| component.is_ready())
+    }
+
+    /// Returns a JSON snapshot of the current readiness and liveness state of all registered components.
+    ///
+    /// Each component appears as a key in the returned JSON object, with its `live` and `ready` boolean fields
+    /// reflecting the state at the time of the call. This is the same data exposed by the `/health/ready` and
+    /// `/health/live` HTTP endpoints, but collected in a single pass for use outside of the HTTP handler path (for
+    /// example, when building a diagnostic artifact).
+    pub fn snapshot_json(&self) -> String {
+        #[derive(serde::Serialize)]
+        struct ComponentSnapshot {
+            live: bool,
+            ready: bool,
+        }
+
+        let inner = self.inner.lock().unwrap();
+        let mut state: std::collections::HashMap<String, ComponentSnapshot> = std::collections::HashMap::new();
+        for component in &inner.component_state {
+            state.insert(
+                component.name.to_string(),
+                ComponentSnapshot {
+                    live: component.is_live(),
+                    ready: component.is_ready(),
+                },
+            );
+        }
+        serde_json::to_string_pretty(&state).unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
     }
 
     /// Creates a [`HealthRegistryWorker`] that can be added to a supervisor to run the health registry.
@@ -782,7 +820,9 @@ mod tests {
         let registry_state = registry.state();
 
         // Add our component to the registry:
-        let handle = registry.register_component(component_id).unwrap();
+        let handle = registry
+            .register_component(&SubsystemIdentifier::from_dotted(component_id))
+            .unwrap();
 
         // Extract the registry runner task and poll it until it's quiesced.
         //
@@ -807,10 +847,11 @@ mod tests {
 
     fn component_live(state: &Mutex<RegistryState>, component_id: &str) -> bool {
         let state = state.lock().unwrap();
+        let target = SubsystemIdentifier::from_dotted(component_id);
         state
             .component_state
             .iter()
-            .find(|state| state.name == component_id)
+            .find(|state| state.name == target)
             .map(|state| state.is_live())
             .unwrap()
     }
@@ -818,7 +859,9 @@ mod tests {
     #[test]
     fn basic_registration() {
         let registry = HealthRegistry::new();
-        assert!(registry.register_component(COMPONENT_ID).is_some());
+        assert!(registry
+            .register_component(&SubsystemIdentifier::from_dotted(COMPONENT_ID))
+            .is_some());
     }
 
     #[test]
@@ -826,8 +869,12 @@ mod tests {
         let registry = HealthRegistry::new();
 
         // Registering the same component twice should fail:
-        assert!(registry.register_component(COMPONENT_ID).is_some());
-        assert!(registry.register_component(COMPONENT_ID).is_none());
+        assert!(registry
+            .register_component(&SubsystemIdentifier::from_dotted(COMPONENT_ID))
+            .is_some());
+        assert!(registry
+            .register_component(&SubsystemIdentifier::from_dotted(COMPONENT_ID))
+            .is_none());
     }
 
     #[test]
@@ -883,7 +930,9 @@ mod tests {
         assert_ready!(all_ready_fut.poll());
 
         // Components start out as not ready, so adding this component changes the registry to not ready overall:
-        let mut handle = registry.register_component(COMPONENT_ID).unwrap();
+        let mut handle = registry
+            .register_component(&SubsystemIdentifier::from_dotted(COMPONENT_ID))
+            .unwrap();
 
         let mut all_ready_fut = spawn(registry.all_ready());
         assert_pending!(all_ready_fut.poll());
@@ -1013,7 +1062,9 @@ mod tests {
     ) {
         let registry = HealthRegistry::new();
         let registry_state = registry.state();
-        let handle = registry.register_component(component_id).unwrap();
+        let handle = registry
+            .register_component(&SubsystemIdentifier::from_dotted(component_id))
+            .unwrap();
         let runner = registry.into_runner().expect("should not fail to create runner");
         let runner_state = runner.state();
 

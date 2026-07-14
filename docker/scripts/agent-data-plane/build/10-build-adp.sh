@@ -4,10 +4,10 @@
 #
 # This is the single entrypoint for the build. It resolves BUILD_TARGET to a per-target profile under
 # `targets/`, sets up the shared build cache and credentials, then runs the one cargo invocation used
-# for every target. ALL target-specific knowledge -- cross-compilation kernel headers, CFLAGS,
-# `rustup target add`, and the output path -- lives in the per-target profile, not here. To support a
-# new target, add a `targets/<triple>.sh` profile; no change to this script or the Dockerfile is
-# needed.
+# for every target. ALL target-specific knowledge -- `rustup target add`, C/linker toolchain routing,
+# CFLAGS, RUSTFLAGS, the output path, and the glibc floor -- lives in the per-target profile, not here.
+# To support a new target, add a `targets/<triple>.sh` profile; no change to this script or the
+# Dockerfile is needed.
 
 set -eu
 
@@ -26,27 +26,6 @@ if [ ! -f "${target_profile}" ]; then
     exit 1
 fi
 
-# Copies the host kernel headers into the musl target include directory. AWS-LC (and any other crate
-# that needs kernel headers) requires these when cross-compiling <arch>-unknown-linux-musl. Invoked
-# by the per-target profiles that need it.
-#
-#   $1: the GNU triple whose headers we copy from (e.g. x86_64-linux-gnu)
-#   $2: the musl cross triple we copy into        (e.g. x86_64-linux-musl)
-copy_kernel_headers() {
-    gnu_triple="$1"
-    musl_triple="$2"
-
-    if ! [ -d /usr/include/linux ] || ! [ -d /usr/include/asm-generic ] || ! [ -d "/usr/include/${gnu_triple}" ]; then
-        echo "ERROR: kernel headers not found (need /usr/include/linux, asm-generic, and ${gnu_triple})." >&2
-        exit 1
-    fi
-
-    mkdir -p "/usr/include/${musl_triple}"
-    cp -R /usr/include/linux "/usr/include/${musl_triple}/linux"
-    cp -R /usr/include/asm-generic "/usr/include/${musl_triple}/asm-generic"
-    cp -R "/usr/include/${gnu_triple}/asm" "/usr/include/${musl_triple}/asm"
-}
-
 # Pull in temporary AWS credentials if the secret was mounted (used to reach the remote build cache).
 if [ -f /run/secrets/aws-creds.sh ]; then
     . /run/secrets/aws-creds.sh
@@ -58,10 +37,11 @@ if command -v buildcache >/dev/null 2>&1; then
     buildcache --zero-stats
 fi
 
-# Defaults a per-target profile may override. The profile runs its prep (rustup target add, header
-# copying) when sourced, and sets the three TARGET_* values used by the cargo invocation below.
+# Defaults a per-target profile may override. The profile runs its prep (rustup target add, toolchain
+# routing) when sourced, and sets the TARGET_* values used by the cargo invocation below.
 TARGET_CARGO_ARGS=""
 TARGET_CFLAGS=""
+TARGET_RUSTFLAGS=""
 TARGET_OUTPUT_DIR="/adp/target/${BUILD_PROFILE}"
 
 . "${target_profile}"
@@ -82,10 +62,18 @@ if [ "${USE_CARGO_AUDITABLE:-false}" = "true" ]; then
     cargo_subcmd="auditable build"
 fi
 
-# The one cargo invocation shared by every target. TARGET_CFLAGS carries any target-mandated flags
-# (e.g. -mno-outline-atomics for aarch64 musl); BUILD_CFLAGS lets a caller append extra flags without
-# clobbering the target's own. cargo_subcmd is intentionally unquoted so `auditable build` splits
-# into two arguments (same word-splitting style as TARGET_CARGO_ARGS below).
+# When a profile sets TARGET_RUSTFLAGS (e.g. -C link-arg=-static-libgcc for the glibc targets), pass
+# it via RUSTFLAGS. The RUSTFLAGS env var *overrides* `.cargo/config.toml` `[build] rustflags`, so we
+# must re-add `--cfg tokio_unstable` (the only Linux-relevant flag there) to avoid dropping it. When a
+# profile leaves TARGET_RUSTFLAGS empty we leave RUSTFLAGS unset so the config file's flags apply as-is.
+if [ -n "${TARGET_RUSTFLAGS}" ]; then
+    export RUSTFLAGS="--cfg tokio_unstable ${TARGET_RUSTFLAGS}"
+fi
+
+# The one cargo invocation shared by every target. TARGET_CFLAGS carries any target-mandated C flags;
+# BUILD_CFLAGS lets a caller append extra flags without clobbering the target's own. cargo_subcmd is
+# intentionally unquoted so `auditable build` splits into two arguments (same word-splitting style as
+# TARGET_CARGO_ARGS below).
 CFLAGS="${TARGET_CFLAGS} ${BUILD_CFLAGS:-}" \
     cargo ${cargo_subcmd} \
         --profile "${BUILD_PROFILE}" \

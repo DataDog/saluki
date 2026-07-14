@@ -1,28 +1,33 @@
 use std::{collections::HashMap, future::Future, num::NonZeroUsize, pin::Pin, sync::Mutex, time::Duration};
 
 use async_trait::async_trait;
-use resource_accounting::{ComponentRegistry, MemoryLimiter, Track as _, UsageExpr};
+use saluki_common::resource_tracking::Track as _;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use snafu::Snafu;
 use tokio::{pin, runtime::Handle, select, sync::oneshot};
-use tracing::{error, info};
+use tracing::info;
 
 use super::{
     built::{BuiltTopology, WorkerPoolConfiguration},
     graph::{Graph, GraphError},
-    ComponentId, RegisteredComponent,
+    ComponentId,
 };
+use crate::accounting::{ComponentRegistry, MemoryLimiter, UsageExpr};
 use crate::{
     components::{
         decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
         forwarders::ForwarderBuilder, relays::RelayBuilder, sources::SourceBuilder, transforms::TransformBuilder,
-        ComponentContext,
+        ComponentContext, ComponentType,
     },
     data_model::event::Event,
     health::HealthRegistry,
     runtime::{state::DataspaceRegistry, InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
-    topology::{ids::AsComponentIds, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
+    support::SubsystemIdentifier,
+    topology::{
+        ids::{get_component_relative_identifier, AsComponentIds},
+        topology_identifier, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY,
+    },
 };
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -65,14 +70,15 @@ pub struct TopologyBlueprint {
 ///
 /// This is taken out of the blueprint when it's first initialized, at which point the topology is built and spawned.
 struct TopologyBuildState {
+    topology_id: SubsystemIdentifier,
     graph: Graph,
-    sources: HashMap<ComponentId, RegisteredComponent<Box<dyn SourceBuilder + Send>>>,
-    relays: HashMap<ComponentId, RegisteredComponent<Box<dyn RelayBuilder + Send>>>,
-    decoders: HashMap<ComponentId, RegisteredComponent<Box<dyn DecoderBuilder + Send>>>,
-    transforms: HashMap<ComponentId, RegisteredComponent<Box<dyn TransformBuilder + Send>>>,
-    destinations: HashMap<ComponentId, RegisteredComponent<Box<dyn DestinationBuilder + Send>>>,
-    encoders: HashMap<ComponentId, RegisteredComponent<Box<dyn EncoderBuilder + Send>>>,
-    forwarders: HashMap<ComponentId, RegisteredComponent<Box<dyn ForwarderBuilder + Send>>>,
+    sources: HashMap<ComponentId, (Box<dyn SourceBuilder + Send>, ComponentRegistry)>,
+    relays: HashMap<ComponentId, (Box<dyn RelayBuilder + Send>, ComponentRegistry)>,
+    decoders: HashMap<ComponentId, (Box<dyn DecoderBuilder + Send>, ComponentRegistry)>,
+    transforms: HashMap<ComponentId, (Box<dyn TransformBuilder + Send>, ComponentRegistry)>,
+    destinations: HashMap<ComponentId, (Box<dyn DestinationBuilder + Send>, ComponentRegistry)>,
+    encoders: HashMap<ComponentId, (Box<dyn EncoderBuilder + Send>, ComponentRegistry)>,
+    forwarders: HashMap<ComponentId, (Box<dyn ForwarderBuilder + Send>, ComponentRegistry)>,
     component_registry: ComponentRegistry,
     interconnect_capacity: NonZeroUsize,
     shutdown_timeout: Duration,
@@ -84,10 +90,11 @@ struct TopologyBuildState {
 impl TopologyBlueprint {
     /// Creates an empty `TopologyBlueprint` with the given name.
     pub fn new(name: &str, component_registry: &ComponentRegistry) -> Self {
-        // Create a nested component registry for this topology.
-        let component_registry = component_registry.get_or_create("topology").get_or_create(name);
+        let topology_id = topology_identifier(name);
+        let component_registry = component_registry.get_or_create(topology_id.to_string());
 
         let build_state = TopologyBuildState {
+            topology_id,
             graph: Graph::default(),
             sources: HashMap::new(),
             relays: HashMap::new(),
@@ -187,7 +194,7 @@ impl TopologyBlueprint {
             .health_registry
             .clone()
             .expect("health registry must be set before acquiring a topology readiness handle");
-        let component_prefix = format!("{}.", super::health_component_root(&self.name));
+        let component_root = super::topology_identifier(&self.name);
 
         let (registered_tx, registered_rx) = oneshot::channel();
         self.state_mut().ready_signal = Some(registered_tx);
@@ -195,7 +202,7 @@ impl TopologyBlueprint {
         TopologyReady {
             registered_rx,
             health_registry,
-            component_prefix,
+            component_root,
         }
     }
 
@@ -375,7 +382,7 @@ impl TopologyBlueprint {
 pub struct TopologyReady {
     registered_rx: oneshot::Receiver<()>,
     health_registry: HealthRegistry,
-    component_prefix: String,
+    component_root: SubsystemIdentifier,
 }
 
 impl TopologyReady {
@@ -394,9 +401,7 @@ impl TopologyReady {
         }
 
         // Now wait for all registered topology components to actually become ready.
-        self.health_registry
-            .all_ready_matching(|name| name.starts_with(&self.component_prefix))
-            .await;
+        self.health_registry.all_ready_under(self.component_root).await;
 
         true
     }
@@ -457,6 +462,13 @@ impl TopologyBuildState {
             ));
     }
 
+    fn get_scoped_component_registry(
+        &self, component_type: ComponentType, component_id: &ComponentId,
+    ) -> ComponentRegistry {
+        self.component_registry
+            .get_or_create(get_component_relative_identifier(component_type, component_id).to_string())
+    }
+
     fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<(), GenericError>
     where
         I: AsRef<str>,
@@ -467,18 +479,13 @@ impl TopologyBuildState {
             .add_source(component_id, &builder)
             .error_context("Failed to add source to topology graph.")?;
 
-        let mut source_registry = self
-            .component_registry
-            .get_or_create(format!("components.sources.{}", component_id));
+        let mut source_registry = self.get_scoped_component_registry(ComponentType::Source, &component_id);
         let mut bounds_builder = source_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
         self.recalculate_bounds();
 
-        let _ = self.sources.insert(
-            component_id,
-            RegisteredComponent::new(Box::new(builder), source_registry),
-        );
+        let _ = self.sources.insert(component_id, (Box::new(builder), source_registry));
 
         Ok(())
     }
@@ -493,18 +500,13 @@ impl TopologyBuildState {
             .add_relay(component_id, &builder)
             .error_context("Failed to add relay to topology graph.")?;
 
-        let mut relay_registry = self
-            .component_registry
-            .get_or_create(format!("components.relays.{}", component_id));
+        let mut relay_registry = self.get_scoped_component_registry(ComponentType::Relay, &component_id);
         let mut bounds_builder = relay_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
         self.recalculate_bounds();
 
-        let _ = self.relays.insert(
-            component_id,
-            RegisteredComponent::new(Box::new(builder), relay_registry),
-        );
+        let _ = self.relays.insert(component_id, (Box::new(builder), relay_registry));
 
         Ok(())
     }
@@ -519,18 +521,15 @@ impl TopologyBuildState {
             .add_decoder(component_id, &builder)
             .error_context("Failed to add decoder to topology graph.")?;
 
-        let mut decoder_registry = self
-            .component_registry
-            .get_or_create(format!("components.decoders.{}", component_id));
+        let mut decoder_registry = self.get_scoped_component_registry(ComponentType::Decoder, &component_id);
         let mut bounds_builder = decoder_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
         self.recalculate_bounds();
 
-        let _ = self.decoders.insert(
-            component_id,
-            RegisteredComponent::new(Box::new(builder), decoder_registry),
-        );
+        let _ = self
+            .decoders
+            .insert(component_id, (Box::new(builder), decoder_registry));
 
         Ok(())
     }
@@ -545,18 +544,15 @@ impl TopologyBuildState {
             .add_transform(component_id, &builder)
             .error_context("Failed to add transform to topology graph.")?;
 
-        let mut transform_registry = self
-            .component_registry
-            .get_or_create(format!("components.transforms.{}", component_id));
+        let mut transform_registry = self.get_scoped_component_registry(ComponentType::Transform, &component_id);
         let mut bounds_builder = transform_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
         self.recalculate_bounds();
 
-        let _ = self.transforms.insert(
-            component_id,
-            RegisteredComponent::new(Box::new(builder), transform_registry),
-        );
+        let _ = self
+            .transforms
+            .insert(component_id, (Box::new(builder), transform_registry));
 
         Ok(())
     }
@@ -571,18 +567,15 @@ impl TopologyBuildState {
             .add_destination(component_id, &builder)
             .error_context("Failed to add destination to topology graph.")?;
 
-        let mut destination_registry = self
-            .component_registry
-            .get_or_create(format!("components.destinations.{}", component_id));
+        let mut destination_registry = self.get_scoped_component_registry(ComponentType::Destination, &component_id);
         let mut bounds_builder = destination_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
         self.recalculate_bounds();
 
-        let _ = self.destinations.insert(
-            component_id,
-            RegisteredComponent::new(Box::new(builder), destination_registry),
-        );
+        let _ = self
+            .destinations
+            .insert(component_id, (Box::new(builder), destination_registry));
 
         Ok(())
     }
@@ -597,18 +590,15 @@ impl TopologyBuildState {
             .add_encoder(component_id, &builder)
             .error_context("Failed to add encoder to topology graph.")?;
 
-        let mut encoder_registry = self
-            .component_registry
-            .get_or_create(format!("components.encoders.{}", component_id));
+        let mut encoder_registry = self.get_scoped_component_registry(ComponentType::Encoder, &component_id);
         let mut bounds_builder = encoder_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
         self.recalculate_bounds();
 
-        let _ = self.encoders.insert(
-            component_id,
-            RegisteredComponent::new(Box::new(builder), encoder_registry),
-        );
+        let _ = self
+            .encoders
+            .insert(component_id, (Box::new(builder), encoder_registry));
 
         Ok(())
     }
@@ -623,18 +613,15 @@ impl TopologyBuildState {
             .add_forwarder(component_id, &builder)
             .error_context("Failed to add forwarder to topology graph.")?;
 
-        let mut forwarder_registry = self
-            .component_registry
-            .get_or_create(format!("components.forwarders.{}", component_id));
+        let mut forwarder_registry = self.get_scoped_component_registry(ComponentType::Forwarder, &component_id);
         let mut bounds_builder = forwarder_registry.bounds_builder();
         builder.specify_bounds(&mut bounds_builder);
 
         self.recalculate_bounds();
 
-        let _ = self.forwarders.insert(
-            component_id,
-            RegisteredComponent::new(Box::new(builder), forwarder_registry),
-        );
+        let _ = self
+            .forwarders
+            .insert(component_id, (Box::new(builder), forwarder_registry));
 
         Ok(())
     }
@@ -697,133 +684,105 @@ impl TopologyBuildState {
         self.graph.validate().error_context("Failed to build topology graph.")?;
 
         let mut sources = HashMap::new();
-        for (id, builder) in self.sources {
-            let (builder, mut component_registry) = builder.into_parts();
+        for (id, (builder, mut component_registry)) in self.sources {
             let allocation_token = component_registry.token();
 
-            let component_context = ComponentContext::source(id.clone());
+            let component_context = ComponentContext::source(&self.topology_id, id.clone());
             let source = builder
-                .build(component_context)
+                .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
-            sources.insert(
-                id,
-                RegisteredComponent::new(source.track_resources(allocation_token), component_registry),
-            );
+            sources.insert(component_context, (source, component_registry));
         }
 
         let mut relays = HashMap::new();
-        for (id, builder) in self.relays {
-            let (builder, mut component_registry) = builder.into_parts();
+        for (id, (builder, mut component_registry)) in self.relays {
             let allocation_token = component_registry.token();
 
-            let component_context = ComponentContext::relay(id.clone());
+            let component_context = ComponentContext::relay(&self.topology_id, id.clone());
             let relay = builder
-                .build(component_context)
+                .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build relay '{}'.", id))?;
 
-            relays.insert(
-                id,
-                RegisteredComponent::new(relay.track_resources(allocation_token), component_registry),
-            );
+            relays.insert(component_context, (relay, component_registry));
         }
 
         let mut decoders = HashMap::new();
-        for (id, builder) in self.decoders {
-            let (builder, mut component_registry) = builder.into_parts();
+        for (id, (builder, mut component_registry)) in self.decoders {
             let allocation_token = component_registry.token();
 
-            let component_context = ComponentContext::decoder(id.clone());
+            let component_context = ComponentContext::decoder(&self.topology_id, id.clone());
             let decoder = builder
-                .build(component_context)
+                .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build decoder '{}'.", id))?;
 
-            decoders.insert(
-                id,
-                RegisteredComponent::new(decoder.track_resources(allocation_token), component_registry),
-            );
+            decoders.insert(component_context, (decoder, component_registry));
         }
 
         let mut transforms = HashMap::new();
-        for (id, builder) in self.transforms {
-            let (builder, mut component_registry) = builder.into_parts();
+        for (id, (builder, mut component_registry)) in self.transforms {
             let allocation_token = component_registry.token();
 
-            let component_context = ComponentContext::transform(id.clone());
+            let component_context = ComponentContext::transform(&self.topology_id, id.clone());
             let transform = builder
-                .build(component_context)
+                .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
-            transforms.insert(
-                id,
-                RegisteredComponent::new(transform.track_resources(allocation_token), component_registry),
-            );
+            transforms.insert(component_context, (transform, component_registry));
         }
 
         let mut destinations = HashMap::new();
-        for (id, builder) in self.destinations {
-            let (builder, mut component_registry) = builder.into_parts();
+        for (id, (builder, mut component_registry)) in self.destinations {
             let allocation_token = component_registry.token();
 
-            let component_context = ComponentContext::destination(id.clone());
+            let component_context = ComponentContext::destination(&self.topology_id, id.clone());
             let destination = builder
-                .build(component_context)
+                .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 
-            destinations.insert(
-                id,
-                RegisteredComponent::new(destination.track_resources(allocation_token), component_registry),
-            );
+            destinations.insert(component_context, (destination, component_registry));
         }
 
         let mut encoders = HashMap::new();
-        for (id, builder) in self.encoders {
-            let (builder, mut component_registry) = builder.into_parts();
+        for (id, (builder, mut component_registry)) in self.encoders {
             let allocation_token = component_registry.token();
 
-            let component_context = ComponentContext::encoder(id.clone());
+            let component_context = ComponentContext::encoder(&self.topology_id, id.clone());
             let encoder = builder
-                .build(component_context)
+                .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build encoder '{}'.", id))?;
 
-            encoders.insert(
-                id,
-                RegisteredComponent::new(encoder.track_resources(allocation_token), component_registry),
-            );
+            encoders.insert(component_context, (encoder, component_registry));
         }
 
         let mut forwarders = HashMap::new();
-        for (id, builder) in self.forwarders {
-            let (builder, mut component_registry) = builder.into_parts();
+        for (id, (builder, mut component_registry)) in self.forwarders {
             let allocation_token = component_registry.token();
-
-            let component_context = ComponentContext::forwarder(id.clone());
+            let component_context = ComponentContext::forwarder(&self.topology_id, id.clone());
             let forwarder = builder
-                .build(component_context)
+                .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build forwarder '{}'.", id))?;
 
-            forwarders.insert(
-                id,
-                RegisteredComponent::new(forwarder.track_resources(allocation_token), component_registry),
-            );
+            forwarders.insert(component_context, (forwarder, component_registry));
         }
 
         Ok(BuiltTopology::from_parts(
             name,
+            self.topology_id,
             self.graph,
             sources,
             relays,
@@ -889,7 +848,7 @@ impl Supervisable for TopologyBlueprint {
         Ok(Box::pin(async move {
             pin!(shutdown);
 
-            // If a readiness signal was provided, wait for it before spawning the components, but remain responsive to
+            // If a readiness signal was provided, wait for it before building the components, but remain responsive to
             // shutdown so we exit promptly if asked to stop before we've started.
             if let Some(environment_ready) = environment_ready {
                 select! {
@@ -898,37 +857,38 @@ impl Supervisable for TopologyBlueprint {
                 }
             }
 
-            let mut running = built.spawn_inner(&health_registry, memory_limiter, dataspace).await?;
+            // Build the topology supervisor: one dedicated supervisor per component, parented under a single topology
+            // supervisor that owns failure detection and graceful shutdown.
+            let mut topology_sup = built
+                .spawn_inner(&health_registry, memory_limiter, dataspace.clone(), shutdown_timeout)
+                .await?;
 
             // Signal that the topology has registered all of its components in the health registry, so any readiness
-            // handle can begin waiting on those components. We send this only after `spawn_inner` so readiness can't be
-            // observed before the topology's components exist.
+            // handle can begin waiting on those components. `spawn_inner` registers every component before returning, so
+            // readiness can't be observed before the topology's components exist.
             if let Some(ready_signal) = ready_signal {
                 let _ = ready_signal.send(());
             }
 
-            let mut topology_failed = false;
-            select! {
-                // The supervisor requested shutdown.
-                _ = &mut shutdown => {
-                    info!("Topology received shutdown signal. Shutting down...");
-                },
+            // Run the topology supervisor, forwarding our own shutdown signal into it. We use the internal variant so we
+            // can pass down the inherited dataspace (the public `run_with_shutdown` would create a fresh, empty one). The
+            // topology supervisor returns `Ok(())` on an intentional shutdown that drained cleanly, and an error if any
+            // component exits on its own (how a component failure fails the topology) or if a component had to be
+            // forcefully aborted after ignoring graceful shutdown (`SupervisorError::ShutdownTimedOut`). That error is
+            // preserved here as a `GenericError` so the root supervisor can still recover the aborted-worker count.
+            let (topology_shutdown_trigger, topology_shutdown) = ShutdownHandle::paired();
+            let run = topology_sup.run_with_shutdown_inner(topology_shutdown, Some(dataspace));
+            pin!(run);
 
-                // A component finished before shutdown was requested, which we treat as a failure of the topology.
-                _ = running.wait_for_unexpected_finish() => {
-                    error!("Topology component unexpectedly finished. Shutting down...");
-                    topology_failed = true;
-                },
-            }
-
-            // Trigger graceful shutdown and wait for all components to stop.
-            let shutdown_result = running.shutdown_with_timeout(shutdown_timeout).await;
-            match (shutdown_result, topology_failed) {
-                (Ok(()), false) => Ok(()),
-                (Ok(()), true) => Err(generic_error!(
-                    "Topology shut down after a component unexpectedly finished."
-                )),
-                (Err(e), _) => Err(e),
+            let mut topology_shutdown_trigger = Some(topology_shutdown_trigger);
+            loop {
+                select! {
+                    result = &mut run => return result.map_err(Into::into),
+                    _ = &mut shutdown, if topology_shutdown_trigger.is_some() => {
+                        info!("Topology received shutdown signal. Shutting down...");
+                        topology_shutdown_trigger.take().expect("present per select guard").shutdown();
+                    }
+                }
             }
         }))
     }
@@ -936,18 +896,227 @@ impl Supervisable for TopologyBlueprint {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
-    use resource_accounting::{ComponentRegistry, MemoryLimiter};
+    use async_trait::async_trait;
+    use saluki_common::sync::shutdown::ShutdownHandle;
+    use saluki_error::GenericError;
     use tokio::sync::oneshot;
 
     use super::{TopologyBlueprint, TopologyReady};
+    use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
+    use crate::runtime::Name;
+    use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
     use crate::{
+        components::{
+            destinations::{Destination, DestinationBuilder, DestinationContext},
+            sources::{Source, SourceBuilder, SourceContext},
+            ComponentContext,
+        },
         data_model::event::EventType,
         health::HealthRegistry,
-        runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError},
-        topology::test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
+        runtime::{
+            InitializationError, RestartMode, RestartStrategy, Supervisable, Supervisor, SupervisorError,
+            SupervisorFuture,
+        },
+        support::SubsystemIdentifier,
+        topology::{
+            test_util::{TestDestinationBuilder, TestSourceBuilder, TestTransformBuilder},
+            OutputDefinition,
+        },
     };
+
+    /// A dynamic child worker for exercising [`SourceContext::spawn_handle`].
+    ///
+    /// Records that it started, then runs until its supervisor shuts it down.
+    struct CountingChild {
+        started: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Supervisable for CountingChild {
+        fn name(&self) -> &str {
+            "child"
+        }
+
+        async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+            let started = Arc::clone(&self.started);
+            Ok(Box::pin(async move {
+                started.fetch_add(1, Ordering::SeqCst);
+                // Run until torn down, so the test can observe structured teardown of dynamic children.
+                process_shutdown.await;
+                Ok(())
+            }))
+        }
+    }
+
+    /// A source that runs until shutdown, optionally spawning a dynamic child through its spawn handle first.
+    struct ControlSource {
+        spawned_child: Option<Arc<AtomicUsize>>,
+    }
+
+    #[async_trait]
+    impl Source for ControlSource {
+        async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            let shutdown = context.take_shutdown_handle();
+            if let Some(started) = self.spawned_child {
+                context
+                    .spawn_handle()
+                    .spawn(CountingChild { started })
+                    .await
+                    .expect("should spawn dynamic child");
+            }
+            shutdown.await;
+            Ok(())
+        }
+    }
+
+    struct ControlSourceBuilder {
+        outputs: Vec<OutputDefinition<EventType>>,
+        spawned_child: Option<Arc<AtomicUsize>>,
+    }
+
+    impl ControlSourceBuilder {
+        fn new(spawned_child: Option<Arc<AtomicUsize>>) -> Self {
+            Self {
+                outputs: vec![OutputDefinition::default_output(EventType::EventD)],
+                spawned_child,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SourceBuilder for ControlSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            Ok(Box::new(ControlSource {
+                spawned_child: self.spawned_child.clone(),
+            }))
+        }
+    }
+
+    impl MemoryBounds for ControlSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A destination that drains its input until the upstream closes (which happens when the source stops).
+    struct DrainingDestination;
+
+    #[async_trait]
+    impl Destination for DrainingDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while context.events().next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    struct DrainingDestinationBuilder {
+        input_event_ty: EventType,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for DrainingDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            self.input_event_ty
+        }
+
+        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(DrainingDestination))
+        }
+    }
+
+    impl MemoryBounds for DrainingDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// A destination that ignores both its input and shutdown, running forever until it is forcefully aborted.
+    struct StuckDestination;
+
+    #[async_trait]
+    impl Destination for StuckDestination {
+        async fn run(self: Box<Self>, _context: DestinationContext) -> Result<(), GenericError> {
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+    }
+
+    struct StuckDestinationBuilder {
+        input_event_ty: EventType,
+    }
+
+    #[async_trait]
+    impl DestinationBuilder for StuckDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            self.input_event_ty
+        }
+
+        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(StuckDestination))
+        }
+    }
+
+    impl MemoryBounds for StuckDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    /// Builds a connected `source` -> `destination` blueprint of long-running components.
+    ///
+    /// The source runs until shutdown; the destination drains until its upstream closes. If `spawned_child` is
+    /// provided, the source spawns a dynamic child through its spawn handle that records when it starts.
+    fn long_running_blueprint(spawned_child: Option<Arc<AtomicUsize>>) -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("source", ControlSourceBuilder::new(spawned_child))
+            .expect("should not fail to add source")
+            .add_destination(
+                "destination",
+                DrainingDestinationBuilder {
+                    input_event_ty: EventType::EventD,
+                },
+            )
+            .expect("should not fail to add destination");
+        blueprint
+            .connect_components_in_order(["source", "destination"])
+            .expect("should not fail to connect components");
+        blueprint
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop());
+        blueprint
+    }
+
+    /// Builds a connected `source` -> `destination` blueprint whose destination must be forcefully aborted on shutdown.
+    ///
+    /// The source stops cleanly when shutdown is signalled; the destination ignores shutdown and runs forever, so its
+    /// per-component supervisor aborts it after `shutdown_timeout`. Exactly one component (the destination) is
+    /// force-aborted, which lets a test assert a precise abort count.
+    fn stuck_destination_blueprint(shutdown_timeout: Duration) -> TopologyBlueprint {
+        let component_registry = ComponentRegistry::default();
+        let mut blueprint = TopologyBlueprint::new("test", &component_registry);
+        blueprint
+            .add_source("source", ControlSourceBuilder::new(None))
+            .expect("should not fail to add source")
+            .add_destination(
+                "destination",
+                StuckDestinationBuilder {
+                    input_event_ty: EventType::EventD,
+                },
+            )
+            .expect("should not fail to add destination");
+        blueprint
+            .connect_components_in_order(["source", "destination"])
+            .expect("should not fail to connect components");
+        blueprint
+            .with_health_registry(HealthRegistry::new())
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_shutdown_timeout(shutdown_timeout);
+        blueprint
+    }
 
     /// Builds a blueprint pre-populated with a source, transform, and destination, all dealing in event-D events.
     ///
@@ -1207,7 +1376,7 @@ mod tests {
         // Simulate an unrelated subsystem that has already registered and become ready. A naive readiness check against
         // the shared registry could resolve immediately here, even though the topology hasn't registered anything yet.
         let mut other = health_registry
-            .register_component("env_provider.workload.foo")
+            .register_component(&SubsystemIdentifier::from_dotted("env_provider.workload.foo"))
             .expect("should register component");
         other.mark_ready();
 
@@ -1215,7 +1384,7 @@ mod tests {
         let topology_ready = TopologyReady {
             registered_rx,
             health_registry: health_registry.clone(),
-            component_prefix: "topology.primary.".to_string(),
+            component_root: topology_identifier("primary"),
         };
 
         let mut wait = spawn(topology_ready.wait());
@@ -1226,7 +1395,7 @@ mod tests {
 
         // Now register a topology component (as the topology does when it spawns), but leave it not-ready.
         let mut source = health_registry
-            .register_component("topology.primary.sources.in")
+            .register_component(&SubsystemIdentifier::from_dotted("topology.primary.sources.in"))
             .expect("should register component");
 
         // Fire the registration signal. `wait` advances to the scoped readiness check, which is still pending because
@@ -1247,7 +1416,7 @@ mod tests {
         let topology_ready = TopologyReady {
             registered_rx,
             health_registry,
-            component_prefix: "topology.primary.".to_string(),
+            component_root: topology_identifier("primary"),
         };
 
         // Drop the sender without ever signaling, as happens when the topology is torn down before it registers its
@@ -1255,5 +1424,138 @@ mod tests {
         drop(registered_tx);
 
         assert!(!topology_ready.wait().await);
+    }
+
+    #[tokio::test]
+    async fn topology_clean_shutdown_returns_ok() {
+        // A source that runs until shutdown feeds a destination that drains until its upstream closes. On shutdown,
+        // the source stops (it observes its supervisor's shutdown signal), the destination drains and stops, and the
+        // topology supervisor returns cleanly -- which is the intentional-shutdown path, distinct from a component
+        // unexpectedly finishing.
+        let blueprint = long_running_blueprint(None);
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        supervisor.add_worker(blueprint);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        // Give the components a moment to start, then request shutdown.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(()).expect("should send shutdown signal");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic");
+
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn component_can_spawn_dynamic_child_via_spawn_handle() {
+        // The source spawns a dynamic child through its context's spawn handle. The child records that it started and
+        // then runs until torn down. We verify the child actually ran, then shut the topology down cleanly. The clean
+        // shutdown also tears the (still-running) dynamic child down with its component's supervisor -- if it didn't,
+        // draining would hang and the test would time out.
+        let started = Arc::new(AtomicUsize::new(0));
+        let blueprint = long_running_blueprint(Some(Arc::clone(&started)));
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        supervisor.add_worker(blueprint);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        // Wait until the dynamic child has started.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while started.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "dynamic child never started");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            1,
+            "dynamic child should have started exactly once"
+        );
+
+        tx.send(()).expect("should send shutdown signal");
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic");
+
+        assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn forced_abort_count_survives_topology_boundary_to_root() {
+        // A component that ignores graceful shutdown is forcefully aborted, and that abort count must survive the
+        // `TopologyBlueprint` boundary -- where the topology supervisor's `SupervisorError` is flattened into a
+        // `GenericError` -- and be recovered by the root supervisor as `ShutdownTimedOut`. This exercises the
+        // `downcast` recovery path in `reported_abort_count`, which the production topology depends on but the direct
+        // nested-supervisor tests in `supervisor.rs` do not cover: those hit the structured `WorkerError` variant,
+        // never the flattened-`GenericError` path taken here.
+        //
+        // The source stops cleanly on shutdown; the destination ignores shutdown and runs forever, so exactly one
+        // component (the destination) is force-aborted after the (short) shutdown timeout.
+        let blueprint = stuck_destination_blueprint(Duration::from_millis(100));
+
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        supervisor.add_worker(blueprint);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+
+        // Give the components a moment to start, then request shutdown.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        tx.send(()).expect("should send shutdown signal");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic");
+
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "a component that ignored shutdown must surface as an unclean shutdown with a count of 1, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn component_identity_is_byte_identical_across_subsystems() {
+        // We want to ensure that when using a component's canonical identity, we are able to use that canonical
+        // identical to reference the same entity across subsystems like the health registry, resource accounting, the
+        // supervision/process tree, and so on.
+
+        for (topology_name, raw_id) in [("primary", "dsd_in"), ("secondary", "dsd_agg")] {
+            // Calculate the root topology identifier, our component context, and the identifiers for the component.
+            let topology_root = topology_identifier(topology_name);
+            let component_context = ComponentContext::source(&topology_root, ComponentId::try_from(raw_id).unwrap());
+            let component_canonical_id = component_context.identity().to_string();
+            let component_relative_id =
+                get_component_relative_identifier(component_context.component_type(), component_context.component_id());
+
+            // Resource accounting: when using relative subsystem identifiers in a nested fashion, we should end up with
+            // a full name for a component node that matches the canonical identity.
+            let topology_registry = ComponentRegistry::default().get_or_create(topology_root.to_string());
+            let component_node = topology_registry.get_or_create(component_relative_id.to_string());
+            assert_eq!(
+                component_node.full_name().as_deref(),
+                Some(component_canonical_id.as_str()),
+                "resource-accounting node name must match the canonical identity"
+            );
+
+            // Supervision: when using relative subsystem identifiers in a nested fashion, we should end up with
+            // a process name that matches the canonical identity.
+            let topology_sup = Name::root(topology_root.to_string()).expect("topology name is non-empty");
+            let process_name =
+                Name::scoped(&topology_sup, component_relative_id.to_string()).expect("component name is non-empty");
+            assert_eq!(
+                &*process_name,
+                component_canonical_id.as_str(),
+                "per-component supervisor process name must match the canonical identity"
+            );
+        }
     }
 }

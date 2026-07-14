@@ -7,12 +7,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytesize::ByteSize;
 use regex::Regex;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},
@@ -264,6 +264,9 @@ impl MetricMapper {
         let metric_name = context.name();
         let tags = context.tags();
         let origin_tags = context.origin_tags();
+        // TODO: If host-bearing remaps show measurable allocation overhead, preserve the context's underlying host
+        // representation through the resolver instead of rematerializing it from `&str`.
+        let host = context.host();
 
         // See if we have a cached result for this metric name.
         if let Some(cache) = &self.cache {
@@ -274,8 +277,9 @@ impl MetricMapper {
                         let mut merged_tags = tags.clone();
                         merged_tags.merge_shared(&result.extra_tags);
 
-                        self.context_resolver.resolve_with_origin_tags(
+                        self.context_resolver.resolve_with_optional_host_and_origin_tags(
                             result.name.clone(),
+                            host,
                             merged_tags,
                             origin_tags.clone(),
                         )
@@ -314,8 +318,9 @@ impl MetricMapper {
                     let mut merged_tags = tags.clone();
                     merged_tags.merge_shared(&extra_tags);
 
-                    let resolved = self.context_resolver.resolve_with_origin_tags(
+                    let resolved = self.context_resolver.resolve_with_optional_host_and_origin_tags(
                         new_name.as_str(),
+                        host,
                         merged_tags,
                         origin_tags.clone(),
                     )?;
@@ -401,8 +406,11 @@ impl SynchronousTransform for DogStatsDMapper {
 mod tests {
 
     use bytesize::ByteSize;
-    use saluki_context::Context;
-    use saluki_core::{components::ComponentContext, data_model::event::metric::Metric, topology::ComponentId};
+    use saluki_context::{Context, ContextResolverBuilder};
+    use saluki_core::{
+        components::ComponentContext, data_model::event::metric::Metric, support::SubsystemIdentifier,
+        topology::ComponentId,
+    };
     use saluki_error::GenericError;
     use serde_json::{json, Value};
 
@@ -418,7 +426,10 @@ mod tests {
     }
 
     fn mapper_with_cache(json_data: Value, cache_size: usize) -> Result<MetricMapper, GenericError> {
-        let context = ComponentContext::transform(ComponentId::try_from("test_mapper").unwrap());
+        let context = ComponentContext::transform(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("test_mapper").unwrap(),
+        );
         let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
         let context_string_interner_bytes = ByteSize::kib(64);
         mpc.build(context, context_string_interner_bytes, cache_size)
@@ -469,6 +480,42 @@ mod tests {
 
         let metric = counter_metric("test.job.size.not_match", &[]);
         assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
+    }
+
+    #[tokio::test]
+    async fn mapper_preserves_host_context_dimension() {
+        let json_data = json!([{
+          "name": "test",
+          "prefix": "test.",
+          "mappings": [
+            {
+              "match": "test.job.duration.*",
+              "name": "test.job.duration",
+              "tags": {
+                "job_name": "$1"
+              }
+            }
+          ]
+        }]);
+
+        let mut resolver = ContextResolverBuilder::for_tests().build();
+        let context_a = resolver
+            .resolve_with_host("test.job.duration.worker", "host-a", &[] as &[&str], None)
+            .expect("context should resolve");
+        let context_b = resolver
+            .resolve_with_host("test.job.duration.worker", "host-b", &[] as &[&str], None)
+            .expect("context should resolve");
+
+        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+        let mapped_a = mapper.try_map(&context_a).expect("should have remapped");
+        let mapped_b = mapper.try_map(&context_b).expect("should have remapped");
+
+        assert_ne!(mapped_a, mapped_b);
+        assert_eq!(mapped_a.host(), Some("host-a"));
+        assert_eq!(mapped_b.host(), Some("host-b"));
+        assert_eq!(mapped_a.name(), "test.job.duration");
+        assert_tags(&mapped_a, &["job_name:worker"]);
+        assert_tags(&mapped_b, &["job_name:worker"]);
     }
 
     #[tokio::test]

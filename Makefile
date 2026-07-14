@@ -19,6 +19,9 @@ export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | gre
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
 export ADP_APP_BUILD_TIME := $(APP_BUILD_TIME)
 
+# Datadog Agent version used by the project-wide comparison image.
+export DATADOG_AGENT_VERSION := $(shell cat .datadog-agent-version)
+
 # SPDX license-list-data tag used by package-adp-host to harvest THIRD-PARTY-* license texts.
 # Pinned to match docker/Dockerfile.agent-data-plane so the host-built tarball ships the same
 # set of license texts as the linux Docker artifact; bump in lockstep with the Dockerfile.
@@ -38,7 +41,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.80.3
+MACOS_TEST_AGENT_VERSION ?= 7.81.0
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -46,6 +49,11 @@ MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
 # General build settings used for tooling, etc.
 export GO_BUILD_IMAGE ?= golang:1.23-bullseye
 export GO_APP_IMAGE ?= ubuntu:24.04
+
+# Pinned nightly toolchain shared by the Miri tests and API-doc generation, both of which rely on
+# nightly-only features. Keeping it in one variable ensures the two stay in lockstep; bump here to
+# move both at once.
+export RUST_NIGHTLY_VERSION ?= nightly-2026-01-18
 
 # Tool configuration.
 export AUTOINSTALL ?= true
@@ -75,7 +83,7 @@ export WINDOWS_CROSS_LLVM_BIN ?= /opt/homebrew/opt/llvm/bin
 export WINDOWS_CROSS_CARGO_ARGS ?= --package agent-data-plane
 
 # Version of source repositories (Git tag) for vendored Protocol Buffers definitions.
-export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.80.x
+export PROTOBUF_SRC_REPO_DD_AGENT ?= 7.81.x
 export PROTOBUF_SRC_REPO_AGENT_PAYLOAD ?= v5.0.164
 export PROTOBUF_SRC_REPO_CONTAINERD ?= v2.2.0
 export PROTOBUF_SRC_REPO_SKETCHES_GO ?= v1.4.7
@@ -201,6 +209,7 @@ build-datadog-agent-image: build-adp-image ## Builds the converged Datadog Agent
 	@docker build \
 		--tag saluki-images/datadog-agent:testing-devel \
 		--tag local.dev/saluki-images/datadog-agent:testing-devel \
+		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-devel \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -211,6 +220,7 @@ build-datadog-agent-image-release: build-adp-image-release ## Builds the converg
 	@docker build \
 		--tag saluki-images/datadog-agent:testing-release \
 		--tag local.dev/saluki-images/datadog-agent:testing-release \
+		--build-arg "DD_AGENT_VERSION=$(DATADOG_AGENT_VERSION)-full" \
 		--build-arg ADP_IMAGE=saluki-images/agent-data-plane:testing-release \
 		--file ./docker/Dockerfile.datadog-agent \
 		.
@@ -497,10 +507,10 @@ check-all: ## Check everything
 check-all: check-fmt check-clippy check-docs check-deny check-licenses check-unused-deps generate-api-docs check-features
 
 .PHONY: generate-api-docs
-generate-api-docs: check-rust-build-tools
+generate-api-docs: check-rust-build-tools ensure-rust-nightly
 generate-api-docs: ## Check that API documentation builds without errors
 	@echo "[*] Checking API documentation build..."
-	@RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +nightly doc --no-deps -Zrustdoc-map --lib
+	@RUSTDOCFLAGS="--enable-index-page -Zunstable-options" cargo +$(RUST_NIGHTLY_VERSION) doc --no-deps -Zrustdoc-map --lib
 
 .PHONY: check-clippy
 check-clippy: check-rust-build-tools
@@ -515,12 +525,12 @@ check-deny: ## Check all crate dependencies for outstanding advisories or usage 
 	@cargo deny check --hide-inclusion-graph --show-stats
 
 .PHONY: check-fmt
-check-fmt: check-rust-build-tools cargo-install-cargo-sort
+check-fmt: check-rust-build-tools ensure-rust-nightly cargo-install-cargo-sort
 check-fmt: ## Check that all Rust source files are formatted properly
 	@echo "[*] Checking Rust source code formatting..."
-	@cargo +nightly fmt -- --check
+	@cargo +$(RUST_NIGHTLY_VERSION) fmt -- --check
 	@echo "[*] Checking Cargo.toml formatting..."
-	@cargo sort --workspace --check >/dev/null
+	@cargo sort --workspace . --check >/dev/null
 
 .PHONY: check-licenses
 check-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool
@@ -578,7 +588,7 @@ test-docs: ## Runs all doctests
 test-miri: check-rust-build-tools ensure-rust-miri
 test-miri: ## Runs all Miri-specific unit tests
 	@echo "[*] Running Miri-specific unit tests..."
-	cargo +nightly-2025-06-16 miri test -p stringtheory
+	cargo +$(RUST_NIGHTLY_VERSION) miri test -p stringtheory
 
 .PHONY: test-loom
 test-loom: check-rust-build-tools
@@ -641,6 +651,11 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
+.PHONY: build-adp-aix
+build-adp-aix: BUILD_PROFILE ?= aix-optimized-release
+build-adp-aix: ## Builds a release agent-data-plane binary natively on AIX (optimized settings without LTO)
+	@BUILD_PROFILE="$(BUILD_PROFILE)" $(CURDIR)/ci/tooling/build-adp-aix.sh
+
 .PHONY: package-adp-host
 package-adp-host: BUILD_PROFILE ?= release
 # Tarball-filename version. Defaults to Cargo.toml; CI overrides with $$ADP_IMAGE_VERSION.
@@ -687,12 +702,24 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 			curl -fL "$(MACOS_TEST_AGENT_DMG_URL)" -o "$$DMG_PATH"; \
 		fi; \
 		MOUNT_DIR=$$(mktemp -d /tmp/saluki-dda-mount-XXXXXX); \
-		hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; \
+		cleanup_mount() { bash "$(CURDIR)/ci/tooling/cleanup-macos-dda-mounts.sh" "$$MOUNT_DIR"; }; \
+		trap cleanup_mount EXIT; \
+		for attempt in 1 2 3; do \
+			if hdiutil attach "$$DMG_PATH" -mountpoint "$$MOUNT_DIR" -nobrowse >/dev/null; then \
+				break; \
+			fi; \
+			if [ "$$attempt" = "3" ]; then \
+				echo "ERROR: failed to attach $$DMG_PATH after $$attempt attempts" >&2; \
+				exit 1; \
+			fi; \
+			echo "[*] Failed to attach $$DMG_PATH on attempt $$attempt; retrying..." >&2; \
+			sleep $$((attempt * 2)); \
+		done; \
 		PKG=$$(find "$$MOUNT_DIR" -name '*.pkg' | head -1); \
 		EXPAND_DIR=$$(mktemp -d /tmp/saluki-dda-expand-XXXXXX) && rm -rf "$$EXPAND_DIR"; \
 		pkgutil --expand-full "$$PKG" "$$EXPAND_DIR" >/dev/null; \
-		hdiutil detach "$$MOUNT_DIR" >/dev/null; \
-		rmdir "$$MOUNT_DIR" 2>/dev/null || true; \
+		cleanup_mount; \
+		trap - EXIT; \
 		PAYLOAD_DIR=$$(find "$$EXPAND_DIR" -type d -name Payload | head -1); \
 		if [ -z "$$PAYLOAD_DIR" ] || [ ! -x "$$PAYLOAD_DIR/bin/agent/agent" ]; then \
 			echo "ERROR: pkg payload did not contain bin/agent/agent. Expanded layout:" >&2; \
@@ -739,20 +766,27 @@ provision-macos-test-env: ## Installs the pinned Datadog Agent ($(MACOS_TEST_AGE
 .PHONY: test-integration-macos-ci
 test-integration-macos-ci: build-panoramic build-adp-host provision-macos-test-env test-integration-macos-run ## CI entry point: builds binaries, ensures Agent + cert are provisioned, then runs the `mac`-runtime integration tests
 
-.PHONY: ensure-rust-miri
-ensure-rust-miri:
+.PHONY: ensure-rust-nightly
+ensure-rust-nightly:
 ifeq ($(shell command -v rustup >/dev/null || echo not-found), not-found)
-	$(error "Rustup must be present to install nightly toolchain/Miri component: https://www.rust-lang.org/tools/install")
+	$(error "Rustup must be present to install the nightly toolchain: https://www.rust-lang.org/tools/install")
 endif
-	@echo "[*] Installing/updating nightly Rust (2025-06-16) and Miri component..."
-	@rustup toolchain install nightly-2025-06-16 --component miri
+	@echo "[*] Installing/updating nightly Rust ($(RUST_NIGHTLY_VERSION))..."
+	@rustup toolchain install $(RUST_NIGHTLY_VERSION) --profile minimal --component rustfmt
+
+.PHONY: ensure-rust-miri
+ensure-rust-miri: ensure-rust-nightly
+	@echo "[*] Installing/updating Miri component..."
+	@rustup component add miri --toolchain $(RUST_NIGHTLY_VERSION)
 	@echo "[*] Ensuring Miri is setup..."
-	@cargo +nightly-2025-06-16 miri setup
+	@cargo +$(RUST_NIGHTLY_VERSION) miri setup
 
 ##@ Antithesis
 
 ANTITHESIS_CONFIG_DIR := test/antithesis/scenarios/general
 ANTITHESIS_COMPOSE_FILE := $(ANTITHESIS_CONFIG_DIR)/docker-compose.yaml
+ANTITHESIS_DIFFERENTIAL_CONFIG_DIR := test/antithesis/scenarios/differential
+ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE := $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)/docker-compose.yaml
 
 .PHONY: check-antithesis-tools
 check-antithesis-tools:
@@ -761,15 +795,29 @@ ifeq ($(shell command -v snouty >/dev/null || echo not-found), not-found)
 endif
 
 .PHONY: antithesis-build
-antithesis-build: ## Builds the Antithesis harness container images
+antithesis-build: build-datadog-agent-image-release ## Builds the Antithesis harness container images
 	@echo "[*] Building Antithesis harness images..."
 	@docker compose -f $(ANTITHESIS_COMPOSE_FILE) build
 
-.PHONY: antithesis-validate
-antithesis-validate: check-antithesis-tools antithesis-build
-antithesis-validate: ## Validates the Antithesis harness: builds images, runs 'snouty validate'
-	@echo "[*] Validating Antithesis harness with snouty..."
+.PHONY: antithesis-build-differential
+antithesis-build-differential: build-datadog-agent-image-release ## Builds the differential Antithesis harness images
+	@echo "[*] Building differential Antithesis harness images..."
+	@docker compose -f $(ANTITHESIS_DIFFERENTIAL_COMPOSE_FILE) build
+
+.PHONY: antithesis-validate-general
+antithesis-validate-general: check-antithesis-tools antithesis-build
+antithesis-validate-general: ## Validates the general Antithesis harness: builds images, runs 'snouty validate'
+	@echo "[*] Validating general Antithesis harness with snouty..."
 	@snouty validate $(ANTITHESIS_CONFIG_DIR)
+
+.PHONY: antithesis-validate-differential
+antithesis-validate-differential: check-antithesis-tools antithesis-build-differential
+antithesis-validate-differential: ## Validates the differential Antithesis harness
+	@echo "[*] Validating differential Antithesis harness with snouty..."
+	@snouty validate $(ANTITHESIS_DIFFERENTIAL_CONFIG_DIR)
+
+.PHONY: antithesis-validate
+antithesis-validate: antithesis-validate-general antithesis-validate-differential ## Validates both Antithesis harnesses (general + differential)
 
 ##@ Profiling
 
@@ -921,14 +969,14 @@ clean-kind: check-kind-tools ## Cleans up orphaned panoramic namespaces in the k
 clean-correctness: clean-airlock clean-kind ## Cleans up all orphaned correctness test resources (Docker + kind)
 
 .PHONY: fmt
-fmt: check-rust-build-tools cargo-install-cargo-autoinherit cargo-install-cargo-sort
+fmt: check-rust-build-tools ensure-rust-nightly cargo-install-cargo-autoinherit cargo-install-cargo-sort
 fmt: ## Format Rust source code
 	@echo "[*] Formatting Rust source code..."
-	@cargo +nightly fmt
+	@cargo +$(RUST_NIGHTLY_VERSION) fmt
 	@echo "[*] Ensuring workspace dependencies are autoinherited..."
 	@cargo autoinherit 2>/dev/null
 	@echo "[*] Formatting Cargo.toml files..."
-	@cargo sort --workspace >/dev/null
+	@cargo sort --workspace . >/dev/null
 
 .PHONY: sync-licenses
 sync-licenses: check-rust-build-tools cargo-install-dd-rust-license-tool

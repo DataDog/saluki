@@ -1,12 +1,12 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{
     collections::{FastHashMap, FastHashSet},
     sync::shutdown::ShutdownHandle,
 };
 use saluki_config::GenericConfiguration;
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use stringtheory::{interning::GenericMapInterner, MetaString};

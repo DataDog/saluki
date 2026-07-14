@@ -9,11 +9,14 @@ pub mod reexport {
     pub use pastey::paste;
 }
 
+pub mod accounting;
 pub mod components;
 pub mod constants;
 pub mod data_model;
+pub mod diagnostic;
 pub mod health;
 pub mod observability;
 pub mod pooling;
 pub mod runtime;
+pub mod support;
 pub mod topology;

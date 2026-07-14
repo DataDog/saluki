@@ -38,6 +38,9 @@ pub async fn create_v2_request_builder(
     let mut request_builder =
         RequestBuilder::new(encoder, endpoint_config.compression_scheme(), RB_BUFFER_CHUNK_SIZE).await?;
     request_builder.with_max_inputs_per_payload(endpoint_config.max_metrics_per_payload());
+    if matches!(endpoint, MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2) {
+        request_builder.with_max_data_points_per_payload(endpoint_config.max_series_points_per_payload());
+    }
 
     Ok(request_builder)
 }
@@ -287,7 +290,7 @@ fn encode_series_metric(
         output_stream,
         scratch_buf,
         "host",
-        metric.metadata().hostname().unwrap_or_default(),
+        metric.context().host().unwrap_or_default(),
     )?;
 
     // Write the origin metadata, if it exists.
@@ -367,7 +370,7 @@ fn encode_sketch_metric(
     // Write the host.
     output_stream.write_string(
         constants::SKETCH_HOST_FIELD_NUMBER,
-        metric.metadata().hostname().unwrap_or_default(),
+        metric.context().host().unwrap_or_default(),
     )?;
 
     // Set the origin metadata, if it exists.

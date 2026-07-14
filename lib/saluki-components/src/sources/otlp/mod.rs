@@ -13,11 +13,12 @@ use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLog
 use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
 use saluki_config::GenericConfiguration;
+use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
     components::{
@@ -32,6 +33,7 @@ use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 use serde::Deserialize;
+use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
 use tokio::sync::mpsc;
@@ -49,6 +51,20 @@ use self::metrics::translator::OtlpMetricsTranslator;
 use self::resolver::build_context_resolver;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
+
+/// Parses `otlp_config.metrics.tags` into a set of tags added to every emitted metric.
+///
+/// The value is a comma-separated list. An empty configuration yields no tags.
+fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
+    let mut tags = TagSet::default();
+    for tag in raw.split(',') {
+        let tag = tag.trim();
+        if !tag.is_empty() {
+            tags.insert_tag(tag);
+        }
+    }
+    tags.into_shared()
+}
 
 const fn default_context_string_interner_size() -> ByteSize {
     ByteSize::mib(2)
@@ -71,6 +87,9 @@ const fn default_allow_context_heap_allocations() -> bool {
 #[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
 #[cfg_attr(test, derive_where(PartialEq))]
 pub struct OtlpConfiguration {
+    #[serde(skip)]
+    default_hostname: MetaString,
+
     otlp_config: OtlpConfig,
 
     /// Total size of the string interner used for contexts.
@@ -133,6 +152,12 @@ impl OtlpConfiguration {
         Ok(cfg)
     }
 
+    /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
+    pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
+        self.default_hostname = hostname.into();
+        self
+    }
+
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
@@ -192,7 +217,10 @@ impl SourceBuilder for OtlpConfiguration {
         let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
         let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default()
             .with_remapping(true)
-            .with_quantiles(true);
+            .with_quantiles(true)
+            .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags);
+
+        let metric_tags = parse_configured_metric_tags(&self.otlp_config.metrics.tags);
         let traces_interner_size =
             std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
                 .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
@@ -208,6 +236,8 @@ impl SourceBuilder for OtlpConfiguration {
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
+            metric_tags,
+            default_hostname: self.default_hostname.clone(),
             traces_translator,
             metrics,
         }))
@@ -230,6 +260,8 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
+    metric_tags: SharedTagSet,
+    default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
@@ -244,6 +276,8 @@ impl Source for Otlp {
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
+            metric_tags,
+            default_hostname,
             traces_translator,
             metrics,
         } = *self;
@@ -259,7 +293,12 @@ impl Source for Otlp {
 
         let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
 
-        let metrics_translator = OtlpMetricsTranslator::new(metrics_translator_config, context_resolver)?;
+        let metrics_translator = OtlpMetricsTranslator::new(
+            metrics_translator_config,
+            default_hostname,
+            context_resolver,
+            metric_tags,
+        )?;
 
         let thread_pool_handle = context.topology_context().global_thread_pool().clone();
 
@@ -509,5 +548,57 @@ mod config_smoke {
             DatadogRemapper::new,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_configured_metric_tags;
+
+    fn tags(raw: &str) -> Vec<String> {
+        parse_configured_metric_tags(raw)
+            .into_iter()
+            .map(|t| t.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn empty_configuration_yields_no_tags() {
+        assert!(tags("").is_empty());
+    }
+
+    #[test]
+    fn single_tag_is_parsed() {
+        assert_eq!(tags("env:prod"), vec!["env:prod".to_string()]);
+    }
+
+    #[test]
+    fn multiple_tags_are_split_on_comma() {
+        assert_eq!(
+            tags("env:prod,team:core"),
+            vec!["env:prod".to_string(), "team:core".to_string()]
+        );
+    }
+
+    #[test]
+    fn duplicate_tags_are_deduplicated() {
+        assert_eq!(tags("env:prod,env:prod"), vec!["env:prod".to_string()]);
+    }
+
+    #[test]
+    fn whitespace_around_commas_is_stripped() {
+        assert_eq!(
+            tags("env:prod, team:core"),
+            vec!["env:prod".to_string(), "team:core".to_string()]
+        );
+    }
+
+    #[test]
+    fn trailing_and_doubled_commas_produce_no_empty_tags() {
+        assert_eq!(tags("env:prod,"), vec!["env:prod".to_string()]);
+        assert_eq!(
+            tags("env:prod,,team:core"),
+            vec!["env:prod".to_string(), "team:core".to_string()]
+        );
     }
 }

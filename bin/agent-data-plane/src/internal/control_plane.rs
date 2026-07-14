@@ -1,11 +1,11 @@
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_server_tls_config};
-use resource_accounting::ComponentRegistry;
 use saluki_api::EndpointType;
 use saluki_app::{
     accounting::ResourceTelemetryWorker, config::ConfigWorker, dynamic_api::DynamicAPIBuilder,
     logging::LoggingOverrideController,
 };
 use saluki_config::GenericConfiguration;
+use saluki_core::accounting::ComponentRegistry;
 use saluki_core::{
     health::HealthRegistry,
     runtime::{RestartStrategy, RuntimeConfiguration, Supervisor},
@@ -58,8 +58,10 @@ pub async fn create_control_plane_supervisor(
 
     privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
-    // If we bootstrapped ourselves as a remote agent, add the necessary gRPC services to the API.
+    // If we bootstrapped ourselves as a remote agent, add the necessary gRPC services to the API
+    // and a worker that captures the dataspace for diagnostic artifact collection.
     if let Some(ra_bootstrap) = &ra_bootstrap {
+        supervisor.add_worker(ra_bootstrap.create_dataspace_anchor());
         privileged_api = privileged_api
             .with_grpc_service(ra_bootstrap.create_status_service())
             .with_grpc_service(ra_bootstrap.create_flare_service())

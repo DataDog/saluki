@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::strings::lower_alphanumeric;
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::EventType;
 use saluki_core::{
     components::{transforms::*, ComponentContext},

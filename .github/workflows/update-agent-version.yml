@@ -85,7 +85,7 @@ jobs:
             -not -path "./bun.lock" \
             -not -path "./Cargo.lock" \
             -not -path "./.github/workflows/update-agent-version.yml" \
-            -exec grep -lF "$OLD_VERSION_ESCAPED" {} \; 2>/dev/null | while read -r file; do
+            -exec grep -lF "$OLD_VERSION" {} \; 2>/dev/null | while read -r file; do
               echo "Updating: $file"
               sed -i "s/$OLD_VERSION_ESCAPED/$NEW_VERSION/g" "$file"
           done

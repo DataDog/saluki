@@ -8,7 +8,7 @@ use crate::runtime::process::Id;
 
 mod dataspace;
 pub(crate) use self::dataspace::CURRENT_DATASPACE;
-pub use self::dataspace::{AssertionUpdate, DataspaceRegistry, Subscription};
+pub use self::dataspace::{DataspaceRegistry, DataspaceUpdate, Subscription};
 
 /// An identifier used to key values in a [`DataspaceRegistry`].
 ///

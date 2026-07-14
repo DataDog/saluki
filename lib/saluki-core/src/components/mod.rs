@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::topology::ComponentId;
+use crate::{support::SubsystemIdentifier, topology::ComponentId};
 
 pub mod decoders;
 pub mod destinations;
@@ -50,142 +50,146 @@ impl ComponentType {
             Self::Destination => "destination",
         }
     }
+
+    /// Returns the categorical string representation of the component type.
+    ///
+    /// This is a plural form of the value returned by [`as_str`][Self::as_str]. For example, if [`as_str`][Self::as_str]
+    /// returns `source`, this returns `sources`.
+    pub fn as_category_str(&self) -> &'static str {
+        match self {
+            Self::Source => "sources",
+            Self::Relay => "relays",
+            Self::Decoder => "decoders",
+            Self::Transform => "transforms",
+            Self::Encoder => "encoders",
+            Self::Forwarder => "forwarders",
+            Self::Destination => "destinations",
+        }
+    }
 }
 
 /// A component context.
 ///
-/// Component contexts uniquely identify a component within a topology by coupling the component identifier (name) and
-/// component type (source, relay, decoder, transform, encoder, forwarder, or destination).
-///
-/// Practically speaking, all components are required to have a unique identifier. However, identifiers may be opaque
-/// enough that without knowing the _type_ of component, the identifier doesn't provide enough information.
-#[derive(Clone)]
+/// Holds the identifiers (absolute and relative) for a component, as well as its type.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ComponentContext {
+    topology_root: SubsystemIdentifier,
     component_id: ComponentId,
     component_type: ComponentType,
 }
 
 impl ComponentContext {
-    /// Creates a new `ComponentContext` for a source component with the given identifier.
-    pub fn source(component_id: ComponentId) -> Self {
+    /// Creates a new `ComponentContext` rooted at the given topology, with the given identifier and type.
+    pub fn new(topology_root: &SubsystemIdentifier, component_id: ComponentId, component_type: ComponentType) -> Self {
         Self {
+            topology_root: topology_root.clone(),
             component_id,
-            component_type: ComponentType::Source,
+            component_type,
         }
     }
 
-    /// Creates a new `ComponentContext` for a relay component with the given identifier.
-    pub fn relay(component_id: ComponentId) -> Self {
-        Self {
-            component_id,
-            component_type: ComponentType::Relay,
-        }
+    /// Creates a new `ComponentContext` for a source component with the given identifier, within the named topology.
+    pub fn source(topology_root: &SubsystemIdentifier, component_id: ComponentId) -> Self {
+        Self::new(topology_root, component_id, ComponentType::Source)
     }
 
-    /// Creates a new `ComponentContext` for a decoder component with the given identifier.
-    pub fn decoder(component_id: ComponentId) -> Self {
-        Self {
-            component_id,
-            component_type: ComponentType::Decoder,
-        }
+    /// Creates a new `ComponentContext` for a relay component with the given identifier, within the named topology.
+    pub fn relay(topology_root: &SubsystemIdentifier, component_id: ComponentId) -> Self {
+        Self::new(topology_root, component_id, ComponentType::Relay)
     }
 
-    /// Creates a new `ComponentContext` for a transform component with the given identifier.
-    pub fn transform(component_id: ComponentId) -> Self {
-        Self {
-            component_id,
-            component_type: ComponentType::Transform,
-        }
+    /// Creates a new `ComponentContext` for a decoder component with the given identifier, within the named topology.
+    pub fn decoder(topology_root: &SubsystemIdentifier, component_id: ComponentId) -> Self {
+        Self::new(topology_root, component_id, ComponentType::Decoder)
     }
 
-    /// Creates a new `ComponentContext` for an encoder component with the given identifier.
-    pub fn encoder(component_id: ComponentId) -> Self {
-        Self {
-            component_id,
-            component_type: ComponentType::Encoder,
-        }
+    /// Creates a new `ComponentContext` for a transform component with the given identifier, within the named topology.
+    pub fn transform(topology_root: &SubsystemIdentifier, component_id: ComponentId) -> Self {
+        Self::new(topology_root, component_id, ComponentType::Transform)
     }
 
-    /// Creates a new `ComponentContext` for a forwarder component with the given identifier.
-    pub fn forwarder(component_id: ComponentId) -> Self {
-        Self {
-            component_id,
-            component_type: ComponentType::Forwarder,
-        }
+    /// Creates a new `ComponentContext` for an encoder component with the given identifier, within the named topology.
+    pub fn encoder(topology_root: &SubsystemIdentifier, component_id: ComponentId) -> Self {
+        Self::new(topology_root, component_id, ComponentType::Encoder)
     }
 
-    /// Creates a new `ComponentContext` for a destination component with the given identifier.
-    pub fn destination(component_id: ComponentId) -> Self {
-        Self {
-            component_id,
-            component_type: ComponentType::Destination,
-        }
+    /// Creates a new `ComponentContext` for a forwarder component with the given identifier, within the named topology.
+    pub fn forwarder(topology_root: &SubsystemIdentifier, component_id: ComponentId) -> Self {
+        Self::new(topology_root, component_id, ComponentType::Forwarder)
     }
 
-    /// Creates a new `ComponentContext` for a source component with the given identifier.
+    /// Creates a new `ComponentContext` for a destination component with the given identifier, within the named topology.
+    pub fn destination(topology_root: &SubsystemIdentifier, component_id: ComponentId) -> Self {
+        Self::new(topology_root, component_id, ComponentType::Destination)
+    }
+
+    /// Creates a new `ComponentContext` for a source component with the given identifier, in a test topology.
     #[cfg(test)]
     pub fn test_source<S: AsRef<str>>(component_id: S) -> Self {
-        Self {
-            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
-            component_type: ComponentType::Source,
-        }
+        Self::source(
+            &SubsystemIdentifier::from_segments(["topology", "test"]),
+            ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+        )
     }
 
-    /// Creates a new `ComponentContext` for a relay component with the given identifier.
+    /// Creates a new `ComponentContext` for a relay component with the given identifier, in a test topology.
     #[cfg(test)]
     pub fn test_relay<S: AsRef<str>>(component_id: S) -> Self {
-        Self {
-            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
-            component_type: ComponentType::Relay,
-        }
+        Self::relay(
+            &SubsystemIdentifier::from_segments(["topology", "test"]),
+            ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+        )
     }
 
-    /// Creates a new `ComponentContext` for a decoder component with the given identifier.
+    /// Creates a new `ComponentContext` for a decoder component with the given identifier, in a test topology.
     #[cfg(test)]
     pub fn test_decoder<S: AsRef<str>>(component_id: S) -> Self {
-        Self {
-            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
-            component_type: ComponentType::Decoder,
-        }
+        Self::decoder(
+            &SubsystemIdentifier::from_segments(["topology", "test"]),
+            ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+        )
     }
 
-    /// Creates a new `ComponentContext` for a transform component with the given identifier.
+    /// Creates a new `ComponentContext` for a transform component with the given identifier, in a test topology.
     #[cfg(test)]
     pub fn test_transform<S: AsRef<str>>(component_id: S) -> Self {
-        Self {
-            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
-            component_type: ComponentType::Transform,
-        }
+        Self::transform(
+            &SubsystemIdentifier::from_segments(["topology", "test"]),
+            ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+        )
     }
 
-    /// Creates a new `ComponentContext` for a encoder component with the given identifier.
+    /// Creates a new `ComponentContext` for an encoder component with the given identifier, in a test topology.
     #[cfg(test)]
     pub fn test_encoder<S: AsRef<str>>(component_id: S) -> Self {
-        Self {
-            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
-            component_type: ComponentType::Encoder,
-        }
+        Self::encoder(
+            &SubsystemIdentifier::from_segments(["topology", "test"]),
+            ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+        )
     }
 
-    /// Creates a new `ComponentContext` for a forwarder component with the given identifier.
+    /// Creates a new `ComponentContext` for a forwarder component with the given identifier, in a test topology.
     #[cfg(test)]
     pub fn test_forwarder<S: AsRef<str>>(component_id: S) -> Self {
-        Self {
-            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
-            component_type: ComponentType::Forwarder,
-        }
+        Self::forwarder(
+            &SubsystemIdentifier::from_segments(["topology", "test"]),
+            ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+        )
     }
 
-    /// Creates a new `ComponentContext` for a destination component with the given identifier.
+    /// Creates a new `ComponentContext` for a destination component with the given identifier, in a test topology.
     #[cfg(test)]
     pub fn test_destination<S: AsRef<str>>(component_id: S) -> Self {
-        Self {
-            component_id: ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
-            component_type: ComponentType::Destination,
-        }
+        Self::destination(
+            &SubsystemIdentifier::from_segments(["topology", "test"]),
+            ComponentId::try_from(component_id.as_ref()).expect("invalid component ID"),
+        )
     }
 
     /// Returns the component identifier.
+    ///
+    /// This is the relative identifier of the component, unique within its topology but not guaranteed to be globally
+    /// unique. See [`ComponentContext::identity`] for the fully qualified identity.
     pub fn component_id(&self) -> &ComponentId {
         &self.component_id
     }
@@ -194,10 +198,38 @@ impl ComponentContext {
     pub fn component_type(&self) -> ComponentType {
         self.component_type
     }
+
+    /// Returns the fully qualified identity of this component.
+    ///
+    /// The returned identifier uniquely identifies the component within the process, inclusive of the topology to
+    /// which it belongs.
+    pub fn identity(&self) -> SubsystemIdentifier {
+        self.topology_root
+            .clone()
+            .child(self.component_type.as_category_str())
+            .child(&*self.component_id)
+    }
 }
 
 impl fmt::Display for ComponentContext {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}[{}]", self.component_type.as_str(), self.component_id)
+        write!(f, "{}", self.identity())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ComponentContext;
+
+    #[test]
+    fn identity_dotted_form() {
+        let context = ComponentContext::test_source("dsd_in");
+        assert_eq!(context.identity().to_string(), "topology.test.sources.dsd_in");
+    }
+
+    #[test]
+    fn context_display_equals_identity_to_string() {
+        let context = ComponentContext::test_transform("dsd_mapper");
+        assert_eq!(context.to_string(), context.identity().to_string());
     }
 }

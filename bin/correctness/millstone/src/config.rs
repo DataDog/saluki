@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::Engine as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
 
@@ -73,6 +74,14 @@ pub enum Payload {
     #[serde(rename = "dogstatsd")]
     DogStatsD(Box<lading_payload::dogstatsd::Config>),
 
+    /// Static UTF-8 payload bytes embedded directly in the config.
+    #[serde(rename = "static")]
+    Static(String),
+
+    /// Static payload bytes embedded directly in the config as base64.
+    #[serde(rename = "static_base64")]
+    StaticBase64(String),
+
     /// OpenTelemetry-encoded metrics.
     #[serde(rename = "opentelemetry_metrics")]
     OpenTelemetryMetrics(lading_payload::opentelemetry::metric::Config),
@@ -87,6 +96,8 @@ impl Payload {
     pub fn name(&self) -> &'static str {
         match self {
             Self::DogStatsD(_) => "DogStatsD",
+            Self::Static(_) => "Static",
+            Self::StaticBase64(_) => "Static Base64",
             Self::OpenTelemetryMetrics(_) => "OpenTelemetry Metrics",
             Self::OpenTelemetryTraces(_) => "OpenTelemetry Traces",
         }
@@ -109,6 +120,25 @@ impl CorpusBlueprint {
             Payload::DogStatsD(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid DogStatsD payload configuration: {}", e)),
+            Payload::Static(payload) => {
+                if payload.is_empty() {
+                    Err(generic_error!("Invalid static payload: payload must not be empty"))
+                } else {
+                    Ok(())
+                }
+            }
+            Payload::StaticBase64(payload) => {
+                if payload.is_empty() {
+                    Err(generic_error!(
+                        "Invalid static_base64 payload: payload must not be empty"
+                    ))
+                } else {
+                    base64::engine::general_purpose::STANDARD
+                        .decode(payload.trim())
+                        .map(|_| ())
+                        .map_err(|e| generic_error!("Invalid static_base64 payload: {}", e))
+                }
+            }
             Payload::OpenTelemetryMetrics(config) => config
                 .valid()
                 .map_err(|e| generic_error!("Invalid OpenTelemetry Metrics payload configuration: {}", e)),

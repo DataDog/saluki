@@ -13,7 +13,10 @@ use saluki_context::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, TagSet},
 };
-use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
+use saluki_core::{
+    diagnostic::DiagnosticHandle,
+    runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
+};
 use saluki_env::workload::{
     entity::HighestPrecedenceEntityIdRef,
     stores::{ExternalDataStoreResolver, TagStoreQuerier},
@@ -55,6 +58,24 @@ pub struct RemoteAgentWorkloadState {
 }
 
 impl RemoteAgentWorkloadState {
+    /// Returns a JSON snapshot of the current tag store state.
+    ///
+    /// Lists every active entity with its tags at each cardinality level. This is the same data served by
+    /// `/workload/remote_agent/tags/dump`, collected directly from the in-process store for use as a
+    /// diagnostic artifact.
+    fn tags_dump_json(&self) -> String {
+        self.get_tags_dump_response()
+    }
+
+    /// Returns a JSON snapshot of the current external data store state.
+    ///
+    /// Lists every pod/container identity mapping tracked by the external data store. This is the same data served
+    /// by `/workload/remote_agent/external_data/dump`, collected directly from the in-process store for use as a
+    /// diagnostic artifact.
+    fn eds_dump_json(&self) -> String {
+        self.get_eds_dump_response()
+    }
+
     fn get_tags_dump_response(&self) -> String {
         let mut active_entities = FastHashSet::default();
         let mut entity_aliases = FastHashMap::default();
@@ -189,10 +210,21 @@ impl Supervisable for RemoteAgentWorkloadAPIWorker {
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let workload_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
+        let state = self.handler.state.clone();
+        let tags_handle = DiagnosticHandle::new("workload-tags-dump.json", move || state.tags_dump_json().into_bytes());
+
+        let state = self.handler.state.clone();
+        let eds_handle = DiagnosticHandle::new("workload-external-data-dump.json", move || {
+            state.eds_dump_json().into_bytes()
+        });
+
         Ok(Box::pin(async move {
-            DataspaceRegistry::try_current()
-                .ok_or_else(|| generic_error!("Dataspace not available."))?
-                .assert(workload_route, "workload-api");
+            let dataspace =
+                DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
+
+            dataspace.assert(workload_route, "workload-api");
+            dataspace.assert(tags_handle, "diag-workload-tags");
+            dataspace.assert(eds_handle, "diag-workload-eds");
 
             process_shutdown.await;
             Ok(())

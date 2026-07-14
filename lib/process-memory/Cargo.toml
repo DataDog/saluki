@@ -25,7 +25,7 @@ windows-sys = { workspace = true, features = [
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 mach2 = { version = "0.6.0" }
 
-[dev-dependencies]
+[target.'cfg(not(target_os = "aix"))'.dev-dependencies]
 dhat = { workspace = true }
 
 # Run the runtime-allocation test without the libtest harness so that the harness's own

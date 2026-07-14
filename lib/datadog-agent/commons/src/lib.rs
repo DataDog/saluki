@@ -7,6 +7,8 @@
 #![deny(missing_docs)]
 #![deny(warnings)]
 
+pub mod agent_version;
+
 pub mod ipc;
 
 pub mod platform;

@@ -1,0 +1,10 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "grpc://$GROUP:4317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+aggregation_bucket_width_secs: 10
+volume: 1000
+corpus:
+  size: 1
+  payload:
+    # ExportMetricsServiceRequest with four otlphost.metric gauge points that differ only by resource host:
+    # unset host, host.name="", host.name="correctness-testing", and host.name="custom".
+    static_base64: "Ci0KABIpEicKD290bHBob3N0Lm1ldHJpYyoUChIZAMqaOwAAAAAhAAAAAAAA8D8KPgoRCg8KCWhvc3QubmFtZRICCgASKRInCg9vdGxwaG9zdC5tZXRyaWMqFAoSGQDKmjsAAAAAIQAAAAAAAABAClEKJAoiCglob3N0Lm5hbWUSFQoTY29ycmVjdG5lc3MtdGVzdGluZxIpEicKD290bHBob3N0Lm1ldHJpYyoUChIZAMqaOwAAAAAhAAAAAAAACEAKRAoXChUKCWhvc3QubmFtZRIICgZjdXN0b20SKRInCg9vdGxwaG9zdC5tZXRyaWMqFAoSGQDKmjsAAAAAIQAAAAAAABBA"

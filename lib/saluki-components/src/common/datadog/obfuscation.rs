@@ -127,7 +127,7 @@ pub struct ValkeyObfuscationConfig {
 #[derive(Clone, Debug, Default, Deserialize, Facet)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct SqlObfuscationConfig {
-    /// DBMS type (for example, "postgresql", "mysql", "mssql", "sqlite").
+    /// DBMS type (for example, `postgresql`, `mysql`, `mssql`, `sqlite`).
     #[serde(default, rename = "apm_obfuscation_sql_dbms")]
     pub(crate) dbms: String,
 

@@ -1,0 +1,11 @@
+[package]
+name = "datadog-agent-metrics-v3"
+version = "0.1.0"
+description = "V3 columnar protobuf codec for Datadog metrics"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+foldhash = { workspace = true }
+protobuf = { workspace = true }

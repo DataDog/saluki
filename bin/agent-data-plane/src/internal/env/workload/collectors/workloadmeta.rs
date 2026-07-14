@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_protos::agent::{Container, KubernetesPod, WorkloadmetaEventType};
 use futures::{StreamExt as _, TryStreamExt as _};
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::origin::ExternalData;
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataOperation};
 use saluki_error::GenericError;
@@ -212,7 +212,7 @@ impl RemoteAgentWorkloadMetadataCollector {
 #[async_trait]
 impl MetadataCollector for RemoteAgentWorkloadMetadataCollector {
     fn name(&self) -> &'static str {
-        "remote-agent-wmeta"
+        "remote_agent_wmeta"
     }
 
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {

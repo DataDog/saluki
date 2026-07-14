@@ -19,7 +19,9 @@ use http::{Request, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
-use saluki_common::{hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp};
+use saluki_common::{
+    collections::FastHashMap, hash::hash_single_stable, task::spawn_traced_named, time::get_unix_timestamp,
+};
 use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
@@ -45,7 +47,9 @@ use super::{
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
-    telemetry::{ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
+    telemetry::{
+        ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionInputTelemetry, TransactionQueueTelemetry,
+    },
     transaction::{Metadata, Transaction, TransactionBody},
     validation::ApiKeyValidator,
     METRIC_INTAKE_PATHS,
@@ -420,6 +424,21 @@ fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool,
     }
 }
 
+fn track_transaction_input_for_endpoint(
+    telemetry_by_endpoint: &mut FastHashMap<MetaString, TransactionInputTelemetry>, telemetry: &ComponentTelemetry,
+    endpoint_domain: &str, endpoint_name: &str, transaction_size: u64,
+) {
+    if let Some(transaction_input_telemetry) = telemetry_by_endpoint.get(endpoint_name) {
+        transaction_input_telemetry.track(transaction_size);
+        return;
+    }
+
+    let endpoint_name = MetaString::from(endpoint_name);
+    let transaction_input_telemetry = telemetry.register_transaction_input_telemetry(endpoint_domain, &endpoint_name);
+    transaction_input_telemetry.track(transaction_size);
+    telemetry_by_endpoint.insert(endpoint_name, transaction_input_telemetry);
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
@@ -530,6 +549,7 @@ async fn run_endpoint_io_loop<B>(
     );
 
     let mut in_flight = JoinSet::new();
+    let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
     let mut done = false;
 
     loop {
@@ -553,11 +573,15 @@ async fn run_endpoint_io_loop<B>(
                         strip_metrics_validation_headers(txn)
                     };
                     let transaction_size = txn.size_bytes();
-                    let transaction_endpoint_name = endpoint_name(txn.request_uri())
-                        .unwrap_or_else(|| MetaString::from(txn.request_uri().path()));
-                    telemetry.track_transaction_input(
+                    let transaction_endpoint_name = endpoint_name(txn.request_uri());
+                    let transaction_endpoint_name = transaction_endpoint_name
+                        .as_deref()
+                        .unwrap_or_else(|| txn.request_uri().path());
+                    track_transaction_input_for_endpoint(
+                        &mut transaction_input_telemetry_by_endpoint,
+                        &telemetry,
                         &endpoint_domain,
-                        &transaction_endpoint_name,
+                        transaction_endpoint_name,
                         transaction_size,
                     );
 
@@ -691,6 +715,19 @@ fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoin
 }
 
 fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
+    if push_result.had_drops() {
+        saluki_antithesis::sometimes!(
+            true,
+            "ADP dropped transactions",
+            {
+                "domain": domain,
+                "items_dropped": push_result.items_dropped,
+                "events_dropped": push_result.events_dropped,
+                "data_points_dropped": push_result.data_points_dropped
+            }
+        );
+    }
+
     telemetry.track_dropped_items(push_result.items_dropped);
     telemetry.track_dropped_events(push_result.events_dropped);
     telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
@@ -952,7 +989,7 @@ mod tests {
     };
     use saluki_common::buf::FrozenChunkedBytesBuffer;
     use saluki_config::ConfigurationLoader;
-    use saluki_core::{observability::ComponentMetricsExt as _, topology::ComponentId};
+    use saluki_core::{observability::ComponentMetricsExt as _, support::SubsystemIdentifier, topology::ComponentId};
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
     use serde_json::json;
@@ -971,6 +1008,13 @@ mod tests {
         METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_PATH, METRICS_SKETCHES_V3_PATH,
     };
+
+    fn test_component_context() -> ComponentContext {
+        ComponentContext::forwarder(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("test_forwarder").unwrap(),
+        )
+    }
 
     fn uri(path: &'static str) -> Uri {
         Uri::from_static(path)
@@ -1031,8 +1075,7 @@ mod tests {
 
     #[test]
     fn retry_queue_id_uses_raw_additional_endpoint_url() {
-        let context =
-            ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
+        let context = test_component_context();
         let additional: AdditionalEndpoints = serde_yaml::from_str(
             r#"
 app.datadoghq.com: [key-a]
@@ -1053,8 +1096,7 @@ https://app.datadoghq.com: [key-b]
 
     #[test]
     fn retry_queue_id_uses_additional_endpoint_api_key_index() {
-        let context =
-            ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
+        let context = test_component_context();
         let additional: AdditionalEndpoints = serde_yaml::from_str(
             r#"
 app.datadoghq.com: [key-a, key-b]
@@ -1494,8 +1536,7 @@ app.datadoghq.com: [key-a, key-b]
             "skip_ssl_validation": true,
         });
         let forwarder_config = forwarder_config_from_value(value);
-        let context =
-            ComponentContext::forwarder(ComponentId::try_from("test_forwarder").expect("component ID should be valid"));
+        let context = test_component_context();
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 

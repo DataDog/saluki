@@ -186,6 +186,7 @@ snapshotting
 stringified
 subexpression(s?)
 subtasks
+subtree(s?)
 supervisable
 swappable
 syslog
@@ -244,3 +245,6 @@ respawn(s|ed|ing)?
 validator
 varint
 serializer
+backreference(s)?
+Miri
+proptest

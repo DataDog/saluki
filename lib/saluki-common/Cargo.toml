@@ -19,7 +19,6 @@ papaya = { workspace = true }
 pin-project = { workspace = true }
 quick_cache = { workspace = true }
 regex = { workspace = true, features = ["unicode-perl", "unicode-case"] }
-resource-accounting = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }
@@ -27,9 +26,12 @@ serde_with = { workspace = true }
 shake = { workspace = true }
 smallvec = { workspace = true }
 stringtheory = { workspace = true }
-tokio = { workspace = true, features = ["rt", "io-util", "macros", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["rt", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }

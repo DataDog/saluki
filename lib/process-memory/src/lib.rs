@@ -25,6 +25,10 @@
 //! On Windows, we query the kernel directly for process memory counters.
 //!
 //! Available since Windows XP/Server 2003.
+//!
+//! ## AIX
+//!
+//! On AIX, we read `/proc/<pid>/psinfo` and extract the resident set size from the `psinfo_t` structure.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -44,5 +48,16 @@ mod windows;
 #[cfg(target_os = "windows")]
 pub use windows::Querier;
 
-#[cfg(all(not(target_os = "linux"), not(target_os = "macos"), not(target_os = "windows")))]
-compile_error!("This crate only supports Linux, macOS, and Windows at the moment.");
+#[cfg(target_os = "aix")]
+mod aix;
+
+#[cfg(target_os = "aix")]
+pub use aix::Querier;
+
+#[cfg(all(
+    not(target_os = "linux"),
+    not(target_os = "macos"),
+    not(target_os = "windows"),
+    not(target_os = "aix")
+))]
+compile_error!("This crate only supports Linux, macOS, Windows, and AIX at the moment.");

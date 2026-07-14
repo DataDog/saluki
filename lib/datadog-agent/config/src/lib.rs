@@ -1,10 +1,12 @@
 pub mod classifier;
 
-/// Generated typed deserializer for the supported Datadog Agent configuration surface.
-///
-/// Generated at build time from `core_schema.yaml` plus `schema_overlay.yaml`. Contains only keys
-/// inventoried as `support: full` or `support: partial`. Mostly unused until the configuration
-/// translator consumes it.
-pub mod generated;
+mod duration_de;
 
-pub use generated::DatadogConfiguration;
+/// Build-time generated code, produced from `core_schema.yaml` plus `schema_overlay.yaml`.
+mod generated;
+
+/// The translation error type recorded by the translator and surfaced by the witness driver.
+mod translate_error;
+
+pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration};
+pub use translate_error::{TranslateError, TranslateErrors};

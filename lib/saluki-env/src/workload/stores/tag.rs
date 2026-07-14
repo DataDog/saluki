@@ -1,11 +1,11 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastConcurrentHashMap, FastConcurrentHashSet};
 use saluki_context::{
     origin::OriginTagCardinality,
     tags::{SharedTagSet, TagSet},
 };
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_metrics::static_metrics;
 use tracing::{debug, trace};
 

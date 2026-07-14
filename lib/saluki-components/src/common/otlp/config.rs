@@ -165,6 +165,24 @@ pub struct MetricsConfig {
     /// Defaults to `true`.
     #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
+
+    /// Whether to add scalar resource attributes as raw tags on emitted metrics.
+    ///
+    /// Recognized mappings are always applied. When enabled, supported scalar resource attributes
+    /// (string, bool, integer, float) are also emitted as raw `key:value` tags under their original
+    /// keys. Corresponds to `otlp_config.metrics.resource_attributes_as_tags`.
+    ///
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub resource_attributes_as_tags: bool,
+
+    /// Comma-separated tags added to every emitted metric.
+    ///
+    /// Corresponds to `otlp_config.metrics.tags`.
+    ///
+    /// Defaults to empty.
+    #[serde(default)]
+    pub tags: String,
 }
 
 fn default_metrics_enabled() -> bool {
@@ -175,6 +193,8 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             enabled: default_metrics_enabled(),
+            resource_attributes_as_tags: false,
+            tags: String::new(),
         }
     }
 }

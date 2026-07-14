@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::EventType;
 use saluki_error::GenericError;

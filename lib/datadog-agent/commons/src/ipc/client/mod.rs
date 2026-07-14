@@ -3,12 +3,15 @@
 use std::time::Duration;
 
 use backon::Retryable as _;
-use datadog_protos::agent::v1::{RefreshRemoteAgentRequest, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse};
+use datadog_protos::agent::v1::{
+    RefreshRemoteAgentRequest, RegisterRemoteAgentRequest, RegisterRemoteAgentResponse, ReportRemoteAgentEventRequest,
+    ReportRemoteAgentEventResponse,
+};
 use datadog_protos::agent::{
     AgentClient, AgentSecureClient, AutodiscoveryStreamResponse, ConfigEvent, ConfigStreamRequest, EntityId,
-    FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, StreamTagsRequest, StreamTagsResponse,
-    TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind, WorkloadmetaSource,
-    WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
+    FetchEntityRequest, HostTagReply, HostTagRequest, HostnameRequest, RemoteAgentClient as RemoteAgentServiceClient,
+    StreamTagsRequest, StreamTagsResponse, TagCardinality, WorkloadmetaEventType, WorkloadmetaFilter, WorkloadmetaKind,
+    WorkloadmetaSource, WorkloadmetaStreamRequest, WorkloadmetaStreamResponse,
 };
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -33,6 +36,7 @@ pub use self::streaming::StreamingResponse;
 pub struct RemoteAgentClient {
     client: AgentClient<InterceptedService<Channel, BearerAuthInterceptor>>,
     secure_client: AgentSecureClient<InterceptedService<Channel, BearerAuthInterceptor>>,
+    remote_agent_client: RemoteAgentServiceClient<InterceptedService<Channel, BearerAuthInterceptor>>,
 }
 
 impl RemoteAgentClient {
@@ -96,12 +100,18 @@ impl RemoteAgentClient {
 
         let client = AgentClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size());
         let mut secure_client =
-            AgentSecureClient::new(service).max_decoding_message_size(config.grpc_max_message_size());
+            AgentSecureClient::new(service.clone()).max_decoding_message_size(config.grpc_max_message_size());
+        let remote_agent_client =
+            RemoteAgentServiceClient::new(service).max_decoding_message_size(config.grpc_max_message_size());
 
         // Try and do a basic health check to make sure we can connect and that our authentication token is valid.
         try_query_agent_api(&mut secure_client).await?;
 
-        Ok(Self { client, secure_client })
+        Ok(Self {
+            client,
+            secure_client,
+            remote_agent_client,
+        })
     }
 
     /// Gets the detected hostname from the Agent.
@@ -163,10 +173,10 @@ impl RemoteAgentClient {
     /// # Errors
     ///
     /// If there is an error sending the request to the Agent API, an error will be returned.
-    pub async fn register_remote_agent_request(
+    pub async fn register_remote_agent(
         &mut self, pid: u32, display_name: &str, flavor: &str, api_endpoint: &str, services: Vec<String>,
     ) -> Result<Response<RegisterRemoteAgentResponse>, GenericError> {
-        let mut client = self.secure_client.clone();
+        let mut client = self.remote_agent_client.clone();
         let response = client
             .register_remote_agent(RegisterRemoteAgentRequest {
                 pid: pid.to_string(),
@@ -184,14 +194,27 @@ impl RemoteAgentClient {
     /// # Errors
     ///
     /// If there is an error sending the request to the Agent API, an error will be returned.
-    pub async fn refresh_remote_agent_request(&mut self, session_id: &SessionId) -> Result<Response<()>, GenericError> {
-        let mut client = self.secure_client.clone();
+    pub async fn refresh_remote_agent(&mut self, session_id: &SessionId) -> Result<Response<()>, GenericError> {
+        let mut client = self.remote_agent_client.clone();
         let response = client
             .refresh_remote_agent(RefreshRemoteAgentRequest {
                 session_id: session_id.to_string(),
             })
             .await?
             .map(|_| ());
+        Ok(response)
+    }
+
+    /// Reports one or more operational events for a remote agent session to the Agent.
+    ///
+    /// # Errors
+    ///
+    /// If there is an error sending the request to the Agent API, an error will be returned.
+    pub async fn report_remote_agent_event(
+        &mut self, request: ReportRemoteAgentEventRequest,
+    ) -> Result<Response<ReportRemoteAgentEventResponse>, GenericError> {
+        let mut client = self.remote_agent_client.clone();
+        let response = client.report_remote_agent_event(request).await?;
         Ok(response)
     }
 

@@ -6,18 +6,21 @@ members = [
   "bin/correctness/millstone",
   "bin/correctness/panoramic",
   "bin/correctness/stele",
+  "lib/agent-data-plane-config",
+  "lib/agent-data-plane-config-system",
   "lib/datadog-agent/commons",
   "lib/datadog-agent/config",
   "lib/datadog-agent/config-overlay-model",
   "lib/datadog-agent/config-testing",
+  "lib/datadog-agent/metrics-v3",
   "lib/ddsketch",
+  "lib/go-duration",
   "lib/ottl",
   "lib/process-memory",
   "lib/prometheus-exposition",
   "lib/protos/containerd",
   "lib/protos/datadog",
   "lib/protos/otlp",
-  "lib/resource-accounting",
   "lib/saluki-antithesis",
   "lib/saluki-api",
   "lib/saluki-app",
@@ -35,24 +38,29 @@ members = [
   "lib/stringtheory",
   "test/antithesis/harness",
   "test/antithesis/intake",
+  "test/antithesis/scenarios/differential",
   "test/antithesis/scenarios/general",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
+rust-version = "1.94"
 license = "Apache-2.0"
 repository = "https://github.com/DataDog/saluki"
 
 [workspace.dependencies]
+agent-data-plane-config = { path = "lib/agent-data-plane-config" }
+agent-data-plane-config-system = { path = "lib/agent-data-plane-config-system" }
 datadog-agent-commons = { path = "lib/datadog-agent/commons" }
 datadog-agent-config = { path = "lib/datadog-agent/config" }
 datadog-agent-config-overlay-model = { path = "lib/datadog-agent/config-overlay-model" }
 datadog-agent-config-testing = { path = "lib/datadog-agent/config-testing" }
+datadog-agent-metrics-v3 = { path = "lib/datadog-agent/metrics-v3" }
 datadog-protos = { path = "lib/protos/datadog" }
 containerd-protos = { path = "lib/protos/containerd" }
 ddsketch = { path = "lib/ddsketch" }
-resource-accounting = { path = "lib/resource-accounting" }
+go-duration = { path = "lib/go-duration" }
 process-memory = { path = "lib/process-memory" }
 prometheus-exposition = { path = "lib/prometheus-exposition" }
 saluki-antithesis = { path = "lib/saluki-antithesis" }
@@ -204,7 +212,7 @@ tower-http = { version = "0.7", default-features = false }
 bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
-lading-payload = { git = "https://github.com/DataDog/lading", rev = "e98e30524c8caa31d585703da790e15fd6f92573" }
+lading-payload = { git = "https://github.com/DataDog/lading", rev = "576129489df44ae0e71c4871c51910837c919b90" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.18.0", default-features = false, features = [
   "macros",
@@ -268,6 +276,12 @@ debug-assertions = false
 overflow-checks = false
 lto = "fat"
 codegen-units = 1
+
+[profile.aix-optimized-release]
+inherits = "optimized-release"
+# IBM Open SDK for Rust 1.92 on AIX fails LTO during final linking with `Can't find section .ipa`,
+# even for a minimal hello-world crate. Keep the other optimized-release settings while disabling LTO.
+lto = false
 
 [workspace.lints.clippy]
 new_without_default = "allow"

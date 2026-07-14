@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_api::{
     extract::{Query, State},
     routing::{get, Router},
@@ -10,6 +9,7 @@ use saluki_api::{
 };
 use saluki_common::time::get_coarse_unix_timestamp;
 use saluki_context::tags::TagSet;
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},

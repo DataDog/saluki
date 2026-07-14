@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 figment = { workspace = true, features = ["env"] }
+go-duration = { workspace = true }
 saluki-antithesis = { workspace = true }
 saluki-error = { workspace = true }
 serde = { workspace = true }

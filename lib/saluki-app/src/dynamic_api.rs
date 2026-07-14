@@ -25,7 +25,7 @@ use rustls_pki_types::PrivatePkcs8KeyDer;
 use saluki_api::{APIHandler, DynamicRoute, EndpointProtocol, EndpointType};
 use saluki_common::{collections::FastIndexMap, sync::shutdown::ShutdownHandle};
 use saluki_core::runtime::{
-    state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter, Subscription},
+    state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter, Subscription},
     InitializationError, Supervisable, SupervisorFuture,
 };
 use saluki_error::{generic_error, GenericError};
@@ -35,6 +35,7 @@ use saluki_io::net::{
     util::hyper::TowerToHyperService,
     ListenAddress,
 };
+use saluki_tls::ensure_server_config_fips_compliant;
 use tokio::select;
 use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder};
 use tower::Service;
@@ -145,16 +146,28 @@ impl DynamicAPIBuilder {
 
     /// Sets the TLS configuration for the server based on a dynamically generated, self-signed certificate.
     pub fn with_self_signed_tls(self) -> Self {
-        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+        self.try_with_self_signed_tls()
+            .expect("self-signed server TLS configuration should build and pass FIPS validation")
+    }
+
+    /// Sets the TLS configuration for the server based on a dynamically generated, self-signed certificate.
+    ///
+    /// # Errors
+    ///
+    /// If the certificate cannot be generated, the TLS configuration cannot be built, or the resulting TLS
+    /// configuration is not FIPS compliant, an error is returned.
+    pub fn try_with_self_signed_tls(self) -> Result<Self, GenericError> {
+        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()])?;
         let cert_chain = vec![cert.der().clone()];
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
 
-        let config = ServerConfig::builder()
+        let mut config = ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
-            .unwrap();
+            .with_single_cert(cert_chain, key)?;
 
-        self.with_tls_config(config)
+        ensure_server_config_fips_compliant(&mut config)?;
+
+        Ok(self.with_tls_config(config))
     }
 }
 
@@ -283,7 +296,7 @@ async fn run_event_loop(
         let mut rebuild_grpc = false;
 
         match update {
-            AssertionUpdate::Asserted(id, route) => {
+            DataspaceUpdate::Asserted(id, route) => {
                 if route.endpoint_type() != endpoint_type {
                     continue;
                 }
@@ -303,7 +316,7 @@ async fn run_event_loop(
                     }
                 }
             }
-            AssertionUpdate::Retracted(id) => {
+            DataspaceUpdate::Retracted(id) => {
                 if http_handlers.swap_remove(&id).is_some() {
                     debug!(?id, "Withdrawing dynamic HTTP handler.");
                     rebuild_http = true;
@@ -314,6 +327,8 @@ async fn run_event_loop(
                     rebuild_grpc = true;
                 }
             }
+            // Routes are modeled as assertions; transient messages are not meaningful here.
+            DataspaceUpdate::Message(..) => continue,
         }
 
         if rebuild_http {
@@ -416,7 +431,7 @@ mod tests {
     use hyper_util::{client::legacy::Client, rt::TokioExecutor};
     use saluki_api::{APIHandler, DynamicRoute, EndpointType};
     use saluki_core::runtime::{
-        state::{AssertionUpdate, DataspaceRegistry, Identifier, IdentifierFilter},
+        state::{DataspaceRegistry, DataspaceUpdate, Identifier, IdentifierFilter},
         InitializationError, Supervisable, Supervisor, SupervisorFuture,
     };
     use tokio::{
@@ -486,7 +501,7 @@ mod tests {
                     dataspace.subscribe::<BoundApiAddress>(IdentifierFilter::exact(Identifier::named(bound_addr_name)));
 
                 let addr = match addr_sub.recv().await {
-                    Some(AssertionUpdate::Asserted(_, BoundApiAddress(mut addr))) => {
+                    Some(DataspaceUpdate::Asserted(_, BoundApiAddress(mut addr))) => {
                         // Convert 0.0.0.0 to 127.0.0.1 so the test client can connect.
                         if addr.ip().is_unspecified() {
                             addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());

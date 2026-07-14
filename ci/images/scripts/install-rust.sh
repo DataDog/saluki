@@ -11,12 +11,10 @@ curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain none
 # Update our path so we can use Cargo commands.
 export PATH="/root/.cargo/bin:${PATH}"
 
-# First, install the default toolchain, which is provided via the `RUST_VERSION` environment variable.
-#
-# We add a musl target to support statically linked builds.
+# Install the default toolchain, which is provided via the `RUST_VERSION` environment variable. The
+# host gnu target it installs is the one we build ADP for; the old-glibc floor comes from the build
+# image's crosstool-NG toolchain at link/compile time, not from a separate Rust target.
 rustup toolchain install --profile minimal --component clippy,rustfmt ${RUST_VERSION}
-musl_target=$(rustc -vV | grep 'host:' | awk '{print $2}' | sed 's/linux-gnu/linux-musl/')
-rustup target add --toolchain ${RUST_VERSION} ${musl_target}
 
 # Install `rustfmt` via the nightly toolchain.
 #

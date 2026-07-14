@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
-use super::{ClassifierEntry, PipelineAffinity, SupportLevel, CLASSIFIER_ENTRIES};
+use super::{ClassifierEntry, DefaultValue, PipelineAffinity, SupportLevel, CLASSIFIER_ENTRIES};
 
 /// Result of classifying a single config key/value pair against the registry.
 pub struct Classification {
@@ -51,17 +51,37 @@ impl ConfigClassifier {
     }
 }
 
-fn is_default_value(default: Option<&str>, value: &Value) -> bool {
+fn is_default_value(default: DefaultValue, value: &Value) -> bool {
     match default {
-        Some(default_str) => match serde_json::from_str::<Value>(default_str) {
-            Ok(default_value) => *value == default_value,
-            Err(_) => false,
-        },
-        None => match value {
+        DefaultValue::Json(default_str) => serde_json::from_str::<Value>(default_str)
+            .map(|default_value| *value == default_value)
+            .unwrap_or(false),
+
+        // Duration defaults are canonicalized to nanoseconds at build time. The Agent transmits
+        // durations as integer nanoseconds (and occasionally as a Go duration string), so normalize
+        // the incoming value the same way before comparing.
+        DefaultValue::DurationNanos(default_ns) => duration_value_as_nanos(value)
+            .map(|value_ns| value_ns == default_ns)
+            .unwrap_or(false),
+
+        DefaultValue::Missing => match value {
             Value::Null => true,
             Value::String(s) => s.is_empty(),
             _ => false,
         },
+    }
+}
+
+/// Normalizes a duration-typed config value to nanoseconds.
+///
+/// Accepts a JSON number already expressed in nanoseconds (the form the Datadog Agent sends over
+/// the config stream) or a Go duration string (for example, `"10s"`). Returns `None` for any other
+/// shape or an out-of-range/invalid value.
+fn duration_value_as_nanos(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => go_duration::parse_duration(s).ok().map(|d| d.as_nanos() as u64),
+        _ => None,
     }
 }
 
@@ -119,26 +139,35 @@ mod tests {
     #[test]
     fn duration_default_null_is_not_default() {
         let c = classifier();
-        // tls_handshake_timeout now has default "10s" (a duration string); null != "10s"
+        // tls_handshake_timeout has a duration default (10s); a null value can't be normalized.
         let result = c.classify("tls_handshake_timeout", &Value::Null).unwrap();
         assert!(!result.is_default);
     }
 
     #[test]
-    fn duration_default_empty_string_is_not_default() {
+    fn duration_default_non_duration_string_is_not_default() {
         let c = classifier();
-        // tls_handshake_timeout has default "10s"; empty string does not match
-        let result = c.classify("tls_handshake_timeout", &Value::String("".into())).unwrap();
-        assert!(!result.is_default);
+        // Neither an empty string nor arbitrary text parses as a duration, so neither matches.
+        assert!(
+            !c.classify("tls_handshake_timeout", &Value::String("".into()))
+                .unwrap()
+                .is_default
+        );
+        assert!(
+            !c.classify("tls_handshake_timeout", &Value::String("something".into()))
+                .unwrap()
+                .is_default
+        );
     }
 
     #[test]
-    fn none_default_non_empty_is_not_default() {
+    fn duration_default_matches_go_duration_string() {
         let c = classifier();
+        // The default is also matched when supplied as a Go duration string rather than nanoseconds.
         let result = c
-            .classify("tls_handshake_timeout", &Value::String("something".into()))
+            .classify("tls_handshake_timeout", &Value::String("10s".into()))
             .unwrap();
-        assert!(!result.is_default);
+        assert!(result.is_default);
     }
 
     #[test]
@@ -149,5 +178,63 @@ mod tests {
             result.support_level,
             SupportLevel::Incompatible(Severity::Medium)
         ));
+    }
+
+    #[test]
+    fn duration_default_as_nanoseconds_is_default() {
+        let c = classifier();
+        // The Agent transmits tls_handshake_timeout (schema default "10s") as integer nanoseconds.
+        // The classifier must recognize this as the default and not flag it as an override.
+        let result = c
+            .classify("tls_handshake_timeout", &Value::Number(10_000_000_000i64.into()))
+            .unwrap();
+        assert!(result.is_default);
+    }
+
+    #[test]
+    fn duration_non_default_nanoseconds_is_not_default() {
+        let c = classifier();
+        // 5s in nanoseconds is not the 10s default.
+        let result = c
+            .classify("tls_handshake_timeout", &Value::Number(5_000_000_000i64.into()))
+            .unwrap();
+        assert!(!result.is_default);
+    }
+
+    #[test]
+    fn is_default_value_by_variant() {
+        // Json: structural equality against the decoded JSON literal.
+        assert!(is_default_value(
+            DefaultValue::Json("\"tlsv1.2\""),
+            &Value::String("tlsv1.2".into())
+        ));
+        assert!(!is_default_value(
+            DefaultValue::Json("\"tlsv1.2\""),
+            &Value::String("tlsv1.3".into())
+        ));
+        assert!(is_default_value(DefaultValue::Json("1"), &Value::Number(1.into())));
+
+        // DurationNanos: matches both the nanosecond number and the equivalent Go duration string.
+        assert!(is_default_value(
+            DefaultValue::DurationNanos(10_000_000_000),
+            &Value::Number(10_000_000_000u64.into())
+        ));
+        assert!(is_default_value(
+            DefaultValue::DurationNanos(10_000_000_000),
+            &Value::String("10s".into())
+        ));
+        assert!(!is_default_value(
+            DefaultValue::DurationNanos(10_000_000_000),
+            &Value::Number(5_000_000_000u64.into())
+        ));
+        assert!(!is_default_value(
+            DefaultValue::DurationNanos(10_000_000_000),
+            &Value::String("nope".into())
+        ));
+
+        // Missing: only null or an empty string counts as "default".
+        assert!(is_default_value(DefaultValue::Missing, &Value::Null));
+        assert!(is_default_value(DefaultValue::Missing, &Value::String("".into())));
+        assert!(!is_default_value(DefaultValue::Missing, &Value::String("x".into())));
     }
 }

@@ -1,0 +1,17 @@
+[package]
+name = "agent-data-plane-config"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+
+# Otherwise a pure data model: avoid adding workspace dependencies. The two blessed exceptions are
+# tokio[sync] and arc-swap, which back the live config view (`Live<T>`); the model owns that view so
+# a consumer gets it without depending on the raw map or the Datadog source.
+[dependencies]
+arc-swap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["sync"] }
+
+[lints]
+workspace = true

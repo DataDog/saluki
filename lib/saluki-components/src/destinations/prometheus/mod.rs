@@ -15,9 +15,9 @@ use ddsketch::DDSketch;
 use http::{Request, Response, StatusCode};
 use hyper::{body::Incoming, service::service_fn};
 use prometheus_exposition::{MetricType, PrometheusRenderer};
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator, sync::shutdown::ShutdownCoordinator};
 use saluki_context::{tags::Tag, Context};
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::{destinations::*, ComponentContext};
 use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},

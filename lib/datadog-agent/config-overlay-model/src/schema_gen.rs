@@ -21,6 +21,7 @@ pub enum FieldType {
     Integer,
     Float,
     StringList,
+    Duration,
     Unknown,
 }
 
@@ -120,7 +121,24 @@ fn parse_setting(path_parts: &[&str], value: &Value) -> (String, FieldInfo) {
 }
 
 fn parse_value_type(value: &Value) -> FieldType {
-    match value.get("type").and_then(|v| v.as_str()) {
+    let ty = value.get("type").and_then(|v| v.as_str());
+    let format = value.get("format").and_then(|v| v.as_str());
+
+    // `format: duration` folds into a single effective `Duration` type regardless of the declared
+    // base type. The vendored Agent schema currently declares these as `type: number` (nanoseconds
+    // on the wire) but has also used `type: string` (Go duration text); both are durations to us.
+    if format == Some("duration") {
+        return match ty {
+            Some("string") | Some("number") | Some("integer") => FieldType::Duration,
+            other => panic!(
+                "config schema field has `format: duration` with unsupported base type {:?}; \
+                 expected string, number, or integer",
+                other
+            ),
+        };
+    }
+
+    match ty {
         Some("string") => FieldType::String,
         Some("boolean") => FieldType::Bool,
         Some("integer") => FieldType::Integer,
@@ -163,6 +181,7 @@ pub fn field_type_as_rust(ft: &FieldType) -> &'static str {
         FieldType::Integer => "ValueType::Integer",
         FieldType::Float => "ValueType::Float",
         FieldType::StringList => "ValueType::StringList",
+        FieldType::Duration => "ValueType::Duration",
     }
 }
 

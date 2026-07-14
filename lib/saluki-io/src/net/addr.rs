@@ -22,7 +22,7 @@ use super::Connection;
 /// - `udp://[::1]:53` (listen on IPv6 loopback, UDP port 53)
 /// - `unixgram:///tmp/app.socket` (listen on a Unix datagram socket at `/tmp/app.socket`)
 /// - `unix:///tmp/app.socket` (listen on a Unix stream socket at `/tmp/app.socket`)
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "String")]
 pub enum ListenAddress {
     /// A TCP listen address.
@@ -36,12 +36,40 @@ pub enum ListenAddress {
 
     /// A Unix stream listen address.
     Unix(PathBuf),
+
+    /// A Windows named pipe listen address.
+    NamedPipe {
+        /// Named pipe name without the `\\.\pipe\` prefix.
+        name: String,
+
+        /// Security descriptor string applied when creating the pipe.
+        security_descriptor: String,
+
+        /// Input buffer size to request from Windows when creating the pipe.
+        input_buffer_size: Option<u32>,
+    },
 }
 
 impl ListenAddress {
     /// Creates a TCP address for the given port that listens on all interfaces.
     pub const fn any_tcp(port: u16) -> Self {
         Self::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port)))
+    }
+
+    /// Creates a Windows named pipe listen address.
+    pub fn named_pipe(name: impl Into<String>, security_descriptor: impl Into<String>) -> Self {
+        Self::named_pipe_with_input_buffer_size(name, security_descriptor, None)
+    }
+
+    /// Creates a Windows named pipe listen address with a requested input buffer size.
+    pub fn named_pipe_with_input_buffer_size(
+        name: impl Into<String>, security_descriptor: impl Into<String>, input_buffer_size: impl Into<Option<u32>>,
+    ) -> Self {
+        Self::NamedPipe {
+            name: normalize_windows_named_pipe_name(name.into()),
+            security_descriptor: security_descriptor.into(),
+            input_buffer_size: input_buffer_size.into(),
+        }
     }
 
     /// Returns the socket type of the listen address.
@@ -51,6 +79,7 @@ impl ListenAddress {
             Self::Udp(_) => "udp",
             Self::Unixgram(_) => "unixgram",
             Self::Unix(_) => "unix",
+            Self::NamedPipe { .. } => "named_pipe",
         }
     }
 
@@ -82,6 +111,25 @@ impl ListenAddress {
             // in fact, it's kind of the only way to connect to a unix domain socket :thonk:
             Self::Unixgram(_) => None,
             Self::Unix(_) => None,
+            Self::NamedPipe { .. } => None,
+        }
+    }
+
+    /// Returns the fully qualified Windows named pipe path, if this is a named pipe address.
+    pub fn as_windows_named_pipe_path(&self) -> Option<String> {
+        match self {
+            Self::NamedPipe { name, .. } => Some(format!(r"\\.\pipe\{name}")),
+            _ => None,
+        }
+    }
+
+    /// Returns the Windows named pipe security descriptor, if this is a named pipe address.
+    pub fn as_windows_named_pipe_security_descriptor(&self) -> Option<&str> {
+        match self {
+            Self::NamedPipe {
+                security_descriptor, ..
+            } => Some(security_descriptor.as_str()),
+            _ => None,
         }
     }
 
@@ -96,6 +144,14 @@ impl ListenAddress {
     }
 }
 
+fn normalize_windows_named_pipe_name(name: String) -> String {
+    name.strip_prefix(r"\\.\pipe\")
+        .or_else(|| name.strip_prefix(r"//./pipe/"))
+        .or_else(|| name.strip_prefix("pipe/"))
+        .unwrap_or(&name)
+        .to_string()
+}
+
 impl fmt::Display for ListenAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -103,6 +159,7 @@ impl fmt::Display for ListenAddress {
             Self::Udp(addr) => write!(f, "udp://{}", addr),
             Self::Unixgram(path) => write!(f, "unixgram://{}", path.display()),
             Self::Unix(path) => write!(f, "unix://{}", path.display()),
+            Self::NamedPipe { name, .. } => write!(f, "npipe://{}", name),
         }
     }
 }
@@ -171,6 +228,14 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
                 }
 
                 Ok(Self::Unix(path_buf))
+            }
+            "npipe" => {
+                let name = url.host_str().unwrap_or_else(|| url.path().trim_start_matches('/'));
+                if name.is_empty() {
+                    return Err("named pipe name cannot be empty".to_string());
+                }
+
+                Ok(Self::named_pipe(name, String::new()))
             }
             scheme => Err(format!("unknown/unsupported address scheme '{}'", scheme)),
         }
@@ -257,6 +322,14 @@ impl ProcessIdentity {
     pub const fn is_error(&self) -> bool {
         matches!(self, Self::Error(_))
     }
+
+    /// Returns `true` if process credential detection failed for a per-message reason.
+    pub const fn is_telemetry_error(&self) -> bool {
+        matches!(
+            self,
+            Self::Error(ProcessCredentialsError::InvalidCredentials | ProcessCredentialsError::ZeroPid)
+        )
+    }
 }
 
 /// Connection address.
@@ -300,6 +373,14 @@ impl ConnectionAddress {
     pub const fn has_process_credential_error(&self) -> bool {
         match self {
             Self::ProcessLike(identity) => identity.is_error(),
+            Self::SocketLike(_) => false,
+        }
+    }
+
+    /// Returns `true` if Unix domain socket process credential detection failed for a per-message reason.
+    pub const fn has_process_credential_telemetry_error(&self) -> bool {
+        match self {
+            Self::ProcessLike(identity) => identity.is_telemetry_error(),
             Self::SocketLike(_) => false,
         }
     }
@@ -368,6 +449,66 @@ impl fmt::Display for GrpcTargetAddress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_pipe_listen_address_formats_with_windows_pipe_prefix() {
+        let address = ListenAddress::named_pipe("datadog-dogstatsd", "D:AI(A;;GA;;;WD)");
+
+        assert_eq!(address.listener_type(), "named_pipe");
+        assert_eq!(address.to_string(), r"npipe://datadog-dogstatsd");
+        assert_eq!(
+            address.as_windows_named_pipe_path().as_deref(),
+            Some(r"\\.\pipe\datadog-dogstatsd")
+        );
+    }
+
+    #[test]
+    fn named_pipe_listen_address_accepts_full_windows_pipe_path() {
+        let address = ListenAddress::named_pipe(r"\\.\pipe\datadog-dogstatsd", "D:AI(A;;GA;;;WD)");
+
+        assert_eq!(address.to_string(), r"npipe://datadog-dogstatsd");
+        assert_eq!(
+            address.as_windows_named_pipe_path().as_deref(),
+            Some(r"\\.\pipe\datadog-dogstatsd")
+        );
+    }
+
+    #[test]
+    fn npipe_url_parses_full_windows_pipe_path() {
+        let address = ListenAddress::try_from("npipe:////./pipe/datadog-dogstatsd").unwrap();
+
+        assert_eq!(address.to_string(), r"npipe://datadog-dogstatsd");
+        assert_eq!(
+            address.as_windows_named_pipe_path().as_deref(),
+            Some(r"\\.\pipe\datadog-dogstatsd")
+        );
+    }
+
+    #[test]
+    fn unsupported_platform_process_identity_is_not_a_telemetry_error() {
+        let peer_addr =
+            ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::UnsupportedPlatform));
+
+        assert!(peer_addr.has_process_credential_error());
+        assert!(!peer_addr.has_process_credential_telemetry_error());
+    }
+
+    #[test]
+    fn invalid_process_credentials_are_telemetry_errors() {
+        let peer_addr =
+            ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials));
+
+        assert!(peer_addr.has_process_credential_error());
+        assert!(peer_addr.has_process_credential_telemetry_error());
+    }
+
+    #[test]
+    fn zero_pid_process_credentials_are_telemetry_errors() {
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(ProcessCredentialsError::ZeroPid));
+
+        assert!(peer_addr.has_process_credential_error());
+        assert!(peer_addr.has_process_credential_telemetry_error());
+    }
 
     #[test]
     fn test_as_local_connect_addr() {

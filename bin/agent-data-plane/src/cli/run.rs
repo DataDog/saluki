@@ -7,7 +7,6 @@ use std::{
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
-use resource_accounting::{ComponentBounds, ComponentRegistry};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
@@ -34,10 +33,11 @@ use saluki_components::{
     },
 };
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor};
+use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::EnvironmentProvider as _;
+use saluki_env::{EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{debug, error, info, trace, warn};
 
@@ -239,6 +239,18 @@ pub async fn handle_run_command(
             info!("Agent Data Plane shut down successfully.");
             Ok(())
         }
+        // The shutdown ran to completion, but one or more components ignored graceful shutdown and had to be forcefully
+        // aborted after exceeding the shutdown timeout. Surface that plainly instead of reporting success -- but don't
+        // treat it as a fatal error: the process did stop, and mapping it through the error path would mislabel it as a
+        // boot/setup failure (and trip the boot assertion in `run_inner`).
+        Err(SupervisorError::ShutdownTimedOut { aborted }) => {
+            warn!(
+                aborted,
+                "Agent Data Plane shut down uncleanly: {aborted} component(s) had to be forcefully stopped after \
+                 exceeding the shutdown timeout. Check the preceding warnings for which components were affected."
+            );
+            Ok(())
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -413,7 +425,7 @@ async fn create_topology(
 
     // Now we move on to our actual data pipelines.
     if dp_config.checks().enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_checks_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
     }
 
     if dp_config.dogstatsd().enabled() {
@@ -422,16 +434,21 @@ async fn create_topology(
     }
 
     if dp_config.otlp().enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider)?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
 }
 
 async fn add_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let checks_config = ChecksIPCConfiguration::from_configuration(config)?;
+    let default_hostname = env_provider
+        .host()
+        .get_hostname()
+        .await
+        .error_context("Failed to get default hostname for Checks IPC source.")?;
+    let checks_config = ChecksIPCConfiguration::from_configuration(config)?.with_default_hostname(default_hostname);
 
     blueprint
         .add_source("checks_ipc_in", checks_config)?
@@ -692,8 +709,14 @@ async fn add_dsd_pipeline_to_blueprint(
     //    │    (destination)    │    │                       (Datadog Platform)                        │
     //    └─────────────────────┘    └ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
 
+    let default_hostname = env_provider
+        .host()
+        .get_hostname()
+        .await
+        .error_context("Failed to get default hostname for DogStatsD source.")?;
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
+        .with_default_hostname(default_hostname)
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
@@ -770,7 +793,7 @@ async fn add_dsd_pipeline_to_blueprint(
     })
 }
 
-fn add_otlp_pipeline_to_blueprint(
+async fn add_otlp_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
@@ -812,8 +835,14 @@ fn add_otlp_pipeline_to_blueprint(
     } else {
         info!("OTLP proxy mode disabled. OTLP signals will be handled natively.");
 
-        let otlp_config =
-            OtlpConfiguration::from_configuration(config)?.with_workload_provider(env_provider.workload().clone());
+        let default_hostname = env_provider
+            .host()
+            .get_hostname()
+            .await
+            .error_context("Failed to get default hostname for OTLP source.")?;
+        let otlp_config = OtlpConfiguration::from_configuration(config)?
+            .with_default_hostname(default_hostname)
+            .with_workload_provider(env_provider.workload().clone());
 
         blueprint
             // Components.

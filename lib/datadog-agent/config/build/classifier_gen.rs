@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use datadog_agent_config_overlay_model::schema_gen::FieldInfo;
+use datadog_agent_config_overlay_model::schema_gen::{FieldInfo, FieldType};
 use datadog_agent_config_overlay_model::{KnownEntry, PipelineAffinity, SchemaOverlay, Severity};
 use indexmap::IndexMap;
 
@@ -14,7 +14,7 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
     .unwrap();
     writeln!(out, "// Regenerate by running `cargo build -p datadog-agent-config`.").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "use super::*;").unwrap();
+    writeln!(out, "use crate::classifier::*;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[").unwrap();
 
@@ -25,14 +25,14 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
         }
         let alias_lit = alias_literal(&p.test_support.additional_yaml_paths);
         let pipeline_affinity = overlay_pipeline_affinity_expr(&p.pipelines);
-        let default_lit = schema_default_literal(yaml_path, schema_map);
+        let default_expr = schema_default_expr(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
         writeln!(out, "        aliases: {},", alias_lit).unwrap();
         writeln!(out, "        support_level: SupportLevel::Partial,").unwrap();
         writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
-        writeln!(out, "        default: {},", default_lit).unwrap();
+        writeln!(out, "        default: {},", default_expr).unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
@@ -44,14 +44,14 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
             Severity::High => "Severity::High",
         };
         let pipeline_affinity = overlay_pipeline_affinity_expr(&u.pipelines);
-        let default_lit = schema_default_literal(yaml_path, schema_map);
+        let default_expr = schema_default_expr(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
         writeln!(out, "        aliases: &[],").unwrap();
         writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
         writeln!(out, "        pipeline_affinity: {},", pipeline_affinity).unwrap();
-        writeln!(out, "        default: {},", default_lit).unwrap();
+        writeln!(out, "        default: {},", default_expr).unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
@@ -63,20 +63,20 @@ pub fn generate(overlay: &SchemaOverlay, schema_map: &IndexMap<String, FieldInfo
             Some(Severity::High) => "Severity::High",
             None => continue,
         };
-        let default_lit = schema_default_literal(yaml_path, schema_map);
+        let default_expr = schema_default_expr(yaml_path, schema_map);
 
         writeln!(out, "    ClassifierEntry {{").unwrap();
         writeln!(out, "        yaml_path: \"{}\",", yaml_path).unwrap();
         writeln!(out, "        aliases: &[],").unwrap();
         writeln!(out, "        support_level: SupportLevel::Incompatible({}),", severity).unwrap();
         writeln!(out, "        pipeline_affinity: PipelineAffinity::CrossCutting,").unwrap();
-        writeln!(out, "        default: {},", default_lit).unwrap();
+        writeln!(out, "        default: {},", default_expr).unwrap();
         writeln!(out, "    }},").unwrap();
     }
 
     writeln!(out, "];").unwrap();
 
-    let path = manifest_dir.join("src/classifier/classifier_data.rs");
+    let path = manifest_dir.join("src/generated/classifier_data.rs");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     if existing != out {
         std::fs::write(&path, out).unwrap_or_else(|e| panic!("cannot write {}: {}", path.display(), e));
@@ -92,18 +92,43 @@ fn alias_literal(paths: &[String]) -> String {
     }
 }
 
-fn schema_default_literal(yaml_path: &str, schema_map: &IndexMap<String, FieldInfo>) -> String {
-    if let Some(info) = schema_map.get(yaml_path) {
-        match &info.default {
-            Some(d) => format!(
-                "Some(\"{}\")",
-                datadog_agent_config_overlay_model::schema_gen::escape_str(d)
-            ),
-            None => "None".to_string(),
-        }
-    } else {
-        "None".to_string()
+/// Builds the `DefaultValue` expression for a key's generated classifier entry.
+///
+/// Duration defaults are parsed and normalized to nanoseconds here, at build time, so the
+/// runtime never has to parse a schema default. An invalid duration default fails the build.
+fn schema_default_expr(yaml_path: &str, schema_map: &IndexMap<String, FieldInfo>) -> String {
+    let Some(info) = schema_map.get(yaml_path) else {
+        return "DefaultValue::Missing".to_string();
+    };
+
+    let Some(default) = &info.default else {
+        return "DefaultValue::Missing".to_string();
+    };
+
+    if matches!(info.value_type, FieldType::Duration) {
+        // Schema duration defaults are JSON string literals (for example, `"10s"`). Unwrap the JSON
+        // string, then parse the Go duration to nanoseconds. Both steps must succeed or the build
+        // fails — an unparseable duration default is a schema bug we want to catch at compile time.
+        let default_value: serde_json::Value = serde_json::from_str(default)
+            .unwrap_or_else(|e| panic!("schema duration default for '{}' must be JSON: {}", yaml_path, e));
+        let default_str = default_value
+            .as_str()
+            .unwrap_or_else(|| panic!("schema duration default for '{}' must be a JSON string", yaml_path));
+        let nanos = go_duration::parse_duration(default_str)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "schema duration default '{}' for '{}' is invalid: {}",
+                    default_str, yaml_path, e
+                )
+            })
+            .as_nanos();
+        return format!("DefaultValue::DurationNanos({})", nanos);
     }
+
+    format!(
+        "DefaultValue::Json(\"{}\")",
+        datadog_agent_config_overlay_model::schema_gen::escape_str(default)
+    )
 }
 
 fn overlay_pipeline_affinity_expr(pa: &PipelineAffinity) -> String {

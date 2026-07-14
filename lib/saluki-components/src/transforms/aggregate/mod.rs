@@ -6,10 +6,10 @@ use std::{
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_common::time::get_unix_timestamp;
 use saluki_config::GenericConfiguration;
 use saluki_context::Context;
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
     data_model::event::{metric::*, Event, EventType},
@@ -908,6 +908,7 @@ mod tests {
     use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
         components::ComponentContext,
+        support::SubsystemIdentifier,
         topology::{interconnect::Dispatcher, ComponentId, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
@@ -960,8 +961,11 @@ mod tests {
 
     /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
     fn build_basic_dispatcher() -> (EventsDispatcher, DispatcherReceiver) {
-        let component_id = ComponentId::try_from("test").expect("should not fail to create component ID");
-        let mut dispatcher = Dispatcher::new(ComponentContext::transform(component_id));
+        let context = ComponentContext::transform(
+            &SubsystemIdentifier::from_segments(["test"]),
+            ComponentId::try_from("test").unwrap(),
+        );
+        let mut dispatcher = Dispatcher::new(context);
 
         let (buffer_tx, buffer_rx) = mpsc::channel(1);
         dispatcher.add_output(OutputName::Default).unwrap();

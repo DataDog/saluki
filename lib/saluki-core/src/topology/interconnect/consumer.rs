@@ -65,7 +65,6 @@ mod tests {
     use ordered_float::OrderedFloat;
 
     use super::*;
-    use crate::topology::ComponentId;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     struct DispatchableEvent<T> {
@@ -92,9 +91,7 @@ mod tests {
     fn create_consumer<T: Clone>(
         channel_size: usize,
     ) -> (Consumer<DispatchableEvent<T>>, mpsc::Sender<DispatchableEvent<T>>) {
-        let component_context = ComponentId::try_from("consumer_test")
-            .map(ComponentContext::source)
-            .expect("component ID should never be invalid");
+        let component_context = ComponentContext::test_source("consumer_test");
 
         let (tx, rx) = mpsc::channel(channel_size);
         let consumer = Consumer::new(component_context, rx);

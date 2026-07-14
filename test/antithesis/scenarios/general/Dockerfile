@@ -3,14 +3,17 @@
 # Antithesis harness image for Agent Data Plane (ADP).
 #
 # Build context is the repository root. Three named targets:
-#   - adp      : agent-data-plane built WITH Antithesis coverage instrumentation + SDK (the SUT)
-#   - intake   : antithesis-intake mock Datadog intake + W-property assertions (dependency)
-#   - workload : DogStatsD driver + test templates + setup-complete (the client)
+#   - datadog-agent : converged Datadog Agent with our instrumented ADP embedded, data plane ON (the SUT)
+#   - intake        : antithesis-intake mock Datadog intake + W-property assertions (dependency)
+#   - workload      : DogStatsD driver + test templates + setup-complete (the client)
 #
 # ADP is built native x86_64-unknown-linux-gnu (glibc), so no musl cross-compile headers are needed.
 
-ARG BUILD_IMAGE=ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
-ARG APP_IMAGE=ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+ARG BUILD_IMAGE=ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
+ARG APP_IMAGE=ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e
+# Project-pinned converged Datadog Agent image (Make-built from `.datadog-agent-version`).
+# Do not pin an upstream Agent tag here.
+ARG DD_AGENT_IMAGE=saluki-images/datadog-agent:testing-release
 
 # ---------------------------------------------------------------------------
 # Shared build environment: Rust toolchain + native build dependencies.
@@ -88,33 +91,21 @@ RUN --mount=type=cache,target=/tools/target,id=antithesis-tools-target \
     cp /tools/target/release/first_sample_config /usr/local/bin/first_sample_config
 
 # ---------------------------------------------------------------------------
-# Runtime: Agent Data Plane (SUT).
+# Runtime: converged Datadog Agent with our instrumented ADP embedded, data
+# plane ON. The general scenario's single SUT, so the workload exercises the
+# real Agent+ADP path rather than a standalone ADP.
 # ---------------------------------------------------------------------------
-FROM ${APP_IMAGE} AS adp
+FROM ${DD_AGENT_IMAGE} AS datadog-agent
 ENV NO_COLOR=1
-RUN apt-get update && \
-    apt-get install --no-install-recommends -y ca-certificates openssl && \
-    rm -rf /var/lib/apt/lists/*
-COPY --from=adp-builder /usr/local/bin/agent-data-plane /usr/local/bin/agent-data-plane
-# Expose DWARF/build-id symbols to Antithesis for symbolization (one-hop symlink to the unstripped binary).
-RUN mkdir -p /symbols && ln -s /usr/local/bin/agent-data-plane /symbols/agent-data-plane
-# main.rs requires a config file at the default path. Ship a minimal standalone config as a
-# fallback. The boot wrapper overwrites it with the per-timeline config that first_sample_config
-# samples onto the shared `agent-config` volume.
-COPY test/antithesis/scenarios/general/adp/datadog.yaml /etc/datadog-agent/datadog.yaml
-# Boot wrapper waits for the config sentinel, copies the config into place, then execs ADP.
-COPY --chmod=755 test/antithesis/scenarios/general/adp/entrypoint.sh /entrypoint.sh
-# ADP's control-plane secure API requires an IPC TLS cert (a single PEM holding both certificate and
-# private key) that the Core Agent normally generates. In standalone mode there is no Core Agent, so
-# generate a self-signed cert+key. An empty auth_token satisfies the IPC auth config at startup.
-RUN openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-        -subj "/CN=agent-data-plane" \
-        -keyout /tmp/ipc_key.pem -out /tmp/ipc_cert.pem && \
-    cat /tmp/ipc_cert.pem /tmp/ipc_key.pem > /etc/datadog-agent/ipc_cert.pem && \
-    rm -f /tmp/ipc_cert.pem /tmp/ipc_key.pem && \
-    touch /etc/datadog-agent/auth_token
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["run"]
+# Wait for and install the per-timeline sampled config for both the Core Agent and ADP.
+COPY --chmod=755 test/antithesis/agent-config-init.sh /etc/cont-init.d/00-general-agent-config.sh
+# Overlay our instrumented ADP over the release binary the converged image ships,
+# so the embedded data plane carries Antithesis coverage. Expose its symbols.
+COPY --from=adp-builder /usr/local/bin/agent-data-plane /opt/datadog-agent/embedded/bin/agent-data-plane
+RUN mkdir -p /symbols && ln -s /opt/datadog-agent/embedded/bin/agent-data-plane /symbols/agent-data-plane
+# Bring the container down on an ADP crash instead of respawning, so a SIGABRT is
+# recorded as a fault rather than masked by an s6 restart loop.
+COPY --chmod=755 test/antithesis/data-plane-finish /etc/services.d/data-plane/finish
 
 # ---------------------------------------------------------------------------
 # Runtime: antithesis-intake (mock Datadog intake + W-property assertions).
@@ -122,10 +113,27 @@ CMD ["run"]
 FROM ${APP_IMAGE} AS intake
 ENV NO_COLOR=1
 # W17 resolves each series' host resource against this hostname. Keep it in sync
-# with `hostname:` in adp/datadog.yaml and the DD_HOSTNAME default in the harness.
+# with the DD_HOSTNAME the datadog-agent service sets and the harness default.
 ENV DD_HOSTNAME=antithesis-adp
 COPY --from=tools-builder /usr/local/bin/antithesis-intake /usr/local/bin/antithesis-intake
 ENTRYPOINT ["/usr/local/bin/antithesis-intake"]
+
+# ---------------------------------------------------------------------------
+# Fetch the Datadog Agent debug symbols. The release binary is stripped; the
+# DWARF is published as a separate build-id-matched `-dbg` package, so Antithesis
+# can symbolize the off-the-shelf Core Agent without touching the agent image.
+# ---------------------------------------------------------------------------
+FROM build-base AS agent-symbols
+# Version bumped by .github/workflows/update-agent-version.yml alongside .datadog-agent-version.
+ARG DD_AGENT_VERSION=7.81.0
+ARG TARGETARCH=amd64
+RUN curl -fsSL -o /tmp/agent-dbg.deb \
+        "https://s3.amazonaws.com/apt.datadoghq.com/pool/d/da/datadog-agent-dbg_${DD_AGENT_VERSION}-1_${TARGETARCH}.deb" && \
+    dpkg-deb --raw-extract /tmp/agent-dbg.deb /tmp/dbg && \
+    mkdir -p /agent-symbols && \
+    dbg="$(find /tmp/dbg -type f -name agent.dbg -path '*bin/agent/*')" && \
+    [ "$(printf '%s\n' "$dbg" | grep -c .)" = "1" ] || { echo "expected exactly one agent.dbg, found: [$dbg]" >&2; exit 1; } && \
+    cp "$dbg" /agent-symbols/agent.dbg
 
 # ---------------------------------------------------------------------------
 # Runtime: workload client (DogStatsD driver + test templates).
@@ -144,5 +152,8 @@ COPY --from=tools-builder --chmod=755 /usr/local/bin/first_sample_config /opt/an
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_send_dogstatsd /opt/antithesis/test/v1/main/parallel_driver_send_dogstatsd
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_sketchburst /opt/antithesis/test/v1/main/parallel_driver_sketchburst
 COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_adp_alive /opt/antithesis/test/v1/main/eventually_adp_alive
+# Datadog Agent debug symbols. Antithesis scans /symbols in every pushed image and
+# matches by build-id, so this symbolizes the Core Agent running in the SUT.
+COPY --from=agent-symbols /agent-symbols/agent.dbg /symbols/agent.dbg
 COPY --chmod=755 test/antithesis/scenarios/general/workload/entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
