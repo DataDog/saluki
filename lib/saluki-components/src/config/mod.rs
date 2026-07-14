@@ -263,7 +263,7 @@ mod tests {
     fn env_var_remapped_case_insensitively() {
         // Serialize against the single shared lock the configuration loader itself uses, so this process-wide env
         // mutation can't race with other env-mutating configuration tests in this crate or any other.
-        let _guard = test_env_lock().lock().unwrap();
+        let _guard = test_env_lock();
 
         std::env::set_var("HTTP_PROXY", "http://proxy.example.com");
         let remapper = DatadogRemapper::new();
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn env_var_not_remapped_when_absent() {
-        let _guard = test_env_lock().lock().unwrap();
+        let _guard = test_env_lock();
 
         std::env::remove_var("HTTP_PROXY");
         std::env::remove_var("http_proxy");

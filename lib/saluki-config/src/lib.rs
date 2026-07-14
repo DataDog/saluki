@@ -453,7 +453,7 @@ impl ConfigurationLoader {
         // All tests that mutate process-wide environment variables while loading configuration serialize against a
         // single shared lock (see `test_env_lock`), so that tests in other modules and crates can't race with the
         // env-var manipulation below.
-        let guard = test_env_lock().lock().unwrap();
+        let guard = test_env_lock();
 
         if let Some(pairs) = env_vars.as_ref() {
             for (k, v) in pairs.iter() {
@@ -492,8 +492,8 @@ impl ConfigurationLoader {
     }
 }
 
-/// Returns the process-global lock that serializes tests which mutate environment variables while loading
-/// configuration.
+/// Acquires the process-global lock that serializes tests which mutate environment variables while loading
+/// configuration, returning the held guard.
 ///
 /// [`ConfigurationLoader::for_tests`] and [`ConfigurationLoader::for_tests_with_provider_factory`] set and unset
 /// process-wide environment variables to simulate `DD_`-prefixed configuration, and providers such as the Datadog
@@ -504,10 +504,14 @@ impl ConfigurationLoader {
 ///
 /// This is exposed publicly so that tests in downstream crates can serialize against the same single lock that the
 /// loader itself uses, instead of each hand-rolling an independent (and therefore non-serializing) mutex.
+///
+/// Lock poisoning is intentionally ignored: the mutex guards no data (its guarded type is `()`), so a panic in
+/// another test while the lock was held leaves nothing in an inconsistent state. Propagating poisoning would only
+/// cascade an unrelated test failure into every later env-mutating test.
 #[cfg(any(test, feature = "test-util"))]
-pub fn test_env_lock() -> &'static std::sync::Mutex<()> {
+pub fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    &ENV_MUTEX
+    ENV_MUTEX.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Builds a [`GenericConfiguration`] from an in-memory JSON body, for use in tests.

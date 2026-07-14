@@ -501,6 +501,8 @@ mod tests {
         assert!(dp.data_pipelines_enabled());
         assert!(!dp.metrics_pipeline_required());
         assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
     }
 
