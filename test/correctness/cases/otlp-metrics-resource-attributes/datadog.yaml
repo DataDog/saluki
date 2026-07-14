@@ -1,0 +1,19 @@
+# OTLP correctness test configuration for resource attributes as tags.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+otlp_config:
+  metrics:
+    resource_attributes_as_tags: true
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"

@@ -160,6 +160,8 @@ pub trait DatadogConfigWitness {
     fn consume_origin_detection_unified(&mut self, value: bool);
     fn consume_otlp_config_logs_enabled(&mut self, value: bool);
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool);
+    fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool);
+    fn consume_otlp_config_metrics_tags(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String);
@@ -413,6 +415,10 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_origin_detection_unified(config.origin_detection_unified.clone());
     consumer.consume_otlp_config_logs_enabled(config.otlp_config.logs.enabled.clone());
     consumer.consume_otlp_config_metrics_enabled(config.otlp_config.metrics.enabled.clone());
+    consumer.consume_otlp_config_metrics_resource_attributes_as_tags(
+        config.otlp_config.metrics.resource_attributes_as_tags.clone(),
+    );
+    consumer.consume_otlp_config_metrics_tags(config.otlp_config.metrics.tags.clone());
     consumer.consume_otlp_config_receiver_protocols_grpc_endpoint(
         config.otlp_config.receiver.protocols.grpc.endpoint.clone(),
     );

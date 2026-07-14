@@ -34,8 +34,8 @@ use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
-use crate::common::otlp::attributes::raw_origin_from_attributes;
 use crate::common::otlp::attributes::translator::AttributeTranslator;
+use crate::common::otlp::attributes::{raw_origin_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
 use crate::sources::otlp::Metrics;
@@ -80,6 +80,8 @@ pub struct OtlpMetricsTranslator {
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
     attribute_translator: AttributeTranslator,
+    // Configured tags (`otlp_config.metrics.tags`) added to every emitted metric.
+    metric_tags: SharedTagSet,
 }
 
 #[derive(Debug, Default)]
@@ -387,9 +389,11 @@ fn convert_ddsketch_into_sketch(
 }
 
 impl OtlpMetricsTranslator {
-    /// Creates a new, empty `OtlpMetricsTranslator`.
+    /// Creates an `OtlpMetricsTranslator` from the given configuration, context resolver, and
+    /// configured metric tags.
     pub fn new(
         config: OtlpMetricsTranslatorConfig, default_hostname: MetaString, context_resolver: ContextResolver,
+        metric_tags: SharedTagSet,
     ) -> Result<Self, GenericError> {
         config
             .validate()
@@ -404,6 +408,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
+            metric_tags,
         })
     }
 
@@ -416,7 +421,20 @@ impl OtlpMetricsTranslator {
         let resource = resource_metrics.resource.unwrap_or_default();
         let source = self.attribute_translator.resource_to_source(&resource);
 
-        let attribute_tags = self.attribute_translator.tags_from_attributes(&resource.attributes);
+        let resource_tag_mode = if self.config.resource_attributes_as_tags {
+            ResourceAttributeTagMode::All
+        } else {
+            ResourceAttributeTagMode::Mapped
+        };
+        let resource_attribute_tags = self
+            .attribute_translator
+            .tags_from_attributes(&resource.attributes, resource_tag_mode)
+            .into_shared();
+
+        // Combine configured and resource-derived tags once per resource, then reuse them for every
+        // instrumentation scope.
+        let mut resource_tags = self.metric_tags.clone();
+        resource_tags.extend_from_shared(&resource_attribute_tags);
 
         // TODO: https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L736-L753
         let host = match source {
@@ -428,11 +446,8 @@ impl OtlpMetricsTranslator {
         };
 
         for scope_metrics in resource_metrics.scope_metrics {
-            let tags = {
-                let mut mutable_tags = TagSet::default();
-                for tag in &attribute_tags {
-                    mutable_tags.insert_tag(tag.clone());
-                }
+            let scope_tags = {
+                let mut tags = TagSet::default();
 
                 if self.config.instrumentation_scope_metadata_as_tags {
                     // Always add instrumentation scope tags, even if scope is `None`
@@ -442,17 +457,21 @@ impl OtlpMetricsTranslator {
                         None => instrumentationscope::tags_from_empty_instrumentation_scope(),
                     };
                     for tag in scope_tags {
-                        mutable_tags.insert_tag(tag);
+                        tags.insert_tag(tag);
                     }
                 } else if self.config.instrumentation_library_metadata_as_tags {
                     if let Some(scope) = &scope_metrics.scope {
                         for tag in instrumentationlibrary::tags_from_instrumentation_library_metadata(scope) {
-                            mutable_tags.insert_tag(tag);
+                            tags.insert_tag(tag);
                         }
                     }
                 }
-                mutable_tags.into_shared()
+
+                tags.into_shared()
             };
+
+            let mut tags = resource_tags.clone();
+            tags.extend_from_shared(&scope_tags);
 
             let mut new_metrics: Vec<OtlpMetric> = Vec::new();
             for mut metric in scope_metrics.metrics {
@@ -530,6 +549,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::for_tests(),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
+            metric_tags: SharedTagSet::default(),
         }
     }
 
@@ -670,7 +690,11 @@ impl OtlpMetricsTranslator {
 
             let start_ts = dp.start_time_unix_nano;
             let ts = dp.time_unix_nano;
-            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+            let shadowing_resource_attributes = self
+                .config
+                .resource_attributes_as_tags
+                .then_some(context.resource_attributes);
+            let point_dims = base_dims.with_attribute_map(&dp.attributes, shadowing_resource_attributes);
             //Count will be treated as a cumulative monotonic metric
             {
                 let count_dims = point_dims.with_suffix("count");
@@ -730,7 +754,11 @@ impl OtlpMetricsTranslator {
                 continue;
             }
 
-            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+            let shadowing_resource_attributes = self
+                .config
+                .resource_attributes_as_tags
+                .then_some(context.resource_attributes);
+            let point_dims = base_dims.with_attribute_map(&dp.attributes, shadowing_resource_attributes);
             let value = get_number_data_point_value(&dp);
             if is_skippable(value) {
                 warn!(
@@ -758,7 +786,11 @@ impl OtlpMetricsTranslator {
                 continue;
             }
 
-            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+            let shadowing_resource_attributes = self
+                .config
+                .resource_attributes_as_tags
+                .then_some(context.resource_attributes);
+            let point_dims = base_dims.with_attribute_map(&dp.attributes, shadowing_resource_attributes);
             let value = get_number_data_point_value(dp);
             if is_skippable(value) {
                 debug!(
@@ -1006,7 +1038,11 @@ impl OtlpMetricsTranslator {
                 continue;
             }
 
-            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+            let shadowing_resource_attributes = self
+                .config
+                .resource_attributes_as_tags
+                .then_some(context.resource_attributes);
+            let point_dims = base_dims.with_attribute_map(&dp.attributes, shadowing_resource_attributes);
             let mut hist_info = HistogramInfo {
                 ok: true,
                 ..Default::default()
@@ -1119,7 +1155,11 @@ impl OtlpMetricsTranslator {
         for dp in data_points.iter() {
             let start_ts = dp.start_time_unix_nano;
             let ts = dp.time_unix_nano;
-            let point_dims = base_dims.with_attribute_map(&dp.attributes);
+            let shadowing_resource_attributes = self
+                .config
+                .resource_attributes_as_tags
+                .then_some(context.resource_attributes);
+            let point_dims = base_dims.with_attribute_map(&dp.attributes, shadowing_resource_attributes);
 
             let mut hist_info = HistogramInfo {
                 ok: true,
@@ -1519,6 +1559,222 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), Some("resource-host"));
+    }
+
+    fn string_attribute(key: &str, value: &str) -> OtlpKeyValue {
+        OtlpKeyValue {
+            key: key.to_string(),
+            value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                value: Some(
+                    otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value.to_string()),
+                ),
+            }),
+        }
+    }
+
+    fn single_gauge_with_resource_attributes(attributes: Vec<OtlpKeyValue>) -> OtlpResourceMetrics {
+        OtlpResourceMetrics {
+            resource: Some(otlp_protos::opentelemetry::proto::resource::v1::Resource {
+                attributes,
+                ..Default::default()
+            }),
+            scope_metrics: vec![otlp_protos::opentelemetry::proto::metrics::v1::ScopeMetrics {
+                metrics: vec![OtlpMetric {
+                    name: "otlpresource.metric".to_string(),
+                    data: Some(OtlpMetricData::Gauge(
+                        otlp_protos::opentelemetry::proto::metrics::v1::Gauge {
+                            data_points: vec![OtlpNumberDataPoint {
+                                value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
+                                time_unix_nano: nanos_from_seconds(1),
+                                ..Default::default()
+                            }],
+                        },
+                    )),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resource_attributes_as_tags_disabled_keeps_only_semantic_mapping() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        assert!(!translator.config.resource_attributes_as_tags);
+
+        let resource_metrics = single_gauge_with_resource_attributes(vec![
+            string_attribute("service.name", "otlp-test"),
+            string_attribute("custom.resource.attribute", "present"),
+        ]);
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let tags = events[0].try_as_metric().expect("metric event").context().tags();
+
+        // The semantic-convention mapping is always applied.
+        assert_eq!(tags.get_single_tag("service"), Some(&Tag::from("service:otlp-test")));
+
+        // The raw resource attributes are not added when the flag is disabled.
+        assert_eq!(tags.get_single_tag("service.name"), None);
+        assert_eq!(tags.get_single_tag("custom.resource.attribute"), None);
+    }
+
+    #[test]
+    fn resource_attributes_as_tags_enabled_adds_raw_attributes() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.resource_attributes_as_tags = true;
+
+        // Configured tags and resource tags may be stored in separate shared chunks. Exact
+        // duplicates must still resolve to one tag in the metric context.
+        let mut configured_tags = TagSet::default();
+        configured_tags.insert_tag("service:otlp-test");
+        configured_tags.insert_tag("custom.resource.attribute:present");
+        translator.metric_tags = configured_tags.into_shared();
+
+        let resource_metrics = single_gauge_with_resource_attributes(vec![
+            string_attribute("service.name", "otlp-test"),
+            string_attribute("custom.resource.attribute", "present"),
+        ]);
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let tags = events[0].try_as_metric().expect("metric event").context().tags();
+
+        // The semantic-convention mapping remains intact.
+        assert_eq!(tags.get_single_tag("service"), Some(&Tag::from("service:otlp-test")));
+
+        // Every resource attribute is also emitted as a raw tag.
+        assert_eq!(
+            tags.get_single_tag("service.name"),
+            Some(&Tag::from("service.name:otlp-test"))
+        );
+        assert_eq!(
+            tags.get_single_tag("custom.resource.attribute"),
+            Some(&Tag::from("custom.resource.attribute:present"))
+        );
+        assert_eq!(tags.into_iter().filter(|tag| tag.name() == "service").count(), 1);
+        assert_eq!(
+            tags.into_iter()
+                .filter(|tag| tag.name() == "custom.resource.attribute")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn configured_metric_tags_are_added_to_every_metric() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let mut configured = TagSet::default();
+        configured.insert_tag("correctness:configured");
+        translator.metric_tags = configured.into_shared();
+
+        let events = translator
+            .translate_metrics(single_gauge_with_resource_attributes(vec![]), &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let tags = events[0].try_as_metric().expect("metric event").context().tags();
+        assert_eq!(
+            tags.get_single_tag("correctness"),
+            Some(&Tag::from("correctness:configured"))
+        );
+    }
+
+    #[test]
+    fn conflicting_service_values_all_coexist() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.resource_attributes_as_tags = true;
+
+        // A configured `service` tag with a value that differs from the resource's `service.name`.
+        let mut configured = TagSet::default();
+        configured.insert_tag("service:configured");
+        translator.metric_tags = configured.into_shared();
+
+        let resource_metrics =
+            single_gauge_with_resource_attributes(vec![string_attribute("service.name", "resource")]);
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let tags = events[0].try_as_metric().expect("metric event").context().tags();
+
+        // Distinct values for the same tag name coexist; tags are not keyed by name alone.
+        let service_values: Vec<&str> = tags
+            .into_iter()
+            .filter(|tag| tag.name() == "service")
+            .map(|tag| tag.value().unwrap_or(""))
+            .collect();
+        assert!(service_values.contains(&"configured"), "got {service_values:?}");
+        assert!(service_values.contains(&"resource"), "got {service_values:?}");
+
+        // The raw resource attribute is also present under its original key.
+        assert_eq!(
+            tags.get_single_tag("service.name"),
+            Some(&Tag::from("service.name:resource"))
+        );
+    }
+
+    #[test]
+    fn resource_attribute_shadows_colliding_datapoint_attribute() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.resource_attributes_as_tags = true;
+
+        // A data-point attribute collides with a resource attribute of the same key.
+        let resource = otlp_protos::opentelemetry::proto::resource::v1::Resource {
+            attributes: vec![string_attribute("custom.key", "resource")],
+            ..Default::default()
+        };
+        let resource_metrics = OtlpResourceMetrics {
+            resource: Some(resource),
+            scope_metrics: vec![otlp_protos::opentelemetry::proto::metrics::v1::ScopeMetrics {
+                metrics: vec![OtlpMetric {
+                    name: "otlpresource.metric".to_string(),
+                    data: Some(OtlpMetricData::Gauge(
+                        otlp_protos::opentelemetry::proto::metrics::v1::Gauge {
+                            data_points: vec![OtlpNumberDataPoint {
+                                value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
+                                time_unix_nano: nanos_from_seconds(1),
+                                attributes: vec![string_attribute("custom.key", "datapoint")],
+                                ..Default::default()
+                            }],
+                        },
+                    )),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let tags = events[0].try_as_metric().expect("metric event").context().tags();
+
+        // The resource value wins; the data-point value is dropped.
+        let values: Vec<&str> = tags
+            .into_iter()
+            .filter(|tag| tag.name() == "custom.key")
+            .map(|tag| tag.value().unwrap_or(""))
+            .collect();
+        assert_eq!(values, vec!["resource"]);
     }
 
     fn build_test_cumulative_monotonic_double_points(

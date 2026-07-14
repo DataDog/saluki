@@ -689,6 +689,8 @@ compressed wire payload bytes.
 | `origin_detection_unified`                                     | Unified origin detection mode                      |
 | `otlp_config.logs.enabled`                                     | otlp_config.logs.enabled                           |
 | `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
+| `otlp_config.metrics.resource_attributes_as_tags`              | Add scalar resource attributes as raw tags.        |
+| `otlp_config.metrics.tags`                                     | Comma-separated tags for all OTLP metrics.         |
 | `otlp_config.receiver.protocols.grpc.endpoint`                 | otlp_config.receiver.protocols.grpc.endpoint       |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`    | Max OTLP inbound gRPC message size (MiB)           |
 | `otlp_config.receiver.protocols.grpc.transport`                | otlp_config.receiver.protocols.grpc.transport      |

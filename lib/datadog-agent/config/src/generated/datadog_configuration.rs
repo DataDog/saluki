@@ -1256,12 +1256,20 @@ impl Default for OtlpConfigLogs {
 pub struct OtlpConfigMetrics {
     #[serde(default = "defaults::default_bool::<true>")]
     pub enabled: bool,
+
+    #[serde(default)]
+    pub resource_attributes_as_tags: bool,
+
+    #[serde(default)]
+    pub tags: String,
 }
 
 impl Default for OtlpConfigMetrics {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
+            resource_attributes_as_tags: Default::default(),
+            tags: Default::default(),
         }
     }
 }

@@ -9,11 +9,25 @@ pub struct Domain {
     /// OTLP receiver transports and per-signal activation.
     pub receiver: Receiver,
 
+    /// OTLP metrics translation settings.
+    pub metrics: Metrics,
+
     /// OTLP proxy gating and endpoint.
     pub proxy: Proxy,
 
     /// OTLP context cache sizing.
     pub contexts: Contexts,
+}
+
+/// OTLP metrics translation settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Metrics {
+    /// Whether every resource attribute is added as a raw metric tag, in addition to the
+    /// semantic-convention mappings that are always applied.
+    pub resource_attributes_as_tags: bool,
+
+    /// Comma-separated list of tags to add to every emitted metric.
+    pub tags: String,
 }
 
 /// OTLP receiver transports and per-signal activation.
