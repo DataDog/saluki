@@ -362,40 +362,37 @@
 <a href=#362 id=362 data-nosnippet>362</a></span><span class="kw">mod </span>tests {
 <a href=#363 id=363 data-nosnippet>363</a>    <span class="kw">use </span>std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 <a href=#364 id=364 data-nosnippet>364</a>
-<a href=#365 id=365 data-nosnippet>365</a>    <span class="kw">use </span>saluki_core::{components::ComponentContext, support::SubsystemIdentifier, topology::ComponentId};
+<a href=#365 id=365 data-nosnippet>365</a>    <span class="kw">use </span>saluki_core::components::ComponentContext;
 <a href=#366 id=366 data-nosnippet>366</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
 <a href=#367 id=367 data-nosnippet>367</a>
 <a href=#368 id=368 data-nosnippet>368</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#369 id=369 data-nosnippet>369</a>
 <a href=#370 id=370 data-nosnippet>370</a>    <span class="kw">fn </span>test_context() -&gt; ComponentContext {
-<a href=#371 id=371 data-nosnippet>371</a>        ComponentContext::source(
-<a href=#372 id=372 data-nosnippet>372</a>            <span class="kw-2">&amp;</span>SubsystemIdentifier::from_segments([<span class="string">"test"</span>]),
-<a href=#373 id=373 data-nosnippet>373</a>            ComponentId::try_from(<span class="string">"dogstatsd_test"</span>).expect(<span class="string">"valid component ID"</span>),
-<a href=#374 id=374 data-nosnippet>374</a>        )
-<a href=#375 id=375 data-nosnippet>375</a>    }
-<a href=#376 id=376 data-nosnippet>376</a>
-<a href=#377 id=377 data-nosnippet>377</a>    <span class="kw">fn </span>udp_listen_addr() -&gt; ListenAddress {
-<a href=#378 id=378 data-nosnippet>378</a>        ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">8125</span>)))
-<a href=#379 id=379 data-nosnippet>379</a>    }
-<a href=#380 id=380 data-nosnippet>380</a>
-<a href=#381 id=381 data-nosnippet>381</a>    <span class="attr">#[test]
-<a href=#382 id=382 data-nosnippet>382</a>    </span><span class="kw">fn </span>origin_metric_recorder_evicts_oldest_origin_when_cache_is_full() {
-<a href=#383 id=383 data-nosnippet>383</a>        <span class="kw">let </span>recorder = TestRecorder::default();
-<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">let </span>_recorder_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
-<a href=#385 id=385 data-nosnippet>385</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>udp_listen_addr(), <span class="kw-2">&amp;</span>test_context(), <span class="bool-val">true</span>);
-<a href=#386 id=386 data-nosnippet>386</a>
-<a href=#387 id=387 data-nosnippet>387</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..=MAX_ORIGIN_COUNTERS {
-<a href=#388 id=388 data-nosnippet>388</a>            metrics.record_metrics_received(<span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"container_id://test-container-{index}"</span>)));
-<a href=#389 id=389 data-nosnippet>389</a>        }
-<a href=#390 id=390 data-nosnippet>390</a>
-<a href=#391 id=391 data-nosnippet>391</a>        <span class="kw">let </span>origin_recorder = metrics
-<a href=#392 id=392 data-nosnippet>392</a>            .origin_metric_recorder
-<a href=#393 id=393 data-nosnippet>393</a>            .as_ref()
-<a href=#394 id=394 data-nosnippet>394</a>            .expect(<span class="string">"origin metric recorder should be enabled"</span>);
-<a href=#395 id=395 data-nosnippet>395</a>        <span class="macro">assert_eq!</span>(origin_recorder.cached_origin_count(), MAX_ORIGIN_COUNTERS);
-<a href=#396 id=396 data-nosnippet>396</a>        <span class="macro">assert!</span>(!origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-0"</span>));
-<a href=#397 id=397 data-nosnippet>397</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-1"</span>));
-<a href=#398 id=398 data-nosnippet>398</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-200"</span>));
-<a href=#399 id=399 data-nosnippet>399</a>    }
-<a href=#400 id=400 data-nosnippet>400</a>}
+<a href=#371 id=371 data-nosnippet>371</a>        ComponentContext::test_source(<span class="string">"dogstatsd_test"</span>)
+<a href=#372 id=372 data-nosnippet>372</a>    }
+<a href=#373 id=373 data-nosnippet>373</a>
+<a href=#374 id=374 data-nosnippet>374</a>    <span class="kw">fn </span>udp_listen_addr() -&gt; ListenAddress {
+<a href=#375 id=375 data-nosnippet>375</a>        ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, <span class="number">8125</span>)))
+<a href=#376 id=376 data-nosnippet>376</a>    }
+<a href=#377 id=377 data-nosnippet>377</a>
+<a href=#378 id=378 data-nosnippet>378</a>    <span class="attr">#[test]
+<a href=#379 id=379 data-nosnippet>379</a>    </span><span class="kw">fn </span>origin_metric_recorder_evicts_oldest_origin_when_cache_is_full() {
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="kw">let </span>recorder = TestRecorder::default();
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>_recorder_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
+<a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>udp_listen_addr(), <span class="kw-2">&amp;</span>test_context(), <span class="bool-val">true</span>);
+<a href=#383 id=383 data-nosnippet>383</a>
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..=MAX_ORIGIN_COUNTERS {
+<a href=#385 id=385 data-nosnippet>385</a>            metrics.record_metrics_received(<span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"container_id://test-container-{index}"</span>)));
+<a href=#386 id=386 data-nosnippet>386</a>        }
+<a href=#387 id=387 data-nosnippet>387</a>
+<a href=#388 id=388 data-nosnippet>388</a>        <span class="kw">let </span>origin_recorder = metrics
+<a href=#389 id=389 data-nosnippet>389</a>            .origin_metric_recorder
+<a href=#390 id=390 data-nosnippet>390</a>            .as_ref()
+<a href=#391 id=391 data-nosnippet>391</a>            .expect(<span class="string">"origin metric recorder should be enabled"</span>);
+<a href=#392 id=392 data-nosnippet>392</a>        <span class="macro">assert_eq!</span>(origin_recorder.cached_origin_count(), MAX_ORIGIN_COUNTERS);
+<a href=#393 id=393 data-nosnippet>393</a>        <span class="macro">assert!</span>(!origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-0"</span>));
+<a href=#394 id=394 data-nosnippet>394</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-1"</span>));
+<a href=#395 id=395 data-nosnippet>395</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-200"</span>));
+<a href=#396 id=396 data-nosnippet>396</a>    }
+<a href=#397 id=397 data-nosnippet>397</a>}
 </code></pre></div></section></main></body></html>
