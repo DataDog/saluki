@@ -19,7 +19,6 @@ bytes = { workspace = true }
 chrono = { workspace = true }
 fs4 = { workspace = true }
 futures = { workspace = true }
-hickory-resolver = { workspace = true, features = ["tokio", "system-config"] }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
