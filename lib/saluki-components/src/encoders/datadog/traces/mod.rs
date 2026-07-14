@@ -7,7 +7,6 @@ use datadog_protos::traces::builders::{idx::SpanKind, AgentPayloadBuilder};
 use facet::Facet;
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use piecemeal::{ScratchBuffer, ScratchWriter};
-use resource_accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
