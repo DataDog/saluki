@@ -12,7 +12,7 @@ use tracing::warn;
 
 use super::{
     endpoint::{EndpointConfiguration, MetricsEndpoint},
-    sketch_has_emittable_values, v1,
+    metric_has_emittable_values, sketch_has_emittable_values, v1,
 };
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -158,7 +158,7 @@ impl EndpointEncoder for MetricsEndpointEncoder {
 
         match self.endpoint {
             MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => is_series_input && v1::has_emittable_point(input),
-            MetricsEndpoint::Sketches => has_emittable_sketch_values(input),
+            MetricsEndpoint::Sketches => !is_series_input && metric_has_emittable_values(input),
         }
     }
 
@@ -273,16 +273,6 @@ fn encode_single_metric(
             ),
         }
     })
-}
-
-fn has_emittable_sketch_values(metric: &Metric) -> bool {
-    match metric.values() {
-        MetricValues::Distribution(sketches) => sketches
-            .into_iter()
-            .any(|(_, sketch)| sketch_has_emittable_values(sketch)),
-        MetricValues::Histogram(points) => points.into_iter().any(|(_, histogram)| !histogram.samples().is_empty()),
-        MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => false,
-    }
 }
 
 fn encode_series_metric(
