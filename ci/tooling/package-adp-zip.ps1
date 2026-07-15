@@ -109,7 +109,11 @@ try {
     New-Item -ItemType Directory -Force $env:OUTPUT_DIR | Out-Null
     $OutputPath = Join-Path $env:OUTPUT_DIR $ZipName
     if (Test-Path $OutputPath) { Remove-Item -Force $OutputPath }
-    Compress-Archive -Path (Join-Path $StageRoot "*") -DestinationPath $OutputPath -CompressionLevel Optimal
+
+    # Compress-Archive writes entry names with `\` separators, which breaks cross-platform zip
+    # readers. Use tar.exe instead.
+    & tar -a -c -f $OutputPath -C $StageRoot .
+    if ($LASTEXITCODE -ne 0) { throw "tar zip creation failed (exit $LASTEXITCODE)" }
 
     Write-Host "[*] Zip ready"
     $Hash = (Get-FileHash -Algorithm SHA256 -Path $OutputPath).Hash.ToLowerInvariant()
