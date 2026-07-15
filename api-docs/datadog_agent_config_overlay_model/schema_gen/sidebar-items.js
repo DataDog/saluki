@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["FieldType"],"fn":["escape_str","field_type_as_rust","generate_schema_rs","is_unknown","load_schema","yaml_path_to_const"],"struct":["FieldInfo"]};
+window.SIDEBAR_ITEMS = {"enum":["EnvBinding","EnvParser","FieldType"],"fn":["escape_str","field_type_as_rust","generate_schema_rs","is_unknown","load_schema","yaml_path_to_const"],"struct":["FieldInfo"]};
