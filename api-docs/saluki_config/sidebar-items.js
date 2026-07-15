@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ConfigurationError","ParseDurationError"],"fn":["parse_duration","upsert"],"mod":["duration_string","dynamic","space_separated","value"],"struct":["ConfigurationLoader","GenericConfiguration"]};
+window.SIDEBAR_ITEMS = {"enum":["ConfigurationError","ParseDurationError"],"fn":["config_from","parse_duration","test_env_lock","upsert"],"mod":["duration_string","dynamic","space_separated","value"],"struct":["ConfigurationLoader","GenericConfiguration"]};

@@ -988,7 +988,7 @@
 <a href=#988 id=988 data-nosnippet>988</a>        RootCertStore, ServerConfig,
 <a href=#989 id=989 data-nosnippet>989</a>    };
 <a href=#990 id=990 data-nosnippet>990</a>    <span class="kw">use </span>saluki_common::buf::FrozenChunkedBytesBuffer;
-<a href=#991 id=991 data-nosnippet>991</a>    <span class="kw">use </span>saluki_config::ConfigurationLoader;
+<a href=#991 id=991 data-nosnippet>991</a>    <span class="kw">use </span>saluki_config::config_from;
 <a href=#992 id=992 data-nosnippet>992</a>    <span class="kw">use </span>saluki_core::observability::ComponentMetricsExt <span class="kw">as _</span>;
 <a href=#993 id=993 data-nosnippet>993</a>    <span class="kw">use </span>saluki_io::net::client::http::TlsMinimumVersion;
 <a href=#994 id=994 data-nosnippet>994</a>    <span class="kw">use </span>saluki_metrics::test::TestRecorder;
@@ -1562,46 +1562,45 @@
 <a href=#1562 id=1562 data-nosnippet>1562</a>    }
 <a href=#1563 id=1563 data-nosnippet>1563</a>
 <a href=#1564 id=1564 data-nosnippet>1564</a>    <span class="kw">async fn </span>config_with(values: serde_json::Value) -&gt; GenericConfiguration {
-<a href=#1565 id=1565 data-nosnippet>1565</a>        <span class="kw">let </span>(config, <span class="kw">_</span>) = ConfigurationLoader::for_tests(<span class="prelude-val">Some</span>(values), <span class="prelude-val">None</span>, <span class="bool-val">false</span>).<span class="kw">await</span>;
-<a href=#1566 id=1566 data-nosnippet>1566</a>        config
-<a href=#1567 id=1567 data-nosnippet>1567</a>    }
-<a href=#1568 id=1568 data-nosnippet>1568</a>
-<a href=#1569 id=1569 data-nosnippet>1569</a>    <span class="kw">async fn </span>wait_for_count_at_least(counter: <span class="kw-2">&amp;</span>Arc&lt;AtomicUsize&gt;, target: usize, deadline: Duration) -&gt; usize {
-<a href=#1570 id=1570 data-nosnippet>1570</a>        <span class="kw">let </span>start = std::time::Instant::now();
-<a href=#1571 id=1571 data-nosnippet>1571</a>        <span class="kw">loop </span>{
-<a href=#1572 id=1572 data-nosnippet>1572</a>            <span class="kw">let </span>current = counter.load(Ordering::SeqCst);
-<a href=#1573 id=1573 data-nosnippet>1573</a>            <span class="kw">if </span>current &gt;= target {
-<a href=#1574 id=1574 data-nosnippet>1574</a>                <span class="kw">return </span>current;
-<a href=#1575 id=1575 data-nosnippet>1575</a>            }
-<a href=#1576 id=1576 data-nosnippet>1576</a>            <span class="kw">if </span>start.elapsed() &gt; deadline {
-<a href=#1577 id=1577 data-nosnippet>1577</a>                <span class="kw">return </span>current;
-<a href=#1578 id=1578 data-nosnippet>1578</a>            }
-<a href=#1579 id=1579 data-nosnippet>1579</a>            tokio::time::sleep(Duration::from_millis(<span class="number">10</span>)).<span class="kw">await</span>;
-<a href=#1580 id=1580 data-nosnippet>1580</a>        }
-<a href=#1581 id=1581 data-nosnippet>1581</a>    }
-<a href=#1582 id=1582 data-nosnippet>1582</a>
-<a href=#1583 id=1583 data-nosnippet>1583</a>    <span class="attr">#[tokio::test]
-<a href=#1584 id=1584 data-nosnippet>1584</a>    </span><span class="kw">async fn </span>forwarder_retries_403_when_secrets_in_use() {
-<a href=#1585 id=1585 data-nosnippet>1585</a>        <span class="comment">// The server returns 403 to the first request and 200 to every subsequent request; the forwarder must drive
-<a href=#1586 id=1586 data-nosnippet>1586</a>        // at least one retry to observe the second request.
-<a href=#1587 id=1587 data-nosnippet>1587</a>        </span><span class="kw">let </span>(server_url, counter) = start_recording_http_server(<span class="macro">vec!</span>[StatusCode::FORBIDDEN, StatusCode::OK]).<span class="kw">await</span>;
-<a href=#1588 id=1588 data-nosnippet>1588</a>        <span class="kw">let </span>live_config = config_with(<span class="macro">json!</span>({ <span class="string">"secret_backend_command"</span>: <span class="string">"/bin/true" </span>})).<span class="kw">await</span>;
-<a href=#1589 id=1589 data-nosnippet>1589</a>        <span class="kw">let </span>forwarder = build_test_forwarder(<span class="kw-2">&amp;</span>server_url, <span class="prelude-val">Some</span>(live_config));
-<a href=#1590 id=1590 data-nosnippet>1590</a>
-<a href=#1591 id=1591 data-nosnippet>1591</a>        <span class="kw">let </span>handle = forwarder.spawn().<span class="kw">await</span>;
-<a href=#1592 id=1592 data-nosnippet>1592</a>        handle
-<a href=#1593 id=1593 data-nosnippet>1593</a>            .send_transaction(build_test_transaction())
-<a href=#1594 id=1594 data-nosnippet>1594</a>            .<span class="kw">await
-<a href=#1595 id=1595 data-nosnippet>1595</a>            </span>.expect(<span class="string">"send should succeed"</span>);
-<a href=#1596 id=1596 data-nosnippet>1596</a>
-<a href=#1597 id=1597 data-nosnippet>1597</a>        <span class="kw">let </span>observed = wait_for_count_at_least(<span class="kw-2">&amp;</span>counter, <span class="number">2</span>, Duration::from_secs(<span class="number">3</span>)).<span class="kw">await</span>;
-<a href=#1598 id=1598 data-nosnippet>1598</a>        handle.shutdown().<span class="kw">await</span>;
-<a href=#1599 id=1599 data-nosnippet>1599</a>
-<a href=#1600 id=1600 data-nosnippet>1600</a>        <span class="macro">assert!</span>(
-<a href=#1601 id=1601 data-nosnippet>1601</a>            observed &gt;= <span class="number">2</span>,
-<a href=#1602 id=1602 data-nosnippet>1602</a>            <span class="string">"with secrets configured, 403 must be retried at least once (saw {} requests)"</span>,
-<a href=#1603 id=1603 data-nosnippet>1603</a>            observed
-<a href=#1604 id=1604 data-nosnippet>1604</a>        );
-<a href=#1605 id=1605 data-nosnippet>1605</a>    }
-<a href=#1606 id=1606 data-nosnippet>1606</a>}
+<a href=#1565 id=1565 data-nosnippet>1565</a>        config_from(values).<span class="kw">await
+<a href=#1566 id=1566 data-nosnippet>1566</a>    </span>}
+<a href=#1567 id=1567 data-nosnippet>1567</a>
+<a href=#1568 id=1568 data-nosnippet>1568</a>    <span class="kw">async fn </span>wait_for_count_at_least(counter: <span class="kw-2">&amp;</span>Arc&lt;AtomicUsize&gt;, target: usize, deadline: Duration) -&gt; usize {
+<a href=#1569 id=1569 data-nosnippet>1569</a>        <span class="kw">let </span>start = std::time::Instant::now();
+<a href=#1570 id=1570 data-nosnippet>1570</a>        <span class="kw">loop </span>{
+<a href=#1571 id=1571 data-nosnippet>1571</a>            <span class="kw">let </span>current = counter.load(Ordering::SeqCst);
+<a href=#1572 id=1572 data-nosnippet>1572</a>            <span class="kw">if </span>current &gt;= target {
+<a href=#1573 id=1573 data-nosnippet>1573</a>                <span class="kw">return </span>current;
+<a href=#1574 id=1574 data-nosnippet>1574</a>            }
+<a href=#1575 id=1575 data-nosnippet>1575</a>            <span class="kw">if </span>start.elapsed() &gt; deadline {
+<a href=#1576 id=1576 data-nosnippet>1576</a>                <span class="kw">return </span>current;
+<a href=#1577 id=1577 data-nosnippet>1577</a>            }
+<a href=#1578 id=1578 data-nosnippet>1578</a>            tokio::time::sleep(Duration::from_millis(<span class="number">10</span>)).<span class="kw">await</span>;
+<a href=#1579 id=1579 data-nosnippet>1579</a>        }
+<a href=#1580 id=1580 data-nosnippet>1580</a>    }
+<a href=#1581 id=1581 data-nosnippet>1581</a>
+<a href=#1582 id=1582 data-nosnippet>1582</a>    <span class="attr">#[tokio::test]
+<a href=#1583 id=1583 data-nosnippet>1583</a>    </span><span class="kw">async fn </span>forwarder_retries_403_when_secrets_in_use() {
+<a href=#1584 id=1584 data-nosnippet>1584</a>        <span class="comment">// The server returns 403 to the first request and 200 to every subsequent request; the forwarder must drive
+<a href=#1585 id=1585 data-nosnippet>1585</a>        // at least one retry to observe the second request.
+<a href=#1586 id=1586 data-nosnippet>1586</a>        </span><span class="kw">let </span>(server_url, counter) = start_recording_http_server(<span class="macro">vec!</span>[StatusCode::FORBIDDEN, StatusCode::OK]).<span class="kw">await</span>;
+<a href=#1587 id=1587 data-nosnippet>1587</a>        <span class="kw">let </span>live_config = config_with(<span class="macro">json!</span>({ <span class="string">"secret_backend_command"</span>: <span class="string">"/bin/true" </span>})).<span class="kw">await</span>;
+<a href=#1588 id=1588 data-nosnippet>1588</a>        <span class="kw">let </span>forwarder = build_test_forwarder(<span class="kw-2">&amp;</span>server_url, <span class="prelude-val">Some</span>(live_config));
+<a href=#1589 id=1589 data-nosnippet>1589</a>
+<a href=#1590 id=1590 data-nosnippet>1590</a>        <span class="kw">let </span>handle = forwarder.spawn().<span class="kw">await</span>;
+<a href=#1591 id=1591 data-nosnippet>1591</a>        handle
+<a href=#1592 id=1592 data-nosnippet>1592</a>            .send_transaction(build_test_transaction())
+<a href=#1593 id=1593 data-nosnippet>1593</a>            .<span class="kw">await
+<a href=#1594 id=1594 data-nosnippet>1594</a>            </span>.expect(<span class="string">"send should succeed"</span>);
+<a href=#1595 id=1595 data-nosnippet>1595</a>
+<a href=#1596 id=1596 data-nosnippet>1596</a>        <span class="kw">let </span>observed = wait_for_count_at_least(<span class="kw-2">&amp;</span>counter, <span class="number">2</span>, Duration::from_secs(<span class="number">3</span>)).<span class="kw">await</span>;
+<a href=#1597 id=1597 data-nosnippet>1597</a>        handle.shutdown().<span class="kw">await</span>;
+<a href=#1598 id=1598 data-nosnippet>1598</a>
+<a href=#1599 id=1599 data-nosnippet>1599</a>        <span class="macro">assert!</span>(
+<a href=#1600 id=1600 data-nosnippet>1600</a>            observed &gt;= <span class="number">2</span>,
+<a href=#1601 id=1601 data-nosnippet>1601</a>            <span class="string">"with secrets configured, 403 must be retried at least once (saw {} requests)"</span>,
+<a href=#1602 id=1602 data-nosnippet>1602</a>            observed
+<a href=#1603 id=1603 data-nosnippet>1603</a>        );
+<a href=#1604 id=1604 data-nosnippet>1604</a>    }
+<a href=#1605 id=1605 data-nosnippet>1605</a>}
 </code></pre></div></section></main></body></html>

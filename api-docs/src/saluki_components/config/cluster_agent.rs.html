@@ -116,14 +116,14 @@
 <a href=#116 id=116 data-nosnippet>116</a>
 <a href=#117 id=117 data-nosnippet>117</a><span class="attr">#[cfg(test)]
 <a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">mod </span>tests {
-<a href=#119 id=119 data-nosnippet>119</a>    <span class="kw">use </span>saluki_config::ConfigurationLoader;
+<a href=#119 id=119 data-nosnippet>119</a>    <span class="kw">use </span>saluki_config::config_from;
 <a href=#120 id=120 data-nosnippet>120</a>    <span class="kw">use </span>serde_json::json;
 <a href=#121 id=121 data-nosnippet>121</a>
 <a href=#122 id=122 data-nosnippet>122</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#123 id=123 data-nosnippet>123</a>
 <a href=#124 id=124 data-nosnippet>124</a>    <span class="kw">async fn </span>cluster_agent_config_from(value: serde_json::Value) -&gt; ClusterAgentConfiguration {
-<a href=#125 id=125 data-nosnippet>125</a>        <span class="kw">let </span>(config, <span class="kw">_</span>) = ConfigurationLoader::for_tests(<span class="prelude-val">Some</span>(value), <span class="prelude-val">None</span>, <span class="bool-val">false</span>).<span class="kw">await</span>;
-<a href=#126 id=126 data-nosnippet>126</a>        ClusterAgentConfiguration::from_configuration(<span class="kw-2">&amp;</span>config).expect(<span class="string">"Cluster Agent configuration should deserialize"</span>)
+<a href=#125 id=125 data-nosnippet>125</a>        ClusterAgentConfiguration::from_configuration(<span class="kw-2">&amp;</span>config_from(value).<span class="kw">await</span>)
+<a href=#126 id=126 data-nosnippet>126</a>            .expect(<span class="string">"Cluster Agent configuration should deserialize"</span>)
 <a href=#127 id=127 data-nosnippet>127</a>    }
 <a href=#128 id=128 data-nosnippet>128</a>
 <a href=#129 id=129 data-nosnippet>129</a>    <span class="attr">#[tokio::test]
