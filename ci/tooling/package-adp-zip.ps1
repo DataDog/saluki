@@ -111,8 +111,10 @@ try {
     if (Test-Path $OutputPath) { Remove-Item -Force $OutputPath }
 
     # Compress-Archive writes entry names with `\` separators, which breaks cross-platform zip
-    # readers. Use tar.exe instead.
-    & tar -a -c -f $OutputPath -C $StageRoot .
+    # readers. Use tar.exe instead. Pass the staged top-level items explicitly rather than `.` so
+    # entries are named e.g. `bin/agent-data-plane.exe`, not `./bin/agent-data-plane.exe`.
+    $StageItems = Get-ChildItem -Name $StageRoot
+    & tar -a -c -f $OutputPath -C $StageRoot @StageItems
     if ($LASTEXITCODE -ne 0) { throw "tar zip creation failed (exit $LASTEXITCODE)" }
 
     Write-Host "[*] Zip ready"
