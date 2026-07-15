@@ -760,9 +760,6 @@ impl Supervisable for MetricsFlusherWorker {
 
 /// Feeds `upserts` through a fresh [`AggregatedMetricsProcessor`] and returns the resulting
 /// [`AggregatedMetricsState`].
-///
-/// Shared by the `aggregated` and `processor` submodule test modules, both of which previously
-/// reimplemented this same processor harness independently.
 #[cfg(test)]
 pub(crate) fn aggregate_upserts(upserts: Vec<Event>) -> AggregatedMetricsState {
     let processor = AggregatedMetricsProcessor;
