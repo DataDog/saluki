@@ -24,6 +24,10 @@ pub use self::host::RemoteAgentHostProvider;
 mod workload;
 pub use self::workload::RemoteAgentWorkloadProvider;
 
+pub(crate) fn root_provider_id() -> SubsystemIdentifier {
+    SubsystemIdentifier::from_segments(["env_provider"])
+}
+
 /// Agent Data Plane-specific environment provider.
 ///
 /// This environment provider is designed for ADP's normal deployment environment, which is running alongside the
@@ -68,15 +72,10 @@ impl ADPEnvironmentProvider {
             return Ok((env, None));
         }
 
-        // Otherwise, construct our real providers that will interact directly with the Datadog Agent. Providers address
-        // their memory bounds and resource groups on the single component registry using their fully qualified
-        // subsystem identifiers.
+        // Otherwise, construct our real providers that will interact directly with the Datadog Agent.
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
-        let host_provider = RemoteAgentHostProvider::from_configuration(config).await?;
-        component_registry
-            .bounds_builder(&SubsystemIdentifier::from_segments(["env_provider"]))
-            .with_subcomponent("host", &host_provider);
+        let host_provider = RemoteAgentHostProvider::from_configuration(config, component_registry).await?;
 
         let (workload_provider, workload_supervisor) =
             RemoteAgentWorkloadProvider::from_configuration(config, component_registry, health_registry).await?;
@@ -104,10 +103,9 @@ impl ADPEnvironmentProvider {
     pub fn wait_for_ready(&self) -> impl Future<Output = ()> + Send + 'static {
         let health_registry = self.health_registry.clone();
         let has_workload_provider = self.workload_provider.is_some();
-        let workload_root = workload::workload_root();
         async move {
             if has_workload_provider {
-                health_registry.all_ready_under(workload_root).await;
+                health_registry.all_ready_under(root_provider_id()).await;
             }
         }
     }
