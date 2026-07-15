@@ -123,30 +123,35 @@ fn apply_one(
 /// A case-insensitive snapshot of the process environment.
 ///
 /// The legacy figment loader reads environment variables case-insensitively (via `uncased`), and
-/// the compatibility `DatadogRemapper` lowercases names before matching. `std::env::var` is
-/// case-sensitive, so the typed reader would otherwise regress that behavior. Capturing the
-/// environment once with lowercased names preserves parity: `DD_DOGSTATSD_PORT`,
-/// `dd_dogstatsd_port`, and `Dd_Dogstatsd_Port` all resolve to the same key.
+/// the compatibility `DatadogRemapper` converts names to lowercase before matching. Because
+/// `std::env::var` is case-sensitive, the typed reader captures the environment with lowercase
+/// names to preserve parity. `DD_DOGSTATSD_PORT`, `dd_dogstatsd_port`, and `Dd_Dogstatsd_Port` all
+/// resolve to the same key.
 struct EnvSnapshot {
-    /// Environment values keyed by lowercased variable name. Only non-empty values are kept.
+    /// Environment values keyed by lowercase variable name. Only non-empty values are kept.
     vars: HashMap<String, String>,
 }
 
 impl EnvSnapshot {
-    /// Captures the current process environment, lowercasing names and dropping empty values.
+    /// Captures the environment, converting names to lowercase and dropping empty values.
+    fn capture() -> Self {
+        Self::from_vars(std::env::vars())
+    }
+
+    /// Builds a snapshot from environment variable pairs.
     ///
     /// An empty string counts as unset, matching the Agent (`os.LookupEnv` plus an emptiness
     /// check). If several case variants of one name are set, the first seen wins, mirroring the
     /// remapper.
-    fn capture() -> Self {
-        let mut vars = HashMap::new();
-        for (name, value) in std::env::vars() {
+    fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Self {
+        let mut snapshot = HashMap::new();
+        for (name, value) in vars {
             if value.is_empty() {
                 continue;
             }
-            vars.entry(name.to_lowercase()).or_insert(value);
+            snapshot.entry(name.to_lowercase()).or_insert(value);
         }
-        Self { vars }
+        Self { vars: snapshot }
     }
 
     /// Returns the value of the first name in `names` (highest priority first) that is set to a
@@ -272,19 +277,13 @@ mod tests {
 
     #[test]
     fn env_var_names_are_matched_case_insensitively() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        // Lowercase and mixed-case names must resolve just as the legacy figment loader does.
-        std::env::set_var("dd_dogstatsd_port", "9125");
-        std::env::set_var("Dd_Api_Key", "00000");
+        let env = EnvSnapshot::from_vars([
+            ("dd_dogstatsd_port".to_string(), "9125".to_string()),
+            ("Dd_Api_Key".to_string(), "00000".to_string()),
+        ]);
 
-        let mut base = json!({});
-        apply_datadog_env(&mut base, true).unwrap();
-
-        std::env::remove_var("dd_dogstatsd_port");
-        std::env::remove_var("Dd_Api_Key");
-
-        assert_eq!(at(&base, &["dogstatsd_port"]), Some(&json!(9125)));
-        assert_eq!(at(&base, &["api_key"]), Some(&json!("00000")));
+        assert_eq!(env.lookup(&["DD_DOGSTATSD_PORT"]).as_deref(), Some("9125"));
+        assert_eq!(env.lookup(&["DD_API_KEY"]).as_deref(), Some("00000"));
     }
 
     #[test]
