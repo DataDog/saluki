@@ -1,6 +1,4 @@
 //! Shared helpers for `saluki-tls` integration tests.
-//!
-//! Not every test binary uses every helper, so `dead_code` is suppressed for the module as a whole.
 
 #![allow(dead_code)]
 
@@ -10,9 +8,6 @@ use std::{fs, path::Path};
 const MALFORMED_PEM: &str = "-----BEGIN CERTIFICATE-----\nNOT VALID BASE64!!!\n-----END CERTIFICATE-----\n";
 
 /// Generates a self-signed certificate and writes it as a PEM file at `path`.
-///
-/// Delegates to the shared `saluki_tls::test_util` helper (exposed via the `test-util` feature) so certificate
-/// generation lives in exactly one place.
 pub fn write_self_signed_cert(path: &Path) {
     saluki_tls::test_util::write_self_signed_cert(path);
 }
