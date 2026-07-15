@@ -156,23 +156,27 @@
 <a href=#156 id=156 data-nosnippet>156</a>        </span><span class="kw">let </span>now = Instant::now();
 <a href=#157 id=157 data-nosnippet>157</a>        <span class="kw">if </span><span class="self">self</span>.restart_history.len() == <span class="self">self</span>.strategy.intensity {
 <a href=#158 id=158 data-nosnippet>158</a>            <span class="kw">let </span>oldest = <span class="self">self</span>.restart_history.front().expect(<span class="string">"restart history cannot be empty"</span>);
-<a href=#159 id=159 data-nosnippet>159</a>            <span class="kw">if </span>now.saturating_duration_since(<span class="kw-2">*</span>oldest) &lt; <span class="self">self</span>.strategy.period {
-<a href=#160 id=160 data-nosnippet>160</a>                <span class="macro">debug!</span>(
-<a href=#161 id=161 data-nosnippet>161</a>                    <span class="string">"Restart limit exceeded ({} in {:?}), shutting down."</span>,
-<a href=#162 id=162 data-nosnippet>162</a>                    <span class="self">self</span>.strategy.intensity, <span class="self">self</span>.strategy.period
-<a href=#163 id=163 data-nosnippet>163</a>                );
-<a href=#164 id=164 data-nosnippet>164</a>                <span class="kw">return </span>RestartAction::Shutdown;
-<a href=#165 id=165 data-nosnippet>165</a>            }
-<a href=#166 id=166 data-nosnippet>166</a>
-<a href=#167 id=167 data-nosnippet>167</a>            <span class="comment">// Remove the oldest restart from the history since it is outside the period.
-<a href=#168 id=168 data-nosnippet>168</a>            </span><span class="self">self</span>.restart_history.pop_front();
-<a href=#169 id=169 data-nosnippet>169</a>        }
+<a href=#159 id=159 data-nosnippet>159</a>            <span class="macro">saluki_antithesis::always_or_unreachable!</span>(
+<a href=#160 id=160 data-nosnippet>160</a>                now &gt;= <span class="kw-2">*</span>oldest,
+<a href=#161 id=161 data-nosnippet>161</a>                <span class="string">"restart-intensity window clock did not move backward"
+<a href=#162 id=162 data-nosnippet>162</a>            </span>);
+<a href=#163 id=163 data-nosnippet>163</a>            <span class="kw">if </span>now.saturating_duration_since(<span class="kw-2">*</span>oldest) &lt; <span class="self">self</span>.strategy.period {
+<a href=#164 id=164 data-nosnippet>164</a>                <span class="macro">debug!</span>(
+<a href=#165 id=165 data-nosnippet>165</a>                    <span class="string">"Restart limit exceeded ({} in {:?}), shutting down."</span>,
+<a href=#166 id=166 data-nosnippet>166</a>                    <span class="self">self</span>.strategy.intensity, <span class="self">self</span>.strategy.period
+<a href=#167 id=167 data-nosnippet>167</a>                );
+<a href=#168 id=168 data-nosnippet>168</a>                <span class="kw">return </span>RestartAction::Shutdown;
+<a href=#169 id=169 data-nosnippet>169</a>            }
 <a href=#170 id=170 data-nosnippet>170</a>
-<a href=#171 id=171 data-nosnippet>171</a>        <span class="comment">// Track this latest restart.
-<a href=#172 id=172 data-nosnippet>172</a>        </span><span class="self">self</span>.restart_history.push_back(now);
-<a href=#173 id=173 data-nosnippet>173</a>
-<a href=#174 id=174 data-nosnippet>174</a>        <span class="macro">debug!</span>(<span class="string">"Restart limit not exceeded, restarting worker."</span>);
-<a href=#175 id=175 data-nosnippet>175</a>        RestartAction::Restart(<span class="self">self</span>.strategy.mode)
-<a href=#176 id=176 data-nosnippet>176</a>    }
-<a href=#177 id=177 data-nosnippet>177</a>}
+<a href=#171 id=171 data-nosnippet>171</a>            <span class="comment">// Remove the oldest restart from the history since it is outside the period.
+<a href=#172 id=172 data-nosnippet>172</a>            </span><span class="self">self</span>.restart_history.pop_front();
+<a href=#173 id=173 data-nosnippet>173</a>        }
+<a href=#174 id=174 data-nosnippet>174</a>
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="comment">// Track this latest restart.
+<a href=#176 id=176 data-nosnippet>176</a>        </span><span class="self">self</span>.restart_history.push_back(now);
+<a href=#177 id=177 data-nosnippet>177</a>
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="macro">debug!</span>(<span class="string">"Restart limit not exceeded, restarting worker."</span>);
+<a href=#179 id=179 data-nosnippet>179</a>        RestartAction::Restart(<span class="self">self</span>.strategy.mode)
+<a href=#180 id=180 data-nosnippet>180</a>    }
+<a href=#181 id=181 data-nosnippet>181</a>}
 </code></pre></div></section></main></body></html>
