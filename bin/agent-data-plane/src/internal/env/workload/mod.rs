@@ -90,11 +90,10 @@ impl RemoteAgentWorkloadProvider {
     /// If there is an issue with any of the provider configuration, or creating the underlying metadata collectors, an
     /// error is returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, component_registry: ComponentRegistry, health_registry: &HealthRegistry,
+        config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
         let root_provider_id = workload_root().child("remote_agent");
-        let mut component_registry = component_registry.get_or_create(&root_provider_id);
-        let mut provider_bounds = component_registry.bounds_builder();
+        let mut provider_bounds = component_registry.bounds_builder(&root_provider_id);
 
         // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
         let string_interner_size_bytes = config

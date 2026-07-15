@@ -68,21 +68,18 @@ impl ADPEnvironmentProvider {
             return Ok((env, None));
         }
 
-        // Otherwise, construct our real providers that will interact directly with the Datadog Agent.
+        // Otherwise, construct our real providers that will interact directly with the Datadog Agent. Providers address
+        // their memory bounds and resource groups on the single component registry using their fully qualified
+        // subsystem identifiers.
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
         let host_provider = RemoteAgentHostProvider::from_configuration(config).await?;
         component_registry
-            .get_or_create(&SubsystemIdentifier::from_segments(["env_provider"]))
-            .bounds_builder()
+            .bounds_builder(&SubsystemIdentifier::from_segments(["env_provider"]))
             .with_subcomponent("host", &host_provider);
 
-        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
-            config,
-            component_registry.get_or_create(&workload::workload_root()),
-            health_registry,
-        )
-        .await?;
+        let (workload_provider, workload_supervisor) =
+            RemoteAgentWorkloadProvider::from_configuration(config, component_registry, health_registry).await?;
         env_supervisor.add_worker(workload_supervisor);
 
         let (autodiscovery_provider, autodiscovery_supervisor) =

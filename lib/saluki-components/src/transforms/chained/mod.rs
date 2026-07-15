@@ -4,7 +4,6 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::EventType;
 use saluki_core::{
     components::{transforms::*, ComponentContext},
-    support::SubsystemIdentifier,
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
@@ -91,7 +90,9 @@ impl Transform for Chained {
         );
 
         // We have to re-associate each subtransform with their allocation group token here, as we don't have access to
-        // it when the bounds are initially defined.
+        // it when the bounds are initially defined. Each subtransform's resource group is addressed by its absolute
+        // identity: this component's canonical identity with the subtransform's relative id appended.
+        let component_id = context.component_context().identity();
         let mut subtransforms = self
             .subtransforms
             .into_iter()
@@ -99,8 +100,7 @@ impl Transform for Chained {
                 (
                     context
                         .component_registry()
-                        .get_or_create(&SubsystemIdentifier::from_dotted(&subtransform_id))
-                        .token(),
+                        .get_resource_group_token(&component_id.clone().child(&subtransform_id)),
                     subtransform,
                 )
             })
