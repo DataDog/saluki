@@ -634,7 +634,12 @@ impl Runner {
             let now = Instant::now();
             let stale_ids: Vec<usize> = (0..registry.component_state.len())
                 .filter(|&id| {
-                    now.duration_since(registry.component_state[id].last_response) >= DEFAULT_PROBE_TIMEOUT_DUR
+                    let last = registry.component_state[id].last_response;
+                    saluki_antithesis::always_or_unreachable!(
+                        now >= last,
+                        "health probe last-response clock did not move backward"
+                    );
+                    now.saturating_duration_since(last) >= DEFAULT_PROBE_TIMEOUT_DUR
                 })
                 .collect();
             (registry.component_state.len(), stale_ids)

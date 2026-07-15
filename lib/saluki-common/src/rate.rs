@@ -29,9 +29,13 @@ impl TokenBucket {
     /// Attempt to consume one token. Returns `true` if a token was available.
     pub fn allow(&mut self) -> bool {
         let now = Instant::now();
+        saluki_antithesis::always_or_unreachable!(
+            now >= self.last_refill,
+            "token-bucket refill clock did not move backward"
+        );
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
         self.tokens = (self.tokens + elapsed * self.rate).min(self.capacity);
-        self.last_refill = now;
+        self.last_refill = now.max(self.last_refill);
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
             true

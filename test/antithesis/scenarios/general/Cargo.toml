@@ -14,5 +14,7 @@ antithesis_sdk = { workspace = true, features = ["full", "rand_v0_10"] }
 anyhow = { workspace = true, features = ["std"] }
 clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
 harness = { path = "../../harness" }
+reqwest = { workspace = true, features = ["blocking", "rustls-no-provider"] }
+rustls = { workspace = true, features = ["aws_lc_rs"] }
 ryu = { workspace = true }
 serde_json = { workspace = true }
