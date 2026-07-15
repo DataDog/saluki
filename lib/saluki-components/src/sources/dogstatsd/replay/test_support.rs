@@ -1,6 +1,4 @@
 //! Shared test-support helpers for the DogStatsD capture/replay tests.
-//!
-//! These were previously duplicated verbatim across `reader.rs`, `writer.rs`, and `capture.rs`.
 
 use std::{
     fs,
@@ -22,7 +20,7 @@ pub(super) fn wait_until_inactive(is_ongoing: impl Fn() -> bool) {
     assert!(!is_ongoing(), "capture did not stop in time");
 }
 
-/// Creates, and returns the path to, a unique, freshly-created temporary directory for a test.
+/// Creates, and returns the path to, a unique, freshly created temporary directory for a test.
 pub(super) fn unique_dir(label: &str) -> PathBuf {
     let path = unique_path(label);
     fs::create_dir_all(&path).expect("test directory should be created");
