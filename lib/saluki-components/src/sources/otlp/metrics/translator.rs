@@ -936,6 +936,12 @@ impl OtlpMetricsTranslator {
 
         if hist_info.ok {
             qa.set_count(hist_info.count);
+
+            if hist_info.count == 0 {
+                self.record_sketch_event(&point_dims, qa, ts, events, context, 0);
+                return Ok(());
+            }
+
             qa.set_sum(hist_info.sum);
             qa.set_avg(hist_info.sum / hist_info.count as f64);
         }
@@ -1906,6 +1912,85 @@ mod tests {
         assert_eq!(sketch.count(), 256);
         assert!(sketch.bin_count() > 1);
         assert!(sketch.min().unwrap() < sketch.max().unwrap());
+    }
+
+    #[test]
+    fn cumulative_histogram_preserves_interpolated_summary_when_exact_count_is_zero() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let dims = Dimensions {
+            name: "metric.example".to_string(),
+            ..Default::default()
+        };
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let start_ts = translator.process_start_time_ns + 1;
+        let mut events = Vec::new();
+
+        let seed = OtlpHistogramDataPoint {
+            start_time_unix_nano: start_ts,
+            time_unix_nano: start_ts + nanos_from_seconds(1),
+            count: 0,
+            sum: Some(0.0),
+            bucket_counts: vec![0, 0],
+            explicit_bounds: vec![100.0],
+            min: Some(0.0),
+            max: Some(100.0),
+            ..Default::default()
+        };
+        translator
+            .get_sketch_buckets(
+                &context,
+                dims.clone(),
+                &seed,
+                false,
+                &mut events,
+                HistogramInfo::default(),
+            )
+            .expect("seeding cumulative bucket state should succeed");
+        assert!(events.is_empty());
+
+        let point = OtlpHistogramDataPoint {
+            start_time_unix_nano: start_ts,
+            time_unix_nano: start_ts + nanos_from_seconds(2),
+            count: 0,
+            sum: Some(0.0),
+            bucket_counts: vec![0, 10],
+            explicit_bounds: vec![100.0],
+            min: Some(0.0),
+            max: Some(100.0),
+            ..Default::default()
+        };
+        translator
+            .get_sketch_buckets(
+                &context,
+                dims,
+                &point,
+                false,
+                &mut events,
+                HistogramInfo {
+                    ok: true,
+                    count: 0,
+                    sum: 0.0,
+                    ..Default::default()
+                },
+            )
+            .expect("translating cumulative bucket deltas should succeed");
+
+        assert_eq!(events.len(), 1);
+        let metric = events[0].try_as_metric().expect("event should be a metric");
+        let MetricValues::Distribution(points) = metric.values() else {
+            panic!("cumulative histogram should produce a distribution");
+        };
+        let (_, sketch) = points.into_iter().next().expect("distribution should contain a sketch");
+        assert_eq!(sketch.count(), 0);
+        assert!(!sketch.bins().is_empty());
+        assert!(sketch.stored_min() > 0.0);
+        assert!(sketch.stored_max() >= sketch.stored_min());
+        assert!(sketch.stored_sum() > 0.0);
+        assert!(sketch.stored_avg() > 0.0);
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296

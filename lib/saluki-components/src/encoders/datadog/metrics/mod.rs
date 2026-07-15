@@ -49,7 +49,7 @@ use crate::{
         endpoints::{series_v3_config_can_enable_v3, AdditionalEndpoints},
         io::RB_BUFFER_CHUNK_SIZE,
         protocol::{MetricsPayloadInfo, UseV3ApiSeriesConfig, V3ApiConfig},
-        request_builder::RequestBuilder,
+        request_builder::{RequestBuilder, RequestBuilderError},
         resolve_zstd_compressor_level,
         telemetry::ComponentTelemetry,
         DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
@@ -1140,6 +1140,11 @@ async fn encode_v2_metrics(
     let metric_to_retry = match request_builder.encode(metric).await {
         Ok(None) => return Ok(EncodeResult::new(true, false)),
         Ok(Some(metric)) => metric,
+        Err(RequestBuilderError::InvalidInput { input }) => {
+            debug!(metric_name = %input.context().name(), "Dropping metric with no emittable values.");
+            telemetry.events_dropped_encoder().increment(1);
+            return Ok(EncodeResult::new(false, false));
+        }
         Err(e) => {
             error!(error = %e, "Failed to encode metric.");
             telemetry.events_dropped_encoder().increment(1);
@@ -1406,18 +1411,18 @@ fn split_v3_metric_ranges_by_point_limit(
     let mut current_points = 0usize;
 
     for (idx, metric) in metrics.iter().enumerate() {
-        let metric_points = metric.values().len();
-        if metric_points == 0 {
-            // The Agent drops zero-point V3 metrics before writing them.
+        if !metric_has_emittable_values(metric) {
             if let Some(start) = current_start.take() {
                 if start < idx {
                     ranges.push_back(start..idx);
                 }
             }
+            debug!(metric_name = %metric.context().name(), "Dropping metric with no emittable values.");
             context.telemetry.events_dropped_encoder().increment(1);
             current_points = 0;
             continue;
         }
+        let metric_points = metric.values().len();
 
         if !context.payload_limits.point_count_fits(metric_points) {
             // This metric exceeds the point limit by itself, so it cannot fit in any V3 payload request.
@@ -1525,10 +1530,32 @@ fn encode_v3_metrics_batch(
 }
 
 /// Writes a single metric to the V3 writer.
+pub(super) fn sketch_has_emittable_values(sketch: &DDSketch) -> bool {
+    !sketch.is_empty() || !sketch.bins().is_empty()
+}
+
+pub(super) fn metric_has_emittable_values(metric: &Metric) -> bool {
+    match metric.values() {
+        MetricValues::Counter(points) | MetricValues::Rate(points, _) | MetricValues::Gauge(points) => {
+            points.into_iter().any(|(_, value)| emittable_scalar_point(value))
+        }
+        MetricValues::Set(points) => points.into_iter().any(|(_, value)| emittable_scalar_point(value)),
+        MetricValues::Distribution(sketches) => sketches
+            .into_iter()
+            .any(|(_, sketch)| sketch_has_emittable_values(sketch)),
+        MetricValues::Histogram(points) => points.into_iter().any(|(_, histogram)| !histogram.samples().is_empty()),
+    }
+}
+
 fn write_metric_to_v3(
     writer: &mut V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
     tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) {
+    if !metric_has_emittable_values(metric) {
+        debug!(metric_name = %metric.context().name(), "Dropping metric with no emittable values.");
+        return;
+    }
+
     let metric_type = match metric.values() {
         MetricValues::Counter(..) => V3MetricType::Count,
         MetricValues::Rate(..) => V3MetricType::Rate,
@@ -1641,15 +1668,15 @@ fn write_metric_to_v3(
         MetricValues::Distribution(sketches) => {
             for (ts, sketch) in sketches {
                 let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
-                if !sketch.is_empty() {
+                if sketch_has_emittable_values(sketch) {
                     let bin_keys: Vec<i32> = sketch.bins().iter().map(|b| b.key()).collect();
                     let bin_counts: Vec<u32> = sketch.bins().iter().map(|b| b.count()).collect();
                     builder.add_sketch(
                         timestamp,
                         sketch.count() as i64,
-                        sketch.sum().unwrap_or(0.0),
-                        sketch.min().unwrap_or(0.0),
-                        sketch.max().unwrap_or(0.0),
+                        sketch.stored_sum(),
+                        sketch.stored_min(),
+                        sketch.stored_max(),
                         &bin_keys,
                         &bin_counts,
                     );
@@ -1776,6 +1803,8 @@ mod tests {
     use std::io::Cursor;
 
     use bytes::Bytes;
+    use datadog_protos::metrics::v3::MetricData as V3MetricData;
+    use protobuf::Message as _;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context,
@@ -1908,6 +1937,44 @@ serializer_experimental_use_v3_api:
             false,
             &series_config
         ));
+    }
+
+    #[test]
+    fn v3_encodes_zero_count_distribution_with_bins() {
+        let mut sketch = DDSketch::default();
+        sketch.insert_n(42.0, 10);
+        sketch.set_count(0);
+        sketch.set_min(40.0);
+        sketch.set_max(45.0);
+        sketch.set_sum(123.0);
+        sketch.set_avg(f64::NAN);
+
+        let metric = Metric::from_parts(
+            Context::from_static_parts("zero.count.distribution", &[]),
+            MetricValues::distribution((123_u64, sketch)),
+            MetricMetadata::default(),
+        );
+
+        let encoded = encode_v3_metrics_batch(&[metric], &SharedTagSet::default())
+            .expect("zero-count distribution should encode to V3");
+        let metric_data = V3MetricData::parse_from_bytes(&encoded.payload).expect("V3 metric data should decode");
+
+        assert_eq!(metric_data.numPoints, vec![1]);
+    }
+
+    #[test]
+    fn v3_skips_empty_distribution() {
+        let metric = Metric::from_parts(
+            Context::from_static_parts("empty.distribution", &[]),
+            MetricValues::distribution((123_u64, DDSketch::default())),
+            MetricMetadata::default(),
+        );
+
+        let encoded =
+            encode_v3_metrics_batch(&[metric], &SharedTagSet::default()).expect("empty distribution should encode");
+        let metric_data = V3MetricData::parse_from_bytes(&encoded.payload).expect("V3 metric data should decode");
+
+        assert!(metric_data.numPoints.is_empty());
     }
 
     #[tokio::test]
