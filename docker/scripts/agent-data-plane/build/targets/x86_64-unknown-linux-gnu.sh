@@ -13,6 +13,7 @@ if [ -d /opt/toolchains/x86_64 ]; then
     export CC_x86_64_unknown_linux_gnu="${_ctng}-gcc"
     export CXX_x86_64_unknown_linux_gnu="${_ctng}-g++"
     export AR_x86_64_unknown_linux_gnu="${_ctng}-ar"
+    # https://github.com/DataDog/datadog-agent-buildimages/blob/6431ee46dba53a45dce472da57856e3b6bd2d494/docker-bake.hcl#L118
     TARGET_MAX_GLIBC="2.17"
 fi
 
