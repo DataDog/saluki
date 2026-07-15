@@ -59,6 +59,9 @@ pub struct FullSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
+    /// Accepted input shape when it is wider than the schema's declared type (see [`InputShape`]).
+    #[serde(default)]
+    pub input_shape: Option<InputShape>,
     /// Fields to support the `config_registry` and configuration smoke tests.
     pub test_support: TestSupport,
 }
@@ -79,6 +82,9 @@ pub struct PartialSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
+    /// Accepted input shape when it is wider than the schema's declared type (see [`InputShape`]).
+    #[serde(default)]
+    pub input_shape: Option<InputShape>,
     /// Fields to support the `config_registry` and configuration smoke tests.
     pub test_support: TestSupport,
 }
@@ -233,6 +239,19 @@ pub enum ValueType {
     Float,
     String,
     StringList,
+}
+
+/// A widened input shape a schema `string` leaf accepts beyond a bare string.
+///
+/// The vendored schema types some settings as `string` but documents an equivalent numeric form
+/// (for example a byte size given as `10485760` instead of `"10MB"`). The schema cannot express that
+/// union, so the overlay names it and codegen attaches a tolerant deserializer to the generated
+/// field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputShape {
+    /// Accept a string unchanged, or a non-negative integer normalized to its decimal string.
+    StringOrInteger,
 }
 
 /// File paths to the two YAML files required as input by this library.

@@ -6,6 +6,10 @@ license = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
+# TODO: remove after migration to typed config. `figment` is pulled in only for `DatadogRemapper`
+# (a figment provider) and the legacy flat-key loader path in `remapper`; the typed model needs no
+# figment.
+figment = { workspace = true }
 go-duration = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

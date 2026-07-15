@@ -861,6 +861,7 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "DSD log file max size"
+    input_shape: string_or_integer
     test_support:
       used_by: [DogStatsDDebugLogConfiguration]
       test_json: '"42MB"'
@@ -1707,6 +1708,7 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Max log file size before rolling"
+    input_shape: string_or_integer
     test_support:
       used_by: [NO_SMOKE]
 

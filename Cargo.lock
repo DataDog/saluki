@@ -89,6 +89,7 @@ dependencies = [
  "saluki-config",
  "serde",
  "serde_json",
+ "serde_yaml",
  "snafu",
  "tokio",
  "tracing",
@@ -1226,6 +1227,7 @@ name = "datadog-agent-config"
 version = "0.1.0"
 dependencies = [
  "datadog-agent-config-overlay-model",
+ "figment",
  "go-duration",
  "indexmap",
  "prettyplease",
@@ -4302,6 +4304,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "datadog-agent-commons",
+ "datadog-agent-config",
  "datadog-agent-config-testing",
  "datadog-agent-metrics-v3",
  "datadog-protos",
