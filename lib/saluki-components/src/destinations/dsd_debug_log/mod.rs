@@ -344,6 +344,7 @@ mod tests {
     use bytesize::ByteSize;
     use datadog_agent_config_testing::config_registry::structs;
     use datadog_agent_config_testing::run_config_smoke_tests;
+    use saluki_config::config_from;
     use saluki_context::Context;
     use saluki_core::data_model::event::metric::Metric;
     use serde_json::json;
@@ -358,9 +359,7 @@ mod tests {
 
     async fn deser_config(raw_json: &str) -> DogStatsDDebugLogConfiguration {
         let value = serde_json::from_str(raw_json).expect("test config should be valid JSON");
-        let (config, _) = saluki_config::ConfigurationLoader::for_tests(Some(value), None, false).await;
-
-        DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path())
+        DogStatsDDebugLogConfiguration::from_configuration(&config_from(value).await, test_default_log_file_path())
             .expect("DogStatsDDebugLogConfiguration should deserialize")
     }
 
@@ -423,7 +422,7 @@ mod tests {
     #[tokio::test]
     async fn negative_log_file_max_rolls_is_rejected() {
         let value = json!({ "dogstatsd_log_file_max_rolls": -1 });
-        let (config, _) = saluki_config::ConfigurationLoader::for_tests(Some(value), None, false).await;
+        let config = config_from(value).await;
 
         let result = DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path());
         assert!(result.is_err());
@@ -446,17 +445,13 @@ mod tests {
     }
 
     async fn test_config(log_file: PathBuf, max_size: ByteSize, max_rolls: usize) -> DogStatsDDebugLogConfiguration {
-        let (config, _) = saluki_config::ConfigurationLoader::for_tests(
-            Some(json!({
-                "dogstatsd_metrics_stats_enable": true,
-                "dogstatsd_logging_enabled": true,
-                "dogstatsd_log_file": log_file.display().to_string(),
-                "dogstatsd_log_file_max_size": max_size.as_u64(),
-                "dogstatsd_log_file_max_rolls": max_rolls,
-            })),
-            None,
-            false,
-        )
+        let config = config_from(json!({
+            "dogstatsd_metrics_stats_enable": true,
+            "dogstatsd_logging_enabled": true,
+            "dogstatsd_log_file": log_file.display().to_string(),
+            "dogstatsd_log_file_max_size": max_size.as_u64(),
+            "dogstatsd_log_file_max_rolls": max_rolls,
+        }))
         .await;
 
         DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path())

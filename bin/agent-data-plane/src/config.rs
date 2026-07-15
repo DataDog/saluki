@@ -345,65 +345,36 @@ impl DataPlaneOtlpProxyConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config::config_from;
     use serde_json::json;
 
     use super::*;
+
+    async fn dp_config_from(value: serde_json::Value) -> DataPlaneConfiguration {
+        DataPlaneConfiguration::from_configuration(&config_from(value).await)
+            .expect("data plane configuration should parse")
+    }
 
     // ADP ignores `use_dogstatsd`. The Core Agent evaluates that key and delivers the resolved
     // decision to ADP by setting `data_plane.dogstatsd.enabled` via the config stream.
 
     #[tokio::test]
     async fn default_enables_dogstatsd() {
-        let (config, _) =
-            ConfigurationLoader::for_tests(Some(json!({ "data_plane": { "enabled": true } })), None, false).await;
-
-        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        let dp = dp_config_from(json!({ "data_plane": { "enabled": true } })).await;
         assert!(dp.enabled());
         assert!(dp.dogstatsd().enabled());
     }
 
     #[tokio::test]
-    async fn data_plane_stop_timeout_overrides_core_agent_shutdown_timeout_sum() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "aggregator_stop_timeout": 3,
-                "forwarder_stop_timeout": 7,
-                "data_plane": { "stop_timeout": 11 },
-            })),
-            None,
-            false,
-        )
-        .await;
-
-        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
-        assert_eq!(dp.stop_timeout(), Duration::from_secs(11));
-    }
-
-    #[tokio::test]
     async fn use_dogstatsd_false_does_not_disable_dogstatsd_by_default() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({ "use_dogstatsd": false, "data_plane": { "enabled": true } })),
-            None,
-            false,
-        )
-        .await;
-
-        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        let dp = dp_config_from(json!({ "use_dogstatsd": false, "data_plane": { "enabled": true } })).await;
         assert!(dp.enabled());
         assert!(dp.dogstatsd().enabled());
     }
 
     #[tokio::test]
     async fn explicit_false_disables_dogstatsd() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({ "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } } })),
-            None,
-            false,
-        )
-        .await;
-
-        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
+        let dp = dp_config_from(json!({ "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } } })).await;
         assert!(dp.enabled());
         assert!(!dp.dogstatsd().enabled());
     }
@@ -412,17 +383,11 @@ mod tests {
     async fn use_dogstatsd_true_does_not_override_explicit_false() {
         // `use_dogstatsd=true` must not enable DSD when `data_plane.dogstatsd.enabled=false` is
         // set explicitly. ADP reads only its own key.
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "use_dogstatsd": true,
-                "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } },
-            })),
-            None,
-            false,
-        )
+        let dp = dp_config_from(json!({
+            "use_dogstatsd": true,
+            "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } },
+        }))
         .await;
-
-        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
         assert!(dp.enabled());
         assert!(!dp.dogstatsd().enabled());
     }
@@ -431,18 +396,187 @@ mod tests {
     async fn use_dogstatsd_false_does_not_disable_dogstatsd_when_explicitly_enabled() {
         // `use_dogstatsd=false` must not disable DSD when `data_plane.dogstatsd.enabled=true` is
         // set explicitly. The Core Agent communicates its resolved decision via that key.
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "use_dogstatsd": false,
-                "data_plane": { "enabled": true, "dogstatsd": { "enabled": true } },
-            })),
-            None,
-            false,
-        )
+        let dp = dp_config_from(json!({
+            "use_dogstatsd": false,
+            "data_plane": { "enabled": true, "dogstatsd": { "enabled": true } },
+        }))
         .await;
-
-        let dp = DataPlaneConfiguration::from_configuration(&config).expect("parse config");
         assert!(dp.enabled());
         assert!(dp.dogstatsd().enabled());
+    }
+
+    // Pipeline-requirement predicates. Each scenario is chosen to walk one documented branch of the
+    // `*_pipeline_required` predicates on `DataPlaneConfiguration`, asserting the full predicate set so that a
+    // regression in any single predicate surfaces.
+
+    #[tokio::test]
+    async fn default_dogstatsd_only_requires_metrics_events_and_service_checks_pipelines() {
+        // Only DogStatsD is enabled (it defaults to on); Checks and OTLP are off.
+        let dp = dp_config_from(json!({ "data_plane": { "enabled": true } })).await;
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(dp.events_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[tokio::test]
+    async fn checks_enabled_requires_every_pipeline_except_traces() {
+        let dp = dp_config_from(json!({
+            "data_plane": {
+                "enabled": true,
+                "checks": { "enabled": true },
+                "dogstatsd": { "enabled": false },
+                "otlp": { "enabled": false },
+            },
+        }))
+        .await;
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(dp.logs_pipeline_required());
+        assert!(dp.events_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[tokio::test]
+    async fn otlp_without_proxy_requires_metrics_logs_and_traces_pipelines() {
+        let dp = dp_config_from(json!({
+            "data_plane": {
+                "enabled": true,
+                "dogstatsd": { "enabled": false },
+                "otlp": { "enabled": true, "proxy": { "enabled": false } },
+            },
+        }))
+        .await;
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(dp.metrics_pipeline_required());
+        assert!(dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
+        assert!(dp.traces_pipeline_required());
+    }
+
+    #[tokio::test]
+    async fn otlp_proxy_mode_proxying_all_signals_requires_no_baseline_pipelines() {
+        // With proxy mode enabled and traces still proxied to the Core Agent (the default), ADP handles no signals
+        // itself, so no baseline pipeline is required even though a data pipeline (OTLP) is enabled.
+        let dp = dp_config_from(json!({
+            "data_plane": {
+                "enabled": true,
+                "dogstatsd": { "enabled": false },
+                "otlp": { "enabled": true, "proxy": { "enabled": true } },
+            },
+        }))
+        .await;
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[tokio::test]
+    async fn otlp_proxy_mode_with_local_traces_requires_traces_pipeline() {
+        // Proxy mode is enabled but trace proxying is turned off, so ADP must handle traces locally and the traces
+        // pipeline becomes required again while the other baseline pipelines stay off.
+        let dp = dp_config_from(json!({
+            "data_plane": {
+                "enabled": true,
+                "dogstatsd": { "enabled": false },
+                "otlp": {
+                    "enabled": true,
+                    "proxy": { "enabled": true, "traces": { "enabled": false } },
+                },
+            },
+        }))
+        .await;
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
+        assert!(dp.traces_pipeline_required());
+    }
+
+    #[tokio::test]
+    async fn no_pipelines_enabled_requires_no_baseline_pipelines() {
+        let dp = dp_config_from(json!({
+            "data_plane": {
+                "enabled": true,
+                "checks": { "enabled": false },
+                "dogstatsd": { "enabled": false },
+                "otlp": { "enabled": false },
+            },
+        }))
+        .await;
+
+        assert!(!dp.data_pipelines_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    // Stop-timeout resolution: explicit override, default, sum of Core Agent component timeouts, and overflow.
+
+    #[tokio::test]
+    async fn data_plane_stop_timeout_overrides_core_agent_shutdown_timeout_sum() {
+        let dp = dp_config_from(json!({
+            "aggregator_stop_timeout": 3,
+            "forwarder_stop_timeout": 7,
+            "data_plane": { "stop_timeout": 11 },
+        }))
+        .await;
+
+        assert_eq!(dp.stop_timeout(), Duration::from_secs(11));
+    }
+
+    #[tokio::test]
+    async fn stop_timeout_defaults_to_sum_of_core_agent_component_defaults() {
+        // With neither `data_plane.stop_timeout` nor the Core Agent component timeouts set, the timeout falls back
+        // to the sum of the documented per-component defaults (2s aggregator + 2s forwarder).
+        let dp = dp_config_from(json!({ "data_plane": { "enabled": true } })).await;
+
+        assert_eq!(dp.stop_timeout(), Duration::from_secs(4));
+    }
+
+    #[tokio::test]
+    async fn stop_timeout_sums_core_agent_component_timeouts() {
+        // Without a `data_plane.stop_timeout` override, the timeout is the sum of the aggregator and forwarder
+        // stop timeouts.
+        let dp = dp_config_from(json!({
+            "aggregator_stop_timeout": 3,
+            "forwarder_stop_timeout": 7,
+        }))
+        .await;
+
+        assert_eq!(dp.stop_timeout(), Duration::from_secs(10));
+    }
+
+    #[tokio::test]
+    async fn stop_timeout_overflow_is_rejected() {
+        // When the summed Core Agent component timeouts overflow a `Duration`, `from_configuration` surfaces an
+        // error rather than silently wrapping.
+        let config = config_from(json!({
+            "aggregator_stop_timeout": 9_223_372_036_854_775_808_u64,
+            "forwarder_stop_timeout": 9_223_372_036_854_775_808_u64,
+        }))
+        .await;
+
+        let error = DataPlaneConfiguration::from_configuration(&config)
+            .expect_err("summed stop timeout should overflow and be rejected");
+        assert!(
+            error.to_string().contains("stop timeout overflowed"),
+            "unexpected error message: {error}"
+        );
     }
 }

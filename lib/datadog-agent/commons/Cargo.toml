@@ -26,6 +26,7 @@ tracing = { workspace = true }
 windows-registry = "0.6.1"
 
 [dev-dependencies]
+saluki-config = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

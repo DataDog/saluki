@@ -8,6 +8,11 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+# Exposes test-only helpers (for example, `ConfigurationLoader::for_tests` and `config_from`) as plain `pub` items
+# so downstream crates can build configurations in their own tests. Not enabled in normal builds.
+test-util = ["dep:tempfile"]
+
 [dependencies]
 figment = { workspace = true, features = ["env"] }
 go-duration = { workspace = true }
@@ -17,10 +22,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 snafu = { workspace = true }
-tempfile = { workspace = true }
+tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }

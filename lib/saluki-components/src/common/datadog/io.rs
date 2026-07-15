@@ -988,7 +988,7 @@ mod tests {
         RootCertStore, ServerConfig,
     };
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::ConfigurationLoader;
+    use saluki_config::config_from;
     use saluki_core::observability::ComponentMetricsExt as _;
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
@@ -1562,8 +1562,7 @@ app.datadoghq.com: [key-a, key-b]
     }
 
     async fn config_with(values: serde_json::Value) -> GenericConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        config
+        config_from(values).await
     }
 
     async fn wait_for_count_at_least(counter: &Arc<AtomicUsize>, target: usize, deadline: Duration) -> usize {

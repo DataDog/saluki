@@ -32,7 +32,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/small] Documented double-take panics on `*Context::take_health_handle`/`take_shutdown_handle` are
     untested in all 7 context files.
 
-- [ ] **G2 — Shared config test-helper foundation** (`tobz/test-cleanup-config-test-helper-foundation`, `test(config)`)
+- [x] **G2 — Shared config test-helper foundation** (`tobz/test-cleanup-config-test-helper-foundation`, `test(config)`)
   - [low/small] A `xxx_config_from(value) -> XxxConfiguration` async test helper is duplicated verbatim across 15+
     config/component test files.
   - [medium/small] The env-var test mutex guarding `ConfigurationLoader` is fragmented into multiple unsynchronized
