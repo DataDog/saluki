@@ -1,8 +1,4 @@
 //! Test utilities for generating self-signed TLS certificates.
-//!
-//! These helpers are exposed behind the non-default `test-util` Cargo feature so that other crates can reuse them from
-//! their own test suites (via a `dev-dependency` on `saluki-tls` with the `test-util` feature enabled) instead of
-//! hand-rolling `rcgen`-based certificate generation. They are not compiled into production builds.
 
 use std::{fs, path::Path};
 
