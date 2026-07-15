@@ -12,7 +12,7 @@ use tracing::warn;
 
 use super::{
     endpoint::{EndpointConfiguration, MetricsEndpoint},
-    v1,
+    sketch_has_emittable_values, v1,
 };
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -158,7 +158,7 @@ impl EndpointEncoder for MetricsEndpointEncoder {
 
         match self.endpoint {
             MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => is_series_input && v1::has_emittable_point(input),
-            MetricsEndpoint::Sketches => !is_series_input,
+            MetricsEndpoint::Sketches => has_emittable_sketch_values(input),
         }
     }
 
@@ -254,11 +254,6 @@ fn encode_single_metric(
     secondary_scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
     tags_deduplicator: &mut ReusableDeduplicator<Tag>,
 ) -> Result<(), protobuf::Error> {
-    if !metric_has_emittable_values(metric) {
-        warn!(metric_name = %metric.context().name(), "Skipping metric with no emittable values.");
-        return Ok(());
-    }
-
     let mut output_stream = CodedOutputStream::vec(output_buf);
     let field_number = field_number_for_metric_type(metric);
 
@@ -280,21 +275,14 @@ fn encode_single_metric(
     })
 }
 
-fn metric_has_emittable_values(metric: &Metric) -> bool {
+fn has_emittable_sketch_values(metric: &Metric) -> bool {
     match metric.values() {
-        MetricValues::Counter(points) | MetricValues::Rate(points, _) | MetricValues::Gauge(points) => {
-            points.into_iter().any(|(_, value)| emittable(value))
-        }
-        MetricValues::Set(points) => points.into_iter().any(|(_, value)| emittable(value)),
         MetricValues::Distribution(sketches) => sketches
             .into_iter()
             .any(|(_, sketch)| sketch_has_emittable_values(sketch)),
         MetricValues::Histogram(points) => points.into_iter().any(|(_, histogram)| !histogram.samples().is_empty()),
+        MetricValues::Counter(..) | MetricValues::Rate(..) | MetricValues::Gauge(..) | MetricValues::Set(..) => false,
     }
-}
-
-fn sketch_has_emittable_values(sketch: &DDSketch) -> bool {
-    !sketch.is_empty() || !sketch.bins().is_empty()
 }
 
 fn encode_series_metric(

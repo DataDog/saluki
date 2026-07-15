@@ -1525,6 +1525,10 @@ fn encode_v3_metrics_batch(
 }
 
 /// Writes a single metric to the V3 writer.
+pub(super) fn sketch_has_emittable_values(sketch: &DDSketch) -> bool {
+    !sketch.is_empty() || !sketch.bins().is_empty()
+}
+
 fn write_metric_to_v3(
     writer: &mut V3Writer, metric: &Metric, additional_tags: &SharedTagSet,
     tags_deduplicator: &mut ReusableDeduplicator<Tag>,
@@ -1641,15 +1645,15 @@ fn write_metric_to_v3(
         MetricValues::Distribution(sketches) => {
             for (ts, sketch) in sketches {
                 let timestamp = ts.map(|t| t.get() as i64).unwrap_or(0);
-                if !sketch.is_empty() {
+                if sketch_has_emittable_values(sketch) {
                     let bin_keys: Vec<i32> = sketch.bins().iter().map(|b| b.key()).collect();
                     let bin_counts: Vec<u32> = sketch.bins().iter().map(|b| b.count()).collect();
                     builder.add_sketch(
                         timestamp,
                         sketch.count() as i64,
-                        sketch.sum().unwrap_or(0.0),
-                        sketch.min().unwrap_or(0.0),
-                        sketch.max().unwrap_or(0.0),
+                        sketch.stored_sum(),
+                        sketch.stored_min(),
+                        sketch.stored_max(),
                         &bin_keys,
                         &bin_counts,
                     );
@@ -1776,6 +1780,8 @@ mod tests {
     use std::io::Cursor;
 
     use bytes::Bytes;
+    use datadog_protos::metrics::v3::MetricData as V3MetricData;
+    use protobuf::Message as _;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context,
@@ -1908,6 +1914,29 @@ serializer_experimental_use_v3_api:
             false,
             &series_config
         ));
+    }
+
+    #[test]
+    fn v3_encodes_zero_count_distribution_with_bins() {
+        let mut sketch = DDSketch::default();
+        sketch.insert_n(42.0, 10);
+        sketch.set_count(0);
+        sketch.set_min(40.0);
+        sketch.set_max(45.0);
+        sketch.set_sum(123.0);
+        sketch.set_avg(f64::NAN);
+
+        let metric = Metric::from_parts(
+            Context::from_static_parts("zero.count.distribution", &[]),
+            MetricValues::distribution((123_u64, sketch)),
+            MetricMetadata::default(),
+        );
+
+        let encoded = encode_v3_metrics_batch(&[metric], &SharedTagSet::default())
+            .expect("zero-count distribution should encode to V3");
+        let metric_data = V3MetricData::parse_from_bytes(&encoded.payload).expect("V3 metric data should decode");
+
+        assert_eq!(metric_data.numPoints, vec![1]);
     }
 
     #[tokio::test]
