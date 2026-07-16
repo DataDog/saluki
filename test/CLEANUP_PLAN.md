@@ -91,7 +91,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/medium] The dispatcher's default-output/named-output test pairs are structural clones: 22 functions,
     11 pairs, that could collapse to one table-driven test (KI-11).
 
-- [ ] **G6 — dogstatsd component test cleanup** (`tobz/test-cleanup-dogstatsd-test-cleanup`, `test(components)`)
+- [x] **G6 — dogstatsd component test cleanup** (`tobz/test-cleanup-dogstatsd-test-cleanup`, `test(components)`)
   - [medium/medium] `MockWorkloadProvider` is hand-rolled with 3 divergent shapes across `origin.rs`,
     `replay/reader.rs`, and `replay/writer.rs`, because `NoopWorkloadProvider` offers no configuration seam (KI-2).
   - [high/small] `OriginTagsResolver::resolve_origin_tags`'s live, non-replay production path is never exercised

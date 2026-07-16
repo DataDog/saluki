@@ -133,13 +133,9 @@ impl DogStatsDCaptureControl {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        thread,
-        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, time::Duration};
 
+    use super::super::test_support::{unique_dir, wait_until_inactive};
     use super::{DogStatsDCaptureControl, TrafficCapture, UNAVAILABLE_CAPTURE_CONTROL_ERROR};
 
     #[test]
@@ -171,36 +167,10 @@ mod tests {
 
         control.stop_capture().expect("stop should succeed");
         control.stop_capture().expect("second stop should be safe");
-        wait_until_inactive(&control);
+        wait_until_inactive(|| control.is_ongoing().expect("control should be bound"));
 
         assert!(capture_path.exists());
 
         let _ = fs::remove_dir_all(target_dir);
-    }
-
-    fn wait_until_inactive(control: &DogStatsDCaptureControl) {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while control.is_ongoing().expect("control should be bound") && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-
-        assert!(
-            !control.is_ongoing().expect("control should be bound"),
-            "capture control did not stop in time"
-        );
-    }
-
-    fn unique_dir(label: &str) -> PathBuf {
-        let path = unique_path(label);
-        fs::create_dir_all(&path).expect("test directory should be created");
-        path
-    }
-
-    fn unique_path(label: &str) -> PathBuf {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("saluki-{}-{}-{}", label, std::process::id(), timestamp))
     }
 }
