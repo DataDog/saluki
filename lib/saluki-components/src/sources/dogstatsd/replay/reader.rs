@@ -153,51 +153,13 @@ fn has_zstd_magic(buf: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        sync::Arc,
-        thread,
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, path::PathBuf, sync::Arc, time::Duration};
 
-    use saluki_common::collections::FastHashMap;
-    use saluki_context::{
-        origin::OriginTagCardinality,
-        tags::{SharedTagSet, Tag, TagSet},
-    };
-    use saluki_env::{
-        workload::{origin::ResolvedOrigin, EntityId},
-        WorkloadProvider,
-    };
+    use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
 
+    use super::super::test_support::{unique_dir, unique_path, wait_until_inactive};
     use super::*;
     use crate::sources::dogstatsd::replay::writer::{CaptureRecord, CaptureTargetDir, TrafficCaptureWriter};
-
-    #[derive(Default)]
-    struct MockWorkloadProvider {
-        entities: FastHashMap<EntityId, SharedTagSet>,
-    }
-
-    impl MockWorkloadProvider {
-        fn with_entity(entity_id: EntityId, tags: &[&str]) -> Self {
-            let mut entities = FastHashMap::default();
-            entities.insert(entity_id, shared_tags(tags));
-            Self { entities }
-        }
-    }
-
-    impl WorkloadProvider for MockWorkloadProvider {
-        fn get_tags_for_entity(
-            &self, entity_id: &EntityId, _cardinality: OriginTagCardinality,
-        ) -> Option<SharedTagSet> {
-            self.entities.get(entity_id).cloned()
-        }
-
-        fn get_resolved_origin(&self, _origin: saluki_context::origin::RawOrigin<'_>) -> Option<ResolvedOrigin> {
-            None
-        }
-    }
 
     #[test]
     fn plain_capture_round_trip() {
@@ -251,18 +213,55 @@ mod tests {
     }
 
     #[test]
-    fn truncated_record_returns_none() {
-        let (path, _dir_guard) = run_capture(1, false, &[sample_record(1, b"metric.a:1|c", 1)]);
+    fn read_next_reads_records_then_stops_cleanly_when_trailer_is_truncated() {
+        // The previous name ("truncated_record_returns_none") mischaracterized this test: dropping the final bytes
+        // truncates the tagger-state *trailer*, not a record. The single record stays intact, so `read_next` must
+        // still return it and then terminate cleanly at the zero-length separator, rather than erroring on the
+        // damaged trailer.
+        let (path, _dir_guard) = run_capture(1, false, &[sample_record(1, b"metric.a:1|c", 7)]);
 
         let bytes = fs::read(&path).expect("capture readable");
         let truncated_path = path.with_extension("truncated");
-        // Drop the last 8 bytes so the trailer length prefix is gone and a record is incomplete.
         fs::write(&truncated_path, &bytes[..bytes.len().saturating_sub(8)]).expect("write truncated");
 
         let mut reader = TrafficCaptureReader::from_path(&truncated_path).expect("reader should open");
-        let _ = reader.read_next();
-        // Whatever the reader recovered, the next call must terminate cleanly rather than error.
-        assert!(reader.read_next().expect("clean EOF on truncation").is_none());
+        let record = reader
+            .read_next()
+            .expect("record read should succeed")
+            .expect("intact record should still be recovered");
+        assert_eq!(record.payload, b"metric.a:1|c");
+        assert_eq!(record.pid, 7);
+        assert!(reader.read_next().expect("clean EOF after truncated trailer").is_none());
+
+        let _ = fs::remove_file(&truncated_path);
+    }
+
+    #[test]
+    fn read_next_treats_corrupt_length_prefix_as_end_of_stream() {
+        // Regression coverage for read_next's documented corrupt/oversized-length branch: a *non-zero* length prefix
+        // that overruns the buffer must be treated as a clean end-of-stream (`Ok(None)`) rather than decoding past the
+        // end of the buffer. This is distinct from the legitimate zero-length trailer marker (covered by
+        // `read_next_stops_at_state_separator`).
+        let (path, _dir_guard) = run_capture(1, false, &[sample_record(1, b"metric.a:1|c", 1)]);
+
+        let mut bytes = fs::read(&path).expect("capture readable");
+        // Overwrite the first record's 4-byte little-endian length prefix (immediately after the 8-byte header) with a
+        // value far larger than the remaining file.
+        let prefix_start = DATADOG_HEADER.len();
+        bytes[prefix_start..prefix_start + LENGTH_PREFIX_SIZE].copy_from_slice(&u32::MAX.to_le_bytes());
+        let corrupt_path = path.with_extension("corrupt");
+        fs::write(&corrupt_path, &bytes).expect("write corrupt capture");
+
+        let mut reader = TrafficCaptureReader::from_path(&corrupt_path).expect("reader should open");
+        assert!(
+            reader
+                .read_next()
+                .expect("corrupt length prefix should read as clean EOF")
+                .is_none(),
+            "an oversized length prefix must terminate the record stream, not decode past the buffer"
+        );
+
+        let _ = fs::remove_file(&corrupt_path);
     }
 
     #[test]
@@ -279,7 +278,7 @@ mod tests {
     #[test]
     fn read_state_recovers_entity_tags() {
         let target_dir = unique_dir("reader-state");
-        let workload = Arc::new(MockWorkloadProvider::with_entity(
+        let workload = Arc::new(TestWorkloadProvider::with_entity(
             EntityId::Container("container-xyz".into()),
             &["env:prod", "service:api"],
         ));
@@ -300,7 +299,7 @@ mod tests {
             container_id: Some("container_id://container-xyz".to_string()),
         }));
         writer.stop_capture();
-        wait_until_inactive(&writer);
+        wait_until_inactive(|| writer.is_ongoing());
 
         let reader = TrafficCaptureReader::from_path(&path).expect("reader should open");
         let state = reader
@@ -339,7 +338,7 @@ mod tests {
             assert!(writer.enqueue(clone_record(record)));
         }
         writer.stop_capture();
-        wait_until_inactive(&writer);
+        wait_until_inactive(|| writer.is_ongoing());
 
         (path, DirGuard { path: target_dir })
     }
@@ -362,32 +361,6 @@ mod tests {
             ancillary: Vec::new(),
             container_id: Some(format!("container_id://container-{}", pid)),
         }
-    }
-
-    fn shared_tags(tags: &[&str]) -> SharedTagSet {
-        TagSet::from_iter(tags.iter().copied().map(Tag::from)).into_shared()
-    }
-
-    fn wait_until_inactive(writer: &TrafficCaptureWriter) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while writer.is_ongoing() && std::time::Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert!(!writer.is_ongoing(), "capture writer did not stop in time");
-    }
-
-    fn unique_dir(label: &str) -> PathBuf {
-        let path = unique_path(label);
-        fs::create_dir_all(&path).expect("test directory should be created");
-        path
-    }
-
-    fn unique_path(label: &str) -> PathBuf {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("saluki-{}-{}-{}", label, std::process::id(), timestamp))
     }
 
     struct DirGuard {

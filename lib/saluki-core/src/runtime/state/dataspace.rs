@@ -381,8 +381,8 @@ impl DataspaceRegistry {
 
     /// Retracts all assertions made by the given process.
     ///
-    /// This is called automatically when a process exits (via [`FutureProcess`] drop) to ensure that no stale
-    /// assertions remain in the registry after the owning process is gone.
+    /// This is called automatically when a process exits (via [`ProcessFuture`](crate::runtime::process::ProcessFuture)
+    /// drop) to ensure that no stale assertions remain in the registry after the owning process is gone.
     pub(crate) fn retract_all_for_process(&self, process_id: Id) {
         let mut state = self.inner.state.lock().unwrap();
 
@@ -1538,5 +1538,50 @@ mod tests {
 
         // The assertion's stored value is untouched by the message.
         assert_eq!(registry.current_values::<u32>(IdentifierFilter::exact(id)), vec![1]);
+    }
+
+    #[test]
+    fn current_values_returns_point_in_time_snapshot() {
+        // `current_values` is a synchronous, point-in-time read: it collects the values currently asserted for the
+        // given type that match the filter, without creating any subscription. Exercise its documented semantics
+        // directly (type separation, each filter kind, and retraction being reflected in the next snapshot).
+        let registry = DataspaceRegistry::new();
+        let id_alpha = Identifier::named("svc.alpha");
+        let id_beta = Identifier::named("svc.beta");
+        let id_other = Identifier::named("other.gamma");
+
+        registry.assert(1u32, id_alpha.clone());
+        registry.assert(2u32, id_beta.clone());
+        registry.assert(3u32, id_other.clone());
+        // A value of a *different* type under a matching identifier must not leak into the `u32` snapshot.
+        registry.assert("not a u32".to_string(), id_alpha.clone());
+
+        // Prefix filter: only the two `svc.`-prefixed `u32` values (order is unspecified, so sort before comparing).
+        let mut prefixed = registry.current_values::<u32>(IdentifierFilter::prefix("svc."));
+        prefixed.sort_unstable();
+        assert_eq!(prefixed, vec![1, 2]);
+
+        // All filter: every `u32` value regardless of identifier.
+        let mut all = registry.current_values::<u32>(IdentifierFilter::all());
+        all.sort_unstable();
+        assert_eq!(all, vec![1, 2, 3]);
+
+        // Exact filter: just the single matching value.
+        assert_eq!(
+            registry.current_values::<u32>(IdentifierFilter::exact(id_beta.clone())),
+            vec![2]
+        );
+
+        // The `String` value is visible only under its own type, confirming type-keyed separation.
+        assert_eq!(
+            registry.current_values::<String>(IdentifierFilter::all()),
+            vec!["not a u32".to_string()]
+        );
+
+        // A retraction is reflected in the *next* snapshot, since each call is an independent point-in-time read.
+        registry.retract::<u32>(id_alpha);
+        let mut after_retract = registry.current_values::<u32>(IdentifierFilter::all());
+        after_retract.sort_unstable();
+        assert_eq!(after_retract, vec![2, 3]);
     }
 }

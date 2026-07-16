@@ -307,7 +307,7 @@ mod tests {
 
     use saluki_context::tags::{RawTags, TagSet};
     use saluki_core::data_model::event::{metric::MetricValues, service_check::CheckStatus};
-    use saluki_env::workload::{origin::ResolvedExternalData, EntityId};
+    use saluki_env::workload::{origin::ResolvedExternalData, providers::TestWorkloadProvider, EntityId};
     use stringtheory::MetaString;
 
     use super::*;
@@ -318,28 +318,6 @@ mod tests {
     static EID_EXTERNAL_CID_INVALID: EntityId = EntityId::Container(MetaString::from_static("invalid-external-cid"));
     static EID_LOCAL_POD: EntityId = EntityId::PodUid(MetaString::from_static("local-pod-uid"));
     static EID_EXTERNAL_POD: EntityId = EntityId::PodUid(MetaString::from_static("external-pod-uid"));
-
-    #[derive(Default)]
-    struct MockWorkloadProvider {
-        tags: HashMap<EntityId, SharedTagSet>,
-    }
-
-    impl MockWorkloadProvider {
-        fn add_tags(&mut self, entity_id: EntityId, tags: SharedTagSet) {
-            self.tags.insert(entity_id, tags);
-        }
-    }
-
-    impl WorkloadProvider for MockWorkloadProvider {
-        fn get_tags_for_entity(&self, entity_id: &EntityId, _: OriginTagCardinality) -> Option<SharedTagSet> {
-            self.tags.get(entity_id).cloned()
-        }
-
-        fn get_resolved_origin(&self, _: RawOrigin<'_>) -> Option<ResolvedOrigin> {
-            // We don't use this for our tests.
-            todo!()
-        }
-    }
 
     fn single_tag(tag: &str) -> SharedTagSet {
         let mut tag_set = TagSet::default();
@@ -377,12 +355,13 @@ mod tests {
     }
 
     fn build_tags_resolver_with_default_tags(config: OriginEnrichmentConfiguration) -> DogStatsDOriginTagResolver {
-        let mut workload_provider = MockWorkloadProvider::default();
-        workload_provider.add_tags(EID_PID.clone(), tags_for_entity(&EID_PID));
-        workload_provider.add_tags(EID_LOCAL_CID.clone(), tags_for_entity(&EID_LOCAL_CID));
-        workload_provider.add_tags(EID_EXTERNAL_CID_VALID.clone(), tags_for_entity(&EID_EXTERNAL_CID_VALID));
-        workload_provider.add_tags(EID_LOCAL_POD.clone(), tags_for_entity(&EID_LOCAL_POD));
-        workload_provider.add_tags(EID_EXTERNAL_POD.clone(), tags_for_entity(&EID_EXTERNAL_POD));
+        let mut workload_provider = TestWorkloadProvider::new();
+        workload_provider.add_entity_shared_tags(EID_PID.clone(), tags_for_entity(&EID_PID));
+        workload_provider.add_entity_shared_tags(EID_LOCAL_CID.clone(), tags_for_entity(&EID_LOCAL_CID));
+        workload_provider
+            .add_entity_shared_tags(EID_EXTERNAL_CID_VALID.clone(), tags_for_entity(&EID_EXTERNAL_CID_VALID));
+        workload_provider.add_entity_shared_tags(EID_LOCAL_POD.clone(), tags_for_entity(&EID_LOCAL_POD));
+        workload_provider.add_entity_shared_tags(EID_EXTERNAL_POD.clone(), tags_for_entity(&EID_EXTERNAL_POD));
 
         let erased_workload_provider = Arc::new(workload_provider);
 
@@ -734,7 +713,7 @@ mod tests {
             tag_cardinality: OriginTagCardinality::Low,
             ..Default::default()
         };
-        let live = Arc::new(MockWorkloadProvider::default());
+        let live = Arc::new(TestWorkloadProvider::new());
         let resolver = DogStatsDOriginTagResolver::new(config, live, captured_tagger);
 
         let mut origin = RawOrigin::default();
@@ -756,7 +735,7 @@ mod tests {
             tag_cardinality: OriginTagCardinality::Low,
             ..Default::default()
         };
-        let live = Arc::new(MockWorkloadProvider::default());
+        let live = Arc::new(TestWorkloadProvider::new());
         let resolver = DogStatsDOriginTagResolver::new(config, live, CapturedTaggerHandle::new());
 
         let mut origin = RawOrigin::default();
@@ -767,5 +746,49 @@ mod tests {
             tags.is_empty(),
             "replay path with no captured store must return empty tags"
         );
+    }
+
+    #[test]
+    fn resolve_origin_tags_live_path_resolves_tags_via_workload_provider() {
+        // Exercises the real, non-replay production entry point: `resolve_origin_tags` asks the workload provider to
+        // resolve the raw origin, then walks the resolved entity IDs to collect tags. Every other test either drives
+        // the internal `collect_origin_tags` directly or takes the replay bypass, so this is the only coverage of the
+        // live `get_resolved_origin` -> `collect_origin_tags` path through the trait method.
+        let config = OriginEnrichmentConfiguration {
+            enabled: true,
+            tag_cardinality: OriginTagCardinality::High,
+            ..Default::default()
+        };
+
+        let mut workload_provider = TestWorkloadProvider::new();
+        workload_provider.add_entity_shared_tags(EntityId::ContainerPid(4242), single_tag("tag_source:live-pid"));
+        let resolver =
+            DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), CapturedTaggerHandle::new());
+
+        // A plain process ID (no replay marker bit) resolves to `EntityId::ContainerPid(4242)` via the live path.
+        let mut origin = RawOrigin::default();
+        origin.set_process_id(4242);
+
+        let tags = resolver.resolve_origin_tags(origin);
+        assert_eq!(tags, single_tag("tag_source:live-pid"));
+    }
+
+    #[test]
+    fn resolve_origin_tags_live_path_returns_empty_when_origin_unresolved() {
+        // When the workload provider can't resolve the origin (here, an empty origin resolves to `None`), the live
+        // path returns an empty tag set rather than falling through to anything else.
+        let config = OriginEnrichmentConfiguration {
+            enabled: true,
+            tag_cardinality: OriginTagCardinality::High,
+            ..Default::default()
+        };
+        let resolver = DogStatsDOriginTagResolver::new(
+            config,
+            Arc::new(TestWorkloadProvider::new()),
+            CapturedTaggerHandle::new(),
+        );
+
+        let tags = resolver.resolve_origin_tags(RawOrigin::default());
+        assert!(tags.is_empty(), "unresolved origin must produce no tags");
     }
 }

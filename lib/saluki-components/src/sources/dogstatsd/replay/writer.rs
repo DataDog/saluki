@@ -503,86 +503,16 @@ pub(super) fn parse_entity_id_str(value: &str) -> Option<EntityId> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        io::Cursor,
-        sync::Arc,
-        thread,
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, io::Cursor, sync::Arc, time::Duration};
 
     use prost::Message;
-    use saluki_common::collections::FastHashMap;
-    use saluki_context::{
-        origin::OriginTagCardinality,
-        tags::{SharedTagSet, Tag, TagSet},
-    };
-    use saluki_env::{
-        workload::{origin::ResolvedOrigin, EntityId},
-        WorkloadProvider,
-    };
+    use saluki_env::workload::{providers::TestWorkloadProvider, EntityId};
 
+    use super::super::test_support::{unique_dir, unique_path, wait_until_inactive};
     use super::{
         CaptureRecord, CaptureTargetDir, TaggerState, TrafficCaptureWriter, UnixDogstatsdMsg, MIN_CAPTURE_DEPTH,
     };
     use crate::sources::dogstatsd::replay::file_header::valid_header;
-
-    #[derive(Default)]
-    struct MockWorkloadProvider {
-        entities: FastHashMap<EntityId, MockEntityTags>,
-    }
-
-    struct MockEntityTags {
-        low: SharedTagSet,
-        orchestrator: SharedTagSet,
-        high: SharedTagSet,
-    }
-
-    impl MockWorkloadProvider {
-        fn with_entity(entity_id: EntityId, low: &[&str], orchestrator: &[&str], high: &[&str]) -> Self {
-            let mut entities = FastHashMap::default();
-            entities.insert(
-                entity_id,
-                MockEntityTags {
-                    low: shared_tags(low),
-                    orchestrator: shared_tags(orchestrator),
-                    high: shared_tags(high),
-                },
-            );
-            Self { entities }
-        }
-    }
-
-    impl WorkloadProvider for MockWorkloadProvider {
-        fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
-            let tags = self.entities.get(entity_id)?;
-
-            let mut merged = SharedTagSet::default();
-            if !tags.low.is_empty() {
-                merged.extend_from_shared(&tags.low);
-            }
-            if cardinality == OriginTagCardinality::Low {
-                return (!merged.is_empty()).then_some(merged);
-            }
-
-            if !tags.orchestrator.is_empty() {
-                merged.extend_from_shared(&tags.orchestrator);
-            }
-            if cardinality == OriginTagCardinality::Orchestrator {
-                return (!merged.is_empty()).then_some(merged);
-            }
-
-            if !tags.high.is_empty() {
-                merged.extend_from_shared(&tags.high);
-            }
-
-            (!merged.is_empty()).then_some(merged)
-        }
-
-        fn get_resolved_origin(&self, _origin: saluki_context::origin::RawOrigin<'_>) -> Option<ResolvedOrigin> {
-            None
-        }
-    }
 
     #[test]
     fn queue_depth_is_raised_to_minimum() {
@@ -630,7 +560,7 @@ mod tests {
             )
             .expect("implicit directory should be created");
 
-        wait_until_inactive(&writer);
+        wait_until_inactive(|| writer.is_ongoing());
 
         assert!(implicit_dir.is_dir());
         assert!(capture_path.exists());
@@ -652,7 +582,7 @@ mod tests {
             .expect("capture should start");
         assert!(writer.enqueue(sample_record()));
         writer.stop_capture();
-        wait_until_inactive(&writer);
+        wait_until_inactive(|| writer.is_ongoing());
 
         let bytes = fs::read(&capture_path).expect("capture should be readable");
         assert_capture_contents(&bytes);
@@ -674,7 +604,7 @@ mod tests {
             .expect("capture should start");
         assert!(writer.enqueue(sample_record()));
         writer.stop_capture();
-        wait_until_inactive(&writer);
+        wait_until_inactive(|| writer.is_ongoing());
 
         let compressed_bytes = fs::read(&capture_path).expect("capture should be readable");
         let decoded_bytes =
@@ -688,7 +618,7 @@ mod tests {
     fn capture_with_workload_provider_writes_entity_state() {
         let writer = TrafficCaptureWriter::with_workload_provider(
             1,
-            Some(Arc::new(MockWorkloadProvider::with_entity(
+            Some(Arc::new(TestWorkloadProvider::with_entity_cardinalities(
                 EntityId::Container("container-123".into()),
                 &["env:prod", "service:api"],
                 &["pod_name:api-123"],
@@ -706,7 +636,7 @@ mod tests {
             .expect("capture should start");
         assert!(writer.enqueue(sample_record()));
         writer.stop_capture();
-        wait_until_inactive(&writer);
+        wait_until_inactive(|| writer.is_ongoing());
 
         let bytes = fs::read(&capture_path).expect("capture should be readable");
         let state = decode_capture_state(&bytes);
@@ -745,7 +675,7 @@ mod tests {
             )
             .expect("capture should start");
 
-        wait_until_inactive(&writer);
+        wait_until_inactive(|| writer.is_ongoing());
 
         assert!(!writer.is_ongoing());
         assert!(capture_path.exists());
@@ -800,32 +730,5 @@ mod tests {
         let state_size = u32::from_le_bytes(bytes[state_size_offset..].try_into().expect("state size")) as usize;
         let state_start = state_size_offset - state_size;
         TaggerState::decode(&bytes[state_start..state_size_offset]).expect("state should decode")
-    }
-
-    fn shared_tags(tags: &[&str]) -> SharedTagSet {
-        TagSet::from_iter(tags.iter().copied().map(Tag::from)).into_shared()
-    }
-
-    fn wait_until_inactive(writer: &TrafficCaptureWriter) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        while writer.is_ongoing() && std::time::Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-
-        assert!(!writer.is_ongoing(), "capture writer did not stop in time");
-    }
-
-    fn unique_dir(label: &str) -> std::path::PathBuf {
-        let path = unique_path(label);
-        fs::create_dir_all(&path).expect("test directory should be created");
-        path
-    }
-
-    fn unique_path(label: &str) -> std::path::PathBuf {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("clock should be after epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("saluki-{}-{}-{}", label, std::process::id(), timestamp))
     }
 }
