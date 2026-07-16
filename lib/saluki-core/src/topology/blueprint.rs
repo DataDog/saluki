@@ -24,10 +24,7 @@ use crate::{
     health::HealthRegistry,
     runtime::{state::DataspaceRegistry, InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
     support::SubsystemIdentifier,
-    topology::{
-        ids::{get_component_relative_identifier, AsComponentIds},
-        topology_identifier, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY,
-    },
+    topology::{ids::AsComponentIds, topology_identifier, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
 };
 
 const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -72,13 +69,13 @@ pub struct TopologyBlueprint {
 struct TopologyBuildState {
     topology_id: SubsystemIdentifier,
     graph: Graph,
-    sources: HashMap<ComponentId, (Box<dyn SourceBuilder + Send>, ComponentRegistry)>,
-    relays: HashMap<ComponentId, (Box<dyn RelayBuilder + Send>, ComponentRegistry)>,
-    decoders: HashMap<ComponentId, (Box<dyn DecoderBuilder + Send>, ComponentRegistry)>,
-    transforms: HashMap<ComponentId, (Box<dyn TransformBuilder + Send>, ComponentRegistry)>,
-    destinations: HashMap<ComponentId, (Box<dyn DestinationBuilder + Send>, ComponentRegistry)>,
-    encoders: HashMap<ComponentId, (Box<dyn EncoderBuilder + Send>, ComponentRegistry)>,
-    forwarders: HashMap<ComponentId, (Box<dyn ForwarderBuilder + Send>, ComponentRegistry)>,
+    sources: HashMap<ComponentId, Box<dyn SourceBuilder + Send>>,
+    relays: HashMap<ComponentId, Box<dyn RelayBuilder + Send>>,
+    decoders: HashMap<ComponentId, Box<dyn DecoderBuilder + Send>>,
+    transforms: HashMap<ComponentId, Box<dyn TransformBuilder + Send>>,
+    destinations: HashMap<ComponentId, Box<dyn DestinationBuilder + Send>>,
+    encoders: HashMap<ComponentId, Box<dyn EncoderBuilder + Send>>,
+    forwarders: HashMap<ComponentId, Box<dyn ForwarderBuilder + Send>>,
     component_registry: ComponentRegistry,
     interconnect_capacity: NonZeroUsize,
     shutdown_timeout: Duration,
@@ -91,7 +88,7 @@ impl TopologyBlueprint {
     /// Creates an empty `TopologyBlueprint` with the given name.
     pub fn new(name: &str, component_registry: &ComponentRegistry) -> Self {
         let topology_id = topology_identifier(name);
-        let component_registry = component_registry.get_or_create(topology_id.to_string());
+        let component_registry = component_registry.clone();
 
         let build_state = TopologyBuildState {
             topology_id,
@@ -416,7 +413,7 @@ impl TopologyBuildState {
     fn recalculate_bounds(&mut self) {
         let interconnect_capacity = self.interconnect_capacity.get();
 
-        let mut bounds_builder = self.component_registry.bounds_builder();
+        let mut bounds_builder = self.component_registry.bounds_builder(&self.topology_id);
         let mut bounds_builder = bounds_builder.subcomponent("interconnects");
         bounds_builder.reset();
 
@@ -462,11 +459,8 @@ impl TopologyBuildState {
             ));
     }
 
-    fn get_scoped_component_registry(
-        &self, component_type: ComponentType, component_id: &ComponentId,
-    ) -> ComponentRegistry {
-        self.component_registry
-            .get_or_create(get_component_relative_identifier(component_type, component_id).to_string())
+    fn component_identity(&self, component_type: ComponentType, component_id: &ComponentId) -> SubsystemIdentifier {
+        ComponentContext::new(&self.topology_id, component_id.clone(), component_type).identity()
     }
 
     fn add_source<I, B>(&mut self, component_id: I, builder: B) -> Result<(), GenericError>
@@ -479,13 +473,12 @@ impl TopologyBuildState {
             .add_source(component_id, &builder)
             .error_context("Failed to add source to topology graph.")?;
 
-        let mut source_registry = self.get_scoped_component_registry(ComponentType::Source, &component_id);
-        let mut bounds_builder = source_registry.bounds_builder();
-        builder.specify_bounds(&mut bounds_builder);
+        let identity = self.component_identity(ComponentType::Source, &component_id);
+        builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
         self.recalculate_bounds();
 
-        let _ = self.sources.insert(component_id, (Box::new(builder), source_registry));
+        let _ = self.sources.insert(component_id, Box::new(builder));
 
         Ok(())
     }
@@ -500,13 +493,12 @@ impl TopologyBuildState {
             .add_relay(component_id, &builder)
             .error_context("Failed to add relay to topology graph.")?;
 
-        let mut relay_registry = self.get_scoped_component_registry(ComponentType::Relay, &component_id);
-        let mut bounds_builder = relay_registry.bounds_builder();
-        builder.specify_bounds(&mut bounds_builder);
+        let identity = self.component_identity(ComponentType::Relay, &component_id);
+        builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
         self.recalculate_bounds();
 
-        let _ = self.relays.insert(component_id, (Box::new(builder), relay_registry));
+        let _ = self.relays.insert(component_id, Box::new(builder));
 
         Ok(())
     }
@@ -521,15 +513,12 @@ impl TopologyBuildState {
             .add_decoder(component_id, &builder)
             .error_context("Failed to add decoder to topology graph.")?;
 
-        let mut decoder_registry = self.get_scoped_component_registry(ComponentType::Decoder, &component_id);
-        let mut bounds_builder = decoder_registry.bounds_builder();
-        builder.specify_bounds(&mut bounds_builder);
+        let identity = self.component_identity(ComponentType::Decoder, &component_id);
+        builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
         self.recalculate_bounds();
 
-        let _ = self
-            .decoders
-            .insert(component_id, (Box::new(builder), decoder_registry));
+        let _ = self.decoders.insert(component_id, Box::new(builder));
 
         Ok(())
     }
@@ -544,15 +533,12 @@ impl TopologyBuildState {
             .add_transform(component_id, &builder)
             .error_context("Failed to add transform to topology graph.")?;
 
-        let mut transform_registry = self.get_scoped_component_registry(ComponentType::Transform, &component_id);
-        let mut bounds_builder = transform_registry.bounds_builder();
-        builder.specify_bounds(&mut bounds_builder);
+        let identity = self.component_identity(ComponentType::Transform, &component_id);
+        builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
         self.recalculate_bounds();
 
-        let _ = self
-            .transforms
-            .insert(component_id, (Box::new(builder), transform_registry));
+        let _ = self.transforms.insert(component_id, Box::new(builder));
 
         Ok(())
     }
@@ -567,15 +553,12 @@ impl TopologyBuildState {
             .add_destination(component_id, &builder)
             .error_context("Failed to add destination to topology graph.")?;
 
-        let mut destination_registry = self.get_scoped_component_registry(ComponentType::Destination, &component_id);
-        let mut bounds_builder = destination_registry.bounds_builder();
-        builder.specify_bounds(&mut bounds_builder);
+        let identity = self.component_identity(ComponentType::Destination, &component_id);
+        builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
         self.recalculate_bounds();
 
-        let _ = self
-            .destinations
-            .insert(component_id, (Box::new(builder), destination_registry));
+        let _ = self.destinations.insert(component_id, Box::new(builder));
 
         Ok(())
     }
@@ -590,15 +573,12 @@ impl TopologyBuildState {
             .add_encoder(component_id, &builder)
             .error_context("Failed to add encoder to topology graph.")?;
 
-        let mut encoder_registry = self.get_scoped_component_registry(ComponentType::Encoder, &component_id);
-        let mut bounds_builder = encoder_registry.bounds_builder();
-        builder.specify_bounds(&mut bounds_builder);
+        let identity = self.component_identity(ComponentType::Encoder, &component_id);
+        builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
         self.recalculate_bounds();
 
-        let _ = self
-            .encoders
-            .insert(component_id, (Box::new(builder), encoder_registry));
+        let _ = self.encoders.insert(component_id, Box::new(builder));
 
         Ok(())
     }
@@ -613,15 +593,12 @@ impl TopologyBuildState {
             .add_forwarder(component_id, &builder)
             .error_context("Failed to add forwarder to topology graph.")?;
 
-        let mut forwarder_registry = self.get_scoped_component_registry(ComponentType::Forwarder, &component_id);
-        let mut bounds_builder = forwarder_registry.bounds_builder();
-        builder.specify_bounds(&mut bounds_builder);
+        let identity = self.component_identity(ComponentType::Forwarder, &component_id);
+        builder.specify_bounds(&mut self.component_registry.bounds_builder(&identity));
 
         self.recalculate_bounds();
 
-        let _ = self
-            .forwarders
-            .insert(component_id, (Box::new(builder), forwarder_registry));
+        let _ = self.forwarders.insert(component_id, Box::new(builder));
 
         Ok(())
     }
@@ -680,105 +657,115 @@ impl TopologyBuildState {
     /// # Errors
     ///
     /// If any of the components couldn't be built, an error is returned.
-    async fn build(mut self, name: String) -> Result<BuiltTopology, GenericError> {
+    async fn build(self, name: String) -> Result<BuiltTopology, GenericError> {
         self.graph.validate().error_context("Failed to build topology graph.")?;
 
         let mut sources = HashMap::new();
-        for (id, (builder, mut component_registry)) in self.sources {
-            let allocation_token = component_registry.token();
-
+        for (id, builder) in self.sources {
             let component_context = ComponentContext::source(&self.topology_id, id.clone());
+            let allocation_token = self
+                .component_registry
+                .get_resource_group_token(&component_context.identity());
             let source = builder
                 .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
 
-            sources.insert(component_context, (source, component_registry));
+            sources.insert(component_context, (source, self.component_registry.clone()));
         }
 
         let mut relays = HashMap::new();
-        for (id, (builder, mut component_registry)) in self.relays {
-            let allocation_token = component_registry.token();
-
+        for (id, builder) in self.relays {
             let component_context = ComponentContext::relay(&self.topology_id, id.clone());
+            let allocation_token = self
+                .component_registry
+                .get_resource_group_token(&component_context.identity());
             let relay = builder
                 .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build relay '{}'.", id))?;
 
-            relays.insert(component_context, (relay, component_registry));
+            relays.insert(component_context, (relay, self.component_registry.clone()));
         }
 
         let mut decoders = HashMap::new();
-        for (id, (builder, mut component_registry)) in self.decoders {
-            let allocation_token = component_registry.token();
-
+        for (id, builder) in self.decoders {
             let component_context = ComponentContext::decoder(&self.topology_id, id.clone());
+            let allocation_token = self
+                .component_registry
+                .get_resource_group_token(&component_context.identity());
             let decoder = builder
                 .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build decoder '{}'.", id))?;
 
-            decoders.insert(component_context, (decoder, component_registry));
+            decoders.insert(component_context, (decoder, self.component_registry.clone()));
         }
 
         let mut transforms = HashMap::new();
-        for (id, (builder, mut component_registry)) in self.transforms {
-            let allocation_token = component_registry.token();
-
+        for (id, builder) in self.transforms {
             let component_context = ComponentContext::transform(&self.topology_id, id.clone());
+            let allocation_token = self
+                .component_registry
+                .get_resource_group_token(&component_context.identity());
             let transform = builder
                 .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
 
-            transforms.insert(component_context, (transform, component_registry));
+            transforms.insert(component_context, (transform, self.component_registry.clone()));
         }
 
         let mut destinations = HashMap::new();
-        for (id, (builder, mut component_registry)) in self.destinations {
-            let allocation_token = component_registry.token();
-
+        for (id, builder) in self.destinations {
             let component_context = ComponentContext::destination(&self.topology_id, id.clone());
+            let allocation_token = self
+                .component_registry
+                .get_resource_group_token(&component_context.identity());
             let destination = builder
                 .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
 
-            destinations.insert(component_context, (destination, component_registry));
+            destinations.insert(component_context, (destination, self.component_registry.clone()));
         }
 
         let mut encoders = HashMap::new();
-        for (id, (builder, mut component_registry)) in self.encoders {
-            let allocation_token = component_registry.token();
-
+        for (id, builder) in self.encoders {
             let component_context = ComponentContext::encoder(&self.topology_id, id.clone());
+            let allocation_token = self
+                .component_registry
+                .get_resource_group_token(&component_context.identity());
             let encoder = builder
                 .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build encoder '{}'.", id))?;
 
-            encoders.insert(component_context, (encoder, component_registry));
+            encoders.insert(component_context, (encoder, self.component_registry.clone()));
         }
 
         let mut forwarders = HashMap::new();
-        for (id, (builder, mut component_registry)) in self.forwarders {
-            let allocation_token = component_registry.token();
+        for (id, builder) in self.forwarders {
             let component_context = ComponentContext::forwarder(&self.topology_id, id.clone());
+            let allocation_token = self
+                .component_registry
+                .get_resource_group_token(&component_context.identity());
             let forwarder = builder
                 .build(component_context.clone())
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build forwarder '{}'.", id))?;
 
-            forwarders.insert(component_context, (forwarder, component_registry));
+            forwarders.insert(component_context, (forwarder, self.component_registry.clone()));
         }
+
+        let topology_token = self.component_registry.get_resource_group_token(&self.topology_id);
 
         Ok(BuiltTopology::from_parts(
             name,
@@ -791,7 +778,7 @@ impl TopologyBuildState {
             destinations,
             encoders,
             forwarders,
-            self.component_registry.token(),
+            topology_token,
             self.interconnect_capacity,
             self.worker_pool_config,
         ))
@@ -1536,14 +1523,32 @@ mod tests {
             let component_relative_id =
                 get_component_relative_identifier(component_context.component_type(), component_context.component_id());
 
-            // Resource accounting: when using relative subsystem identifiers in a nested fashion, we should end up with
-            // a full name for a component node that matches the canonical identity.
-            let topology_registry = ComponentRegistry::default().get_or_create(topology_root.to_string());
-            let component_node = topology_registry.get_or_create(component_relative_id.to_string());
             assert_eq!(
-                component_node.full_name().as_deref(),
-                Some(component_canonical_id.as_str()),
-                "resource-accounting node name must match the canonical identity"
+                component_canonical_id,
+                format!("topology.{topology_name}.sources.{raw_id}")
+            );
+
+            // Resource accounting: the component is addressed by its canonical identity directly, so declaring bounds
+            // for it must create a node whose full path -- segment by segment -- is exactly that canonical identity.
+            let registry = ComponentRegistry::default();
+            registry
+                .bounds_builder(&component_context.identity())
+                .firm()
+                .with_fixed_amount("marker", 1);
+
+            let bounds = registry.as_bounds();
+            let mut node = &bounds;
+            for segment in component_canonical_id.split('.') {
+                node = node
+                    .subcomponents()
+                    .into_iter()
+                    .find_map(|(name, child)| (name.as_str() == segment).then_some(child))
+                    .expect("resource-accounting node path must match the canonical identity segment by segment");
+            }
+            assert_eq!(
+                node.total_firm_limit_bytes(),
+                1,
+                "the resource-accounting node at the canonical path must hold the declared bounds"
             );
 
             // Supervision: when using relative subsystem identifiers in a nested fashion, we should end up with

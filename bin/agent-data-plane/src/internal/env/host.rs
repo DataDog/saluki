@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use saluki_config::GenericConfiguration;
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder};
 use saluki_env::HostProvider;
 use saluki_error::GenericError;
 use tokio::sync::OnceCell;
+
+use crate::internal::env::root_provider_id;
 
 /// Datadog Agent-based host provider.
 ///
@@ -23,13 +25,21 @@ impl RemoteAgentHostProvider {
     ///
     /// If the Agent gRPC client can't be created (invalid API endpoint, missing authentication token, etc), or if the
     /// authentication token is invalid, an error will be returned.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub async fn from_configuration(
+        config: &GenericConfiguration, component_registry: &ComponentRegistry,
+    ) -> Result<Self, GenericError> {
         let client = RemoteAgentClient::from_configuration(config).await?;
 
-        Ok(Self {
+        let host_provider = Self {
             client,
             cached_hostname: OnceCell::new(),
-        })
+        };
+
+        let host_provider_id = root_provider_id().child("host").child("remote_agent");
+        let mut bounds_builder = component_registry.bounds_builder(&host_provider_id);
+        host_provider.specify_bounds(&mut bounds_builder);
+
+        Ok(host_provider)
     }
 
     async fn get_or_fetch_hostname(&self) -> Result<String, GenericError> {

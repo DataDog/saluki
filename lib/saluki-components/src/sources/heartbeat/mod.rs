@@ -98,7 +98,7 @@ impl MemoryBounds for HeartbeatConfiguration {
 mod tests {
     use std::mem::size_of;
 
-    use saluki_core::accounting::ComponentRegistry;
+    use saluki_core::{accounting::ComponentRegistry, support::SubsystemIdentifier};
 
     use super::*;
 
@@ -131,8 +131,8 @@ mod tests {
         // size.
         let config = HeartbeatConfiguration::default();
 
-        let mut registry = ComponentRegistry::default();
-        config.specify_bounds(&mut registry.bounds_builder());
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
         let bounds = registry.as_bounds();
 
         assert_eq!(bounds.total_minimum_required_bytes(), size_of::<Heartbeat>());

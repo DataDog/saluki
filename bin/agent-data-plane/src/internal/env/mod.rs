@@ -4,6 +4,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
+use saluki_core::support::SubsystemIdentifier;
 use saluki_env::{
     autodiscovery::providers::BoxedAutodiscoveryProvider,
     host::providers::{BoxedHostProvider, FixedHostProvider},
@@ -22,6 +23,10 @@ pub use self::host::RemoteAgentHostProvider;
 
 mod workload;
 pub use self::workload::RemoteAgentWorkloadProvider;
+
+pub(crate) fn root_provider_id() -> SubsystemIdentifier {
+    SubsystemIdentifier::from_segments(["env_provider"])
+}
 
 /// Agent Data Plane-specific environment provider.
 ///
@@ -68,20 +73,12 @@ impl ADPEnvironmentProvider {
         }
 
         // Otherwise, construct our real providers that will interact directly with the Datadog Agent.
-        let mut provider_component = component_registry.get_or_create("env_provider");
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
-        let host_provider = RemoteAgentHostProvider::from_configuration(config).await?;
-        provider_component
-            .bounds_builder()
-            .with_subcomponent("host", &host_provider);
+        let host_provider = RemoteAgentHostProvider::from_configuration(config, component_registry).await?;
 
-        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
-            config,
-            provider_component.get_or_create("workload"),
-            health_registry,
-        )
-        .await?;
+        let (workload_provider, workload_supervisor) =
+            RemoteAgentWorkloadProvider::from_configuration(config, component_registry, health_registry).await?;
         env_supervisor.add_worker(workload_supervisor);
 
         let (autodiscovery_provider, autodiscovery_supervisor) =
@@ -106,10 +103,9 @@ impl ADPEnvironmentProvider {
     pub fn wait_for_ready(&self) -> impl Future<Output = ()> + Send + 'static {
         let health_registry = self.health_registry.clone();
         let has_workload_provider = self.workload_provider.is_some();
-        let workload_root = workload::workload_root();
         async move {
             if has_workload_provider {
-                health_registry.all_ready_under(workload_root).await;
+                health_registry.all_ready_under(root_provider_id()).await;
             }
         }
     }
