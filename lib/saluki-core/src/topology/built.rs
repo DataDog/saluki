@@ -643,7 +643,7 @@ mod tests {
             HashMap::new(),
             HashMap::new(),
             HashMap::new(),
-            ComponentRegistry::default().token(),
+            ResourceGroupToken::root(),
             NonZeroUsize::new(128).unwrap(),
             worker_pool_config,
         )
