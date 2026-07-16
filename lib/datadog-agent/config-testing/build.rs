@@ -27,8 +27,8 @@ fn main() {
         .join("docs")
         .join("agent-data-plane")
         .join("configuration");
-    let template_path = doc_dir.join("dogstatsd.md.tmpl");
-    let doc_target = doc_dir.join("dogstatsd.md");
+    let template_path = doc_dir.join("configuration.md.tmpl");
+    let doc_target = doc_dir.join("configuration.md");
     let config_registry_dir = manifest_dir.join("src/config_registry");
 
     let files = Files::default();
@@ -61,7 +61,7 @@ fn main() {
 }
 
 fn write_generated_doc(out_dir: &Path, dst: &Path) {
-    let src = out_dir.join("docs/dogstatsd.md");
+    let src = out_dir.join("docs/configuration.md");
     let content = std::fs::read(&src).unwrap_or_else(|e| panic!("cannot read {}: {}", src.display(), e));
     std::fs::write(dst, content).unwrap_or_else(|e| panic!("cannot write {}: {}", dst.display(), e));
 }

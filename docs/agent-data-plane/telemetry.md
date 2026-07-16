@@ -96,4 +96,4 @@ ADP-native names from `/metrics` or compatibility names from `/compat/metrics`.
 If you are investigating DogStatsD-specific counters, the internal telemetry endpoint includes
 aggregate DogStatsD counters such as processed message counts, packet and byte counts, packet pool
 usage, and channel latency. This is separate from the on-demand DogStatsD statistics API documented
-in [Configuring DogStatsD](configuration/dogstatsd.md).
+in [Agent Data Plane configuration](configuration/configuration.md).
