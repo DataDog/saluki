@@ -11,9 +11,12 @@ to build and submit Antithesis runs. Do not hand-type `snouty launch`.
 **launch.sh**
 
 `test/antithesis/bin/launch.sh <scenario>` builds the images, renders the compose
-with concrete tags, and submits to the `persistent_storage` webhook with the node,
-cpu, and clock fault profile the scenario's `launch.env` sets. See the script
-header for env overrides such as DURATION and WEBHOOK.
+with concrete tags, and submits to the unified `run_test` webhook under
+`antithesis.source=datadog_agent` with the node, cpu, and clock fault profile the
+scenario's `launch.env` sets. `datadog_agent` is both this project's fixed source,
+which selects the "Datadog Agent" customizations, and its property-history bucket.
+See the script header for env overrides such as DURATION, WEBHOOK, SOURCE, and the
+new `SIMULTANEOUS_FAULTS` / `FORCE_DISABLE_ALL_FAULTS` toggles.
 
 **snouty validate**
 
