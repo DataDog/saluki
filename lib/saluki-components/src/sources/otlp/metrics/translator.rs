@@ -898,8 +898,6 @@ impl OtlpMetricsTranslator {
         &mut self, context: &TranslationContext, point_dims: Dimensions, p: &OtlpHistogramDataPoint, delta: bool,
         events: &mut Vec<Event>, hist_info: HistogramInfo,
     ) -> Result<(), GenericError> {
-        validate_histogram_buckets(&point_dims, p)?;
-
         let start_ts = p.start_time_unix_nano;
         let ts = p.time_unix_nano;
 
@@ -1047,8 +1045,6 @@ impl OtlpMetricsTranslator {
         &mut self, context: &TranslationContext, point_dims: Dimensions, p: OtlpHistogramDataPoint, delta: bool,
         events: &mut Vec<Event>,
     ) -> Result<(), GenericError> {
-        validate_histogram_buckets(&point_dims, &p)?;
-
         let start_ts = p.start_time_unix_nano;
         let ts = p.time_unix_nano;
 
@@ -1087,6 +1083,13 @@ impl OtlpMetricsTranslator {
                 .resource_attributes_as_tags
                 .then_some(context.resource_attributes);
             let point_dims = base_dims.with_attribute_map(&dp.attributes, shadowing_resource_attributes);
+
+            // Validate before updating cumulative state.
+            if let Err(e) = validate_histogram_buckets(&point_dims, &dp) {
+                warn!(error = %e, "Failed to validate histogram buckets, dropping data point.");
+                continue;
+            }
+
             let mut hist_info = HistogramInfo {
                 ok: true,
                 ..Default::default()
@@ -1531,6 +1534,44 @@ mod tests {
     #[test]
     fn empty_bucket_counts_with_bounds_emit_no_distribution() {
         assert!(map_malformed_histogram(HistogramMode::Distributions, vec![], vec![1.0]).is_empty());
+    }
+
+    #[test]
+    fn malformed_cumulative_histogram_does_not_update_aggregation_caches() {
+        let metrics = Metrics::for_tests();
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let dims = Dimensions {
+            name: "malformed.histogram".to_string(),
+            ..Default::default()
+        };
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.hist_mode = HistogramMode::Counters;
+        translator.config.send_histogram_aggregations = true;
+
+        let malformed = OtlpHistogramDataPoint {
+            count: 5,
+            sum: Some(8.0),
+            bucket_counts: vec![1],
+            explicit_bounds: vec![1.0, 2.0],
+            start_time_unix_nano: nanos_from_seconds(1),
+            time_unix_nano: nanos_from_seconds(2),
+            ..Default::default()
+        };
+        let valid = OtlpHistogramDataPoint {
+            count: 12,
+            sum: Some(20.0),
+            bucket_counts: vec![5, 7],
+            explicit_bounds: vec![1.0],
+            start_time_unix_nano: nanos_from_seconds(1),
+            time_unix_nano: nanos_from_seconds(3),
+            ..Default::default()
+        };
+
+        let events = translator.map_histogram_metrics(dims, vec![malformed, valid], false, &context);
+        assert!(events.is_empty());
     }
 
     #[track_caller]
