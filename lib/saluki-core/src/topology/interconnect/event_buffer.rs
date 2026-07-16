@@ -424,4 +424,15 @@ mod tests {
         assert_eq!(Some(event4), buffered_events2.next());
         assert_eq!(None, buffered_events2.next());
     }
+
+    #[test]
+    #[should_panic(expected = "New event buffer is unexpectedly full")]
+    fn event_buffer_manager_panics_when_fresh_buffer_cannot_hold_event() {
+        // Defensive guard: on overflow, `EventBufferManager::try_push` swaps in a fresh buffer and assumes it can
+        // always accept the event that overflowed the previous one. That invariant holds for every real capacity
+        // (N >= 1); it can only be violated by a degenerate zero-capacity buffer, which trips the guard. This documents
+        // that `EventBufferManager` requires a non-zero `N`.
+        let mut manager = EventBufferManager::<0>::default();
+        let _ = manager.try_push(Event::Metric(Metric::counter("foo", 1.0)));
+    }
 }

@@ -758,6 +758,22 @@ impl Supervisable for MetricsFlusherWorker {
     }
 }
 
+/// Feeds `upserts` through a fresh [`AggregatedMetricsProcessor`] and returns the resulting
+/// [`AggregatedMetricsState`].
+#[cfg(test)]
+pub(crate) fn aggregate_upserts(upserts: Vec<Event>) -> AggregatedMetricsState {
+    let processor = AggregatedMetricsProcessor;
+    let state = processor.build_initial_state();
+    processor.process(
+        MetricsSnapshot {
+            upserts,
+            evictions: Vec::new(),
+        },
+        &state,
+    );
+    state
+}
+
 #[cfg(test)]
 mod tests {
     use metrics::Label;
@@ -803,6 +819,12 @@ mod tests {
         state.registry.get_or_create_gauge(&Key::from_name(name), Level::TRACE)
     }
 
+    fn register_histogram(state: &State, name: &'static str) -> Histogram {
+        state
+            .registry
+            .get_or_create_histogram(&Key::from_name(name), Level::TRACE)
+    }
+
     fn counter_present(state: &State, name: &'static str) -> bool {
         state
             .registry
@@ -824,6 +846,16 @@ mod tests {
             .lock()
             .unwrap()
             .gauges
+            .contains_key(&Key::from_name(name))
+    }
+
+    fn histogram_present(state: &State, name: &'static str) -> bool {
+        state
+            .registry
+            .maps
+            .lock()
+            .unwrap()
+            .histograms
             .contains_key(&Key::from_name(name))
     }
 
@@ -1083,6 +1115,64 @@ mod tests {
         flush_once(&state, &mut resolver, &mut flush_state);
         assert!(!gauge_present(&state, "final_gauge"));
     }
+
+    #[tokio::test]
+    async fn histogram_final_samples_reach_downstream_before_eviction() {
+        // Regression test for the histogram eviction race fixed in commit 3752c5ad1b
+        // ("rework internal metrics registry to support evicting expired/idle metrics", #1947).
+        //
+        // The histogram branch of `flush_once` must read the Arc strong count first (Acquire-fencing
+        // on the orphaned path) and only THEN drain the sample bucket, exactly like the counter and
+        // gauge paths. If a final `record()` and the handle drop both land in the inter-flush window
+        // where eviction is armed, the flush that observes the orphaned handle must still see and emit
+        // that sample -- and defer eviction by one interval -- rather than dropping the samples along
+        // with the evicted registry entry. That commit shipped the counter regression coverage
+        // (`final_counter_delta_reaches_downstream_before_eviction` plus the loom model) but never the
+        // symmetric histogram coverage; this is it.
+        let (state, mut rx) = make_state(1);
+        let mut resolver = resolver();
+        let mut flush_state = FlushState::default();
+
+        let histogram = register_histogram(&state, "final_histogram");
+
+        // Arm eviction by letting the idle counter reach the threshold while the handle is held.
+        flush_once(&state, &mut resolver, &mut flush_state);
+
+        // Record a sample and drop the handle in the same inter-flush window. The next flush observes
+        // the recorded sample, so it must emit it and defer eviction by one interval.
+        histogram.record(1.5);
+        drop(histogram);
+        flush_once(&state, &mut resolver, &mut flush_state);
+        assert!(
+            histogram_present(&state, "final_histogram"),
+            "must not evict in an interval that recorded a sample"
+        );
+
+        // The recorded sample must reach the downstream aggregated state.
+        let agg_processor = AggregatedMetricsProcessor;
+        let agg_state = agg_processor.build_initial_state();
+        for update in drain(&mut rx) {
+            agg_processor.process(update, &agg_state);
+        }
+
+        let mut downstream_sample_count = None;
+        agg_state.visit_metrics(|context, value| {
+            if context.name() == "final_histogram" {
+                if let AggregatedMetricValue::Histogram(histogram) = value {
+                    downstream_sample_count = Some(histogram.count());
+                }
+            }
+        });
+        assert_eq!(
+            downstream_sample_count,
+            Some(1),
+            "the final recorded sample must reach downstream before eviction"
+        );
+
+        // The following interval (no samples) finally evicts it.
+        flush_once(&state, &mut resolver, &mut flush_state);
+        assert!(!histogram_present(&state, "final_histogram"));
+    }
 }
 
 // Loom model of the counter eviction path in `flush_once`.
@@ -1189,5 +1279,70 @@ mod loom_tests {
     #[test]
     fn strong_count_first_ordering_preserves_a_final_increment() {
         model(flush_decision_strong_count_first);
+    }
+
+    // The histogram branch of `flush_once` has the same race shape as the counter branch, and got the
+    // same fix in commit 3752c5ad1b (#1947): `Histogram::record` pushes straight through the
+    // `Arc<Handle>`'s sample bucket, and dropping a caller's `Histogram` only decrements the Arc strong
+    // count, so a component can land a final sample and drop its handle while a flush is mid-pass over
+    // that histogram. Reading the strong count first (Acquire-fencing when orphaned) before draining
+    // guarantees the drain observes the dropping thread's final `record()`.
+    //
+    // As with the counter model, loom cannot instrument the real storage: histogram samples live in
+    // `metrics_util`'s `AtomicBucket`, which loom does not rewrite behind the `loom` cfg. We transcribe
+    // "number of un-drained samples" into the same loom `AtomicU64` accumulator (record => fetch_add(1),
+    // drain => swap(0)); that is precisely the ordering that decides whether the drain sees the final
+    // sample, so the two decision functions above -- `flush_decision_consume_first` (drain-first) and
+    // `flush_decision_strong_count_first` -- model the histogram drain unchanged, just with a
+    // single-sample final write.
+    fn histogram_model(decision: fn(&Arc<Shared>) -> (u64, bool)) {
+        loom::model(move || {
+            const FINAL_SAMPLES: u64 = 1;
+
+            // strong count starts at 2: one ref in the registry map, one held by the caller.
+            let shared = Arc::new(Shared {
+                value: AtomicU64::new(0),
+                strong: AtomicUsize::new(2),
+            });
+            let caller_shared = Arc::clone(&shared);
+
+            // A component holding a cached histogram handle records one final sample, then drops it.
+            let caller = loom::thread::spawn(move || {
+                caller_shared.value.fetch_add(FINAL_SAMPLES, Ordering::Relaxed); // Histogram::record
+                caller_shared.strong.fetch_sub(1, Ordering::Release); // Arc clone drop
+            });
+
+            // The flush task evaluates this histogram while the component races.
+            let (drained, evicted) = decision(&shared);
+            caller.join().unwrap();
+
+            // Invariant: a histogram may only be evicted once every recorded sample has been drained
+            // (and thus emitted). If the flush evicts it, the drain it performed must have observed the
+            // final sample -- otherwise that sample is discarded with the evicted registry entry.
+            if evicted {
+                assert_eq!(
+                    drained,
+                    FINAL_SAMPLES,
+                    "histogram evicted while {} recorded sample(s) were never drained -> permanently lost",
+                    FINAL_SAMPLES - drained
+                );
+            }
+        });
+    }
+
+    // Draining the sample bucket before checking the strong count is lossy: loom finds an interleaving
+    // where the histogram is evicted while a final recorded sample goes undrained. `#[should_panic]`
+    // asserts loom reaches that interleaving.
+    #[test]
+    #[should_panic(expected = "permanently lost")]
+    fn histogram_drain_first_ordering_loses_a_final_sample() {
+        histogram_model(flush_decision_consume_first);
+    }
+
+    // Checking the strong count first (Acquire-fencing when orphaned) before draining preserves the
+    // final recorded sample across all interleavings loom explores.
+    #[test]
+    fn histogram_strong_count_first_ordering_preserves_a_final_sample() {
+        histogram_model(flush_decision_strong_count_first);
     }
 }

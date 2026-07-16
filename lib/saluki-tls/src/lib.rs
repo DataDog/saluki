@@ -33,6 +33,9 @@ use tracing::debug;
 #[cfg(not(feature = "fips"))]
 use tracing::warn;
 
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
+
 /// Tracks if the default cryptography provider for `rustls` has been set.
 static DEFAULT_CRYPTO_PROVIDER_SET: OnceLock<()> = OnceLock::new();
 
@@ -613,26 +616,48 @@ mod tests {
     use std::fs;
     #[cfg(all(unix, not(feature = "fips")))]
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
     #[cfg(feature = "fips")]
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     };
 
-    use rcgen::{generate_simple_self_signed, CertifiedKey};
     #[cfg(feature = "fips")]
     use rustls::KeyLog;
     use rustls::{
-        pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
-        ProtocolVersion, RootCertStore, ServerConfig,
+        client::danger::ServerCertVerifier,
+        crypto::CryptoProvider,
+        pki_types::{ServerName, UnixTime},
+        ClientConfig, ProtocolVersion, RootCertStore, ServerConfig,
     };
 
+    use super::test_util::SelfSignedCert;
     #[cfg(not(feature = "fips"))]
     use super::{build_nss_key_log_line, open_key_log_file};
     use super::{
-        ensure_client_config_fips_compliant, ensure_server_config_fips_compliant, ClientTLSConfigBuilder,
-        TlsMinimumVersion,
+        ensure_client_config_fips_compliant, ensure_server_config_fips_compliant, AcceptAllServerCertVerifier,
+        ClientTLSConfigBuilder, TlsMinimumVersion,
     };
+
+    /// Builds a client TLS configuration that logs key material to `path`, initializing the default crypto provider
+    /// first so the configuration can be built. Every key-log test shares this setup.
+    fn client_config_with_key_log(path: &Path) -> ClientConfig {
+        let _ = super::initialize_default_crypto_provider();
+
+        ClientTLSConfigBuilder::new()
+            .with_root_cert_store(RootCertStore::empty())
+            .with_key_log_file(path)
+            .build()
+            .expect("client TLS config should build")
+    }
+
+    /// Creates a temporary directory and returns it (to keep it alive) alongside a path to `file_name` within it.
+    fn temp_file_path(file_name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
+        let path = tempdir.path().join(file_name);
+        (tempdir, path)
+    }
 
     #[test]
     fn tls12_minimum_enables_tls12_and_tls13() {
@@ -664,15 +689,59 @@ mod tests {
     }
 
     #[test]
+    fn accept_all_verifier_accepts_mismatched_server_certificate() {
+        // The accept-all verifier performs no validation by design, so it must accept even a self-signed certificate
+        // presented for a completely different server name — a case any real verifier would reject. This is the
+        // behavior that backs `ClientTLSConfigBuilder::danger_accept_invalid_certs`.
+        let _ = super::initialize_default_crypto_provider();
+        let provider = CryptoProvider::get_default()
+            .cloned()
+            .expect("default crypto provider should be installed");
+        let verifier = AcceptAllServerCertVerifier { provider };
+
+        let cert = SelfSignedCert::new(["localhost"]);
+        let cert_chain = cert.cert_chain();
+        let server_name = ServerName::try_from("totally.different.example").expect("server name should parse");
+
+        let result = verifier.verify_server_cert(&cert_chain[0], &[], &server_name, &[], UnixTime::now());
+
+        assert!(
+            result.is_ok(),
+            "accept-all verifier must accept a certificate presented for a mismatched server name"
+        );
+    }
+
+    #[test]
+    fn danger_accept_invalid_certs_builds_without_root_cert_store() {
+        let _ = super::initialize_default_crypto_provider();
+
+        // Without an explicit root cert store (and with no process-wide default initialized in this test), a normal
+        // build fails: there is nothing to verify server certificates against.
+        let missing_store_error = ClientTLSConfigBuilder::new()
+            .build()
+            .expect_err("client TLS config should fail to build without any root cert store");
+        assert!(
+            missing_store_error
+                .to_string()
+                .contains("root certificate store not initialized"),
+            "unexpected error: {missing_store_error}"
+        );
+
+        // Enabling the dangerous accept-all verifier removes the need for a root cert store entirely, so the same
+        // builder now succeeds.
+        ClientTLSConfigBuilder::new()
+            .danger_accept_invalid_certs()
+            .build()
+            .expect("client TLS config should build with an accept-all verifier and no root cert store");
+    }
+
+    #[test]
     fn server_config_fips_validation_accepts_basic_server_config() {
         let _ = super::initialize_default_crypto_provider();
-        let CertifiedKey { cert, signing_key } =
-            generate_simple_self_signed(["localhost".to_owned()]).expect("self-signed cert should be generated");
-        let cert_chain = vec![cert.der().clone()];
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+        let cert = SelfSignedCert::localhost();
         let mut config = ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
+            .with_single_cert(cert.cert_chain(), cert.private_key())
             .expect("server TLS config should build");
 
         ensure_server_config_fips_compliant(&mut config).expect("server TLS config should pass FIPS validation");
@@ -691,14 +760,11 @@ mod tests {
         }
 
         let _ = super::initialize_default_crypto_provider();
-        let CertifiedKey { cert, signing_key } =
-            generate_simple_self_signed(["localhost".to_owned()]).expect("self-signed cert should be generated");
-        let cert_chain = vec![cert.der().clone()];
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+        let cert = SelfSignedCert::localhost();
         let key_log_used = Arc::new(AtomicBool::new(false));
         let mut config = ServerConfig::builder()
             .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
+            .with_single_cert(cert.cert_chain(), cert.private_key())
             .expect("server TLS config should build");
         config.key_log = Arc::new(TestKeyLog(Arc::clone(&key_log_used)));
         config.enable_secret_extraction = true;
@@ -709,6 +775,48 @@ mod tests {
 
         assert!(!key_log_used.load(Ordering::Relaxed));
         assert!(!config.enable_secret_extraction);
+    }
+
+    // The FIPS-compliance checks return an error when a configuration is not FIPS compliant. To exercise that
+    // documented error path in a FIPS build, the two tests below build configurations using the *unfiltered*
+    // aws-lc-rs provider, whose default cipher suites include non-FIPS-approved algorithms (e.g. ChaCha20), so
+    // `fips()` reports false even though the crate is compiled with FIPS support.
+    #[cfg(all(feature = "fips", not(windows)))]
+    #[test]
+    fn client_config_fips_validation_rejects_non_fips_config() {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let config = ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+            .expect("client config builder should accept protocol versions")
+            .with_root_certificates(RootCertStore::empty())
+            .with_no_client_auth();
+
+        let error =
+            ensure_client_config_fips_compliant(&config).expect_err("a non-FIPS client configuration must be rejected");
+        assert!(
+            error.to_string().contains("not FIPS compliant"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[cfg(all(feature = "fips", not(windows)))]
+    #[test]
+    fn server_config_fips_validation_rejects_non_fips_config() {
+        let cert = SelfSignedCert::localhost();
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut config = ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13, &rustls::version::TLS12])
+            .expect("server config builder should accept protocol versions")
+            .with_no_client_auth()
+            .with_single_cert(cert.cert_chain(), cert.private_key())
+            .expect("server TLS config should build");
+
+        let error = ensure_server_config_fips_compliant(&mut config)
+            .expect_err("a non-FIPS server configuration must be rejected");
+        assert!(
+            error.to_string().contains("not FIPS compliant"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -723,16 +831,9 @@ mod tests {
     #[test]
     #[cfg(not(feature = "fips"))]
     fn client_config_uses_configured_key_log_file() {
-        let _ = super::initialize_default_crypto_provider();
-        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
-        let key_log_path = tempdir.path().join("sslkeylogfile");
+        let (_tempdir, key_log_path) = temp_file_path("sslkeylogfile");
 
-        let config = ClientTLSConfigBuilder::new()
-            .with_root_cert_store(RootCertStore::empty())
-            .with_key_log_file(&key_log_path)
-            .build()
-            .expect("client TLS config should build");
-
+        let config = client_config_with_key_log(&key_log_path);
         config.key_log.log("CLIENT_RANDOM", &[0xab, 0xcd], &[0x01, 0x23]);
 
         let contents = fs::read_to_string(&key_log_path).expect("key log file should be readable");
@@ -742,16 +843,11 @@ mod tests {
     #[test]
     #[cfg(not(feature = "fips"))]
     fn client_config_ignores_unwritable_key_log_file() {
-        let _ = super::initialize_default_crypto_provider();
-        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
-        let key_log_path = tempdir.path().join("missing").join("sslkeylogfile");
+        // The key log path points into a nonexistent subdirectory, so the file can never be opened. Building the
+        // configuration must still succeed, and no file should be created.
+        let (_tempdir, key_log_path) = temp_file_path("missing/sslkeylogfile");
 
-        let config = ClientTLSConfigBuilder::new()
-            .with_root_cert_store(RootCertStore::empty())
-            .with_key_log_file(&key_log_path)
-            .build()
-            .expect("client TLS config should build even when the key log file cannot be opened");
-
+        let config = client_config_with_key_log(&key_log_path);
         config.key_log.log("CLIENT_RANDOM", &[0xab, 0xcd], &[0x01, 0x23]);
 
         assert!(!key_log_path.exists());
@@ -760,20 +856,10 @@ mod tests {
     #[test]
     #[cfg(not(feature = "fips"))]
     fn client_configs_append_to_shared_key_log_file() {
-        let _ = super::initialize_default_crypto_provider();
-        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
-        let key_log_path = tempdir.path().join("shared-sslkeylogfile");
+        let (_tempdir, key_log_path) = temp_file_path("shared-sslkeylogfile");
 
-        let first_config = ClientTLSConfigBuilder::new()
-            .with_root_cert_store(RootCertStore::empty())
-            .with_key_log_file(&key_log_path)
-            .build()
-            .expect("first client TLS config should build");
-        let second_config = ClientTLSConfigBuilder::new()
-            .with_root_cert_store(RootCertStore::empty())
-            .with_key_log_file(&key_log_path)
-            .build()
-            .expect("second client TLS config should build");
+        let first_config = client_config_with_key_log(&key_log_path);
+        let second_config = client_config_with_key_log(&key_log_path);
 
         first_config.key_log.log("CLIENT_RANDOM", &[0xab, 0xcd], &[0x01, 0x23]);
         second_config.key_log.log("CLIENT_RANDOM", &[0xef, 0x01], &[0x45, 0x67]);
@@ -813,17 +899,11 @@ mod tests {
     #[test]
     #[cfg(feature = "fips")]
     fn key_log_file_ignored_in_fips_mode() {
-        let _ = super::initialize_default_crypto_provider();
-        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
-        let key_log_path = tempdir.path().join("fips-sslkeylogfile");
-
         // FIPS builds soft-skip TLS key logging instead of failing, so a leftover key log file path does not
         // prevent TLS client construction.
-        let config = ClientTLSConfigBuilder::new()
-            .with_root_cert_store(RootCertStore::empty())
-            .with_key_log_file(&key_log_path)
-            .build()
-            .expect("TLS config should build in FIPS mode even when a key log file is configured");
+        let (_tempdir, key_log_path) = temp_file_path("fips-sslkeylogfile");
+
+        let config = client_config_with_key_log(&key_log_path);
 
         // The default no-op `KeyLog` remains in place: invoking it must not panic and must not produce a file.
         config.key_log.log("CLIENT_RANDOM", &[0xab, 0xcd], &[0x01, 0x23]);

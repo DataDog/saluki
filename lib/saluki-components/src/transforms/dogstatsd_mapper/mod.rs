@@ -407,11 +407,15 @@ mod tests {
 
     use bytesize::ByteSize;
     use saluki_context::{Context, ContextResolverBuilder};
-    use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
+    use saluki_core::{
+        components::{transforms::SynchronousTransform, ComponentContext},
+        data_model::event::{metric::Metric, Event},
+        topology::EventsBuffer,
+    };
     use saluki_error::GenericError;
     use serde_json::{json, Value};
 
-    use super::{MapperProfileConfigs, MetricMapper};
+    use super::{DogStatsDMapper, MapperProfileConfigs, MetricMapper};
 
     fn counter_metric(name: &'static str, tags: &[&'static str]) -> Metric {
         let context = Context::from_static_parts(name, tags);
@@ -436,44 +440,474 @@ mod tests {
         assert_eq!(context.tags().len(), expected_tags.len(), "unexpected number of tags");
     }
 
+    #[track_caller]
+    fn assert_tags_for_case(context: &Context, expected_tags: &[&str], case: &str, input: &str) {
+        for tag in expected_tags {
+            assert!(
+                context.tags().has_tag(tag),
+                "[{case}] input {input:?}: missing tag {tag:?}"
+            );
+        }
+        assert_eq!(
+            context.tags().len(),
+            expected_tags.len(),
+            "[{case}] input {input:?}: unexpected number of tags"
+        );
+    }
+
+    fn simple_mapping_profile() -> Value {
+        json!([{
+            "name": "test",
+            "prefix": "test.",
+            "mappings": [
+                {
+                    "match": "test.job.duration.*.*",
+                    "name": "test.job.duration",
+                    "tags": {
+                        "job_type": "$1",
+                        "job_name": "$2"
+                    }
+                }
+            ]
+        }])
+    }
+
     #[tokio::test]
-    async fn test_mapper_wildcard_simple() {
-        let json_data = json!([{
-          "name": "test",
-          "prefix": "test.",
-          "mappings": [
-            {
-              "match": "test.job.duration.*.*",
-              "name": "test.job.duration",
-              "tags": {
-                "job_type": "$1",
-                "job_name": "$2"
-              }
+    async fn config_driven_mappings_produce_expected_output() {
+        // Each case builds one mapper from `config`, then checks a series of inputs against it. A check is
+        // `(input_name, input_tags, expected)`, where `expected` is `Some((mapped_name, mapped_tags))` when the metric
+        // should be remapped, or `None` when it must pass through unmapped.
+        struct MapperCase {
+            description: &'static str,
+            config: Value,
+            #[allow(clippy::type_complexity)]
+            checks: Vec<(
+                &'static str,
+                &'static [&'static str],
+                Option<(&'static str, &'static [&'static str])>,
+            )>,
+        }
+
+        let cases = vec![
+            MapperCase {
+                description: "wildcard mappings with capture-group tags",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.job.duration.*.*", "name": "test.job.duration", "tags": { "job_type": "$1", "job_name": "$2" } },
+                        { "match": "test.job.size.*.*", "name": "test.job.size", "tags": { "foo": "$1", "bar": "$2" } }
+                    ]
+                }]),
+                checks: vec![
+                    (
+                        "test.job.duration.my_job_type.my_job_name",
+                        &[],
+                        Some(("test.job.duration", &["job_type:my_job_type", "job_name:my_job_name"])),
+                    ),
+                    (
+                        "test.job.size.my_job_type.my_job_name",
+                        &[],
+                        Some(("test.job.size", &["foo:my_job_type", "bar:my_job_name"])),
+                    ),
+                    ("test.job.size.not_match", &[], None),
+                ],
             },
-            {
-              "match": "test.job.size.*.*",
-              "name": "test.job.size",
-              "tags": {
-                "foo": "$1",
-                "bar": "$2"
-              }
+            MapperCase {
+                description: "partial mapping, second mapping has no tags",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.job.duration.*.*", "name": "test.job.duration", "tags": { "job_type": "$1" } },
+                        { "match": "test.task.duration.*.*", "name": "test.task.duration" }
+                    ]
+                }]),
+                checks: vec![
+                    (
+                        "test.job.duration.my_job_type.my_job_name",
+                        &[],
+                        Some(("test.job.duration", &["job_type:my_job_type"])),
+                    ),
+                    (
+                        "test.task.duration.my_job_type.my_job_name",
+                        &[],
+                        Some(("test.task.duration", &[])),
+                    ),
+                ],
+            },
+            MapperCase {
+                description: "regex expansion with ${n} syntax",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.job.duration.*.*", "name": "test.job.duration", "tags": { "job_type": "${1}_x", "job_name": "${2}_y" } }
+                    ]
+                }]),
+                checks: vec![(
+                    "test.job.duration.my_job_type.my_job_name",
+                    &[],
+                    Some((
+                        "test.job.duration",
+                        &["job_type:my_job_type_x", "job_name:my_job_name_y"],
+                    )),
+                )],
+            },
+            MapperCase {
+                description: "capture groups expanded into the metric name",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.job.duration.*.*", "name": "test.hello.$2.$1", "tags": { "job_type": "$1", "job_name": "$2" } }
+                    ]
+                }]),
+                checks: vec![(
+                    "test.job.duration.my_job_type.my_job_name",
+                    &[],
+                    Some((
+                        "test.hello.my_job_name.my_job_type",
+                        &["job_type:my_job_type", "job_name:my_job_name"],
+                    )),
+                )],
+            },
+            MapperCase {
+                description: "wildcard matches a segment before an underscore",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.*_start", "name": "test.start", "tags": { "job": "$1" } }
+                    ]
+                }]),
+                checks: vec![("test.my_job_start", &[], Some(("test.start", &["job:my_job"])))],
+            },
+            MapperCase {
+                description: "mappings without any tags",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.my-worker.start", "name": "test.worker.start" },
+                        { "match": "test.my-worker.stop.*", "name": "test.worker.stop" }
+                    ]
+                }]),
+                checks: vec![
+                    ("test.my-worker.start", &[], Some(("test.worker.start", &[]))),
+                    ("test.my-worker.stop.worker-name", &[], Some(("test.worker.stop", &[]))),
+                ],
+            },
+            MapperCase {
+                description: "all allowed wildcard characters",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ-01234567.*", "name": "test.alphabet" }
+                    ]
+                }]),
+                checks: vec![(
+                    "test.abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ-01234567.123",
+                    &[],
+                    Some(("test.alphabet", &[])),
+                )],
+            },
+            MapperCase {
+                description: "regex match type",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test\\.job\\.duration\\.(.*)", "match_type": "regex", "name": "test.job.duration", "tags": { "job_name": "$1" } },
+                        { "match": "test\\.task\\.duration\\.(.*)", "match_type": "regex", "name": "test.task.duration", "tags": { "task_name": "$1" } }
+                    ]
+                }]),
+                checks: vec![
+                    (
+                        "test.job.duration.my.funky.job$name-abc/123",
+                        &[],
+                        Some(("test.job.duration", &["job_name:my.funky.job$name-abc/123"])),
+                    ),
+                    (
+                        "test.task.duration.MY_task_name",
+                        &[],
+                        Some(("test.task.duration", &["task_name:MY_task_name"])),
+                    ),
+                ],
+            },
+            MapperCase {
+                description: "complex regex match type",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test\\.job\\.([a-z][0-9]-\\w+)\\.(.*)", "match_type": "regex", "name": "test.job", "tags": { "job_type": "$1", "job_name": "$2" } }
+                    ]
+                }]),
+                checks: vec![
+                    (
+                        "test.job.a5-foo.bar",
+                        &[],
+                        Some(("test.job", &["job_type:a5-foo", "job_name:bar"])),
+                    ),
+                    ("test.job.foo.bar-not-match", &[], None),
+                ],
+            },
+            MapperCase {
+                description: "multiple profiles matched by prefix",
+                config: json!([
+                    {
+                        "name": "test",
+                        "prefix": "foo.",
+                        "mappings": [ { "match": "foo.duration.*", "name": "foo.duration", "tags": { "name": "$1" } } ]
+                    },
+                    {
+                        "name": "test",
+                        "prefix": "bar.",
+                        "mappings": [
+                            { "match": "bar.count.*", "name": "bar.count", "tags": { "name": "$1" } },
+                            { "match": "foo.duration2.*", "name": "foo.duration2", "tags": { "name": "$1" } }
+                        ]
+                    }
+                ]),
+                checks: vec![
+                    (
+                        "foo.duration.foo_name1",
+                        &[],
+                        Some(("foo.duration", &["name:foo_name1"])),
+                    ),
+                    // `foo.duration2` only exists under the `bar.` prefix, so it can't be reached by a `foo.` metric.
+                    ("foo.duration2.foo_name1", &[], None),
+                    ("bar.count.bar_name1", &[], Some(("bar.count", &["name:bar_name1"]))),
+                    ("z.not.mapped", &[], None),
+                ],
+            },
+            MapperCase {
+                description: "wildcard prefix matches any metric",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "*",
+                    "mappings": [ { "match": "foo.duration.*", "name": "foo.duration", "tags": { "name": "$1" } } ]
+                }]),
+                checks: vec![(
+                    "foo.duration.foo_name1",
+                    &[],
+                    Some(("foo.duration", &["name:foo_name1"])),
+                )],
+            },
+            MapperCase {
+                description: "only the first matching wildcard-prefixed profile applies",
+                config: json!([
+                    {
+                        "name": "test",
+                        "prefix": "*",
+                        "mappings": [ { "match": "foo.duration.*", "name": "foo.duration", "tags": { "name1": "$1" } } ]
+                    },
+                    {
+                        "name": "test",
+                        "prefix": "*",
+                        "mappings": [ { "match": "foo.duration.*", "name": "foo.duration", "tags": { "name2": "$1" } } ]
+                    }
+                ]),
+                // The single expected tag (and exact tag count) proves the second profile's `name2` tag was not applied.
+                checks: vec![(
+                    "foo.duration.foo_name",
+                    &[],
+                    Some(("foo.duration", &["name1:foo_name"])),
+                )],
+            },
+            MapperCase {
+                description: "only the first matching profile applies across differing prefixes",
+                config: json!([
+                    {
+                        "name": "test",
+                        "prefix": "foo.",
+                        "mappings": [ { "match": "foo.*.duration.*", "name": "foo.bar1.duration", "tags": { "bar": "$1", "foo": "$2" } } ]
+                    },
+                    {
+                        "name": "test",
+                        "prefix": "foo.bar.",
+                        "mappings": [ { "match": "foo.bar.duration.*", "name": "foo.bar2.duration", "tags": { "foo_bar": "$1" } } ]
+                    }
+                ]),
+                // The exact tag count proves the second profile's `foo_bar` tag was not applied.
+                checks: vec![(
+                    "foo.bar.duration.foo_name",
+                    &[],
+                    Some(("foo.bar1.duration", &["bar:bar", "foo:foo_name"])),
+                )],
+            },
+            MapperCase {
+                description: "regex expansion with (\\w+) groups",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.user.(\\w+).action.(\\w+)", "match_type": "regex", "name": "test.user.action", "tags": { "user": "$1", "action": "$2" } }
+                    ]
+                }]),
+                checks: vec![(
+                    "test.user.john_doe.action.login",
+                    &[],
+                    Some(("test.user.action", &["user:john_doe", "action:login"])),
+                )],
+            },
+            MapperCase {
+                description: "existing metric tags are retained alongside mapped tags",
+                config: json!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.job.duration.*.*", "name": "test.job.duration.$2", "tags": { "job_type": "$1", "job_name": "$2" } }
+                    ]
+                }]),
+                checks: vec![(
+                    "test.job.duration.abc.def",
+                    &["foo:bar", "baz"],
+                    Some((
+                        "test.job.duration.def",
+                        &["foo:bar", "baz", "job_type:abc", "job_name:def"],
+                    )),
+                )],
+            },
+        ];
+
+        for case in cases {
+            let mut mapper = mapper(case.config)
+                .unwrap_or_else(|e| panic!("[{}] config should parse and build: {e}", case.description));
+
+            for (input_name, input_tags, expected) in case.checks {
+                let metric = counter_metric(input_name, input_tags);
+                match (mapper.try_map(metric.context()), expected) {
+                    (Some(context), Some((expected_name, expected_tags))) => {
+                        assert_eq!(
+                            context.name(),
+                            expected_name,
+                            "[{}] wrong mapped name for input {input_name:?}",
+                            case.description
+                        );
+                        assert_tags_for_case(&context, expected_tags, case.description, input_name);
+                    }
+                    (None, None) => {}
+                    (mapped, expected) => panic!(
+                        "[{}] input {input_name:?}: expected remap={}, got remap={}",
+                        case.description,
+                        expected.is_some(),
+                        mapped.is_some()
+                    ),
+                }
             }
-          ]
-        }]);
+        }
+    }
 
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-        let metric = counter_metric("test.job.duration.my_job_type.my_job_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.job.duration");
-        assert_tags(&context, &["job_type:my_job_type", "job_name:my_job_name"]);
+    #[test]
+    fn invalid_mapper_configurations_are_rejected() {
+        // Each case is `(description, config, expected_error_substring)`. The empty-field cases exercise
+        // `MapperProfileConfigs::build`'s custom validation, which is only reachable via *present-but-empty* fields:
+        // missing fields are rejected earlier by serde (the required-field cases below), because the corresponding
+        // config fields have no `#[serde(default)]`.
+        let cases: Vec<(&str, Value, &str)> = vec![
+            // Custom (present-but-empty) validation branches.
+            (
+                "profile with an empty name",
+                json!([{ "name": "", "prefix": "test.", "mappings": [] }]),
+                "missing profile name",
+            ),
+            (
+                "profile with an empty prefix",
+                json!([{ "name": "test", "prefix": "", "mappings": [] }]),
+                "missing prefix for profile: test",
+            ),
+            (
+                "mapping with an empty match",
+                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "", "name": "test.mapped" }] }]),
+                "match is required",
+            ),
+            (
+                "mapping with an empty name",
+                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.job.duration.*.*", "name": "", "tags": { "job_type": "$1" } }] }]),
+                "name is required",
+            ),
+            // serde required-field rejection (missing fields short-circuit before the custom validation).
+            (
+                "mapping missing its name field",
+                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.job.duration.*.*", "tags": { "job_type": "$1", "job_name": "$2" } }] }]),
+                "missing field `name`",
+            ),
+            (
+                "profile missing its name field",
+                json!([{ "prefix": "test.", "mappings": [{ "match": "test.invalid.duration", "name": "test.job.duration" }] }]),
+                "missing field `name`",
+            ),
+            (
+                "profile missing its prefix field",
+                json!([{ "name": "test", "mappings": [{ "match": "test.invalid.duration", "name": "test.job.duration" }] }]),
+                "missing field `prefix`",
+            ),
+            // Match compilation / type validation.
+            (
+                "wildcard match with disallowed characters",
+                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.[]duration.*.*", "name": "test.job.duration" }] }]),
+                "does not match allowed match regex",
+            ),
+            (
+                "wildcard match anchored with a caret",
+                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "^test.invalid.duration.*.*", "name": "test.job.duration" }] }]),
+                "does not match allowed match regex",
+            ),
+            (
+                "wildcard match with consecutive wildcards",
+                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.invalid.duration.**", "name": "test.job.duration" }] }]),
+                "consecutive",
+            ),
+            (
+                "unknown match type",
+                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.invalid.duration", "match_type": "invalid", "name": "test.job.duration" }] }]),
+                "invalid match type",
+            ),
+        ];
 
-        let metric = counter_metric("test.job.size.my_job_type.my_job_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.job.size");
-        assert_tags(&context, &["foo:my_job_type", "bar:my_job_name"]);
+        for (description, config, expected_substring) in cases {
+            let err = mapper(config)
+                .err()
+                .unwrap_or_else(|| panic!("[{description}] configuration should be rejected"));
+            let message = err.to_string();
+            assert!(
+                message.contains(expected_substring),
+                "[{description}] error {message:?} should contain {expected_substring:?}"
+            );
+        }
+    }
 
-        let metric = counter_metric("test.job.size.not_match", &[]);
-        assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
+    #[tokio::test]
+    async fn transform_buffer_remaps_matching_metrics_and_passes_others_through() {
+        // Drives the public `SynchronousTransform::transform_buffer` entry point (every other test exercises the
+        // internal `try_map`). Matching metrics are remapped in place; non-matching metrics pass through untouched.
+        let mut transform = DogStatsDMapper {
+            metric_mapper: mapper(simple_mapping_profile()).expect("config should parse and build"),
+        };
+
+        let mut events = EventsBuffer::default();
+        assert!(events
+            .try_push(Event::Metric(counter_metric("test.job.duration.my_type.my_name", &[])))
+            .is_none());
+        assert!(events
+            .try_push(Event::Metric(counter_metric("unrelated.metric", &["keep:me"])))
+            .is_none());
+
+        transform.transform_buffer(&mut events);
+
+        let metrics: Vec<Metric> = events.into_iter().filter_map(Event::try_into_metric).collect();
+        assert_eq!(metrics.len(), 2);
+
+        // The matching metric is remapped in place (order is preserved).
+        assert_eq!(metrics[0].context().name(), "test.job.duration");
+        assert_tags(metrics[0].context(), &["job_type:my_type", "job_name:my_name"]);
+
+        // The non-matching metric is left untouched.
+        assert_eq!(metrics[1].context().name(), "unrelated.metric");
+        assert_tags(metrics[1].context(), &["keep:me"]);
     }
 
     #[tokio::test]
@@ -513,590 +947,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_partial_match() {
-        let json_data = json!([{
-          "name": "test",
-          "prefix": "test.",
-          "mappings": [
-            {
-              "match": "test.job.duration.*.*",
-              "name": "test.job.duration",
-              "tags": {
-                "job_type": "$1"
-              }
-            },
-            {
-              "match": "test.task.duration.*.*",
-              "name": "test.task.duration",
-            }
-          ]
-        }]);
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-        let metric = counter_metric("test.job.duration.my_job_type.my_job_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.job.duration");
-        assert!(context.tags().has_tag("job_type:my_job_type"));
-
-        let metric = counter_metric("test.task.duration.my_job_type.my_job_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.task.duration");
-    }
-
-    #[tokio::test]
-    async fn test_use_regex_expansion_alternative_syntax() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.job.duration.*.*",
-                    "name": "test.job.duration",
-                    "tags": {
-                        "job_type": "${1}_x",
-                        "job_name": "${2}_y"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric("test.job.duration.my_job_type.my_job_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.job.duration");
-        assert_tags(&context, &["job_type:my_job_type_x", "job_name:my_job_name_y"]);
-    }
-
-    #[tokio::test]
-    async fn test_expand_name() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.job.duration.*.*",
-                    "name": "test.hello.$2.$1",
-                    "tags": {
-                        "job_type": "$1",
-                        "job_name": "$2"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric("test.job.duration.my_job_type.my_job_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.hello.my_job_name.my_job_type");
-        assert_tags(&context, &["job_type:my_job_type", "job_name:my_job_name"]);
-    }
-
-    #[tokio::test]
-    async fn test_match_before_underscore() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.*_start",
-                    "name": "test.start",
-                    "tags": {
-                        "job": "$1"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric("test.my_job_start", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.start");
-        assert!(context.tags().has_tag("job:my_job"));
-    }
-
-    #[tokio::test]
-    async fn test_no_tags() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.my-worker.start",
-                    "name": "test.worker.start"
-                },
-                {
-                    "match": "test.my-worker.stop.*",
-                    "name": "test.worker.stop"
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric("test.my-worker.start", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.worker.start");
-        assert!(context.tags().is_empty(), "Expected no tags");
-
-        let metric = counter_metric("test.my-worker.stop.worker-name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.worker.stop");
-        assert!(context.tags().is_empty(), "Expected no tags");
-    }
-
-    #[tokio::test]
-    async fn test_all_allowed_characters() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ-01234567.*",
-                    "name": "test.alphabet"
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric(
-            "test.abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ-01234567.123",
-            &[],
-        );
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.alphabet");
-        assert!(context.tags().is_empty(), "Expected no tags");
-    }
-
-    #[tokio::test]
-    async fn test_regex_match_type() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test\\.job\\.duration\\.(.*)",
-                    "match_type": "regex",
-                    "name": "test.job.duration",
-                    "tags": {
-                        "job_name": "$1"
-                    }
-                },
-                {
-                    "match": "test\\.task\\.duration\\.(.*)",
-                    "match_type": "regex",
-                    "name": "test.task.duration",
-                    "tags": {
-                        "task_name": "$1"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-        let metric = counter_metric("test.job.duration.my.funky.job$name-abc/123", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.job.duration");
-        assert!(context.tags().has_tag("job_name:my.funky.job$name-abc/123"));
-
-        let metric = counter_metric("test.task.duration.MY_task_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.task.duration");
-        assert!(context.tags().has_tag("task_name:MY_task_name"));
-    }
-
-    #[tokio::test]
-    async fn test_complex_regex_match_type() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test\\.job\\.([a-z][0-9]-\\w+)\\.(.*)",
-                    "match_type": "regex",
-                    "name": "test.job",
-                    "tags": {
-                        "job_type": "$1",
-                        "job_name": "$2"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric("test.job.a5-foo.bar", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.job");
-        assert_tags(&context, &["job_type:a5-foo", "job_name:bar"]);
-
-        let metric = counter_metric("test.job.foo.bar-not-match", &[]);
-        assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
-    }
-
-    #[tokio::test]
-    async fn test_profile_and_prefix() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "foo.",
-            "mappings": [
-                {
-                    "match": "foo.duration.*",
-                    "name": "foo.duration",
-                    "tags": {
-                        "name": "$1"
-                    }
-                }
-            ]
-        },
-        {
-            "name": "test",
-            "prefix": "bar.",
-            "mappings": [
-                {
-                    "match": "bar.count.*",
-                    "name": "bar.count",
-                    "tags": {
-                        "name": "$1"
-                    }
-                },
-                {
-                    "match": "foo.duration2.*",
-                    "name": "foo.duration2",
-                    "tags": {
-                        "name": "$1"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric("foo.duration.foo_name1", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "foo.duration");
-        assert!(context.tags().has_tag("name:foo_name1"));
-
-        let metric = counter_metric("foo.duration2.foo_name1", &[]);
-        assert!(
-            mapper.try_map(metric.context()).is_none(),
-            "should not have remapped due to wrong group"
-        );
-
-        let metric = counter_metric("bar.count.bar_name1", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "bar.count");
-        assert!(context.tags().has_tag("name:bar_name1"));
-
-        let metric = counter_metric("z.not.mapped", &[]);
-        assert!(mapper.try_map(metric.context()).is_none(), "should not have remapped");
-    }
-
-    #[tokio::test]
-    async fn test_wildcard_prefix() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "*",
-            "mappings": [
-                {
-                    "match": "foo.duration.*",
-                    "name": "foo.duration",
-                    "tags": {
-                        "name": "$1"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric("foo.duration.foo_name1", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "foo.duration");
-        assert!(context.tags().has_tag("name:foo_name1"));
-    }
-
-    #[tokio::test]
-    async fn test_wildcard_prefix_order() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "*",
-            "mappings": [
-                {
-                    "match": "foo.duration.*",
-                    "name": "foo.duration",
-                    "tags": {
-                        "name1": "$1"
-                    }
-                }
-            ]
-        },
-        {
-            "name": "test",
-            "prefix": "*",
-            "mappings": [
-                {
-                    "match": "foo.duration.*",
-                    "name": "foo.duration",
-                    "tags": {
-                        "name2": "$1"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-        let metric = counter_metric("foo.duration.foo_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "foo.duration");
-        assert!(context.tags().has_tag("name1:foo_name"));
-        assert!(
-            !context.tags().has_tag("name2:foo_name"),
-            "Only the first matching profile should apply"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_multiple_profiles_order() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "foo.",
-            "mappings": [
-                {
-                    "match": "foo.*.duration.*",
-                    "name": "foo.bar1.duration",
-                    "tags": {
-                        "bar": "$1",
-                        "foo": "$2"
-                    }
-                }
-            ]
-        },
-        {
-            "name": "test",
-            "prefix": "foo.bar.",
-            "mappings": [
-                {
-                    "match": "foo.bar.duration.*",
-                    "name": "foo.bar2.duration",
-                    "tags": {
-                        "foo_bar": "$1"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-
-        let metric = counter_metric("foo.bar.duration.foo_name", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "foo.bar1.duration");
-        assert_tags(&context, &["bar:bar", "foo:foo_name"]);
-        assert!(
-            !context.tags().has_tag("foo_bar:foo_name"),
-            "Only the first matching profile should apply"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_different_regex_expansion_syntax() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.user.(\\w+).action.(\\w+)",
-                    "match_type": "regex",
-                    "name": "test.user.action",
-                    "tags": {
-                        "user": "$1",
-                        "action": "$2"
-                    }
-                }
-            ]
-        }]);
-
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-        let metric = counter_metric("test.user.john_doe.action.login", &[]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.user.action");
-        assert_tags(&context, &["user:john_doe", "action:login"]);
-    }
-
-    #[tokio::test]
-    async fn test_retain_existing_tags() {
-        let json_data = json!([{
-          "name": "test",
-          "prefix": "test.",
-          "mappings": [
-            {
-              "match": "test.job.duration.*.*",
-              "name": "test.job.duration.$2",
-              "tags": {
-                "job_type": "$1",
-                "job_name": "$2"
-              }
-            },
-          ]
-        }]);
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
-        let metric = counter_metric("test.job.duration.abc.def", &["foo:bar", "baz"]);
-        let context = mapper.try_map(metric.context()).expect("should have remapped");
-        assert_eq!(context.name(), "test.job.duration.def");
-        assert!(context.tags().has_tag("foo:bar"));
-        assert!(context.tags().has_tag("baz"));
-    }
-
-    #[test]
-    fn test_empty_name() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.job.duration.*.*",
-                    "name": "",
-                    "tags": {
-                        "job_type": "$1"
-                    }
-                }
-            ]
-        }]);
-        assert!(mapper(json_data).is_err())
-    }
-
-    #[test]
-    fn test_missing_name() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.job.duration.*.*",
-                    "tags": {
-                        "job_type": "$1",
-                        "job_name": "$2"
-                    }
-                }
-            ]
-        }]);
-        assert!(mapper(json_data).is_err());
-    }
-
-    #[test]
-    fn test_invalid_match_regex_brackets() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.[]duration.*.*", // Invalid regex
-                    "name": "test.job.duration"
-                }
-            ]
-        }]);
-        assert!(mapper(json_data).is_err());
-    }
-
-    #[test]
-    fn test_invalid_match_regex_caret() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "^test.invalid.duration.*.*", // Invalid regex
-                    "name": "test.job.duration"
-                }
-            ]
-        }]);
-        assert!(mapper(json_data).is_err());
-    }
-
-    #[test]
-    fn test_consecutive_wildcards() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.invalid.duration.**", // Consecutive *
-                    "name": "test.job.duration"
-                }
-            ]
-        }]);
-        assert!(mapper(json_data).is_err());
-    }
-
-    #[test]
-    fn test_invalid_match_type() {
-        let json_data = json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.invalid.duration",
-                    "match_type": "invalid", // Invalid match_type
-                    "name": "test.job.duration"
-                }
-            ]
-        }]);
-        assert!(mapper(json_data).is_err());
-    }
-
-    #[test]
-    fn test_missing_profile_name() {
-        let json_data = json!([{
-            // "name" is missing here
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.invalid.duration",
-                    "match_type": "invalid",
-                    "name": "test.job.duration"
-                }
-            ]
-        }]);
-        assert!(mapper(json_data).is_err());
-    }
-
-    #[test]
-    fn test_missing_profile_prefix() {
-        let json_data = json!([{
-            "name": "test",
-            // "prefix" is missing here
-            "mappings": [
-                {
-                    "match": "test.invalid.duration",
-                    "match_type": "invalid",
-                    "name": "test.job.duration"
-                }
-            ]
-        }]);
-        assert!(mapper(json_data).is_err());
-    }
-
-    fn simple_mapping_profile() -> Value {
-        json!([{
-            "name": "test",
-            "prefix": "test.",
-            "mappings": [
-                {
-                    "match": "test.job.duration.*.*",
-                    "name": "test.job.duration",
-                    "tags": {
-                        "job_type": "$1",
-                        "job_name": "$2"
-                    }
-                }
-            ]
-        }])
-    }
-
-    #[tokio::test]
-    async fn test_cache_hit_returns_same_result_as_miss() {
+    async fn cache_hit_returns_same_result_as_miss() {
         let mut mapper = mapper_with_cache(simple_mapping_profile(), 1000).expect("should have parsed mapping config");
         assert_eq!(mapper.cache_len(), Some(0));
 
@@ -1115,7 +966,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_negative_cache() {
+    async fn negative_results_are_cached() {
         let mut mapper = mapper_with_cache(simple_mapping_profile(), 1000).expect("should have parsed mapping config");
 
         let metric = counter_metric("unrelated.metric.name", &[]);
@@ -1128,7 +979,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cache_disabled_when_zero() {
+    async fn cache_disabled_when_size_is_zero() {
         let mut mapper = mapper_with_cache(simple_mapping_profile(), 0).expect("should have parsed mapping config");
         assert_eq!(mapper.cache_len(), None);
 
@@ -1144,7 +995,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cache_eviction() {
+    async fn cache_stays_within_capacity_when_evicting() {
         let mut mapper = mapper_with_cache(simple_mapping_profile(), 2).expect("should have parsed mapping config");
 
         for suffix in ["a", "b", "c"] {
@@ -1161,7 +1012,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_flood_does_not_grow_cache() {
+    async fn flood_of_identical_names_populates_single_cache_entry() {
         // Many profiles, only the last one matches the test metric. A flood of identical
         // names should be served from the cache after the first call.
         let mut profiles: Vec<Value> = (0..50)

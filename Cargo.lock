@@ -4341,7 +4341,6 @@ dependencies = [
  "prost",
  "protobuf",
  "rand 0.10.1",
- "rcgen",
  "regex",
  "rmp-serde",
  "rustls",
@@ -4582,6 +4581,7 @@ dependencies = [
  "rustls-webpki",
  "saluki-common",
  "saluki-error",
+ "saluki-tls",
  "tempfile",
  "tracing",
 ]

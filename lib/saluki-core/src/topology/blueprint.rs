@@ -883,19 +883,23 @@ impl Supervisable for TopologyBlueprint {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use async_trait::async_trait;
     use saluki_common::sync::shutdown::ShutdownHandle;
     use saluki_error::GenericError;
     use tokio::sync::oneshot;
 
-    use super::{TopologyBlueprint, TopologyReady};
+    use super::{TopologyBlueprint, TopologyReady, WorkerPoolConfiguration};
     use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
+    use crate::data_model::event::Event;
     use crate::runtime::Name;
+    use crate::test_support::wait_until;
     use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
+    use crate::topology::{EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY};
     use crate::{
         components::{
             destinations::{Destination, DestinationBuilder, DestinationContext},
@@ -940,13 +944,17 @@ mod tests {
     }
 
     /// A source that runs until shutdown, optionally spawning a dynamic child through its spawn handle first.
+    ///
+    /// Records that it started (so tests can wait for readiness rather than sleeping) before running.
     struct ControlSource {
+        started: Arc<AtomicUsize>,
         spawned_child: Option<Arc<AtomicUsize>>,
     }
 
     #[async_trait]
     impl Source for ControlSource {
         async fn run(self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            self.started.fetch_add(1, Ordering::SeqCst);
             let shutdown = context.take_shutdown_handle();
             if let Some(started) = self.spawned_child {
                 context
@@ -962,13 +970,15 @@ mod tests {
 
     struct ControlSourceBuilder {
         outputs: Vec<OutputDefinition<EventType>>,
+        started: Arc<AtomicUsize>,
         spawned_child: Option<Arc<AtomicUsize>>,
     }
 
     impl ControlSourceBuilder {
-        fn new(spawned_child: Option<Arc<AtomicUsize>>) -> Self {
+        fn new(started: Arc<AtomicUsize>, spawned_child: Option<Arc<AtomicUsize>>) -> Self {
             Self {
                 outputs: vec![OutputDefinition::default_output(EventType::EventD)],
+                started,
                 spawned_child,
             }
         }
@@ -982,6 +992,7 @@ mod tests {
 
         async fn build(&self, _: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
             Ok(Box::new(ControlSource {
+                started: Arc::clone(&self.started),
                 spawned_child: self.spawned_child.clone(),
             }))
         }
@@ -1022,11 +1033,16 @@ mod tests {
     }
 
     /// A destination that ignores both its input and shutdown, running forever until it is forcefully aborted.
-    struct StuckDestination;
+    ///
+    /// Records that it started (so tests can wait for it to actually be running before triggering shutdown).
+    struct StuckDestination {
+        started: Arc<AtomicUsize>,
+    }
 
     #[async_trait]
     impl Destination for StuckDestination {
         async fn run(self: Box<Self>, _context: DestinationContext) -> Result<(), GenericError> {
+            self.started.fetch_add(1, Ordering::SeqCst);
             std::future::pending::<()>().await;
             Ok(())
         }
@@ -1034,6 +1050,7 @@ mod tests {
 
     struct StuckDestinationBuilder {
         input_event_ty: EventType,
+        started: Arc<AtomicUsize>,
     }
 
     #[async_trait]
@@ -1043,7 +1060,9 @@ mod tests {
         }
 
         async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-            Ok(Box::new(StuckDestination))
+            Ok(Box::new(StuckDestination {
+                started: Arc::clone(&self.started),
+            }))
         }
     }
 
@@ -1055,11 +1074,18 @@ mod tests {
     ///
     /// The source runs until shutdown; the destination drains until its upstream closes. If `spawned_child` is
     /// provided, the source spawns a dynamic child through its spawn handle that records when it starts.
-    fn long_running_blueprint(spawned_child: Option<Arc<AtomicUsize>>) -> TopologyBlueprint {
+    ///
+    /// Returns the blueprint together with the source's "started" counter, so a test can wait for the source to
+    /// actually be running (readiness polling) rather than sleeping for a fixed duration.
+    fn long_running_blueprint(spawned_child: Option<Arc<AtomicUsize>>) -> (TopologyBlueprint, Arc<AtomicUsize>) {
+        let source_started = Arc::new(AtomicUsize::new(0));
         let component_registry = ComponentRegistry::default();
         let mut blueprint = TopologyBlueprint::new("test", &component_registry);
         blueprint
-            .add_source("source", ControlSourceBuilder::new(spawned_child))
+            .add_source(
+                "source",
+                ControlSourceBuilder::new(Arc::clone(&source_started), spawned_child),
+            )
             .expect("should not fail to add source")
             .add_destination(
                 "destination",
@@ -1074,7 +1100,7 @@ mod tests {
         blueprint
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop());
-        blueprint
+        (blueprint, source_started)
     }
 
     /// Builds a connected `source` -> `destination` blueprint whose destination must be forcefully aborted on shutdown.
@@ -1082,16 +1108,21 @@ mod tests {
     /// The source stops cleanly when shutdown is signalled; the destination ignores shutdown and runs forever, so its
     /// per-component supervisor aborts it after `shutdown_timeout`. Exactly one component (the destination) is
     /// force-aborted, which lets a test assert a precise abort count.
-    fn stuck_destination_blueprint(shutdown_timeout: Duration) -> TopologyBlueprint {
+    ///
+    /// Returns the blueprint together with the destination's "started" counter, so a test can wait until the stuck
+    /// destination is actually running before triggering shutdown.
+    fn stuck_destination_blueprint(shutdown_timeout: Duration) -> (TopologyBlueprint, Arc<AtomicUsize>) {
+        let destination_started = Arc::new(AtomicUsize::new(0));
         let component_registry = ComponentRegistry::default();
         let mut blueprint = TopologyBlueprint::new("test", &component_registry);
         blueprint
-            .add_source("source", ControlSourceBuilder::new(None))
+            .add_source("source", ControlSourceBuilder::new(Arc::new(AtomicUsize::new(0)), None))
             .expect("should not fail to add source")
             .add_destination(
                 "destination",
                 StuckDestinationBuilder {
                     input_event_ty: EventType::EventD,
+                    started: Arc::clone(&destination_started),
                 },
             )
             .expect("should not fail to add destination");
@@ -1102,7 +1133,53 @@ mod tests {
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop())
             .with_shutdown_timeout(shutdown_timeout);
-        blueprint
+        (blueprint, destination_started)
+    }
+
+    /// Spawns `blueprint` under a fresh `test-topology` supervisor, returning the shutdown sender and the run's join
+    /// handle.
+    ///
+    /// This is the shared spawn/shutdown scaffold used by the topology-lifecycle tests below, replacing the
+    /// copy-pasted supervisor construction repeated across them.
+    fn spawn_supervised_blueprint(
+        blueprint: TopologyBlueprint,
+    ) -> (
+        oneshot::Sender<()>,
+        tokio::task::JoinHandle<Result<(), SupervisorError>>,
+    ) {
+        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
+        supervisor.add_worker(blueprint);
+
+        let (tx, rx) = oneshot::channel::<()>();
+        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+        (tx, handle)
+    }
+
+    /// Runs `blueprint` under a fresh `test-topology` supervisor with the given restart strategy until it exits on its
+    /// own (no shutdown is ever signalled), returning the supervisor's result.
+    async fn run_blueprint_until_exit(
+        blueprint: TopologyBlueprint, strategy: RestartStrategy,
+    ) -> Result<(), SupervisorError> {
+        let mut supervisor = Supervisor::new("test-topology")
+            .expect("should not fail to create supervisor")
+            .with_restart_strategy(strategy);
+        supervisor.add_worker(blueprint);
+
+        // Hold the sender so shutdown is never triggered; the supervisor exits only when the topology does.
+        let (_tx, rx) = oneshot::channel::<()>();
+        tokio::time::timeout(Duration::from_secs(5), supervisor.run_with_shutdown(rx))
+            .await
+            .expect("supervisor should exit promptly")
+    }
+
+    /// Awaits a spawned topology-supervisor run to completion under a bounded timeout, unwrapping the join.
+    async fn join_topology(
+        handle: tokio::task::JoinHandle<Result<(), SupervisorError>>,
+    ) -> Result<(), SupervisorError> {
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic")
     }
 
     /// Builds a blueprint pre-populated with a source, transform, and destination, all dealing in event-D events.
@@ -1289,15 +1366,11 @@ mod tests {
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop());
 
-        let mut supervisor = Supervisor::new("test-topology")
-            .expect("should not fail to create supervisor")
-            .with_restart_strategy(RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)));
-        supervisor.add_worker(blueprint);
-
-        let (_tx, rx) = oneshot::channel::<()>();
-        let result = tokio::time::timeout(Duration::from_secs(5), supervisor.run_with_shutdown(rx))
-            .await
-            .expect("supervisor should exit promptly");
+        let result = run_blueprint_until_exit(
+            blueprint,
+            RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)),
+        )
+        .await;
 
         assert!(matches!(result, Err(SupervisorError::Shutdown)));
     }
@@ -1313,13 +1386,7 @@ mod tests {
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop());
 
-        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
-        supervisor.add_worker(blueprint);
-
-        let (_tx, rx) = oneshot::channel::<()>();
-        let result = tokio::time::timeout(Duration::from_secs(5), supervisor.run_with_shutdown(rx))
-            .await
-            .expect("supervisor should exit promptly");
+        let result = run_blueprint_until_exit(blueprint, RestartStrategy::default()).await;
 
         assert!(matches!(result, Err(SupervisorError::FailedToInitialize { .. })));
     }
@@ -1330,27 +1397,34 @@ mod tests {
         // signal that never resolves, then trigger shutdown: the topology should exit cleanly without ever spawning
         // its components (which would otherwise finish immediately and fail the supervisor), and the supervisor should
         // shut down successfully.
+        // A readiness gate that records when the topology first reaches it, then never resolves. This lets us wait for
+        // the topology to actually be blocked on readiness before shutting down, rather than sleeping.
+        let gate_reached = Arc::new(AtomicUsize::new(0));
+        let gate = {
+            let gate_reached = Arc::clone(&gate_reached);
+            async move {
+                gate_reached.fetch_add(1, Ordering::SeqCst);
+                std::future::pending::<()>().await;
+            }
+        };
+
         let mut blueprint = connected_blueprint();
         blueprint
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop())
-            .with_environment_readiness(std::future::pending::<()>());
+            .with_environment_readiness(gate);
 
-        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
-        supervisor.add_worker(blueprint);
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
 
-        let (tx, rx) = oneshot::channel::<()>();
-        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
-
-        // Give the supervisor a moment to start and reach the readiness gate, then trigger shutdown.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Once the topology is blocked on the readiness gate (and thus has NOT started its components), trigger
+        // shutdown; it must exit cleanly.
+        wait_until("the topology reached the readiness gate", || {
+            gate_reached.load(Ordering::SeqCst) >= 1
+        })
+        .await;
         tx.send(()).expect("should send shutdown signal");
 
-        let result = tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("supervisor should exit promptly")
-            .expect("supervisor task should not panic");
-
+        let result = join_topology(handle).await;
         assert!(result.is_ok(), "supervisor should shut down cleanly, got: {:?}", result);
     }
 
@@ -1419,23 +1493,15 @@ mod tests {
         // the source stops (it observes its supervisor's shutdown signal), the destination drains and stops, and the
         // topology supervisor returns cleanly -- which is the intentional-shutdown path, distinct from a component
         // unexpectedly finishing.
-        let blueprint = long_running_blueprint(None);
+        let (blueprint, source_started) = long_running_blueprint(None);
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
 
-        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
-        supervisor.add_worker(blueprint);
-
-        let (tx, rx) = oneshot::channel::<()>();
-        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
-
-        // Give the components a moment to start, then request shutdown.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Wait until the source is actually running before requesting shutdown, so we exercise shutting down live
+        // components rather than shutting down before they start.
+        wait_until("the source has started", || source_started.load(Ordering::SeqCst) == 1).await;
         tx.send(()).expect("should send shutdown signal");
 
-        let result = tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("supervisor should exit promptly")
-            .expect("supervisor task should not panic");
-
+        let result = join_topology(handle).await;
         assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
     }
 
@@ -1445,33 +1511,23 @@ mod tests {
         // then runs until torn down. We verify the child actually ran, then shut the topology down cleanly. The clean
         // shutdown also tears the (still-running) dynamic child down with its component's supervisor -- if it didn't,
         // draining would hang and the test would time out.
-        let started = Arc::new(AtomicUsize::new(0));
-        let blueprint = long_running_blueprint(Some(Arc::clone(&started)));
-
-        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
-        supervisor.add_worker(blueprint);
-
-        let (tx, rx) = oneshot::channel::<()>();
-        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
+        let child_started = Arc::new(AtomicUsize::new(0));
+        let (blueprint, _source_started) = long_running_blueprint(Some(Arc::clone(&child_started)));
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
 
         // Wait until the dynamic child has started.
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while started.load(Ordering::SeqCst) == 0 {
-            assert!(Instant::now() < deadline, "dynamic child never started");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        wait_until("the dynamic child has started", || {
+            child_started.load(Ordering::SeqCst) == 1
+        })
+        .await;
         assert_eq!(
-            started.load(Ordering::SeqCst),
+            child_started.load(Ordering::SeqCst),
             1,
             "dynamic child should have started exactly once"
         );
 
         tx.send(()).expect("should send shutdown signal");
-        let result = tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("supervisor should exit promptly")
-            .expect("supervisor task should not panic");
-
+        let result = join_topology(handle).await;
         assert!(result.is_ok(), "topology should shut down cleanly, got: {:?}", result);
     }
 
@@ -1486,23 +1542,18 @@ mod tests {
         //
         // The source stops cleanly on shutdown; the destination ignores shutdown and runs forever, so exactly one
         // component (the destination) is force-aborted after the (short) shutdown timeout.
-        let blueprint = stuck_destination_blueprint(Duration::from_millis(100));
+        let (blueprint, destination_started) = stuck_destination_blueprint(Duration::from_millis(100));
+        let (tx, handle) = spawn_supervised_blueprint(blueprint);
 
-        let mut supervisor = Supervisor::new("test-topology").expect("should not fail to create supervisor");
-        supervisor.add_worker(blueprint);
-
-        let (tx, rx) = oneshot::channel::<()>();
-        let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
-
-        // Give the components a moment to start, then request shutdown.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // The forced abort only happens if the stuck destination is actually running when shutdown arrives, so wait
+        // for it to start before triggering shutdown.
+        wait_until("the stuck destination has started", || {
+            destination_started.load(Ordering::SeqCst) == 1
+        })
+        .await;
         tx.send(()).expect("should send shutdown signal");
 
-        let result = tokio::time::timeout(Duration::from_secs(5), handle)
-            .await
-            .expect("supervisor should exit promptly")
-            .expect("supervisor task should not panic");
-
+        let result = join_topology(handle).await;
         assert!(
             matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
             "a component that ignored shutdown must surface as an unclean shutdown with a count of 1, got {result:?}"
@@ -1562,5 +1613,91 @@ mod tests {
                 "per-component supervisor process name must match the canonical identity"
             );
         }
+    }
+
+    #[test]
+    fn recalculate_bounds_accounts_for_interconnect_and_event_buffer_memory() {
+        // `recalculate_bounds` sizes the topology's interconnect and event-buffer memory from the component counts and
+        // the interconnect capacity. Build a source -> transform -> destination topology, then set a distinctive
+        // interconnect capacity so the recalculation runs with all components present, and assert the exact byte
+        // totals against the documented arithmetic.
+        let interconnect_capacity = 4usize;
+        let mut blueprint = blueprint_with_components();
+        blueprint.with_interconnect_capacity(NonZeroUsize::new(interconnect_capacity).unwrap());
+
+        // Component counts once all three components are registered.
+        let (sources, transforms, destinations, decoders) = (1usize, 1usize, 1usize, 0usize);
+
+        // Minimum: one preallocated interconnect (holding `capacity` event buffers) per non-source component (that is,
+        // every transform and destination).
+        let total_interconnect_capacity = interconnect_capacity * (transforms + destinations);
+        let expected_min = total_interconnect_capacity * std::mem::size_of::<EventsBuffer>();
+
+        // Firm: the maximum number of in-flight event buffers, each sized as one events-buffer container plus the
+        // events it holds at the default per-buffer capacity. The firm total is additive with the minimum.
+        let max_in_flight = ((transforms + destinations) * interconnect_capacity) + sources + decoders + transforms;
+        let per_buffer =
+            std::mem::size_of::<EventsBuffer>() + (std::mem::size_of::<Event>() * DEFAULT_EVENTS_BUFFER_CAPACITY);
+        let expected_firm = expected_min + (max_in_flight * per_buffer);
+
+        let bounds = {
+            let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+            guard
+                .as_ref()
+                .expect("topology blueprint already initialized")
+                .component_registry
+                .as_bounds()
+        };
+
+        assert_eq!(
+            bounds.total_minimum_required_bytes(),
+            expected_min,
+            "interconnect minimum bytes should be capacity * non-source components * size_of::<EventsBuffer>()"
+        );
+        assert_eq!(
+            bounds.total_firm_limit_bytes(),
+            expected_firm,
+            "firm bytes should add the max in-flight event-buffer memory on top of the minimum"
+        );
+    }
+
+    #[test]
+    fn worker_pool_configuration_defaults_to_dedicated() {
+        let blueprint = blueprint_with_components();
+        let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+        let config = &guard
+            .as_ref()
+            .expect("topology blueprint already initialized")
+            .worker_pool_config;
+        assert!(
+            matches!(config, WorkerPoolConfiguration::Dedicated),
+            "the default worker-pool configuration must be dedicated"
+        );
+    }
+
+    #[test]
+    fn with_ambient_worker_pool_selects_ambient() {
+        let mut blueprint = blueprint_with_components();
+        blueprint.with_ambient_worker_pool();
+
+        let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+        let config = &guard
+            .as_ref()
+            .expect("topology blueprint already initialized")
+            .worker_pool_config;
+        assert!(matches!(config, WorkerPoolConfiguration::Ambient));
+    }
+
+    #[tokio::test]
+    async fn with_explicit_worker_pool_selects_explicit() {
+        let mut blueprint = blueprint_with_components();
+        blueprint.with_explicit_worker_pool(tokio::runtime::Handle::current());
+
+        let guard = blueprint.build_state.lock().expect("topology blueprint mutex poisoned");
+        let config = &guard
+            .as_ref()
+            .expect("topology blueprint already initialized")
+            .worker_pool_config;
+        assert!(matches!(config, WorkerPoolConfiguration::Explicit(_)));
     }
 }

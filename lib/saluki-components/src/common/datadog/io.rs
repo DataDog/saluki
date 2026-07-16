@@ -981,17 +981,13 @@ mod tests {
     use bytes::Bytes;
     use http::StatusCode;
     use http_body_util::Empty;
-    use rcgen::{generate_simple_self_signed, CertifiedKey};
-    use rustls::{
-        pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
-        version::TLS12,
-        RootCertStore, ServerConfig,
-    };
+    use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
     use saluki_config::config_from;
     use saluki_core::observability::ComponentMetricsExt as _;
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
+    use saluki_tls::test_util::SelfSignedCert;
     use serde_json::json;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1161,16 +1157,14 @@ app.datadoghq.com: [key-a, key-b]
     ) -> (String, mpsc::Receiver<String>) {
         init_tls_crypto_provider();
 
-        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_string()]).unwrap();
-        let cert_chain = vec![cert.der().clone()];
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+        let cert = SelfSignedCert::localhost();
         let server_config_builder = match versions {
             TestServerTlsVersions::Default => ServerConfig::builder(),
             TestServerTlsVersions::Tls12Only => ServerConfig::builder_with_protocol_versions(&[&TLS12]),
         };
         let server_config = server_config_builder
             .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
+            .with_single_cert(cert.cert_chain(), cert.private_key())
             .unwrap();
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
 

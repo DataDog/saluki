@@ -44,7 +44,7 @@ otherwise keep hand-rolling the thing it replaces.
     default/overflow branches have zero test coverage.
   - [low/trivial] Repeated per-test setup/construction boilerplate isn't extracted into a shared helper.
 
-- [ ] **G3 — saluki-tls test suite cleanup** (`tobz/test-cleanup-tls-self-signed-test-helper`, `test(tls)`)
+- [x] **G3 — saluki-tls test suite cleanup** (`tobz/test-cleanup-tls-self-signed-test-helper`, `test(tls)`)
   - [medium/small] Self-signed TLS certificate generation via `rcgen` is duplicated across `saluki-tls`, `saluki-app`,
     and `saluki-components`, and the one copy that could be shared is trapped in a `tests/` directory (KI-5).
   - [medium/small] The public root-cert wrapper and TLS builder security/config methods are never exercised.
@@ -52,7 +52,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/small] `ClientTLSConfigBuilder` methods' documented behavior is never verified end-to-end.
   - [low/trivial] Repeated key-log test setup boilerplate is duplicated across `saluki-tls` tests.
 
-- [ ] **G4 — saluki-core observability/metrics & pooling test cleanup**
+- [x] **G4 — saluki-core observability/metrics & pooling test cleanup**
   (`tobz/test-cleanup-observability-metrics-pooling-tests`, `test(core)`)
   - [low/small] `DebuggingRecorder`/`TestRecorder` metrics-snapshot test helpers are duplicated ad hoc or left unused
     (KI-6) instead of standardizing on one.
@@ -67,7 +67,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] Several small test groups differ only by an input value/scenario and duplicate setup —
     table-driven/merge candidates.
 
-- [ ] **G5 — saluki-core runtime supervision & topology test cleanup**
+- [x] **G5 — saluki-core runtime supervision & topology test cleanup**
   (`tobz/test-cleanup-runtime-topology-wait-until`, `test(core)`)
   - [medium/medium] No shared `wait_until`/`assert_eventually` helper exists repo-wide; bespoke polling loops and
     blind fixed-duration sleeps proliferate as startup/shutdown barriers instead of readiness polling (KI-7).
@@ -91,7 +91,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/medium] The dispatcher's default-output/named-output test pairs are structural clones: 22 functions,
     11 pairs, that could collapse to one table-driven test (KI-11).
 
-- [ ] **G6 — dogstatsd component test cleanup** (`tobz/test-cleanup-dogstatsd-test-cleanup`, `test(components)`)
+- [x] **G6 — dogstatsd component test cleanup** (`tobz/test-cleanup-dogstatsd-test-cleanup`, `test(components)`)
   - [medium/medium] `MockWorkloadProvider` is hand-rolled with 3 divergent shapes across `origin.rs`,
     `replay/reader.rs`, and `replay/writer.rs`, because `NoopWorkloadProvider` offers no configuration seam (KI-2).
   - [high/small] `OriginTagsResolver::resolve_origin_tags`'s live, non-replay production path is never exercised

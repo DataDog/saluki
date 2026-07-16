@@ -192,3 +192,104 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_metrics::test::TestRecorder;
+    use tokio_test::{assert_pending, assert_ready, task::spawn};
+
+    use super::*;
+    use crate::pooled;
+
+    pooled! {
+        struct PooledValue {
+            value: u32,
+        }
+
+        clear => |this| this.value = 0
+    }
+
+    impl std::fmt::Debug for PooledValue {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("PooledValue").finish_non_exhaustive()
+        }
+    }
+
+    #[test]
+    fn preallocates_capacity_and_blocks_when_pool_is_empty() {
+        // Documented contract: all items are created up front, and once the pool is empty `acquire`
+        // blocks until an item is returned.
+        let pool = FixedSizeObjectPool::<PooledValue>::with_capacity("test", 2);
+        assert_eq!(pool.strategy.available.available_permits(), 2);
+
+        let mut first_acquire = spawn(pool.acquire());
+        let first = assert_ready!(first_acquire.poll());
+        let mut second_acquire = spawn(pool.acquire());
+        let second = assert_ready!(second_acquire.poll());
+        assert_eq!(pool.strategy.available.available_permits(), 0);
+
+        // The pool is empty, so a third acquire must block rather than allocate a new item.
+        let mut third_acquire = spawn(pool.acquire());
+        assert_pending!(third_acquire.poll());
+        assert!(!third_acquire.is_woken());
+
+        // Returning an item wakes the blocked acquire and lets it complete.
+        drop(first);
+        assert!(third_acquire.is_woken());
+        let third = assert_ready!(third_acquire.poll());
+        assert_eq!(pool.strategy.available.available_permits(), 0);
+
+        // Returning the remaining items restores the pool to its full capacity.
+        drop(second);
+        drop(third);
+        assert_eq!(pool.strategy.available.available_permits(), 2);
+    }
+
+    #[test]
+    fn clears_items_before_returning_them_to_the_pool() {
+        // A capacity-1 pool forces reuse of the same backing item, so a value written before release
+        // must have been cleared by the time the item is re-acquired.
+        let pool = FixedSizeObjectPool::<PooledValue>::with_capacity("test", 1);
+
+        let mut first_acquire = spawn(pool.acquire());
+        let mut item = assert_ready!(first_acquire.poll());
+        item.data_mut().value = 42;
+        drop(item);
+
+        let mut second_acquire = spawn(pool.acquire());
+        let item = assert_ready!(second_acquire.poll());
+        assert_eq!(item.data().value, 0, "a released item must be cleared before reuse");
+        drop(item);
+    }
+
+    #[test]
+    fn tracks_acquire_and_release_metrics() {
+        // Documented metrics: `object_pool_acquired`/`object_pool_released` count acquisitions and
+        // releases, and `object_pool_in_use` tracks the number of currently-outstanding items.
+        let recorder = TestRecorder::default();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let pool = FixedSizeObjectPool::<PooledValue>::with_capacity("test", 2);
+
+        let mut first_acquire = spawn(pool.acquire());
+        let item = assert_ready!(first_acquire.poll());
+        assert_eq!(
+            recorder.counter((PoolMetrics::acquired_name(), &[("pool_name", "test")])),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.gauge((PoolMetrics::in_use_name(), &[("pool_name", "test")])),
+            Some(1.0)
+        );
+
+        drop(item);
+        assert_eq!(
+            recorder.counter((PoolMetrics::released_name(), &[("pool_name", "test")])),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.gauge((PoolMetrics::in_use_name(), &[("pool_name", "test")])),
+            Some(0.0)
+        );
+    }
+}

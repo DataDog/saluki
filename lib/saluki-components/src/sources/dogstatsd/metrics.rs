@@ -377,6 +377,14 @@ mod tests {
 
     #[test]
     fn origin_metric_recorder_evicts_oldest_origin_when_cache_is_full() {
+        // The recorder keeps at most MAX_ORIGIN_COUNTERS per-origin counters, evicting the oldest when full. Eviction
+        // also deletes the underlying counters from the metrics registry (via `internal_metrics::delete_counter`) to
+        // bound cardinality. That registry deletion, however, operates on the process-global metrics registry --
+        // populated only by `MetricsRecorder::install` -- which a `TestRecorder`-based unit test can't observe: a
+        // `TestRecorder` records registrations but never removes them, so a deleted counter still reads back here.
+        // We therefore assert (a) the recorder's own eviction bookkeeping and (b) that recording actually registered
+        // and incremented a retained origin's counter in the registry. `delete_counter`'s registry-deletion behavior
+        // itself is covered by saluki-core's `delete_counter_from_state` tests.
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let metrics = build_metrics(&udp_listen_addr(), &test_context(), true);
@@ -393,5 +401,21 @@ mod tests {
         assert!(!origin_recorder.has_cached_origin("container_id://test-container-0"));
         assert!(origin_recorder.has_cached_origin("container_id://test-container-1"));
         assert!(origin_recorder.has_cached_origin("container_id://test-container-200"));
+
+        // A retained origin's per-origin counter was actually registered and incremented once in the registry.
+        assert_eq!(
+            recorder.counter((
+                METRIC_EVENTS_RECEIVED_TOTAL,
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("message_type", MESSAGE_TYPE_METRICS),
+                    ("listener_type", "udp"),
+                    ("origin", "container_id://test-container-1"),
+                ],
+            )),
+            Some(1),
+            "a retained origin's counter should reflect its single recorded metric"
+        );
     }
 }
