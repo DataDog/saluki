@@ -12,7 +12,7 @@ use datadog_agent_config::apply_datadog_env;
 // TODO: remove after migration to typed config; these support the legacy flat-key loader.
 use datadog_agent_config::{DatadogRemapper, EnvOverlayMode, KEY_ALIASES};
 use saluki_config::dynamic::ConfigUpdate;
-use saluki_config::ConfigurationLoader;
+use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -84,10 +84,9 @@ impl LoadedConfiguration {
         Ok(Self { loader, base, env })
     }
 
-    /// A static snapshot of the local sources, for reads the Agent stream can never change: the
-    /// standalone decision and the remote-agent registration parameters. Ignores the (not-yet-
-    /// attached) dynamic provider.
-    pub fn bootstrap(&self) -> saluki_config::GenericConfiguration {
+    /// A static snapshot of the local sources for startup phase configuration.
+    // TODO: remove this backdoor and use typed configuration for the bootstrap phase
+    pub fn raw_config(&self) -> GenericConfiguration {
         self.loader.bootstrap_generic()
     }
 

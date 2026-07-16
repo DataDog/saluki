@@ -88,7 +88,7 @@ pub async fn handle_run_command(
 
     // A static snapshot of the local sources, used only for decisions the Agent stream can never
     // change: whether we run standalone, and the remote-agent registration parameters.
-    let bootstrap = loaded.bootstrap();
+    let bootstrap = loaded.raw_config();
     let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap)
         .error_context("Failed to load data plane configuration.")?;
     let standalone = bootstrap_dp_config.standalone_mode();
