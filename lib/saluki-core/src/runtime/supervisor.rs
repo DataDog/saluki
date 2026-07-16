@@ -1163,6 +1163,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::test_support::wait_until;
 
     /// Behavior for a mock worker during initialization.
     #[derive(Clone)]
@@ -1205,6 +1206,7 @@ mod tests {
         init_behavior: InitBehavior,
         run_behavior: RunBehavior,
         start_count: Arc<AtomicUsize>,
+        finish_count: Arc<AtomicUsize>,
         brutal_shutdown: bool,
         graceful_timeout: Duration,
     }
@@ -1217,6 +1219,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
+                finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
             }
@@ -1229,6 +1232,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::FailAfter(delay, "worker failed"),
                 start_count: Arc::new(AtomicUsize::new(0)),
+                finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
             }
@@ -1241,6 +1245,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::CompleteAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
+                finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
             }
@@ -1253,6 +1258,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::SlowShutdown(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
+                finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
             }
@@ -1265,6 +1271,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::IgnoreShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
+                finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
             }
@@ -1277,6 +1284,7 @@ mod tests {
                 init_behavior: InitBehavior::Instant,
                 run_behavior: RunBehavior::PanicAfter(delay),
                 start_count: Arc::new(AtomicUsize::new(0)),
+                finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
             }
@@ -1289,6 +1297,7 @@ mod tests {
                 init_behavior: InitBehavior::Fail("init failed"),
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
+                finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
             }
@@ -1301,14 +1310,29 @@ mod tests {
                 init_behavior: InitBehavior::Slow(init_delay),
                 run_behavior: RunBehavior::UntilShutdown,
                 start_count: Arc::new(AtomicUsize::new(0)),
+                finish_count: Arc::new(AtomicUsize::new(0)),
                 brutal_shutdown: false,
                 graceful_timeout: Duration::from_millis(500),
             }
         }
 
         /// Returns a shared handle to the start count for this worker.
+        ///
+        /// The start count ticks up the instant the worker's run future begins executing, which is *before* any
+        /// programmed delay elapses. It records that the worker started (or was restarted), not that it ran to any
+        /// particular outcome.
         fn start_count(&self) -> Arc<AtomicUsize> {
             Arc::clone(&self.start_count)
+        }
+
+        /// Returns a shared handle to the finish count for this worker.
+        ///
+        /// The finish count ticks up only when the worker runs to its *own* programmed terminal state -- a
+        /// [`RunBehavior::FailAfter`] failure or a [`RunBehavior::CompleteAfter`] completion -- and not when it is cut
+        /// short by shutdown. Tests use it to wait for a worker to actually fail or complete (rather than merely
+        /// start) before asserting on restart behavior, so the failure/completion path is genuinely exercised.
+        fn finish_count(&self) -> Arc<AtomicUsize> {
+            Arc::clone(&self.finish_count)
         }
 
         /// Configures this worker to use a `Brutal` shutdown strategy (immediate abort, no graceful wait).
@@ -1352,6 +1376,7 @@ mod tests {
             }
 
             let start_count = Arc::clone(&self.start_count);
+            let finish_count = Arc::clone(&self.finish_count);
             let run_behavior = self.run_behavior.clone();
 
             Ok(Box::pin(async move {
@@ -1365,6 +1390,9 @@ mod tests {
                     RunBehavior::FailAfter(delay, msg) => {
                         select! {
                             _ = sleep(delay) => {
+                                // Ran to our own programmed failure rather than being cut short by shutdown; record
+                                // it so tests can wait for the failure to actually happen before asserting.
+                                finish_count.fetch_add(1, Ordering::SeqCst);
                                 Err(GenericError::msg(msg))
                             }
                             _ = process_shutdown => {
@@ -1374,7 +1402,11 @@ mod tests {
                     }
                     RunBehavior::CompleteAfter(delay) => {
                         select! {
-                            _ = sleep(delay) => Ok(()),
+                            _ = sleep(delay) => {
+                                // Ran to our own programmed completion rather than being cut short by shutdown.
+                                finish_count.fetch_add(1, Ordering::SeqCst);
+                                Ok(())
+                            }
                             _ = process_shutdown => Ok(()),
                         }
                     }
@@ -1400,15 +1432,33 @@ mod tests {
     }
 
     /// Helper: run a supervisor with a oneshot-based shutdown trigger.
-    /// Returns the supervisor result and provides the shutdown sender.
+    ///
+    /// Returns the shutdown sender and a join handle for the run. The supervisor is polled to a running state (its
+    /// static children spawned) via readiness polling rather than a blind startup sleep, so callers can rely on it
+    /// being live on return.
     async fn run_supervisor_with_trigger(
-        mut supervisor: Supervisor,
+        supervisor: Supervisor,
     ) -> (oneshot::Sender<()>, JoinHandle<Result<(), SupervisorError>>) {
+        // Grab a handle before moving the supervisor into the run task so we can observe when it actually starts.
+        let sup_handle = supervisor.handle();
+        let mut supervisor = supervisor;
+
         let (tx, rx) = oneshot::channel();
         let handle = tokio::spawn(async move { supervisor.run_with_shutdown(rx).await });
-        // Give the supervisor a moment to start and spawn children.
-        sleep(Duration::from_millis(50)).await;
+
+        wait_until("supervisor is running", || sup_handle.is_running()).await;
         (tx, handle)
+    }
+
+    /// Helper: awaits a spawned supervisor run to completion under a bounded timeout, unwrapping the join.
+    ///
+    /// Collapses the `timeout(..).await.unwrap().unwrap()` suffix repeated across the restart/shutdown tests into one
+    /// call with useful panic messages.
+    async fn join_supervisor(handle: JoinHandle<Result<(), SupervisorError>>) -> Result<(), SupervisorError> {
+        timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("supervisor should exit promptly")
+            .expect("supervisor task should not panic")
     }
 
     // -- Supervisor run mode tests ---------------------------------------------------------
@@ -1422,7 +1472,7 @@ mod tests {
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
         tx.send(()).unwrap();
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
     }
 
@@ -1438,7 +1488,7 @@ mod tests {
         let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
         tx.send(()).unwrap();
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
     }
 
@@ -1452,7 +1502,7 @@ mod tests {
         assert!(!handle.is_finished(), "an empty supervisor must idle rather than exit");
 
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
     }
 
@@ -1474,11 +1524,14 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        // Wait for a few restarts to happen.
-        sleep(Duration::from_millis(300)).await;
+        // Wait until the failing worker has actually been restarted (its second start), then shut down.
+        wait_until("the failing worker has been restarted", || {
+            failing_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
 
         // The failing worker should have been started multiple times.
@@ -1510,11 +1563,14 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        // Wait for at least one restart cycle.
-        sleep(Duration::from_millis(300)).await;
+        // Wait until a one-for-all cycle has restarted both workers (each on its second start), then shut down.
+        wait_until("both workers have been restarted", || {
+            failing_count.load(Ordering::SeqCst) >= 2 && stable_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
 
         // Both workers should have been started multiple times.
@@ -1546,11 +1602,14 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        // Let several one-for-all cycles occur.
-        sleep(Duration::from_millis(300)).await;
+        // Wait until the permanent worker has driven at least one one-for-all restart, then shut down.
+        wait_until("the permanent worker has been restarted", || {
+            failing_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
         assert!(
             failing_count.load(Ordering::SeqCst) >= 2,
@@ -1581,10 +1640,13 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        sleep(Duration::from_millis(300)).await;
+        wait_until("the transient worker has been restarted by the group", || {
+            transient_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
         assert!(
             transient_count.load(Ordering::SeqCst) >= 2,
@@ -1610,10 +1672,13 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        sleep(Duration::from_millis(300)).await;
+        wait_until("the abnormal exit has restarted both workers", || {
+            transient_count.load(Ordering::SeqCst) >= 2 && stable_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
         assert!(
             transient_count.load(Ordering::SeqCst) >= 2,
@@ -1636,7 +1701,7 @@ mod tests {
         let (tx, rx) = oneshot::channel::<()>();
         let handle = tokio::spawn(async move { sup.run_with_shutdown(rx).await });
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         drop(tx);
 
         assert!(matches!(result, Err(SupervisorError::Shutdown)));
@@ -1648,7 +1713,8 @@ mod tests {
     async fn temporary_child_is_not_restarted() {
         // A temporary worker that fails quickly, alongside a long-running worker that keeps the supervisor alive.
         let temp = MockWorker::failing("temp-worker", Duration::from_millis(50));
-        let temp_count = temp.start_count();
+        let temp_started = temp.start_count();
+        let temp_failed = temp.finish_count();
 
         let stable = MockWorker::long_running("stable-worker");
 
@@ -1660,23 +1726,31 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        // Give the temporary worker time to fail; it must not be restarted.
-        sleep(Duration::from_millis(300)).await;
+        // Wait for the worker to *actually fail*, not merely start. `start_count` ticks up the instant the worker
+        // begins running -- well before its 50ms failure -- so shutting down as soon as it reached 1 would tear the
+        // supervisor down before the failure -> no-restart path ever ran, hiding a regression that restarted a
+        // temporary child (or charged the failure against restart intensity). `finish_count` ticks only once the
+        // worker runs to its own failure, so waiting on it genuinely exercises that path before we shut down.
+        wait_until("the temporary worker has failed once", || {
+            temp_failed.load(Ordering::SeqCst) == 1
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
         assert_eq!(
-            temp_count.load(Ordering::SeqCst),
+            temp_started.load(Ordering::SeqCst),
             1,
-            "temporary worker must not be restarted"
+            "temporary worker must not be restarted after it fails"
         );
     }
 
     #[tokio::test]
     async fn transient_child_is_not_restarted_on_clean_exit() {
         let transient = MockWorker::completing("transient-worker", Duration::from_millis(50));
-        let transient_count = transient.start_count();
+        let transient_started = transient.start_count();
+        let transient_finished = transient.finish_count();
 
         let stable = MockWorker::long_running("stable-worker");
 
@@ -1688,13 +1762,20 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        sleep(Duration::from_millis(300)).await;
+        // Wait for the worker to *actually complete*, not merely start: `start_count` ticks the instant it begins
+        // running, so shutting down as soon as it reached 1 would drive the supervisor's teardown before the clean
+        // exit -> no-restart path ran, hiding a regression that restarted a transient child after a clean exit.
+        // `finish_count` ticks only once the worker runs to its own completion.
+        wait_until("the transient worker has completed once", || {
+            transient_finished.load(Ordering::SeqCst) == 1
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
         assert_eq!(
-            transient_count.load(Ordering::SeqCst),
+            transient_started.load(Ordering::SeqCst),
             1,
             "transient worker must not be restarted after a clean exit"
         );
@@ -1712,10 +1793,13 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        sleep(Duration::from_millis(300)).await;
+        wait_until("the transient worker has been restarted", || {
+            transient_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
         assert!(
             transient_count.load(Ordering::SeqCst) >= 2,
@@ -1738,10 +1822,13 @@ mod tests {
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
 
-        sleep(Duration::from_millis(300)).await;
+        wait_until("the permanent worker has been restarted", || {
+            permanent_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(result.is_ok());
         assert!(
             permanent_count.load(Ordering::SeqCst) >= 2,
@@ -1765,7 +1852,8 @@ mod tests {
             MockWorker::failing("temp-3", Duration::from_millis(20)),
             MockWorker::failing("temp-4", Duration::from_millis(20)),
         ];
-        let counts: Vec<_> = workers.iter().map(|w| w.start_count()).collect();
+        let started: Vec<_> = workers.iter().map(|w| w.start_count()).collect();
+        let failed: Vec<_> = workers.iter().map(|w| w.finish_count()).collect();
         for worker in workers {
             sup.add_worker(ChildSpecification::worker(worker).with_restart_type(RestartType::Temporary));
         }
@@ -1773,15 +1861,21 @@ mod tests {
         sup.add_worker(MockWorker::long_running("stable-worker"));
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
-        sleep(Duration::from_millis(300)).await;
+        // Wait for every temporary worker to *actually fail* on its own. Keying off `start_count` would let shutdown
+        // cut them short before their failures ran, so the supervisor would never get the chance to (mis)charge those
+        // failures against its intensity=1 budget -- hiding the very regression this guards against.
+        wait_until("every temporary worker has failed once", || {
+            failed.iter().all(|c| c.load(Ordering::SeqCst) == 1)
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(
             result.is_ok(),
             "supervisor must not trip its restart limit on temporary exits"
         );
-        for count in counts {
+        for count in started {
             assert_eq!(
                 count.load(Ordering::SeqCst),
                 1,
@@ -1806,7 +1900,8 @@ mod tests {
             MockWorker::completing("transient-3", Duration::from_millis(20)),
             MockWorker::completing("transient-4", Duration::from_millis(20)),
         ];
-        let counts: Vec<_> = workers.iter().map(|w| w.start_count()).collect();
+        let started: Vec<_> = workers.iter().map(|w| w.start_count()).collect();
+        let finished: Vec<_> = workers.iter().map(|w| w.finish_count()).collect();
         for worker in workers {
             sup.add_worker(ChildSpecification::worker(worker).with_restart_type(RestartType::Transient));
         }
@@ -1814,15 +1909,21 @@ mod tests {
         sup.add_worker(MockWorker::long_running("stable-worker"));
 
         let (tx, handle) = run_supervisor_with_trigger(sup).await;
-        sleep(Duration::from_millis(300)).await;
+        // Wait for every transient to *actually complete* on its own. Keying off `start_count` would let shutdown cut
+        // the workers short before their clean exits ran, so the supervisor would never get the chance to (mis)charge
+        // those exits against its intensity=1 budget -- hiding the very regression this guards against.
+        wait_until("every transient worker has completed once", || {
+            finished.iter().all(|c| c.load(Ordering::SeqCst) == 1)
+        })
+        .await;
         let _ = tx.send(());
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(
             result.is_ok(),
             "supervisor must not trip its restart limit on clean transient exits"
         );
-        for count in counts {
+        for count in started {
             assert_eq!(
                 count.load(Ordering::SeqCst),
                 1,
@@ -1833,29 +1934,48 @@ mod tests {
 
     #[tokio::test]
     async fn supervisor_idles_when_all_temporary_children_exit() {
-        // When every child is temporary and they all exit, the worker set drains. The supervisor must not panic or exit
-        // on its own; it should keep waiting until shutdown is triggered.
+        // When every static child is temporary and they all exit, the worker set drains. The supervisor must not panic
+        // or exit on its own; it must keep running and remain able to accept new (dynamic) work until shutdown is
+        // triggered.
+        let temp_a = MockWorker::completing("temp-a", Duration::from_millis(10));
+        let a_finished = temp_a.finish_count();
+        let temp_b = MockWorker::completing("temp-b", Duration::from_millis(10));
+        let b_finished = temp_b.finish_count();
+
         let mut sup = Supervisor::new("test-sup").unwrap();
-        sup.add_worker(
-            ChildSpecification::worker(MockWorker::completing("temp-a", Duration::from_millis(30)))
-                .with_restart_type(RestartType::Temporary),
-        );
-        sup.add_worker(
-            ChildSpecification::worker(MockWorker::completing("temp-b", Duration::from_millis(30)))
-                .with_restart_type(RestartType::Temporary),
-        );
+        let handle = sup.handle();
+        sup.add_worker(ChildSpecification::worker(temp_a).with_restart_type(RestartType::Temporary));
+        sup.add_worker(ChildSpecification::worker(temp_b).with_restart_type(RestartType::Temporary));
 
-        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
 
-        // Both children complete well within this window; the supervisor should still be running (idling).
-        sleep(Duration::from_millis(200)).await;
+        // Wait for both temporary children to actually complete -- draining the worker set to empty -- before probing.
+        // Keying off `start_count` could spawn the probe child before the set ever emptied, letting a supervisor that
+        // (wrongly) exited once its last child left slip through.
+        wait_until("both temporary children have completed", || {
+            a_finished.load(Ordering::SeqCst) == 1 && b_finished.load(Ordering::SeqCst) == 1
+        })
+        .await;
+
+        // The supervisor must still be alive after its worker set empties: spawning a new dynamic child succeeds and
+        // runs, which is only possible if the supervise loop kept running rather than exiting when the last child left.
+        let dynamic = MockWorker::long_running("late-comer");
+        let dynamic_count = dynamic.start_count();
+        handle
+            .spawn(dynamic)
+            .await
+            .expect("supervisor must still accept work after its children drain");
+        wait_until("the late dynamic child has started", || {
+            dynamic_count.load(Ordering::SeqCst) == 1
+        })
+        .await;
         assert!(
-            !handle.is_finished(),
-            "supervisor must keep running after all children exit"
+            handle.is_running(),
+            "supervisor must keep running after all temporary children exit"
         );
 
-        let _ = tx.send(());
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        tx.send(()).unwrap();
+        let result = join_supervisor(run).await;
         assert!(result.is_ok());
     }
 
@@ -1886,24 +2006,46 @@ mod tests {
     #[tokio::test]
     async fn non_significant_exit_does_not_auto_shutdown() {
         // Even with `AnySignificant` set, a non-significant child exiting must not shut the supervisor down.
+        let plain = MockWorker::completing("plain", Duration::from_millis(10));
+        let plain_finished = plain.finish_count();
+
         let mut sup = Supervisor::new("test-sup")
             .unwrap()
             .with_auto_shutdown(AutoShutdown::AnySignificant);
+        let handle = sup.handle();
         sup.add_worker(MockWorker::long_running("stable"));
-        sup.add_worker(
-            ChildSpecification::worker(MockWorker::completing("plain", Duration::from_millis(50)))
-                .with_restart_type(RestartType::Temporary),
-        );
+        sup.add_worker(ChildSpecification::worker(plain).with_restart_type(RestartType::Temporary));
 
-        let (tx, handle) = run_supervisor_with_trigger(sup).await;
-        sleep(Duration::from_millis(200)).await;
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+
+        // Let the non-significant child actually run to completion -- not merely start. Its completion is what could
+        // (wrongly) trip `AnySignificant`, so we must observe the real exit before probing liveness; keying off
+        // `start_count` could assert before the completion was ever processed.
+        wait_until("the non-significant child has completed", || {
+            plain_finished.load(Ordering::SeqCst) == 1
+        })
+        .await;
+
+        // The supervisor must still be alive after the non-significant child exits (had it been treated as
+        // significant, `AnySignificant` would have torn the supervisor down). Spawning a dynamic child and observing
+        // it start proves the supervise loop is still running.
+        let dynamic = MockWorker::long_running("late-comer");
+        let dynamic_count = dynamic.start_count();
+        handle
+            .spawn(dynamic)
+            .await
+            .expect("supervisor must still accept work after a non-significant child exits");
+        wait_until("the late dynamic child has started", || {
+            dynamic_count.load(Ordering::SeqCst) == 1
+        })
+        .await;
         assert!(
-            !handle.is_finished(),
+            handle.is_running(),
             "a non-significant child exiting must not trigger auto-shutdown"
         );
 
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         assert!(result.is_ok());
     }
 
@@ -2017,32 +2159,12 @@ mod tests {
 
     // -- Dynamic children tests ------------------------------------------------------------
 
-    async fn wait_running(handle: &SupervisorHandle) {
-        for _ in 0..200 {
-            if handle.is_running() {
-                return;
-            }
-            sleep(Duration::from_millis(5)).await;
-        }
-        panic!("supervisor did not start in time");
-    }
-
-    async fn wait_until(condition: impl Fn() -> bool) {
-        for _ in 0..200 {
-            if condition() {
-                return;
-            }
-            sleep(Duration::from_millis(5)).await;
-        }
-        panic!("condition not met in time");
-    }
-
     #[tokio::test]
     async fn dynamic_children_spawn_after_start() {
         let sup = Supervisor::new("dyn-sup").unwrap();
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         let c1 = MockWorker::long_running("c1");
         let c2 = MockWorker::long_running("c2");
@@ -2051,11 +2173,14 @@ mod tests {
         handle.spawn(c1).await.unwrap();
         handle.spawn(c2).await.unwrap();
 
-        wait_until(|| c1_count.load(Ordering::SeqCst) == 1 && c2_count.load(Ordering::SeqCst) == 1).await;
+        wait_until("both dynamic children have started", || {
+            c1_count.load(Ordering::SeqCst) == 1 && c2_count.load(Ordering::SeqCst) == 1
+        })
+        .await;
         assert_eq!(handle.active_children(), 2);
 
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         assert!(result.is_ok());
         assert_eq!(
             handle.active_children(),
@@ -2071,13 +2196,16 @@ mod tests {
         let sup = Supervisor::new("dyn-sup").unwrap();
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         let failing = MockWorker::failing("boom", Duration::from_millis(20));
         let failing_count = failing.start_count();
         handle.spawn(failing).await.unwrap();
-        wait_until(|| failing_count.load(Ordering::SeqCst) == 1).await;
-        wait_until(|| handle.active_children() == 0).await;
+        wait_until("the failing dynamic child has run once", || {
+            failing_count.load(Ordering::SeqCst) == 1
+        })
+        .await;
+        wait_until("all dynamic children have drained", || handle.active_children() == 0).await;
 
         sleep(Duration::from_millis(50)).await;
         assert!(
@@ -2092,10 +2220,10 @@ mod tests {
 
         // It still accepts new children.
         handle.spawn(MockWorker::long_running("c2")).await.unwrap();
-        wait_until(|| handle.active_children() == 1).await;
+        wait_until("one dynamic child is running", || handle.active_children() == 1).await;
 
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         assert!(result.is_ok());
     }
 
@@ -2105,19 +2233,19 @@ mod tests {
         let sup = Supervisor::new("dyn-sup").unwrap();
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         handle
             .spawn(MockWorker::panicking("boom", Duration::from_millis(20)))
             .await
             .unwrap();
-        wait_until(|| handle.active_children() == 0).await;
+        wait_until("all dynamic children have drained", || handle.active_children() == 0).await;
 
         sleep(Duration::from_millis(50)).await;
         assert!(handle.is_running(), "supervisor stays up after an isolated child panic");
 
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         assert!(result.is_ok());
     }
 
@@ -2130,7 +2258,7 @@ mod tests {
             .with_auto_shutdown(AutoShutdown::AnySignificant);
         let handle = sup.handle();
         let (_tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         handle
             .spawn_with(
@@ -2141,7 +2269,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         assert!(matches!(result, Err(SupervisorError::SignificantChildExited)));
     }
 
@@ -2161,18 +2289,18 @@ mod tests {
 
         // Once it's running, spawns succeed.
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
         let worker = MockWorker::long_running("after-start");
         let started = worker.start_count();
         handle.spawn(worker).await.unwrap();
-        wait_until(|| started.load(Ordering::SeqCst) == 1).await;
+        wait_until("the dynamic child has started", || started.load(Ordering::SeqCst) == 1).await;
 
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         assert!(result.is_ok());
 
         // Once the supervisor has shut down, the run is gone and spawns are rejected again.
-        wait_until(|| !handle.is_running()).await;
+        wait_until("the supervisor has stopped", || !handle.is_running()).await;
         let err = handle
             .spawn(MockWorker::long_running("after-shutdown"))
             .await
@@ -2185,17 +2313,17 @@ mod tests {
         let sup = Supervisor::new("dyn-sup").unwrap();
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         let worker = MockWorker::long_running("c");
         let started = worker.start_count();
         let id = handle.spawn(worker).await.unwrap();
         // No static children, so the first dynamic child takes id 0.
         assert_eq!(id.as_u64(), 0);
-        wait_until(|| started.load(Ordering::SeqCst) == 1).await;
+        wait_until("the dynamic child has started", || started.load(Ordering::SeqCst) == 1).await;
 
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         assert!(result.is_ok());
     }
 
@@ -2206,7 +2334,7 @@ mod tests {
         let sup = Supervisor::new("dyn-sup").unwrap();
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         let err = handle.spawn(MockWorker::long_running("")).await.unwrap_err();
         assert!(matches!(err, SpawnError::Rejected { .. }), "got {err:?}");
@@ -2214,10 +2342,10 @@ mod tests {
         // The supervisor stays up and still accepts valid children.
         assert!(handle.is_running());
         handle.spawn(MockWorker::long_running("ok")).await.unwrap();
-        wait_until(|| handle.active_children() == 1).await;
+        wait_until("one dynamic child is running", || handle.active_children() == 1).await;
 
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         assert!(result.is_ok());
     }
 
@@ -2231,7 +2359,7 @@ mod tests {
             .with_shutdown_mode(ShutdownMode::Concurrent);
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         for _ in 0..CHILDREN {
             handle
@@ -2239,7 +2367,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        wait_until(|| handle.active_children() == CHILDREN).await;
+        wait_until("all dynamic children are running", || {
+            handle.active_children() == CHILDREN
+        })
+        .await;
 
         // Each child sleeps after observing shutdown. Concurrent shutdown drains them all in roughly one delay; an
         // ordered shutdown would take CHILDREN * delay (25s here). Assert it finishes well under that.
@@ -2263,16 +2394,16 @@ mod tests {
             .with_shutdown_mode(ShutdownMode::Concurrent);
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         handle.spawn(MockWorker::ignore_shutdown("stuck")).await.unwrap();
-        wait_until(|| handle.active_children() == 1).await;
+        wait_until("one dynamic child is running", || handle.active_children() == 1).await;
 
         // The child never reacts to shutdown, so it must be aborted once its graceful deadline (500ms) elapses rather
         // than hanging the supervisor.
         let start = std::time::Instant::now();
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         let elapsed = start.elapsed();
 
         // Forcefully aborting an unresponsive child is surfaced as an unclean shutdown rather than reported as success.
@@ -2298,7 +2429,7 @@ mod tests {
             .with_shutdown_mode(ShutdownMode::Concurrent);
         let handle = sup.handle();
         let (tx, run) = run_supervisor_with_trigger(sup).await;
-        wait_running(&handle).await;
+        wait_until("supervisor is running", || handle.is_running()).await;
 
         // Responds to shutdown promptly, but its deadline is effectively infinite.
         handle
@@ -2310,11 +2441,11 @@ mod tests {
             .spawn(MockWorker::ignore_shutdown("stuck").with_graceful_timeout(Duration::from_millis(200)))
             .await
             .unwrap();
-        wait_until(|| handle.active_children() == 2).await;
+        wait_until("both dynamic children are running", || handle.active_children() == 2).await;
 
         let start = std::time::Instant::now();
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), run).await.unwrap().unwrap();
+        let result = join_supervisor(run).await;
         let elapsed = start.elapsed();
 
         // Only the stuck child is aborted (the responsive one exits cleanly), so the unclean-shutdown tally is exactly 1.
@@ -2340,7 +2471,7 @@ mod tests {
 
         let start = std::time::Instant::now();
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         let elapsed = start.elapsed();
 
         assert!(
@@ -2364,7 +2495,7 @@ mod tests {
 
         let start = std::time::Instant::now();
         tx.send(()).unwrap();
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         let elapsed = start.elapsed();
 
         // A brutal abort is the configured, expected way to stop this child -- not a graceful-timeout overrun -- so it
@@ -2398,10 +2529,178 @@ mod tests {
         let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
         tx.send(()).unwrap();
 
-        let result = timeout(Duration::from_secs(2), handle).await.unwrap().unwrap();
+        let result = join_supervisor(handle).await;
         assert!(
             matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
             "forced aborts must aggregate across the tree (1 direct + 1 nested), got {result:?}"
+        );
+    }
+
+    // -- Restart-policy edge cases ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn restart_intensity_zero_shuts_down_on_first_failure() {
+        // A restart intensity of zero means the supervisor gives up the moment any restartable child fails: it shuts
+        // down on the very first failure without ever restarting the worker. (See `RestartState::evaluate_restart`,
+        // which short-circuits to `Shutdown` when intensity is zero.)
+        let worker = MockWorker::failing("boom", Duration::from_millis(20));
+        let start_count = worker.start_count();
+
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_restart_strategy(RestartStrategy::new(RestartMode::OneForOne, 0, Duration::from_secs(5)));
+        sup.add_worker(worker);
+
+        let (_tx, rx) = oneshot::channel::<()>();
+        let result = timeout(Duration::from_secs(2), sup.run_with_shutdown(rx))
+            .await
+            .unwrap();
+
+        assert!(matches!(result, Err(SupervisorError::Shutdown)));
+        assert_eq!(
+            start_count.load(Ordering::SeqCst),
+            1,
+            "with intensity zero the worker must run exactly once and never be restarted"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_for_all_restart_loses_dynamic_children() {
+        // Documented one-for-all semantics: a group restart resets to the static roster only -- dynamic children are
+        // NOT restored (they're lost on a supervisor-level restart, matching Erlang/OTP). A permanent static worker
+        // that keeps failing drives repeated one-for-all restarts; a dynamic child spawned before the first restart
+        // must be torn down and never brought back.
+        let failing = MockWorker::failing("failing-static", Duration::from_millis(50));
+        let failing_count = failing.start_count();
+
+        let sup = Supervisor::new("dyn-sup").unwrap().with_restart_strategy(
+            RestartStrategy::one_for_all().with_intensity_and_period(20, Duration::from_secs(10)),
+        );
+        let handle = sup.handle();
+        let mut sup = sup;
+        sup.add_worker(failing);
+
+        let (tx, run) = run_supervisor_with_trigger(sup).await;
+
+        // Spawn a long-running dynamic child and wait for it to be running.
+        let dynamic = MockWorker::long_running("dynamic");
+        let dynamic_count = dynamic.start_count();
+        handle.spawn(dynamic).await.expect("should spawn dynamic child");
+        wait_until("the dynamic child is running", || handle.active_children() == 1).await;
+
+        // Let the static worker drive at least one one-for-all restart (its second start).
+        wait_until("the static worker has been restarted", || {
+            failing_count.load(Ordering::SeqCst) >= 2
+        })
+        .await;
+
+        // The one-for-all restart must have discarded the dynamic child: the active count returns to zero, and the
+        // dynamic child ran exactly once (it was never restored).
+        wait_until("the dynamic child has been discarded", || handle.active_children() == 0).await;
+        assert_eq!(
+            dynamic_count.load(Ordering::SeqCst),
+            1,
+            "a dynamic child must be lost -- not restored -- across a one-for-all restart"
+        );
+
+        tx.send(()).unwrap();
+        let result = join_supervisor(run).await;
+        assert!(result.is_ok());
+    }
+
+    // -- Dedicated-runtime tests -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn dedicated_single_threaded_runtime_runs_nested_worker_and_shuts_down_cleanly() {
+        // A nested supervisor configured with a dedicated single-threaded runtime spawns its own OS thread and Tokio
+        // runtime (via `spawn_dedicated_runtime`). Its worker must run there, and a shutdown signalled by the parent
+        // must propagate across the thread boundary and tear it down cleanly.
+        let worker = MockWorker::long_running("dedicated-worker");
+        let worker_count = worker.start_count();
+
+        let mut child_sup = Supervisor::new("child-sup")
+            .unwrap()
+            .with_dedicated_runtime(RuntimeConfiguration::single_threaded());
+        child_sup.add_worker(worker);
+
+        let mut parent_sup = Supervisor::new("parent-sup").unwrap();
+        parent_sup.add_worker(child_sup);
+
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+
+        // The worker starts on the dedicated runtime's own thread.
+        wait_until("the dedicated worker has started", || {
+            worker_count.load(Ordering::SeqCst) == 1
+        })
+        .await;
+
+        tx.send(()).unwrap();
+        let result = join_supervisor(handle).await;
+        assert!(
+            result.is_ok(),
+            "dedicated-runtime supervisor should shut down cleanly, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dedicated_multi_threaded_runtime_runs_nested_worker() {
+        // The same nested-dedicated flow, but exercising the multi-threaded dedicated runtime builder path.
+        let worker = MockWorker::long_running("dedicated-worker");
+        let worker_count = worker.start_count();
+
+        let mut child_sup = Supervisor::new("child-sup")
+            .unwrap()
+            .with_dedicated_runtime(RuntimeConfiguration::multi_threaded(2));
+        child_sup.add_worker(worker);
+
+        let mut parent_sup = Supervisor::new("parent-sup").unwrap();
+        parent_sup.add_worker(child_sup);
+
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+        wait_until("the dedicated worker has started", || {
+            worker_count.load(Ordering::SeqCst) == 1
+        })
+        .await;
+
+        tx.send(()).unwrap();
+        let result = join_supervisor(handle).await;
+        assert!(
+            result.is_ok(),
+            "multi-threaded dedicated-runtime supervisor should shut down cleanly, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dedicated_runtime_forced_abort_aggregates_to_root() {
+        // A worker inside a dedicated-runtime nested supervisor that ignores shutdown must be forcefully aborted at its
+        // deadline, and that abort tally must survive the OS-thread boundary (`DedicatedRuntimeHandle` -> `WorkerError`)
+        // and be observed by the root supervisor as `ShutdownTimedOut`.
+        let stuck = MockWorker::ignore_shutdown("stuck").with_graceful_timeout(Duration::from_millis(200));
+        let stuck_count = stuck.start_count();
+
+        let mut child_sup = Supervisor::new("child-sup")
+            .unwrap()
+            .with_dedicated_runtime(RuntimeConfiguration::single_threaded())
+            .with_shutdown_mode(ShutdownMode::Concurrent);
+        child_sup.add_worker(stuck);
+
+        let mut parent_sup = Supervisor::new("parent-sup").unwrap();
+        parent_sup.add_worker(child_sup);
+
+        let (tx, handle) = run_supervisor_with_trigger(parent_sup).await;
+
+        // Make sure the stuck worker is actually running on the dedicated runtime before signalling shutdown, so the
+        // forced-abort path (rather than an early exit) is what we exercise.
+        wait_until("the stuck worker has started", || {
+            stuck_count.load(Ordering::SeqCst) == 1
+        })
+        .await;
+
+        tx.send(()).unwrap();
+        let result = join_supervisor(handle).await;
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "a stuck worker in a dedicated runtime must surface as an unclean shutdown aggregated to the root, got {result:?}"
         );
     }
 }

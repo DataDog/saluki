@@ -8,6 +8,10 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+# Exposes in-memory test doubles (e.g. `TestWorkloadProvider`) for downstream crates to use as a dev-dependency.
+test-util = []
+
 [dependencies]
 arc-swap = { workspace = true }
 async-stream = { workspace = true }

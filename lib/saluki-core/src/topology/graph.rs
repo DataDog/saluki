@@ -324,9 +324,15 @@ impl Graph {
 
     /// Adds an edge to the graph.
     ///
+    /// The `from` side of an edge is a component output, and the `to` side is a component.
+    ///
     /// # Errors
     ///
     /// If either the `from` or `to` component IDs don't exist in the graph, or are invalid, an error is returned.
+    ///
+    /// If the `from` side refers to a terminal component -- a destination or forwarder, which has no outputs -- the
+    /// edge is rejected with [`GraphError::NonexistentComponentOutputId`], since a terminal component cannot be the
+    /// source of a connection.
     pub fn add_edge<F, T>(&mut self, from: F, to: T) -> Result<(), GraphError>
     where
         F: AsRef<str>,
@@ -1254,6 +1260,32 @@ mod test {
             }),
             graph.validate()
         );
+    }
+
+    #[test]
+    fn terminal_node_cannot_be_edge_source() {
+        // Destinations and forwarders are terminal nodes: they have no outputs, so using one as the *source* (the
+        // "from" side) of an edge must be rejected with a nonexistent-output error, even though the node itself exists.
+
+        // A destination used as an edge source is rejected.
+        let mut graph = Graph::default();
+        let result = graph
+            .with_source("in", EventType::EventD)
+            .with_destination("out", EventType::EventD)
+            .with_destination("out_downstream", EventType::EventD)
+            .with_edge_fallible("out", "out_downstream")
+            .map(|_| ());
+        assert_eq!(result, Err(output_id_doesnt_exist("out")));
+
+        // A forwarder used as an edge source is rejected the same way.
+        let mut graph = Graph::default();
+        let result = graph
+            .with_relay("relay_in", PayloadType::Raw)
+            .with_forwarder("fwd", PayloadType::Raw)
+            .with_forwarder("fwd_downstream", PayloadType::Raw)
+            .with_edge_fallible("fwd", "fwd_downstream")
+            .map(|_| ());
+        assert_eq!(result, Err(output_id_doesnt_exist("fwd")));
     }
 
     #[test]

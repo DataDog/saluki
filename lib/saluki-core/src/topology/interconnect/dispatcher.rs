@@ -520,29 +520,77 @@ mod tests {
         unbuffered_dispatcher()
     }
 
-    fn add_dispatcher_default_output<T: Dispatchable, const N: usize>(
-        dispatcher: &mut Dispatcher<T>, senders: [mpsc::Sender<T>; N],
+    /// One output-kind case: the output to operate on, plus the `output` metric label it maps to.
+    ///
+    /// Every dispatcher operation must behave identically for the default output and for a named output, so the tests
+    /// below iterate over these two cases rather than duplicating a default-vs-named function pair for each scenario.
+    struct OutputCase {
+        output: OutputName,
+        metric_label: &'static str,
+    }
+
+    fn output_cases() -> [OutputCase; 2] {
+        [
+            OutputCase {
+                output: OutputName::Default,
+                metric_label: "_default",
+            },
+            OutputCase {
+                output: OutputName::Given("special".into()),
+                metric_label: "special",
+            },
+        ]
+    }
+
+    /// Declares `output` on the dispatcher and attaches the given senders to it.
+    fn add_output_with_senders<T: Dispatchable, const N: usize>(
+        dispatcher: &mut Dispatcher<T>, output: &OutputName, senders: [mpsc::Sender<T>; N],
     ) {
         dispatcher
-            .add_output(OutputName::Default)
-            .expect("default output should not be added yet");
+            .add_output(output.clone())
+            .expect("output should not be declared yet");
         for sender in senders {
             dispatcher
-                .attach_sender_to_output(&OutputName::Default, sender)
-                .expect("default output should be added");
+                .attach_sender_to_output(output, sender)
+                .expect("output should exist after being declared");
         }
     }
 
-    fn add_dispatcher_named_output<T: Dispatchable, const N: usize>(
-        dispatcher: &mut Dispatcher<T>, output_name: &'static str, senders: [mpsc::Sender<T>; N],
-    ) {
-        dispatcher
-            .add_output(OutputName::Given(output_name.into()))
-            .expect("named output should not be added yet");
-        for sender in senders {
-            dispatcher
-                .attach_sender_to_output(&OutputName::Given(output_name.into()), sender)
-                .expect("named output should be added");
+    /// Dispatches `item` to `output`, choosing the default or named entry point as appropriate.
+    async fn dispatch_to<T: Dispatchable>(
+        dispatcher: &Dispatcher<T>, output: &OutputName, item: T,
+    ) -> Result<(), GenericError> {
+        match output {
+            OutputName::Default => dispatcher.dispatch(item).await,
+            OutputName::Given(name) => dispatcher.dispatch_named(name.as_ref(), item).await,
+        }
+    }
+
+    /// Creates a buffered dispatcher for `output`, choosing the default or named entry point as appropriate.
+    fn buffered_for<'a, T: DispatchBuffer>(
+        dispatcher: &'a Dispatcher<T>, output: &OutputName,
+    ) -> Result<BufferedDispatcher<'a, T>, GenericError> {
+        match output {
+            OutputName::Default => dispatcher.buffered(),
+            OutputName::Given(name) => dispatcher.buffered_named(name.as_ref()),
+        }
+    }
+
+    /// Dispatches a single item to `output`, choosing the default or named entry point as appropriate.
+    async fn dispatch_one_to<T: DispatchBuffer>(
+        dispatcher: &Dispatcher<T>, output: &OutputName, item: T::Item,
+    ) -> Result<(), GenericError> {
+        match output {
+            OutputName::Default => dispatcher.dispatch_one(item).await,
+            OutputName::Given(name) => dispatcher.dispatch_one_named(name.as_ref(), item).await,
+        }
+    }
+
+    /// Returns whether `output` is connected, choosing the default or named query as appropriate.
+    fn is_output_connected<T: Dispatchable>(dispatcher: &Dispatcher<T>, output: &OutputName) -> bool {
+        match output {
+            OutputName::Default => dispatcher.is_default_output_connected(),
+            OutputName::Given(name) => dispatcher.is_named_output_connected(name.as_ref()),
         }
     }
 
@@ -614,511 +662,306 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_output() {
-        // Create the dispatcher and wire up a sender to the default output.
-        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
+    async fn dispatch_delivers_item_to_each_output_kind() {
+        // Dispatching a single item to a wired output delivers it unchanged, for both the default and a named output.
+        for case in output_cases() {
+            let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
+            let (tx, mut rx) = mpsc::channel(1);
+            add_output_with_senders(&mut dispatcher, &case.output, [tx]);
 
-        let (tx, mut rx) = mpsc::channel(1);
-        add_dispatcher_default_output(&mut dispatcher, [tx]);
+            let input_item = 42.into();
+            dispatch_to(&dispatcher, &case.output, input_item).await.unwrap();
 
-        // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42.into();
-
-        dispatcher.dispatch(input_item).await.unwrap();
-
-        let output_item = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item, input_item);
-    }
-
-    #[tokio::test]
-    async fn named_output() {
-        // Create the dispatcher and wire up a sender to a named output.
-        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
-
-        let output_name = "special";
-        let (tx, mut rx) = mpsc::channel(1);
-        add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
-
-        // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42.into();
-
-        dispatcher.dispatch_named(output_name, input_item).await.unwrap();
-
-        let output_item = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item, input_item);
-    }
-
-    #[tokio::test]
-    async fn default_output_multiple_senders() {
-        // Create the dispatcher and wire up two senders to the default output.
-        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
-
-        let (tx1, mut rx1) = mpsc::channel(1);
-        let (tx2, mut rx2) = mpsc::channel(1);
-        add_dispatcher_default_output(&mut dispatcher, [tx1, tx2]);
-
-        // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42.into();
-
-        dispatcher.dispatch(input_item).await.unwrap();
-
-        let output_item1 = rx1.try_recv().expect("input item should have been dispatched");
-        let output_item2 = rx2.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item1, input_item);
-        assert_eq!(output_item2, input_item);
-    }
-
-    #[tokio::test]
-    async fn named_output_multiple_senders() {
-        // Create the dispatcher and wire up two senders to a named output.
-        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
-
-        let output_name = "special";
-        let (tx1, mut rx1) = mpsc::channel(1);
-        let (tx2, mut rx2) = mpsc::channel(1);
-        add_dispatcher_named_output(&mut dispatcher, output_name, [tx1, tx2]);
-
-        // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42.into();
-
-        dispatcher.dispatch_named(output_name, input_item).await.unwrap();
-
-        let output_item1 = rx1.try_recv().expect("input item should have been dispatched");
-        let output_item2 = rx2.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item1, input_item);
-        assert_eq!(output_item2, input_item);
-    }
-
-    #[tokio::test]
-    async fn default_output_not_set() {
-        // Create the dispatcher and try to dispatch an item without setting up a default output.
-        let dispatcher = unbuffered_dispatcher::<SingleEvent<()>>();
-
-        let result = dispatcher.dispatch(().into()).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn named_output_not_set() {
-        // Create the dispatcher and try to dispatch an event without setting up a named output.
-        let dispatcher = unbuffered_dispatcher::<SingleEvent<()>>();
-
-        let result = dispatcher.dispatch_named("non_existent", ().into()).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn default_output_buffered_partial() {
-        // Create the dispatcher and wire up a sender to the default output, using a bufferable type.
-        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let (tx, mut rx) = mpsc::channel(1);
-        add_dispatcher_default_output(&mut dispatcher, [tx]);
-
-        // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42;
-
-        let mut buffered = dispatcher.buffered().unwrap();
-        buffered.push(input_item).await.unwrap();
-
-        let flushed_len = buffered.flush().await.unwrap();
-        assert_eq!(flushed_len, 1);
-
-        let output_item = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item.len(), 1);
-        assert_eq!(output_item[0], input_item);
-    }
-
-    #[tokio::test]
-    async fn named_output_buffered_partial() {
-        // Create the dispatcher and wire up a sender to a named output, using a bufferable type.
-        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let output_name = "buffered_partial";
-        let (tx, mut rx) = mpsc::channel(1);
-        add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
-
-        // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42;
-
-        let mut buffered = dispatcher.buffered_named(output_name).unwrap();
-        buffered.push(input_item).await.unwrap();
-
-        let flushed_len = buffered.flush().await.unwrap();
-        assert_eq!(flushed_len, 1);
-
-        let output_item = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item.len(), 1);
-        assert_eq!(output_item[0], input_item);
-    }
-
-    #[tokio::test]
-    async fn default_output_buffered_overflow() {
-        // Create the dispatcher and wire up a sender to the default output, using a bufferable type.
-        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let (tx, mut rx) = mpsc::channel(2);
-        add_dispatcher_default_output(&mut dispatcher, [tx]);
-
-        // Create multiple items and roundtrip them through the dispatcher.
-        //
-        // We explicitly create more items than a single buffer can hold to exercise full buffers
-        // being flushed during push.
-        let input_items: Vec<usize> = vec![1, 2, 3, 4, 5, 6];
-
-        let mut buffered = dispatcher.buffered().unwrap();
-
-        for item in &input_items {
-            buffered.push(*item).await.unwrap();
+            let output_item = rx.try_recv().expect("input item should have been dispatched");
+            assert_eq!(output_item, input_item);
         }
-
-        let flushed_len = buffered.flush().await.unwrap();
-        assert_eq!(flushed_len, input_items.len());
-
-        let output_item1 = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item1.len(), 4);
-        assert_eq!(output_item1[0..4], input_items[0..4]);
-
-        let output_item2 = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item2.len(), 2);
-        assert_eq!(output_item2[0..2], input_items[4..6]);
     }
 
     #[tokio::test]
-    async fn named_output_buffered_overflow() {
-        // Create the dispatcher and wire up a sender to a named output, using a bufferable type.
-        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+    async fn dispatch_fans_out_to_all_senders_for_each_output_kind() {
+        // With multiple senders attached to an output, a dispatched item is delivered (cloned) to every sender.
+        for case in output_cases() {
+            let mut dispatcher = unbuffered_dispatcher::<SingleEvent<usize>>();
+            let (tx1, mut rx1) = mpsc::channel(1);
+            let (tx2, mut rx2) = mpsc::channel(1);
+            add_output_with_senders(&mut dispatcher, &case.output, [tx1, tx2]);
 
-        let output_name = "buffered_overflow";
-        let (tx, mut rx) = mpsc::channel(2);
-        add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
+            let input_item = 42.into();
+            dispatch_to(&dispatcher, &case.output, input_item).await.unwrap();
 
-        // Create multiple items and roundtrip them through the dispatcher.
-        //
-        // We explicitly create more items than a single buffer can hold to exercise full buffers
-        // being flushed during push.
-        let input_items: Vec<usize> = vec![1, 2, 3, 4, 5, 6];
-
-        let mut buffered = dispatcher.buffered_named(output_name).unwrap();
-
-        for item in &input_items {
-            buffered.push(*item).await.unwrap();
+            assert_eq!(rx1.try_recv().expect("first sender should receive"), input_item);
+            assert_eq!(rx2.try_recv().expect("second sender should receive"), input_item);
         }
-
-        let flushed_len = buffered.flush().await.unwrap();
-        assert_eq!(flushed_len, input_items.len());
-
-        let output_item1 = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item1.len(), 4);
-        assert_eq!(output_item1[0..4], input_items[0..4]);
-
-        let output_item2 = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item2.len(), 2);
-        assert_eq!(output_item2[0..2], input_items[4..6]);
     }
 
     #[tokio::test]
-    async fn default_output_buffered_partial_multiple_senders() {
-        // Create the dispatcher and wire up two senders to the default output, using a bufferable type.
-        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let (tx1, mut rx1) = mpsc::channel(1);
-        let (tx2, mut rx2) = mpsc::channel(1);
-        add_dispatcher_default_output(&mut dispatcher, [tx1, tx2]);
-
-        // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42;
-
-        let mut buffered = dispatcher.buffered().unwrap();
-        buffered.push(input_item).await.unwrap();
-
-        let flushed_len = buffered.flush().await.unwrap();
-        assert_eq!(flushed_len, 1);
-
-        let output_item1 = rx1.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item1.len(), 1);
-        assert_eq!(output_item1[0], input_item);
-
-        let output_item2 = rx2.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item2.len(), 1);
-        assert_eq!(output_item2[0], input_item);
+    async fn dispatch_to_unconfigured_output_errors() {
+        // Dispatching to an output that was never declared fails with the documented error for that output kind.
+        for case in output_cases() {
+            let dispatcher = unbuffered_dispatcher::<SingleEvent<()>>();
+            let err = dispatch_to(&dispatcher, &case.output, ().into())
+                .await
+                .expect_err("dispatch to an unconfigured output must fail");
+            let msg = err.to_string();
+            match &case.output {
+                OutputName::Default => assert_eq!(msg, "No default output declared."),
+                OutputName::Given(_) => assert!(msg.contains("No output named"), "got: {msg}"),
+            }
+        }
     }
 
     #[tokio::test]
-    async fn named_output_buffered_partial_multiple_senders() {
-        // Create the dispatcher and wire up two senders to a named output, using a bufferable type.
-        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let output_name = "buffered_partial";
-        let (tx1, mut rx1) = mpsc::channel(1);
-        let (tx2, mut rx2) = mpsc::channel(1);
-        add_dispatcher_named_output(&mut dispatcher, output_name, [tx1, tx2]);
-
-        // Create an item and roundtrip it through the dispatcher.
-        let input_item = 42;
-
-        let mut buffered = dispatcher.buffered_named(output_name).unwrap();
-        buffered.push(input_item).await.unwrap();
-
-        let flushed_len = buffered.flush().await.unwrap();
-        assert_eq!(flushed_len, 1);
-
-        let output_item1 = rx1.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item1.len(), 1);
-        assert_eq!(output_item1[0], input_item);
-
-        let output_item2 = rx2.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item2.len(), 1);
-        assert_eq!(output_item2[0], input_item);
-    }
-
-    #[tokio::test]
-    async fn default_output_no_senders() {
-        // Test that we can add a default output and dispatch to it even with no senders attached
-        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
-
-        // Add default output but don't attach any senders
-        dispatcher
-            .add_output(OutputName::Default)
-            .expect("should be able to add default output");
-
-        // Should not panic when dispatching to output with no senders
-        let test_event = 42.into();
-        let result = dispatcher.dispatch(test_event).await;
-        assert!(
-            result.is_ok(),
-            "dispatch to default output with no senders should succeed"
-        );
-    }
-
-    #[tokio::test]
-    async fn named_output_no_senders() {
-        // Test that we can add a named output and dispatch to it even with no senders attached
-        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
-
-        // Add named output but don't attach any senders
-        dispatcher
-            .add_output(OutputName::Given("errors".into()))
-            .expect("should be able to add named output");
-
-        // Should not panic when dispatching to output with no senders
-        let test_event = 42.into();
-        let result = dispatcher.dispatch_named("errors", test_event).await;
-        assert!(
-            result.is_ok(),
-            "dispatch to named output with no senders should succeed"
-        );
-    }
-
-    #[tokio::test]
-    async fn metrics_default_output_disconnected() {
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-        let dispatcher = metrics::with_local_recorder(&recorder, || {
+    async fn buffered_dispatch_flushes_partial_buffer() {
+        // A single buffered push, once flushed, arrives as a one-element buffer on the wired output.
+        for case in output_cases() {
             let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-            dispatcher
-                .add_output(OutputName::Default)
-                .expect("should not fail to add default output");
-            dispatcher
-        });
+            let (tx, mut rx) = mpsc::channel(1);
+            add_output_with_senders(&mut dispatcher, &case.output, [tx]);
 
-        // Send an item with an item count of 1, and make sure we can receive it, and that we update our metrics accordingly:
-        let mut single_item = FixedUsizeVec::<4>::default();
-        assert_eq!(None, single_item.try_push(42));
-        let single_item_item_count = single_item.item_count() as u64;
+            let input_item = 42;
+            let mut buffered = buffered_for(&dispatcher, &case.output).unwrap();
+            buffered.push(input_item).await.unwrap();
+            let flushed_len = buffered.flush().await.unwrap();
+            assert_eq!(flushed_len, 1);
 
-        dispatcher
-            .dispatch(single_item.clone())
-            .await
-            .expect("should not fail to dispatch");
-
-        let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, "_default");
-        assert_eq!(events_sent, 0);
-        assert_eq!(events_discarded, single_item_item_count);
-        assert!(send_latencies.is_empty());
-
-        // Now send an item with an item count of 3, and make sure we can receive it, and that we update our metrics accordingly:
-        let mut multiple_items = FixedUsizeVec::<4>::default();
-        assert_eq!(None, multiple_items.try_push(42));
-        assert_eq!(None, multiple_items.try_push(12345));
-        assert_eq!(None, multiple_items.try_push(1337));
-        let multiple_items_item_count = multiple_items.item_count() as u64;
-
-        dispatcher
-            .dispatch(multiple_items.clone())
-            .await
-            .expect("should not fail to dispatch");
-
-        let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, "_default");
-        assert_eq!(events_sent, 0);
-        assert_eq!(events_discarded, multiple_items_item_count);
-        assert!(send_latencies.is_empty());
+            let output_item = rx.try_recv().expect("input item should have been dispatched");
+            assert_eq!(output_item.len(), 1);
+            assert_eq!(output_item[0], input_item);
+        }
     }
 
     #[tokio::test]
-    async fn metrics_named_output_disconnected() {
-        let output_name = "some_output";
-
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-        let dispatcher = metrics::with_local_recorder(&recorder, || {
+    async fn buffered_dispatch_flushes_full_buffer_during_push() {
+        // Pushing more items than a single buffer can hold flushes the full buffer mid-push, so the items arrive as
+        // successive buffers (four, then the remaining two).
+        for case in output_cases() {
             let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+            let (tx, mut rx) = mpsc::channel(2);
+            add_output_with_senders(&mut dispatcher, &case.output, [tx]);
+
+            let input_items: Vec<usize> = vec![1, 2, 3, 4, 5, 6];
+            let mut buffered = buffered_for(&dispatcher, &case.output).unwrap();
+            for item in &input_items {
+                buffered.push(*item).await.unwrap();
+            }
+            let flushed_len = buffered.flush().await.unwrap();
+            assert_eq!(flushed_len, input_items.len());
+
+            let first = rx.try_recv().expect("first buffer should have been dispatched");
+            assert_eq!(first.len(), 4);
+            assert_eq!(first[0..4], input_items[0..4]);
+
+            let second = rx.try_recv().expect("second buffer should have been dispatched");
+            assert_eq!(second.len(), 2);
+            assert_eq!(second[0..2], input_items[4..6]);
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_dispatch_fans_out_partial_buffer() {
+        // A buffered push flushed to an output with multiple senders is delivered to every sender.
+        for case in output_cases() {
+            let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+            let (tx1, mut rx1) = mpsc::channel(1);
+            let (tx2, mut rx2) = mpsc::channel(1);
+            add_output_with_senders(&mut dispatcher, &case.output, [tx1, tx2]);
+
+            let input_item = 42;
+            let mut buffered = buffered_for(&dispatcher, &case.output).unwrap();
+            buffered.push(input_item).await.unwrap();
+            let flushed_len = buffered.flush().await.unwrap();
+            assert_eq!(flushed_len, 1);
+
+            let out1 = rx1.try_recv().expect("first sender should receive");
+            assert_eq!(out1.len(), 1);
+            assert_eq!(out1[0], input_item);
+
+            let out2 = rx2.try_recv().expect("second sender should receive");
+            assert_eq!(out2.len(), 1);
+            assert_eq!(out2[0], input_item);
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_to_output_without_senders_succeeds() {
+        // Dispatching to a declared output that has no senders attached succeeds (the item is discarded, not an error).
+        for case in output_cases() {
+            let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
             dispatcher
-                .add_output(OutputName::Given(output_name.into()))
-                .expect("should not fail to add named output");
+                .add_output(case.output.clone())
+                .expect("should be able to declare the output");
+
+            dispatch_to(&dispatcher, &case.output, 42.into())
+                .await
+                .expect("dispatch to a senderless output should succeed");
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnected_output_records_discarded_events() {
+        // Dispatching to a declared-but-senderless output records the item count as discarded (and none as sent, with
+        // no send-latency samples), for both the default and a named output.
+        for case in output_cases() {
+            let recorder = DebuggingRecorder::new();
+            let snapshotter = recorder.snapshotter();
+            let output = case.output.clone();
+            let dispatcher = metrics::with_local_recorder(&recorder, || {
+                let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+                dispatcher
+                    .add_output(output)
+                    .expect("should not fail to declare the output");
+                dispatcher
+            });
+
+            // Dispatch an item with a count of 1 to the senderless output; it is discarded rather than sent.
+            let mut single_item = FixedUsizeVec::<4>::default();
+            assert_eq!(None, single_item.try_push(42));
+            let single_item_count = single_item.item_count() as u64;
+            dispatch_to(&dispatcher, &case.output, single_item)
+                .await
+                .expect("should not fail to dispatch");
+
+            let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, case.metric_label);
+            assert_eq!(events_sent, 0);
+            assert_eq!(events_discarded, single_item_count);
+            assert!(send_latencies.is_empty());
+
+            // Dispatch a second item, this time with a count of 3.
+            let mut multiple_items = FixedUsizeVec::<4>::default();
+            assert_eq!(None, multiple_items.try_push(42));
+            assert_eq!(None, multiple_items.try_push(12345));
+            assert_eq!(None, multiple_items.try_push(1337));
+            let multiple_items_count = multiple_items.item_count() as u64;
+            dispatch_to(&dispatcher, &case.output, multiple_items)
+                .await
+                .expect("should not fail to dispatch");
+
+            let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, case.metric_label);
+            assert_eq!(events_sent, 0);
+            assert_eq!(events_discarded, multiple_items_count);
+            assert!(send_latencies.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn output_connected_reflects_sender_attachment() {
+        // The connected-query reports false before an output exists, false once declared without senders, and true
+        // only after a sender is attached -- for both the default and a named output.
+        for case in output_cases() {
+            let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+
+            assert!(
+                !is_output_connected(&dispatcher, &case.output),
+                "an undeclared output must report as not connected"
+            );
+
             dispatcher
-        });
+                .add_output(case.output.clone())
+                .expect("should be able to declare the output");
+            assert!(
+                !is_output_connected(&dispatcher, &case.output),
+                "a declared output with no senders must report as not connected"
+            );
 
-        // Send an item with an item count of 1, and make sure we can receive it, and that we update our metrics accordingly:
-        let mut single_item = FixedUsizeVec::<4>::default();
-        assert_eq!(None, single_item.try_push(42));
-        let single_item_item_count = single_item.item_count() as u64;
+            let (tx, _rx) = mpsc::channel(1);
+            dispatcher
+                .attach_sender_to_output(&case.output, tx)
+                .expect("should be able to attach a sender");
+            assert!(
+                is_output_connected(&dispatcher, &case.output),
+                "an output with a sender attached must report as connected"
+            );
 
-        dispatcher
-            .dispatch_named(output_name, single_item.clone())
-            .await
-            .expect("should not fail to dispatch");
-
-        let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, output_name);
-        assert_eq!(events_sent, 0);
-        assert_eq!(events_discarded, single_item_item_count);
-        assert!(send_latencies.is_empty());
-
-        // Now send an item with an item count of 3, and make sure we can receive it, and that we update our metrics accordingly:
-        let mut multiple_items = FixedUsizeVec::<4>::default();
-        assert_eq!(None, multiple_items.try_push(42));
-        assert_eq!(None, multiple_items.try_push(12345));
-        assert_eq!(None, multiple_items.try_push(1337));
-        let multiple_items_item_count = multiple_items.item_count() as u64;
-
-        dispatcher
-            .dispatch_named(output_name, multiple_items.clone())
-            .await
-            .expect("should not fail to dispatch");
-
-        let (events_sent, events_discarded, send_latencies) = get_output_metrics(&snapshotter, output_name);
-        assert_eq!(events_sent, 0);
-        assert_eq!(events_discarded, multiple_items_item_count);
-        assert!(send_latencies.is_empty());
+            // A query for a different, undeclared named output is always false.
+            assert!(
+                !dispatcher.is_named_output_connected("nonexistent_output"),
+                "an unknown named output must report as not connected"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn is_default_output_connected_behavior() {
-        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+    async fn dispatch_one_wraps_item_in_single_element_buffer() {
+        // `dispatch_one`/`dispatch_one_named` wrap a single item into a one-element buffer on the wired output.
+        for case in output_cases() {
+            let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+            let (tx, mut rx) = mpsc::channel(1);
+            add_output_with_senders(&mut dispatcher, &case.output, [tx]);
 
-        // Initially, no default output exists - should return false
-        assert!(
-            !dispatcher.is_default_output_connected(),
-            "should return false when no default output exists"
-        );
+            let input_item = 42;
+            dispatch_one_to(&dispatcher, &case.output, input_item).await.unwrap();
 
-        // Add default output but no senders - should return false
-        dispatcher
-            .add_output(OutputName::Default)
-            .expect("should be able to add default output");
-        assert!(
-            !dispatcher.is_default_output_connected(),
-            "should return false when default output exists but has no senders"
-        );
+            let output_item = rx.try_recv().expect("input item should have been dispatched");
+            assert_eq!(output_item.len(), 1);
+            assert_eq!(output_item[0], input_item);
+        }
+    }
 
-        // Add a sender to the default output - should return true
+    #[tokio::test]
+    async fn dispatch_one_to_unconfigured_output_errors() {
+        // `dispatch_one`/`dispatch_one_named` to an output that was never declared fails with the documented error for
+        // that output kind.
+        for case in output_cases() {
+            let dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
+            let err = dispatch_one_to(&dispatcher, &case.output, 42)
+                .await
+                .expect_err("dispatch_one to an unconfigured output must fail");
+            let msg = err.to_string();
+            match &case.output {
+                OutputName::Default => assert_eq!(msg, "No default output declared."),
+                OutputName::Given(_) => assert!(msg.contains("No output named"), "got: {msg}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn add_output_rejects_duplicate() {
+        // `add_output`'s documented error: declaring the same output twice is rejected with an "already exists" error,
+        // for both the default and a named output.
+        for case in output_cases() {
+            let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+            dispatcher
+                .add_output(case.output.clone())
+                .expect("first declaration should succeed");
+
+            let err = dispatcher
+                .add_output(case.output.clone())
+                .expect_err("declaring the same output twice must fail");
+            assert!(err.to_string().contains("already exists"), "got: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn attach_sender_to_undeclared_output_errors() {
+        // `attach_sender_to_output`'s documented error: attaching a sender to an output that hasn't been declared fails
+        // with the documented error for that output kind.
+        for case in output_cases() {
+            let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
+            let (tx, _rx) = mpsc::channel(1);
+            let err = dispatcher
+                .attach_sender_to_output(&case.output, tx)
+                .expect_err("attaching to an undeclared output must fail");
+            let msg = err.to_string();
+            match &case.output {
+                OutputName::Default => assert_eq!(msg, "No default output declared."),
+                OutputName::Given(_) => assert!(msg.contains("does not exist"), "got: {msg}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_one_errors_when_buffer_cannot_hold_a_single_item() {
+        // Defensive guard in `dispatch_one_inner`: if the default-constructed buffer can't accept even one item, it
+        // returns a documented error rather than silently dropping the item. This branch is only reachable via a
+        // degenerate zero-capacity buffer type; every real buffer (capacity >= 1) accepts the first item.
+        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<0>>();
         let (tx, _rx) = mpsc::channel(1);
-        dispatcher
-            .attach_sender_to_output(&OutputName::Default, tx)
-            .expect("should be able to attach sender");
-        assert!(
-            dispatcher.is_default_output_connected(),
-            "should return true when default output has senders attached"
-        );
-    }
+        add_output_with_senders(&mut dispatcher, &OutputName::Default, [tx]);
 
-    #[tokio::test]
-    async fn is_named_output_connected_behavior() {
-        let mut dispatcher = unbuffered_dispatcher::<SingleEvent<u32>>();
-        let output_name = "test_output";
-
-        // Initially, no named output exists - should return false
-        assert!(
-            !dispatcher.is_named_output_connected(output_name),
-            "should return false when named output doesn't exist"
-        );
-
-        // Add named output but no senders - should return false
-        dispatcher
-            .add_output(OutputName::Given(output_name.into()))
-            .expect("should be able to add named output");
-        assert!(
-            !dispatcher.is_named_output_connected(output_name),
-            "should return false when named output exists but has no senders"
-        );
-
-        // Add a sender to the named output - should return true
-        let (tx, _rx) = mpsc::channel(1);
-        dispatcher
-            .attach_sender_to_output(&OutputName::Given(output_name.into()), tx)
-            .expect("should be able to attach sender");
-        assert!(
-            dispatcher.is_named_output_connected(output_name),
-            "should return true when named output has senders attached"
-        );
-
-        // Test with a different output name that doesn't exist - should return false
-        assert!(
-            !dispatcher.is_named_output_connected("nonexistent_output"),
-            "should return false for nonexistent output"
-        );
-    }
-
-    #[tokio::test]
-    async fn default_output_dispatch_one() {
-        // Dispatch a single item to the default output and confirm it arrives wrapped in a one-element buffer.
-        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let (tx, mut rx) = mpsc::channel(1);
-        add_dispatcher_default_output(&mut dispatcher, [tx]);
-
-        let input_item = 42;
-
-        dispatcher.dispatch_one(input_item).await.unwrap();
-
-        let output_item = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item.len(), 1);
-        assert_eq!(output_item[0], input_item);
-    }
-
-    #[tokio::test]
-    async fn named_output_dispatch_one() {
-        // Same as above but for a named output.
-        let mut dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let output_name = "single";
-        let (tx, mut rx) = mpsc::channel(1);
-        add_dispatcher_named_output(&mut dispatcher, output_name, [tx]);
-
-        let input_item = 42;
-
-        dispatcher.dispatch_one_named(output_name, input_item).await.unwrap();
-
-        let output_item = rx.try_recv().expect("input item should have been dispatched");
-        assert_eq!(output_item.len(), 1);
-        assert_eq!(output_item[0], input_item);
-    }
-
-    #[tokio::test]
-    async fn default_output_dispatch_one_not_set() {
-        // dispatch_one without a default output configured should error.
-        let dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let result = dispatcher.dispatch_one(42).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn named_output_dispatch_one_not_set() {
-        // dispatch_one_named on an unknown output should error.
-        let dispatcher = buffered_dispatcher::<FixedUsizeVec<4>>();
-
-        let result = dispatcher.dispatch_one_named("nonexistent", 42).await;
-        assert!(result.is_err());
+        let err = dispatcher
+            .dispatch_one(42)
+            .await
+            .expect_err("a zero-capacity buffer must be rejected, not silently drop the item");
+        assert!(err.to_string().contains("rejected a single item"), "got: {err}");
     }
 }

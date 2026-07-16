@@ -10,6 +10,8 @@ mod file_header;
 mod reader;
 mod replay_api;
 mod replay_control;
+#[cfg(test)]
+mod test_support;
 pub(super) mod writer;
 
 pub use self::capture::DogStatsDCaptureControl;

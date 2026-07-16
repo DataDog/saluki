@@ -20,3 +20,6 @@ pub mod pooling;
 pub mod runtime;
 pub mod support;
 pub mod topology;
+
+#[cfg(test)]
+pub(crate) mod test_support;
