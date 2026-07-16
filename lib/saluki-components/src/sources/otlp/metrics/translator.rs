@@ -112,6 +112,13 @@ fn get_bounds(explicit_bounds: &[f64], idx: usize) -> (f64, f64) {
 fn validate_histogram_buckets(point_dims: &Dimensions, p: &OtlpHistogramDataPoint) -> Result<(), GenericError> {
     let bucket_count = p.bucket_counts.len();
     let bound_count = p.explicit_bounds.len();
+    if bucket_count == 0 && bound_count != 0 {
+        return Err(generic_error!(
+            "Histogram '{}' has no bucket counts but {} explicit bounds; explicit bounds must be empty when bucket counts are empty.",
+            point_dims.name,
+            bound_count
+        ));
+    }
     if bucket_count > 0 && bucket_count != bound_count + 1 {
         return Err(generic_error!(
             "Histogram '{}' has {} bucket counts but {} explicit bounds; bucket count must equal bound count plus one.",
@@ -1487,7 +1494,7 @@ mod tests {
 
     // Matches the Agent's rejection of malformed explicit histograms:
     // https://github.com/DataDog/datadog-agent/blob/087bbbe6d66864dbc8374ed2c66f71f3c1259c36/pkg/opentelemetry-mapping-go/otlp/metrics/default_mapper.go#L348-L352
-    fn map_malformed_histogram(mode: HistogramMode) -> Vec<Event> {
+    fn map_malformed_histogram(mode: HistogramMode, bucket_counts: Vec<u64>, explicit_bounds: Vec<f64>) -> Vec<Event> {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
         translator.config.hist_mode = mode;
@@ -1502,8 +1509,8 @@ mod tests {
         let point = OtlpHistogramDataPoint {
             count: 1,
             sum: Some(0.5),
-            bucket_counts: vec![1],
-            explicit_bounds: vec![1.0, 2.0],
+            bucket_counts,
+            explicit_bounds,
             time_unix_nano: nanos_from_seconds(1),
             ..Default::default()
         };
@@ -1513,12 +1520,17 @@ mod tests {
 
     #[test]
     fn mismatched_bucket_and_bound_lengths_emit_no_distribution() {
-        assert!(map_malformed_histogram(HistogramMode::Distributions).is_empty());
+        assert!(map_malformed_histogram(HistogramMode::Distributions, vec![1], vec![1.0, 2.0]).is_empty());
     }
 
     #[test]
     fn mismatched_bucket_and_bound_lengths_emit_no_bucket_counters() {
-        assert!(map_malformed_histogram(HistogramMode::Counters).is_empty());
+        assert!(map_malformed_histogram(HistogramMode::Counters, vec![1], vec![1.0, 2.0]).is_empty());
+    }
+
+    #[test]
+    fn empty_bucket_counts_with_bounds_emit_no_distribution() {
+        assert!(map_malformed_histogram(HistogramMode::Distributions, vec![], vec![1.0]).is_empty());
     }
 
     #[track_caller]
