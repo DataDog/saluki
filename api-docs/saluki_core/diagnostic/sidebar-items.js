@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["DiagnosticHandle"]};
+window.SIDEBAR_ITEMS = {"enum":["DiagnosticDetails","DiagnosticsEmitterError"],"fn":["subscribe_events"],"struct":["DiagnosticCollector","DiagnosticEvent","DiagnosticsEmitter"]};
