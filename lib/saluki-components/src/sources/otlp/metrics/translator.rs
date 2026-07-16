@@ -1176,7 +1176,6 @@ impl OtlpMetricsTranslator {
                 }
             }
 
-            // TODO: Implement bucket-to-sketch conversion.
             match self.config.hist_mode {
                 HistogramMode::NoBuckets => {
                     continue;

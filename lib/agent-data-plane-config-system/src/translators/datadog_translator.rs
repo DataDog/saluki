@@ -1104,7 +1104,6 @@ mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
-    use agent_data_plane_config::domains::otlp::HistogramMode;
     use datadog_agent_config::DatadogConfiguration;
     use serde_json::json;
 
