@@ -1,10 +1,11 @@
 //! Shared OTLP receiver configuration.
 
+use agent_data_plane_config::domains::otlp::HistogramMode;
 use bytesize::ByteSize;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
-use serde::Deserialize;
+use serde::{de::Error as _, Deserialize, Deserializer};
 
 fn default_grpc_endpoint() -> String {
     "0.0.0.0:4317".to_string()
@@ -156,6 +157,28 @@ impl Default for LogsConfig {
     }
 }
 
+fn deserialize_histogram_mode<'de, D>(deserializer: D) -> Result<HistogramMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
+}
+
+/// Configuration for OTLP histogram processing.
+#[derive(Debug, Default, Deserialize)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+pub struct HistogramsConfig {
+    /// Controls how histogram buckets are reported.
+    ///
+    /// Use `distributions` for distribution metrics, `counters` for one metric per bucket, or
+    /// `nobuckets` to omit bucket metrics. The `nobuckets` mode requires histogram aggregation
+    /// metrics to be enabled separately.
+    ///
+    /// Defaults to `distributions`.
+    #[serde(default, deserialize_with = "deserialize_histogram_mode")]
+    pub mode: HistogramMode,
+}
+
 /// Configuration for OTLP metrics processing.
 #[derive(Deserialize, Debug)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -165,6 +188,10 @@ pub struct MetricsConfig {
     /// Defaults to `true`.
     #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
+
+    /// Histogram processing configuration.
+    #[serde(default)]
+    pub histograms: HistogramsConfig,
 
     /// Whether to add scalar resource attributes as raw tags on emitted metrics.
     ///
@@ -193,6 +220,7 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             enabled: default_metrics_enabled(),
+            histograms: HistogramsConfig::default(),
             resource_attributes_as_tags: false,
             tags: String::new(),
         }

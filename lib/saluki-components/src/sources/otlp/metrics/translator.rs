@@ -2,11 +2,13 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
 use ::ddsketch::canonical::mapping::IndexMapping;
+use agent_data_plane_config::domains::otlp::HistogramMode;
 use datadog_protos::metrics::Dogsketch;
 use ddsketch::canonical::mapping::LogarithmicMapping;
 use ddsketch::canonical::store::DenseStore;
@@ -29,7 +31,7 @@ use stringtheory::MetaString;
 use tracing::{debug, trace, warn};
 
 use super::cache::PointsCache;
-use super::config::{HistogramMode, NumberMode, OtlpMetricsTranslatorConfig};
+use super::config::{NumberMode, OtlpMetricsTranslatorConfig};
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
@@ -107,6 +109,20 @@ fn get_bounds(explicit_bounds: &[f64], idx: usize) -> (f64, f64) {
     (lower, upper)
 }
 
+fn validate_histogram_buckets(point_dims: &Dimensions, p: &OtlpHistogramDataPoint) -> Result<(), GenericError> {
+    let bucket_count = p.bucket_counts.len();
+    let bound_count = p.explicit_bounds.len();
+    if bucket_count > 0 && bucket_count != bound_count + 1 {
+        return Err(generic_error!(
+            "Histogram '{}' has {} bucket counts but {} explicit bounds; bucket count must equal bound count plus one.",
+            point_dims.name,
+            bucket_count,
+            bound_count
+        ));
+    }
+    Ok(())
+}
+
 fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
     if start_ts == 0 || start_ts > ts {
         return 0;
@@ -121,46 +137,54 @@ fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
     0
 }
 
-fn format_float(f: f64) -> String {
-    if f == f64::INFINITY {
-        return "inf".to_string();
-    } else if f == f64::NEG_INFINITY {
-        return "-inf".to_string();
-    } else if f.is_nan() {
-        return "nan".to_string();
-    } else if f == 0.0 {
-        return "0".to_string();
-    }
+/// Formats a float using Go semantics directly into the caller's output buffer.
+struct GoFloat(f64);
 
-    // Mirror Go's strconv.FormatFloat(f, 'g', -1, 64): switch to scientific
-    // notation below 1e-4 and at/above 1e6, with a zero-padded two-digit
-    // signed exponent.
-    if f.abs() < 1e-4 || f.abs() >= 1e6 {
-        let s = format!("{f:e}");
-        let (mantissa, exp_part) = s.split_once('e').expect("{:e} always contains 'e'");
-        let (sign, digits) = if let Some(d) = exp_part.strip_prefix('-') {
-            ("-", d)
-        } else {
-            ("+", exp_part.strip_prefix('+').unwrap_or(exp_part))
-        };
-        let s = if digits.len() < 2 {
-            format!("{mantissa}e{sign}0{digits}")
-        } else {
-            format!("{mantissa}e{sign}{digits}")
-        };
-        return if f == f.floor() { format!("{s}.0") } else { s };
-    }
+impl fmt::Display for GoFloat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v = self.0;
+        if v == f64::INFINITY {
+            return f.write_str("inf");
+        } else if v == f64::NEG_INFINITY {
+            return f.write_str("-inf");
+        } else if v.is_nan() {
+            return f.write_str("nan");
+        } else if v == 0.0 {
+            return f.write_str("0");
+        }
 
-    let s = format!("{f}");
-    if f == f.floor() {
-        format!("{s}.0")
-    } else {
-        s
+        // Mirror Go's strconv.FormatFloat(f, 'g', -1, 64): switch to scientific
+        // notation below 1e-4 and at/above 1e6, with a zero-padded two-digit
+        // signed exponent.
+        if v.abs() < 1e-4 || v.abs() >= 1e6 {
+            let s = format!("{v:e}");
+            let (mantissa, exp_part) = s.split_once('e').expect("{:e} always contains 'e'");
+            let (sign, digits) = if let Some(d) = exp_part.strip_prefix('-') {
+                ("-", d)
+            } else {
+                ("+", exp_part.strip_prefix('+').unwrap_or(exp_part))
+            };
+            if digits.len() < 2 {
+                write!(f, "{mantissa}e{sign}0{digits}")?;
+            } else {
+                write!(f, "{mantissa}e{sign}{digits}")?;
+            }
+            if v == v.floor() {
+                f.write_str(".0")?;
+            }
+            return Ok(());
+        }
+
+        write!(f, "{v}")?;
+        if v == v.floor() {
+            f.write_str(".0")?;
+        }
+        Ok(())
     }
 }
 
 fn format_quantile_tag(quantile: f64) -> String {
-    "quantile:".to_string() + format_float(quantile).as_str()
+    format!("quantile:{}", GoFloat(quantile))
 }
 
 fn to_store(b: Option<&OtlpExponentialHistogramBuckets>) -> DenseStore {
@@ -728,7 +752,7 @@ impl OtlpMetricsTranslator {
                     if is_skippable(quantile.value) {
                         continue;
                     }
-                    let quantile_dims = base_quantile_dims.add_tags(&[format_quantile_tag(quantile.quantile)]);
+                    let quantile_dims = base_quantile_dims.add_tags([format_quantile_tag(quantile.quantile)]);
                     self.record_metric_event(
                         &quantile_dims,
                         quantile.value,
@@ -867,6 +891,8 @@ impl OtlpMetricsTranslator {
         &mut self, context: &TranslationContext, point_dims: Dimensions, p: &OtlpHistogramDataPoint, delta: bool,
         events: &mut Vec<Event>, hist_info: HistogramInfo,
     ) -> Result<(), GenericError> {
+        validate_histogram_buckets(&point_dims, p)?;
+
         let start_ts = p.start_time_unix_nano;
         let ts = p.time_unix_nano;
 
@@ -875,6 +901,8 @@ impl OtlpMetricsTranslator {
         let mut explicit_bounds = p.explicit_bounds.clone();
 
         if bucket_counts.is_empty() && hist_info.ok {
+            explicit_bounds.clear();
+
             if hist_info.has_min_from_last_time_window {
                 bucket_counts.push(0);
                 explicit_bounds.push(p.min.unwrap_or(0.0));
@@ -895,9 +923,9 @@ impl OtlpMetricsTranslator {
             let (lower_bound, upper_bound) = get_bounds(&explicit_bounds, j);
             let (original_lower_bound, original_upper_bound) = (lower_bound, upper_bound);
 
-            let bucket_dims = point_dims.add_tags(&[
-                "lower_bound:".to_string() + format_float(lower_bound).as_str(),
-                "upper_bound:".to_string() + format_float(upper_bound).as_str(),
+            let bucket_dims = point_dims.add_tags([
+                format!("lower_bound:{}", GoFloat(lower_bound)),
+                format!("upper_bound:{}", GoFloat(upper_bound)),
             ]);
 
             let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
@@ -1011,7 +1039,9 @@ impl OtlpMetricsTranslator {
     fn get_legacy_buckets(
         &mut self, context: &TranslationContext, point_dims: Dimensions, p: OtlpHistogramDataPoint, delta: bool,
         events: &mut Vec<Event>,
-    ) {
+    ) -> Result<(), GenericError> {
+        validate_histogram_buckets(&point_dims, &p)?;
+
         let start_ts = p.start_time_unix_nano;
         let ts = p.time_unix_nano;
 
@@ -1019,9 +1049,9 @@ impl OtlpMetricsTranslator {
         for idx in 0..p.bucket_counts.len() {
             let (lower_bound, upper_bound) = get_bounds(&p.explicit_bounds, idx);
 
-            let bucket_dims = base_bucket_dims.add_tags(&[
-                "lower_bound:".to_string() + format_float(lower_bound).as_str(),
-                "upper_bound:".to_string() + format_float(upper_bound).as_str(),
+            let bucket_dims = base_bucket_dims.add_tags([
+                format!("lower_bound:{}", GoFloat(lower_bound)),
+                format!("upper_bound:{}", GoFloat(upper_bound)),
             ]);
             let count = p.bucket_counts[idx];
             let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
@@ -1031,6 +1061,7 @@ impl OtlpMetricsTranslator {
                 self.record_metric_event(&bucket_dims, dx, ts, DataType::Count, events, context);
             }
         }
+        Ok(())
     }
 
     fn map_histogram_metrics(
@@ -1141,7 +1172,9 @@ impl OtlpMetricsTranslator {
                     continue;
                 }
                 HistogramMode::Counters => {
-                    self.get_legacy_buckets(context, point_dims, dp, delta, &mut events);
+                    if let Err(e) = self.get_legacy_buckets(context, point_dims, dp, delta, &mut events) {
+                        warn!(error = %e, "Failed to convert histogram buckets to counters, dropping data point.");
+                    }
                 }
                 HistogramMode::Distributions => {
                     if let Err(e) = self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info) {
@@ -1452,9 +1485,117 @@ mod tests {
         s * 1_000_000_000
     }
 
+    // Matches the Agent's rejection of malformed explicit histograms:
+    // https://github.com/DataDog/datadog-agent/blob/087bbbe6d66864dbc8374ed2c66f71f3c1259c36/pkg/opentelemetry-mapping-go/otlp/metrics/default_mapper.go#L348-L352
+    fn map_malformed_histogram(mode: HistogramMode) -> Vec<Event> {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.hist_mode = mode;
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let dims = Dimensions {
+            name: "malformed.histogram".to_string(),
+            ..Default::default()
+        };
+        let point = OtlpHistogramDataPoint {
+            count: 1,
+            sum: Some(0.5),
+            bucket_counts: vec![1],
+            explicit_bounds: vec![1.0, 2.0],
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+
+        translator.map_histogram_metrics(dims, vec![point], true, &context)
+    }
+
+    #[test]
+    fn mismatched_bucket_and_bound_lengths_emit_no_distribution() {
+        assert!(map_malformed_histogram(HistogramMode::Distributions).is_empty());
+    }
+
+    #[test]
+    fn mismatched_bucket_and_bound_lengths_emit_no_bucket_counters() {
+        assert!(map_malformed_histogram(HistogramMode::Counters).is_empty());
+    }
+
+    #[track_caller]
+    fn assert_bucket_events(events: &[Event], values: &[f64], timestamp: u64) {
+        let bounds = [("-inf", "1.0"), ("1.0", "inf")];
+        assert_eq!(events.len(), values.len());
+        for ((event, value), (lower, upper)) in events.iter().zip(values).zip(bounds) {
+            let metric = event.try_as_metric().expect("event should be a metric");
+            assert_eq!(metric.context().name(), "valid.histogram.bucket");
+            assert_eq!(metric.values(), &MetricValues::counter((timestamp, *value)));
+            assert_eq!(
+                metric.context().tags().get_single_tag("lower_bound").unwrap().value(),
+                Some(lower)
+            );
+            assert_eq!(
+                metric.context().tags().get_single_tag("upper_bound").unwrap().value(),
+                Some(upper)
+            );
+        }
+    }
+
+    #[test]
+    fn valid_bucket_counters_preserve_bounds_and_cumulative_diffs() {
+        let metrics = Metrics::for_tests();
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let dims = Dimensions {
+            name: "valid.histogram".to_string(),
+            ..Default::default()
+        };
+
+        let mut delta_translator = OtlpMetricsTranslator::for_tests();
+        delta_translator.config.hist_mode = HistogramMode::Counters;
+        let delta_point = OtlpHistogramDataPoint {
+            count: 5,
+            sum: Some(8.0),
+            bucket_counts: vec![2, 3],
+            explicit_bounds: vec![1.0],
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+        let delta_events = delta_translator.map_histogram_metrics(dims.clone(), vec![delta_point], true, &context);
+        assert_bucket_events(&delta_events, &[2.0, 3.0], 1);
+
+        let mut cumulative_translator = OtlpMetricsTranslator::for_tests();
+        cumulative_translator.config.hist_mode = HistogramMode::Counters;
+        let initial_point = OtlpHistogramDataPoint {
+            count: 5,
+            sum: Some(8.0),
+            bucket_counts: vec![2, 3],
+            explicit_bounds: vec![1.0],
+            start_time_unix_nano: nanos_from_seconds(1),
+            time_unix_nano: nanos_from_seconds(2),
+            ..Default::default()
+        };
+        let next_point = OtlpHistogramDataPoint {
+            count: 12,
+            sum: Some(20.0),
+            bucket_counts: vec![5, 7],
+            explicit_bounds: vec![1.0],
+            start_time_unix_nano: nanos_from_seconds(1),
+            time_unix_nano: nanos_from_seconds(3),
+            ..Default::default()
+        };
+        let initial_events =
+            cumulative_translator.map_histogram_metrics(dims.clone(), vec![initial_point], false, &context);
+        assert!(initial_events.is_empty());
+        let cumulative_events = cumulative_translator.map_histogram_metrics(dims, vec![next_point], false, &context);
+        assert_bucket_events(&cumulative_events, &[3.0, 4.0], 3);
+    }
+
+    // Ported from the Go OTLP mapping tests:
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2225
     #[test]
-    fn test_format_float_go_parity() {
+    fn go_float_matches_go_format_float() {
         let tests = [
             (0.0, "0"),
             (0.001, "0.001"),
@@ -1479,8 +1620,21 @@ mod tests {
         ];
 
         for (input, expected) in tests {
-            assert_eq!(format_float(input), expected);
+            assert_eq!(GoFloat(input).to_string(), expected);
         }
+    }
+
+    #[test]
+    fn bucket_bound_tags_use_go_float_format() {
+        assert_eq!(
+            format!("lower_bound:{}", GoFloat(f64::NEG_INFINITY)),
+            "lower_bound:-inf"
+        );
+        assert_eq!(format!("upper_bound:{}", GoFloat(f64::INFINITY)), "upper_bound:inf");
+        assert_eq!(format!("lower_bound:{}", GoFloat(0.0)), "lower_bound:0");
+        assert_eq!(format!("lower_bound:{}", GoFloat(1.0)), "lower_bound:1.0");
+        assert_eq!(format!("lower_bound:{}", GoFloat(0.001)), "lower_bound:0.001");
+        assert_eq!(format!("upper_bound:{}", GoFloat(1e6)), "upper_bound:1e+06.0");
     }
 
     /// A helper function to build a series of cumulative monotonic integer data points from deltas.

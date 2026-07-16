@@ -1277,6 +1277,9 @@ pub struct OtlpConfigMetrics {
     pub enabled: bool,
 
     #[serde(default)]
+    pub histograms: OtlpConfigMetricsHistograms,
+
+    #[serde(default)]
     pub resource_attributes_as_tags: bool,
 
     #[serde(default)]
@@ -1287,8 +1290,25 @@ impl Default for OtlpConfigMetrics {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
+            histograms: Default::default(),
             resource_attributes_as_tags: Default::default(),
             tags: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigMetricsHistograms {
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_histograms_mode"
+    )]
+    pub mode: String,
+}
+
+impl Default for OtlpConfigMetricsHistograms {
+    fn default() -> Self {
+        Self {
+            mode: defaults::datadog_configuration_otlp_config_metrics_histograms_mode(),
         }
     }
 }
@@ -1736,6 +1756,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint() -> String {
         "127.0.0.1:4319".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_histograms_mode() -> String {
+        "distributions".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint() -> String {
         "localhost:4317".to_string()

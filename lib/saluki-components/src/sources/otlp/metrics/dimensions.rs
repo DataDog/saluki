@@ -1,7 +1,7 @@
 //! OTLP metric dimensions.
 
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
-use saluki_context::tags::{SharedTagSet, TagSet};
+use saluki_context::tags::{SharedTagSet, Tag, TagSet};
 use stringtheory::MetaString;
 
 use super::internal::utils::format_key_value_tag;
@@ -27,20 +27,23 @@ impl Dimensions {
         }
     }
 
-    /// Creates a new `Dimensions` with additional tags.
-    #[allow(dead_code)]
-    pub fn add_tags(&self, tags_to_add: &[String]) -> Self {
-        let mut new_tags = TagSet::default();
-        for tag in &self.tags {
-            new_tags.insert_tag(tag.clone());
-        }
-        for tag in tags_to_add {
-            new_tags.insert_tag(tag.clone());
-        }
+    /// Creates a new `Dimensions` with additional tags, structurally sharing the existing tags.
+    pub fn add_tags<I>(&self, tags_to_add: I) -> Self
+    where
+        I: IntoIterator<Item = String>,
+    {
+        let additions: SharedTagSet = tags_to_add
+            .into_iter()
+            .filter(|tag| !self.tags.has_tag(tag))
+            .map(Tag::from)
+            .collect();
+
+        let mut tags = self.tags.clone();
+        tags.extend_from_shared(&additions);
 
         Self {
             name: self.name.clone(),
-            tags: new_tags.into_shared(),
+            tags,
             host: self.host.clone(),
             origin_id: self.origin_id.clone(),
         }
@@ -109,5 +112,53 @@ impl Dimensions {
 
         // Join with a null character separator.
         dimensions.join("\0")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use saluki_context::tags::{Tag, TagSet};
+
+    use super::*;
+
+    fn dims_with_tags(name: &str, tags: &[&str]) -> Dimensions {
+        let tag_set: TagSet = tags.iter().map(|t| Tag::from(*t)).collect();
+        Dimensions {
+            name: name.to_string(),
+            tags: tag_set.into_shared(),
+            host: None,
+            origin_id: None,
+        }
+    }
+
+    #[test]
+    fn add_tags_preserves_order_deduplication_and_base() {
+        let base = dims_with_tags("http.request.duration", &["env:prod", "service:web", "lower_bound:1.0"]);
+        let extended = base.add_tags(["lower_bound:1.0".to_string(), "upper_bound:2.0".to_string()]);
+
+        let extended_tags: Vec<&str> = extended.tags.into_iter().map(|t| t.as_str()).collect();
+        assert_eq!(
+            extended_tags,
+            vec!["env:prod", "service:web", "lower_bound:1.0", "upper_bound:2.0"]
+        );
+
+        let base_tags: Vec<&str> = base.tags.into_iter().map(|t| t.as_str()).collect();
+        assert_eq!(base_tags, vec!["env:prod", "service:web", "lower_bound:1.0"]);
+    }
+
+    #[test]
+    fn add_tags_preserves_canonical_cache_key() {
+        let base = dims_with_tags("http.request.duration", &["service:web", "env:prod"]);
+        let extended = base.add_tags(["lower_bound:1.0".to_string(), "upper_bound:2.0".to_string()]);
+
+        let expected = [
+            "env:prod",
+            "lower_bound:1.0",
+            "name:http.request.duration",
+            "service:web",
+            "upper_bound:2.0",
+        ]
+        .join("\0");
+        assert_eq!(extended.get_cache_key(), expected);
     }
 }

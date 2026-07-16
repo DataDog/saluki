@@ -23,6 +23,7 @@ use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
+use agent_data_plane_config::domains::otlp::HistogramMode;
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
@@ -875,6 +876,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.receiver.metrics_enabled = value;
     }
 
+    fn consume_otlp_config_metrics_histograms_mode(&mut self, value: String) {
+        match value.parse::<HistogramMode>() {
+            Ok(mode) => self.config.domains.otlp.metrics.histogram_mode = mode,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.metrics.histograms.mode", error)),
+        }
+    }
+
     fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool) {
         self.config.domains.otlp.metrics.resource_attributes_as_tags = value;
     }
@@ -1096,6 +1104,7 @@ mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
+    use agent_data_plane_config::domains::otlp::HistogramMode;
     use datadog_agent_config::DatadogConfiguration;
     use serde_json::json;
 
@@ -1145,6 +1154,50 @@ mod tests {
         );
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
+    }
+
+    #[test]
+    fn otlp_histogram_modes_translate_to_typed_model() {
+        let cases = [
+            ("nobuckets", HistogramMode::NoBuckets),
+            ("counters", HistogramMode::Counters),
+            ("distributions", HistogramMode::Distributions),
+        ];
+
+        for (value, expected) in cases {
+            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+                "otlp_config": {
+                    "metrics": {
+                        "histograms": {
+                            "mode": value
+                        }
+                    }
+                }
+            }))
+            .expect("datadog source deserializes");
+
+            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+            assert!(errors.is_none());
+            assert_eq!(config.domains.otlp.metrics.histogram_mode, expected);
+        }
+    }
+
+    #[test]
+    fn invalid_otlp_histogram_mode_records_error_and_keeps_default() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "histograms": {
+                        "mode": "invalid"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        assert!(errors.is_some());
+        assert_eq!(config.domains.otlp.metrics.histogram_mode, HistogramMode::Distributions);
     }
 
     #[test]
