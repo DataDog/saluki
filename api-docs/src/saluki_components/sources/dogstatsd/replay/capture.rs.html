@@ -133,75 +133,45 @@
 <a href=#133 id=133 data-nosnippet>133</a>
 <a href=#134 id=134 data-nosnippet>134</a><span class="attr">#[cfg(test)]
 <a href=#135 id=135 data-nosnippet>135</a></span><span class="kw">mod </span>tests {
-<a href=#136 id=136 data-nosnippet>136</a>    <span class="kw">use </span>std::{
-<a href=#137 id=137 data-nosnippet>137</a>        fs,
-<a href=#138 id=138 data-nosnippet>138</a>        path::PathBuf,
-<a href=#139 id=139 data-nosnippet>139</a>        thread,
-<a href=#140 id=140 data-nosnippet>140</a>        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
-<a href=#141 id=141 data-nosnippet>141</a>    };
-<a href=#142 id=142 data-nosnippet>142</a>
-<a href=#143 id=143 data-nosnippet>143</a>    <span class="kw">use </span>super::{DogStatsDCaptureControl, TrafficCapture, UNAVAILABLE_CAPTURE_CONTROL_ERROR};
+<a href=#136 id=136 data-nosnippet>136</a>    <span class="kw">use </span>std::{fs, time::Duration};
+<a href=#137 id=137 data-nosnippet>137</a>
+<a href=#138 id=138 data-nosnippet>138</a>    <span class="kw">use </span><span class="kw">super</span>::<span class="kw">super</span>::test_support::{unique_dir, wait_until_inactive};
+<a href=#139 id=139 data-nosnippet>139</a>    <span class="kw">use </span>super::{DogStatsDCaptureControl, TrafficCapture, UNAVAILABLE_CAPTURE_CONTROL_ERROR};
+<a href=#140 id=140 data-nosnippet>140</a>
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="attr">#[test]
+<a href=#142 id=142 data-nosnippet>142</a>    </span><span class="kw">fn </span>control_requires_bound_runtime() {
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="kw">let </span>control = DogStatsDCaptureControl::new();
 <a href=#144 id=144 data-nosnippet>144</a>
-<a href=#145 id=145 data-nosnippet>145</a>    <span class="attr">#[test]
-<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">fn </span>control_requires_bound_runtime() {
-<a href=#147 id=147 data-nosnippet>147</a>        <span class="kw">let </span>control = DogStatsDCaptureControl::new();
+<a href=#145 id=145 data-nosnippet>145</a>        <span class="kw">let </span>error = control
+<a href=#146 id=146 data-nosnippet>146</a>            .start_capture(<span class="prelude-val">None</span>, Duration::from_millis(<span class="number">25</span>), <span class="bool-val">false</span>)
+<a href=#147 id=147 data-nosnippet>147</a>            .expect_err(<span class="string">"unbound control should fail"</span>);
 <a href=#148 id=148 data-nosnippet>148</a>
-<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">let </span>error = control
-<a href=#150 id=150 data-nosnippet>150</a>            .start_capture(<span class="prelude-val">None</span>, Duration::from_millis(<span class="number">25</span>), <span class="bool-val">false</span>)
-<a href=#151 id=151 data-nosnippet>151</a>            .expect_err(<span class="string">"unbound control should fail"</span>);
-<a href=#152 id=152 data-nosnippet>152</a>
-<a href=#153 id=153 data-nosnippet>153</a>        <span class="macro">assert_eq!</span>(error.to_string(), UNAVAILABLE_CAPTURE_CONTROL_ERROR);
-<a href=#154 id=154 data-nosnippet>154</a>    }
-<a href=#155 id=155 data-nosnippet>155</a>
-<a href=#156 id=156 data-nosnippet>156</a>    <span class="attr">#[test]
-<a href=#157 id=157 data-nosnippet>157</a>    </span><span class="kw">fn </span>control_drives_bound_capture_runtime() {
-<a href=#158 id=158 data-nosnippet>158</a>        <span class="kw">let </span>control = DogStatsDCaptureControl::new();
-<a href=#159 id=159 data-nosnippet>159</a>        <span class="kw">let </span>target_dir = unique_dir(<span class="string">"capture-control"</span>);
-<a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">let </span>capture = TrafficCapture::new(target_dir.clone(), <span class="number">1</span>);
-<a href=#161 id=161 data-nosnippet>161</a>        control.bind(capture);
+<a href=#149 id=149 data-nosnippet>149</a>        <span class="macro">assert_eq!</span>(error.to_string(), UNAVAILABLE_CAPTURE_CONTROL_ERROR);
+<a href=#150 id=150 data-nosnippet>150</a>    }
+<a href=#151 id=151 data-nosnippet>151</a>
+<a href=#152 id=152 data-nosnippet>152</a>    <span class="attr">#[test]
+<a href=#153 id=153 data-nosnippet>153</a>    </span><span class="kw">fn </span>control_drives_bound_capture_runtime() {
+<a href=#154 id=154 data-nosnippet>154</a>        <span class="kw">let </span>control = DogStatsDCaptureControl::new();
+<a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>target_dir = unique_dir(<span class="string">"capture-control"</span>);
+<a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">let </span>capture = TrafficCapture::new(target_dir.clone(), <span class="number">1</span>);
+<a href=#157 id=157 data-nosnippet>157</a>        control.bind(capture);
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a>        <span class="kw">let </span>capture_path = control
+<a href=#160 id=160 data-nosnippet>160</a>            .start_capture(<span class="prelude-val">None</span>, Duration::from_millis(<span class="number">250</span>), <span class="bool-val">false</span>)
+<a href=#161 id=161 data-nosnippet>161</a>            .expect(<span class="string">"capture should start"</span>);
 <a href=#162 id=162 data-nosnippet>162</a>
-<a href=#163 id=163 data-nosnippet>163</a>        <span class="kw">let </span>capture_path = control
+<a href=#163 id=163 data-nosnippet>163</a>        <span class="kw">let </span>error = control
 <a href=#164 id=164 data-nosnippet>164</a>            .start_capture(<span class="prelude-val">None</span>, Duration::from_millis(<span class="number">250</span>), <span class="bool-val">false</span>)
-<a href=#165 id=165 data-nosnippet>165</a>            .expect(<span class="string">"capture should start"</span>);
-<a href=#166 id=166 data-nosnippet>166</a>
-<a href=#167 id=167 data-nosnippet>167</a>        <span class="kw">let </span>error = control
-<a href=#168 id=168 data-nosnippet>168</a>            .start_capture(<span class="prelude-val">None</span>, Duration::from_millis(<span class="number">250</span>), <span class="bool-val">false</span>)
-<a href=#169 id=169 data-nosnippet>169</a>            .expect_err(<span class="string">"second capture should fail"</span>);
-<a href=#170 id=170 data-nosnippet>170</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"capture already in progress"</span>));
+<a href=#165 id=165 data-nosnippet>165</a>            .expect_err(<span class="string">"second capture should fail"</span>);
+<a href=#166 id=166 data-nosnippet>166</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"capture already in progress"</span>));
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a>        control.stop_capture().expect(<span class="string">"stop should succeed"</span>);
+<a href=#169 id=169 data-nosnippet>169</a>        control.stop_capture().expect(<span class="string">"second stop should be safe"</span>);
+<a href=#170 id=170 data-nosnippet>170</a>        wait_until_inactive(|| control.is_ongoing().expect(<span class="string">"control should be bound"</span>));
 <a href=#171 id=171 data-nosnippet>171</a>
-<a href=#172 id=172 data-nosnippet>172</a>        control.stop_capture().expect(<span class="string">"stop should succeed"</span>);
-<a href=#173 id=173 data-nosnippet>173</a>        control.stop_capture().expect(<span class="string">"second stop should be safe"</span>);
-<a href=#174 id=174 data-nosnippet>174</a>        wait_until_inactive(<span class="kw-2">&amp;</span>control);
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="macro">assert!</span>(capture_path.exists());
-<a href=#177 id=177 data-nosnippet>177</a>
-<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">let _ </span>= fs::remove_dir_all(target_dir);
-<a href=#179 id=179 data-nosnippet>179</a>    }
-<a href=#180 id=180 data-nosnippet>180</a>
-<a href=#181 id=181 data-nosnippet>181</a>    <span class="kw">fn </span>wait_until_inactive(control: <span class="kw-2">&amp;</span>DogStatsDCaptureControl) {
-<a href=#182 id=182 data-nosnippet>182</a>        <span class="kw">let </span>deadline = Instant::now() + Duration::from_secs(<span class="number">2</span>);
-<a href=#183 id=183 data-nosnippet>183</a>        <span class="kw">while </span>control.is_ongoing().expect(<span class="string">"control should be bound"</span>) &amp;&amp; Instant::now() &lt; deadline {
-<a href=#184 id=184 data-nosnippet>184</a>            thread::sleep(Duration::from_millis(<span class="number">10</span>));
-<a href=#185 id=185 data-nosnippet>185</a>        }
-<a href=#186 id=186 data-nosnippet>186</a>
-<a href=#187 id=187 data-nosnippet>187</a>        <span class="macro">assert!</span>(
-<a href=#188 id=188 data-nosnippet>188</a>            !control.is_ongoing().expect(<span class="string">"control should be bound"</span>),
-<a href=#189 id=189 data-nosnippet>189</a>            <span class="string">"capture control did not stop in time"
-<a href=#190 id=190 data-nosnippet>190</a>        </span>);
-<a href=#191 id=191 data-nosnippet>191</a>    }
-<a href=#192 id=192 data-nosnippet>192</a>
-<a href=#193 id=193 data-nosnippet>193</a>    <span class="kw">fn </span>unique_dir(label: <span class="kw-2">&amp;</span>str) -&gt; PathBuf {
-<a href=#194 id=194 data-nosnippet>194</a>        <span class="kw">let </span>path = unique_path(label);
-<a href=#195 id=195 data-nosnippet>195</a>        fs::create_dir_all(<span class="kw-2">&amp;</span>path).expect(<span class="string">"test directory should be created"</span>);
-<a href=#196 id=196 data-nosnippet>196</a>        path
-<a href=#197 id=197 data-nosnippet>197</a>    }
-<a href=#198 id=198 data-nosnippet>198</a>
-<a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">fn </span>unique_path(label: <span class="kw-2">&amp;</span>str) -&gt; PathBuf {
-<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">let </span>timestamp = SystemTime::now()
-<a href=#201 id=201 data-nosnippet>201</a>            .duration_since(UNIX_EPOCH)
-<a href=#202 id=202 data-nosnippet>202</a>            .expect(<span class="string">"clock should be after epoch"</span>)
-<a href=#203 id=203 data-nosnippet>203</a>            .as_nanos();
-<a href=#204 id=204 data-nosnippet>204</a>        std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"saluki-{}-{}-{}"</span>, label, std::process::id(), timestamp))
-<a href=#205 id=205 data-nosnippet>205</a>    }
-<a href=#206 id=206 data-nosnippet>206</a>}
+<a href=#172 id=172 data-nosnippet>172</a>        <span class="macro">assert!</span>(capture_path.exists());
+<a href=#173 id=173 data-nosnippet>173</a>
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">let _ </span>= fs::remove_dir_all(target_dir);
+<a href=#175 id=175 data-nosnippet>175</a>    }
+<a href=#176 id=176 data-nosnippet>176</a>}
 </code></pre></div></section></main></body></html>

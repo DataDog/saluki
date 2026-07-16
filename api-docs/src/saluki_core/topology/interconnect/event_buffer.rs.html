@@ -424,5 +424,16 @@
 <a href=#424 id=424 data-nosnippet>424</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(event4), buffered_events2.next());
 <a href=#425 id=425 data-nosnippet>425</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, buffered_events2.next());
 <a href=#426 id=426 data-nosnippet>426</a>    }
-<a href=#427 id=427 data-nosnippet>427</a>}
+<a href=#427 id=427 data-nosnippet>427</a>
+<a href=#428 id=428 data-nosnippet>428</a>    <span class="attr">#[test]
+<a href=#429 id=429 data-nosnippet>429</a>    #[should_panic(expected = <span class="string">"New event buffer is unexpectedly full"</span>)]
+<a href=#430 id=430 data-nosnippet>430</a>    </span><span class="kw">fn </span>event_buffer_manager_panics_when_fresh_buffer_cannot_hold_event() {
+<a href=#431 id=431 data-nosnippet>431</a>        <span class="comment">// Defensive guard: on overflow, `EventBufferManager::try_push` swaps in a fresh buffer and assumes it can
+<a href=#432 id=432 data-nosnippet>432</a>        // always accept the event that overflowed the previous one. That invariant holds for every real capacity
+<a href=#433 id=433 data-nosnippet>433</a>        // (N &gt;= 1); it can only be violated by a degenerate zero-capacity buffer, which trips the guard. This documents
+<a href=#434 id=434 data-nosnippet>434</a>        // that `EventBufferManager` requires a non-zero `N`.
+<a href=#435 id=435 data-nosnippet>435</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>manager = EventBufferManager::&lt;<span class="number">0</span>&gt;::default();
+<a href=#436 id=436 data-nosnippet>436</a>        <span class="kw">let _ </span>= manager.try_push(Event::Metric(Metric::counter(<span class="string">"foo"</span>, <span class="number">1.0</span>)));
+<a href=#437 id=437 data-nosnippet>437</a>    }
+<a href=#438 id=438 data-nosnippet>438</a>}
 </code></pre></div></section></main></body></html>

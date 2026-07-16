@@ -10,21 +10,23 @@
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">mod </span>reader;
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">mod </span>replay_api;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">mod </span>replay_control;
-<a href=#13 id=13 data-nosnippet>13</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">mod </span>writer;
-<a href=#14 id=14 data-nosnippet>14</a>
-<a href=#15 id=15 data-nosnippet>15</a><span class="kw">pub use </span><span class="self">self</span>::capture::DogStatsDCaptureControl;
-<a href=#16 id=16 data-nosnippet>16</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::capture::TrafficCapture;
-<a href=#17 id=17 data-nosnippet>17</a><span class="kw">pub use </span><span class="self">self</span>::capture_api::DogStatsDCaptureAPIHandler;
-<a href=#18 id=18 data-nosnippet>18</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::captured_tagger::{CapturedTaggerHandle, CapturedTaggerStore};
-<a href=#19 id=19 data-nosnippet>19</a><span class="kw">pub use </span><span class="self">self</span>::reader::{TimestampResolution, TrafficCaptureReader};
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">pub use </span><span class="self">self</span>::replay_api::DogStatsDReplayAPIHandler;
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">pub use </span><span class="self">self</span>::replay_control::{DogStatsDReplayControl, ReplaySession, DEFAULT_REPLAY_LOOPS};
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::writer::CaptureRecord;
-<a href=#23 id=23 data-nosnippet>23</a>
-<a href=#24 id=24 data-nosnippet>24</a><span class="doccomment">/// GID stamped onto replay-injected DogStatsD packets via `SCM_CREDENTIALS`.
-<a href=#25 id=25 data-nosnippet>25</a>///
-<a href=#26 id=26 data-nosnippet>26</a>/// The replay sender stamps this value as the `gid` field of the ancillary credentials block and packs the original
-<a href=#27 id=27 data-nosnippet>27</a>/// captured PID into the `uid` field. The DogStatsD UDS listener uses this GID as the signal to recover the original
-<a href=#28 id=28 data-nosnippet>28</a>/// PID from `uid` and route origin resolution against the captured tagger state instead of the live workload provider.
-<a href=#29 id=29 data-nosnippet>29</a></span><span class="kw">pub const </span>REPLAY_CREDENTIALS_GID: u32 = <span class="number">999_888_777</span>;
+<a href=#13 id=13 data-nosnippet>13</a><span class="attr">#[cfg(test)]
+<a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">mod </span>test_support;
+<a href=#15 id=15 data-nosnippet>15</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">mod </span>writer;
+<a href=#16 id=16 data-nosnippet>16</a>
+<a href=#17 id=17 data-nosnippet>17</a><span class="kw">pub use </span><span class="self">self</span>::capture::DogStatsDCaptureControl;
+<a href=#18 id=18 data-nosnippet>18</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::capture::TrafficCapture;
+<a href=#19 id=19 data-nosnippet>19</a><span class="kw">pub use </span><span class="self">self</span>::capture_api::DogStatsDCaptureAPIHandler;
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::captured_tagger::{CapturedTaggerHandle, CapturedTaggerStore};
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">pub use </span><span class="self">self</span>::reader::{TimestampResolution, TrafficCaptureReader};
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">pub use </span><span class="self">self</span>::replay_api::DogStatsDReplayAPIHandler;
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">pub use </span><span class="self">self</span>::replay_control::{DogStatsDReplayControl, ReplaySession, DEFAULT_REPLAY_LOOPS};
+<a href=#24 id=24 data-nosnippet>24</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">use </span><span class="self">self</span>::writer::CaptureRecord;
+<a href=#25 id=25 data-nosnippet>25</a>
+<a href=#26 id=26 data-nosnippet>26</a><span class="doccomment">/// GID stamped onto replay-injected DogStatsD packets via `SCM_CREDENTIALS`.
+<a href=#27 id=27 data-nosnippet>27</a>///
+<a href=#28 id=28 data-nosnippet>28</a>/// The replay sender stamps this value as the `gid` field of the ancillary credentials block and packs the original
+<a href=#29 id=29 data-nosnippet>29</a>/// captured PID into the `uid` field. The DogStatsD UDS listener uses this GID as the signal to recover the original
+<a href=#30 id=30 data-nosnippet>30</a>/// PID from `uid` and route origin resolution against the captured tagger state instead of the live workload provider.
+<a href=#31 id=31 data-nosnippet>31</a></span><span class="kw">pub const </span>REPLAY_CREDENTIALS_GID: u32 = <span class="number">999_888_777</span>;
 </code></pre></div></section></main></body></html>

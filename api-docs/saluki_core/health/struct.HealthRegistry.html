@@ -6,9 +6,9 @@ probing their liveness, which indicates if they’re currently responding, or ab
 <p>The health registry emits some internal telemetry about the status of registered components. In particular, three
 metrics are emitted:</p>
 <ul>
-<li><code>health.component_ready</code>: whether or not a component is ready (<code>gauge</code>, <code>0</code> for not ready, <code>1</code> for ready)</li>
-<li><code>health.component_alive</code>: whether or not a component is alive (<code>gauge</code>, <code>0</code> for not alive/unknown, <code>1</code> for alive, <code>-1</code> for dead)</li>
-<li><code>health.component_liveness_latency_secs</code>: the response latency of the component for liveness probes (<code>histogram</code>,
+<li><code>health_component_ready</code>: whether or not a component is ready (<code>gauge</code>, <code>0</code> for not ready, <code>1</code> for ready)</li>
+<li><code>health_component_live</code>: whether or not a component is alive (<code>gauge</code>, <code>0</code> for not alive/unknown, <code>1</code> for alive, <code>-1</code> for dead)</li>
+<li><code>health_component_liveness_latency_seconds</code>: the response latency of the component for liveness probes (<code>histogram</code>,
 in seconds)</li>
 </ul>
 <p>All metrics have a <code>component_id</code> tag that corresponds to the name of the component that was given when registering it.</p>

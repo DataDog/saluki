@@ -377,22 +377,46 @@
 <a href=#377 id=377 data-nosnippet>377</a>
 <a href=#378 id=378 data-nosnippet>378</a>    <span class="attr">#[test]
 <a href=#379 id=379 data-nosnippet>379</a>    </span><span class="kw">fn </span>origin_metric_recorder_evicts_oldest_origin_when_cache_is_full() {
-<a href=#380 id=380 data-nosnippet>380</a>        <span class="kw">let </span>recorder = TestRecorder::default();
-<a href=#381 id=381 data-nosnippet>381</a>        <span class="kw">let </span>_recorder_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
-<a href=#382 id=382 data-nosnippet>382</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>udp_listen_addr(), <span class="kw-2">&amp;</span>test_context(), <span class="bool-val">true</span>);
-<a href=#383 id=383 data-nosnippet>383</a>
-<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..=MAX_ORIGIN_COUNTERS {
-<a href=#385 id=385 data-nosnippet>385</a>            metrics.record_metrics_received(<span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"container_id://test-container-{index}"</span>)));
-<a href=#386 id=386 data-nosnippet>386</a>        }
-<a href=#387 id=387 data-nosnippet>387</a>
-<a href=#388 id=388 data-nosnippet>388</a>        <span class="kw">let </span>origin_recorder = metrics
-<a href=#389 id=389 data-nosnippet>389</a>            .origin_metric_recorder
-<a href=#390 id=390 data-nosnippet>390</a>            .as_ref()
-<a href=#391 id=391 data-nosnippet>391</a>            .expect(<span class="string">"origin metric recorder should be enabled"</span>);
-<a href=#392 id=392 data-nosnippet>392</a>        <span class="macro">assert_eq!</span>(origin_recorder.cached_origin_count(), MAX_ORIGIN_COUNTERS);
-<a href=#393 id=393 data-nosnippet>393</a>        <span class="macro">assert!</span>(!origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-0"</span>));
-<a href=#394 id=394 data-nosnippet>394</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-1"</span>));
-<a href=#395 id=395 data-nosnippet>395</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-200"</span>));
-<a href=#396 id=396 data-nosnippet>396</a>    }
-<a href=#397 id=397 data-nosnippet>397</a>}
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="comment">// The recorder keeps at most MAX_ORIGIN_COUNTERS per-origin counters, evicting the oldest when full. Eviction
+<a href=#381 id=381 data-nosnippet>381</a>        // also deletes the underlying counters from the metrics registry (via `internal_metrics::delete_counter`) to
+<a href=#382 id=382 data-nosnippet>382</a>        // bound cardinality. That registry deletion, however, operates on the process-global metrics registry --
+<a href=#383 id=383 data-nosnippet>383</a>        // populated only by `MetricsRecorder::install` -- which a `TestRecorder`-based unit test can't observe: a
+<a href=#384 id=384 data-nosnippet>384</a>        // `TestRecorder` records registrations but never removes them, so a deleted counter still reads back here.
+<a href=#385 id=385 data-nosnippet>385</a>        // We therefore assert (a) the recorder's own eviction bookkeeping and (b) that recording actually registered
+<a href=#386 id=386 data-nosnippet>386</a>        // and incremented a retained origin's counter in the registry. `delete_counter`'s registry-deletion behavior
+<a href=#387 id=387 data-nosnippet>387</a>        // itself is covered by saluki-core's `delete_counter_from_state` tests.
+<a href=#388 id=388 data-nosnippet>388</a>        </span><span class="kw">let </span>recorder = TestRecorder::default();
+<a href=#389 id=389 data-nosnippet>389</a>        <span class="kw">let </span>_recorder_guard = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
+<a href=#390 id=390 data-nosnippet>390</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>udp_listen_addr(), <span class="kw-2">&amp;</span>test_context(), <span class="bool-val">true</span>);
+<a href=#391 id=391 data-nosnippet>391</a>
+<a href=#392 id=392 data-nosnippet>392</a>        <span class="kw">for </span>index <span class="kw">in </span><span class="number">0</span>..=MAX_ORIGIN_COUNTERS {
+<a href=#393 id=393 data-nosnippet>393</a>            metrics.record_metrics_received(<span class="number">1</span>, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">format!</span>(<span class="string">"container_id://test-container-{index}"</span>)));
+<a href=#394 id=394 data-nosnippet>394</a>        }
+<a href=#395 id=395 data-nosnippet>395</a>
+<a href=#396 id=396 data-nosnippet>396</a>        <span class="kw">let </span>origin_recorder = metrics
+<a href=#397 id=397 data-nosnippet>397</a>            .origin_metric_recorder
+<a href=#398 id=398 data-nosnippet>398</a>            .as_ref()
+<a href=#399 id=399 data-nosnippet>399</a>            .expect(<span class="string">"origin metric recorder should be enabled"</span>);
+<a href=#400 id=400 data-nosnippet>400</a>        <span class="macro">assert_eq!</span>(origin_recorder.cached_origin_count(), MAX_ORIGIN_COUNTERS);
+<a href=#401 id=401 data-nosnippet>401</a>        <span class="macro">assert!</span>(!origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-0"</span>));
+<a href=#402 id=402 data-nosnippet>402</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-1"</span>));
+<a href=#403 id=403 data-nosnippet>403</a>        <span class="macro">assert!</span>(origin_recorder.has_cached_origin(<span class="string">"container_id://test-container-200"</span>));
+<a href=#404 id=404 data-nosnippet>404</a>
+<a href=#405 id=405 data-nosnippet>405</a>        <span class="comment">// A retained origin's per-origin counter was actually registered and incremented once in the registry.
+<a href=#406 id=406 data-nosnippet>406</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#407 id=407 data-nosnippet>407</a>            recorder.counter((
+<a href=#408 id=408 data-nosnippet>408</a>                METRIC_EVENTS_RECEIVED_TOTAL,
+<a href=#409 id=409 data-nosnippet>409</a>                <span class="kw-2">&amp;</span>[
+<a href=#410 id=410 data-nosnippet>410</a>                    (<span class="string">"component_id"</span>, <span class="string">"dogstatsd_test"</span>),
+<a href=#411 id=411 data-nosnippet>411</a>                    (<span class="string">"component_type"</span>, <span class="string">"source"</span>),
+<a href=#412 id=412 data-nosnippet>412</a>                    (<span class="string">"message_type"</span>, MESSAGE_TYPE_METRICS),
+<a href=#413 id=413 data-nosnippet>413</a>                    (<span class="string">"listener_type"</span>, <span class="string">"udp"</span>),
+<a href=#414 id=414 data-nosnippet>414</a>                    (<span class="string">"origin"</span>, <span class="string">"container_id://test-container-1"</span>),
+<a href=#415 id=415 data-nosnippet>415</a>                ],
+<a href=#416 id=416 data-nosnippet>416</a>            )),
+<a href=#417 id=417 data-nosnippet>417</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>),
+<a href=#418 id=418 data-nosnippet>418</a>            <span class="string">"a retained origin's counter should reflect its single recorded metric"
+<a href=#419 id=419 data-nosnippet>419</a>        </span>);
+<a href=#420 id=420 data-nosnippet>420</a>    }
+<a href=#421 id=421 data-nosnippet>421</a>}
 </code></pre></div></section></main></body></html>

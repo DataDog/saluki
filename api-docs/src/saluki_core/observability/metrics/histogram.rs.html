@@ -123,4 +123,86 @@
 <a href=#123 id=123 data-nosnippet>123</a>
 <a href=#124 id=124 data-nosnippet>124</a>    buckets
 <a href=#125 id=125 data-nosnippet>125</a>}
+<a href=#126 id=126 data-nosnippet>126</a>
+<a href=#127 id=127 data-nosnippet>127</a><span class="attr">#[cfg(test)]
+<a href=#128 id=128 data-nosnippet>128</a></span><span class="kw">mod </span>tests {
+<a href=#129 id=129 data-nosnippet>129</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#130 id=130 data-nosnippet>130</a>
+<a href=#131 id=131 data-nosnippet>131</a>    <span class="attr">#[test]
+<a href=#132 id=132 data-nosnippet>132</a>    </span><span class="kw">fn </span>generates_log_linear_bucket_schedule() {
+<a href=#133 id=133 data-nosnippet>133</a>        <span class="comment">// Ported directly from the worked example in `histogram_buckets`'s own doc comment: with
+<a href=#134 id=134 data-nosnippet>134</a>        // base=2 and scale=4, the n-th pair is `(base*scale^n, midpoint(base*scale^n, base*scale^(n+1)))`,
+<a href=#135 id=135 data-nosnippet>135</a>        // producing the flattened sequence 2, 5, 8, 20, 32, 80, 128, 320, 512.
+<a href=#136 id=136 data-nosnippet>136</a>        </span><span class="kw">let </span>buckets = histogram_buckets::&lt;<span class="number">9</span>&gt;(<span class="number">2.0</span>, <span class="number">4.0</span>);
+<a href=#137 id=137 data-nosnippet>137</a>        <span class="kw">let </span>bounds: Vec&lt;f64&gt; = buckets.iter().map(|(bound, <span class="kw">_</span>)| <span class="kw-2">*</span>bound).collect();
+<a href=#138 id=138 data-nosnippet>138</a>        <span class="macro">assert_eq!</span>(bounds, <span class="macro">vec!</span>[<span class="number">2.0</span>, <span class="number">5.0</span>, <span class="number">8.0</span>, <span class="number">20.0</span>, <span class="number">32.0</span>, <span class="number">80.0</span>, <span class="number">128.0</span>, <span class="number">320.0</span>, <span class="number">512.0</span>]);
+<a href=#139 id=139 data-nosnippet>139</a>
+<a href=#140 id=140 data-nosnippet>140</a>        <span class="comment">// The string labels are the plain `Display` form of each upper bound.
+<a href=#141 id=141 data-nosnippet>141</a>        </span><span class="kw">let </span>labels: Vec&lt;<span class="kw-2">&amp;</span>str&gt; = buckets.iter().map(|(<span class="kw">_</span>, label)| <span class="kw-2">*</span>label).collect();
+<a href=#142 id=142 data-nosnippet>142</a>        <span class="macro">assert_eq!</span>(labels, <span class="macro">vec!</span>[<span class="string">"2"</span>, <span class="string">"5"</span>, <span class="string">"8"</span>, <span class="string">"20"</span>, <span class="string">"32"</span>, <span class="string">"80"</span>, <span class="string">"128"</span>, <span class="string">"320"</span>, <span class="string">"512"</span>]);
+<a href=#143 id=143 data-nosnippet>143</a>
+<a href=#144 id=144 data-nosnippet>144</a>        <span class="comment">// The generic (non-time) schedule uses base=1, scale=2.
+<a href=#145 id=145 data-nosnippet>145</a>        </span><span class="kw">let </span>non_time = histogram_buckets::&lt;<span class="number">6</span>&gt;(<span class="number">1.0</span>, <span class="number">2.0</span>);
+<a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">let </span>non_time_bounds: Vec&lt;f64&gt; = non_time.iter().map(|(bound, <span class="kw">_</span>)| <span class="kw-2">*</span>bound).collect();
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="macro">assert_eq!</span>(non_time_bounds, <span class="macro">vec!</span>[<span class="number">1.0</span>, <span class="number">1.5</span>, <span class="number">2.0</span>, <span class="number">3.0</span>, <span class="number">4.0</span>, <span class="number">6.0</span>]);
+<a href=#148 id=148 data-nosnippet>148</a>    }
+<a href=#149 id=149 data-nosnippet>149</a>
+<a href=#150 id=150 data-nosnippet>150</a>    <span class="attr">#[test]
+<a href=#151 id=151 data-nosnippet>151</a>    </span><span class="kw">fn </span>metric_name_suffix_selects_the_bucket_schedule() {
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="comment">// A `_seconds` suffix selects the time-oriented schedule; everything else uses the generic
+<a href=#153 id=153 data-nosnippet>153</a>        // non-time schedule, which starts at an upper bound of 1.0.
+<a href=#154 id=154 data-nosnippet>154</a>        </span><span class="kw">let </span>time = AggregatedHistogram::new(<span class="string">"request_latency_seconds"</span>);
+<a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>non_time = AggregatedHistogram::new(<span class="string">"request_count"</span>);
+<a href=#156 id=156 data-nosnippet>156</a>
+<a href=#157 id=157 data-nosnippet>157</a>        <span class="kw">let </span>time_first = time.buckets().next().expect(<span class="string">"time schedule has buckets"</span>).<span class="number">0</span>;
+<a href=#158 id=158 data-nosnippet>158</a>        <span class="kw">let </span>non_time_first = non_time.buckets().next().expect(<span class="string">"non-time schedule has buckets"</span>).<span class="number">0</span>;
+<a href=#159 id=159 data-nosnippet>159</a>
+<a href=#160 id=160 data-nosnippet>160</a>        <span class="macro">assert_eq!</span>(
+<a href=#161 id=161 data-nosnippet>161</a>            non_time_first, <span class="string">"1"</span>,
+<a href=#162 id=162 data-nosnippet>162</a>            <span class="string">"the non-time schedule starts at an upper bound of 1.0"
+<a href=#163 id=163 data-nosnippet>163</a>        </span>);
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="macro">assert_ne!</span>(
+<a href=#165 id=165 data-nosnippet>165</a>            time_first, non_time_first,
+<a href=#166 id=166 data-nosnippet>166</a>            <span class="string">"the `_seconds` suffix must select a different, time-oriented bucket schedule"
+<a href=#167 id=167 data-nosnippet>167</a>        </span>);
+<a href=#168 id=168 data-nosnippet>168</a>    }
+<a href=#169 id=169 data-nosnippet>169</a>
+<a href=#170 id=170 data-nosnippet>170</a>    <span class="attr">#[test]
+<a href=#171 id=171 data-nosnippet>171</a>    </span><span class="kw">fn </span>adds_weighted_samples_into_cumulative_buckets() {
+<a href=#172 id=172 data-nosnippet>172</a>        <span class="comment">// Using the non-time schedule (1, 1.5, 2, 3, 4, ...), a single value of 2.0 with weight 3 adds
+<a href=#173 id=173 data-nosnippet>173</a>        // to the sum/count by its weight and increments every cumulative "le" bucket whose upper bound
+<a href=#174 id=174 data-nosnippet>174</a>        // is &gt;= 2.0.
+<a href=#175 id=175 data-nosnippet>175</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>histogram = AggregatedHistogram::new(<span class="string">"queue_depth"</span>);
+<a href=#176 id=176 data-nosnippet>176</a>        histogram.add_sample(<span class="number">2.0</span>, <span class="number">3</span>);
+<a href=#177 id=177 data-nosnippet>177</a>
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="macro">assert_eq!</span>(histogram.count(), <span class="number">3</span>);
+<a href=#179 id=179 data-nosnippet>179</a>        <span class="macro">assert_eq!</span>(histogram.sum(), <span class="number">6.0</span>);
+<a href=#180 id=180 data-nosnippet>180</a>
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="kw">let </span>buckets: Vec&lt;(<span class="kw-2">&amp;</span>str, u64)&gt; = histogram.buckets().collect();
+<a href=#182 id=182 data-nosnippet>182</a>        <span class="macro">assert_eq!</span>(buckets[<span class="number">0</span>], (<span class="string">"1"</span>, <span class="number">0</span>));
+<a href=#183 id=183 data-nosnippet>183</a>        <span class="macro">assert_eq!</span>(buckets[<span class="number">1</span>], (<span class="string">"1.5"</span>, <span class="number">0</span>));
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="macro">assert_eq!</span>(buckets[<span class="number">2</span>], (<span class="string">"2"</span>, <span class="number">3</span>));
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="macro">assert_eq!</span>(buckets[<span class="number">3</span>], (<span class="string">"3"</span>, <span class="number">3</span>));
+<a href=#186 id=186 data-nosnippet>186</a>    }
+<a href=#187 id=187 data-nosnippet>187</a>
+<a href=#188 id=188 data-nosnippet>188</a>    <span class="attr">#[test]
+<a href=#189 id=189 data-nosnippet>189</a>    </span><span class="kw">fn </span>merge_sums_counts_sum_and_per_bucket_counts() {
+<a href=#190 id=190 data-nosnippet>190</a>        <span class="kw">let </span><span class="kw-2">mut </span>left = AggregatedHistogram::new(<span class="string">"queue_depth"</span>);
+<a href=#191 id=191 data-nosnippet>191</a>        left.add_sample(<span class="number">2.0</span>, <span class="number">1</span>);
+<a href=#192 id=192 data-nosnippet>192</a>
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="kw">let </span><span class="kw-2">mut </span>right = AggregatedHistogram::new(<span class="string">"queue_depth"</span>);
+<a href=#194 id=194 data-nosnippet>194</a>        right.add_sample(<span class="number">4.0</span>, <span class="number">2</span>);
+<a href=#195 id=195 data-nosnippet>195</a>
+<a href=#196 id=196 data-nosnippet>196</a>        left.merge(<span class="kw-2">&amp;</span>right);
+<a href=#197 id=197 data-nosnippet>197</a>
+<a href=#198 id=198 data-nosnippet>198</a>        <span class="comment">// Sum is weighted (2.0*1 + 4.0*2), count is total weight (1 + 2).
+<a href=#199 id=199 data-nosnippet>199</a>        </span><span class="macro">assert_eq!</span>(left.count(), <span class="number">3</span>);
+<a href=#200 id=200 data-nosnippet>200</a>        <span class="macro">assert_eq!</span>(left.sum(), <span class="number">10.0</span>);
+<a href=#201 id=201 data-nosnippet>201</a>
+<a href=#202 id=202 data-nosnippet>202</a>        <span class="kw">let </span>buckets: Vec&lt;(<span class="kw-2">&amp;</span>str, u64)&gt; = left.buckets().collect();
+<a href=#203 id=203 data-nosnippet>203</a>        <span class="comment">// The `2` bucket only counts the value 2.0 (weight 1); the `4` bucket counts both samples.
+<a href=#204 id=204 data-nosnippet>204</a>        </span><span class="macro">assert_eq!</span>(buckets[<span class="number">2</span>], (<span class="string">"2"</span>, <span class="number">1</span>));
+<a href=#205 id=205 data-nosnippet>205</a>        <span class="macro">assert_eq!</span>(buckets[<span class="number">4</span>], (<span class="string">"4"</span>, <span class="number">3</span>));
+<a href=#206 id=206 data-nosnippet>206</a>    }
+<a href=#207 id=207 data-nosnippet>207</a>}
 </code></pre></div></section></main></body></html>

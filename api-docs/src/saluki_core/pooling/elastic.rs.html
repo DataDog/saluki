@@ -554,5 +554,52 @@
 <a href=#554 id=554 data-nosnippet>554</a>        drop(first_item);
 <a href=#555 id=555 data-nosnippet>555</a>        drop(third_item);
 <a href=#556 id=556 data-nosnippet>556</a>    }
-<a href=#557 id=557 data-nosnippet>557</a>}
+<a href=#557 id=557 data-nosnippet>557</a>
+<a href=#558 id=558 data-nosnippet>558</a>    <span class="attr">#[tokio::test(start_paused = <span class="bool-val">true</span>)]
+<a href=#559 id=559 data-nosnippet>559</a>    </span><span class="kw">async fn </span>background_shrinker_shrinks_idle_pool_to_min_capacity() {
+<a href=#560 id=560 data-nosnippet>560</a>        <span class="kw">use </span><span class="kw">super</span>::SHRINKER_SLEEP_DURATION;
+<a href=#561 id=561 data-nosnippet>561</a>
+<a href=#562 id=562 data-nosnippet>562</a>        <span class="comment">// min=1, max=3: one item is preallocated, and up to two more can be burst-allocated on demand.
+<a href=#563 id=563 data-nosnippet>563</a>        </span><span class="kw">let </span>(pool, shrinker) = ElasticObjectPool::&lt;TestObject&gt;::with_capacity(<span class="string">"test"</span>, <span class="number">1</span>, <span class="number">3</span>);
+<a href=#564 id=564 data-nosnippet>564</a>
+<a href=#565 id=565 data-nosnippet>565</a>        <span class="comment">// Burst all the way to max capacity, then return every item so the pool is fully idle. The two
+<a href=#566 id=566 data-nosnippet>566</a>        // burst allocations register as recent "demand" that the shrinker's EWMA has to decay past
+<a href=#567 id=567 data-nosnippet>567</a>        // before it will start reclaiming items.
+<a href=#568 id=568 data-nosnippet>568</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>items = Vec::new();
+<a href=#569 id=569 data-nosnippet>569</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">3 </span>{
+<a href=#570 id=570 data-nosnippet>570</a>            <span class="kw">let </span><span class="kw-2">mut </span>acquire = spawn(pool.acquire());
+<a href=#571 id=571 data-nosnippet>571</a>            items.push(<span class="macro">assert_ready!</span>(acquire.poll()));
+<a href=#572 id=572 data-nosnippet>572</a>        }
+<a href=#573 id=573 data-nosnippet>573</a>        <span class="macro">assert_eq!</span>(pool.strategy.active.load(Acquire), <span class="number">3</span>);
+<a href=#574 id=574 data-nosnippet>574</a>        drop(items);
+<a href=#575 id=575 data-nosnippet>575</a>        <span class="macro">assert_eq!</span>(pool.strategy.available.available_permits(), <span class="number">3</span>);
+<a href=#576 id=576 data-nosnippet>576</a>
+<a href=#577 id=577 data-nosnippet>577</a>        <span class="comment">// Drive the real background shrinker one loop iteration per poll under paused time.
+<a href=#578 id=578 data-nosnippet>578</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>shrinker = spawn(shrinker);
+<a href=#579 id=579 data-nosnippet>579</a>        <span class="macro">assert_pending!</span>(shrinker.poll()); <span class="comment">// first iteration parks on the initial sleep
+<a href=#580 id=580 data-nosnippet>580</a>
+<a href=#581 id=581 data-nosnippet>581</a>        // With no further on-demand demand, the smoothed demand stays below the shrink threshold, so the
+<a href=#582 id=582 data-nosnippet>582</a>        // shrinker removes exactly one idle item per iteration.
+<a href=#583 id=583 data-nosnippet>583</a>        </span>tokio::time::advance(SHRINKER_SLEEP_DURATION).<span class="kw">await</span>;
+<a href=#584 id=584 data-nosnippet>584</a>        <span class="macro">assert_pending!</span>(shrinker.poll());
+<a href=#585 id=585 data-nosnippet>585</a>        <span class="macro">assert_eq!</span>(pool.strategy.active.load(Acquire), <span class="number">2</span>);
+<a href=#586 id=586 data-nosnippet>586</a>        <span class="macro">assert_eq!</span>(pool.strategy.available.available_permits(), <span class="number">2</span>);
+<a href=#587 id=587 data-nosnippet>587</a>
+<a href=#588 id=588 data-nosnippet>588</a>        tokio::time::advance(SHRINKER_SLEEP_DURATION).<span class="kw">await</span>;
+<a href=#589 id=589 data-nosnippet>589</a>        <span class="macro">assert_pending!</span>(shrinker.poll());
+<a href=#590 id=590 data-nosnippet>590</a>        <span class="macro">assert_eq!</span>(pool.strategy.active.load(Acquire), <span class="number">1</span>);
+<a href=#591 id=591 data-nosnippet>591</a>        <span class="macro">assert_eq!</span>(pool.strategy.available.available_permits(), <span class="number">1</span>);
+<a href=#592 id=592 data-nosnippet>592</a>
+<a href=#593 id=593 data-nosnippet>593</a>        <span class="comment">// Once the pool is back at its minimum capacity, further shrinker iterations leave it untouched:
+<a href=#594 id=594 data-nosnippet>594</a>        // the pool is documented to only ever shrink down to (never below) its minimum capacity.
+<a href=#595 id=595 data-nosnippet>595</a>        </span>tokio::time::advance(SHRINKER_SLEEP_DURATION).<span class="kw">await</span>;
+<a href=#596 id=596 data-nosnippet>596</a>        <span class="macro">assert_pending!</span>(shrinker.poll());
+<a href=#597 id=597 data-nosnippet>597</a>        <span class="macro">assert_eq!</span>(
+<a href=#598 id=598 data-nosnippet>598</a>            pool.strategy.active.load(Acquire),
+<a href=#599 id=599 data-nosnippet>599</a>            <span class="number">1</span>,
+<a href=#600 id=600 data-nosnippet>600</a>            <span class="string">"the shrinker must never shrink a pool below its minimum capacity"
+<a href=#601 id=601 data-nosnippet>601</a>        </span>);
+<a href=#602 id=602 data-nosnippet>602</a>        <span class="macro">assert_eq!</span>(pool.strategy.available.available_permits(), <span class="number">1</span>);
+<a href=#603 id=603 data-nosnippet>603</a>    }
+<a href=#604 id=604 data-nosnippet>604</a>}
 </code></pre></div></section></main></body></html>

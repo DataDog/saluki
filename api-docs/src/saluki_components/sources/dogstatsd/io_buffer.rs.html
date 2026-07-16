@@ -101,4 +101,128 @@
 <a href=#101 id=101 data-nosnippet>101</a>        <span class="self">self</span>.current.as_mut().unwrap()
 <a href=#102 id=102 data-nosnippet>102</a>    }
 <a href=#103 id=103 data-nosnippet>103</a>}
+<a href=#104 id=104 data-nosnippet>104</a>
+<a href=#105 id=105 data-nosnippet>105</a><span class="attr">#[cfg(test)]
+<a href=#106 id=106 data-nosnippet>106</a></span><span class="kw">mod </span>tests {
+<a href=#107 id=107 data-nosnippet>107</a>    <span class="kw">use </span>std::time::Duration;
+<a href=#108 id=108 data-nosnippet>108</a>
+<a href=#109 id=109 data-nosnippet>109</a>    <span class="kw">use </span>bytes::{Buf <span class="kw">as _</span>, BufMut <span class="kw">as _</span>};
+<a href=#110 id=110 data-nosnippet>110</a>    <span class="kw">use </span>saluki_core::pooling::FixedSizeObjectPool;
+<a href=#111 id=111 data-nosnippet>111</a>    <span class="kw">use </span>saluki_io::buf::{BytesBuffer, FixedSizeVec, ReadIoBuffer <span class="kw">as _</span>};
+<a href=#112 id=112 data-nosnippet>112</a>    <span class="kw">use </span>tokio::time::timeout;
+<a href=#113 id=113 data-nosnippet>113</a>
+<a href=#114 id=114 data-nosnippet>114</a>    <span class="kw">use </span><span class="kw">super</span>::IoBufferManager;
+<a href=#115 id=115 data-nosnippet>115</a>
+<a href=#116 id=116 data-nosnippet>116</a>    <span class="kw">const </span>BUFFER_CAPACITY: usize = <span class="number">16</span>;
+<a href=#117 id=117 data-nosnippet>117</a>
+<a href=#118 id=118 data-nosnippet>118</a>    <span class="kw">fn </span>test_pool(name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, count: usize) -&gt; FixedSizeObjectPool&lt;BytesBuffer&gt; {
+<a href=#119 id=119 data-nosnippet>119</a>        FixedSizeObjectPool::with_builder(name, count, || FixedSizeVec::with_capacity(BUFFER_CAPACITY))
+<a href=#120 id=120 data-nosnippet>120</a>    }
+<a href=#121 id=121 data-nosnippet>121</a>
+<a href=#122 id=122 data-nosnippet>122</a>    <span class="attr">#[tokio::test]
+<a href=#123 id=123 data-nosnippet>123</a>    </span><span class="kw">async fn </span>get_buffer_mut_acquires_buffer_when_none_is_held() {
+<a href=#124 id=124 data-nosnippet>124</a>        <span class="kw">let </span>pool = test_pool(<span class="string">"io-buffer-acquire"</span>, <span class="number">1</span>);
+<a href=#125 id=125 data-nosnippet>125</a>        <span class="kw">let </span><span class="kw-2">mut </span>manager = IoBufferManager {
+<a href=#126 id=126 data-nosnippet>126</a>            pool: <span class="kw-2">&amp;</span>pool,
+<a href=#127 id=127 data-nosnippet>127</a>            should_retain: <span class="bool-val">false</span>,
+<a href=#128 id=128 data-nosnippet>128</a>            current: <span class="prelude-val">None</span>,
+<a href=#129 id=129 data-nosnippet>129</a>        };
+<a href=#130 id=130 data-nosnippet>130</a>
+<a href=#131 id=131 data-nosnippet>131</a>        <span class="kw">let </span>buffer = manager.get_buffer_mut().<span class="kw">await</span>;
+<a href=#132 id=132 data-nosnippet>132</a>        <span class="macro">assert_eq!</span>(buffer.remaining(), <span class="number">0</span>, <span class="string">"a freshly acquired buffer has nothing to read"</span>);
+<a href=#133 id=133 data-nosnippet>133</a>        <span class="macro">assert_eq!</span>(buffer.capacity(), BUFFER_CAPACITY);
+<a href=#134 id=134 data-nosnippet>134</a>    }
+<a href=#135 id=135 data-nosnippet>135</a>
+<a href=#136 id=136 data-nosnippet>136</a>    <span class="attr">#[tokio::test]
+<a href=#137 id=137 data-nosnippet>137</a>    </span><span class="kw">async fn </span>get_buffer_mut_collapses_and_retains_remaining_data() {
+<a href=#138 id=138 data-nosnippet>138</a>        <span class="comment">// When the current buffer still has unread data, get_buffer_mut must keep that buffer, collapse it so the
+<a href=#139 id=139 data-nosnippet>139</a>        // unread tail moves to the front, and expose the freed capacity for the next socket read -- never dropping a
+<a href=#140 id=140 data-nosnippet>140</a>        // partial frame.
+<a href=#141 id=141 data-nosnippet>141</a>        </span><span class="kw">let </span>pool = test_pool(<span class="string">"io-buffer-collapse"</span>, <span class="number">1</span>);
+<a href=#142 id=142 data-nosnippet>142</a>        <span class="kw">let </span><span class="kw-2">mut </span>manager = IoBufferManager {
+<a href=#143 id=143 data-nosnippet>143</a>            pool: <span class="kw-2">&amp;</span>pool,
+<a href=#144 id=144 data-nosnippet>144</a>            should_retain: <span class="bool-val">false</span>,
+<a href=#145 id=145 data-nosnippet>145</a>            current: <span class="prelude-val">None</span>,
+<a href=#146 id=146 data-nosnippet>146</a>        };
+<a href=#147 id=147 data-nosnippet>147</a>
+<a href=#148 id=148 data-nosnippet>148</a>        {
+<a href=#149 id=149 data-nosnippet>149</a>            <span class="kw">let </span>buffer = manager.get_buffer_mut().<span class="kw">await</span>;
+<a href=#150 id=150 data-nosnippet>150</a>            buffer.put_slice(<span class="string">b"framed-data"</span>); <span class="comment">// 11 bytes written
+<a href=#151 id=151 data-nosnippet>151</a>            </span>buffer.advance(<span class="number">6</span>); <span class="comment">// consume "framed", leaving "-data" as a partial frame
+<a href=#152 id=152 data-nosnippet>152</a>            </span><span class="macro">assert_eq!</span>(buffer.chunk(), <span class="string">b"-data"</span>);
+<a href=#153 id=153 data-nosnippet>153</a>            <span class="comment">// Pre-collapse, only the trailing free space (capacity - written length) is writable.
+<a href=#154 id=154 data-nosnippet>154</a>            </span><span class="macro">assert_eq!</span>(buffer.remaining_mut(), BUFFER_CAPACITY - <span class="number">11</span>);
+<a href=#155 id=155 data-nosnippet>155</a>        }
+<a href=#156 id=156 data-nosnippet>156</a>
+<a href=#157 id=157 data-nosnippet>157</a>        <span class="kw">let </span>buffer = manager.get_buffer_mut().<span class="kw">await</span>;
+<a href=#158 id=158 data-nosnippet>158</a>        <span class="macro">assert_eq!</span>(
+<a href=#159 id=159 data-nosnippet>159</a>            buffer.chunk(),
+<a href=#160 id=160 data-nosnippet>160</a>            <span class="string">b"-data"</span>,
+<a href=#161 id=161 data-nosnippet>161</a>            <span class="string">"unread data must be preserved across the call"
+<a href=#162 id=162 data-nosnippet>162</a>        </span>);
+<a href=#163 id=163 data-nosnippet>163</a>        <span class="macro">assert_eq!</span>(buffer.remaining(), <span class="number">5</span>);
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="comment">// Post-collapse, the consumed prefix has been reclaimed as writable capacity.
+<a href=#165 id=165 data-nosnippet>165</a>        </span><span class="macro">assert_eq!</span>(buffer.remaining_mut(), BUFFER_CAPACITY - <span class="number">5</span>);
+<a href=#166 id=166 data-nosnippet>166</a>    }
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a>    <span class="attr">#[tokio::test]
+<a href=#169 id=169 data-nosnippet>169</a>    </span><span class="kw">async fn </span>get_buffer_mut_releases_drained_buffer_before_reacquiring() {
+<a href=#170 id=170 data-nosnippet>170</a>        <span class="comment">// Fairness contract (see module docs): a connection-oriented reader that has fully drained its buffer must
+<a href=#171 id=171 data-nosnippet>171</a>        // release it back to the pool *before* acquiring a replacement. With a single-slot pool this only makes
+<a href=#172 id=172 data-nosnippet>172</a>        // progress if the release happens first -- an acquire-before-release ordering would deadlock.
+<a href=#173 id=173 data-nosnippet>173</a>        </span><span class="kw">let </span>pool = test_pool(<span class="string">"io-buffer-release"</span>, <span class="number">1</span>);
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">let </span><span class="kw-2">mut </span>manager = IoBufferManager {
+<a href=#175 id=175 data-nosnippet>175</a>            pool: <span class="kw-2">&amp;</span>pool,
+<a href=#176 id=176 data-nosnippet>176</a>            should_retain: <span class="bool-val">false</span>,
+<a href=#177 id=177 data-nosnippet>177</a>            current: <span class="prelude-val">None</span>,
+<a href=#178 id=178 data-nosnippet>178</a>        };
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a>        {
+<a href=#181 id=181 data-nosnippet>181</a>            <span class="kw">let </span>buffer = manager.get_buffer_mut().<span class="kw">await</span>;
+<a href=#182 id=182 data-nosnippet>182</a>            buffer.put_slice(<span class="string">b"done"</span>);
+<a href=#183 id=183 data-nosnippet>183</a>            buffer.advance(<span class="number">4</span>); <span class="comment">// fully consumed: nothing remaining
+<a href=#184 id=184 data-nosnippet>184</a>            </span><span class="macro">assert_eq!</span>(buffer.remaining(), <span class="number">0</span>);
+<a href=#185 id=185 data-nosnippet>185</a>        }
+<a href=#186 id=186 data-nosnippet>186</a>
+<a href=#187 id=187 data-nosnippet>187</a>        <span class="kw">let </span>reacquired = timeout(Duration::from_secs(<span class="number">5</span>), manager.get_buffer_mut())
+<a href=#188 id=188 data-nosnippet>188</a>            .<span class="kw">await
+<a href=#189 id=189 data-nosnippet>189</a>            </span>.expect(<span class="string">"draining then reacquiring on a saturated pool must not deadlock"</span>);
+<a href=#190 id=190 data-nosnippet>190</a>        <span class="macro">assert_eq!</span>(reacquired.remaining(), <span class="number">0</span>);
+<a href=#191 id=191 data-nosnippet>191</a>        <span class="macro">assert_eq!</span>(reacquired.capacity(), BUFFER_CAPACITY);
+<a href=#192 id=192 data-nosnippet>192</a>    }
+<a href=#193 id=193 data-nosnippet>193</a>
+<a href=#194 id=194 data-nosnippet>194</a>    <span class="attr">#[tokio::test]
+<a href=#195 id=195 data-nosnippet>195</a>    </span><span class="kw">async fn </span>connectionless_stream_reuses_buffer_across_reads() {
+<a href=#196 id=196 data-nosnippet>196</a>        <span class="comment">// Connectionless streams keep their buffer (`should_retain = true`) rather than releasing it, even once
+<a href=#197 id=197 data-nosnippet>197</a>        // drained. The retain-vs-release decision for an empty buffer isn't observable from the buffer alone (both
+<a href=#198 id=198 data-nosnippet>198</a>        // yield an empty buffer), but this confirms the connectionless path preserves unread data across calls and
+<a href=#199 id=199 data-nosnippet>199</a>        // keeps returning a usable buffer once drained.
+<a href=#200 id=200 data-nosnippet>200</a>        </span><span class="kw">let </span>pool = test_pool(<span class="string">"io-buffer-connectionless"</span>, <span class="number">1</span>);
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span><span class="kw-2">mut </span>manager = IoBufferManager {
+<a href=#202 id=202 data-nosnippet>202</a>            pool: <span class="kw-2">&amp;</span>pool,
+<a href=#203 id=203 data-nosnippet>203</a>            should_retain: <span class="bool-val">true</span>,
+<a href=#204 id=204 data-nosnippet>204</a>            current: <span class="prelude-val">None</span>,
+<a href=#205 id=205 data-nosnippet>205</a>        };
+<a href=#206 id=206 data-nosnippet>206</a>
+<a href=#207 id=207 data-nosnippet>207</a>        {
+<a href=#208 id=208 data-nosnippet>208</a>            <span class="kw">let </span>buffer = manager.get_buffer_mut().<span class="kw">await</span>;
+<a href=#209 id=209 data-nosnippet>209</a>            buffer.put_slice(<span class="string">b"partial"</span>);
+<a href=#210 id=210 data-nosnippet>210</a>            buffer.advance(<span class="number">3</span>); <span class="comment">// leave "tial" unread
+<a href=#211 id=211 data-nosnippet>211</a>        </span>}
+<a href=#212 id=212 data-nosnippet>212</a>
+<a href=#213 id=213 data-nosnippet>213</a>        {
+<a href=#214 id=214 data-nosnippet>214</a>            <span class="kw">let </span>buffer = manager.get_buffer_mut().<span class="kw">await</span>;
+<a href=#215 id=215 data-nosnippet>215</a>            <span class="macro">assert_eq!</span>(
+<a href=#216 id=216 data-nosnippet>216</a>                buffer.chunk(),
+<a href=#217 id=217 data-nosnippet>217</a>                <span class="string">b"tial"</span>,
+<a href=#218 id=218 data-nosnippet>218</a>                <span class="string">"connectionless reuse must preserve unread data"
+<a href=#219 id=219 data-nosnippet>219</a>            </span>);
+<a href=#220 id=220 data-nosnippet>220</a>            buffer.advance(<span class="number">4</span>); <span class="comment">// drain it fully
+<a href=#221 id=221 data-nosnippet>221</a>        </span>}
+<a href=#222 id=222 data-nosnippet>222</a>
+<a href=#223 id=223 data-nosnippet>223</a>        <span class="kw">let </span>buffer = manager.get_buffer_mut().<span class="kw">await</span>;
+<a href=#224 id=224 data-nosnippet>224</a>        <span class="macro">assert_eq!</span>(buffer.remaining(), <span class="number">0</span>);
+<a href=#225 id=225 data-nosnippet>225</a>        <span class="macro">assert_eq!</span>(buffer.capacity(), BUFFER_CAPACITY);
+<a href=#226 id=226 data-nosnippet>226</a>    }
+<a href=#227 id=227 data-nosnippet>227</a>}
 </code></pre></div></section></main></body></html>
