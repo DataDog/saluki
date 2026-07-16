@@ -88,8 +88,7 @@ pub async fn handle_run_command(
 
     // A static snapshot of the local sources, used only for decisions the Agent stream can never
     // change: whether we run standalone, and the remote-agent registration parameters.
-    let bootstrap = loaded.raw_config();
-    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap)
+    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&loaded.raw_config())
         .error_context("Failed to load data plane configuration.")?;
     let standalone = bootstrap_dp_config.standalone_mode();
 
@@ -105,7 +104,7 @@ pub async fn handle_run_command(
         (config_sys, None)
     } else {
         // Blocks until the Core Agent acknowledges registration.
-        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&bootstrap, &bootstrap_dp_config)
+        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&loaded.raw_config(), &bootstrap_dp_config)
             .await
             .error_context("Failed to bootstrap remote agent state.")?;
 
@@ -126,15 +125,14 @@ pub async fn handle_run_command(
 
     // Hand un-migrated components the resolved configuration as the legacy `GenericConfiguration`
     // they still read from. Raw reads go through `config`; typed/live reads go through `config_sys`.
-    let config = config_sys.raw_map();
-    let dp_config = DataPlaneConfiguration::from_configuration(&config)
+    let dp_config = DataPlaneConfiguration::from_configuration(&config_sys.raw_map())
         .error_context("Failed to load data plane configuration.")?;
 
     // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative
     // config, so reload logging to match. Standalone resolves the same local sources seen at
     // bootstrap, making a reload redundant.
     if !standalone {
-        match LoggingConfigurationTranslator::translate(&config) {
+        match LoggingConfigurationTranslator::translate(&config_sys.raw_map()) {
             Ok(logging_config) => {
                 if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
                     warn!(
@@ -156,21 +154,22 @@ pub async fn handle_run_command(
     }
 
     let active_pipelines = active_pipelines(&dp_config);
-    check_and_warn_config(&config, &active_pipelines).error_context("Incompatible configuration detected.")?;
+    check_and_warn_config(&config_sys, &active_pipelines).error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
     let (env_provider, maybe_env_supervisor) =
-        ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
+        ADPEnvironmentProvider::from_configuration(&config_sys, &dp_config, &component_registry, &health_registry)
+            .await?;
 
     // Create the blueprint for our primary topology.
     let (mut blueprint, control_surfaces) =
-        create_topology(&config, &config_sys, &dp_config, &env_provider, &component_registry).await?;
+        create_topology(&config_sys, &dp_config, &env_provider, &component_registry).await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
-        &config,
+        &config_sys,
         &dp_config,
         &component_registry,
         health_registry.clone(),
@@ -183,7 +182,7 @@ pub async fn handle_run_command(
     .error_context("Failed to create internal supervisor.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
+    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config_sys.raw_map())?;
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
@@ -300,11 +299,13 @@ fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
 /// individual keys are logged at error level during iteration.
 ///
 fn check_and_warn_config(
-    config: &GenericConfiguration, active_pipelines: &HashSet<Pipeline>,
+    config: &ConfigurationSystem, active_pipelines: &HashSet<Pipeline>,
 ) -> Result<(), GenericError> {
     let classifier = ConfigClassifier::new();
     let mut high_severity_incompatibilities = 0u32;
     debug!("Analyzing configuration.");
+    // TODO: transfer this functionality to the config system
+    let config = config.raw_map();
     for (key, val) in config
         .flattened_keys()
         .error_context("Unable to flatten configuration into a list of dot-separated keys.")?
@@ -372,8 +373,8 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
 }
 
 async fn create_topology(
-    config: &GenericConfiguration, config_system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration,
-    env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    config_system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
+    component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint.with_shutdown_timeout(dp_config.stop_timeout());
@@ -400,44 +401,46 @@ async fn create_topology(
         || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(&config_system.raw_map())
             .error_context("Failed to configure Datadog forwarder.")?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
     if dp_config.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
+        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), dp_config, env_provider)
+            .await?;
     }
 
     if dp_config.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
     if dp_config.events_pipeline_required() {
-        add_baseline_events_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
     if dp_config.service_checks_pipeline_required() {
-        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
     if dp_config.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
     // Now we move on to our actual data pipelines.
     if dp_config.checks().enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        add_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
     if dp_config.dogstatsd().enabled() {
         let dsd_control_surface =
-            add_dsd_pipeline_to_blueprint(&mut blueprint, config, config_system, env_provider).await?;
+            add_dsd_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), config_system, env_provider)
+                .await?;
         control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
     if dp_config.otlp().enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), dp_config, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
