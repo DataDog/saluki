@@ -23,6 +23,7 @@ otlp_config:
   receiver:
     protocols:
       grpc:
-        endpoint: "0.0.0.0:4317"
+        endpoint: "0.0.0.0:54317"
+        max_recv_msg_size_mib: 4
   traces:
     enable_otlp_compute_top_level_by_span_kind: true

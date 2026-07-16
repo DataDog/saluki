@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    env,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -840,9 +841,15 @@ async fn add_otlp_pipeline_to_blueprint(
             .get_hostname()
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
-        let otlp_config = OtlpConfiguration::from_configuration(config)?
+        let mut otlp_config = OtlpConfiguration::from_configuration(config)?
             .with_default_hostname(default_hostname)
             .with_workload_provider(env_provider.workload().clone());
+        if let Ok(grpc_endpoint) = env::var("DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_GRPC_ENDPOINT") {
+            otlp_config = otlp_config.with_grpc_endpoint(grpc_endpoint);
+        }
+        if let Ok(http_endpoint) = env::var("DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_HTTP_ENDPOINT") {
+            otlp_config = otlp_config.with_http_endpoint(http_endpoint);
+        }
 
         blueprint
             // Components.
