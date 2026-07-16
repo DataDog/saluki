@@ -157,6 +157,7 @@ impl Default for LogsConfig {
     }
 }
 
+// TODO: delete when this component uses typed config
 fn deserialize_histogram_mode<'de, D>(deserializer: D) -> Result<HistogramMode, D::Error>
 where
     D: Deserializer<'de>,
