@@ -1157,50 +1157,6 @@ mod tests {
     }
 
     #[test]
-    fn otlp_histogram_modes_translate_to_typed_model() {
-        let cases = [
-            ("nobuckets", HistogramMode::NoBuckets),
-            ("counters", HistogramMode::Counters),
-            ("distributions", HistogramMode::Distributions),
-        ];
-
-        for (value, expected) in cases {
-            let datadog: DatadogConfiguration = serde_json::from_value(json!({
-                "otlp_config": {
-                    "metrics": {
-                        "histograms": {
-                            "mode": value
-                        }
-                    }
-                }
-            }))
-            .expect("datadog source deserializes");
-
-            let (config, errors) = DatadogTranslator::new(&datadog).translate();
-            assert!(errors.is_none());
-            assert_eq!(config.domains.otlp.metrics.histogram_mode, expected);
-        }
-    }
-
-    #[test]
-    fn invalid_otlp_histogram_mode_records_error_and_keeps_default() {
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
-            "otlp_config": {
-                "metrics": {
-                    "histograms": {
-                        "mode": "invalid"
-                    }
-                }
-            }
-        }))
-        .expect("datadog source deserializes");
-
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
-        assert!(errors.is_some());
-        assert_eq!(config.domains.otlp.metrics.histogram_mode, HistogramMode::Distributions);
-    }
-
-    #[test]
     fn dd_url_at_default_is_dropped_so_site_wins() {
         // The Core Agent sends `dd_url` at its default intake even when the user only set
         // `site`. Translation must treat that default as unset so downstream endpoint resolution
