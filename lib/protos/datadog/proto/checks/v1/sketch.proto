@@ -2,12 +2,9 @@ syntax = "proto3";
 
 package datadog.checks.v1.sketch;
 
-// Sketch carries a pre-aggregated DDSketch produced by a check.
-//
-// The wire format is aligned with the Datadog Agent's sketch_payload
-// format (see DataDog/agent-payload v5 SketchPayload.Sketch.Dogsketch)
-// so receivers can convert directly to the agent's internal Sketch
-// type without a separate sketches-go round-trip.
+// Sketch carries a pre-aggregated DDSketch produced by a check. Its bin
+// encoding matches the Datadog Agent's sketch payload so a receiver can
+// convert it to its internal sketch type directly.
 message Sketch {
     // Metric name (e.g. "http.request.duration").
     string name = 1;
@@ -30,10 +27,9 @@ message Sketch {
     Dogsketch dogsketch = 6;
 }
 
-// Dogsketch is the bin-encoded DDSketch payload. Bin keys (k) and
-// counts (n) are parallel arrays — k[i] is the bin index and n[i] the
-// number of observations in that bin. This matches the Datadog Agent's
-// SketchPayload.Sketch.Dogsketch definition exactly.
+// Dogsketch is the bin-encoded DDSketch body. Bin keys (k) and counts
+// (n) are parallel arrays: k[i] is the bin index and n[i] the number of
+// observations in that bin.
 message Dogsketch {
     int64 ts = 1;
     int64 cnt = 2;

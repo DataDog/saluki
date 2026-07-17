@@ -155,7 +155,7 @@ fn main() {
         .compile_protos(
             &[
                 "proto/checks/v1/checks.proto",
-                "proto/checks/v1/acr_ipc.proto",
+                "proto/checks/v1/check_runner.proto",
                 "proto/checks/v1/metric.proto",
                 "proto/checks/v1/log.proto",
                 "proto/checks/v1/service_check.proto",

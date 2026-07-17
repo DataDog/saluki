@@ -4,23 +4,30 @@ package datadog.checks.v1;
 
 import "checks/v1/checks.proto";
 
+// Known protocol versions
+enum ProtocolVersion {
+  PROTOCOL_VERSION_UNSPECIFIED = 0;
+  PROTOCOL_VERSION_V1 = 1;
+}
+
 // Handshake: client -> server
-message Hello {
-  uint32 protocol_version = 1;
+message HandshakeRequest {
+  ProtocolVersion protocol_version = 1;
   string client_id = 2;
   string client_version = 3;
 }
 
 // Handshake: server -> client
-message HelloResp {
-  uint32 protocol_version = 1;
+message HandshakeResponse {
+  ProtocolVersion protocol_version = 1;
   string server_id = 2;
-  bool accepted = 3;
-  string reject_reason = 4;
+  string server_version = 3;
+  bool accepted = 4;
+  string reject_reason = 5;
 }
 
-// Configuration: server -> client (unsolicited)
-message ConfigData {
+// A single config update the server streams to the client
+message StreamConfigResponse {
   EnrichmentData enrichment = 1;
   repeated CheckInstance checks = 2;
   map<string, string> agent_config = 3;
@@ -55,8 +62,8 @@ message CheckInstance {
   bytes init_config = 5;
 }
 
-// Check data: client -> server (batched)
-message CheckDataMsg {
+// Batched check data: client -> server
+message SendCheckDataRequest {
   uint64 sequence_id = 1;
   string check_name = 2;
   string instance_name = 3;
@@ -64,36 +71,36 @@ message CheckDataMsg {
   repeated CheckData data = 5;
 }
 
-// Check data acknowledgement: server -> client
-message CheckDataAck {
+// Acknowledgement of a check-data batch: server -> client
+message SendCheckDataResponse {
   uint64 sequence_id = 1;
   bool success = 2;
   string error = 3;
 }
 
-// Check result: client -> server
-message CheckResultMsg {
+// Result of a completed check run: client -> server
+message SendCheckResultRequest {
   string check_name = 1;
   string instance_name = 2;
   string check_id = 3;
   string error = 4;
 }
 
-// Trivial request/response types for RPCs that don't need a body.
+// Empty request/response types for RPCs that don't need a body
 message StreamConfigRequest {}
 message SendCheckResultResponse {}
 
-// gRPC service for ACR <-> ADP IPC.
-service AcrIpc {
-  // Handshake — first call after connecting.
-  rpc Handshake(Hello) returns (HelloResp);
+// gRPC service a check runner uses to hand its output to a host process
+service CheckRunner {
+  // Handshake — the first call after connecting.
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
 
   // Check data submission with acknowledgement.
-  rpc SendCheckData(CheckDataMsg) returns (CheckDataAck);
+  rpc SendCheckData(SendCheckDataRequest) returns (SendCheckDataResponse);
 
   // Check result reporting.
-  rpc SendCheckResult(CheckResultMsg) returns (SendCheckResultResponse);
+  rpc SendCheckResult(SendCheckResultRequest) returns (SendCheckResultResponse);
 
-  // Server pushes config updates to the client as a stream.
-  rpc StreamConfig(StreamConfigRequest) returns (stream ConfigData);
+  // Server-streamed config updates.
+  rpc StreamConfig(StreamConfigRequest) returns (stream StreamConfigResponse);
 }

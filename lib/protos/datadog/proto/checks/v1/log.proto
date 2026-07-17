@@ -13,10 +13,6 @@ enum LogLevel {
 }
 
 // Log carries a single log record produced by an integration check.
-//
-// Fields 1 and 2 mirror the original minimal shape and stay for backward
-// compatibility. Fields 3-8 are additive: proto3 default-empty values are
-// wire-compatible with peers that don't populate them.
 message Log {
     string message = 1;
     LogLevel level = 2;

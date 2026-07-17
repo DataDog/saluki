@@ -2,15 +2,8 @@ syntax = "proto3";
 
 package datadog.checks.v1.histogram_bucket;
 
-// HistogramBucket carries a pre-aggregated histogram bucket produced
-// by an OpenMetrics / Prometheus-style integration. It is the wire
-// shape for both the agent's `Sender.HistogramBucket` and
-// `Sender.OpenmetricsBucket` upcalls (see
-// pkg/aggregator/sender/sender.go on the receiving side); the two
-// differ only in whether the producer is emitting many buckets per
-// (name, tags) context (`HistogramBucket`, multiple_buckets=true) or
-// exactly one (`OpenmetricsBucket`, multiple_buckets=false, the
-// default for Python `aggregator.submit_histogram_bucket`).
+// HistogramBucket carries a single pre-aggregated histogram bucket
+// produced by an OpenMetrics / Prometheus-style integration
 message HistogramBucket {
     // Metric name (e.g. "http.request.duration.count").
     string name = 1;
@@ -41,9 +34,15 @@ message HistogramBucket {
     // zero recently (e.g. a freshly-scraped target).
     bool flush_first_value = 8;
 
-    // Distinguishes the two sender upcalls. False (the default)
-    // routes to `Sender.OpenmetricsBucket`; true routes to
-    // `Sender.HistogramBucket`. Python `submit_histogram_bucket`
-    // always lands as false.
-    bool multiple_buckets = 9;
+    // true = several buckets share this metric context, told apart only by
+    // their bounds
+    //
+    // false = one bucket per context with bounds encoded in the tags (default)
+    //
+    // For monotonic buckets this selects whether the receiver keys delta 
+    // tracking by context alone or by context and bounds.
+    //
+    // Python / OpenMetrics checks always emit false. Go core checks that
+    // submit whole histograms set it true.
+    bool multiple_buckets_per_context = 9;
 }

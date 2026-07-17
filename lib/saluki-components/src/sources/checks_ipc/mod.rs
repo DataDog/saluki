@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use datadog_protos::checks::{
-    acr_ipc_server::{AcrIpc, AcrIpcServer},
     check_data::Data,
+    check_runner_server::{CheckRunner, CheckRunnerServer},
     event::{AlertType as ProtoAlertType, Priority as ProtoPriority},
     log::LogLevel,
     metric::MetricType,
     service_check::Status as SvcStatus,
-    CheckDataAck, CheckDataMsg, CheckResultMsg, ConfigData, Hello, HelloResp, SendCheckResultResponse,
-    StreamConfigRequest,
+    HandshakeRequest, HandshakeResponse, ProtocolVersion, SendCheckDataRequest, SendCheckDataResponse,
+    SendCheckResultRequest, SendCheckResultResponse, StreamConfigRequest, StreamConfigResponse,
 };
 use futures::stream::{self, Stream};
 use saluki_common::task::HandleExt as _;
@@ -44,15 +44,6 @@ use tracing::{debug, info, warn};
 const fn default_grpc_endpoint() -> ListenAddress {
     ListenAddress::any_tcp(5105)
 }
-
-/// AcrIpc protocol version this server speaks. Bumped on
-/// wire-incompatible changes; today the protocol is wire-additive so
-/// we stay on 1.
-const PROTOCOL_VERSION: u32 = 1;
-
-/// Identifier surfaced in the Handshake response so a client can tell
-/// which server flavor it connected to.
-const SERVER_ID: &str = "saluki-checks-ipc";
 
 // Named outputs the source dispatches into. Defined as constants so the
 // `outputs()` declaration and the per-event dispatch match can't drift.
@@ -129,14 +120,14 @@ impl Source for ChecksIPC {
 
         let (events_tx, mut events_rx) = mpsc::channel(16);
 
-        let grpc_server = Server::builder().add_service(AcrIpcServer::new(AcrIpcService {
+        let grpc_server = Server::builder().add_service(CheckRunnerServer::new(CheckRunnerService {
             events_tx,
             default_hostname: self.default_hostname.clone(),
         }));
 
         let grpc_socket_addr = match self.grpc_endpoint {
             ListenAddress::Tcp(addr) => addr,
-            _ => return Err(generic_error!("AcrIpc gRPC endpoint must be a TCP address.")),
+            _ => return Err(generic_error!("Check runner gRPC endpoint must be a TCP address.")),
         };
         context
             .topology_context()
@@ -175,38 +166,41 @@ impl Source for ChecksIPC {
     }
 }
 
-/// Server-side implementation of the AcrIpc gRPC service. ACR-shaped
-/// clients (the agent-check-runner crate's IPC destination, the in-tree
-/// fake test server, etc.) connect, hand off check data, and receive
-/// per-batch acks. This service pushes received events through
-/// `events_tx` to the source's run loop, which fans them out to the
-/// topology's named outputs.
-struct AcrIpcService {
+/// Server-side implementation of the `CheckRunner` gRPC service. Check
+/// runners connect, hand off check data, and receive per-batch ACKs.
+/// Received events are pushed through `events_tx` to the source's run
+/// loop, which fans them out to the topology's named outputs.
+struct CheckRunnerService {
     events_tx: mpsc::Sender<Event>,
     default_hostname: MetaString,
 }
 
 #[async_trait]
-impl AcrIpc for AcrIpcService {
-    async fn handshake(&self, request: tonic::Request<Hello>) -> Result<Response<HelloResp>, Status> {
+impl CheckRunner for CheckRunnerService {
+    async fn handshake(
+        &self, request: tonic::Request<HandshakeRequest>,
+    ) -> Result<Response<HandshakeResponse>, Status> {
         let hello = request.into_inner();
         info!(
             client_id = %hello.client_id,
             client_version = %hello.client_version,
             client_protocol_version = hello.protocol_version,
-            "ACR client connected.",
+            "Check runner connected.",
         );
-        Ok(Response::new(HelloResp {
-            protocol_version: PROTOCOL_VERSION,
-            server_id: SERVER_ID.to_string(),
+
+        let app_details = saluki_metadata::get_app_details();
+        Ok(Response::new(HandshakeResponse {
+            protocol_version: ProtocolVersion::V1 as i32,
+            server_id: app_details.identifier().to_string(),
+            server_version: app_details.version().raw().to_string(),
             accepted: true,
             reject_reason: String::new(),
         }))
     }
 
     async fn send_check_data(
-        &self, request: tonic::Request<CheckDataMsg>,
-    ) -> Result<Response<CheckDataAck>, Status> {
+        &self, request: tonic::Request<SendCheckDataRequest>,
+    ) -> Result<Response<SendCheckDataResponse>, Status> {
         let msg = request.into_inner();
         let sequence_id = msg.sequence_id;
 
@@ -217,7 +211,7 @@ impl AcrIpc for AcrIpcService {
             };
             if let Err(e) = self.events_tx.send(event).await {
                 warn!("Failed to forward event to source pipeline: {:?}", e);
-                return Ok(Response::new(CheckDataAck {
+                return Ok(Response::new(SendCheckDataResponse {
                     sequence_id,
                     success: false,
                     error: format!("forward failed: {}", e),
@@ -225,7 +219,7 @@ impl AcrIpc for AcrIpcService {
             }
         }
 
-        Ok(Response::new(CheckDataAck {
+        Ok(Response::new(SendCheckDataResponse {
             sequence_id,
             success: true,
             error: String::new(),
@@ -233,7 +227,7 @@ impl AcrIpc for AcrIpcService {
     }
 
     async fn send_check_result(
-        &self, request: tonic::Request<CheckResultMsg>,
+        &self, request: tonic::Request<SendCheckResultRequest>,
     ) -> Result<Response<SendCheckResultResponse>, Status> {
         let msg = request.into_inner();
         if msg.error.is_empty() {
@@ -253,25 +247,23 @@ impl AcrIpc for AcrIpcService {
         Ok(Response::new(SendCheckResultResponse {}))
     }
 
-    type StreamConfigStream = Pin<Box<dyn Stream<Item = Result<ConfigData, Status>> + Send + 'static>>;
+    type StreamConfigStream = Pin<Box<dyn Stream<Item = Result<StreamConfigResponse, Status>> + Send + 'static>>;
 
     async fn stream_config(
         &self, _request: tonic::Request<StreamConfigRequest>,
     ) -> Result<Response<Self::StreamConfigStream>, Status> {
-        // ADP is purely a check-data sink; it has no autodiscovery
-        // configs to push back to the client. Hold the stream open
-        // (forever pending) so the client doesn't tight-loop reconnect
-        // — its `Ok(None)` arm treats stream completion as a signal to
-        // reconnect. The stream stays alive until the underlying
-        // connection drops, at which point the gRPC layer terminates
-        // the call.
+        // This source only consumes check data; it has no autodiscovery
+        // configs to push back. Hold the stream open (forever pending)
+        // rather than completing it, so clients that reconnect on stream
+        // completion don't tight-loop. The stream ends when the underlying
+        // connection drops and the gRPC layer terminates the call.
         Ok(Response::new(Box::pin(stream::pending())))
     }
 }
 
 /// Translates a single received `CheckData` payload into a saluki `Event`,
 /// returning `None` for variants that the source intentionally drops
-/// (unsupported payload shapes, malformed enums, etc).
+/// (bogus or unsupported data).
 fn data_to_event(data: Data, default_hostname: &MetaString) -> Option<Event> {
     match data {
         Data::Metric(metric) => metric_to_event(metric, default_hostname),
@@ -279,28 +271,25 @@ fn data_to_event(data: Data, default_hostname: &MetaString) -> Option<Event> {
         Data::Event(event) => Some(eventd_to_event(event)),
         Data::ServiceCheck(sc) => service_check_to_event(sc),
         Data::Sketch(_) => {
-            // DDSketch reception requires a public `DDSketch::from_bins`
-            // (or equivalent) constructor in saluki's ddsketch crate;
-            // today `insert_raw_bin` is `pub(crate)` only. Drop the
-            // payload for now — the wire format and ACR-side encoder
-            // are in place so the unblock is purely a follow-up on the
-            // ddsketch crate's surface area.
-            debug!("AcrIpc Sketch payload received; sketch ingestion not yet implemented.");
+            // Ingesting DDSketch data requires a public `DDSketch::from_bins`
+            // (or equivalent) constructor in saluki's ddsketch crate.
+            // Today, `insert_raw_bin` is `pub(crate)` only.
+            // Implementing this functionality just requires a public constructor.
+            debug!("Sketch payload received; sketch ingestion not yet implemented.");
             None
         }
         Data::EventPlatformEvent(_) => {
-            // Event-platform events are an Agent-internal event-pipeline
-            // concept (DBM, NPM, etc.) with no native saluki Event
-            // equivalent. ADP intentionally doesn't surface them.
-            debug!("AcrIpc EventPlatformEvent payload received; not handled by checks_ipc source.");
+            // EVP events not yet implemented in saluki
+            debug!("EventPlatformEvent payload received; not handled by checks_ipc source.");
             None
         }
         Data::HistogramBucket(_) => {
             // Pre-aggregated buckets target the agent's
             // `Sender.HistogramBucket` / `Sender.OpenmetricsBucket`
-            // upcalls; saluki's metric pipeline has no equivalent
-            // ingestion path today.
-            debug!("AcrIpc HistogramBucket payload received; not handled by checks_ipc source.");
+            // upcalls; saluki's metric pipeline has no equivalent ingestion
+            // path today.
+            // Implementing this functionality just requires a public constructor.
+            debug!("HistogramBucket payload received; not handled by checks_ipc source.");
             None
         }
     }
@@ -332,20 +321,20 @@ fn metric_to_event(metric: datadog_protos::checks::metric::Metric, default_hostn
         }
         MetricType::Histogram => Metric::histogram(context, (metric.timestamp, metric.value)),
         MetricType::MonotonicCount => {
-            // Monotonic counts ship absolute readings (e.g. /proc/stat
-            // ticks); the receiver is responsible for diffing
+            // Monotonic counts ship absolute readings which should never go backward
+            // (e.g. /proc/stat ticks). The receiver is responsible for diffing
             // successive samples to produce the delta. Saluki's
-            // aggregator has no monotonic-aware sink — forwarding as a
+            // aggregator has no monotonic-aware sink, and forwarding as a
             // Counter would sum absolute values into nonsense. Drop
             // until ADP grows a monotonic ingest path.
-            debug!("AcrIpc MonotonicCount metric received; not yet supported by checks_ipc source.");
+            debug!("MonotonicCount metric received; not yet supported by checks_ipc source.");
             return None;
         }
         MetricType::Historate => {
             // Historate is a rate over histogram buckets; degrading to
             // Histogram loses the rate semantics. No native saluki
             // equivalent today.
-            debug!("AcrIpc Historate metric received; not yet supported by checks_ipc source.");
+            debug!("Historate metric received; not yet supported by checks_ipc source.");
             return None;
         }
         MetricType::Unspecified => {
@@ -365,9 +354,8 @@ fn log_to_event(log: datadog_protos::checks::log::Log) -> Event {
 
     // ACR encodes additional_properties values as JSON-encoded strings
     // (since proto's map<string,string> can't carry typed payloads
-    // directly); decode each back to a JsonValue for saluki's typed
-    // map. Entries that fail to parse are dropped — losing one
-    // attribute is preferable to losing the whole log.
+    // directly); decode each back to a JsonValue for saluki's typed map.
+    // Entries that fail to parse are dropped to avoid losing the whole log.
     let additional_properties: HashMap<MetaString, JsonValue> = log
         .additional_properties
         .into_iter()
@@ -782,7 +770,8 @@ mod tests {
 
     #[test]
     fn eventd_hostname_propagates() {
-        let event = data_to_event_for_tests(event_data("title", "body", 0, &[], "host-b")).expect("event should convert");
+        let event =
+            data_to_event_for_tests(event_data("title", "body", 0, &[], "host-b")).expect("event should convert");
         let Event::EventD(ev) = event else {
             panic!("expected EventD event");
         };
