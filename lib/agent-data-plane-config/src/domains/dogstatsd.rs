@@ -328,6 +328,51 @@ pub struct MetricTagFilterEntry {
 
     /// Tags the action applies to.
     pub tags: Vec<String>,
+
+    /// Value allowlists for specific tag keys.
+    ///
+    /// The map is empty by default, which disables value filtering. Use this for tag keys whose
+    /// unbounded values would create excessive metric cardinality.
+    pub tag_value_allowlists: HashMap<String, TagValueAllowlist>,
+}
+
+/// An allowlist and mismatch behavior for one tag key.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TagValueAllowlist {
+    /// Tag values retained unchanged.
+    ///
+    /// The list is empty by default, so every value is treated as a mismatch.
+    pub values: Vec<String>,
+
+    /// Action applied to values absent from [`values`][Self::values].
+    ///
+    /// The default is [`Remove`][TagValueMismatchAction::Remove].
+    pub on_miss: TagValueMismatchAction,
+
+    /// Value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace].
+    ///
+    /// The default is `other`. Configure a value that cannot collide with a real tag value.
+    pub replacement: String,
+}
+
+impl Default for TagValueAllowlist {
+    fn default() -> Self {
+        Self {
+            values: Vec::new(),
+            on_miss: TagValueMismatchAction::Remove,
+            replacement: "other".to_string(),
+        }
+    }
+}
+
+/// Action applied when a tag value is absent from its allowlist.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum TagValueMismatchAction {
+    /// Removes the tag.
+    #[default]
+    Remove,
+    /// Replaces the tag value with the configured sentinel.
+    Replace,
 }
 
 /// Whether a tag-filterlist entry includes or excludes the listed tags.

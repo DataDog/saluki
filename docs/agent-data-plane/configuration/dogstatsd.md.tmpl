@@ -58,6 +58,49 @@ The following settings are specific to ADP and have no equivalent in the core ag
 
 { adp_only_table }
 { adp_only_docs }
+### `metric_tag_filterlist.*.tag_value_allowlists`
+
+ADP extends each `metric_tag_filterlist` entry with an optional map of tag keys to allowed values.
+For example, to retain a configured set of customer IDs for one metric and aggregate all other
+customer IDs under `customer_id:other`, configure:
+
+```yaml
+metric_tag_filterlist:
+  - metric_name: requests.count
+    action: exclude
+    tags: []
+    tag_value_allowlists:
+      customer_id:
+        values:
+          - customer-1
+          - customer-2
+        on_miss: replace
+        replacement: other
+```
+
+ADP first applies the entry's existing `action` and `tags` filter, then applies the value
+allowlists to tags that remain. With `action: include`, you must also add an allowlisted tag key to
+`tags`; otherwise the include filter removes it before checking its value.
+
+For each allowlist, `on_miss` accepts `remove` or `replace` and defaults to `remove`. When set to
+`replace`, `replacement` controls the sentinel value and defaults to `other`. Configure a sentinel
+that cannot collide with a real tag value. An empty `values` list treats every value as a mismatch.
+Bare tags have no value and are also treated as mismatches.
+
+Duplicate entries for the same metric and tag key may add allowed values only when they configure
+the same mismatch behavior. ADP rejects startup configuration with conflicting `on_miss` or
+`replacement` values. If a runtime update introduces a conflict, ADP retains the previous rules and
+logs the configuration error.
+
+Filtering applies to counters and sketch-backed metrics before aggregation, including both
+instrumented and origin tags. Allowed values retain separate metric contexts. With `remove`,
+unlisted values lose the configured tag and aggregate according to the remaining context
+dimensions. With `replace`, they aggregate under the configured sentinel value.
+
+The core Agent does not interpret `tag_value_allowlists`. Keep `metric_tag_filterlist_adp_only` at
+its default value of `true` when ADP is enabled. If the core Agent applies the same entry directly,
+it only applies `action` and `tags` and ignores value filtering.
+
 ## Transparent Settings
 
 <!-- section:reference -->

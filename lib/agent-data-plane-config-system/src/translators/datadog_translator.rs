@@ -21,7 +21,8 @@ use std::time::Duration;
 
 use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
-    FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
+    FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality, TagValueAllowlist,
+    TagValueMismatchAction,
 };
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
@@ -177,6 +178,28 @@ enum TagFilterEntry {
 /// entry: the schema lets any string through, so the component tolerates typos by defaulting to
 /// `exclude`, and this preserves that behavior while still surfacing the error.
 fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
+    fn default_replacement() -> String {
+        "other".to_string()
+    }
+
+    #[derive(Default, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum RawTagValueMismatchAction {
+        #[default]
+        Remove,
+        Replace,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawTagValueAllowlist {
+        #[serde(default)]
+        values: Vec<String>,
+        #[serde(default)]
+        on_miss: RawTagValueMismatchAction,
+        #[serde(default = "default_replacement")]
+        replacement: String,
+    }
+
     #[derive(serde::Deserialize)]
     struct RawEntry {
         metric_name: String,
@@ -184,6 +207,8 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
         action: String,
         #[serde(default)]
         tags: Vec<String>,
+        #[serde(default)]
+        tag_value_allowlists: HashMap<String, RawTagValueAllowlist>,
     }
 
     let parsed: RawEntry = match serde_json::from_value(raw).map_err(|error| TranslateError::new(key, error)) {
@@ -207,6 +232,24 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
         metric_name: parsed.metric_name,
         action,
         tags: parsed.tags,
+        tag_value_allowlists: parsed
+            .tag_value_allowlists
+            .into_iter()
+            .map(|(tag_name, allowlist)| {
+                let on_miss = match allowlist.on_miss {
+                    RawTagValueMismatchAction::Remove => TagValueMismatchAction::Remove,
+                    RawTagValueMismatchAction::Replace => TagValueMismatchAction::Replace,
+                };
+                (
+                    tag_name,
+                    TagValueAllowlist {
+                        values: allowlist.values,
+                        on_miss,
+                        replacement: allowlist.replacement,
+                    },
+                )
+            })
+            .collect(),
     };
     match action_error {
         Some(error) => TagFilterEntry::Recovered(entry, error),
@@ -1087,7 +1130,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 mod tests {
     use std::time::Duration;
 
-    use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
+    use agent_data_plane_config::domains::dogstatsd::{OriginTagCardinality, TagValueMismatchAction};
     use datadog_agent_config::DatadogConfiguration;
     use serde_json::json;
 
@@ -1203,6 +1246,33 @@ mod tests {
             Some(1024)
         );
         assert_eq!(config.shared.endpoints.forwarder.retry_queue_max_size, None);
+    }
+
+    #[test]
+    fn tag_value_allowlists_are_preserved() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "metric_tag_filterlist": [{
+                "metric_name": "a",
+                "action": "exclude",
+                "tags": [],
+                "tag_value_allowlists": {
+                    "customer_id": {
+                        "values": ["top-1", "top-2"],
+                        "on_miss": "replace",
+                        "replacement": "aggregated"
+                    }
+                }
+            }],
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert!(errors.is_none());
+        let allowlist = &config.domains.dogstatsd.tag_filterlist[0].tag_value_allowlists["customer_id"];
+        assert_eq!(allowlist.values, vec!["top-1".to_string(), "top-2".to_string()]);
+        assert_eq!(allowlist.on_miss, TagValueMismatchAction::Replace);
+        assert_eq!(allowlist.replacement, "aggregated");
     }
 
     #[test]
