@@ -19,12 +19,14 @@ pub struct Context {
     kind: String,
 }
 
-/// A context and the time it first arrived on a lane, the flat wire shape the intake serves.
+/// A context, the time it first arrived on a lane, and its cumulative point count: the flat wire
+/// shape the intake serves.
 #[derive(Clone, Debug, Deserialize)]
 struct Captured {
     #[serde(flatten)]
     context: Context,
     first_seen: i64,
+    points: i64,
 }
 
 /// A lane's cumulative context set with each context's first-seen time. The README's `C_ADP`/`C_DA`.
@@ -79,6 +81,44 @@ impl LaneView {
             .map(|c| (c.context.clone(), c.first_seen))
             .collect()
     }
+
+    fn counts(&self) -> BTreeMap<Context, i64> {
+        self.contexts.iter().map(|c| (c.context.clone(), c.points)).collect()
+    }
+}
+
+/// A context on both lanes whose per-lane cumulative point counts differ by more than the tolerance.
+#[derive(Clone, Debug, Serialize)]
+pub struct Skewed {
+    #[serde(flatten)]
+    pub context: Context,
+    pub agent_points: i64,
+    pub adp_points: i64,
+    pub skew: i64,
+}
+
+/// Shared contexts whose absolute point-count skew exceeds `k`, with the signed counts.
+///
+/// Only the intersection of the two lanes is judged: a context on one lane alone is the
+/// symmetric-difference oracle's concern ([`Difference`]) and stays silent here, so the two oracles
+/// never double-report the same divergence.
+#[must_use]
+pub fn count_skews(agent: &LaneView, adp: &LaneView, k: i64) -> Vec<Skewed> {
+    let agent_counts = agent.counts();
+    let adp_counts = adp.counts();
+    agent_counts
+        .into_iter()
+        .filter_map(|(context, agent_points)| {
+            let adp_points = *adp_counts.get(&context)?;
+            let skew = (agent_points - adp_points).abs();
+            (skew > k).then_some(Skewed {
+                context,
+                agent_points,
+                adp_points,
+                skew,
+            })
+        })
+        .collect()
 }
 
 /// A diverging context's lane and first-seen time, before it is aged against `now`.
@@ -185,6 +225,10 @@ mod tests {
     use super::*;
 
     fn captured(name: &str, kind: &str, tags: &[&str], first_seen: i64) -> Captured {
+        counted(name, kind, tags, first_seen, 0)
+    }
+
+    fn counted(name: &str, kind: &str, tags: &[&str], first_seen: i64, points: i64) -> Captured {
         Captured {
             context: Context {
                 name: name.to_string(),
@@ -192,6 +236,7 @@ mod tests {
                 kind: kind.to_string(),
             },
             first_seen,
+            points,
         }
     }
 
@@ -250,11 +295,41 @@ mod tests {
     fn deserializes_the_flat_wire_shape() -> Result<(), serde_json::Error> {
         let view: LaneView = serde_json::from_value(json!({
             "now": 2000,
-            "contexts": [{ "name": "adp.requests", "tagset": ["host:h"], "kind": "count", "first_seen": 1000 }],
+            "contexts": [{ "name": "adp.requests", "tagset": ["host:h"], "kind": "count", "first_seen": 1000, "points": 5 }],
         }))?;
 
         assert_eq!(view.now, 2000);
         assert_eq!(view.contexts.len(), 1);
+        assert_eq!(view.contexts[0].points, 5);
         Ok(())
+    }
+
+    #[test]
+    fn count_skews_ignores_single_lane_contexts() {
+        // A context on one lane alone is the symmetric-difference oracle's job, never a count skew.
+        let agent = lane(10, vec![counted("agent.only", "count", &["host:h"], 1, 100)]);
+        let adp = lane(10, vec![counted("adp.only", "gauge", &["host:h"], 1, 100)]);
+
+        assert!(count_skews(&agent, &adp, 0).is_empty());
+    }
+
+    #[test]
+    fn count_skews_tolerates_skew_up_to_k() {
+        let agent = lane(10, vec![counted("shared", "count", &["host:h"], 1, 10)]);
+        let adp = lane(10, vec![counted("shared", "count", &["host:h"], 1, 11)]);
+
+        assert!(count_skews(&agent, &adp, 1).is_empty());
+    }
+
+    #[test]
+    fn count_skews_reports_the_signed_counts_past_k() {
+        let agent = lane(10, vec![counted("shared", "count", &["host:h"], 1, 10)]);
+        let adp = lane(10, vec![counted("shared", "count", &["host:h"], 1, 14)]);
+
+        let skews = count_skews(&agent, &adp, 1);
+        assert_eq!(skews.len(), 1);
+        assert_eq!(skews[0].agent_points, 10);
+        assert_eq!(skews[0].adp_points, 14);
+        assert_eq!(skews[0].skew, 4);
     }
 }

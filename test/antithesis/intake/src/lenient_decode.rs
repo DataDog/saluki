@@ -1,10 +1,11 @@
-//! UTF-8-tolerant `/api/v2/series` `MetricPayload` decode.
+//! UTF-8-tolerant `/api/v2/series` `MetricPayload` and `/api/beta/sketches` `SketchPayload` decode.
 //!
 //! rust-protobuf validates UTF-8 on `string` fields and rejects the entire payload on
 //! any non-UTF-8 byte. The Datadog Agent forwards feral non-UTF-8 `DogStatsD` names and
-//! tags into those fields unchecked, so a strict `MetricPayload::parse_from_bytes` drops
-//! every legitimate agent-lane payload that carries one bad byte, along with all the
-//! contexts it holds.
+//! tags into those fields unchecked, so a strict `parse_from_bytes` drops every legitimate
+//! agent-lane payload that carries one bad byte, along with all the contexts it holds. This
+//! path was fixed for series in #2039 but the sketch path was left strict, so distribution
+//! contexts still went missing on the agent lane.
 //!
 //! This mirrors the production intake, which retries a failed strict decode into a
 //! tags-as-`bytes` message and keeps the payload. So only the `tags` field tolerates
@@ -13,7 +14,9 @@
 //! malformed wire also fails.
 
 use datadog_protos::metrics::metric_payload::{MetricPoint, MetricSeries, Resource};
-use datadog_protos::metrics::{Metadata, MetricPayload};
+use datadog_protos::metrics::sketch_payload::sketch::{Distribution, Dogsketch};
+use datadog_protos::metrics::sketch_payload::Sketch;
+use datadog_protos::metrics::{CommonMetadata, Metadata, MetricPayload, SketchPayload};
 use protobuf::rt::WireType;
 use protobuf::{CodedInputStream, EnumOrUnknown, Message, MessageField};
 
@@ -137,14 +140,56 @@ fn decode_point(body: &[u8]) -> Result<MetricPoint, Rejection> {
     Ok(point)
 }
 
+/// Decode an `/api/beta/sketches` body into a `SketchPayload`. As with series, only sketch `tags`
+/// tolerate non-UTF-8, lossy-converted; every other string field stays strict, matching production.
+/// The `distributions`, `dogsketches`, and metadata sub-messages carry no feral strings, so a strict
+/// sub-message parse stays production-faithful and a non-UTF-8 byte in one rejects as production does.
+pub(crate) fn decode_sketch_payload(body: &[u8]) -> Result<SketchPayload, Rejection> {
+    let mut is = CodedInputStream::from_bytes(body);
+    let mut payload = SketchPayload::new();
+    while let Some(tag) = is.read_raw_tag_or_eof()? {
+        match unpack(tag)? {
+            (1, WireType::LengthDelimited) => payload.sketches.push(decode_sketch(&is.read_bytes()?)?),
+            (2, WireType::LengthDelimited) => {
+                payload.metadata = MessageField::some(CommonMetadata::parse_from_bytes(&is.read_bytes()?)?);
+            }
+            (_, wire) => is.skip_field(wire)?,
+        }
+    }
+    Ok(payload)
+}
+
+fn decode_sketch(body: &[u8]) -> Result<Sketch, Rejection> {
+    let mut is = CodedInputStream::from_bytes(body);
+    let mut sketch = Sketch::new();
+    while let Some(tag) = is.read_raw_tag_or_eof()? {
+        match unpack(tag)? {
+            (1, WireType::LengthDelimited) => sketch.metric = strict(is.read_bytes()?)?,
+            (2, WireType::LengthDelimited) => sketch.host = strict(is.read_bytes()?)?,
+            (3, WireType::LengthDelimited) => sketch
+                .distributions
+                .push(Distribution::parse_from_bytes(&is.read_bytes()?)?),
+            (4, WireType::LengthDelimited) => sketch.tags.push(to_valid_utf8(&is.read_bytes()?)),
+            (7, WireType::LengthDelimited) => sketch.dogsketches.push(Dogsketch::parse_from_bytes(&is.read_bytes()?)?),
+            (8, WireType::LengthDelimited) => {
+                sketch.metadata = MessageField::some(Metadata::parse_from_bytes(&is.read_bytes()?)?);
+            }
+            (_, wire) => is.skip_field(wire)?,
+        }
+    }
+    Ok(sketch)
+}
+
 #[cfg(test)]
 mod tests {
     use datadog_protos::metrics::metric_payload::{MetricPoint, MetricSeries, MetricType, Resource};
-    use datadog_protos::metrics::{Metadata, MetricPayload, Origin};
+    use datadog_protos::metrics::sketch_payload::sketch::Dogsketch;
+    use datadog_protos::metrics::sketch_payload::Sketch;
+    use datadog_protos::metrics::{Metadata, MetricPayload, Origin, SketchPayload};
     use proptest::prelude::*;
     use protobuf::{EnumOrUnknown, Message, MessageField};
 
-    use super::{decode_metric_payload, to_valid_utf8, Rejection};
+    use super::{decode_metric_payload, decode_sketch_payload, to_valid_utf8, Rejection};
 
     // Non-UTF-8 in a non-tag field is the rejection production also makes, not a decode defect.
     #[test]
@@ -258,6 +303,57 @@ mod tests {
         let bytes = payload.write_to_bytes().expect("serialize");
         let strict = MetricPayload::parse_from_bytes(&bytes).expect("strict parse");
         let lenient = decode_metric_payload(&bytes).expect("lenient decode");
+        assert_eq!(lenient, strict);
+    }
+
+    // Sketch tags tolerate non-UTF-8 exactly like series tags: the payload decodes and each tag is
+    // sanitized with to_valid_utf8. This is the case the strict sketch parser dropped whole.
+    #[test]
+    fn sketch_non_utf8_tag_accepted_and_sanitized() {
+        let sketch_body = [framed(1, b"latency"), framed(4, b"shard:\xff\xffeast")].concat();
+        let payload = framed(1, &sketch_body);
+
+        let decoded = decode_sketch_payload(&payload).expect("sketch tags never reject");
+        assert_eq!(decoded.sketches.len(), 1);
+        assert_eq!(decoded.sketches[0].metric, "latency");
+        assert_eq!(decoded.sketches[0].tags, vec![to_valid_utf8(b"shard:\xff\xffeast")]);
+    }
+
+    // A non-UTF-8 sketch metric name still drops the payload, matching production's strict treatment
+    // of non-tag fields.
+    #[test]
+    fn sketch_non_utf8_metric_rejected() {
+        let sketch_body = framed(1, b"\xfflatency");
+        let payload = framed(1, &sketch_body);
+
+        assert_eq!(decode_sketch_payload(&payload), Err(Rejection::NonUtf8StrictField));
+    }
+
+    // For a valid-UTF-8 sketch the lenient walker must recover exactly what the strict parser does,
+    // dogsketch bins and all, or a renumbered field would silently corrupt distribution contexts.
+    #[test]
+    fn sketch_lenient_matches_strict_for_valid_utf8() {
+        let mut payload = SketchPayload::new();
+        let mut sketch = Sketch::new();
+        sketch.metric = "latency".into();
+        sketch.host = "server-1".into();
+        sketch.tags.push("shard:us-east-1".into());
+        sketch.tags.push("host:antithesis-differential".into());
+        let mut dogsketch = Dogsketch::new();
+        dogsketch.ts = 1_600_000_000;
+        dogsketch.cnt = 3;
+        dogsketch.min = 1.0;
+        dogsketch.max = 9.0;
+        dogsketch.avg = 4.0;
+        dogsketch.sum = 12.0;
+        dogsketch.k = vec![-1, 0, 2];
+        dogsketch.n = vec![1, 1, 1];
+        sketch.dogsketches.push(dogsketch);
+        payload.sketches.push(sketch);
+
+        let bytes = payload.write_to_bytes().expect("serialize");
+        let strict = SketchPayload::parse_from_bytes(&bytes).expect("strict parse");
+        let lenient = decode_sketch_payload(&bytes).expect("lenient decode");
         assert_eq!(lenient, strict);
     }
 

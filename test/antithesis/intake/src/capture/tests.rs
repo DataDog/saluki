@@ -20,11 +20,15 @@ fn contexts_serialize_to_the_flat_wire_shape() {
     let mut lanes = Lanes::default();
     lanes.record(
         Target::Adp,
-        &[context("requests", &["host:agent-host", "env:test"], MetricKind::Count)],
+        &[(
+            context("requests", &["host:agent-host", "env:test"], MetricKind::Count),
+            2,
+        )],
         EpochSeconds::from_epoch_secs(1_000),
     );
 
-    // Flat: name, tagset (a sorted set), kind as a snake_case token, first_seen as a bare number.
+    // Flat: name, tagset (a sorted set), kind as a snake_case token, first_seen and points as bare
+    // numbers.
     let wire = serde_json::to_value(lanes.contexts(Target::Adp)).expect("serialize");
     assert_eq!(
         wire,
@@ -33,8 +37,53 @@ fn contexts_serialize_to_the_flat_wire_shape() {
             "tagset": ["env:test", "host:agent-host"],
             "kind": "count",
             "first_seen": 1_000,
+            "points": 2,
         }])
     );
+}
+
+#[test]
+fn re_recording_a_context_sums_points_and_keeps_first_seen() {
+    let mut lanes = Lanes::default();
+    let ctx = context("requests", &["host:h"], MetricKind::Count);
+    lanes.record(Target::Adp, &[(ctx.clone(), 3)], EpochSeconds::from_epoch_secs(100));
+    lanes.record(Target::Adp, &[(ctx, 4)], EpochSeconds::from_epoch_secs(200));
+
+    let got = lanes.contexts(Target::Adp);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].points, 7);
+    assert_eq!(got[0].first_seen, EpochSeconds::from_epoch_secs(100));
+}
+
+#[test]
+fn self_telemetry_points_are_never_counted() {
+    let mut lanes = Lanes::default();
+    lanes.record(
+        Target::Adp,
+        &[(context("datadog.agent.running", &[], MetricKind::Gauge), 9)],
+        EpochSeconds::from_epoch_secs(0),
+    );
+    assert!(lanes.contexts(Target::Adp).is_empty());
+}
+
+#[test]
+fn observe_series_counts_points_per_context() {
+    // A two-point series contributes two points to its context, however stele groups them.
+    let mut series = built_series("adp.requests", 1, 1);
+    let mut second = MetricPoint::new();
+    second.value = 2.0;
+    second.timestamp = 1_600_000_060;
+    series.points.push(second);
+    let mut payload = MetricPayload::new();
+    payload.series.push(series);
+
+    let observed = observe_series(Target::Agent, payload);
+    let points: u64 = observed
+        .iter()
+        .filter(|(c, _)| c.name == "adp.requests")
+        .map(|(_, n)| n)
+        .sum();
+    assert_eq!(points, 2);
 }
 
 // --- generators ---
@@ -167,7 +216,8 @@ proptest! {
     fn lanes_match_a_replay_oracle(ops in op_sequence()) {
         let mut lanes = Lanes::default();
         for op in &ops {
-            lanes.record(op.target, &op.contexts, op.now);
+            let batch: Vec<(Context, u64)> = op.contexts.iter().map(|c| (c.clone(), 1)).collect();
+            lanes.record(op.target, &batch, op.now);
         }
 
         for lane in [Target::Agent, Target::Adp] {
@@ -181,6 +231,8 @@ proptest! {
     #[test]
     fn record_returns_the_count_of_new_contexts(seed in context_batch(), batch in context_batch(), now in any::<EpochSeconds>()) {
         let mut lanes = Lanes::default();
+        let seed: Vec<(Context, u64)> = seed.into_iter().map(|c| (c, 1)).collect();
+        let batch: Vec<(Context, u64)> = batch.into_iter().map(|c| (c, 1)).collect();
         lanes.record(Target::Adp, &seed, EpochSeconds::from_epoch_secs(0));
         let before = lanes.contexts(Target::Adp).len();
 
@@ -239,6 +291,6 @@ fn observe_series_drops_what_propjoe_drops() {
     payload.series.push(built_series("adp.toomanytags", 101, 1)); // tag flood
 
     let contexts = observe_series(Target::Agent, payload);
-    let names: BTreeSet<&str> = contexts.iter().map(|c| c.name.as_str()).collect();
+    let names: BTreeSet<&str> = contexts.iter().map(|(c, _)| c.name.as_str()).collect();
     assert_eq!(names, BTreeSet::from(["adp.requests"]));
 }

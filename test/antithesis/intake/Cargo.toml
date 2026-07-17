@@ -51,6 +51,7 @@ tracing-subscriber = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+antithesis-scenario-differential = { path = "../scenarios/differential" }
 async-compression = { workspace = true, features = ["zstd", "tokio"] }
 proptest = { workspace = true }
 tower = { workspace = true, features = ["util"] }

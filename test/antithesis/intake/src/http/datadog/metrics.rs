@@ -13,7 +13,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use protobuf::Message;
 use tracing::{debug, error, info};
 
 use crate::capture::EpochSeconds;
@@ -138,10 +137,13 @@ pub(crate) async fn handle_sketches(State(state): State<AppState>, body: Body) -
             return StatusCode::PAYLOAD_TOO_LARGE;
         }
     };
-    let payload = match datadog_protos::metrics::SketchPayload::parse_from_bytes(&body) {
+    // Lenient decode: the Datadog Agent forwards feral non-UTF-8 tags on sketches the same way it
+    // does on series, and the real intake keeps them. Strict parsing dropped whole agent-lane sketch
+    // payloads and starved the differential of distribution contexts (#2039 fixed this for series only).
+    let payload = match crate::lenient_decode::decode_sketch_payload(&body) {
         Ok(payload) => payload,
-        Err(e) => {
-            error!(target = state.target.as_str(), error = %e, "failed to parse sketch payload");
+        Err(rejection) => {
+            error!(target = state.target.as_str(), ?rejection, "rejected sketch payload");
             return StatusCode::BAD_REQUEST;
         }
     };
