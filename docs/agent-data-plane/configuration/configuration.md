@@ -383,9 +383,7 @@ validation. When enabled, this setting affects the Datadog intake clients used b
 logs, traces, events, and service checks that flow through the shared forwarder.
 
 This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
-OTLP proxying to the core agent, or unrelated HTTP clients. In FIPS builds, ADP rejects
-`skip_ssl_validation: true` because disabling TLS certificate validation is not
-FIPS-compliant.
+OTLP proxying to the core agent, or unrelated HTTP clients.
 
 ### `statsd_forward_host`
 
