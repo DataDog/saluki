@@ -167,9 +167,10 @@ impl Source for ChecksIPC {
 }
 
 /// Server-side implementation of the `CheckRunner` gRPC service. Check
-/// runners connect, hand off check data, and receive per-batch ACKs.
-/// Received events are pushed through `events_tx` to the source's run
-/// loop, which fans them out to the topology's named outputs.
+/// runners connect, hand off check data, and receive per-batch
+/// acknowledgments. Received events are pushed through `events_tx` to
+/// the source's run loop, which fans them out to the named topology
+/// outputs.
 struct CheckRunnerService {
     events_tx: mpsc::Sender<Event>,
     default_hostname: MetaString,
