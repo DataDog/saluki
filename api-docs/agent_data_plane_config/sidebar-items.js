@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["control","domains","live","shared"],"struct":["SalukiConfiguration"]};
+window.SIDEBAR_ITEMS = {"mod":["control","domains","live","shared"],"struct":["Error","SalukiConfiguration"],"type":["BoxError"]};

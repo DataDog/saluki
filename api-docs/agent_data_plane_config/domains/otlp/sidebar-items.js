@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Contexts","Domain","GrpcReceiver","HttpReceiver","Metrics","Proxy","Receiver"]};
+window.SIDEBAR_ITEMS = {"enum":["HistogramMode"],"struct":["Contexts","Domain","GrpcReceiver","HttpReceiver","Metrics","Proxy","Receiver"]};
