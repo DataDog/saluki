@@ -23,7 +23,7 @@ use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
-use agent_data_plane_config::domains::otlp::HistogramMode;
+use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
@@ -888,11 +888,23 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_metrics_sums_cumulative_monotonic_mode(&mut self, value: String) {
-        self.config.domains.otlp.metrics.sums.cumulative_monotonic_mode = value;
+        match value.parse::<CumulativeMonotonicMode>() {
+            Ok(mode) => self.config.domains.otlp.metrics.sums.cumulative_monotonic_mode = mode,
+            Err(error) => self.record_error(TranslateError::new(
+                "otlp_config.metrics.sums.cumulative_monotonic_mode",
+                error,
+            )),
+        }
     }
 
     fn consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(&mut self, value: String) {
-        self.config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value = value;
+        match value.parse::<InitialCumulativeMonotonicValue>() {
+            Ok(mode) => self.config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value = mode,
+            Err(error) => self.record_error(TranslateError::new(
+                "otlp_config.metrics.sums.initial_cumulative_monotonic_value",
+                error,
+            )),
+        }
     }
 
     fn consume_otlp_config_metrics_tags(&mut self, value: String) {
@@ -1111,7 +1123,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 mod tests {
     use std::time::Duration;
 
-    use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
+    use agent_data_plane_config::domains::{
+        dogstatsd::OriginTagCardinality,
+        otlp::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue},
+    };
     use datadog_agent_config::DatadogConfiguration;
     use serde_json::json;
 
@@ -1261,5 +1276,111 @@ mod tests {
 
         // The error is still surfaced, so startup's strict gate rejects the config.
         assert!(errors.is_some(), "an unknown action must record a translation error");
+    }
+
+    #[test]
+    fn cumulative_monotonic_sum_mode_translates_known_values() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "sums": {
+                        "cumulative_monotonic_mode": "raw_value"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert!(errors.is_none());
+        assert_eq!(
+            config.domains.otlp.metrics.sums.cumulative_monotonic_mode,
+            CumulativeMonotonicMode::RawValue
+        );
+    }
+
+    #[test]
+    fn invalid_cumulative_monotonic_sum_mode_records_error_and_keeps_default() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "sums": {
+                        "cumulative_monotonic_mode": "unsupported"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert_eq!(
+            config.domains.otlp.metrics.sums.cumulative_monotonic_mode,
+            CumulativeMonotonicMode::ToDelta
+        );
+        let errors = errors.expect("invalid mode should record a translation error");
+        assert!(errors
+            .to_string()
+            .contains("otlp_config.metrics.sums.cumulative_monotonic_mode"));
+        assert!(errors
+            .to_string()
+            .contains("unknown cumulative monotonic sum mode `unsupported`"));
+    }
+
+    #[test]
+    fn initial_cumulative_monotonic_value_translates_known_values() {
+        for (value, expected) in [
+            ("auto", InitialCumulativeMonotonicValue::Auto),
+            ("drop", InitialCumulativeMonotonicValue::Drop),
+            ("keep", InitialCumulativeMonotonicValue::Keep),
+        ] {
+            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+                "otlp_config": {
+                    "metrics": {
+                        "sums": {
+                            "initial_cumulative_monotonic_value": value
+                        }
+                    }
+                }
+            }))
+            .expect("datadog source deserializes");
+
+            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+            assert!(errors.is_none());
+            assert_eq!(
+                config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_initial_cumulative_monotonic_value_records_error_and_keeps_default() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "sums": {
+                        "initial_cumulative_monotonic_value": "unsupported"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert_eq!(
+            config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value,
+            InitialCumulativeMonotonicValue::Auto
+        );
+        let errors = errors.expect("invalid value should record a translation error");
+        assert!(errors
+            .to_string()
+            .contains("otlp_config.metrics.sums.initial_cumulative_monotonic_value"));
+        assert!(errors
+            .to_string()
+            .contains("unknown initial cumulative monotonic value `unsupported`"));
     }
 }

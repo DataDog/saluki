@@ -759,7 +759,7 @@ impl OtlpMetricsTranslator {
                     if is_skippable(quantile.value) {
                         continue;
                     }
-                    let quantile_dims = base_quantile_dims.add_tags([format_quantile_tag(quantile.quantile)]);
+                    let quantile_dims = base_quantile_dims.add_tags(&[format_quantile_tag(quantile.quantile)]);
                     self.record_metric_event(
                         &quantile_dims,
                         quantile.value,
@@ -928,7 +928,7 @@ impl OtlpMetricsTranslator {
             let (lower_bound, upper_bound) = get_bounds(&explicit_bounds, j);
             let (original_lower_bound, original_upper_bound) = (lower_bound, upper_bound);
 
-            let bucket_dims = point_dims.add_tags([
+            let bucket_dims = point_dims.add_tags(&[
                 format!("lower_bound:{}", GoFloat(lower_bound)),
                 format!("upper_bound:{}", GoFloat(upper_bound)),
             ]);
@@ -1052,7 +1052,7 @@ impl OtlpMetricsTranslator {
         for idx in 0..p.bucket_counts.len() {
             let (lower_bound, upper_bound) = get_bounds(&p.explicit_bounds, idx);
 
-            let bucket_dims = base_bucket_dims.add_tags([
+            let bucket_dims = base_bucket_dims.add_tags(&[
                 format!("lower_bound:{}", GoFloat(lower_bound)),
                 format!("upper_bound:{}", GoFloat(upper_bound)),
             ]);
