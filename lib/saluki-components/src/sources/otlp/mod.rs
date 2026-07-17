@@ -158,7 +158,7 @@ impl OtlpConfiguration {
             .with_remapping(true)
             .with_quantiles(true)
             .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
-            .with_number_mode(self.otlp_config.metrics.sums.mode.into())
+            .with_number_mode(self.otlp_config.metrics.sums.cumulative_monotonic_mode.into())
             .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags)
     }
 

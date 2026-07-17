@@ -69,22 +69,39 @@ impl FromStr for HistogramMode {
     }
 }
 
+/// How cumulative monotonic sums are reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum CumulativeMonotonicMode {
+    /// Converts cumulative values to deltas and reports them as counts.
+    #[default]
+    ToDelta,
+
+    /// Reports cumulative values as gauges without converting them to deltas.
+    RawValue,
+}
+
+impl FromStr for CumulativeMonotonicMode {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "to_delta" => Ok(Self::ToDelta),
+            "raw_value" => Ok(Self::RawValue),
+            other => Err(Error::new_without_source(format!(
+                "unknown cumulative monotonic sum mode `{other}`; expected `to_delta` or `raw_value`"
+            ))),
+        }
+    }
+}
+
 /// OTLP sum translation settings.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Sums {
     /// Cumulative monotonic sum reporting mode.
     ///
     /// Defaults to `to_delta`, which converts cumulative values to delta counts. Set to `raw_value` to emit
     /// cumulative values as gauges.
-    pub mode: String,
-}
-
-impl Default for Sums {
-    fn default() -> Self {
-        Self {
-            mode: "to_delta".to_string(),
-        }
-    }
+    pub cumulative_monotonic_mode: CumulativeMonotonicMode,
 }
 
 /// OTLP receiver transports and per-signal activation.
@@ -161,4 +178,37 @@ pub struct Contexts {
 
     /// Number of entries the context string interner holds. (not in Datadog Agent config schema)
     pub string_interner_size: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CumulativeMonotonicMode;
+
+    #[test]
+    fn cumulative_monotonic_mode_parses_known_values() {
+        assert_eq!(
+            "to_delta"
+                .parse::<CumulativeMonotonicMode>()
+                .expect("to_delta should parse"),
+            CumulativeMonotonicMode::ToDelta
+        );
+        assert_eq!(
+            "raw_value"
+                .parse::<CumulativeMonotonicMode>()
+                .expect("raw_value should parse"),
+            CumulativeMonotonicMode::RawValue
+        );
+    }
+
+    #[test]
+    fn cumulative_monotonic_mode_rejects_unknown_values() {
+        let error = "unsupported"
+            .parse::<CumulativeMonotonicMode>()
+            .expect_err("unsupported mode should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "unknown cumulative monotonic sum mode `unsupported`; expected `to_delta` or `raw_value`"
+        );
+    }
 }

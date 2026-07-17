@@ -1,10 +1,10 @@
 //! Shared OTLP receiver configuration.
 
-use agent_data_plane_config::domains::otlp::HistogramMode;
+use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode};
 use bytesize::ByteSize;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use serde::{de::Error as _, Deserialize, Deserializer};
 
 fn default_grpc_endpoint() -> String {
@@ -180,18 +180,12 @@ pub struct HistogramsConfig {
     pub mode: HistogramMode,
 }
 
-/// Controls how cumulative monotonic sums are emitted.
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
-#[cfg_attr(test, derive(serde::Serialize))]
-pub enum CumulativeMonotonicMode {
-    /// Converts cumulative values to deltas and emits them as counts.
-    #[default]
-    #[serde(rename = "to_delta")]
-    ToDelta,
-
-    /// Emits cumulative values as gauges without converting them to deltas.
-    #[serde(rename = "raw_value")]
-    RawValue,
+// TODO: delete when this component uses typed config
+fn deserialize_cumulative_monotonic_mode<'de, D>(deserializer: D) -> Result<CumulativeMonotonicMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
 }
 
 /// Configuration for OTLP metrics processing.
@@ -243,8 +237,8 @@ pub struct SumsConfig {
     /// translated metrics needs the original cumulative value.
     ///
     /// Corresponds to `otlp_config.metrics.sums.cumulative_monotonic_mode`.
-    #[serde(default, rename = "cumulative_monotonic_mode")]
-    pub mode: CumulativeMonotonicMode,
+    #[serde(default, deserialize_with = "deserialize_cumulative_monotonic_mode")]
+    pub cumulative_monotonic_mode: CumulativeMonotonicMode,
 }
 
 fn default_metrics_enabled() -> bool {
@@ -266,10 +260,12 @@ impl Default for MetricsConfig {
 impl MetricsConfig {
     /// Applies environment-variable overrides for sum settings that normal nested deserialization cannot read.
     pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
-        if let Some(mode) =
-            config.try_get_typed::<CumulativeMonotonicMode>("otlp_config_metrics_sums_cumulative_monotonic_mode")?
-        {
-            self.sums.mode = mode;
+        if let Some(raw_mode) = config.try_get_typed::<String>("otlp_config_metrics_sums_cumulative_monotonic_mode")? {
+            self.sums.cumulative_monotonic_mode = raw_mode.parse().map_err(|error| {
+                generic_error!(
+                    "invalid `otlp_config.metrics.sums.cumulative_monotonic_mode` environment override: {error}"
+                )
+            })?;
         }
         Ok(())
     }

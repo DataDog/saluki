@@ -1,9 +1,7 @@
 use std::time::Duration;
 
-use agent_data_plane_config::domains::otlp::HistogramMode;
+use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode};
 use saluki_error::{generic_error, GenericError};
-
-use crate::common::otlp::config::CumulativeMonotonicMode;
 
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
 const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
