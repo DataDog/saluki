@@ -28,7 +28,7 @@ The overlay partitions every key in the core schema (rooted at `core/core_schema
 subsystem files pulled in via `$ref`) into `inventory` or `excluded`. Within
 `inventory`, each entry is tagged with a `support` field (`full`, `partial`, `none`, `unknown`).
 Pipeline attribution, descriptions, and prose documentation all live there. The generated
-`dogstatsd.md` documentation is output, not source — edit the overlay, not the generated file.
+`configuration.md` documentation is output, not source — edit the overlay, not the generated file.
 
 ## Shared Setup: Path Resolution and Git Check
 
@@ -97,7 +97,7 @@ prior classifications biases the result and defeats the clean-room purpose.
 exist to catch divergence between analysis output and user expectations — including cases where the
 analysis itself is wrong.
 
-**Editing generated files**: Never edit `dogstatsd.md` or the generated config registry files
+**Editing generated files**: Never edit `configuration.md` or the generated config registry files
 directly. Fix classification in `schema_overlay.yaml` and rebuild. See `/config-management`.
 
 **Moving keys to `excluded` autonomously**: Never classify a key as `excluded` without explicit user

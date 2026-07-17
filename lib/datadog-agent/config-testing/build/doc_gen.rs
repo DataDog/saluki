@@ -1,7 +1,7 @@
 //! Generates the ADP configuration documentation Markdown from a [`SchemaOverlay`].
 //!
 //! [`generate`] renders a TinyTemplate source with Markdown tables derived from each overlay
-//! section and writes the result to `$OUT_DIR/docs/dogstatsd.md`.
+//! section and writes the result to `$OUT_DIR/docs/configuration.md`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -315,6 +315,6 @@ pub fn generate(overlay: &SchemaOverlay, template_path: &Path, out_dir: &Path) {
 
     let docs_dir = out_dir.join("docs");
     std::fs::create_dir_all(&docs_dir).unwrap();
-    let out_path = docs_dir.join("dogstatsd.md");
+    let out_path = docs_dir.join("configuration.md");
     std::fs::write(&out_path, rendered).unwrap_or_else(|e| panic!("cannot write {}: {}", out_path.display(), e));
 }

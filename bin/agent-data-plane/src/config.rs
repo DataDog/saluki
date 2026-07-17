@@ -216,7 +216,7 @@ impl DataPlaneDogStatsDConfiguration {
     // We intentionally do NOT read the Core Agent's `use_dogstatsd` key here. The Core Agent is the
     // sole authority on whether ADP should run DogStatsD: it evaluates `use_dogstatsd` (along with
     // other signals) and sets `data_plane.dogstatsd.enabled` on our behalf. Reading both would risk
-    // ADP and the Core Agent disagreeing. See `docs/agent-data-plane/configuration/dogstatsd.md`.
+    // ADP and the Core Agent disagreeing. See `docs/agent-data-plane/configuration/configuration.md`.
     fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
             enabled: config.try_get_typed("data_plane.dogstatsd.enabled")?.unwrap_or(true),

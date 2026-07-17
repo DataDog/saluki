@@ -40,8 +40,8 @@ There is one place where config metadata is hand-edited, and everything else flo
 ```
 
 Doc generation lives in `config-testing/build.rs`, not `config/build.rs`, because it is a dev/CI
-concern — not a prod build artifact. The generated `dogstatsd.md` is written in-tree by the testing
-build and checked for staleness in CI.
+concern — not a prod build artifact. The generated `configuration.md` is written in-tree by the
+testing build and checked for staleness in CI.
 
 The overlay partitions every key in the core schema into exactly one of two sections: `inventory` or
 `excluded`. The core schema lives under `schema/core/` — `core_schema.yaml` is the root and

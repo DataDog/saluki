@@ -62,7 +62,7 @@ export default defineConfig({
                     {
                         text: "Configuration",
                         items: [
-                            { text: "DogStatsD", link: "/agent-data-plane/configuration/dogstatsd" },
+                            { text: "Configuration", link: "/agent-data-plane/configuration/configuration" },
                         ],
                     },
                 ],
