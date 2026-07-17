@@ -148,6 +148,7 @@ impl OtlpConfiguration {
     /// Creates a new `OTLPConfiguration` from the given configuration.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let mut cfg: Self = config.as_typed()?;
+        cfg.otlp_config.metrics.apply_env_overrides(config)?;
         cfg.otlp_config.traces.apply_env_overrides(config)?;
         Ok(cfg)
     }
@@ -640,6 +641,27 @@ mod tests {
             OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
 
         assert_eq!(config.metrics_translator_config().number_mode, NumberMode::RawValue);
+    }
+
+    #[tokio::test]
+    async fn cumulative_monotonic_mode_environment_variable_configures_metrics_translator() {
+        let env_vars = [(
+            "OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE".to_string(),
+            "raw_value".to_string(),
+        )];
+        let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            Some(json!({ "otlp_config": {} })),
+            Some(&env_vars),
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        let config =
+            OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
+        let translator_config = config.metrics_translator_config();
+
+        assert_eq!(translator_config.number_mode, NumberMode::RawValue);
     }
 
     #[test]
