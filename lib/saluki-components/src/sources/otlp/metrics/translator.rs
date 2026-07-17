@@ -1773,6 +1773,43 @@ mod tests {
         assert_eq!(metric.context().host(), Some("resource-host"));
     }
 
+    #[test]
+    fn raw_value_mode_emits_cumulative_monotonic_sums_as_gauges() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.number_mode = NumberMode::RawValue;
+
+        let events = translator.map_to_dd_format(
+            OtlpMetric {
+                name: "cumulative.sum".to_string(),
+                data: Some(OtlpMetricData::Sum(
+                    otlp_protos::opentelemetry::proto::metrics::v1::Sum {
+                        aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                        is_monotonic: true,
+                        data_points: vec![OtlpNumberDataPoint {
+                            value: Some(OtlpNumberDataPointValue::AsInt(42)),
+                            start_time_unix_nano: nanos_from_seconds(1),
+                            time_unix_nano: nanos_from_seconds(2),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                )),
+                ..Default::default()
+            },
+            &SharedTagSet::default(),
+            None,
+            &[],
+            &metrics,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::gauge((2, 42.0))
+        );
+    }
+
     fn string_attribute(key: &str, value: &str) -> OtlpKeyValue {
         OtlpKeyValue {
             key: key.to_string(),
