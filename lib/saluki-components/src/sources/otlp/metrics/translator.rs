@@ -1792,7 +1792,6 @@ mod tests {
                             time_unix_nano: nanos_from_seconds(2),
                             ..Default::default()
                         }],
-                        ..Default::default()
                     },
                 )),
                 ..Default::default()
