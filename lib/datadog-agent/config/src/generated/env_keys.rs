@@ -751,6 +751,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_METRICS_HISTOGRAMS_MODE"],
+        path: &["otlp_config", "metrics", "histograms", "mode"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS"],
         path: &["otlp_config", "metrics", "resource_attributes_as_tags"],
         decode: EnvDecode::Bool,

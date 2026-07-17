@@ -234,6 +234,7 @@ default values.
 | `log_level`                            | Log verbosity directives                  |
 | `min_tls_version`                      | Minimum TLS version for HTTPS connections |
 | `multi_region_failover.enabled`        | Enable multi-region failover mode         |
+| `otlp_config.metrics.histograms.mode`  | OTLP histogram bucket reporting mode      |
 | `serializer_zstd_compressor_level`     | Zstd compression level (Agent)            |
 | `skip_ssl_validation`                  | Skip TLS cert validation                  |
 | `statsd_forward_host`                  | UDP packet forwarding destination host    |
@@ -370,6 +371,12 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
+
+### `otlp_config.metrics.histograms.mode`
+
+ADP supports the `counters` and `distributions` modes. The `nobuckets` mode requires
+`otlp_config.metrics.histograms.send_aggregation_metrics` to be enabled, but ADP does not yet
+read that setting, so selecting `nobuckets` prevents the OTLP source from starting.
 
 ### `serializer_zstd_compressor_level`
 
@@ -761,3 +768,4 @@ compressed wire payload bytes.
 [#1753]: https://github.com/DataDog/saluki/issues/1753
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
+[#2021]: https://github.com/DataDog/saluki/issues/2021

@@ -23,6 +23,7 @@ use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
+use agent_data_plane_config::domains::otlp::HistogramMode;
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
@@ -873,6 +874,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool) {
         self.config.domains.otlp.receiver.metrics_enabled = value;
+    }
+
+    fn consume_otlp_config_metrics_histograms_mode(&mut self, value: String) {
+        match value.parse::<HistogramMode>() {
+            Ok(mode) => self.config.domains.otlp.metrics.histogram_mode = mode,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.metrics.histograms.mode", error)),
+        }
     }
 
     fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool) {

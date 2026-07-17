@@ -152,6 +152,14 @@ impl OtlpConfiguration {
         Ok(cfg)
     }
 
+    fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
+        metrics::config::OtlpMetricsTranslatorConfig::default()
+            .with_remapping(true)
+            .with_quantiles(true)
+            .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
+            .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags)
+    }
+
     /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
     pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
         self.default_hostname = hostname.into();
@@ -227,10 +235,7 @@ impl SourceBuilder for OtlpConfiguration {
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 
         let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
-        let metrics_translator_config = metrics::config::OtlpMetricsTranslatorConfig::default()
-            .with_remapping(true)
-            .with_quantiles(true)
-            .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags);
+        let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp_config.metrics.tags);
         let traces_interner_size =
@@ -565,13 +570,42 @@ mod config_smoke {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_configured_metric_tags;
+    use agent_data_plane_config::domains::otlp::HistogramMode;
+    use saluki_config::config_from;
+    use serde_json::json;
+
+    use super::{parse_configured_metric_tags, OtlpConfiguration};
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
             .into_iter()
             .map(|t| t.to_string())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn histogram_modes_flow_to_metrics_translator() {
+        let cases = [
+            ("nobuckets", HistogramMode::NoBuckets),
+            ("counters", HistogramMode::Counters),
+            ("distributions", HistogramMode::Distributions),
+        ];
+
+        for (configured_mode, expected_mode) in cases {
+            let config = config_from(json!({
+                "otlp_config": {
+                    "metrics": {
+                        "histograms": {
+                            "mode": configured_mode
+                        }
+                    }
+                }
+            }))
+            .await;
+            let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
+
+            assert_eq!(otlp_config.metrics_translator_config().hist_mode, expected_mode);
+        }
     }
 
     #[test]

@@ -1,7 +1,11 @@
 //! OTLP domain: the OTLP receiver (gRPC/HTTP transports, logs/metrics activation), the OTLP proxy
 //! gating, and OTLP context sizing. OTLP trace handling lives in the `traces` domain.
 
+use std::str::FromStr;
+
 use serde::Serialize;
+
+use crate::Error;
 
 /// Resolved OTLP configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -22,12 +26,44 @@ pub struct Domain {
 /// OTLP metrics translation settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Metrics {
+    /// How explicit histogram buckets are reported.
+    pub histogram_mode: HistogramMode,
+
     /// Whether every resource attribute is added as a raw metric tag, in addition to the
     /// semantic-convention mappings that are always applied.
     pub resource_attributes_as_tags: bool,
 
     /// Comma-separated list of tags to add to every emitted metric.
     pub tags: String,
+}
+
+/// How explicit OTLP histogram buckets are reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum HistogramMode {
+    /// Omit bucket metrics.
+    NoBuckets,
+
+    /// Report each bucket as a counter.
+    Counters,
+
+    /// Report buckets as distributions.
+    #[default]
+    Distributions,
+}
+
+impl FromStr for HistogramMode {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "nobuckets" => Ok(Self::NoBuckets),
+            "counters" => Ok(Self::Counters),
+            "distributions" => Ok(Self::Distributions),
+            other => Err(Error::new_without_source(format!(
+                "unknown histogram mode `{other}`; expected `nobuckets`, `counters`, or `distributions`"
+            ))),
+        }
+    }
 }
 
 /// OTLP receiver transports and per-signal activation.
