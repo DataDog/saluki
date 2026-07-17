@@ -1809,6 +1809,83 @@ mod tests {
         );
     }
 
+    fn initial_cumulative_monotonic_sum(value: i64, start_time_unix_nano: u64, time_unix_nano: u64) -> OtlpMetric {
+        OtlpMetric {
+            name: "cumulative.sum".to_string(),
+            data: Some(OtlpMetricData::Sum(
+                otlp_protos::opentelemetry::proto::metrics::v1::Sum {
+                    aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                    is_monotonic: true,
+                    data_points: vec![OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsInt(value)),
+                        start_time_unix_nano,
+                        time_unix_nano,
+                        ..Default::default()
+                    }],
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn translate_initial_cumulative_monotonic_sum(
+        translator: &mut OtlpMetricsTranslator, metrics: &Metrics, value: i64, start_time_unix_nano: u64,
+        time_unix_nano: u64,
+    ) -> Vec<Event> {
+        translator.map_to_dd_format(
+            initial_cumulative_monotonic_sum(value, start_time_unix_nano, time_unix_nano),
+            &SharedTagSet::default(),
+            None,
+            &[],
+            metrics,
+        )
+    }
+
+    #[test]
+    fn auto_initial_cumulative_monotonic_value_mode_reports_new_series() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_time = translator.process_start_time_ns + 1;
+        let timestamp = start_time + nanos_from_seconds(1);
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, start_time, timestamp);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::counter((timestamp / 1_000_000_000, 42.0))
+        );
+    }
+
+    #[test]
+    fn keep_initial_cumulative_monotonic_value_mode_reports_first_value() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.initial_cumul_mono_value_mode = InitialCumulMonoValueMode::Keep;
+        let timestamp = translator.process_start_time_ns;
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, timestamp, timestamp);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::counter((timestamp / 1_000_000_000, 42.0))
+        );
+    }
+
+    #[test]
+    fn drop_initial_cumulative_monotonic_value_mode_drops_new_series() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.initial_cumul_mono_value_mode = InitialCumulMonoValueMode::Drop;
+        let start_time = translator.process_start_time_ns + 1;
+        let timestamp = start_time + nanos_from_seconds(1);
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, start_time, timestamp);
+
+        assert!(events.is_empty());
+    }
+
     fn string_attribute(key: &str, value: &str) -> OtlpKeyValue {
         OtlpKeyValue {
             key: key.to_string(),

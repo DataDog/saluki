@@ -291,6 +291,10 @@ pub static ENV_OVERLAY_KEYS: &[EnvOverlayKey] = &[
         path: &["otlp_config", "metrics", "sums", "cumulative_monotonic_mode"],
     },
     EnvOverlayKey {
+        flats: &["otlp_config_metrics_sums_initial_cumulative_monotonic_value"],
+        path: &["otlp_config", "metrics", "sums", "initial_cumulative_monotonic_value"],
+    },
+    EnvOverlayKey {
         flats: &["otlp_config_metrics_tags"],
         path: &["otlp_config", "metrics", "tags"],
     },

@@ -891,6 +891,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.metrics.sums.cumulative_monotonic_mode = value;
     }
 
+    fn consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(&mut self, value: String) {
+        self.config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value = value;
+    }
+
     fn consume_otlp_config_metrics_tags(&mut self, value: String) {
         self.config.domains.otlp.metrics.tags = value;
     }

@@ -77,12 +77,19 @@ pub struct Sums {
     /// Defaults to `to_delta`, which converts cumulative values to delta counts. Set to `raw_value` to emit
     /// cumulative values as gauges.
     pub cumulative_monotonic_mode: String,
+
+    /// Initial cumulative monotonic sum reporting behavior.
+    ///
+    /// Defaults to `auto`, which reports the value only when its series started after the translator process.
+    /// Set this to `drop` to always discard the first value or `keep` to always report it.
+    pub initial_cumulative_monotonic_value: String,
 }
 
 impl Default for Sums {
     fn default() -> Self {
         Self {
             cumulative_monotonic_mode: "to_delta".to_string(),
+            initial_cumulative_monotonic_value: "auto".to_string(),
         }
     }
 }

@@ -1323,12 +1323,18 @@ pub struct OtlpConfigMetricsSums {
         default = "defaults::datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode"
     )]
     pub cumulative_monotonic_mode: String,
+
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_sums_initial_cumulative_monotonic_value"
+    )]
+    pub initial_cumulative_monotonic_value: String,
 }
 
 impl Default for OtlpConfigMetricsSums {
     fn default() -> Self {
         Self {
             cumulative_monotonic_mode: defaults::datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode(),
+            initial_cumulative_monotonic_value: defaults::datadog_configuration_otlp_config_metrics_sums_initial_cumulative_monotonic_value(),
         }
     }
 }
@@ -1782,6 +1788,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode() -> String {
         "to_delta".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_sums_initial_cumulative_monotonic_value() -> String {
+        "auto".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint() -> String {
         "localhost:4317".to_string()

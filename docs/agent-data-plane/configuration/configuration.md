@@ -704,6 +704,7 @@ compressed wire payload bytes.
 | `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
 | `otlp_config.metrics.resource_attributes_as_tags`              | Add scalar resource attributes as raw tags.        |
 | `otlp_config.metrics.sums.cumulative_monotonic_mode`           | Cumulative monotonic sum reporting mode.           |
+| `otlp_config.metrics.sums.initial_cumulative_monotonic_value`  | Initial cumulative sum reporting behavior.         |
 | `otlp_config.metrics.tags`                                     | Comma-separated tags for all OTLP metrics.         |
 | `otlp_config.receiver.protocols.grpc.endpoint`                 | otlp_config.receiver.protocols.grpc.endpoint       |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`    | Max OTLP inbound gRPC message size (MiB)           |

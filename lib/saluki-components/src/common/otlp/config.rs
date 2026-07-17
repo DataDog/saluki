@@ -194,6 +194,24 @@ pub enum CumulativeMonotonicMode {
     RawValue,
 }
 
+/// Controls how the translator handles the first value of a cumulative monotonic sum.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum InitialCumulativeMonotonicValue {
+    /// Reports the initial value when its series started after the translator process.
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+
+    /// Always drops the initial value.
+    #[serde(rename = "drop")]
+    Drop,
+
+    /// Always reports the initial value.
+    #[serde(rename = "keep")]
+    Keep,
+}
+
 /// Configuration for OTLP metrics processing.
 #[derive(Deserialize, Debug)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -245,6 +263,16 @@ pub struct SumsConfig {
     /// Corresponds to `otlp_config.metrics.sums.cumulative_monotonic_mode`.
     #[serde(default)]
     pub cumulative_monotonic_mode: CumulativeMonotonicMode,
+
+    /// Controls how the first value of a cumulative monotonic sum is emitted.
+    ///
+    /// Defaults to `auto`, which reports the value only when its series started after the translator process.
+    /// Set this to `drop` to always discard the first value or `keep` to always report it. This setting affects
+    /// only cumulative monotonic sums in `to_delta` mode; `raw_value` emits every value as a gauge.
+    ///
+    /// Corresponds to `otlp_config.metrics.sums.initial_cumulative_monotonic_value`.
+    #[serde(default)]
+    pub initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
 }
 
 fn default_metrics_enabled() -> bool {
