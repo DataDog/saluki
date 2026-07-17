@@ -152,6 +152,12 @@ impl TlsCertificateValidation {
                     config_key = "skip_ssl_validation",
                     "TLS certificate validation is disabled for Datadog intake forwarding."
                 );
+                #[cfg(feature = "fips")]
+                warn!(
+                    config_key = "skip_ssl_validation",
+                    "Disabling TLS certificate validation in a FIPS build means server certificates are no longer \
+                     verified, even though the underlying TLS cipher suites and key exchange remain FIPS-compliant."
+                );
                 client_builder.with_tls_config(|builder| builder.danger_accept_invalid_certs())
             }
         }
