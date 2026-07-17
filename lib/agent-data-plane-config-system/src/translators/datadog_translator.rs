@@ -22,7 +22,7 @@ use std::time::Duration;
 use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality, TagValueAllowlist,
-    TagValueMismatchAction,
+    TagValueMismatchAction, TagValueRegex,
 };
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
@@ -201,6 +201,13 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
     }
 
     #[derive(serde::Deserialize)]
+    struct RawTagValueRegex {
+        pattern: String,
+        #[serde(default = "default_replacement")]
+        replacement: String,
+    }
+
+    #[derive(serde::Deserialize)]
     struct RawEntry {
         metric_name: String,
         #[serde(default)]
@@ -209,6 +216,8 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
         tags: Vec<String>,
         #[serde(default)]
         tag_value_allowlists: HashMap<String, RawTagValueAllowlist>,
+        #[serde(default)]
+        tag_value_regexes: HashMap<String, RawTagValueRegex>,
     }
 
     let parsed: RawEntry = match serde_json::from_value(raw).map_err(|error| TranslateError::new(key, error)) {
@@ -246,6 +255,19 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
                         values: allowlist.values,
                         on_miss,
                         replacement: allowlist.replacement,
+                    },
+                )
+            })
+            .collect(),
+        tag_value_regexes: parsed
+            .tag_value_regexes
+            .into_iter()
+            .map(|(tag_name, regex)| {
+                (
+                    tag_name,
+                    TagValueRegex {
+                        pattern: regex.pattern,
+                        replacement: regex.replacement,
                     },
                 )
             })
@@ -1249,7 +1271,7 @@ mod tests {
     }
 
     #[test]
-    fn tag_value_allowlists_are_preserved() {
+    fn tag_value_rules_are_preserved() {
         let datadog: DatadogConfiguration = serde_json::from_value(json!({
             "metric_tag_filterlist": [{
                 "metric_name": "a",
@@ -1260,6 +1282,12 @@ mod tests {
                         "values": ["top-1", "top-2"],
                         "on_miss": "replace",
                         "replacement": "aggregated"
+                    }
+                },
+                "tag_value_regexes": {
+                    "region": {
+                        "pattern": "[a-z]+-[0-9]+",
+                        "replacement": "invalid"
                     }
                 }
             }],
@@ -1273,6 +1301,9 @@ mod tests {
         assert_eq!(allowlist.values, vec!["top-1".to_string(), "top-2".to_string()]);
         assert_eq!(allowlist.on_miss, TagValueMismatchAction::Replace);
         assert_eq!(allowlist.replacement, "aggregated");
+        let regex = &config.domains.dogstatsd.tag_filterlist[0].tag_value_regexes["region"];
+        assert_eq!(regex.pattern, "[a-z]+-[0-9]+");
+        assert_eq!(regex.replacement, "invalid");
     }
 
     #[test]

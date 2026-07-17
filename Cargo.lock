@@ -44,6 +44,7 @@ dependencies = [
  "process-memory",
  "prost",
  "prost-types",
+ "regex",
  "saluki-antithesis",
  "saluki-api",
  "saluki-app",

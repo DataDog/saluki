@@ -101,6 +101,34 @@ The core Agent does not interpret `tag_value_allowlists`. Keep `metric_tag_filte
 its default value of `true` when ADP is enabled. If the core Agent applies the same entry directly,
 it only applies `action` and `tags` and ignores value filtering.
 
+### `metric_tag_filterlist.*.tag_value_regexes`
+
+ADP can require the complete value of a tag to match a configured regular expression. Values that
+do not match are replaced with a sentinel before aggregation:
+
+```yaml
+metric_tag_filterlist:
+  - metric_name: requests.count
+    action: exclude
+    tags: []
+    tag_value_regexes:
+      customer_id:
+        pattern: "customer-[0-9]+"
+        replacement: invalid
+```
+
+`pattern` uses Rust regular expression syntax and is matched against the complete tag value. The
+`replacement` defaults to `other`. Bare tags have no value and are replaced. A tag that already has
+the replacement value is retained, preventing repeated replacement work.
+
+ADP rejects invalid regular expressions. It also rejects configurations that apply both an
+allowlist and a regular expression to the same metric and tag key, or duplicate regular expression
+rules with different patterns or replacements. If a runtime update introduces one of these errors,
+ADP retains the previous rules and logs the configuration error.
+
+Regular expression rules have the same metric-type, origin-tag, Core Agent compatibility, and
+pre-aggregation behavior as value allowlists.
+
 ## Transparent Settings
 
 <!-- section:reference -->

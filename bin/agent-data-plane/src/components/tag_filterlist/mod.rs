@@ -13,6 +13,7 @@ use std::{collections::HashMap as StdHashMap, num::NonZeroUsize, time::Duration}
 use async_trait::async_trait;
 use foldhash::fast::RandomState as FoldHashState;
 use hashbrown::{HashMap, HashSet};
+use regex::Regex;
 use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_context::{tags::Tag, Context, TagSetMutViewState};
@@ -122,6 +123,18 @@ impl Default for TagValueAllowlist {
     }
 }
 
+/// A regular expression and replacement sentinel for one tag key.
+#[derive(Clone, Debug, Deserialize)]
+pub struct TagValueRegex {
+    /// Regular expression that the complete tag value must match.
+    pub pattern: String,
+    /// Value used when the regular expression does not match.
+    ///
+    /// The default is `other`. Configure a value that cannot collide with a real tag value.
+    #[serde(default = "default_tag_value_replacement")]
+    pub replacement: String,
+}
+
 /// A single metric tag filter entry.
 #[derive(Clone, Debug, Deserialize)]
 pub struct MetricTagFilterEntry {
@@ -140,6 +153,12 @@ pub struct MetricTagFilterEntry {
     /// whose unbounded values would create excessive metric cardinality.
     #[serde(default)]
     pub tag_value_allowlists: StdHashMap<String, TagValueAllowlist>,
+    /// Regular expressions required to match specific tag values.
+    ///
+    /// Values that do not match are replaced with the configured sentinel. The map is empty by
+    /// default, which disables regular expression filtering.
+    #[serde(default)]
+    pub tag_value_regexes: StdHashMap<String, TagValueRegex>,
 }
 
 #[derive(Eq, PartialEq)]
@@ -153,11 +172,18 @@ struct CompiledTagValueAllowlist {
     on_miss: CompiledMismatchAction,
 }
 
+struct CompiledTagValueRegex {
+    pattern: String,
+    regex: Regex,
+    replacement: Tag,
+}
+
 /// A compiled filter rule for one metric name.
 pub struct CompiledFilter {
     is_exclude: bool,
     tag_names: HashSet<String, FoldHashState>,
     tag_value_allowlists: HashMap<String, CompiledTagValueAllowlist, FoldHashState>,
+    tag_value_regexes: HashMap<String, CompiledTagValueRegex, FoldHashState>,
 }
 
 /// Compiled filter table keyed by metric name.
@@ -186,8 +212,9 @@ pub enum FilterMetricTagsOutcome {
 ///
 /// # Errors
 ///
-/// Returns an error when duplicate rules for the same metric and tag key configure different
-/// mismatch actions or replacement values.
+/// Returns an error when a regular expression is invalid, when the same metric and tag key has
+/// both an allowlist and a regular expression, or when duplicate rules configure conflicting
+/// behavior.
 pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> Result<CompiledFilters, GenericError> {
     let mut filters: CompiledFilters = HashMap::with_hasher(FoldHashState::default());
 
@@ -221,12 +248,45 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> Result<CompiledFilte
             );
         }
 
+        let mut tag_value_regexes =
+            HashMap::with_capacity_and_hasher(entry.tag_value_regexes.len(), FoldHashState::default());
+        for (tag_name, regex) in &entry.tag_value_regexes {
+            if tag_value_allowlists.contains_key(tag_name) {
+                return Err(generic_error!(
+                    "Metric '{}' configures both a tag value allowlist and regular expression for tag '{}'. \
+                     Configure only one value aggregation rule for that metric and tag.",
+                    entry.metric_name,
+                    tag_name
+                ));
+            }
+
+            let anchored_pattern = format!(r"\A(?:{})\z", regex.pattern);
+            let compiled = Regex::new(&anchored_pattern).map_err(|error| {
+                generic_error!(
+                    "Invalid tag value regular expression '{}' for metric '{}' and tag '{}': {}",
+                    regex.pattern,
+                    entry.metric_name,
+                    tag_name,
+                    error
+                )
+            })?;
+            tag_value_regexes.insert(
+                tag_name.clone(),
+                CompiledTagValueRegex {
+                    pattern: regex.pattern.clone(),
+                    regex: compiled,
+                    replacement: Tag::from(format!("{}:{}", tag_name, regex.replacement)),
+                },
+            );
+        }
+
         match filters.entry(entry.metric_name.clone()) {
             hashbrown::hash_map::Entry::Vacant(e) => {
                 e.insert(CompiledFilter {
                     is_exclude,
                     tag_names,
                     tag_value_allowlists,
+                    tag_value_regexes,
                 });
             }
             hashbrown::hash_map::Entry::Occupied(mut e) => {
@@ -239,6 +299,14 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> Result<CompiledFilte
                 }
 
                 for (tag_name, allowlist) in tag_value_allowlists {
+                    if existing.tag_value_regexes.contains_key(&tag_name) {
+                        return Err(generic_error!(
+                            "Metric '{}' configures both a tag value allowlist and regular expression for tag '{}'. \
+                             Configure only one value aggregation rule for that metric and tag.",
+                            entry.metric_name,
+                            tag_name
+                        ));
+                    }
                     match existing.tag_value_allowlists.entry(tag_name) {
                         hashbrown::hash_map::Entry::Vacant(e) => {
                             e.insert(allowlist);
@@ -253,6 +321,35 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> Result<CompiledFilte
                                 ));
                             }
                             e.get_mut().allowed_values.extend(allowlist.allowed_values);
+                        }
+                    }
+                }
+
+                for (tag_name, regex) in tag_value_regexes {
+                    if existing.tag_value_allowlists.contains_key(&tag_name) {
+                        return Err(generic_error!(
+                            "Metric '{}' configures both a tag value allowlist and regular expression for tag '{}'. \
+                             Configure only one value aggregation rule for that metric and tag.",
+                            entry.metric_name,
+                            tag_name
+                        ));
+                    }
+                    match existing.tag_value_regexes.entry(tag_name) {
+                        hashbrown::hash_map::Entry::Vacant(e) => {
+                            e.insert(regex);
+                        }
+                        hashbrown::hash_map::Entry::Occupied(e) => {
+                            let existing_regex = e.get();
+                            if existing_regex.pattern != regex.pattern
+                                || existing_regex.replacement != regex.replacement
+                            {
+                                return Err(generic_error!(
+                                    "Conflicting tag value regular expressions for metric '{}' and tag '{}'. \
+                                     Combine the duplicate rules or configure the same `pattern` and `replacement` values.",
+                                    entry.metric_name,
+                                    e.key()
+                                ));
+                            }
                         }
                     }
                 }
@@ -450,21 +547,31 @@ fn filter_tag<'a>(tag: &Tag, filter: &'a CompiledFilter) -> TagFilterAction<'a> 
         return TagFilterAction::Remove;
     }
 
-    let Some(allowlist) = filter.tag_value_allowlists.get(tag.name()) else {
-        return TagFilterAction::Keep;
-    };
-    if tag
-        .value()
-        .is_some_and(|value| allowlist.allowed_values.contains(value))
-    {
-        return TagFilterAction::Keep;
+    if let Some(allowlist) = filter.tag_value_allowlists.get(tag.name()) {
+        if tag
+            .value()
+            .is_some_and(|value| allowlist.allowed_values.contains(value))
+        {
+            return TagFilterAction::Keep;
+        }
+
+        return match &allowlist.on_miss {
+            CompiledMismatchAction::Remove => TagFilterAction::Remove,
+            CompiledMismatchAction::Replace(replacement) if replacement.as_str() == tag.as_ref() => {
+                TagFilterAction::Keep
+            }
+            CompiledMismatchAction::Replace(replacement) => TagFilterAction::Replace(replacement),
+        };
     }
 
-    match &allowlist.on_miss {
-        CompiledMismatchAction::Remove => TagFilterAction::Remove,
-        CompiledMismatchAction::Replace(replacement) if replacement.as_str() == tag.as_ref() => TagFilterAction::Keep,
-        CompiledMismatchAction::Replace(replacement) => TagFilterAction::Replace(replacement),
+    if let Some(regex) = filter.tag_value_regexes.get(tag.name()) {
+        if tag.value().is_some_and(|value| regex.regex.is_match(value)) || regex.replacement.as_str() == tag.as_ref() {
+            return TagFilterAction::Keep;
+        }
+        return TagFilterAction::Replace(&regex.replacement);
     }
+
+    TagFilterAction::Keep
 }
 
 /// Filters the tags of a metric according to the compiled filter table.
@@ -590,6 +697,18 @@ mod tests {
         .collect()
     }
 
+    fn value_regex(tag_name: &str, pattern: &str, replacement: &str) -> StdHashMap<String, TagValueRegex> {
+        [(
+            tag_name.to_string(),
+            TagValueRegex {
+                pattern: pattern.to_string(),
+                replacement: replacement.to_string(),
+            },
+        )]
+        .into_iter()
+        .collect()
+    }
+
     #[test]
     fn exclude_removes_listed_tags() {
         let entries = vec![MetricTagFilterEntry {
@@ -597,6 +716,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["env".to_string(), "host".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -614,6 +734,7 @@ mod tests {
             action: FilterAction::Include,
             tags: vec!["env".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -631,6 +752,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec![],
             tag_value_allowlists: value_allowlist("customer_id", &["top-1", "top-2"]),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let mut state = TagSetMutViewState::default();
@@ -653,6 +775,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec![],
             tag_value_allowlists: replacing_value_allowlist("customer_id", &["top-1"], "other"),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let mut metric = distribution_metric("my.dist", &["customer_id:unlisted", "service:web"]);
@@ -671,6 +794,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec![],
             tag_value_allowlists: replacing_value_allowlist("customer_id", &[], "other"),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let mut metric = distribution_metric("my.dist", &["customer_id:other"]);
@@ -689,6 +813,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec![],
             tag_value_allowlists: replacing_value_allowlist("customer_id", &[], "other"),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let mut metric = distribution_metric("my.dist", &["customer_id:a", "customer_id:b"]);
@@ -707,6 +832,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec![],
             tag_value_allowlists: value_allowlist("customer_id", &["top-1"]),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let mut metric = distribution_metric("my.dist", &["customer_id", "customer_id:", "service:web"]);
@@ -725,6 +851,7 @@ mod tests {
             action: FilterAction::Include,
             tags: vec!["service".to_string()],
             tag_value_allowlists: value_allowlist("customer_id", &["top-1"]),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let mut metric = distribution_metric("my.dist", &["customer_id:top-1", "service:web"]);
@@ -736,12 +863,144 @@ mod tests {
     }
 
     #[test]
+    fn value_regex_keeps_full_matches_and_replaces_non_matches() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec![],
+            tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: value_regex("customer_id", r"customer-[0-9]+", "invalid"),
+        }];
+        let filters = compile_filters(&entries).unwrap();
+        let mut state = TagSetMutViewState::default();
+
+        let mut matching = distribution_metric("my.dist", &["customer_id:customer-42", "service:web"]);
+        assert_eq!(
+            filter_metric_tags(&mut matching, &mut state, &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+        assert_eq!(tag_names(&matching), vec!["customer_id:customer-42", "service:web"]);
+
+        let mut non_matching =
+            distribution_metric("my.dist", &["customer_id:prefix-customer-42-suffix", "service:web"]);
+        assert_eq!(
+            filter_metric_tags(&mut non_matching, &mut state, &filters),
+            FilterMetricTagsOutcome::Modified { removed_tags: 1 }
+        );
+        assert_eq!(tag_names(&non_matching), vec!["customer_id:invalid", "service:web"]);
+    }
+
+    #[test]
+    fn value_regex_replaces_bare_tags_and_preserves_the_sentinel() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec![],
+            tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: value_regex("customer_id", r"customer-[0-9]+", "invalid"),
+        }];
+        let filters = compile_filters(&entries).unwrap();
+        let mut state = TagSetMutViewState::default();
+
+        let mut bare = distribution_metric("my.dist", &["customer_id"]);
+        filter_metric_tags(&mut bare, &mut state, &filters);
+        assert_eq!(tag_names(&bare), vec!["customer_id:invalid"]);
+
+        let mut sentinel = distribution_metric("my.dist", &["customer_id:invalid"]);
+        assert_eq!(
+            filter_metric_tags(&mut sentinel, &mut state, &filters),
+            FilterMetricTagsOutcome::NoChange
+        );
+    }
+
+    #[test]
+    fn value_regex_replaces_non_matching_origin_tags() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec![],
+            tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: value_regex("region", r"[a-z]+-[0-9]+", "invalid"),
+        }];
+        let filters = compile_filters(&entries).unwrap();
+        let mut metric = distribution_metric_with_origin_tags("my.dist", &[], &["region:bad", "service:web"]);
+        let mut state = TagSetMutViewState::default();
+
+        filter_metric_tags(&mut metric, &mut state, &filters);
+
+        assert_eq!(origin_tag_names(&metric), vec!["region:invalid", "service:web"]);
+    }
+
+    #[test]
+    fn invalid_value_regex_is_rejected() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec![],
+            tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: value_regex("customer_id", "[", "invalid"),
+        }];
+
+        let error = compile_filters(&entries)
+            .err()
+            .expect("invalid regular expression must fail");
+
+        assert!(error.to_string().contains("metric 'my.dist' and tag 'customer_id'"));
+    }
+
+    #[test]
+    fn allowlist_and_value_regex_for_same_tag_are_rejected() {
+        let entries = vec![MetricTagFilterEntry {
+            metric_name: "my.dist".to_string(),
+            action: FilterAction::Exclude,
+            tags: vec![],
+            tag_value_allowlists: value_allowlist("customer_id", &["top-1"]),
+            tag_value_regexes: value_regex("customer_id", r"customer-[0-9]+", "invalid"),
+        }];
+
+        let error = compile_filters(&entries)
+            .err()
+            .expect("overlapping value aggregation rules must fail");
+
+        assert!(error
+            .to_string()
+            .contains("both a tag value allowlist and regular expression"));
+    }
+
+    #[test]
+    fn conflicting_duplicate_value_regexes_are_rejected() {
+        let entries = vec![
+            MetricTagFilterEntry {
+                metric_name: "my.dist".to_string(),
+                action: FilterAction::Exclude,
+                tags: vec![],
+                tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: value_regex("customer_id", r"customer-[0-9]+", "invalid"),
+            },
+            MetricTagFilterEntry {
+                metric_name: "my.dist".to_string(),
+                action: FilterAction::Exclude,
+                tags: vec![],
+                tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: value_regex("customer_id", r"customer-[a-z]+", "invalid"),
+            },
+        ];
+
+        let error = compile_filters(&entries)
+            .err()
+            .expect("conflicting regular expressions must fail");
+
+        assert!(error.to_string().contains("metric 'my.dist' and tag 'customer_id'"));
+    }
+
+    #[test]
     fn non_matching_metric_unchanged() {
         let entries = vec![MetricTagFilterEntry {
             metric_name: "other.dist".to_string(),
             action: FilterAction::Exclude,
             tags: vec!["env".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -766,6 +1025,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["env".to_string(), "host".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -784,6 +1044,7 @@ mod tests {
             action: FilterAction::Include,
             tags: vec!["env".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -802,6 +1063,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["env".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -820,6 +1082,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["region".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -838,6 +1101,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["production".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -855,6 +1119,7 @@ mod tests {
             action: FilterAction::Include,
             tags: vec![],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -872,6 +1137,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec![],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -890,12 +1156,14 @@ mod tests {
                 action: FilterAction::Exclude,
                 tags: vec!["env".to_string()],
                 tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: StdHashMap::default(),
             },
             MetricTagFilterEntry {
                 metric_name: "my.dist".to_string(),
                 action: FilterAction::Exclude,
                 tags: vec!["host".to_string()],
                 tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: StdHashMap::default(),
             },
         ];
         let filters = compile_filters(&entries).unwrap();
@@ -915,12 +1183,14 @@ mod tests {
                 action: FilterAction::Exclude,
                 tags: vec![],
                 tag_value_allowlists: value_allowlist("customer_id", &["top-1"]),
+                tag_value_regexes: StdHashMap::default(),
             },
             MetricTagFilterEntry {
                 metric_name: "my.dist".to_string(),
                 action: FilterAction::Exclude,
                 tags: vec![],
                 tag_value_allowlists: value_allowlist("customer_id", &["top-2"]),
+                tag_value_regexes: StdHashMap::default(),
             },
         ];
         let filters = compile_filters(&entries).unwrap();
@@ -943,12 +1213,14 @@ mod tests {
                 action: FilterAction::Exclude,
                 tags: vec![],
                 tag_value_allowlists: replacing_value_allowlist("customer_id", &["top-1"], "other"),
+                tag_value_regexes: StdHashMap::default(),
             },
             MetricTagFilterEntry {
                 metric_name: "my.dist".to_string(),
                 action: FilterAction::Exclude,
                 tags: vec![],
                 tag_value_allowlists: replacing_value_allowlist("customer_id", &["top-2"], "aggregated"),
+                tag_value_regexes: StdHashMap::default(),
             },
         ];
 
@@ -967,12 +1239,14 @@ mod tests {
                 action: FilterAction::Exclude,
                 tags: vec![],
                 tag_value_allowlists: value_allowlist("customer_id", &["top-1"]),
+                tag_value_regexes: StdHashMap::default(),
             },
             MetricTagFilterEntry {
                 metric_name: "my.dist".to_string(),
                 action: FilterAction::Exclude,
                 tags: vec![],
                 tag_value_allowlists: replacing_value_allowlist("customer_id", &["top-2"], "other"),
+                tag_value_regexes: StdHashMap::default(),
             },
         ];
 
@@ -991,12 +1265,14 @@ mod tests {
                 action: FilterAction::Include,
                 tags: vec!["env".to_string()],
                 tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: StdHashMap::default(),
             },
             MetricTagFilterEntry {
                 metric_name: "my.dist".to_string(),
                 action: FilterAction::Exclude,
                 tags: vec!["host".to_string()],
                 tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: StdHashMap::default(),
             },
         ];
         let filters = compile_filters(&entries).unwrap();
@@ -1016,12 +1292,14 @@ mod tests {
                 action: FilterAction::Exclude,
                 tags: vec!["host".to_string()],
                 tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: StdHashMap::default(),
             },
             MetricTagFilterEntry {
                 metric_name: "my.dist".to_string(),
                 action: FilterAction::Include,
                 tags: vec!["env".to_string()],
                 tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: StdHashMap::default(),
             },
         ];
         let filters = compile_filters(&entries).unwrap();
@@ -1050,12 +1328,14 @@ mod tests {
                 action: FilterAction::Exclude,
                 tags: vec!["env".to_string()],
                 tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: StdHashMap::default(),
             },
             MetricTagFilterEntry {
                 metric_name: "my.dist".to_string(),
                 action: FilterAction::Exclude,
                 tags: vec!["host".to_string()],
                 tag_value_allowlists: StdHashMap::default(),
+                tag_value_regexes: StdHashMap::default(),
             },
         ];
         let filters = compile_filters(&entries).unwrap();
@@ -1089,6 +1369,20 @@ mod tests {
         let allowlist = &entry.tag_value_allowlists["customer_id"];
         assert_eq!(allowlist.on_miss, TagValueMismatchAction::Remove);
         assert_eq!(allowlist.replacement, "other");
+    }
+
+    #[test]
+    fn value_regex_defaults_to_other_replacement() {
+        let entry: MetricTagFilterEntry = serde_json::from_value(json!({
+            "metric_name": "my.dist",
+            "tags": [],
+            "tag_value_regexes": {
+                "customer_id": { "pattern": "customer-[0-9]+" }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(entry.tag_value_regexes["customer_id"].replacement, "other");
     }
 
     #[test]
@@ -1132,6 +1426,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["env".to_string(), "host".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -1150,6 +1445,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec![],
             tag_value_allowlists: value_allowlist("customer_id", &["top-1"]),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let mut metric = distribution_metric_with_origin_tags(
@@ -1171,6 +1467,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec![],
             tag_value_allowlists: replacing_value_allowlist("customer_id", &["top-1"], "other"),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let mut metric = distribution_metric_with_origin_tags("my.dist", &[], &["customer_id:unlisted", "service:web"]);
@@ -1188,6 +1485,7 @@ mod tests {
             action: FilterAction::Include,
             tags: vec!["env".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -1206,6 +1504,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["env".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -1236,6 +1535,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["env".to_string(), "host".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -1263,6 +1563,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["env".to_string(), "host".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -1363,6 +1664,12 @@ mod tests {
                             "on_miss": "replace",
                             "replacement": "aggregated"
                         }
+                    },
+                    "tag_value_regexes": {
+                        "region": {
+                            "pattern": "[a-z]+-[0-9]+",
+                            "replacement": "invalid"
+                        }
                     }
                 }]),
             })
@@ -1378,12 +1685,15 @@ mod tests {
 
         let filters = compile_filters(new_entries.as_deref().unwrap_or(&[])).unwrap();
 
-        let mut metric = distribution_metric("my.dist", &["customer_id:other", "env:prod", "host:h1", "service:web"]);
+        let mut metric = distribution_metric(
+            "my.dist",
+            &["customer_id:other", "env:prod", "host:h1", "region:bad", "service:web"],
+        );
         let mut state = TagSetMutViewState::default();
         filter_metric_tags(&mut metric, &mut state, &filters);
         assert_eq!(
             tag_names(&metric),
-            vec!["customer_id:aggregated", "env:prod", "service:web"]
+            vec!["customer_id:aggregated", "env:prod", "region:invalid", "service:web"]
         );
     }
 
@@ -1482,6 +1792,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["host".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
 
@@ -1502,6 +1813,7 @@ mod tests {
             action: FilterAction::Exclude,
             tags: vec!["region".to_string()],
             tag_value_allowlists: StdHashMap::default(),
+            tag_value_regexes: StdHashMap::default(),
         }];
         let filters = compile_filters(&entries).unwrap();
         let shared_tags = ["env:prod", "host:h1"]

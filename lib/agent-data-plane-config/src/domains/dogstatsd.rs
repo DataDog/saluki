@@ -334,6 +334,33 @@ pub struct MetricTagFilterEntry {
     /// The map is empty by default, which disables value filtering. Use this for tag keys whose
     /// unbounded values would create excessive metric cardinality.
     pub tag_value_allowlists: HashMap<String, TagValueAllowlist>,
+
+    /// Regular expressions required to match specific tag values.
+    ///
+    /// Values that do not match are replaced with the configured sentinel. The map is empty by
+    /// default, which disables regular expression filtering.
+    pub tag_value_regexes: HashMap<String, TagValueRegex>,
+}
+
+/// A regular expression and replacement sentinel for one tag key.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct TagValueRegex {
+    /// Regular expression that the complete tag value must match.
+    pub pattern: String,
+
+    /// Value used when the regular expression does not match.
+    ///
+    /// The default is `other`. Configure a value that cannot collide with a real tag value.
+    pub replacement: String,
+}
+
+impl Default for TagValueRegex {
+    fn default() -> Self {
+        Self {
+            pattern: String::new(),
+            replacement: "other".to_string(),
+        }
+    }
 }
 
 /// An allowlist and mismatch behavior for one tag key.
