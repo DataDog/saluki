@@ -157,6 +157,7 @@ impl OtlpConfiguration {
             .with_remapping(true)
             .with_quantiles(true)
             .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
+            .with_number_mode(self.otlp_config.metrics.sums.cumulative_monotonic_mode.into())
             .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags)
     }
 
@@ -571,10 +572,11 @@ mod config_smoke {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::domains::otlp::HistogramMode;
-    use saluki_config::config_from;
+    use saluki_config::{config_from, ConfigurationLoader};
     use serde_json::json;
 
-    use super::{parse_configured_metric_tags, OtlpConfiguration};
+    use super::{metrics::config::NumberMode, parse_configured_metric_tags, OtlpConfiguration};
+    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -606,6 +608,38 @@ mod tests {
 
             assert_eq!(otlp_config.metrics_translator_config().hist_mode, expected_mode);
         }
+    }
+
+    #[test]
+    fn cumulative_monotonic_sum_mode_defaults_to_delta_conversion() {
+        assert_eq!(
+            OtlpConfiguration::default().metrics_translator_config().number_mode,
+            NumberMode::CumulativeToDelta
+        );
+    }
+
+    #[tokio::test]
+    async fn cumulative_monotonic_sum_mode_configures_metrics_translator() {
+        let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            Some(json!({
+                "otlp_config": {
+                    "metrics": {
+                        "sums": {
+                            "cumulative_monotonic_mode": "raw_value"
+                        }
+                    }
+                }
+            })),
+            None,
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        let config =
+            OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
+
+        assert_eq!(config.metrics_translator_config().number_mode, NumberMode::RawValue);
     }
 
     #[test]

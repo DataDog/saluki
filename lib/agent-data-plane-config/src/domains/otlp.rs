@@ -24,7 +24,7 @@ pub struct Domain {
 }
 
 /// OTLP metrics translation settings.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Metrics {
     /// How explicit histogram buckets are reported.
     pub histogram_mode: HistogramMode,
@@ -32,6 +32,12 @@ pub struct Metrics {
     /// Whether every resource attribute is added as a raw metric tag, in addition to the
     /// semantic-convention mappings that are always applied.
     pub resource_attributes_as_tags: bool,
+
+    /// Cumulative monotonic sum reporting mode.
+    ///
+    /// Defaults to `to_delta`, which converts cumulative values to delta counts. Set to `raw_value` to emit
+    /// cumulative values as gauges.
+    pub cumulative_monotonic_mode: String,
 
     /// Comma-separated list of tags to add to every emitted metric.
     pub tags: String,
@@ -62,6 +68,17 @@ impl FromStr for HistogramMode {
             other => Err(Error::new_without_source(format!(
                 "unknown histogram mode `{other}`; expected `nobuckets`, `counters`, or `distributions`"
             ))),
+        }
+    }
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            histogram_mode: HistogramMode::default(),
+            resource_attributes_as_tags: false,
+            cumulative_monotonic_mode: "to_delta".to_string(),
+            tags: String::new(),
         }
     }
 }
