@@ -1283,6 +1283,9 @@ pub struct OtlpConfigMetrics {
     pub resource_attributes_as_tags: bool,
 
     #[serde(default)]
+    pub sums: OtlpConfigMetricsSums,
+
+    #[serde(default)]
     pub tags: String,
 }
 
@@ -1292,6 +1295,7 @@ impl Default for OtlpConfigMetrics {
             enabled: defaults::default_bool::<true>(),
             histograms: Default::default(),
             resource_attributes_as_tags: Default::default(),
+            sums: Default::default(),
             tags: Default::default(),
         }
     }
@@ -1309,6 +1313,22 @@ impl Default for OtlpConfigMetricsHistograms {
     fn default() -> Self {
         Self {
             mode: defaults::datadog_configuration_otlp_config_metrics_histograms_mode(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigMetricsSums {
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode"
+    )]
+    pub cumulative_monotonic_mode: String,
+}
+
+impl Default for OtlpConfigMetricsSums {
+    fn default() -> Self {
+        Self {
+            cumulative_monotonic_mode: defaults::datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode(),
         }
     }
 }
@@ -1759,6 +1779,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_otlp_config_metrics_histograms_mode() -> String {
         "distributions".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode() -> String {
+        "to_delta".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint() -> String {
         "localhost:4317".to_string()

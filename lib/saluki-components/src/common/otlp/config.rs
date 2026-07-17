@@ -180,6 +180,20 @@ pub struct HistogramsConfig {
     pub mode: HistogramMode,
 }
 
+/// Controls how cumulative monotonic sums are emitted.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(serde::Serialize))]
+pub enum CumulativeMonotonicMode {
+    /// Converts cumulative values to deltas and emits them as counts.
+    #[default]
+    #[serde(rename = "to_delta")]
+    ToDelta,
+
+    /// Emits cumulative values as gauges without converting them to deltas.
+    #[serde(rename = "raw_value")]
+    RawValue,
+}
+
 /// Configuration for OTLP metrics processing.
 #[derive(Deserialize, Debug)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -211,6 +225,26 @@ pub struct MetricsConfig {
     /// Defaults to empty.
     #[serde(default)]
     pub tags: String,
+
+    /// Configuration for OTLP sums.
+    #[serde(default)]
+    pub sums: SumsConfig,
+}
+
+/// Configuration for OTLP sums.
+#[derive(Deserialize, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+pub struct SumsConfig {
+    /// Controls how cumulative monotonic sums are emitted.
+    ///
+    /// The default `to_delta` converts each cumulative value to a delta and emits it as a count. Set this to
+    /// `raw_value` to emit the cumulative value as a gauge instead. This affects only cumulative monotonic sums;
+    /// delta sums and non-monotonic sums retain their existing behavior. Use `raw_value` when the receiver of the
+    /// translated metrics needs the original cumulative value.
+    ///
+    /// Corresponds to `otlp_config.metrics.sums.cumulative_monotonic_mode`.
+    #[serde(default, rename = "cumulative_monotonic_mode")]
+    pub mode: CumulativeMonotonicMode,
 }
 
 fn default_metrics_enabled() -> bool {
@@ -224,6 +258,7 @@ impl Default for MetricsConfig {
             histograms: HistogramsConfig::default(),
             resource_attributes_as_tags: false,
             tags: String::new(),
+            sums: SumsConfig::default(),
         }
     }
 }

@@ -3,17 +3,27 @@ use std::time::Duration;
 use agent_data_plane_config::domains::otlp::HistogramMode;
 use saluki_error::{generic_error, GenericError};
 
+use crate::common::otlp::config::CumulativeMonotonicMode;
+
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
 const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L178-L190
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[allow(dead_code)]
-#[derive(Default)]
 pub enum NumberMode {
     #[default]
     CumulativeToDelta,
     RawValue,
+}
+
+impl From<CumulativeMonotonicMode> for NumberMode {
+    fn from(mode: CumulativeMonotonicMode) -> Self {
+        match mode {
+            CumulativeMonotonicMode::ToDelta => Self::CumulativeToDelta,
+            CumulativeMonotonicMode::RawValue => Self::RawValue,
+        }
+    }
 }
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L209-L224
