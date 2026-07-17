@@ -291,6 +291,18 @@ impl Default for MetricsConfig {
     }
 }
 
+impl SumsConfig {
+    /// Applies the initial-value environment-variable override that normal nested deserialization cannot read.
+    pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
+        if let Some(mode) = config.try_get_typed::<InitialCumulativeMonotonicValue>(
+            "otlp_config_metrics_sums_initial_cumulative_monotonic_value",
+        )? {
+            self.initial_cumulative_monotonic_value = mode;
+        }
+        Ok(())
+    }
+}
+
 /// Configuration for OTLP traces processing.
 ///
 /// Mirrors the Agent's `otlp_config.traces` configuration.
