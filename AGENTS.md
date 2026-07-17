@@ -33,10 +33,9 @@ of software projects, in addition to making them harder to maintain and debug ov
   not for production use and supporting it need not be a blocker during feature development.
 - We have customized our use of `cargo fmt` and `clippy`. The `Makefile` is authoritative.
 - Our Rust code wraps at 120 characters.
-- Datadog configuration inventory is managed by YAML files in `lib/datadog-agent/config/schema/`
-  - `schema_overlay.yaml` is a hand-edited file for our inventory of supported Datadog config
-  - The Datadog config schema is vendored under `lib/datadog-agent/config/schema/core`
-  - See `.claude/skills/config-management/SKILL.md`
+- For configuration work, read `.claude/skills/config-system/SKILL.md`.
+  - Keys in `lib/datadog-agent/config/schema/core/` are Datadog; absent keys are Saluki-only.
+  - Edit `schema_overlay.yaml` for Datadog inventory; generated code files are output.
 - Name every proptest function with the literal `property_test_` prefix: the `test`/`test-property` Make targets run
   tests by including/excluding that prefix, so a differently named property test still runs, just in the debug-mode
   `test` job instead of the dedicated release-mode `test-property` job.
