@@ -27,7 +27,7 @@ pub async fn handle_v02_traces(State(state): State<TracesState>, body: Bytes) ->
         }
     };
 
-    match state.merge_agent_payload(payload, &body[..]) {
+    match state.merge_agent_payload(payload) {
         Ok(()) => {
             info!("Processed trace payload.");
             StatusCode::ACCEPTED

@@ -1,7 +1,6 @@
 use datadog_protos::traces as proto;
 use datadog_protos::traces::idx as idx_proto;
 use ordered_float::OrderedFloat;
-use protobuf::CodedInputStream;
 use saluki_common::collections::FastHashMap;
 use serde::{Deserialize, Serialize};
 use stringtheory::MetaString;
@@ -174,8 +173,7 @@ impl Span {
         self.meta.get(meta_key).map(|s| &**s)
     }
 
-    /// Gets all spans from the given `AgentPayload`, reading from the classic `tracerPayloads`
-    /// field (proto field 5).
+    /// Gets all spans from the classic and indexed tracer payloads in the given `AgentPayload`.
     pub fn get_spans_from_agent_payload(payload: &proto::AgentPayload) -> Vec<Self> {
         let agent_metadata = AgentMetadata::from(payload);
 
@@ -198,50 +196,24 @@ impl Span {
             }
         }
 
-        spans
-    }
+        for tracer_payload in payload.idxTracerPayloads() {
+            let strings = &tracer_payload.strings;
+            let tracer_metadata = TracerMetadata::from_idx_payload(tracer_payload);
 
-    /// Gets all spans from the raw AgentPayload bytes by decoding the `idxTracerPayloads`
-    /// field (proto field 11).
-    ///
-    /// The generated `AgentPayload` struct has the wrong Rust type for field 11 (it falls back
-    /// to the classic `TracerPayload` because the new types were not in the same codegen
-    /// invocation), so this function reads field 11 directly from the raw wire bytes using
-    /// `CodedInputStream` and decodes each message as the correct `idx::TracerPayload` type.
-    pub fn get_spans_from_idx_bytes(payload: &proto::AgentPayload, body: &[u8]) -> Vec<Self> {
-        let agent_metadata = AgentMetadata::from(payload);
-        let mut spans = Vec::new();
+            for chunk in &tracer_payload.chunks {
+                let trace_chunk_metadata = TraceChunkMetadata::from_idx_chunk(chunk, strings);
+                let trace_id = trace_id_low_from_bytes(&chunk.traceID);
 
-        // AgentPayload.idxTracerPayloads = field 11, wire type LEN (2) → tag = 90
-        const IDX_TRACER_PAYLOADS_TAG: u32 = (11 << 3) | 2;
-
-        let mut is = CodedInputStream::from_bytes(body);
-        while let Ok(Some(tag)) = is.read_raw_tag_or_eof() {
-            if tag == IDX_TRACER_PAYLOADS_TAG {
-                let idx_payload: idx_proto::TracerPayload = match is.read_message() {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                };
-                let strings = &idx_payload.strings;
-                let tracer_metadata = TracerMetadata::from_idx_payload(&idx_payload);
-
-                for chunk in &idx_payload.chunks {
-                    let trace_chunk_metadata = TraceChunkMetadata::from_idx_chunk(chunk, strings);
-                    let trace_id = trace_id_low_from_bytes(&chunk.traceID);
-
-                    for span in &chunk.spans {
-                        spans.push(Self::from_idx_proto(
-                            agent_metadata.clone(),
-                            tracer_metadata.clone(),
-                            trace_chunk_metadata.clone(),
-                            span,
-                            trace_id,
-                            strings,
-                        ));
-                    }
+                for span in &chunk.spans {
+                    spans.push(Self::from_idx_proto(
+                        agent_metadata.clone(),
+                        tracer_metadata.clone(),
+                        trace_chunk_metadata.clone(),
+                        span,
+                        trace_id,
+                        strings,
+                    ));
                 }
-            } else {
-                let _ = protobuf::rt::skip_field_for_tag(tag, &mut is);
             }
         }
 
