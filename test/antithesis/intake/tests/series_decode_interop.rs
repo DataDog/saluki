@@ -55,7 +55,10 @@ async fn adp_async_compression(raw: &[u8]) -> Vec<u8> {
     enc.into_inner()
 }
 
-async fn post_series(encoding: Option<&str>, body: Vec<u8>) -> StatusCode {
+/// A `User-Agent` the backend classifies as `SourceAgent`, the source whose feral v2 tags are kept.
+const AGENT_UA: &str = "datadog-agent/7.55.0";
+
+async fn post_series(encoding: Option<&str>, user_agent: Option<&str>, body: Vec<u8>) -> StatusCode {
     let state = AppState::agent(&capture::State::new());
     let app = build_router(state);
     let mut builder = Request::builder()
@@ -66,6 +69,9 @@ async fn post_series(encoding: Option<&str>, body: Vec<u8>) -> StatusCode {
     if let Some(enc) = encoding {
         builder = builder.header("content-encoding", enc);
     }
+    if let Some(ua) = user_agent {
+        builder = builder.header("user-agent", ua);
+    }
     let request = builder.body(Body::from(body)).expect("build request");
     app.oneshot(request).await.expect("router response").status()
 }
@@ -73,21 +79,27 @@ async fn post_series(encoding: Option<&str>, body: Vec<u8>) -> StatusCode {
 #[tokio::test]
 async fn identity_protobuf_decodes() {
     let raw = payload_bytes();
-    assert_eq!(post_series(None, raw).await, StatusCode::ACCEPTED);
+    assert_eq!(post_series(None, Some(AGENT_UA), raw).await, StatusCode::ACCEPTED);
 }
 
 #[tokio::test]
 async fn adp_async_compression_zstd_decodes() {
     let raw = payload_bytes();
     let body = adp_async_compression(&raw).await;
-    assert_eq!(post_series(Some("zstd"), body).await, StatusCode::ACCEPTED);
+    assert_eq!(
+        post_series(Some("zstd"), Some(AGENT_UA), body).await,
+        StatusCode::ACCEPTED
+    );
 }
 
 #[tokio::test]
 async fn agent_libzstd_zstd_decodes() {
     let raw = payload_bytes();
     let body = agent_libzstd(&raw);
-    assert_eq!(post_series(Some("zstd"), body).await, StatusCode::ACCEPTED);
+    assert_eq!(
+        post_series(Some("zstd"), Some(AGENT_UA), body).await,
+        StatusCode::ACCEPTED
+    );
 }
 
 /// A `MetricPayload` with a marker in the metric name and one tag, serialized. The caller
@@ -128,18 +140,41 @@ fn non_utf8_rejected_by_strict_protobuf_decode() {
     );
 }
 
-/// A non-UTF-8 tag must not drop the payload. Production retries into a tags-as-bytes
-/// message and keeps it, so the intake captures its contexts instead of losing them.
+/// From the `datadog-agent` source a non-UTF-8 tag must not drop the payload. The backend retries into
+/// a tags-as-bytes message ONLY for that source and keeps it, so the intake captures its contexts.
 #[tokio::test]
-async fn non_utf8_tag_accepted_by_intake() {
+async fn non_utf8_tag_accepted_from_agent_source() {
     let body = agent_libzstd(&corrupt(payload_with_marker(), b"TAGG"));
-    assert_eq!(post_series(Some("zstd"), body).await, StatusCode::ACCEPTED);
+    assert_eq!(
+        post_series(Some("zstd"), Some(AGENT_UA), body).await,
+        StatusCode::ACCEPTED
+    );
 }
 
-/// A non-UTF-8 metric name still drops the payload — production's fallback re-types only
-/// tags as bytes, so a bad name fails there too. The intake must match, not over-accept.
+/// From any non-agent source the same non-UTF-8 tag whole-payload-rejects: the backend runs its
+/// bytes-tag retry only for `SourceAgent`, so a non-`datadog-agent` User-Agent gets 400. This is the
+/// primary source-gating contract the intake previously violated by sanitizing tags for every source.
 #[tokio::test]
-async fn non_utf8_metric_name_dropped_by_intake() {
+async fn non_utf8_tag_rejected_from_non_agent_source() {
+    let corrupt_body = corrupt(payload_with_marker(), b"TAGG");
+    // A recognizably non-agent User-Agent, and the absent-header case, both reject.
+    assert_eq!(
+        post_series(Some("zstd"), Some("vector/0.30"), agent_libzstd(&corrupt_body)).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        post_series(Some("zstd"), None, agent_libzstd(&corrupt_body)).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+/// A non-UTF-8 metric name still drops the payload even from the Agent source — the backend's fallback
+/// re-types only tags as bytes, so a bad name fails there too. The intake must match, not over-accept.
+#[tokio::test]
+async fn non_utf8_metric_name_dropped_even_from_agent_source() {
     let body = agent_libzstd(&corrupt(payload_with_marker(), b"NAME"));
-    assert_eq!(post_series(Some("zstd"), body).await, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        post_series(Some("zstd"), Some(AGENT_UA), body).await,
+        StatusCode::BAD_REQUEST
+    );
 }
