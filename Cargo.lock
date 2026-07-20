@@ -223,8 +223,11 @@ dependencies = [
  "antithesis_sdk",
  "anyhow",
  "clap",
+ "ddsketch",
  "harness",
+ "proptest",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
 ]

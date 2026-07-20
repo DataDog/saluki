@@ -51,6 +51,7 @@ SCENARIO_DIR="$ANTITHESIS_DIR/scenarios/$SCENARIO"
 SCENARIO_TEST_NAME=""
 SCENARIO_DESCRIPTION=""
 SCENARIO_FAULT_NODES=""
+SCENARIO_FORCE_DISABLE_ALL_FAULTS=""
 SCENARIO_WEBHOOK=""
 # shellcheck source=/dev/null
 . "$SCENARIO_DIR/launch.env"
@@ -74,7 +75,7 @@ FAULT_NODES="${FAULT_NODES-$SCENARIO_FAULT_NODES}"
 # run_test global fault toggles. Defaults match the endpoint defaults so a plain
 # shot behaves as it did before the move off persistent_storage.
 SIMULTANEOUS_FAULTS="${SIMULTANEOUS_FAULTS:-false}"
-FORCE_DISABLE_ALL_FAULTS="${FORCE_DISABLE_ALL_FAULTS:-false}"
+FORCE_DISABLE_ALL_FAULTS="${FORCE_DISABLE_ALL_FAULTS:-${SCENARIO_FORCE_DISABLE_ALL_FAULTS:-false}}"
 
 # antithesis.source. On the unified run_test endpoint this one identifier both
 # selects the datadog_agent customization block -- title "Datadog Agent" and the

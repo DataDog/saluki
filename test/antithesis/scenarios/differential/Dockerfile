@@ -62,8 +62,7 @@ RUN --mount=type=cache,target=/tools/target,id=antithesis-differential-tools-tar
     cargo build --release --package harness --bin first_sample_config --bin eventually_adp_alive && \
     cp /tools/target/release/antithesis-intake /usr/local/bin/antithesis-intake && \
     cp /tools/target/release/parallel_driver_send_dogstatsd_differential /usr/local/bin/parallel_driver_send_dogstatsd_differential && \
-    cp /tools/target/release/eventually_differential_contexts /usr/local/bin/eventually_differential_contexts && \
-    cp /tools/target/release/finally_differential_contexts /usr/local/bin/finally_differential_contexts && \
+    cp /tools/target/release/eventually_differential_curves /usr/local/bin/eventually_differential_curves && \
     cp /tools/target/release/eventually_adp_alive /usr/local/bin/eventually_adp_alive && \
     cp /tools/target/release/first_sample_config /usr/local/bin/first_sample_config
 
@@ -122,8 +121,7 @@ RUN mkdir -p /opt/antithesis/test/v1/main
 COPY --chmod=755 test/antithesis/scenarios/differential/workload/setup-complete.sh /opt/antithesis/setup-complete.sh
 COPY --from=tools-builder --chmod=755 /usr/local/bin/first_sample_config /opt/antithesis/test/v1/main/first_sample_config
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_send_dogstatsd_differential /opt/antithesis/test/v1/main/parallel_driver_send_dogstatsd_differential
-COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_differential_contexts /opt/antithesis/test/v1/main/eventually_differential_contexts
-COPY --from=tools-builder --chmod=755 /usr/local/bin/finally_differential_contexts /opt/antithesis/test/v1/main/finally_differential_contexts
+COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_differential_curves /opt/antithesis/test/v1/main/eventually_differential_curves
 COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_adp_alive /opt/antithesis/test/v1/main/eventually_adp_alive
 # Datadog Agent debug symbols. Antithesis scans /symbols in every pushed image and
 # matches by build-id, so this symbolizes the Core Agent running in the SUT lanes.
