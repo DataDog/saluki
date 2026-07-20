@@ -158,8 +158,8 @@ impl OtlpConfiguration {
             .with_remapping(true)
             .with_quantiles(true)
             .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
-            .with_number_mode(self.otlp_config.metrics.sums.cumulative_monotonic_mode.into())
-            .with_initial_cumul_mono_value_mode(self.otlp_config.metrics.sums.initial_cumulative_monotonic_value.into())
+            .with_cumulative_monotonic_mode(self.otlp_config.metrics.sums.cumulative_monotonic_mode)
+            .with_initial_cumulative_monotonic_value(self.otlp_config.metrics.sums.initial_cumulative_monotonic_value)
             .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags)
     }
 
@@ -573,14 +573,13 @@ mod config_smoke {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::domains::otlp::HistogramMode;
+    use agent_data_plane_config::domains::otlp::{
+        CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue,
+    };
     use saluki_config::{config_from, ConfigurationLoader};
     use serde_json::json;
 
-    use super::{
-        metrics::config::{InitialCumulMonoValueMode, NumberMode},
-        parse_configured_metric_tags, OtlpConfiguration,
-    };
+    use super::{parse_configured_metric_tags, OtlpConfiguration};
     use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     fn tags(raw: &str) -> Vec<String> {
@@ -618,8 +617,10 @@ mod tests {
     #[test]
     fn cumulative_monotonic_sum_mode_defaults_to_delta_conversion() {
         assert_eq!(
-            OtlpConfiguration::default().metrics_translator_config().number_mode,
-            NumberMode::CumulativeToDelta
+            OtlpConfiguration::default()
+                .metrics_translator_config()
+                .cumulative_monotonic_mode,
+            CumulativeMonotonicMode::ToDelta
         );
     }
 
@@ -644,7 +645,10 @@ mod tests {
         let config =
             OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
 
-        assert_eq!(config.metrics_translator_config().number_mode, NumberMode::RawValue);
+        assert_eq!(
+            config.metrics_translator_config().cumulative_monotonic_mode,
+            CumulativeMonotonicMode::RawValue
+        );
     }
 
     #[tokio::test]
@@ -665,15 +669,18 @@ mod tests {
             OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
         let translator_config = config.metrics_translator_config();
 
-        assert_eq!(translator_config.number_mode, NumberMode::RawValue);
+        assert_eq!(
+            translator_config.cumulative_monotonic_mode,
+            CumulativeMonotonicMode::RawValue
+        );
     }
 
     #[tokio::test]
     async fn initial_cumulative_monotonic_value_configures_metrics_translator() {
         for (configured_value, expected_mode) in [
-            ("auto", InitialCumulMonoValueMode::Auto),
-            ("drop", InitialCumulMonoValueMode::Drop),
-            ("keep", InitialCumulMonoValueMode::Keep),
+            ("auto", InitialCumulativeMonotonicValue::Auto),
+            ("drop", InitialCumulativeMonotonicValue::Drop),
+            ("keep", InitialCumulativeMonotonicValue::Keep),
         ] {
             let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
                 Some(json!({
@@ -695,7 +702,7 @@ mod tests {
                 OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
 
             assert_eq!(
-                config.metrics_translator_config().initial_cumul_mono_value_mode,
+                config.metrics_translator_config().initial_cumulative_monotonic_value,
                 expected_mode
             );
         }
@@ -704,9 +711,9 @@ mod tests {
     #[tokio::test]
     async fn initial_cumulative_monotonic_value_environment_variable_configures_metrics_translator() {
         for (configured_value, expected_mode) in [
-            ("auto", InitialCumulMonoValueMode::Auto),
-            ("drop", InitialCumulMonoValueMode::Drop),
-            ("keep", InitialCumulMonoValueMode::Keep),
+            ("auto", InitialCumulativeMonotonicValue::Auto),
+            ("drop", InitialCumulativeMonotonicValue::Drop),
+            ("keep", InitialCumulativeMonotonicValue::Keep),
         ] {
             let env_vars = [(
                 "OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE".to_string(),
@@ -724,7 +731,7 @@ mod tests {
                 OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
 
             assert_eq!(
-                config.metrics_translator_config().initial_cumul_mono_value_mode,
+                config.metrics_translator_config().initial_cumulative_monotonic_value,
                 expected_mode
             );
         }

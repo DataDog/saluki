@@ -1,12 +1,11 @@
 //! OTLP domain: the OTLP receiver (gRPC/HTTP transports, logs/metrics activation), the OTLP proxy
 //! gating, and OTLP context sizing. OTLP trace handling lives in the `traces` domain.
 
-use std::{
-    io::{Error, ErrorKind},
-    str::FromStr,
-};
+use std::str::FromStr;
 
 use serde::Serialize;
+
+use crate::Error;
 
 /// Resolved OTLP configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -63,10 +62,9 @@ impl FromStr for HistogramMode {
             "nobuckets" => Ok(Self::NoBuckets),
             "counters" => Ok(Self::Counters),
             "distributions" => Ok(Self::Distributions),
-            other => Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("unknown histogram mode `{other}`; expected `nobuckets`, `counters`, or `distributions`"),
-            )),
+            other => Err(Error::new_without_source(format!(
+                "unknown histogram mode `{other}`; expected `nobuckets`, `counters`, or `distributions`"
+            ))),
         }
     }
 }
@@ -89,10 +87,9 @@ impl FromStr for CumulativeMonotonicMode {
         match value {
             "to_delta" => Ok(Self::ToDelta),
             "raw_value" => Ok(Self::RawValue),
-            other => Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("unknown cumulative monotonic sum mode `{other}`; expected `to_delta` or `raw_value`"),
-            )),
+            other => Err(Error::new_without_source(format!(
+                "unknown cumulative monotonic sum mode `{other}`; expected `to_delta` or `raw_value`"
+            ))),
         }
     }
 }
@@ -119,10 +116,9 @@ impl FromStr for InitialCumulativeMonotonicValue {
             "auto" => Ok(Self::Auto),
             "drop" => Ok(Self::Drop),
             "keep" => Ok(Self::Keep),
-            other => Err(Error::new(
-                ErrorKind::InvalidInput,
-                format!("unknown initial cumulative monotonic value `{other}`; expected `auto`, `drop`, or `keep`"),
-            )),
+            other => Err(Error::new_without_source(format!(
+                "unknown initial cumulative monotonic value `{other}`; expected `auto`, `drop`, or `keep`"
+            ))),
         }
     }
 }

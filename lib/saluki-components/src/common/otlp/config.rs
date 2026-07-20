@@ -277,6 +277,7 @@ impl Default for MetricsConfig {
     }
 }
 
+//TODO: remove env handling with typed config, unblocked by #2094
 impl MetricsConfig {
     /// Applies environment-variable overrides for sum settings that normal nested deserialization cannot read.
     pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
