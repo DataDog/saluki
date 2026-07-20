@@ -2639,10 +2639,6 @@ serializer_experimental_use_v3_api:
     }
 
     /// Distinct inputs for a [`run_request_builder`] integration test.
-    ///
-    /// Everything the request-builder tests share — the V3 endpoint configuration, the authoritative series
-    /// endpoint URI, telemetry construction, and the events/payloads channels — is filled in by
-    /// [`RequestBuilderScenario::spawn`]. Each test specifies only the handful of knobs that actually vary.
     struct RequestBuilderScenario {
         v2_series_max_metrics: Option<usize>,
         series_mode: MetricsEncoderMode,
@@ -2655,7 +2651,7 @@ serializer_experimental_use_v3_api:
 
     impl RequestBuilderScenario {
         /// Creates a scenario with no V2 series builder, unbounded V3 size/point limits, shadow sampling disabled,
-        /// and a 10ms flush timeout.
+        /// and a 10 ms flush timeout.
         fn new(series_mode: MetricsEncoderMode, sketches_mode: MetricsEncoderMode) -> Self {
             Self {
                 v2_series_max_metrics: None,
@@ -2698,8 +2694,12 @@ serializer_experimental_use_v3_api:
         async fn spawn(self) -> RequestBuilderHarness {
             let v2_series_builder = match self.v2_series_max_metrics {
                 Some(max_metrics_per_payload) => {
-                    let v2_endpoint_config =
-                        EndpointConfiguration::new(CompressionScheme::noop(), max_metrics_per_payload, usize::MAX, None);
+                    let v2_endpoint_config = EndpointConfiguration::new(
+                        CompressionScheme::noop(),
+                        max_metrics_per_payload,
+                        usize::MAX,
+                        None,
+                    );
                     Some(
                         v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
                             .await
