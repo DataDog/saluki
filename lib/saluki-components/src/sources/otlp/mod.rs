@@ -158,6 +158,7 @@ impl OtlpConfiguration {
             .with_remapping(true)
             .with_quantiles(true)
             .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
+            .with_send_histogram_aggregations(self.otlp_config.metrics.histograms.send_aggregation_metrics)
             .with_cumulative_monotonic_mode(self.otlp_config.metrics.sums.cumulative_monotonic_mode)
             .with_initial_cumulative_monotonic_value(self.otlp_config.metrics.sums.initial_cumulative_monotonic_value)
             .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags)
@@ -612,6 +613,104 @@ mod tests {
 
             assert_eq!(otlp_config.metrics_translator_config().hist_mode, expected_mode);
         }
+    }
+
+    #[tokio::test]
+    async fn histogram_aggregation_setting_flows_to_metrics_translator() {
+        let cases = [
+            (json!({ "otlp_config": {} }), false),
+            (
+                json!({
+                    "otlp_config": {
+                        "metrics": {
+                            "histograms": {
+                                "send_aggregation_metrics": false
+                            }
+                        }
+                    }
+                }),
+                false,
+            ),
+            (
+                json!({
+                    "otlp_config": {
+                        "metrics": {
+                            "histograms": {
+                                "send_aggregation_metrics": true
+                            }
+                        }
+                    }
+                }),
+                true,
+            ),
+        ];
+
+        for (raw_config, expected) in cases {
+            let config = config_from(raw_config).await;
+            let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
+
+            assert_eq!(
+                otlp_config.metrics_translator_config().send_histogram_aggregations,
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_aggregation_setting_configurable_via_environment_variable() {
+        // Figment exposes this setting as a flat key, so the explicit override must bridge it into `HistogramsConfig`.
+        let env_vars = [(
+            "OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS".to_string(),
+            "true".to_string(),
+        )];
+        let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            Some(json!({ "otlp_config": {} })),
+            Some(&env_vars),
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        let config =
+            OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
+
+        assert!(config.metrics_translator_config().send_histogram_aggregations);
+    }
+
+    #[tokio::test]
+    async fn nobuckets_with_histogram_aggregations_is_valid() {
+        let config = config_from(json!({
+            "otlp_config": {
+                "metrics": {
+                    "histograms": {
+                        "mode": "nobuckets",
+                        "send_aggregation_metrics": true
+                    }
+                }
+            }
+        }))
+        .await;
+        let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
+
+        assert!(otlp_config.metrics_translator_config().validate().is_ok());
+    }
+
+    #[tokio::test]
+    async fn nobuckets_without_histogram_aggregations_is_invalid() {
+        // Match the Agent: `nobuckets` without aggregation metrics emits nothing and is invalid.
+        let config = config_from(json!({
+            "otlp_config": {
+                "metrics": {
+                    "histograms": {
+                        "mode": "nobuckets"
+                    }
+                }
+            }
+        }))
+        .await;
+        let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
+
+        assert!(otlp_config.metrics_translator_config().validate().is_err());
     }
 
     #[test]

@@ -178,6 +178,15 @@ pub struct HistogramsConfig {
     /// Defaults to `distributions`.
     #[serde(default, deserialize_with = "deserialize_histogram_mode")]
     pub mode: HistogramMode,
+
+    /// Whether to emit histogram count, sum, minimum, and maximum metrics when available.
+    ///
+    /// When disabled, only configured bucket metrics are emitted. The `nobuckets` mode therefore
+    /// requires this setting.
+    ///
+    /// Defaults to `false`.
+    #[serde(default)]
+    pub send_aggregation_metrics: bool,
 }
 
 // TODO: delete when this component uses typed config
@@ -279,8 +288,15 @@ impl Default for MetricsConfig {
 
 //TODO: remove env handling with typed config, unblocked by #2094
 impl MetricsConfig {
-    /// Applies environment-variable overrides for sum settings that normal nested deserialization cannot read.
+    /// Applies flat environment-variable overrides to nested settings.
+    ///
+    /// Figment exposes single-underscore names as flat keys, which nested deserialization cannot read.
     pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
+        if let Some(send_aggregation_metrics) =
+            config.try_get_typed::<bool>("otlp_config_metrics_histograms_send_aggregation_metrics")?
+        {
+            self.histograms.send_aggregation_metrics = send_aggregation_metrics;
+        }
         if let Some(raw_mode) = config.try_get_typed::<String>("otlp_config_metrics_sums_cumulative_monotonic_mode")? {
             self.sums.cumulative_monotonic_mode = raw_mode.parse().map_err(|error| {
                 generic_error!(

@@ -1277,6 +1277,10 @@ impl OtlpMetricsTranslator {
                 }
             }
 
+            if self.config.hist_mode == HistogramMode::NoBuckets {
+                continue;
+            }
+
             let exp_hist_dd_sketch = match exponential_histogram_to_ddsketch(dp, delta) {
                 Ok(sketch) => sketch,
                 Err(e) => {
@@ -1522,6 +1526,63 @@ mod tests {
     #[test]
     fn mismatched_bucket_and_bound_lengths_emit_no_distribution() {
         assert!(map_malformed_histogram(HistogramMode::Distributions, vec![1], vec![1.0, 2.0]).is_empty());
+    }
+
+    #[test]
+    fn exponential_histogram_nobuckets_emits_aggregations_without_distribution() {
+        let metrics = Metrics::for_tests();
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let dims = Dimensions {
+            name: "exponential.histogram".to_string(),
+            ..Default::default()
+        };
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.hist_mode = HistogramMode::NoBuckets;
+        translator.config.send_histogram_aggregations = true;
+
+        let point = OtlpExponentialHistogramDataPoint {
+            count: 2,
+            sum: Some(3.0),
+            positive: Some(OtlpExponentialHistogramBuckets {
+                bucket_counts: vec![2],
+                ..Default::default()
+            }),
+            min: Some(1.0),
+            max: Some(2.0),
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+
+        let events = translator.map_exponential_histogram_metrics(dims, vec![point], true, &context);
+
+        let metric_names: Vec<_> = events
+            .iter()
+            .map(|event| {
+                event
+                    .try_as_metric()
+                    .expect("event should be a metric")
+                    .context()
+                    .name()
+            })
+            .collect();
+        assert_eq!(
+            metric_names,
+            vec![
+                "exponential.histogram.count",
+                "exponential.histogram.sum",
+                "exponential.histogram.min",
+                "exponential.histogram.max",
+            ]
+        );
+        assert!(events.iter().all(|event| {
+            !matches!(
+                event.try_as_metric().expect("event should be a metric").values(),
+                MetricValues::Distribution(_)
+            )
+        }));
     }
 
     #[test]
