@@ -209,6 +209,55 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn dd_endpoint_names_map_from_request_path() {
+        // Each intake path maps to the telemetry endpoint name the forwarder tags transactions with; the query and
+        // authority are ignored (only the path matters), and unknown paths map to `None`.
+        let cases: [(Uri, Option<&str>); 12] = [
+            (Uri::from_static("/api/v2/logs"), Some("logs_v2")),
+            (Uri::from_static("/api/v1/series"), Some("series_v1")),
+            (Uri::from_static("/api/v2/series"), Some("series_v2")),
+            (Uri::from_static(METRICS_SERIES_V3_PATH), Some("series_v3")),
+            (Uri::from_static(METRICS_SERIES_V3_BETA_PATH), Some("series_v3beta")),
+            (Uri::from_static("/api/beta/sketches"), Some("sketches_v2")),
+            (Uri::from_static(METRICS_SKETCHES_V3_PATH), Some("sketches_v3")),
+            (Uri::from_static("/api/v1/check_run"), Some("check_run_v1")),
+            (Uri::from_static("/api/v1/events_batch"), Some("events_batch_v1")),
+            (Uri::from_static("/api/v0.2/traces"), Some("traces_v0.2")),
+            (
+                Uri::from_static("https://app.datadoghq.com/api/v2/series"),
+                Some("series_v2"),
+            ),
+            (Uri::from_static("/api/v1/unknown"), None),
+        ];
+
+        for (uri, expected) in cases {
+            assert_eq!(
+                expected,
+                get_dd_endpoint_name(&uri).as_deref(),
+                "get_dd_endpoint_name({})",
+                uri.path()
+            );
+        }
+    }
+
+    #[test]
+    fn transaction_metadata_carries_counts_and_metrics_payload_info() {
+        // A non-metrics payload propagates the event/data-point counts and leaves `payload_info` as `None`.
+        let payload_meta = PayloadMetadata::from_event_and_data_point_count(3, 11);
+        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
+        assert_eq!(3, transaction_meta.event_count);
+        assert_eq!(11, transaction_meta.data_point_count);
+        assert_eq!(None, transaction_meta.payload_info);
+
+        // A metrics payload additionally copies the `MetricsPayloadInfo` extension through unchanged.
+        let payload_meta = PayloadMetadata::from_event_and_data_point_count(2, 7).with(MetricsPayloadInfo::v3_series());
+        let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
+        assert_eq!(2, transaction_meta.event_count);
+        assert_eq!(7, transaction_meta.data_point_count);
+        assert_eq!(Some(MetricsPayloadInfo::v3_series()), transaction_meta.payload_info);
+    }
+
     #[tokio::test]
     async fn endpoint_override_refreshes_from_mrf_api_key() {
         let (generic_config, sender) = ConfigurationLoader::for_tests(

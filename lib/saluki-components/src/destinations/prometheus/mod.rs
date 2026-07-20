@@ -564,9 +564,19 @@ fn histogram_buckets<const N: usize>(base: f64, scale: f64) -> [(f64, &'static s
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use http_body_util::BodyExt as _;
+    use saluki_context::tags::TagSet;
 
     use super::*;
+
+    fn prom_context(metric_type: MetricType) -> PrometheusContext {
+        PrometheusContext {
+            metric_name: MetaString::from("test.metric"),
+            metric_type,
+        }
+    }
 
     #[test]
     fn bucket_print() {
@@ -649,5 +659,132 @@ mod tests {
 
         let missing_response = build_scrape_response("/missing", &payload, &routes).await;
         assert_eq!(missing_response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn into_prometheus_metric_maps_value_type_and_normalizes_name() {
+        let mut renderer = PrometheusRenderer::new();
+        let interner = FixedSizeInterner::<1>::new(METRIC_NAME_STRING_INTERNER_BYTES);
+
+        // The metric name is normalized to the Prometheus character set: the `.` separator is not a valid name
+        // character, so it is replaced (the renderer yields `my__counter`).
+        let counter = into_prometheus_metric(&Metric::counter("my.counter", 1.0), &mut renderer, &interner)
+            .expect("counter should translate");
+        assert_eq!("my__counter", counter.metric_name.as_ref());
+        assert!(matches!(counter.metric_type, MetricType::Counter));
+
+        // Gauges and sets both map to a Prometheus gauge.
+        let gauge =
+            into_prometheus_metric(&Metric::gauge("g", 1.0), &mut renderer, &interner).expect("gauge should translate");
+        assert!(matches!(gauge.metric_type, MetricType::Gauge));
+        let set =
+            into_prometheus_metric(&Metric::set("s", "a"), &mut renderer, &interner).expect("set should translate");
+        assert!(matches!(set.metric_type, MetricType::Gauge));
+
+        // Histograms map to a native Prometheus histogram.
+        let histogram = into_prometheus_metric(&Metric::histogram("h", [1.0]), &mut renderer, &interner)
+            .expect("histogram should translate");
+        assert!(matches!(histogram.metric_type, MetricType::Histogram));
+
+        // Distributions are exposed as a DDSketch-backed summary: the documented stopgap, since a distribution can't
+        // be converted to an aggregated histogram.
+        let distribution = into_prometheus_metric(&Metric::distribution("d", [1.0]), &mut renderer, &interner)
+            .expect("distribution should translate");
+        assert!(matches!(distribution.metric_type, MetricType::Summary));
+    }
+
+    #[test]
+    fn merge_counter_sums_all_points() {
+        let mut value = get_prom_value_for_prom_context(&prom_context(MetricType::Counter));
+        let (_, values, _) = Metric::counter("c", [(1, 1.0), (2, 2.0), (3, 4.0)]).into_parts();
+        merge_metric_values_with_prom_value(values, &mut value);
+        match value {
+            PrometheusValue::Counter(sum) => assert_eq!(7.0, sum),
+            _ => panic!("counter values should stay a counter"),
+        }
+    }
+
+    #[test]
+    fn merge_gauge_keeps_latest_by_timestamp() {
+        let mut value = get_prom_value_for_prom_context(&prom_context(MetricType::Gauge));
+        // Points are supplied out of timestamp order; the highest timestamp's value wins.
+        let (_, values, _) = Metric::gauge("g", [(10, 1.0), (30, 3.0), (20, 2.0)]).into_parts();
+        merge_metric_values_with_prom_value(values, &mut value);
+        match value {
+            PrometheusValue::Gauge(latest) => assert_eq!(3.0, latest),
+            _ => panic!("gauge values should stay a gauge"),
+        }
+    }
+
+    #[test]
+    fn merge_set_maps_cardinality_into_gauge() {
+        let mut value = get_prom_value_for_prom_context(&prom_context(MetricType::Gauge));
+        let (_, values, _) = Metric::set("s", "a").into_parts();
+        merge_metric_values_with_prom_value(values, &mut value);
+        match value {
+            PrometheusValue::Gauge(cardinality) => assert_eq!(1.0, cardinality),
+            _ => panic!("set values should merge into a gauge"),
+        }
+    }
+
+    #[test]
+    fn merge_histogram_accumulates_sum_and_count() {
+        let mut value = get_prom_value_for_prom_context(&prom_context(MetricType::Histogram));
+        let (_, values, _) = Metric::histogram("h", [1.0, 2.0, 3.0]).into_parts();
+        merge_metric_values_with_prom_value(values, &mut value);
+        match value {
+            PrometheusValue::Histogram(histogram) => {
+                assert_eq!(3, histogram.count);
+                assert_eq!(6.0, histogram.sum);
+            }
+            _ => panic!("histogram values should stay a histogram"),
+        }
+    }
+
+    #[test]
+    fn merge_distribution_folds_into_ddsketch_summary() {
+        let mut value = get_prom_value_for_prom_context(&prom_context(MetricType::Summary));
+        let (_, values, _) = Metric::distribution("d", [1.0, 2.0, 3.0, 4.0, 5.0]).into_parts();
+        merge_metric_values_with_prom_value(values, &mut value);
+        match value {
+            PrometheusValue::Summary(sketch) => {
+                assert_eq!(5, sketch.count());
+                let median = sketch.quantile(0.5).expect("median should be computable");
+                assert!((median - 3.0).abs() <= 0.5, "median should be ~= 3.0, got {median}");
+            }
+            _ => panic!("distribution values should merge into a summary"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Mismatched metric types")]
+    fn merge_mismatched_value_and_accumulator_types_panics() {
+        // Feeding gauge values into a counter accumulator is an invariant violation and panics.
+        let mut value = get_prom_value_for_prom_context(&prom_context(MetricType::Counter));
+        let (_, values, _) = Metric::gauge("g", 1.0).into_parts();
+        merge_metric_values_with_prom_value(values, &mut value);
+    }
+
+    #[test]
+    fn collect_tags_skips_bare_tags_and_keeps_key_value_pairs() {
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        let context = Context::from_static_parts("m", &["env:prod", "bare", "team:core"]);
+
+        let labels = collect_tags(&context, &mut tags_deduplicator).expect("tags should collect");
+        let labels = labels.into_iter().collect::<BTreeSet<_>>();
+
+        // Key/value tags become labels; the bare `bare` tag (no value) is dropped.
+        assert_eq!(BTreeSet::from([("env", "prod"), ("team", "core")]), labels);
+    }
+
+    #[test]
+    fn collect_tags_returns_none_when_buffer_limit_exceeded() {
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        // A single tag larger than the 2048-byte buffer trips the size-limit bail-out.
+        let oversized_tag = format!("big:{}", "x".repeat(TAGS_BUFFER_SIZE_LIMIT_BYTES + 1));
+        let tags = std::iter::once(Tag::from(oversized_tag)).collect::<TagSet>();
+        let context = Context::from_parts("m", tags);
+
+        assert_eq!(None, collect_tags(&context, &mut tags_deduplicator));
     }
 }

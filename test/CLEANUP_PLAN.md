@@ -137,7 +137,7 @@ otherwise keep hand-rolling the thing it replaces.
     of a shared builder helper; `AggregationRegistry`'s documented ref-counting/eviction/dedup semantics are
     untested and related accessors are dead code.
 
-- [ ] **G8 — Datadog encoders/destinations/forwarders test cleanup**
+- [x] **G8 — Datadog encoders/destinations/forwarders test cleanup**
   (`tobz/test-cleanup-encoders-destinations-test-cleanup`, `test(components)`)
   - [medium/medium] Six `run_request_builder` integration tests in `datadog/metrics/mod.rs` share unextracted
     setup/teardown boilerplate, and are themselves oversized, multi-concern tests (KI-12).

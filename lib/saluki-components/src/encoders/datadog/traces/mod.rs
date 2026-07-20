@@ -840,9 +840,12 @@ fn append_tags(target: &mut String, tags: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use datadog_protos::traces::AgentPayload;
     use protobuf::Message as _;
     use saluki_config::ConfigurationLoader;
+    use saluki_context::tags::Tag;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
@@ -976,6 +979,165 @@ mod tests {
             .flat_map(|tp| tp.chunks.iter())
             .any(|chunk| chunk.tags.contains_key("_dd.error_tracking_standalone.error"));
         assert!(!has_tag, "ETS chunk tag should be absent when ETS is disabled");
+    }
+
+    #[tokio::test]
+    async fn sampling_rate_clamps_percentage_to_unit_interval() {
+        // `sampling_percentage` is a 0..100 percentage; only strictly in-range values map to a fractional rate, and
+        // anything <= 0 or >= 100 collapses to 1.0 (sample everything).
+        let (cfg, _) =
+            ConfigurationLoader::for_tests_with_provider_factory(None, None, false, KEY_ALIASES, DatadogRemapper::new)
+                .await;
+        let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
+
+        let cases = [
+            (25.0, 0.25),
+            (50.0, 0.5),
+            (0.0, 1.0),
+            (-10.0, 1.0),
+            (100.0, 1.0),
+            (150.0, 1.0),
+        ];
+        for (percentage, expected) in cases {
+            let mut traces_config = TracesConfig::default();
+            traces_config.probabilistic_sampler.sampling_percentage = percentage;
+            let encoder = TraceEndpointEncoder::new(
+                MetaString::from("test-host"),
+                "0.0.0".to_string(),
+                "none".to_string(),
+                apm_config.clone(),
+                traces_config,
+            );
+            assert_eq!(expected, encoder.sampling_rate(), "sampling_rate for {percentage}%");
+        }
+    }
+
+    #[test]
+    fn resolve_hostname_from_payload_prefers_payload_then_source_then_default() {
+        let host_source = OtlpSource {
+            kind: OtlpSourceKind::HostnameKind,
+            identifier: "resolved-host".to_string(),
+        };
+        let fargate_source = OtlpSource {
+            kind: OtlpSourceKind::AwsEcsFargateKind,
+            identifier: "task-arn".to_string(),
+        };
+
+        // A non-empty payload hostname always wins.
+        assert_eq!(
+            Some("payload-host"),
+            resolve_hostname_from_payload("payload-host", Some(&host_source), Some("default"), false)
+        );
+        // An empty payload plus `ignore_missing_fields` short-circuits to an empty hostname.
+        assert_eq!(
+            Some(""),
+            resolve_hostname_from_payload("", Some(&host_source), Some("default"), true)
+        );
+        // Honoring fields, a hostname-kind source supplies its identifier.
+        assert_eq!(
+            Some("resolved-host"),
+            resolve_hostname_from_payload("", Some(&host_source), Some("default"), false)
+        );
+        // A non-hostname (Fargate) source resolves to an empty hostname.
+        assert_eq!(
+            Some(""),
+            resolve_hostname_from_payload("", Some(&fargate_source), Some("default"), false)
+        );
+        // With no source, it falls back to the default hostname (which may itself be absent).
+        assert_eq!(
+            Some("default"),
+            resolve_hostname_from_payload("", None, Some("default"), false)
+        );
+        assert_eq!(None, resolve_hostname_from_payload("", None, None, false));
+    }
+
+    #[test]
+    fn append_tags_joins_non_empty_segments_with_commas() {
+        let mut target = String::new();
+
+        // Appending an empty segment is a no-op.
+        append_tags(&mut target, "");
+        assert_eq!("", target);
+
+        // The first non-empty append does not prepend a separator.
+        append_tags(&mut target, "a:1");
+        assert_eq!("a:1", target);
+
+        // Subsequent non-empty appends are comma-separated.
+        append_tags(&mut target, "b:2");
+        assert_eq!("a:1,b:2", target);
+
+        // An empty segment remains a no-op even once the target is non-empty.
+        append_tags(&mut target, "");
+        assert_eq!("a:1,b:2", target);
+    }
+
+    #[test]
+    fn flatten_container_tag_comma_joins_the_tag_set() {
+        assert_eq!("", flatten_container_tag(TagSet::default()));
+
+        let single: TagSet = std::iter::once(Tag::from_static("image_name:web")).collect();
+        assert_eq!("image_name:web", flatten_container_tag(single));
+
+        let multiple: TagSet = ["image_name:web", "runtime:docker"]
+            .into_iter()
+            .map(Tag::from_static)
+            .collect();
+        let flattened = flatten_container_tag(multiple);
+        assert_eq!(
+            BTreeSet::from(["image_name:web", "runtime:docker"]),
+            flattened.split(',').collect::<BTreeSet<_>>()
+        );
+    }
+
+    #[test]
+    fn resolve_container_tags_prefers_explicit_container_tags_attribute() {
+        // An explicit, non-empty `datadog.container_tags` attribute is used verbatim.
+        let mut attributes = FastHashMap::default();
+        attributes.insert(
+            MetaString::from(KEY_DATADOG_CONTAINER_TAGS),
+            AttributeValue::String(MetaString::from("region:us,team:core")),
+        );
+        assert_eq!(
+            Some(MetaString::from("region:us,team:core")),
+            resolve_container_tags_from_attrs(&attributes, None, false)
+        );
+    }
+
+    #[test]
+    fn resolve_container_tags_returns_none_without_container_attributes() {
+        let attributes = FastHashMap::default();
+        // `ignore_missing_fields` skips the extraction path entirely.
+        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, true));
+        // Honoring fields but with no container attributes and no Fargate source still yields nothing.
+        assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, false));
+    }
+
+    #[tokio::test]
+    async fn encode_prefixes_tracer_version_and_writes_otlp_sampling_rate() {
+        let mut encoder = make_encoder(false).await;
+        let mut trace = make_trace();
+        trace.payload.tracer_version = MetaString::from("1.2.3");
+        trace.otlp_sampling_rate = Some(0.5);
+
+        let mut buf = Vec::new();
+        encoder.encode(&trace, &mut buf).expect("encode should succeed");
+        let payload = AgentPayload::parse_from_bytes(&buf).expect("should parse AgentPayload");
+
+        let tracer_payload = payload
+            .tracerPayloads
+            .first()
+            .expect("a tracer payload should be encoded");
+        // The tracer version is prefixed with `otlp-` to mark the OTLP ingestion path.
+        assert_eq!("otlp-1.2.3", tracer_payload.tracerVersion());
+
+        // The OTLP sampling rate is written to each chunk formatted to two decimal places.
+        let otlp_sr = tracer_payload
+            .chunks
+            .iter()
+            .find_map(|chunk| chunk.tags.get("_dd.otlp_sr"))
+            .expect("chunk should carry the _dd.otlp_sr tag");
+        assert_eq!("0.50", otlp_sr.as_str());
     }
 }
 
