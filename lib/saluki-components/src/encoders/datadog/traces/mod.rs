@@ -64,7 +64,7 @@ const DEFAULT_CHUNK_PRIORITY: i32 = 1; // PRIORITY_AUTO_KEEP
 const TAG_ETS_STANDALONE_ERROR_KEY: &str = "_dd.error_tracking_standalone.error";
 const TAG_ETS_STANDALONE_ERROR_VALUE: &str = "true";
 
-/// String interning table for the `idx` tracer payload format.
+/// String interning table for the ETP (Efficient Trace Payload) tracer payload format.
 ///
 /// Index 0 is always the empty string. All other strings are assigned indices in insertion order.
 #[derive(Debug)]
@@ -614,7 +614,7 @@ impl TraceEndpointEncoder {
                             for (k, v) in &span.attributes {
                                 let k_ref = self.string_table.intern(k);
                                 attrs.write_entry(k_ref, |av: &mut _| {
-                                    encode_idx_attribute_value(av, v, &mut self.string_table)
+                                    encode_etp_attribute_value(av, v, &mut self.string_table)
                                 })?;
                             }
                         }
@@ -648,7 +648,7 @@ impl TraceEndpointEncoder {
                                     for (k, v) in link.attributes() {
                                         let k_ref = self.string_table.intern(k);
                                         lattrs.write_entry(k_ref, |av: &mut _| {
-                                            encode_idx_attribute_value(av, v, &mut self.string_table)
+                                            encode_etp_attribute_value(av, v, &mut self.string_table)
                                         })?;
                                     }
                                 }
@@ -667,7 +667,7 @@ impl TraceEndpointEncoder {
                                     for (k, v) in event.attributes() {
                                         let k_ref = self.string_table.intern(k);
                                         eattrs.write_entry(k_ref, |av: &mut _| {
-                                            encode_idx_attribute_value(av, v, &mut self.string_table)
+                                            encode_etp_attribute_value(av, v, &mut self.string_table)
                                         })?;
                                     }
                                 }
@@ -785,9 +785,9 @@ impl EndpointEncoder for TraceEndpointEncoder {
     }
 }
 
-/// Encodes an [`AttributeValue`] into an idx-format `AnyValue` builder, interning any
+/// Encodes an [`AttributeValue`] into an ETP-format `AnyValue` builder, interning any
 /// string values into `st` on the fly.
-fn encode_idx_attribute_value<S: ScratchBuffer>(
+fn encode_etp_attribute_value<S: ScratchBuffer>(
     builder: &mut datadog_protos::traces::builders::idx::AnyValueBuilder<'_, S>, value: &AttributeValue,
     st: &mut StringTable,
 ) -> std::io::Result<()> {
@@ -800,7 +800,7 @@ fn encode_idx_attribute_value<S: ScratchBuffer>(
             AttributeValue::Bytes(b) => vo.bytes_value(b),
             AttributeValue::Array(values) => vo.array_value(|arr| {
                 for v in values {
-                    arr.add_values(|av| encode_idx_attribute_value(av, v, st))?;
+                    arr.add_values(|av| encode_etp_attribute_value(av, v, st))?;
                 }
                 Ok(())
             }),
@@ -808,7 +808,7 @@ fn encode_idx_attribute_value<S: ScratchBuffer>(
                 for (k, v) in kvs {
                     kvl.add_key_values(|kv| {
                         kv.key(st.intern(k))?
-                            .value(|av| encode_idx_attribute_value(av, v, st))?;
+                            .value(|av| encode_etp_attribute_value(av, v, st))?;
                         Ok(())
                     })?;
                 }
@@ -906,14 +906,14 @@ mod tests {
     use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     // ---------------------------------------------------------------------------
-    // Decode helper: reads the idx AgentPayload wire format and returns the
-    // resolved string-valued chunk attributes from all idx tracer payloads.
+    // Decode helper: reads the ETP AgentPayload wire format and returns the
+    // resolved string-valued chunk attributes from all ETP tracer payloads.
     //
     // Wire format notes (all tags = field_number << 3 | wire_type):
     //   AgentPayload.idxTracerPayloads  field 11, LEN  → tag 90
-    //   idx TracerPayload.strings       field  1, LEN  → tag 10 (repeated)
-    //   idx TracerPayload.chunks        field 11, LEN  → tag 90 (repeated)
-    //   idx TraceChunk.attributes       field  3, LEN  → tag 26 (map)
+    //   ETP TracerPayload.strings       field  1, LEN  → tag 10 (repeated)
+    //   ETP TracerPayload.chunks        field 11, LEN  → tag 90 (repeated)
+    //   ETP TraceChunk.attributes       field  3, LEN  → tag 26 (map)
     //   map-entry key   (Varint<u32>)   field  1, VARINT → tag 8
     //   map-entry value (AnyValue LEN)  field  2, LEN    → tag 18
     //   AnyValue.string_value_ref       field  1, VARINT → tag 8
@@ -928,7 +928,7 @@ mod tests {
     /// Returns one `HashMap<String, String>` per chunk, containing only string-valued
     /// attributes (resolved through the string table). Handles the case where the
     /// string table (field 1) appears after chunks (field 11) in the wire format.
-    fn decode_idx_chunk_attributes(buf: &[u8]) -> Vec<HashMap<String, String>> {
+    fn decode_etp_chunk_attributes(buf: &[u8]) -> Vec<HashMap<String, String>> {
         let mut result = Vec::new();
         let mut is = CodedInputStream::from_bytes(buf);
         while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
@@ -936,7 +936,7 @@ mod tests {
                 // AgentPayload.idxTracerPayloads (field 11, LEN)
                 let len = is.read_raw_varint32().unwrap();
                 let old = is.push_limit(len as u64).unwrap();
-                result.extend(decode_idx_tracer_payload_chunks(&mut is));
+                result.extend(decode_etp_tracer_payload_chunks(&mut is));
                 is.pop_limit(old);
             } else {
                 protobuf::rt::skip_field_for_tag(tag, &mut is).unwrap();
@@ -945,18 +945,18 @@ mod tests {
         result
     }
 
-    fn decode_idx_tracer_payload_chunks(is: &mut CodedInputStream<'_>) -> Vec<HashMap<String, String>> {
+    fn decode_etp_tracer_payload_chunks(is: &mut CodedInputStream<'_>) -> Vec<HashMap<String, String>> {
         let mut strings: Vec<String> = Vec::new();
         // Buffer raw chunk bytes; string table may appear after chunks in the wire format.
         let mut raw_chunks: Vec<Vec<u8>> = Vec::new();
         while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
             match tag {
                 10 => {
-                    // idx TracerPayload.strings (field 1, LEN) - repeated string
+                    // ETP TracerPayload.strings (field 1, LEN) - repeated string
                     strings.push(is.read_string().unwrap());
                 }
                 90 => {
-                    // idx TracerPayload.chunks (field 11, LEN) - buffer raw bytes
+                    // ETP TracerPayload.chunks (field 11, LEN) - buffer raw bytes
                     let len = is.read_raw_varint32().unwrap();
                     raw_chunks.push(is.read_raw_bytes(len).unwrap());
                 }
@@ -970,16 +970,16 @@ mod tests {
             .iter()
             .map(|bytes| {
                 let mut chunk_is = CodedInputStream::from_bytes(bytes);
-                decode_idx_chunk_string_attrs(&mut chunk_is, &strings)
+                decode_etp_chunk_string_attrs(&mut chunk_is, &strings)
             })
             .collect()
     }
 
-    fn decode_idx_chunk_string_attrs(is: &mut CodedInputStream<'_>, strings: &[String]) -> HashMap<String, String> {
+    fn decode_etp_chunk_string_attrs(is: &mut CodedInputStream<'_>, strings: &[String]) -> HashMap<String, String> {
         let mut attrs = HashMap::new();
         while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
             if tag == 26 {
-                // idx TraceChunk.attributes map entry (field 3, LEN)
+                // ETP TraceChunk.attributes map entry (field 3, LEN)
                 let len = is.read_raw_varint32().unwrap();
                 let old = is.push_limit(len as u64).unwrap();
                 let (k_ref, v_str_ref) = decode_string_map_entry(is);
@@ -1110,7 +1110,7 @@ mod tests {
         let trace = make_error_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
-        let chunk_attrs = decode_idx_chunk_attributes(&buf);
+        let chunk_attrs = decode_etp_chunk_attributes(&buf);
         let tag_value = chunk_attrs
             .iter()
             .find_map(|attrs| attrs.get("_dd.error_tracking_standalone.error").map(|v| v.as_str()));
@@ -1127,7 +1127,7 @@ mod tests {
         let trace = make_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
-        let chunk_attrs = decode_idx_chunk_attributes(&buf);
+        let chunk_attrs = decode_etp_chunk_attributes(&buf);
         let has_tag = chunk_attrs
             .iter()
             .any(|attrs| attrs.contains_key("_dd.error_tracking_standalone.error"));
@@ -1140,7 +1140,7 @@ mod tests {
         let trace = make_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
-        let chunk_attrs = decode_idx_chunk_attributes(&buf);
+        let chunk_attrs = decode_etp_chunk_attributes(&buf);
         let has_tag = chunk_attrs
             .iter()
             .any(|attrs| attrs.contains_key("_dd.error_tracking_standalone.error"));

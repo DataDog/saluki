@@ -63,7 +63,10 @@ pub mod traces {
         pub use super::super::trace_piecemeal_include::datadog::trace::*;
     }
 
-    /// String-indexed (`idx`) trace payload types used by the v0.2 trace intake format.
+    /// Efficient Trace Payload (ETP) types: the string-indexed trace payload format used by the v0.2 trace intake.
+    ///
+    /// The `idx` module name mirrors the Agent's proto package (`datadog.trace.idx`); prefer the term "ETP" when
+    /// referring to this format in prose and in our own (non-generated) code.
     pub mod idx {
         pub use super::super::trace_include::idx_span::{any_value, *};
         pub use super::super::trace_include::idx_tracer_payload::*;
