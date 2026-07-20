@@ -2638,655 +2638,557 @@
 <a href=#2638 id=2638 data-nosnippet>2638</a>        assert_contains_bytes(<span class="kw-2">&amp;</span>payload, <span class="kw-2">&amp;</span>expected_resource_dict);
 <a href=#2639 id=2639 data-nosnippet>2639</a>    }
 <a href=#2640 id=2640 data-nosnippet>2640</a>
-<a href=#2641 id=2641 data-nosnippet>2641</a>    <span class="attr">#[tokio::test]
-<a href=#2642 id=2642 data-nosnippet>2642</a>    </span><span class="kw">async fn </span>validation_split_flush_assigns_batch_id_to_carried_metric() {
-<a href=#2643 id=2643 data-nosnippet>2643</a>        <span class="kw">let </span>v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">1</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#2644 id=2644 data-nosnippet>2644</a>        <span class="kw">let </span>v2_series_builder = <span class="prelude-val">Some</span>(
-<a href=#2645 id=2645 data-nosnippet>2645</a>            v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, <span class="kw-2">&amp;</span>v2_endpoint_config)
-<a href=#2646 id=2646 data-nosnippet>2646</a>                .<span class="kw">await
-<a href=#2647 id=2647 data-nosnippet>2647</a>                </span>.expect(<span class="string">"V2 request builder should be created"</span>),
-<a href=#2648 id=2648 data-nosnippet>2648</a>        );
-<a href=#2649 id=2649 data-nosnippet>2649</a>        <span class="kw">let </span>v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#2650 id=2650 data-nosnippet>2650</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::default();
-<a href=#2651 id=2651 data-nosnippet>2651</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2652 id=2652 data-nosnippet>2652</a>        <span class="kw">let </span>serializer_telemetry = V3SerializerTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2653 id=2653 data-nosnippet>2653</a>        <span class="kw">let </span>(events_tx, events_rx) = tokio::sync::mpsc::channel(<span class="number">1</span>);
-<a href=#2654 id=2654 data-nosnippet>2654</a>        <span class="kw">let </span>(payloads_tx, <span class="kw-2">mut </span>payloads_rx) = tokio::sync::mpsc::channel(<span class="number">8</span>);
-<a href=#2655 id=2655 data-nosnippet>2655</a>
-<a href=#2656 id=2656 data-nosnippet>2656</a>        <span class="kw">let </span>request_builder_handle = tokio::spawn(run_request_builder(
-<a href=#2657 id=2657 data-nosnippet>2657</a>            v2_series_builder,
-<a href=#2658 id=2658 data-nosnippet>2658</a>            <span class="prelude-val">None</span>,
-<a href=#2659 id=2659 data-nosnippet>2659</a>            MetricsEncoderMode::Validation,
-<a href=#2660 id=2660 data-nosnippet>2660</a>            MetricsEncoderMode::V2Only,
-<a href=#2661 id=2661 data-nosnippet>2661</a>            V3RuntimeConfig {
-<a href=#2662 id=2662 data-nosnippet>2662</a>                endpoint_config: v3_endpoint_config,
-<a href=#2663 id=2663 data-nosnippet>2663</a>                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, <span class="number">10_000</span>, <span class="number">10_000</span>),
-<a href=#2664 id=2664 data-nosnippet>2664</a>                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
-<a href=#2665 id=2665 data-nosnippet>2665</a>                shadow_series_endpoint_uri: <span class="string">"/api/intake/metrics/v3beta/series"</span>.to_string(),
-<a href=#2666 id=2666 data-nosnippet>2666</a>                series_shadow_config: SeriesShadowConfig::new(<span class="number">0.0</span>),
-<a href=#2667 id=2667 data-nosnippet>2667</a>                serializer_telemetry,
-<a href=#2668 id=2668 data-nosnippet>2668</a>            },
-<a href=#2669 id=2669 data-nosnippet>2669</a>            telemetry,
-<a href=#2670 id=2670 data-nosnippet>2670</a>            events_rx,
-<a href=#2671 id=2671 data-nosnippet>2671</a>            payloads_tx,
-<a href=#2672 id=2672 data-nosnippet>2672</a>            Duration::from_millis(<span class="number">10</span>),
-<a href=#2673 id=2673 data-nosnippet>2673</a>            <span class="bool-val">false</span>,
-<a href=#2674 id=2674 data-nosnippet>2674</a>        ));
-<a href=#2675 id=2675 data-nosnippet>2675</a>
-<a href=#2676 id=2676 data-nosnippet>2676</a>        <span class="kw">let </span><span class="kw-2">mut </span>events = EventsBuffer::default();
-<a href=#2677 id=2677 data-nosnippet>2677</a>        <span class="macro">assert!</span>(events
-<a href=#2678 id=2678 data-nosnippet>2678</a>            .try_push(Event::Metric(Metric::counter(<span class="string">"validation.split.one"</span>, <span class="number">1.0</span>)))
-<a href=#2679 id=2679 data-nosnippet>2679</a>            .is_none());
-<a href=#2680 id=2680 data-nosnippet>2680</a>        <span class="macro">assert!</span>(events
-<a href=#2681 id=2681 data-nosnippet>2681</a>            .try_push(Event::Metric(Metric::counter(<span class="string">"validation.split.two"</span>, <span class="number">2.0</span>)))
-<a href=#2682 id=2682 data-nosnippet>2682</a>            .is_none());
-<a href=#2683 id=2683 data-nosnippet>2683</a>        events_tx
-<a href=#2684 id=2684 data-nosnippet>2684</a>            .send(events)
-<a href=#2685 id=2685 data-nosnippet>2685</a>            .<span class="kw">await
-<a href=#2686 id=2686 data-nosnippet>2686</a>            </span>.expect(<span class="string">"events should be sent to request builder"</span>);
-<a href=#2687 id=2687 data-nosnippet>2687</a>
-<a href=#2688 id=2688 data-nosnippet>2688</a>        <span class="kw">let </span><span class="kw-2">mut </span>flushed_requests = Vec::new();
-<a href=#2689 id=2689 data-nosnippet>2689</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">4 </span>{
-<a href=#2690 id=2690 data-nosnippet>2690</a>            <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), payloads_rx.recv())
-<a href=#2691 id=2691 data-nosnippet>2691</a>                .<span class="kw">await
-<a href=#2692 id=2692 data-nosnippet>2692</a>                </span>.expect(<span class="string">"payload should arrive before timeout"</span>)
-<a href=#2693 id=2693 data-nosnippet>2693</a>                .expect(<span class="string">"payload channel should remain open"</span>);
-<a href=#2694 id=2694 data-nosnippet>2694</a>            <span class="kw">let </span>Payload::Http(http_payload) = payload <span class="kw">else </span>{
-<a href=#2695 id=2695 data-nosnippet>2695</a>                <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>);
-<a href=#2696 id=2696 data-nosnippet>2696</a>            };
-<a href=#2697 id=2697 data-nosnippet>2697</a>            <span class="kw">let </span>(<span class="kw">_</span>, request) = http_payload.into_parts();
-<a href=#2698 id=2698 data-nosnippet>2698</a>            <span class="kw">let </span>batch_id = request
-<a href=#2699 id=2699 data-nosnippet>2699</a>                .headers()
-<a href=#2700 id=2700 data-nosnippet>2700</a>                .get(<span class="string">"X-Metrics-Request-ID"</span>)
-<a href=#2701 id=2701 data-nosnippet>2701</a>                .expect(<span class="string">"validation batch ID header should be present"</span>)
-<a href=#2702 id=2702 data-nosnippet>2702</a>                .to_str()
-<a href=#2703 id=2703 data-nosnippet>2703</a>                .expect(<span class="string">"validation batch ID should be valid header text"</span>)
-<a href=#2704 id=2704 data-nosnippet>2704</a>                .to_string();
-<a href=#2705 id=2705 data-nosnippet>2705</a>            flushed_requests.push((request.uri().to_string(), batch_id));
-<a href=#2706 id=2706 data-nosnippet>2706</a>        }
-<a href=#2707 id=2707 data-nosnippet>2707</a>
-<a href=#2708 id=2708 data-nosnippet>2708</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, flushed_requests[<span class="number">0</span>].<span class="number">0</span>);
-<a href=#2709 id=2709 data-nosnippet>2709</a>        <span class="macro">assert_eq!</span>(V3_SERIES_ENDPOINT_URI, flushed_requests[<span class="number">1</span>].<span class="number">0</span>);
-<a href=#2710 id=2710 data-nosnippet>2710</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, flushed_requests[<span class="number">2</span>].<span class="number">0</span>);
-<a href=#2711 id=2711 data-nosnippet>2711</a>        <span class="macro">assert_eq!</span>(V3_SERIES_ENDPOINT_URI, flushed_requests[<span class="number">3</span>].<span class="number">0</span>);
-<a href=#2712 id=2712 data-nosnippet>2712</a>
-<a href=#2713 id=2713 data-nosnippet>2713</a>        <span class="macro">assert_eq!</span>(flushed_requests[<span class="number">0</span>].<span class="number">1</span>, flushed_requests[<span class="number">1</span>].<span class="number">1</span>);
-<a href=#2714 id=2714 data-nosnippet>2714</a>        <span class="macro">assert_eq!</span>(flushed_requests[<span class="number">2</span>].<span class="number">1</span>, flushed_requests[<span class="number">3</span>].<span class="number">1</span>);
-<a href=#2715 id=2715 data-nosnippet>2715</a>        <span class="macro">assert_ne!</span>(flushed_requests[<span class="number">0</span>].<span class="number">1</span>, flushed_requests[<span class="number">2</span>].<span class="number">1</span>);
-<a href=#2716 id=2716 data-nosnippet>2716</a>
-<a href=#2717 id=2717 data-nosnippet>2717</a>        drop(events_tx);
-<a href=#2718 id=2718 data-nosnippet>2718</a>        request_builder_handle
-<a href=#2719 id=2719 data-nosnippet>2719</a>            .<span class="kw">await
-<a href=#2720 id=2720 data-nosnippet>2720</a>            </span>.expect(<span class="string">"request builder task should complete"</span>)
-<a href=#2721 id=2721 data-nosnippet>2721</a>            .expect(<span class="string">"request builder should stop cleanly"</span>);
-<a href=#2722 id=2722 data-nosnippet>2722</a>    }
-<a href=#2723 id=2723 data-nosnippet>2723</a>
-<a href=#2724 id=2724 data-nosnippet>2724</a>    <span class="attr">#[tokio::test]
-<a href=#2725 id=2725 data-nosnippet>2725</a>    </span><span class="kw">async fn </span>authoritative_v3_flushes_previous_point_limit_batch() {
-<a href=#2726 id=2726 data-nosnippet>2726</a>        <span class="kw">let </span>v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#2727 id=2727 data-nosnippet>2727</a>        <span class="kw">let </span>recorder = TestRecorder::default();
-<a href=#2728 id=2728 data-nosnippet>2728</a>        <span class="kw">let </span>_local = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
-<a href=#2729 id=2729 data-nosnippet>2729</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::default();
-<a href=#2730 id=2730 data-nosnippet>2730</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2731 id=2731 data-nosnippet>2731</a>        <span class="kw">let </span>serializer_telemetry = V3SerializerTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2732 id=2732 data-nosnippet>2732</a>        <span class="kw">let </span>(events_tx, events_rx) = tokio::sync::mpsc::channel(<span class="number">1</span>);
-<a href=#2733 id=2733 data-nosnippet>2733</a>        <span class="kw">let </span>(payloads_tx, <span class="kw-2">mut </span>payloads_rx) = tokio::sync::mpsc::channel(<span class="number">8</span>);
-<a href=#2734 id=2734 data-nosnippet>2734</a>
-<a href=#2735 id=2735 data-nosnippet>2735</a>        <span class="kw">let </span>request_builder_handle = tokio::spawn(run_request_builder(
-<a href=#2736 id=2736 data-nosnippet>2736</a>            <span class="prelude-val">None</span>,
-<a href=#2737 id=2737 data-nosnippet>2737</a>            <span class="prelude-val">None</span>,
-<a href=#2738 id=2738 data-nosnippet>2738</a>            MetricsEncoderMode::V3Enabled,
-<a href=#2739 id=2739 data-nosnippet>2739</a>            MetricsEncoderMode::V2Only,
-<a href=#2740 id=2740 data-nosnippet>2740</a>            V3RuntimeConfig {
-<a href=#2741 id=2741 data-nosnippet>2741</a>                endpoint_config: v3_endpoint_config,
-<a href=#2742 id=2742 data-nosnippet>2742</a>                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, <span class="number">10_000</span>, <span class="number">3</span>),
-<a href=#2743 id=2743 data-nosnippet>2743</a>                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
-<a href=#2744 id=2744 data-nosnippet>2744</a>                shadow_series_endpoint_uri: <span class="string">"/api/intake/metrics/v3beta/series"</span>.to_string(),
-<a href=#2745 id=2745 data-nosnippet>2745</a>                series_shadow_config: SeriesShadowConfig::new(<span class="number">0.0</span>),
-<a href=#2746 id=2746 data-nosnippet>2746</a>                serializer_telemetry,
-<a href=#2747 id=2747 data-nosnippet>2747</a>            },
-<a href=#2748 id=2748 data-nosnippet>2748</a>            telemetry,
-<a href=#2749 id=2749 data-nosnippet>2749</a>            events_rx,
-<a href=#2750 id=2750 data-nosnippet>2750</a>            payloads_tx,
-<a href=#2751 id=2751 data-nosnippet>2751</a>            Duration::from_millis(<span class="number">250</span>),
-<a href=#2752 id=2752 data-nosnippet>2752</a>            <span class="bool-val">false</span>,
-<a href=#2753 id=2753 data-nosnippet>2753</a>        ));
-<a href=#2754 id=2754 data-nosnippet>2754</a>
-<a href=#2755 id=2755 data-nosnippet>2755</a>        <span class="kw">let </span><span class="kw-2">mut </span>events = EventsBuffer::default();
-<a href=#2756 id=2756 data-nosnippet>2756</a>        <span class="macro">assert!</span>(events
-<a href=#2757 id=2757 data-nosnippet>2757</a>            .try_push(Event::Metric(Metric::counter(
-<a href=#2758 id=2758 data-nosnippet>2758</a>                <span class="string">"authoritative.v3.points.one"</span>,
-<a href=#2759 id=2759 data-nosnippet>2759</a>                [(<span class="number">123</span>, <span class="number">1.0</span>), (<span class="number">124</span>, <span class="number">2.0</span>)]
-<a href=#2760 id=2760 data-nosnippet>2760</a>            )))
-<a href=#2761 id=2761 data-nosnippet>2761</a>            .is_none());
-<a href=#2762 id=2762 data-nosnippet>2762</a>        <span class="macro">assert!</span>(events
-<a href=#2763 id=2763 data-nosnippet>2763</a>            .try_push(Event::Metric(Metric::counter(
-<a href=#2764 id=2764 data-nosnippet>2764</a>                <span class="string">"authoritative.v3.points.two"</span>,
-<a href=#2765 id=2765 data-nosnippet>2765</a>                [(<span class="number">123</span>, <span class="number">3.0</span>), (<span class="number">124</span>, <span class="number">4.0</span>)]
-<a href=#2766 id=2766 data-nosnippet>2766</a>            )))
-<a href=#2767 id=2767 data-nosnippet>2767</a>            .is_none());
-<a href=#2768 id=2768 data-nosnippet>2768</a>        events_tx
-<a href=#2769 id=2769 data-nosnippet>2769</a>            .send(events)
-<a href=#2770 id=2770 data-nosnippet>2770</a>            .<span class="kw">await
-<a href=#2771 id=2771 data-nosnippet>2771</a>            </span>.expect(<span class="string">"events should be sent to request builder"</span>);
-<a href=#2772 id=2772 data-nosnippet>2772</a>
-<a href=#2773 id=2773 data-nosnippet>2773</a>        <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), payloads_rx.recv())
-<a href=#2774 id=2774 data-nosnippet>2774</a>            .<span class="kw">await
-<a href=#2775 id=2775 data-nosnippet>2775</a>            </span>.expect(<span class="string">"point-limit payload should arrive before timeout"</span>)
-<a href=#2776 id=2776 data-nosnippet>2776</a>            .expect(<span class="string">"payload channel should remain open"</span>);
-<a href=#2777 id=2777 data-nosnippet>2777</a>        <span class="kw">let </span>Payload::Http(http_payload) = payload <span class="kw">else </span>{
-<a href=#2778 id=2778 data-nosnippet>2778</a>            <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>);
-<a href=#2779 id=2779 data-nosnippet>2779</a>        };
-<a href=#2780 id=2780 data-nosnippet>2780</a>        <span class="kw">let </span>(<span class="kw">_</span>, request) = http_payload.into_parts();
-<a href=#2781 id=2781 data-nosnippet>2781</a>        <span class="macro">assert_eq!</span>(V3_SERIES_ENDPOINT_URI, request.uri());
-<a href=#2782 id=2782 data-nosnippet>2782</a>        <span class="macro">assert!</span>(timeout(Duration::from_millis(<span class="number">50</span>), payloads_rx.recv()).<span class="kw">await</span>.is_err());
-<a href=#2783 id=2783 data-nosnippet>2783</a>
-<a href=#2784 id=2784 data-nosnippet>2784</a>        <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), payloads_rx.recv())
-<a href=#2785 id=2785 data-nosnippet>2785</a>            .<span class="kw">await
-<a href=#2786 id=2786 data-nosnippet>2786</a>            </span>.expect(<span class="string">"timeout payload should arrive before timeout"</span>)
-<a href=#2787 id=2787 data-nosnippet>2787</a>            .expect(<span class="string">"payload channel should remain open"</span>);
-<a href=#2788 id=2788 data-nosnippet>2788</a>        <span class="kw">let </span>Payload::Http(http_payload) = payload <span class="kw">else </span>{
-<a href=#2789 id=2789 data-nosnippet>2789</a>            <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>);
-<a href=#2790 id=2790 data-nosnippet>2790</a>        };
-<a href=#2791 id=2791 data-nosnippet>2791</a>        <span class="kw">let </span>(<span class="kw">_</span>, request) = http_payload.into_parts();
-<a href=#2792 id=2792 data-nosnippet>2792</a>        <span class="macro">assert_eq!</span>(V3_SERIES_ENDPOINT_URI, request.uri());
-<a href=#2793 id=2793 data-nosnippet>2793</a>        <span class="macro">assert_eq!</span>(
-<a href=#2794 id=2794 data-nosnippet>2794</a>            recorder.counter((<span class="string">"serializer.v3_payload_split_reason"</span>, <span class="kw-2">&amp;</span>[(<span class="string">"reason"</span>, <span class="string">"max_points"</span>)])),
-<a href=#2795 id=2795 data-nosnippet>2795</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>)
-<a href=#2796 id=2796 data-nosnippet>2796</a>        );
-<a href=#2797 id=2797 data-nosnippet>2797</a>
-<a href=#2798 id=2798 data-nosnippet>2798</a>        drop(events_tx);
-<a href=#2799 id=2799 data-nosnippet>2799</a>        request_builder_handle
-<a href=#2800 id=2800 data-nosnippet>2800</a>            .<span class="kw">await
-<a href=#2801 id=2801 data-nosnippet>2801</a>            </span>.expect(<span class="string">"request builder task should complete"</span>)
-<a href=#2802 id=2802 data-nosnippet>2802</a>            .expect(<span class="string">"request builder should stop cleanly"</span>);
-<a href=#2803 id=2803 data-nosnippet>2803</a>    }
-<a href=#2804 id=2804 data-nosnippet>2804</a>
-<a href=#2805 id=2805 data-nosnippet>2805</a>    <span class="attr">#[tokio::test]
-<a href=#2806 id=2806 data-nosnippet>2806</a>    </span><span class="kw">async fn </span>authoritative_v3_sketches_flush_previous_point_limit_batch() {
-<a href=#2807 id=2807 data-nosnippet>2807</a>        <span class="kw">let </span>v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#2808 id=2808 data-nosnippet>2808</a>        <span class="kw">let </span>recorder = TestRecorder::default();
-<a href=#2809 id=2809 data-nosnippet>2809</a>        <span class="kw">let </span>_local = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
-<a href=#2810 id=2810 data-nosnippet>2810</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::default();
-<a href=#2811 id=2811 data-nosnippet>2811</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2812 id=2812 data-nosnippet>2812</a>        <span class="kw">let </span>serializer_telemetry = V3SerializerTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2813 id=2813 data-nosnippet>2813</a>        <span class="kw">let </span>(events_tx, events_rx) = tokio::sync::mpsc::channel(<span class="number">1</span>);
-<a href=#2814 id=2814 data-nosnippet>2814</a>        <span class="kw">let </span>(payloads_tx, <span class="kw-2">mut </span>payloads_rx) = tokio::sync::mpsc::channel(<span class="number">8</span>);
+<a href=#2641 id=2641 data-nosnippet>2641</a>    <span class="doccomment">/// Distinct inputs for a [`run_request_builder`] integration test.
+<a href=#2642 id=2642 data-nosnippet>2642</a>    </span><span class="kw">struct </span>RequestBuilderScenario {
+<a href=#2643 id=2643 data-nosnippet>2643</a>        v2_series_max_metrics: <span class="prelude-ty">Option</span>&lt;usize&gt;,
+<a href=#2644 id=2644 data-nosnippet>2644</a>        series_mode: MetricsEncoderMode,
+<a href=#2645 id=2645 data-nosnippet>2645</a>        sketches_mode: MetricsEncoderMode,
+<a href=#2646 id=2646 data-nosnippet>2646</a>        payload_limits: V3PayloadLimits,
+<a href=#2647 id=2647 data-nosnippet>2647</a>        shadow_series_endpoint_uri: String,
+<a href=#2648 id=2648 data-nosnippet>2648</a>        series_shadow_config: SeriesShadowConfig,
+<a href=#2649 id=2649 data-nosnippet>2649</a>        flush_timeout: Duration,
+<a href=#2650 id=2650 data-nosnippet>2650</a>    }
+<a href=#2651 id=2651 data-nosnippet>2651</a>
+<a href=#2652 id=2652 data-nosnippet>2652</a>    <span class="kw">impl </span>RequestBuilderScenario {
+<a href=#2653 id=2653 data-nosnippet>2653</a>        <span class="doccomment">/// Creates a scenario with no V2 series builder, unbounded V3 size/point limits, shadow sampling disabled,
+<a href=#2654 id=2654 data-nosnippet>2654</a>        /// and a 10 ms flush timeout.
+<a href=#2655 id=2655 data-nosnippet>2655</a>        </span><span class="kw">fn </span>new(series_mode: MetricsEncoderMode, sketches_mode: MetricsEncoderMode) -&gt; <span class="self">Self </span>{
+<a href=#2656 id=2656 data-nosnippet>2656</a>            <span class="self">Self </span>{
+<a href=#2657 id=2657 data-nosnippet>2657</a>                v2_series_max_metrics: <span class="prelude-val">None</span>,
+<a href=#2658 id=2658 data-nosnippet>2658</a>                series_mode,
+<a href=#2659 id=2659 data-nosnippet>2659</a>                sketches_mode,
+<a href=#2660 id=2660 data-nosnippet>2660</a>                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, <span class="number">10_000</span>, <span class="number">10_000</span>),
+<a href=#2661 id=2661 data-nosnippet>2661</a>                shadow_series_endpoint_uri: <span class="string">"/api/intake/metrics/v3beta/series"</span>.to_string(),
+<a href=#2662 id=2662 data-nosnippet>2662</a>                series_shadow_config: SeriesShadowConfig::new(<span class="number">0.0</span>),
+<a href=#2663 id=2663 data-nosnippet>2663</a>                flush_timeout: Duration::from_millis(<span class="number">10</span>),
+<a href=#2664 id=2664 data-nosnippet>2664</a>            }
+<a href=#2665 id=2665 data-nosnippet>2665</a>        }
+<a href=#2666 id=2666 data-nosnippet>2666</a>
+<a href=#2667 id=2667 data-nosnippet>2667</a>        <span class="doccomment">/// Attaches a V2 series request builder that flushes after `max_metrics_per_payload` metrics.
+<a href=#2668 id=2668 data-nosnippet>2668</a>        </span><span class="kw">fn </span>with_v2_series_builder(<span class="kw-2">mut </span><span class="self">self</span>, max_metrics_per_payload: usize) -&gt; <span class="self">Self </span>{
+<a href=#2669 id=2669 data-nosnippet>2669</a>            <span class="self">self</span>.v2_series_max_metrics = <span class="prelude-val">Some</span>(max_metrics_per_payload);
+<a href=#2670 id=2670 data-nosnippet>2670</a>            <span class="self">self
+<a href=#2671 id=2671 data-nosnippet>2671</a>        </span>}
+<a href=#2672 id=2672 data-nosnippet>2672</a>
+<a href=#2673 id=2673 data-nosnippet>2673</a>        <span class="doccomment">/// Sets the V3 per-payload point limit that drives point-count split flushes.
+<a href=#2674 id=2674 data-nosnippet>2674</a>        </span><span class="kw">fn </span>with_max_points_per_payload(<span class="kw-2">mut </span><span class="self">self</span>, max_points_per_payload: usize) -&gt; <span class="self">Self </span>{
+<a href=#2675 id=2675 data-nosnippet>2675</a>            <span class="self">self</span>.payload_limits = V3PayloadLimits::new(usize::MAX, usize::MAX, <span class="number">10_000</span>, max_points_per_payload);
+<a href=#2676 id=2676 data-nosnippet>2676</a>            <span class="self">self
+<a href=#2677 id=2677 data-nosnippet>2677</a>        </span>}
+<a href=#2678 id=2678 data-nosnippet>2678</a>
+<a href=#2679 id=2679 data-nosnippet>2679</a>        <span class="doccomment">/// Enables V3 series shadow sampling at `sample_rate`, routed to `shadow_series_endpoint_uri`.
+<a href=#2680 id=2680 data-nosnippet>2680</a>        </span><span class="kw">fn </span>with_series_shadow(<span class="kw-2">mut </span><span class="self">self</span>, sample_rate: f64, shadow_series_endpoint_uri: <span class="kw-2">&amp;</span>str) -&gt; <span class="self">Self </span>{
+<a href=#2681 id=2681 data-nosnippet>2681</a>            <span class="self">self</span>.series_shadow_config = SeriesShadowConfig::new(sample_rate);
+<a href=#2682 id=2682 data-nosnippet>2682</a>            <span class="self">self</span>.shadow_series_endpoint_uri = shadow_series_endpoint_uri.to_string();
+<a href=#2683 id=2683 data-nosnippet>2683</a>            <span class="self">self
+<a href=#2684 id=2684 data-nosnippet>2684</a>        </span>}
+<a href=#2685 id=2685 data-nosnippet>2685</a>
+<a href=#2686 id=2686 data-nosnippet>2686</a>        <span class="doccomment">/// Overrides the flush timeout used to bound pending flushes.
+<a href=#2687 id=2687 data-nosnippet>2687</a>        </span><span class="kw">fn </span>with_flush_timeout(<span class="kw-2">mut </span><span class="self">self</span>, flush_timeout: Duration) -&gt; <span class="self">Self </span>{
+<a href=#2688 id=2688 data-nosnippet>2688</a>            <span class="self">self</span>.flush_timeout = flush_timeout;
+<a href=#2689 id=2689 data-nosnippet>2689</a>            <span class="self">self
+<a href=#2690 id=2690 data-nosnippet>2690</a>        </span>}
+<a href=#2691 id=2691 data-nosnippet>2691</a>
+<a href=#2692 id=2692 data-nosnippet>2692</a>        <span class="doccomment">/// Spawns [`run_request_builder`] for this scenario, returning a harness for pushing metrics and draining
+<a href=#2693 id=2693 data-nosnippet>2693</a>        /// flushed payloads.
+<a href=#2694 id=2694 data-nosnippet>2694</a>        </span><span class="kw">async fn </span>spawn(<span class="self">self</span>) -&gt; RequestBuilderHarness {
+<a href=#2695 id=2695 data-nosnippet>2695</a>            <span class="kw">let </span>v2_series_builder = <span class="kw">match </span><span class="self">self</span>.v2_series_max_metrics {
+<a href=#2696 id=2696 data-nosnippet>2696</a>                <span class="prelude-val">Some</span>(max_metrics_per_payload) =&gt; {
+<a href=#2697 id=2697 data-nosnippet>2697</a>                    <span class="kw">let </span>v2_endpoint_config = EndpointConfiguration::new(
+<a href=#2698 id=2698 data-nosnippet>2698</a>                        CompressionScheme::noop(),
+<a href=#2699 id=2699 data-nosnippet>2699</a>                        max_metrics_per_payload,
+<a href=#2700 id=2700 data-nosnippet>2700</a>                        usize::MAX,
+<a href=#2701 id=2701 data-nosnippet>2701</a>                        <span class="prelude-val">None</span>,
+<a href=#2702 id=2702 data-nosnippet>2702</a>                    );
+<a href=#2703 id=2703 data-nosnippet>2703</a>                    <span class="prelude-val">Some</span>(
+<a href=#2704 id=2704 data-nosnippet>2704</a>                        v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, <span class="kw-2">&amp;</span>v2_endpoint_config)
+<a href=#2705 id=2705 data-nosnippet>2705</a>                            .<span class="kw">await
+<a href=#2706 id=2706 data-nosnippet>2706</a>                            </span>.expect(<span class="string">"V2 request builder should be created"</span>),
+<a href=#2707 id=2707 data-nosnippet>2707</a>                    )
+<a href=#2708 id=2708 data-nosnippet>2708</a>                }
+<a href=#2709 id=2709 data-nosnippet>2709</a>                <span class="prelude-val">None </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#2710 id=2710 data-nosnippet>2710</a>            };
+<a href=#2711 id=2711 data-nosnippet>2711</a>            <span class="kw">let </span>v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
+<a href=#2712 id=2712 data-nosnippet>2712</a>            <span class="kw">let </span>metrics_builder = MetricsBuilder::default();
+<a href=#2713 id=2713 data-nosnippet>2713</a>            <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
+<a href=#2714 id=2714 data-nosnippet>2714</a>            <span class="kw">let </span>serializer_telemetry = V3SerializerTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
+<a href=#2715 id=2715 data-nosnippet>2715</a>            <span class="kw">let </span>(events_tx, events_rx) = tokio::sync::mpsc::channel(<span class="number">1</span>);
+<a href=#2716 id=2716 data-nosnippet>2716</a>            <span class="kw">let </span>(payloads_tx, payloads_rx) = tokio::sync::mpsc::channel(<span class="number">8</span>);
+<a href=#2717 id=2717 data-nosnippet>2717</a>
+<a href=#2718 id=2718 data-nosnippet>2718</a>            <span class="kw">let </span>handle = tokio::spawn(run_request_builder(
+<a href=#2719 id=2719 data-nosnippet>2719</a>                v2_series_builder,
+<a href=#2720 id=2720 data-nosnippet>2720</a>                <span class="prelude-val">None</span>,
+<a href=#2721 id=2721 data-nosnippet>2721</a>                <span class="self">self</span>.series_mode,
+<a href=#2722 id=2722 data-nosnippet>2722</a>                <span class="self">self</span>.sketches_mode,
+<a href=#2723 id=2723 data-nosnippet>2723</a>                V3RuntimeConfig {
+<a href=#2724 id=2724 data-nosnippet>2724</a>                    endpoint_config: v3_endpoint_config,
+<a href=#2725 id=2725 data-nosnippet>2725</a>                    payload_limits: <span class="self">self</span>.payload_limits,
+<a href=#2726 id=2726 data-nosnippet>2726</a>                    series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
+<a href=#2727 id=2727 data-nosnippet>2727</a>                    shadow_series_endpoint_uri: <span class="self">self</span>.shadow_series_endpoint_uri,
+<a href=#2728 id=2728 data-nosnippet>2728</a>                    series_shadow_config: <span class="self">self</span>.series_shadow_config,
+<a href=#2729 id=2729 data-nosnippet>2729</a>                    serializer_telemetry,
+<a href=#2730 id=2730 data-nosnippet>2730</a>                },
+<a href=#2731 id=2731 data-nosnippet>2731</a>                telemetry,
+<a href=#2732 id=2732 data-nosnippet>2732</a>                events_rx,
+<a href=#2733 id=2733 data-nosnippet>2733</a>                payloads_tx,
+<a href=#2734 id=2734 data-nosnippet>2734</a>                <span class="self">self</span>.flush_timeout,
+<a href=#2735 id=2735 data-nosnippet>2735</a>                <span class="bool-val">false</span>,
+<a href=#2736 id=2736 data-nosnippet>2736</a>            ));
+<a href=#2737 id=2737 data-nosnippet>2737</a>
+<a href=#2738 id=2738 data-nosnippet>2738</a>            RequestBuilderHarness {
+<a href=#2739 id=2739 data-nosnippet>2739</a>                events_tx,
+<a href=#2740 id=2740 data-nosnippet>2740</a>                payloads_rx,
+<a href=#2741 id=2741 data-nosnippet>2741</a>                handle,
+<a href=#2742 id=2742 data-nosnippet>2742</a>            }
+<a href=#2743 id=2743 data-nosnippet>2743</a>        }
+<a href=#2744 id=2744 data-nosnippet>2744</a>    }
+<a href=#2745 id=2745 data-nosnippet>2745</a>
+<a href=#2746 id=2746 data-nosnippet>2746</a>    <span class="doccomment">/// A spawned [`run_request_builder`] task plus its input/output channels.
+<a href=#2747 id=2747 data-nosnippet>2747</a>    </span><span class="kw">struct </span>RequestBuilderHarness {
+<a href=#2748 id=2748 data-nosnippet>2748</a>        events_tx: tokio::sync::mpsc::Sender&lt;EventsBuffer&gt;,
+<a href=#2749 id=2749 data-nosnippet>2749</a>        payloads_rx: tokio::sync::mpsc::Receiver&lt;PayloadsBuffer&gt;,
+<a href=#2750 id=2750 data-nosnippet>2750</a>        handle: tokio::task::JoinHandle&lt;<span class="prelude-ty">Result</span>&lt;(), GenericError&gt;&gt;,
+<a href=#2751 id=2751 data-nosnippet>2751</a>    }
+<a href=#2752 id=2752 data-nosnippet>2752</a>
+<a href=#2753 id=2753 data-nosnippet>2753</a>    <span class="kw">impl </span>RequestBuilderHarness {
+<a href=#2754 id=2754 data-nosnippet>2754</a>        <span class="doccomment">/// Sends a single event buffer carrying `metrics` to the request builder.
+<a href=#2755 id=2755 data-nosnippet>2755</a>        </span><span class="kw">async fn </span>push_metrics(<span class="kw-2">&amp;</span><span class="self">self</span>, metrics: <span class="kw">impl </span>IntoIterator&lt;Item = Metric&gt;) {
+<a href=#2756 id=2756 data-nosnippet>2756</a>            <span class="kw">let </span><span class="kw-2">mut </span>events = EventsBuffer::default();
+<a href=#2757 id=2757 data-nosnippet>2757</a>            <span class="kw">for </span>metric <span class="kw">in </span>metrics {
+<a href=#2758 id=2758 data-nosnippet>2758</a>                <span class="macro">assert!</span>(
+<a href=#2759 id=2759 data-nosnippet>2759</a>                    events.try_push(Event::Metric(metric)).is_none(),
+<a href=#2760 id=2760 data-nosnippet>2760</a>                    <span class="string">"event buffer should accept metric"
+<a href=#2761 id=2761 data-nosnippet>2761</a>                </span>);
+<a href=#2762 id=2762 data-nosnippet>2762</a>            }
+<a href=#2763 id=2763 data-nosnippet>2763</a>            <span class="self">self</span>.events_tx
+<a href=#2764 id=2764 data-nosnippet>2764</a>                .send(events)
+<a href=#2765 id=2765 data-nosnippet>2765</a>                .<span class="kw">await
+<a href=#2766 id=2766 data-nosnippet>2766</a>                </span>.expect(<span class="string">"events should be sent to request builder"</span>);
+<a href=#2767 id=2767 data-nosnippet>2767</a>        }
+<a href=#2768 id=2768 data-nosnippet>2768</a>
+<a href=#2769 id=2769 data-nosnippet>2769</a>        <span class="doccomment">/// Receives the next flushed payload, unwrapping it into its HTTP metadata and request.
+<a href=#2770 id=2770 data-nosnippet>2770</a>        </span><span class="kw">async fn </span>next_http_request(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; (PayloadMetadata, Request&lt;FrozenChunkedBytesBuffer&gt;) {
+<a href=#2771 id=2771 data-nosnippet>2771</a>            <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), <span class="self">self</span>.payloads_rx.recv())
+<a href=#2772 id=2772 data-nosnippet>2772</a>                .<span class="kw">await
+<a href=#2773 id=2773 data-nosnippet>2773</a>                </span>.expect(<span class="string">"payload should arrive before timeout"</span>)
+<a href=#2774 id=2774 data-nosnippet>2774</a>                .expect(<span class="string">"payload channel should remain open"</span>);
+<a href=#2775 id=2775 data-nosnippet>2775</a>            <span class="kw">match </span>payload {
+<a href=#2776 id=2776 data-nosnippet>2776</a>                Payload::Http(http_payload) =&gt; http_payload.into_parts(),
+<a href=#2777 id=2777 data-nosnippet>2777</a>                <span class="kw">_ </span>=&gt; <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>),
+<a href=#2778 id=2778 data-nosnippet>2778</a>            }
+<a href=#2779 id=2779 data-nosnippet>2779</a>        }
+<a href=#2780 id=2780 data-nosnippet>2780</a>
+<a href=#2781 id=2781 data-nosnippet>2781</a>        <span class="doccomment">/// Asserts that no payload is flushed within `window`.
+<a href=#2782 id=2782 data-nosnippet>2782</a>        </span><span class="kw">async fn </span>assert_no_payload_within(<span class="kw-2">&amp;mut </span><span class="self">self</span>, window: Duration) {
+<a href=#2783 id=2783 data-nosnippet>2783</a>            <span class="macro">assert!</span>(
+<a href=#2784 id=2784 data-nosnippet>2784</a>                timeout(window, <span class="self">self</span>.payloads_rx.recv()).<span class="kw">await</span>.is_err(),
+<a href=#2785 id=2785 data-nosnippet>2785</a>                <span class="string">"no payload should be flushed within {window:?}"
+<a href=#2786 id=2786 data-nosnippet>2786</a>            </span>);
+<a href=#2787 id=2787 data-nosnippet>2787</a>        }
+<a href=#2788 id=2788 data-nosnippet>2788</a>
+<a href=#2789 id=2789 data-nosnippet>2789</a>        <span class="doccomment">/// Drops the events sender and waits for the request builder task to stop cleanly.
+<a href=#2790 id=2790 data-nosnippet>2790</a>        </span><span class="kw">async fn </span>shutdown(<span class="self">self</span>) {
+<a href=#2791 id=2791 data-nosnippet>2791</a>            drop(<span class="self">self</span>.events_tx);
+<a href=#2792 id=2792 data-nosnippet>2792</a>            <span class="self">self</span>.handle
+<a href=#2793 id=2793 data-nosnippet>2793</a>                .<span class="kw">await
+<a href=#2794 id=2794 data-nosnippet>2794</a>                </span>.expect(<span class="string">"request builder task should complete"</span>)
+<a href=#2795 id=2795 data-nosnippet>2795</a>                .expect(<span class="string">"request builder should stop cleanly"</span>);
+<a href=#2796 id=2796 data-nosnippet>2796</a>        }
+<a href=#2797 id=2797 data-nosnippet>2797</a>    }
+<a href=#2798 id=2798 data-nosnippet>2798</a>
+<a href=#2799 id=2799 data-nosnippet>2799</a>    <span class="attr">#[tokio::test]
+<a href=#2800 id=2800 data-nosnippet>2800</a>    </span><span class="kw">async fn </span>validation_split_flush_assigns_batch_id_to_carried_metric() {
+<a href=#2801 id=2801 data-nosnippet>2801</a>        <span class="comment">// Validation mode keeps each V2 flush aligned with a V3 flush under the same batch ID. With the V2 builder
+<a href=#2802 id=2802 data-nosnippet>2802</a>        // flushing after one metric, two input metrics produce two V2/V3 pairs, and the metric carried into the
+<a href=#2803 id=2803 data-nosnippet>2803</a>        // second batch gets a fresh validation ID.
+<a href=#2804 id=2804 data-nosnippet>2804</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>harness = RequestBuilderScenario::new(MetricsEncoderMode::Validation, MetricsEncoderMode::V2Only)
+<a href=#2805 id=2805 data-nosnippet>2805</a>            .with_v2_series_builder(<span class="number">1</span>)
+<a href=#2806 id=2806 data-nosnippet>2806</a>            .spawn()
+<a href=#2807 id=2807 data-nosnippet>2807</a>            .<span class="kw">await</span>;
+<a href=#2808 id=2808 data-nosnippet>2808</a>
+<a href=#2809 id=2809 data-nosnippet>2809</a>        harness
+<a href=#2810 id=2810 data-nosnippet>2810</a>            .push_metrics([
+<a href=#2811 id=2811 data-nosnippet>2811</a>                Metric::counter(<span class="string">"validation.split.one"</span>, <span class="number">1.0</span>),
+<a href=#2812 id=2812 data-nosnippet>2812</a>                Metric::counter(<span class="string">"validation.split.two"</span>, <span class="number">2.0</span>),
+<a href=#2813 id=2813 data-nosnippet>2813</a>            ])
+<a href=#2814 id=2814 data-nosnippet>2814</a>            .<span class="kw">await</span>;
 <a href=#2815 id=2815 data-nosnippet>2815</a>
-<a href=#2816 id=2816 data-nosnippet>2816</a>        <span class="kw">let </span>request_builder_handle = tokio::spawn(run_request_builder(
-<a href=#2817 id=2817 data-nosnippet>2817</a>            <span class="prelude-val">None</span>,
-<a href=#2818 id=2818 data-nosnippet>2818</a>            <span class="prelude-val">None</span>,
-<a href=#2819 id=2819 data-nosnippet>2819</a>            MetricsEncoderMode::V2Only,
-<a href=#2820 id=2820 data-nosnippet>2820</a>            MetricsEncoderMode::V3Enabled,
-<a href=#2821 id=2821 data-nosnippet>2821</a>            V3RuntimeConfig {
-<a href=#2822 id=2822 data-nosnippet>2822</a>                endpoint_config: v3_endpoint_config,
-<a href=#2823 id=2823 data-nosnippet>2823</a>                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, <span class="number">10_000</span>, <span class="number">3</span>),
-<a href=#2824 id=2824 data-nosnippet>2824</a>                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
-<a href=#2825 id=2825 data-nosnippet>2825</a>                shadow_series_endpoint_uri: <span class="string">"/api/intake/metrics/v3beta/series"</span>.to_string(),
-<a href=#2826 id=2826 data-nosnippet>2826</a>                series_shadow_config: SeriesShadowConfig::new(<span class="number">0.0</span>),
-<a href=#2827 id=2827 data-nosnippet>2827</a>                serializer_telemetry,
-<a href=#2828 id=2828 data-nosnippet>2828</a>            },
-<a href=#2829 id=2829 data-nosnippet>2829</a>            telemetry,
-<a href=#2830 id=2830 data-nosnippet>2830</a>            events_rx,
-<a href=#2831 id=2831 data-nosnippet>2831</a>            payloads_tx,
-<a href=#2832 id=2832 data-nosnippet>2832</a>            Duration::from_millis(<span class="number">250</span>),
-<a href=#2833 id=2833 data-nosnippet>2833</a>            <span class="bool-val">false</span>,
-<a href=#2834 id=2834 data-nosnippet>2834</a>        ));
-<a href=#2835 id=2835 data-nosnippet>2835</a>
-<a href=#2836 id=2836 data-nosnippet>2836</a>        <span class="kw">let </span><span class="kw-2">mut </span>events = EventsBuffer::default();
-<a href=#2837 id=2837 data-nosnippet>2837</a>        <span class="macro">assert!</span>(events
-<a href=#2838 id=2838 data-nosnippet>2838</a>            .try_push(Event::Metric(Metric::distribution(
-<a href=#2839 id=2839 data-nosnippet>2839</a>                <span class="string">"authoritative.v3.sketch.points.one"</span>,
-<a href=#2840 id=2840 data-nosnippet>2840</a>                [(<span class="number">123</span>, <span class="number">1.0</span>), (<span class="number">124</span>, <span class="number">2.0</span>)]
-<a href=#2841 id=2841 data-nosnippet>2841</a>            )))
-<a href=#2842 id=2842 data-nosnippet>2842</a>            .is_none());
-<a href=#2843 id=2843 data-nosnippet>2843</a>        <span class="macro">assert!</span>(events
-<a href=#2844 id=2844 data-nosnippet>2844</a>            .try_push(Event::Metric(Metric::distribution(
-<a href=#2845 id=2845 data-nosnippet>2845</a>                <span class="string">"authoritative.v3.sketch.points.two"</span>,
-<a href=#2846 id=2846 data-nosnippet>2846</a>                [(<span class="number">123</span>, <span class="number">3.0</span>), (<span class="number">124</span>, <span class="number">4.0</span>)]
-<a href=#2847 id=2847 data-nosnippet>2847</a>            )))
-<a href=#2848 id=2848 data-nosnippet>2848</a>            .is_none());
-<a href=#2849 id=2849 data-nosnippet>2849</a>        events_tx
-<a href=#2850 id=2850 data-nosnippet>2850</a>            .send(events)
-<a href=#2851 id=2851 data-nosnippet>2851</a>            .<span class="kw">await
-<a href=#2852 id=2852 data-nosnippet>2852</a>            </span>.expect(<span class="string">"events should be sent to request builder"</span>);
-<a href=#2853 id=2853 data-nosnippet>2853</a>
-<a href=#2854 id=2854 data-nosnippet>2854</a>        <span class="kw">for </span>expected <span class="kw">in </span>[<span class="string">"point-limit"</span>, <span class="string">"timeout"</span>] {
-<a href=#2855 id=2855 data-nosnippet>2855</a>            <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), payloads_rx.recv())
-<a href=#2856 id=2856 data-nosnippet>2856</a>                .<span class="kw">await
-<a href=#2857 id=2857 data-nosnippet>2857</a>                </span>.unwrap_or_else(|<span class="kw">_</span>| <span class="macro">panic!</span>(<span class="string">"{expected} sketches payload should arrive before timeout"</span>))
-<a href=#2858 id=2858 data-nosnippet>2858</a>                .expect(<span class="string">"payload channel should remain open"</span>);
-<a href=#2859 id=2859 data-nosnippet>2859</a>            <span class="kw">let </span>Payload::Http(http_payload) = payload <span class="kw">else </span>{
-<a href=#2860 id=2860 data-nosnippet>2860</a>                <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>);
-<a href=#2861 id=2861 data-nosnippet>2861</a>            };
-<a href=#2862 id=2862 data-nosnippet>2862</a>            <span class="kw">let </span>(<span class="kw">_</span>, request) = http_payload.into_parts();
-<a href=#2863 id=2863 data-nosnippet>2863</a>            <span class="macro">assert_eq!</span>(V3_SKETCHES_ENDPOINT_URI, request.uri());
-<a href=#2864 id=2864 data-nosnippet>2864</a>        }
-<a href=#2865 id=2865 data-nosnippet>2865</a>        <span class="macro">assert_eq!</span>(
-<a href=#2866 id=2866 data-nosnippet>2866</a>            recorder.counter((<span class="string">"serializer.v3_payload_split_reason"</span>, <span class="kw-2">&amp;</span>[(<span class="string">"reason"</span>, <span class="string">"max_points"</span>)])),
-<a href=#2867 id=2867 data-nosnippet>2867</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>)
-<a href=#2868 id=2868 data-nosnippet>2868</a>        );
-<a href=#2869 id=2869 data-nosnippet>2869</a>
-<a href=#2870 id=2870 data-nosnippet>2870</a>        drop(events_tx);
-<a href=#2871 id=2871 data-nosnippet>2871</a>        request_builder_handle
-<a href=#2872 id=2872 data-nosnippet>2872</a>            .<span class="kw">await
-<a href=#2873 id=2873 data-nosnippet>2873</a>            </span>.expect(<span class="string">"request builder task should complete"</span>)
-<a href=#2874 id=2874 data-nosnippet>2874</a>            .expect(<span class="string">"request builder should stop cleanly"</span>);
-<a href=#2875 id=2875 data-nosnippet>2875</a>    }
-<a href=#2876 id=2876 data-nosnippet>2876</a>
-<a href=#2877 id=2877 data-nosnippet>2877</a>    <span class="attr">#[tokio::test]
-<a href=#2878 id=2878 data-nosnippet>2878</a>    </span><span class="kw">async fn </span>authoritative_v3_does_not_flush_on_v2_boundary() {
-<a href=#2879 id=2879 data-nosnippet>2879</a>        <span class="kw">let </span>v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">1</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#2880 id=2880 data-nosnippet>2880</a>        <span class="kw">let </span>v2_series_builder = <span class="prelude-val">Some</span>(
-<a href=#2881 id=2881 data-nosnippet>2881</a>            v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, <span class="kw-2">&amp;</span>v2_endpoint_config)
-<a href=#2882 id=2882 data-nosnippet>2882</a>                .<span class="kw">await
-<a href=#2883 id=2883 data-nosnippet>2883</a>                </span>.expect(<span class="string">"V2 request builder should be created"</span>),
-<a href=#2884 id=2884 data-nosnippet>2884</a>        );
-<a href=#2885 id=2885 data-nosnippet>2885</a>        <span class="kw">let </span>v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#2886 id=2886 data-nosnippet>2886</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::default();
-<a href=#2887 id=2887 data-nosnippet>2887</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2888 id=2888 data-nosnippet>2888</a>        <span class="kw">let </span>serializer_telemetry = V3SerializerTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2889 id=2889 data-nosnippet>2889</a>        <span class="kw">let </span>(events_tx, events_rx) = tokio::sync::mpsc::channel(<span class="number">1</span>);
-<a href=#2890 id=2890 data-nosnippet>2890</a>        <span class="kw">let </span>(payloads_tx, <span class="kw-2">mut </span>payloads_rx) = tokio::sync::mpsc::channel(<span class="number">8</span>);
-<a href=#2891 id=2891 data-nosnippet>2891</a>
-<a href=#2892 id=2892 data-nosnippet>2892</a>        <span class="kw">let </span>request_builder_handle = tokio::spawn(run_request_builder(
-<a href=#2893 id=2893 data-nosnippet>2893</a>            v2_series_builder,
-<a href=#2894 id=2894 data-nosnippet>2894</a>            <span class="prelude-val">None</span>,
-<a href=#2895 id=2895 data-nosnippet>2895</a>            MetricsEncoderMode::V3Enabled,
-<a href=#2896 id=2896 data-nosnippet>2896</a>            MetricsEncoderMode::V2Only,
-<a href=#2897 id=2897 data-nosnippet>2897</a>            V3RuntimeConfig {
-<a href=#2898 id=2898 data-nosnippet>2898</a>                endpoint_config: v3_endpoint_config,
-<a href=#2899 id=2899 data-nosnippet>2899</a>                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, <span class="number">10_000</span>, <span class="number">10_000</span>),
-<a href=#2900 id=2900 data-nosnippet>2900</a>                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
-<a href=#2901 id=2901 data-nosnippet>2901</a>                shadow_series_endpoint_uri: <span class="string">"/api/intake/metrics/v3beta/series"</span>.to_string(),
-<a href=#2902 id=2902 data-nosnippet>2902</a>                series_shadow_config: SeriesShadowConfig::new(<span class="number">0.0</span>),
-<a href=#2903 id=2903 data-nosnippet>2903</a>                serializer_telemetry,
-<a href=#2904 id=2904 data-nosnippet>2904</a>            },
-<a href=#2905 id=2905 data-nosnippet>2905</a>            telemetry,
-<a href=#2906 id=2906 data-nosnippet>2906</a>            events_rx,
-<a href=#2907 id=2907 data-nosnippet>2907</a>            payloads_tx,
-<a href=#2908 id=2908 data-nosnippet>2908</a>            Duration::from_millis(<span class="number">250</span>),
-<a href=#2909 id=2909 data-nosnippet>2909</a>            <span class="bool-val">false</span>,
-<a href=#2910 id=2910 data-nosnippet>2910</a>        ));
-<a href=#2911 id=2911 data-nosnippet>2911</a>
-<a href=#2912 id=2912 data-nosnippet>2912</a>        <span class="kw">let </span><span class="kw-2">mut </span>events = EventsBuffer::default();
-<a href=#2913 id=2913 data-nosnippet>2913</a>        <span class="macro">assert!</span>(events
-<a href=#2914 id=2914 data-nosnippet>2914</a>            .try_push(Event::Metric(Metric::counter(<span class="string">"authoritative.v3.decouple.one"</span>, <span class="number">1.0</span>)))
-<a href=#2915 id=2915 data-nosnippet>2915</a>            .is_none());
-<a href=#2916 id=2916 data-nosnippet>2916</a>        <span class="macro">assert!</span>(events
-<a href=#2917 id=2917 data-nosnippet>2917</a>            .try_push(Event::Metric(Metric::counter(<span class="string">"authoritative.v3.decouple.two"</span>, <span class="number">2.0</span>)))
-<a href=#2918 id=2918 data-nosnippet>2918</a>            .is_none());
-<a href=#2919 id=2919 data-nosnippet>2919</a>        events_tx
-<a href=#2920 id=2920 data-nosnippet>2920</a>            .send(events)
-<a href=#2921 id=2921 data-nosnippet>2921</a>            .<span class="kw">await
-<a href=#2922 id=2922 data-nosnippet>2922</a>            </span>.expect(<span class="string">"events should be sent to request builder"</span>);
+<a href=#2816 id=2816 data-nosnippet>2816</a>        <span class="kw">let </span><span class="kw-2">mut </span>flushed_requests = Vec::new();
+<a href=#2817 id=2817 data-nosnippet>2817</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">4 </span>{
+<a href=#2818 id=2818 data-nosnippet>2818</a>            <span class="kw">let </span>(<span class="kw">_</span>, request) = harness.next_http_request().<span class="kw">await</span>;
+<a href=#2819 id=2819 data-nosnippet>2819</a>            <span class="kw">let </span>batch_id = request
+<a href=#2820 id=2820 data-nosnippet>2820</a>                .headers()
+<a href=#2821 id=2821 data-nosnippet>2821</a>                .get(<span class="string">"X-Metrics-Request-ID"</span>)
+<a href=#2822 id=2822 data-nosnippet>2822</a>                .expect(<span class="string">"validation batch ID header should be present"</span>)
+<a href=#2823 id=2823 data-nosnippet>2823</a>                .to_str()
+<a href=#2824 id=2824 data-nosnippet>2824</a>                .expect(<span class="string">"validation batch ID should be valid header text"</span>)
+<a href=#2825 id=2825 data-nosnippet>2825</a>                .to_string();
+<a href=#2826 id=2826 data-nosnippet>2826</a>            flushed_requests.push((request.uri().to_string(), batch_id));
+<a href=#2827 id=2827 data-nosnippet>2827</a>        }
+<a href=#2828 id=2828 data-nosnippet>2828</a>
+<a href=#2829 id=2829 data-nosnippet>2829</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, flushed_requests[<span class="number">0</span>].<span class="number">0</span>);
+<a href=#2830 id=2830 data-nosnippet>2830</a>        <span class="macro">assert_eq!</span>(V3_SERIES_ENDPOINT_URI, flushed_requests[<span class="number">1</span>].<span class="number">0</span>);
+<a href=#2831 id=2831 data-nosnippet>2831</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, flushed_requests[<span class="number">2</span>].<span class="number">0</span>);
+<a href=#2832 id=2832 data-nosnippet>2832</a>        <span class="macro">assert_eq!</span>(V3_SERIES_ENDPOINT_URI, flushed_requests[<span class="number">3</span>].<span class="number">0</span>);
+<a href=#2833 id=2833 data-nosnippet>2833</a>
+<a href=#2834 id=2834 data-nosnippet>2834</a>        <span class="macro">assert_eq!</span>(flushed_requests[<span class="number">0</span>].<span class="number">1</span>, flushed_requests[<span class="number">1</span>].<span class="number">1</span>);
+<a href=#2835 id=2835 data-nosnippet>2835</a>        <span class="macro">assert_eq!</span>(flushed_requests[<span class="number">2</span>].<span class="number">1</span>, flushed_requests[<span class="number">3</span>].<span class="number">1</span>);
+<a href=#2836 id=2836 data-nosnippet>2836</a>        <span class="macro">assert_ne!</span>(flushed_requests[<span class="number">0</span>].<span class="number">1</span>, flushed_requests[<span class="number">2</span>].<span class="number">1</span>);
+<a href=#2837 id=2837 data-nosnippet>2837</a>
+<a href=#2838 id=2838 data-nosnippet>2838</a>        harness.shutdown().<span class="kw">await</span>;
+<a href=#2839 id=2839 data-nosnippet>2839</a>    }
+<a href=#2840 id=2840 data-nosnippet>2840</a>
+<a href=#2841 id=2841 data-nosnippet>2841</a>    <span class="attr">#[tokio::test]
+<a href=#2842 id=2842 data-nosnippet>2842</a>    </span><span class="kw">async fn </span>authoritative_v3_flushes_previous_point_limit_batch() {
+<a href=#2843 id=2843 data-nosnippet>2843</a>        <span class="comment">// Authoritative V3 batches independently of V2. With a 3-point limit, the first two-point metric fits but
+<a href=#2844 id=2844 data-nosnippet>2844</a>        // the second would exceed it, so the first flushes as a point-limit split and the second flushes on the
+<a href=#2845 id=2845 data-nosnippet>2845</a>        // pending-flush timeout.
+<a href=#2846 id=2846 data-nosnippet>2846</a>        </span><span class="kw">let </span>recorder = TestRecorder::default();
+<a href=#2847 id=2847 data-nosnippet>2847</a>        <span class="kw">let </span>_local = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
+<a href=#2848 id=2848 data-nosnippet>2848</a>
+<a href=#2849 id=2849 data-nosnippet>2849</a>        <span class="kw">let </span><span class="kw-2">mut </span>harness = RequestBuilderScenario::new(MetricsEncoderMode::V3Enabled, MetricsEncoderMode::V2Only)
+<a href=#2850 id=2850 data-nosnippet>2850</a>            .with_max_points_per_payload(<span class="number">3</span>)
+<a href=#2851 id=2851 data-nosnippet>2851</a>            .with_flush_timeout(Duration::from_millis(<span class="number">250</span>))
+<a href=#2852 id=2852 data-nosnippet>2852</a>            .spawn()
+<a href=#2853 id=2853 data-nosnippet>2853</a>            .<span class="kw">await</span>;
+<a href=#2854 id=2854 data-nosnippet>2854</a>
+<a href=#2855 id=2855 data-nosnippet>2855</a>        harness
+<a href=#2856 id=2856 data-nosnippet>2856</a>            .push_metrics([
+<a href=#2857 id=2857 data-nosnippet>2857</a>                Metric::counter(<span class="string">"authoritative.v3.points.one"</span>, [(<span class="number">123</span>, <span class="number">1.0</span>), (<span class="number">124</span>, <span class="number">2.0</span>)]),
+<a href=#2858 id=2858 data-nosnippet>2858</a>                Metric::counter(<span class="string">"authoritative.v3.points.two"</span>, [(<span class="number">123</span>, <span class="number">3.0</span>), (<span class="number">124</span>, <span class="number">4.0</span>)]),
+<a href=#2859 id=2859 data-nosnippet>2859</a>            ])
+<a href=#2860 id=2860 data-nosnippet>2860</a>            .<span class="kw">await</span>;
+<a href=#2861 id=2861 data-nosnippet>2861</a>
+<a href=#2862 id=2862 data-nosnippet>2862</a>        <span class="comment">// Point-count split flushes the first metric before the second exceeds the limit.
+<a href=#2863 id=2863 data-nosnippet>2863</a>        </span><span class="kw">let </span>(<span class="kw">_</span>, request) = harness.next_http_request().<span class="kw">await</span>;
+<a href=#2864 id=2864 data-nosnippet>2864</a>        <span class="macro">assert_eq!</span>(V3_SERIES_ENDPOINT_URI, request.uri());
+<a href=#2865 id=2865 data-nosnippet>2865</a>        harness.assert_no_payload_within(Duration::from_millis(<span class="number">50</span>)).<span class="kw">await</span>;
+<a href=#2866 id=2866 data-nosnippet>2866</a>
+<a href=#2867 id=2867 data-nosnippet>2867</a>        <span class="comment">// The carried-over metric flushes when the pending-flush timeout fires.
+<a href=#2868 id=2868 data-nosnippet>2868</a>        </span><span class="kw">let </span>(<span class="kw">_</span>, request) = harness.next_http_request().<span class="kw">await</span>;
+<a href=#2869 id=2869 data-nosnippet>2869</a>        <span class="macro">assert_eq!</span>(V3_SERIES_ENDPOINT_URI, request.uri());
+<a href=#2870 id=2870 data-nosnippet>2870</a>        <span class="macro">assert_eq!</span>(
+<a href=#2871 id=2871 data-nosnippet>2871</a>            recorder.counter((<span class="string">"serializer.v3_payload_split_reason"</span>, <span class="kw-2">&amp;</span>[(<span class="string">"reason"</span>, <span class="string">"max_points"</span>)])),
+<a href=#2872 id=2872 data-nosnippet>2872</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>)
+<a href=#2873 id=2873 data-nosnippet>2873</a>        );
+<a href=#2874 id=2874 data-nosnippet>2874</a>
+<a href=#2875 id=2875 data-nosnippet>2875</a>        harness.shutdown().<span class="kw">await</span>;
+<a href=#2876 id=2876 data-nosnippet>2876</a>    }
+<a href=#2877 id=2877 data-nosnippet>2877</a>
+<a href=#2878 id=2878 data-nosnippet>2878</a>    <span class="attr">#[tokio::test]
+<a href=#2879 id=2879 data-nosnippet>2879</a>    </span><span class="kw">async fn </span>authoritative_v3_sketches_flush_previous_point_limit_batch() {
+<a href=#2880 id=2880 data-nosnippet>2880</a>        <span class="comment">// The same authoritative point-limit split applies to sketches, which always target the V3 sketches
+<a href=#2881 id=2881 data-nosnippet>2881</a>        // endpoint: the first distribution flushes as a point-limit split, the second on the pending-flush timeout.
+<a href=#2882 id=2882 data-nosnippet>2882</a>        </span><span class="kw">let </span>recorder = TestRecorder::default();
+<a href=#2883 id=2883 data-nosnippet>2883</a>        <span class="kw">let </span>_local = metrics::set_default_local_recorder(<span class="kw-2">&amp;</span>recorder);
+<a href=#2884 id=2884 data-nosnippet>2884</a>
+<a href=#2885 id=2885 data-nosnippet>2885</a>        <span class="kw">let </span><span class="kw-2">mut </span>harness = RequestBuilderScenario::new(MetricsEncoderMode::V2Only, MetricsEncoderMode::V3Enabled)
+<a href=#2886 id=2886 data-nosnippet>2886</a>            .with_max_points_per_payload(<span class="number">3</span>)
+<a href=#2887 id=2887 data-nosnippet>2887</a>            .with_flush_timeout(Duration::from_millis(<span class="number">250</span>))
+<a href=#2888 id=2888 data-nosnippet>2888</a>            .spawn()
+<a href=#2889 id=2889 data-nosnippet>2889</a>            .<span class="kw">await</span>;
+<a href=#2890 id=2890 data-nosnippet>2890</a>
+<a href=#2891 id=2891 data-nosnippet>2891</a>        harness
+<a href=#2892 id=2892 data-nosnippet>2892</a>            .push_metrics([
+<a href=#2893 id=2893 data-nosnippet>2893</a>                Metric::distribution(<span class="string">"authoritative.v3.sketch.points.one"</span>, [(<span class="number">123</span>, <span class="number">1.0</span>), (<span class="number">124</span>, <span class="number">2.0</span>)]),
+<a href=#2894 id=2894 data-nosnippet>2894</a>                Metric::distribution(<span class="string">"authoritative.v3.sketch.points.two"</span>, [(<span class="number">123</span>, <span class="number">3.0</span>), (<span class="number">124</span>, <span class="number">4.0</span>)]),
+<a href=#2895 id=2895 data-nosnippet>2895</a>            ])
+<a href=#2896 id=2896 data-nosnippet>2896</a>            .<span class="kw">await</span>;
+<a href=#2897 id=2897 data-nosnippet>2897</a>
+<a href=#2898 id=2898 data-nosnippet>2898</a>        <span class="kw">for </span>stage <span class="kw">in </span>[<span class="string">"point-limit split"</span>, <span class="string">"timeout"</span>] {
+<a href=#2899 id=2899 data-nosnippet>2899</a>            <span class="kw">let </span>(<span class="kw">_</span>, request) = harness.next_http_request().<span class="kw">await</span>;
+<a href=#2900 id=2900 data-nosnippet>2900</a>            <span class="macro">assert_eq!</span>(
+<a href=#2901 id=2901 data-nosnippet>2901</a>                V3_SKETCHES_ENDPOINT_URI,
+<a href=#2902 id=2902 data-nosnippet>2902</a>                request.uri(),
+<a href=#2903 id=2903 data-nosnippet>2903</a>                <span class="string">"{stage} sketches payload should target the V3 sketches endpoint"
+<a href=#2904 id=2904 data-nosnippet>2904</a>            </span>);
+<a href=#2905 id=2905 data-nosnippet>2905</a>        }
+<a href=#2906 id=2906 data-nosnippet>2906</a>        <span class="macro">assert_eq!</span>(
+<a href=#2907 id=2907 data-nosnippet>2907</a>            recorder.counter((<span class="string">"serializer.v3_payload_split_reason"</span>, <span class="kw-2">&amp;</span>[(<span class="string">"reason"</span>, <span class="string">"max_points"</span>)])),
+<a href=#2908 id=2908 data-nosnippet>2908</a>            <span class="prelude-val">Some</span>(<span class="number">1</span>)
+<a href=#2909 id=2909 data-nosnippet>2909</a>        );
+<a href=#2910 id=2910 data-nosnippet>2910</a>
+<a href=#2911 id=2911 data-nosnippet>2911</a>        harness.shutdown().<span class="kw">await</span>;
+<a href=#2912 id=2912 data-nosnippet>2912</a>    }
+<a href=#2913 id=2913 data-nosnippet>2913</a>
+<a href=#2914 id=2914 data-nosnippet>2914</a>    <span class="attr">#[tokio::test]
+<a href=#2915 id=2915 data-nosnippet>2915</a>    </span><span class="kw">async fn </span>authoritative_v3_does_not_flush_on_v2_boundary() {
+<a href=#2916 id=2916 data-nosnippet>2916</a>        <span class="comment">// The V2 builder flushes at its one-metric boundary, but authoritative V3 batches independently and must
+<a href=#2917 id=2917 data-nosnippet>2917</a>        // not flush just because V2 did. The remaining V2 and V3 batches only flush together on the timeout.
+<a href=#2918 id=2918 data-nosnippet>2918</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>harness = RequestBuilderScenario::new(MetricsEncoderMode::V3Enabled, MetricsEncoderMode::V2Only)
+<a href=#2919 id=2919 data-nosnippet>2919</a>            .with_v2_series_builder(<span class="number">1</span>)
+<a href=#2920 id=2920 data-nosnippet>2920</a>            .with_flush_timeout(Duration::from_millis(<span class="number">250</span>))
+<a href=#2921 id=2921 data-nosnippet>2921</a>            .spawn()
+<a href=#2922 id=2922 data-nosnippet>2922</a>            .<span class="kw">await</span>;
 <a href=#2923 id=2923 data-nosnippet>2923</a>
-<a href=#2924 id=2924 data-nosnippet>2924</a>        <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), payloads_rx.recv())
-<a href=#2925 id=2925 data-nosnippet>2925</a>            .<span class="kw">await
-<a href=#2926 id=2926 data-nosnippet>2926</a>            </span>.expect(<span class="string">"V2 split payload should arrive before timeout"</span>)
-<a href=#2927 id=2927 data-nosnippet>2927</a>            .expect(<span class="string">"payload channel should remain open"</span>);
-<a href=#2928 id=2928 data-nosnippet>2928</a>        <span class="kw">let </span>Payload::Http(http_payload) = payload <span class="kw">else </span>{
-<a href=#2929 id=2929 data-nosnippet>2929</a>            <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>);
-<a href=#2930 id=2930 data-nosnippet>2930</a>        };
-<a href=#2931 id=2931 data-nosnippet>2931</a>        <span class="kw">let </span>(<span class="kw">_</span>, request) = http_payload.into_parts();
+<a href=#2924 id=2924 data-nosnippet>2924</a>        harness
+<a href=#2925 id=2925 data-nosnippet>2925</a>            .push_metrics([
+<a href=#2926 id=2926 data-nosnippet>2926</a>                Metric::counter(<span class="string">"authoritative.v3.decouple.one"</span>, <span class="number">1.0</span>),
+<a href=#2927 id=2927 data-nosnippet>2927</a>                Metric::counter(<span class="string">"authoritative.v3.decouple.two"</span>, <span class="number">2.0</span>),
+<a href=#2928 id=2928 data-nosnippet>2928</a>            ])
+<a href=#2929 id=2929 data-nosnippet>2929</a>            .<span class="kw">await</span>;
+<a href=#2930 id=2930 data-nosnippet>2930</a>
+<a href=#2931 id=2931 data-nosnippet>2931</a>        <span class="kw">let </span>(<span class="kw">_</span>, request) = harness.next_http_request().<span class="kw">await</span>;
 <a href=#2932 id=2932 data-nosnippet>2932</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, request.uri());
-<a href=#2933 id=2933 data-nosnippet>2933</a>        <span class="macro">assert!</span>(timeout(Duration::from_millis(<span class="number">50</span>), payloads_rx.recv()).<span class="kw">await</span>.is_err());
+<a href=#2933 id=2933 data-nosnippet>2933</a>        harness.assert_no_payload_within(Duration::from_millis(<span class="number">50</span>)).<span class="kw">await</span>;
 <a href=#2934 id=2934 data-nosnippet>2934</a>
 <a href=#2935 id=2935 data-nosnippet>2935</a>        <span class="kw">let </span><span class="kw-2">mut </span>timeout_flush_uris = Vec::new();
 <a href=#2936 id=2936 data-nosnippet>2936</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">2 </span>{
-<a href=#2937 id=2937 data-nosnippet>2937</a>            <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), payloads_rx.recv())
-<a href=#2938 id=2938 data-nosnippet>2938</a>                .<span class="kw">await
-<a href=#2939 id=2939 data-nosnippet>2939</a>                </span>.expect(<span class="string">"timeout payload should arrive before timeout"</span>)
-<a href=#2940 id=2940 data-nosnippet>2940</a>                .expect(<span class="string">"payload channel should remain open"</span>);
-<a href=#2941 id=2941 data-nosnippet>2941</a>            <span class="kw">let </span>Payload::Http(http_payload) = payload <span class="kw">else </span>{
-<a href=#2942 id=2942 data-nosnippet>2942</a>                <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>);
-<a href=#2943 id=2943 data-nosnippet>2943</a>            };
-<a href=#2944 id=2944 data-nosnippet>2944</a>            <span class="kw">let </span>(<span class="kw">_</span>, request) = http_payload.into_parts();
-<a href=#2945 id=2945 data-nosnippet>2945</a>            timeout_flush_uris.push(request.uri().to_string());
-<a href=#2946 id=2946 data-nosnippet>2946</a>        }
-<a href=#2947 id=2947 data-nosnippet>2947</a>        <span class="macro">assert_eq!</span>(<span class="number">2</span>, timeout_flush_uris.len());
-<a href=#2948 id=2948 data-nosnippet>2948</a>        <span class="macro">assert!</span>(timeout_flush_uris.iter().any(|uri| uri == <span class="string">"/api/v2/series"</span>));
-<a href=#2949 id=2949 data-nosnippet>2949</a>        <span class="macro">assert!</span>(timeout_flush_uris.iter().any(|uri| uri == V3_SERIES_ENDPOINT_URI));
-<a href=#2950 id=2950 data-nosnippet>2950</a>
-<a href=#2951 id=2951 data-nosnippet>2951</a>        drop(events_tx);
-<a href=#2952 id=2952 data-nosnippet>2952</a>        request_builder_handle
-<a href=#2953 id=2953 data-nosnippet>2953</a>            .<span class="kw">await
-<a href=#2954 id=2954 data-nosnippet>2954</a>            </span>.expect(<span class="string">"request builder task should complete"</span>)
-<a href=#2955 id=2955 data-nosnippet>2955</a>            .expect(<span class="string">"request builder should stop cleanly"</span>);
-<a href=#2956 id=2956 data-nosnippet>2956</a>    }
-<a href=#2957 id=2957 data-nosnippet>2957</a>
-<a href=#2958 id=2958 data-nosnippet>2958</a>    <span class="attr">#[tokio::test]
-<a href=#2959 id=2959 data-nosnippet>2959</a>    </span><span class="kw">async fn </span>shadow_sampled_series_flush_sends_v2_and_v3_beta_with_same_batch_id() {
-<a href=#2960 id=2960 data-nosnippet>2960</a>        <span class="kw">let </span>v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#2961 id=2961 data-nosnippet>2961</a>        <span class="kw">let </span>v2_series_builder = <span class="prelude-val">Some</span>(
-<a href=#2962 id=2962 data-nosnippet>2962</a>            v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, <span class="kw-2">&amp;</span>v2_endpoint_config)
-<a href=#2963 id=2963 data-nosnippet>2963</a>                .<span class="kw">await
-<a href=#2964 id=2964 data-nosnippet>2964</a>                </span>.expect(<span class="string">"V2 request builder should be created"</span>),
-<a href=#2965 id=2965 data-nosnippet>2965</a>        );
-<a href=#2966 id=2966 data-nosnippet>2966</a>        <span class="kw">let </span>v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#2967 id=2967 data-nosnippet>2967</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::default();
-<a href=#2968 id=2968 data-nosnippet>2968</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2969 id=2969 data-nosnippet>2969</a>        <span class="kw">let </span>serializer_telemetry = V3SerializerTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#2970 id=2970 data-nosnippet>2970</a>        <span class="kw">let </span>(events_tx, events_rx) = tokio::sync::mpsc::channel(<span class="number">1</span>);
-<a href=#2971 id=2971 data-nosnippet>2971</a>        <span class="kw">let </span>(payloads_tx, <span class="kw-2">mut </span>payloads_rx) = tokio::sync::mpsc::channel(<span class="number">8</span>);
-<a href=#2972 id=2972 data-nosnippet>2972</a>
-<a href=#2973 id=2973 data-nosnippet>2973</a>        <span class="kw">let </span>request_builder_handle = tokio::spawn(run_request_builder(
-<a href=#2974 id=2974 data-nosnippet>2974</a>            v2_series_builder,
-<a href=#2975 id=2975 data-nosnippet>2975</a>            <span class="prelude-val">None</span>,
-<a href=#2976 id=2976 data-nosnippet>2976</a>            MetricsEncoderMode::V2Only,
-<a href=#2977 id=2977 data-nosnippet>2977</a>            MetricsEncoderMode::V2Only,
-<a href=#2978 id=2978 data-nosnippet>2978</a>            V3RuntimeConfig {
-<a href=#2979 id=2979 data-nosnippet>2979</a>                endpoint_config: v3_endpoint_config,
-<a href=#2980 id=2980 data-nosnippet>2980</a>                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, <span class="number">10_000</span>, <span class="number">10_000</span>),
-<a href=#2981 id=2981 data-nosnippet>2981</a>                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
-<a href=#2982 id=2982 data-nosnippet>2982</a>                shadow_series_endpoint_uri: <span class="string">"/api/intake/metrics/v3beta/custom"</span>.to_string(),
-<a href=#2983 id=2983 data-nosnippet>2983</a>                series_shadow_config: SeriesShadowConfig::new(<span class="number">1.0</span>),
-<a href=#2984 id=2984 data-nosnippet>2984</a>                serializer_telemetry,
-<a href=#2985 id=2985 data-nosnippet>2985</a>            },
-<a href=#2986 id=2986 data-nosnippet>2986</a>            telemetry,
-<a href=#2987 id=2987 data-nosnippet>2987</a>            events_rx,
-<a href=#2988 id=2988 data-nosnippet>2988</a>            payloads_tx,
-<a href=#2989 id=2989 data-nosnippet>2989</a>            Duration::from_millis(<span class="number">10</span>),
-<a href=#2990 id=2990 data-nosnippet>2990</a>            <span class="bool-val">false</span>,
-<a href=#2991 id=2991 data-nosnippet>2991</a>        ));
+<a href=#2937 id=2937 data-nosnippet>2937</a>            <span class="kw">let </span>(<span class="kw">_</span>, request) = harness.next_http_request().<span class="kw">await</span>;
+<a href=#2938 id=2938 data-nosnippet>2938</a>            timeout_flush_uris.push(request.uri().to_string());
+<a href=#2939 id=2939 data-nosnippet>2939</a>        }
+<a href=#2940 id=2940 data-nosnippet>2940</a>        <span class="macro">assert_eq!</span>(<span class="number">2</span>, timeout_flush_uris.len());
+<a href=#2941 id=2941 data-nosnippet>2941</a>        <span class="macro">assert!</span>(timeout_flush_uris.iter().any(|uri| uri == <span class="string">"/api/v2/series"</span>));
+<a href=#2942 id=2942 data-nosnippet>2942</a>        <span class="macro">assert!</span>(timeout_flush_uris.iter().any(|uri| uri == V3_SERIES_ENDPOINT_URI));
+<a href=#2943 id=2943 data-nosnippet>2943</a>
+<a href=#2944 id=2944 data-nosnippet>2944</a>        harness.shutdown().<span class="kw">await</span>;
+<a href=#2945 id=2945 data-nosnippet>2945</a>    }
+<a href=#2946 id=2946 data-nosnippet>2946</a>
+<a href=#2947 id=2947 data-nosnippet>2947</a>    <span class="attr">#[tokio::test]
+<a href=#2948 id=2948 data-nosnippet>2948</a>    </span><span class="kw">async fn </span>shadow_sampled_series_flush_sends_v2_and_v3_beta_with_same_batch_id() {
+<a href=#2949 id=2949 data-nosnippet>2949</a>        <span class="comment">// With shadow sampling forced on (rate 1.0), a V2-only series flush also emits a sampled V3 beta shadow
+<a href=#2950 id=2950 data-nosnippet>2950</a>        // payload to the configured shadow route, tagged as shadow and sharing the V2 batch ID.
+<a href=#2951 id=2951 data-nosnippet>2951</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>harness = RequestBuilderScenario::new(MetricsEncoderMode::V2Only, MetricsEncoderMode::V2Only)
+<a href=#2952 id=2952 data-nosnippet>2952</a>            .with_v2_series_builder(<span class="number">10_000</span>)
+<a href=#2953 id=2953 data-nosnippet>2953</a>            .with_series_shadow(<span class="number">1.0</span>, <span class="string">"/api/intake/metrics/v3beta/custom"</span>)
+<a href=#2954 id=2954 data-nosnippet>2954</a>            .spawn()
+<a href=#2955 id=2955 data-nosnippet>2955</a>            .<span class="kw">await</span>;
+<a href=#2956 id=2956 data-nosnippet>2956</a>
+<a href=#2957 id=2957 data-nosnippet>2957</a>        harness.push_metrics([Metric::counter(<span class="string">"shadow.sampled"</span>, <span class="number">1.0</span>)]).<span class="kw">await</span>;
+<a href=#2958 id=2958 data-nosnippet>2958</a>
+<a href=#2959 id=2959 data-nosnippet>2959</a>        <span class="kw">let </span><span class="kw-2">mut </span>flushed_requests = Vec::new();
+<a href=#2960 id=2960 data-nosnippet>2960</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">2 </span>{
+<a href=#2961 id=2961 data-nosnippet>2961</a>            <span class="kw">let </span>(metadata, request) = harness.next_http_request().<span class="kw">await</span>;
+<a href=#2962 id=2962 data-nosnippet>2962</a>            <span class="kw">let </span>payload_info = <span class="kw-2">*</span>metadata
+<a href=#2963 id=2963 data-nosnippet>2963</a>                .get::&lt;MetricsPayloadInfo&gt;()
+<a href=#2964 id=2964 data-nosnippet>2964</a>                .expect(<span class="string">"metrics payload info should be present"</span>);
+<a href=#2965 id=2965 data-nosnippet>2965</a>            <span class="kw">let </span>batch_id = request
+<a href=#2966 id=2966 data-nosnippet>2966</a>                .headers()
+<a href=#2967 id=2967 data-nosnippet>2967</a>                .get(<span class="string">"X-Metrics-Request-ID"</span>)
+<a href=#2968 id=2968 data-nosnippet>2968</a>                .expect(<span class="string">"shadow batch ID header should be present"</span>)
+<a href=#2969 id=2969 data-nosnippet>2969</a>                .to_str()
+<a href=#2970 id=2970 data-nosnippet>2970</a>                .expect(<span class="string">"shadow batch ID should be valid header text"</span>)
+<a href=#2971 id=2971 data-nosnippet>2971</a>                .to_string();
+<a href=#2972 id=2972 data-nosnippet>2972</a>            flushed_requests.push((request.uri().to_string(), payload_info, batch_id));
+<a href=#2973 id=2973 data-nosnippet>2973</a>        }
+<a href=#2974 id=2974 data-nosnippet>2974</a>
+<a href=#2975 id=2975 data-nosnippet>2975</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, flushed_requests[<span class="number">0</span>].<span class="number">0</span>);
+<a href=#2976 id=2976 data-nosnippet>2976</a>        <span class="macro">assert_eq!</span>(MetricsPayloadInfo::v2_shadow_series(), flushed_requests[<span class="number">0</span>].<span class="number">1</span>);
+<a href=#2977 id=2977 data-nosnippet>2977</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/intake/metrics/v3beta/custom"</span>, flushed_requests[<span class="number">1</span>].<span class="number">0</span>);
+<a href=#2978 id=2978 data-nosnippet>2978</a>        <span class="macro">assert_eq!</span>(MetricsPayloadInfo::v3_shadow_series(), flushed_requests[<span class="number">1</span>].<span class="number">1</span>);
+<a href=#2979 id=2979 data-nosnippet>2979</a>        <span class="macro">assert_eq!</span>(flushed_requests[<span class="number">0</span>].<span class="number">2</span>, flushed_requests[<span class="number">1</span>].<span class="number">2</span>);
+<a href=#2980 id=2980 data-nosnippet>2980</a>
+<a href=#2981 id=2981 data-nosnippet>2981</a>        harness.shutdown().<span class="kw">await</span>;
+<a href=#2982 id=2982 data-nosnippet>2982</a>    }
+<a href=#2983 id=2983 data-nosnippet>2983</a>
+<a href=#2984 id=2984 data-nosnippet>2984</a>    <span class="attr">#[tokio::test]
+<a href=#2985 id=2985 data-nosnippet>2985</a>    </span><span class="kw">async fn </span>shadow_sample_rate_zero_sends_only_v2_without_validation_headers() {
+<a href=#2986 id=2986 data-nosnippet>2986</a>        <span class="comment">// With shadow sampling disabled (rate 0.0), a V2-only series flush emits only the V2 payload, with no
+<a href=#2987 id=2987 data-nosnippet>2987</a>        // shadow/validation batch ID header and no second payload.
+<a href=#2988 id=2988 data-nosnippet>2988</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>harness = RequestBuilderScenario::new(MetricsEncoderMode::V2Only, MetricsEncoderMode::V2Only)
+<a href=#2989 id=2989 data-nosnippet>2989</a>            .with_v2_series_builder(<span class="number">10_000</span>)
+<a href=#2990 id=2990 data-nosnippet>2990</a>            .spawn()
+<a href=#2991 id=2991 data-nosnippet>2991</a>            .<span class="kw">await</span>;
 <a href=#2992 id=2992 data-nosnippet>2992</a>
-<a href=#2993 id=2993 data-nosnippet>2993</a>        <span class="kw">let </span><span class="kw-2">mut </span>events = EventsBuffer::default();
-<a href=#2994 id=2994 data-nosnippet>2994</a>        <span class="macro">assert!</span>(events
-<a href=#2995 id=2995 data-nosnippet>2995</a>            .try_push(Event::Metric(Metric::counter(<span class="string">"shadow.sampled"</span>, <span class="number">1.0</span>)))
-<a href=#2996 id=2996 data-nosnippet>2996</a>            .is_none());
-<a href=#2997 id=2997 data-nosnippet>2997</a>        events_tx
-<a href=#2998 id=2998 data-nosnippet>2998</a>            .send(events)
-<a href=#2999 id=2999 data-nosnippet>2999</a>            .<span class="kw">await
-<a href=#3000 id=3000 data-nosnippet>3000</a>            </span>.expect(<span class="string">"events should be sent to request builder"</span>);
-<a href=#3001 id=3001 data-nosnippet>3001</a>
-<a href=#3002 id=3002 data-nosnippet>3002</a>        <span class="kw">let </span><span class="kw-2">mut </span>flushed_requests = Vec::new();
-<a href=#3003 id=3003 data-nosnippet>3003</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">2 </span>{
-<a href=#3004 id=3004 data-nosnippet>3004</a>            <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), payloads_rx.recv())
-<a href=#3005 id=3005 data-nosnippet>3005</a>                .<span class="kw">await
-<a href=#3006 id=3006 data-nosnippet>3006</a>                </span>.expect(<span class="string">"payload should arrive before timeout"</span>)
-<a href=#3007 id=3007 data-nosnippet>3007</a>                .expect(<span class="string">"payload channel should remain open"</span>);
-<a href=#3008 id=3008 data-nosnippet>3008</a>            <span class="kw">let </span>Payload::Http(http_payload) = payload <span class="kw">else </span>{
-<a href=#3009 id=3009 data-nosnippet>3009</a>                <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>);
-<a href=#3010 id=3010 data-nosnippet>3010</a>            };
-<a href=#3011 id=3011 data-nosnippet>3011</a>            <span class="kw">let </span>(metadata, request) = http_payload.into_parts();
-<a href=#3012 id=3012 data-nosnippet>3012</a>            <span class="kw">let </span>payload_info = <span class="kw-2">*</span>metadata
-<a href=#3013 id=3013 data-nosnippet>3013</a>                .get::&lt;MetricsPayloadInfo&gt;()
-<a href=#3014 id=3014 data-nosnippet>3014</a>                .expect(<span class="string">"metrics payload info should be present"</span>);
-<a href=#3015 id=3015 data-nosnippet>3015</a>            <span class="kw">let </span>batch_id = request
-<a href=#3016 id=3016 data-nosnippet>3016</a>                .headers()
-<a href=#3017 id=3017 data-nosnippet>3017</a>                .get(<span class="string">"X-Metrics-Request-ID"</span>)
-<a href=#3018 id=3018 data-nosnippet>3018</a>                .expect(<span class="string">"shadow batch ID header should be present"</span>)
-<a href=#3019 id=3019 data-nosnippet>3019</a>                .to_str()
-<a href=#3020 id=3020 data-nosnippet>3020</a>                .expect(<span class="string">"shadow batch ID should be valid header text"</span>)
-<a href=#3021 id=3021 data-nosnippet>3021</a>                .to_string();
-<a href=#3022 id=3022 data-nosnippet>3022</a>            flushed_requests.push((request.uri().to_string(), payload_info, batch_id));
-<a href=#3023 id=3023 data-nosnippet>3023</a>        }
-<a href=#3024 id=3024 data-nosnippet>3024</a>
-<a href=#3025 id=3025 data-nosnippet>3025</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, flushed_requests[<span class="number">0</span>].<span class="number">0</span>);
-<a href=#3026 id=3026 data-nosnippet>3026</a>        <span class="macro">assert_eq!</span>(MetricsPayloadInfo::v2_shadow_series(), flushed_requests[<span class="number">0</span>].<span class="number">1</span>);
-<a href=#3027 id=3027 data-nosnippet>3027</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/intake/metrics/v3beta/custom"</span>, flushed_requests[<span class="number">1</span>].<span class="number">0</span>);
-<a href=#3028 id=3028 data-nosnippet>3028</a>        <span class="macro">assert_eq!</span>(MetricsPayloadInfo::v3_shadow_series(), flushed_requests[<span class="number">1</span>].<span class="number">1</span>);
-<a href=#3029 id=3029 data-nosnippet>3029</a>        <span class="macro">assert_eq!</span>(flushed_requests[<span class="number">0</span>].<span class="number">2</span>, flushed_requests[<span class="number">1</span>].<span class="number">2</span>);
-<a href=#3030 id=3030 data-nosnippet>3030</a>
-<a href=#3031 id=3031 data-nosnippet>3031</a>        drop(events_tx);
-<a href=#3032 id=3032 data-nosnippet>3032</a>        request_builder_handle
-<a href=#3033 id=3033 data-nosnippet>3033</a>            .<span class="kw">await
-<a href=#3034 id=3034 data-nosnippet>3034</a>            </span>.expect(<span class="string">"request builder task should complete"</span>)
-<a href=#3035 id=3035 data-nosnippet>3035</a>            .expect(<span class="string">"request builder should stop cleanly"</span>);
-<a href=#3036 id=3036 data-nosnippet>3036</a>    }
-<a href=#3037 id=3037 data-nosnippet>3037</a>
-<a href=#3038 id=3038 data-nosnippet>3038</a>    <span class="attr">#[tokio::test]
-<a href=#3039 id=3039 data-nosnippet>3039</a>    </span><span class="kw">async fn </span>shadow_sample_rate_zero_sends_only_v2_without_validation_headers() {
-<a href=#3040 id=3040 data-nosnippet>3040</a>        <span class="kw">let </span>v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#3041 id=3041 data-nosnippet>3041</a>        <span class="kw">let </span>v2_series_builder = <span class="prelude-val">Some</span>(
-<a href=#3042 id=3042 data-nosnippet>3042</a>            v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, <span class="kw-2">&amp;</span>v2_endpoint_config)
-<a href=#3043 id=3043 data-nosnippet>3043</a>                .<span class="kw">await
-<a href=#3044 id=3044 data-nosnippet>3044</a>                </span>.expect(<span class="string">"V2 request builder should be created"</span>),
-<a href=#3045 id=3045 data-nosnippet>3045</a>        );
-<a href=#3046 id=3046 data-nosnippet>3046</a>        <span class="kw">let </span>v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, usize::MAX, <span class="prelude-val">None</span>);
-<a href=#3047 id=3047 data-nosnippet>3047</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::default();
-<a href=#3048 id=3048 data-nosnippet>3048</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#3049 id=3049 data-nosnippet>3049</a>        <span class="kw">let </span>serializer_telemetry = V3SerializerTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
-<a href=#3050 id=3050 data-nosnippet>3050</a>        <span class="kw">let </span>(events_tx, events_rx) = tokio::sync::mpsc::channel(<span class="number">1</span>);
-<a href=#3051 id=3051 data-nosnippet>3051</a>        <span class="kw">let </span>(payloads_tx, <span class="kw-2">mut </span>payloads_rx) = tokio::sync::mpsc::channel(<span class="number">8</span>);
-<a href=#3052 id=3052 data-nosnippet>3052</a>
-<a href=#3053 id=3053 data-nosnippet>3053</a>        <span class="kw">let </span>request_builder_handle = tokio::spawn(run_request_builder(
-<a href=#3054 id=3054 data-nosnippet>3054</a>            v2_series_builder,
-<a href=#3055 id=3055 data-nosnippet>3055</a>            <span class="prelude-val">None</span>,
-<a href=#3056 id=3056 data-nosnippet>3056</a>            MetricsEncoderMode::V2Only,
-<a href=#3057 id=3057 data-nosnippet>3057</a>            MetricsEncoderMode::V2Only,
-<a href=#3058 id=3058 data-nosnippet>3058</a>            V3RuntimeConfig {
-<a href=#3059 id=3059 data-nosnippet>3059</a>                endpoint_config: v3_endpoint_config,
-<a href=#3060 id=3060 data-nosnippet>3060</a>                payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, <span class="number">10_000</span>, <span class="number">10_000</span>),
-<a href=#3061 id=3061 data-nosnippet>3061</a>                series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
-<a href=#3062 id=3062 data-nosnippet>3062</a>                shadow_series_endpoint_uri: <span class="string">"/api/intake/metrics/v3beta/series"</span>.to_string(),
-<a href=#3063 id=3063 data-nosnippet>3063</a>                series_shadow_config: SeriesShadowConfig::new(<span class="number">0.0</span>),
-<a href=#3064 id=3064 data-nosnippet>3064</a>                serializer_telemetry,
-<a href=#3065 id=3065 data-nosnippet>3065</a>            },
-<a href=#3066 id=3066 data-nosnippet>3066</a>            telemetry,
-<a href=#3067 id=3067 data-nosnippet>3067</a>            events_rx,
-<a href=#3068 id=3068 data-nosnippet>3068</a>            payloads_tx,
-<a href=#3069 id=3069 data-nosnippet>3069</a>            Duration::from_millis(<span class="number">10</span>),
-<a href=#3070 id=3070 data-nosnippet>3070</a>            <span class="bool-val">false</span>,
-<a href=#3071 id=3071 data-nosnippet>3071</a>        ));
+<a href=#2993 id=2993 data-nosnippet>2993</a>        harness.push_metrics([Metric::counter(<span class="string">"shadow.disabled"</span>, <span class="number">1.0</span>)]).<span class="kw">await</span>;
+<a href=#2994 id=2994 data-nosnippet>2994</a>
+<a href=#2995 id=2995 data-nosnippet>2995</a>        <span class="kw">let </span>(<span class="kw">_</span>, request) = harness.next_http_request().<span class="kw">await</span>;
+<a href=#2996 id=2996 data-nosnippet>2996</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, request.uri());
+<a href=#2997 id=2997 data-nosnippet>2997</a>        <span class="macro">assert!</span>(!request.headers().contains_key(<span class="string">"X-Metrics-Request-ID"</span>));
+<a href=#2998 id=2998 data-nosnippet>2998</a>        harness.assert_no_payload_within(Duration::from_millis(<span class="number">50</span>)).<span class="kw">await</span>;
+<a href=#2999 id=2999 data-nosnippet>2999</a>
+<a href=#3000 id=3000 data-nosnippet>3000</a>        harness.shutdown().<span class="kw">await</span>;
+<a href=#3001 id=3001 data-nosnippet>3001</a>    }
+<a href=#3002 id=3002 data-nosnippet>3002</a>
+<a href=#3003 id=3003 data-nosnippet>3003</a>    <span class="kw">fn </span>contains_bytes(haystack: <span class="kw-2">&amp;</span>[u8], needle: <span class="kw-2">&amp;</span>[u8]) -&gt; bool {
+<a href=#3004 id=3004 data-nosnippet>3004</a>        haystack.windows(needle.len()).any(|window| window == needle)
+<a href=#3005 id=3005 data-nosnippet>3005</a>    }
+<a href=#3006 id=3006 data-nosnippet>3006</a>
+<a href=#3007 id=3007 data-nosnippet>3007</a>    <span class="kw">fn </span>assert_contains_bytes(haystack: <span class="kw-2">&amp;</span>[u8], needle: <span class="kw-2">&amp;</span>[u8]) {
+<a href=#3008 id=3008 data-nosnippet>3008</a>        <span class="macro">assert!</span>(
+<a href=#3009 id=3009 data-nosnippet>3009</a>            contains_bytes(haystack, needle),
+<a href=#3010 id=3010 data-nosnippet>3010</a>            <span class="string">"expected payload to contain bytes {:?}, got {:?}"</span>,
+<a href=#3011 id=3011 data-nosnippet>3011</a>            needle,
+<a href=#3012 id=3012 data-nosnippet>3012</a>            haystack
+<a href=#3013 id=3013 data-nosnippet>3013</a>        );
+<a href=#3014 id=3014 data-nosnippet>3014</a>    }
+<a href=#3015 id=3015 data-nosnippet>3015</a>
+<a href=#3016 id=3016 data-nosnippet>3016</a>    <span class="kw">fn </span>tag_set&lt;<span class="kw">const </span>N: usize&gt;(tags: [<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str; N]) -&gt; TagSet {
+<a href=#3017 id=3017 data-nosnippet>3017</a>        tags.into_iter().map(Tag::from_static).collect()
+<a href=#3018 id=3018 data-nosnippet>3018</a>    }
+<a href=#3019 id=3019 data-nosnippet>3019</a>
+<a href=#3020 id=3020 data-nosnippet>3020</a>    <span class="comment">// Regression test to ensure the V2 series request builder enforces `max_series_points_per_payload`.
+<a href=#3021 id=3021 data-nosnippet>3021</a>    //
+<a href=#3022 id=3022 data-nosnippet>3022</a>    // The test encodes more total points than the configured limit and asserts the builder splits them across
+<a href=#3023 id=3023 data-nosnippet>3023</a>    // multiple payloads without any payload exceeding the limit.
+<a href=#3024 id=3024 data-nosnippet>3024</a>    </span><span class="attr">#[tokio::test]
+<a href=#3025 id=3025 data-nosnippet>3025</a>    </span><span class="kw">async fn </span>v2_series_builder_enforces_max_series_points_per_payload() {
+<a href=#3026 id=3026 data-nosnippet>3026</a>        <span class="kw">let </span>v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, <span class="number">10_000</span>, <span class="prelude-val">None</span>);
+<a href=#3027 id=3027 data-nosnippet>3027</a>        <span class="kw">let </span><span class="kw-2">mut </span>builder = v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, <span class="kw-2">&amp;</span>v2_endpoint_config)
+<a href=#3028 id=3028 data-nosnippet>3028</a>            .<span class="kw">await
+<a href=#3029 id=3029 data-nosnippet>3029</a>            </span>.expect(<span class="string">"V2 request builder should be created"</span>);
+<a href=#3030 id=3030 data-nosnippet>3030</a>        builder
+<a href=#3031 id=3031 data-nosnippet>3031</a>            .with_len_limits(usize::MAX, usize::MAX)
+<a href=#3032 id=3032 data-nosnippet>3032</a>            .expect(<span class="string">"byte limits should be accepted"</span>);
+<a href=#3033 id=3033 data-nosnippet>3033</a>
+<a href=#3034 id=3034 data-nosnippet>3034</a>        <span class="kw">let </span><span class="kw-2">mut </span>total_points = <span class="number">0</span>;
+<a href=#3035 id=3035 data-nosnippet>3035</a>        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..<span class="number">6_000u32 </span>{
+<a href=#3036 id=3036 data-nosnippet>3036</a>            <span class="kw">let </span>metric = Metric::gauge(
+<a href=#3037 id=3037 data-nosnippet>3037</a>                Context::from_parts(MetaString::from(<span class="macro">format!</span>(<span class="string">"g{i}"</span>)), TagSet::default()),
+<a href=#3038 id=3038 data-nosnippet>3038</a>                [(<span class="number">1u64</span>, <span class="number">1.0</span>), (<span class="number">2u64</span>, <span class="number">2.0</span>)],
+<a href=#3039 id=3039 data-nosnippet>3039</a>            );
+<a href=#3040 id=3040 data-nosnippet>3040</a>            <span class="kw">let </span><span class="kw-2">mut </span>pending = <span class="prelude-val">Some</span>(metric);
+<a href=#3041 id=3041 data-nosnippet>3041</a>            <span class="kw">while let </span><span class="prelude-val">Some</span>(metric) = pending.take() {
+<a href=#3042 id=3042 data-nosnippet>3042</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(returned) = builder.encode(metric).<span class="kw">await</span>.expect(<span class="string">"encode should not error"</span>) {
+<a href=#3043 id=3043 data-nosnippet>3043</a>                    <span class="kw">for </span>request <span class="kw">in </span>builder.flush().<span class="kw">await </span>{
+<a href=#3044 id=3044 data-nosnippet>3044</a>                        <span class="kw">let </span>(<span class="kw">_</span>, points, <span class="kw">_</span>) = request.expect(<span class="string">"request should build"</span>);
+<a href=#3045 id=3045 data-nosnippet>3045</a>                        <span class="macro">assert!</span>(
+<a href=#3046 id=3046 data-nosnippet>3046</a>                            points &lt;= <span class="number">10_000</span>,
+<a href=#3047 id=3047 data-nosnippet>3047</a>                            <span class="string">"payload carried {} points, over the 10000 limit"</span>,
+<a href=#3048 id=3048 data-nosnippet>3048</a>                            points
+<a href=#3049 id=3049 data-nosnippet>3049</a>                        );
+<a href=#3050 id=3050 data-nosnippet>3050</a>                        total_points += points;
+<a href=#3051 id=3051 data-nosnippet>3051</a>                    }
+<a href=#3052 id=3052 data-nosnippet>3052</a>                    pending = <span class="prelude-val">Some</span>(returned);
+<a href=#3053 id=3053 data-nosnippet>3053</a>                }
+<a href=#3054 id=3054 data-nosnippet>3054</a>            }
+<a href=#3055 id=3055 data-nosnippet>3055</a>        }
+<a href=#3056 id=3056 data-nosnippet>3056</a>        <span class="kw">for </span>request <span class="kw">in </span>builder.flush().<span class="kw">await </span>{
+<a href=#3057 id=3057 data-nosnippet>3057</a>            <span class="kw">let </span>(<span class="kw">_</span>, points, <span class="kw">_</span>) = request.expect(<span class="string">"request should build"</span>);
+<a href=#3058 id=3058 data-nosnippet>3058</a>            <span class="macro">assert!</span>(
+<a href=#3059 id=3059 data-nosnippet>3059</a>                points &lt;= <span class="number">10_000</span>,
+<a href=#3060 id=3060 data-nosnippet>3060</a>                <span class="string">"final payload carried {} points, over the 10000 limit"</span>,
+<a href=#3061 id=3061 data-nosnippet>3061</a>                points
+<a href=#3062 id=3062 data-nosnippet>3062</a>            );
+<a href=#3063 id=3063 data-nosnippet>3063</a>            total_points += points;
+<a href=#3064 id=3064 data-nosnippet>3064</a>        }
+<a href=#3065 id=3065 data-nosnippet>3065</a>
+<a href=#3066 id=3066 data-nosnippet>3066</a>        <span class="macro">assert_eq!</span>(
+<a href=#3067 id=3067 data-nosnippet>3067</a>            total_points, <span class="number">12_000</span>,
+<a href=#3068 id=3068 data-nosnippet>3068</a>            <span class="string">"all points should be emitted across the split payloads"
+<a href=#3069 id=3069 data-nosnippet>3069</a>        </span>);
+<a href=#3070 id=3070 data-nosnippet>3070</a>    }
+<a href=#3071 id=3071 data-nosnippet>3071</a>}
 <a href=#3072 id=3072 data-nosnippet>3072</a>
-<a href=#3073 id=3073 data-nosnippet>3073</a>        <span class="kw">let </span><span class="kw-2">mut </span>events = EventsBuffer::default();
-<a href=#3074 id=3074 data-nosnippet>3074</a>        <span class="macro">assert!</span>(events
-<a href=#3075 id=3075 data-nosnippet>3075</a>            .try_push(Event::Metric(Metric::counter(<span class="string">"shadow.disabled"</span>, <span class="number">1.0</span>)))
-<a href=#3076 id=3076 data-nosnippet>3076</a>            .is_none());
-<a href=#3077 id=3077 data-nosnippet>3077</a>        events_tx
-<a href=#3078 id=3078 data-nosnippet>3078</a>            .send(events)
-<a href=#3079 id=3079 data-nosnippet>3079</a>            .<span class="kw">await
-<a href=#3080 id=3080 data-nosnippet>3080</a>            </span>.expect(<span class="string">"events should be sent to request builder"</span>);
+<a href=#3073 id=3073 data-nosnippet>3073</a><span class="attr">#[cfg(test)]
+<a href=#3074 id=3074 data-nosnippet>3074</a></span><span class="kw">mod </span>config_smoke {
+<a href=#3075 id=3075 data-nosnippet>3075</a>    <span class="kw">use </span>datadog_agent_config_testing::config_registry::structs;
+<a href=#3076 id=3076 data-nosnippet>3076</a>    <span class="kw">use </span>datadog_agent_config_testing::run_config_smoke_tests;
+<a href=#3077 id=3077 data-nosnippet>3077</a>    <span class="kw">use </span>serde_json::json;
+<a href=#3078 id=3078 data-nosnippet>3078</a>
+<a href=#3079 id=3079 data-nosnippet>3079</a>    <span class="kw">use </span><span class="kw">super</span>::DatadogMetricsConfiguration;
+<a href=#3080 id=3080 data-nosnippet>3080</a>    <span class="kw">use </span><span class="kw">crate</span>::config::{DatadogRemapper, KEY_ALIASES};
 <a href=#3081 id=3081 data-nosnippet>3081</a>
-<a href=#3082 id=3082 data-nosnippet>3082</a>        <span class="kw">let </span>payload = timeout(Duration::from_secs(<span class="number">1</span>), payloads_rx.recv())
-<a href=#3083 id=3083 data-nosnippet>3083</a>            .<span class="kw">await
-<a href=#3084 id=3084 data-nosnippet>3084</a>            </span>.expect(<span class="string">"payload should arrive before timeout"</span>)
-<a href=#3085 id=3085 data-nosnippet>3085</a>            .expect(<span class="string">"payload channel should remain open"</span>);
-<a href=#3086 id=3086 data-nosnippet>3086</a>        <span class="kw">let </span>Payload::Http(http_payload) = payload <span class="kw">else </span>{
-<a href=#3087 id=3087 data-nosnippet>3087</a>            <span class="macro">panic!</span>(<span class="string">"expected HTTP payload"</span>);
-<a href=#3088 id=3088 data-nosnippet>3088</a>        };
-<a href=#3089 id=3089 data-nosnippet>3089</a>        <span class="kw">let </span>(<span class="kw">_</span>, request) = http_payload.into_parts();
-<a href=#3090 id=3090 data-nosnippet>3090</a>        <span class="macro">assert_eq!</span>(<span class="string">"/api/v2/series"</span>, request.uri());
-<a href=#3091 id=3091 data-nosnippet>3091</a>        <span class="macro">assert!</span>(!request.headers().contains_key(<span class="string">"X-Metrics-Request-ID"</span>));
-<a href=#3092 id=3092 data-nosnippet>3092</a>        <span class="macro">assert!</span>(timeout(Duration::from_millis(<span class="number">50</span>), payloads_rx.recv()).<span class="kw">await</span>.is_err());
-<a href=#3093 id=3093 data-nosnippet>3093</a>
-<a href=#3094 id=3094 data-nosnippet>3094</a>        drop(events_tx);
-<a href=#3095 id=3095 data-nosnippet>3095</a>        request_builder_handle
-<a href=#3096 id=3096 data-nosnippet>3096</a>            .<span class="kw">await
-<a href=#3097 id=3097 data-nosnippet>3097</a>            </span>.expect(<span class="string">"request builder task should complete"</span>)
-<a href=#3098 id=3098 data-nosnippet>3098</a>            .expect(<span class="string">"request builder should stop cleanly"</span>);
-<a href=#3099 id=3099 data-nosnippet>3099</a>    }
-<a href=#3100 id=3100 data-nosnippet>3100</a>
-<a href=#3101 id=3101 data-nosnippet>3101</a>    <span class="kw">fn </span>contains_bytes(haystack: <span class="kw-2">&amp;</span>[u8], needle: <span class="kw-2">&amp;</span>[u8]) -&gt; bool {
-<a href=#3102 id=3102 data-nosnippet>3102</a>        haystack.windows(needle.len()).any(|window| window == needle)
-<a href=#3103 id=3103 data-nosnippet>3103</a>    }
-<a href=#3104 id=3104 data-nosnippet>3104</a>
-<a href=#3105 id=3105 data-nosnippet>3105</a>    <span class="kw">fn </span>assert_contains_bytes(haystack: <span class="kw-2">&amp;</span>[u8], needle: <span class="kw-2">&amp;</span>[u8]) {
-<a href=#3106 id=3106 data-nosnippet>3106</a>        <span class="macro">assert!</span>(
-<a href=#3107 id=3107 data-nosnippet>3107</a>            contains_bytes(haystack, needle),
-<a href=#3108 id=3108 data-nosnippet>3108</a>            <span class="string">"expected payload to contain bytes {:?}, got {:?}"</span>,
-<a href=#3109 id=3109 data-nosnippet>3109</a>            needle,
-<a href=#3110 id=3110 data-nosnippet>3110</a>            haystack
-<a href=#3111 id=3111 data-nosnippet>3111</a>        );
-<a href=#3112 id=3112 data-nosnippet>3112</a>    }
-<a href=#3113 id=3113 data-nosnippet>3113</a>
-<a href=#3114 id=3114 data-nosnippet>3114</a>    <span class="kw">fn </span>tag_set&lt;<span class="kw">const </span>N: usize&gt;(tags: [<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str; N]) -&gt; TagSet {
-<a href=#3115 id=3115 data-nosnippet>3115</a>        tags.into_iter().map(Tag::from_static).collect()
-<a href=#3116 id=3116 data-nosnippet>3116</a>    }
-<a href=#3117 id=3117 data-nosnippet>3117</a>
-<a href=#3118 id=3118 data-nosnippet>3118</a>    <span class="comment">// Regression test to ensure the V2 series request builder enforces `max_series_points_per_payload`.
-<a href=#3119 id=3119 data-nosnippet>3119</a>    //
-<a href=#3120 id=3120 data-nosnippet>3120</a>    // The test encodes more total points than the configured limit and asserts the builder splits them across
-<a href=#3121 id=3121 data-nosnippet>3121</a>    // multiple payloads without any payload exceeding the limit.
-<a href=#3122 id=3122 data-nosnippet>3122</a>    </span><span class="attr">#[tokio::test]
-<a href=#3123 id=3123 data-nosnippet>3123</a>    </span><span class="kw">async fn </span>v2_series_builder_enforces_max_series_points_per_payload() {
-<a href=#3124 id=3124 data-nosnippet>3124</a>        <span class="kw">let </span>v2_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), <span class="number">10_000</span>, <span class="number">10_000</span>, <span class="prelude-val">None</span>);
-<a href=#3125 id=3125 data-nosnippet>3125</a>        <span class="kw">let </span><span class="kw-2">mut </span>builder = v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, <span class="kw-2">&amp;</span>v2_endpoint_config)
-<a href=#3126 id=3126 data-nosnippet>3126</a>            .<span class="kw">await
-<a href=#3127 id=3127 data-nosnippet>3127</a>            </span>.expect(<span class="string">"V2 request builder should be created"</span>);
-<a href=#3128 id=3128 data-nosnippet>3128</a>        builder
-<a href=#3129 id=3129 data-nosnippet>3129</a>            .with_len_limits(usize::MAX, usize::MAX)
-<a href=#3130 id=3130 data-nosnippet>3130</a>            .expect(<span class="string">"byte limits should be accepted"</span>);
-<a href=#3131 id=3131 data-nosnippet>3131</a>
-<a href=#3132 id=3132 data-nosnippet>3132</a>        <span class="kw">let </span><span class="kw-2">mut </span>total_points = <span class="number">0</span>;
-<a href=#3133 id=3133 data-nosnippet>3133</a>        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..<span class="number">6_000u32 </span>{
-<a href=#3134 id=3134 data-nosnippet>3134</a>            <span class="kw">let </span>metric = Metric::gauge(
-<a href=#3135 id=3135 data-nosnippet>3135</a>                Context::from_parts(MetaString::from(<span class="macro">format!</span>(<span class="string">"g{i}"</span>)), TagSet::default()),
-<a href=#3136 id=3136 data-nosnippet>3136</a>                [(<span class="number">1u64</span>, <span class="number">1.0</span>), (<span class="number">2u64</span>, <span class="number">2.0</span>)],
-<a href=#3137 id=3137 data-nosnippet>3137</a>            );
-<a href=#3138 id=3138 data-nosnippet>3138</a>            <span class="kw">let </span><span class="kw-2">mut </span>pending = <span class="prelude-val">Some</span>(metric);
-<a href=#3139 id=3139 data-nosnippet>3139</a>            <span class="kw">while let </span><span class="prelude-val">Some</span>(metric) = pending.take() {
-<a href=#3140 id=3140 data-nosnippet>3140</a>                <span class="kw">if let </span><span class="prelude-val">Some</span>(returned) = builder.encode(metric).<span class="kw">await</span>.expect(<span class="string">"encode should not error"</span>) {
-<a href=#3141 id=3141 data-nosnippet>3141</a>                    <span class="kw">for </span>request <span class="kw">in </span>builder.flush().<span class="kw">await </span>{
-<a href=#3142 id=3142 data-nosnippet>3142</a>                        <span class="kw">let </span>(<span class="kw">_</span>, points, <span class="kw">_</span>) = request.expect(<span class="string">"request should build"</span>);
-<a href=#3143 id=3143 data-nosnippet>3143</a>                        <span class="macro">assert!</span>(
-<a href=#3144 id=3144 data-nosnippet>3144</a>                            points &lt;= <span class="number">10_000</span>,
-<a href=#3145 id=3145 data-nosnippet>3145</a>                            <span class="string">"payload carried {} points, over the 10000 limit"</span>,
-<a href=#3146 id=3146 data-nosnippet>3146</a>                            points
-<a href=#3147 id=3147 data-nosnippet>3147</a>                        );
-<a href=#3148 id=3148 data-nosnippet>3148</a>                        total_points += points;
-<a href=#3149 id=3149 data-nosnippet>3149</a>                    }
-<a href=#3150 id=3150 data-nosnippet>3150</a>                    pending = <span class="prelude-val">Some</span>(returned);
-<a href=#3151 id=3151 data-nosnippet>3151</a>                }
-<a href=#3152 id=3152 data-nosnippet>3152</a>            }
-<a href=#3153 id=3153 data-nosnippet>3153</a>        }
-<a href=#3154 id=3154 data-nosnippet>3154</a>        <span class="kw">for </span>request <span class="kw">in </span>builder.flush().<span class="kw">await </span>{
-<a href=#3155 id=3155 data-nosnippet>3155</a>            <span class="kw">let </span>(<span class="kw">_</span>, points, <span class="kw">_</span>) = request.expect(<span class="string">"request should build"</span>);
-<a href=#3156 id=3156 data-nosnippet>3156</a>            <span class="macro">assert!</span>(
-<a href=#3157 id=3157 data-nosnippet>3157</a>                points &lt;= <span class="number">10_000</span>,
-<a href=#3158 id=3158 data-nosnippet>3158</a>                <span class="string">"final payload carried {} points, over the 10000 limit"</span>,
-<a href=#3159 id=3159 data-nosnippet>3159</a>                points
-<a href=#3160 id=3160 data-nosnippet>3160</a>            );
-<a href=#3161 id=3161 data-nosnippet>3161</a>            total_points += points;
-<a href=#3162 id=3162 data-nosnippet>3162</a>        }
-<a href=#3163 id=3163 data-nosnippet>3163</a>
-<a href=#3164 id=3164 data-nosnippet>3164</a>        <span class="macro">assert_eq!</span>(
-<a href=#3165 id=3165 data-nosnippet>3165</a>            total_points, <span class="number">12_000</span>,
-<a href=#3166 id=3166 data-nosnippet>3166</a>            <span class="string">"all points should be emitted across the split payloads"
-<a href=#3167 id=3167 data-nosnippet>3167</a>        </span>);
-<a href=#3168 id=3168 data-nosnippet>3168</a>    }
-<a href=#3169 id=3169 data-nosnippet>3169</a>}
-<a href=#3170 id=3170 data-nosnippet>3170</a>
-<a href=#3171 id=3171 data-nosnippet>3171</a><span class="attr">#[cfg(test)]
-<a href=#3172 id=3172 data-nosnippet>3172</a></span><span class="kw">mod </span>config_smoke {
-<a href=#3173 id=3173 data-nosnippet>3173</a>    <span class="kw">use </span>datadog_agent_config_testing::config_registry::structs;
-<a href=#3174 id=3174 data-nosnippet>3174</a>    <span class="kw">use </span>datadog_agent_config_testing::run_config_smoke_tests;
-<a href=#3175 id=3175 data-nosnippet>3175</a>    <span class="kw">use </span>serde_json::json;
-<a href=#3176 id=3176 data-nosnippet>3176</a>
-<a href=#3177 id=3177 data-nosnippet>3177</a>    <span class="kw">use </span><span class="kw">super</span>::DatadogMetricsConfiguration;
-<a href=#3178 id=3178 data-nosnippet>3178</a>    <span class="kw">use </span><span class="kw">crate</span>::config::{DatadogRemapper, KEY_ALIASES};
-<a href=#3179 id=3179 data-nosnippet>3179</a>
-<a href=#3180 id=3180 data-nosnippet>3180</a>    <span class="attr">#[tokio::test]
-<a href=#3181 id=3181 data-nosnippet>3181</a>    </span><span class="kw">async fn </span>smoke_test() {
-<a href=#3182 id=3182 data-nosnippet>3182</a>        run_config_smoke_tests(
-<a href=#3183 id=3183 data-nosnippet>3183</a>            structs::DATADOG_METRICS_CONFIGURATION,
-<a href=#3184 id=3184 data-nosnippet>3184</a>            <span class="kw-2">&amp;</span>[
-<a href=#3185 id=3185 data-nosnippet>3185</a>                <span class="string">"serializer_experimental_use_v3_api.sketches.beta_route"</span>,
-<a href=#3186 id=3186 data-nosnippet>3186</a>                <span class="string">"serializer_experimental_use_v3_api.sketches.shadow_sample_rate"</span>,
-<a href=#3187 id=3187 data-nosnippet>3187</a>                <span class="string">"serializer_experimental_use_v3_api.sketches.shadow_sites"</span>,
-<a href=#3188 id=3188 data-nosnippet>3188</a>                <span class="string">"serializer_experimental_use_v3_api.sketches.use_beta"</span>,
-<a href=#3189 id=3189 data-nosnippet>3189</a>            ],
-<a href=#3190 id=3190 data-nosnippet>3190</a>            <span class="macro">json!</span>({}),
-<a href=#3191 id=3191 data-nosnippet>3191</a>            |cfg| {
-<a href=#3192 id=3192 data-nosnippet>3192</a>                cfg.as_typed::&lt;DatadogMetricsConfiguration&gt;()
-<a href=#3193 id=3193 data-nosnippet>3193</a>                    .expect(<span class="string">"DatadogMetricsConfiguration should deserialize"</span>)
-<a href=#3194 id=3194 data-nosnippet>3194</a>            },
-<a href=#3195 id=3195 data-nosnippet>3195</a>            KEY_ALIASES,
-<a href=#3196 id=3196 data-nosnippet>3196</a>            DatadogRemapper::new,
-<a href=#3197 id=3197 data-nosnippet>3197</a>        )
-<a href=#3198 id=3198 data-nosnippet>3198</a>        .<span class="kw">await
-<a href=#3199 id=3199 data-nosnippet>3199</a>    </span>}
-<a href=#3200 id=3200 data-nosnippet>3200</a>}
-<a href=#3201 id=3201 data-nosnippet>3201</a>
-<a href=#3202 id=3202 data-nosnippet>3202</a><span class="attr">#[cfg(test)]
-<a href=#3203 id=3203 data-nosnippet>3203</a></span><span class="kw">mod </span>use_v2_api_series_default {
-<a href=#3204 id=3204 data-nosnippet>3204</a>    <span class="kw">use </span>saluki_config::ConfigurationLoader;
-<a href=#3205 id=3205 data-nosnippet>3205</a>    <span class="kw">use </span>serde_json::json;
-<a href=#3206 id=3206 data-nosnippet>3206</a>
-<a href=#3207 id=3207 data-nosnippet>3207</a>    <span class="kw">use </span>super::{v2, DatadogMetricsConfiguration};
-<a href=#3208 id=3208 data-nosnippet>3208</a>    <span class="kw">use </span>crate::{common::datadog::clamp_payload_limits, config::KEY_ALIASES};
-<a href=#3209 id=3209 data-nosnippet>3209</a>
-<a href=#3210 id=3210 data-nosnippet>3210</a>    <span class="doccomment">/// `use_v2_api_series` defaults to `true`, preserving V2 protobuf behavior when the flag is absent.
-<a href=#3211 id=3211 data-nosnippet>3211</a>    </span><span class="attr">#[tokio::test]
-<a href=#3212 id=3212 data-nosnippet>3212</a>    </span><span class="kw">async fn </span>defaults_to_true_when_absent() {
-<a href=#3213 id=3213 data-nosnippet>3213</a>        <span class="kw">let </span>cfg = ConfigurationLoader::default()
-<a href=#3214 id=3214 data-nosnippet>3214</a>            .with_key_aliases(KEY_ALIASES)
-<a href=#3215 id=3215 data-nosnippet>3215</a>            .add_providers([figment::providers::Serialized::defaults(<span class="macro">json!</span>({}))])
-<a href=#3216 id=3216 data-nosnippet>3216</a>            .into_generic()
-<a href=#3217 id=3217 data-nosnippet>3217</a>            .<span class="kw">await
-<a href=#3218 id=3218 data-nosnippet>3218</a>            </span>.expect(<span class="string">"config should load"</span>);
-<a href=#3219 id=3219 data-nosnippet>3219</a>        <span class="kw">let </span>parsed: DatadogMetricsConfiguration = cfg.as_typed().expect(<span class="string">"should deserialize"</span>);
-<a href=#3220 id=3220 data-nosnippet>3220</a>        <span class="macro">assert!</span>(parsed.use_v2_api_series);
-<a href=#3221 id=3221 data-nosnippet>3221</a>    }
-<a href=#3222 id=3222 data-nosnippet>3222</a>
-<a href=#3223 id=3223 data-nosnippet>3223</a>    <span class="attr">#[tokio::test]
-<a href=#3224 id=3224 data-nosnippet>3224</a>    </span><span class="kw">async fn </span>deserializes_payload_limit_keys() {
-<a href=#3225 id=3225 data-nosnippet>3225</a>        <span class="kw">let </span>cfg = ConfigurationLoader::default()
-<a href=#3226 id=3226 data-nosnippet>3226</a>            .with_key_aliases(KEY_ALIASES)
-<a href=#3227 id=3227 data-nosnippet>3227</a>            .add_providers([figment::providers::Serialized::defaults(<span class="macro">json!</span>({
-<a href=#3228 id=3228 data-nosnippet>3228</a>                <span class="string">"serializer_max_payload_size"</span>: <span class="number">4321</span>,
-<a href=#3229 id=3229 data-nosnippet>3229</a>                <span class="string">"serializer_max_uncompressed_payload_size"</span>: <span class="number">8765</span>,
-<a href=#3230 id=3230 data-nosnippet>3230</a>                <span class="string">"serializer_max_series_payload_size"</span>: <span class="number">1234</span>,
-<a href=#3231 id=3231 data-nosnippet>3231</a>                <span class="string">"serializer_max_series_uncompressed_payload_size"</span>: <span class="number">5678</span>,
-<a href=#3232 id=3232 data-nosnippet>3232</a>            }))])
-<a href=#3233 id=3233 data-nosnippet>3233</a>            .into_generic()
-<a href=#3234 id=3234 data-nosnippet>3234</a>            .<span class="kw">await
-<a href=#3235 id=3235 data-nosnippet>3235</a>            </span>.expect(<span class="string">"config should load"</span>);
-<a href=#3236 id=3236 data-nosnippet>3236</a>        <span class="kw">let </span>parsed: DatadogMetricsConfiguration = cfg.as_typed().expect(<span class="string">"should deserialize"</span>);
-<a href=#3237 id=3237 data-nosnippet>3237</a>
-<a href=#3238 id=3238 data-nosnippet>3238</a>        <span class="macro">assert_eq!</span>(parsed.max_payload_size, <span class="number">4321</span>);
-<a href=#3239 id=3239 data-nosnippet>3239</a>        <span class="macro">assert_eq!</span>(parsed.max_uncompressed_payload_size, <span class="number">8765</span>);
-<a href=#3240 id=3240 data-nosnippet>3240</a>        <span class="macro">assert_eq!</span>(parsed.max_series_payload_size, <span class="number">1234</span>);
-<a href=#3241 id=3241 data-nosnippet>3241</a>        <span class="macro">assert_eq!</span>(parsed.max_series_uncompressed_payload_size, <span class="number">5678</span>);
-<a href=#3242 id=3242 data-nosnippet>3242</a>    }
-<a href=#3243 id=3243 data-nosnippet>3243</a>
-<a href=#3244 id=3244 data-nosnippet>3244</a>    <span class="attr">#[tokio::test]
-<a href=#3245 id=3245 data-nosnippet>3245</a>    </span><span class="kw">async fn </span>deserializes_max_series_points_per_payload() {
-<a href=#3246 id=3246 data-nosnippet>3246</a>        <span class="comment">// Default should be 10,000.
-<a href=#3247 id=3247 data-nosnippet>3247</a>        </span><span class="kw">let </span>cfg = ConfigurationLoader::default()
-<a href=#3248 id=3248 data-nosnippet>3248</a>            .with_key_aliases(KEY_ALIASES)
-<a href=#3249 id=3249 data-nosnippet>3249</a>            .add_providers([figment::providers::Serialized::defaults(<span class="macro">json!</span>({}))])
-<a href=#3250 id=3250 data-nosnippet>3250</a>            .into_generic()
-<a href=#3251 id=3251 data-nosnippet>3251</a>            .<span class="kw">await
-<a href=#3252 id=3252 data-nosnippet>3252</a>            </span>.expect(<span class="string">"config should load"</span>);
-<a href=#3253 id=3253 data-nosnippet>3253</a>        <span class="kw">let </span>parsed: DatadogMetricsConfiguration = cfg.as_typed().expect(<span class="string">"should deserialize"</span>);
-<a href=#3254 id=3254 data-nosnippet>3254</a>        <span class="macro">assert_eq!</span>(parsed.max_series_points_per_payload, <span class="number">10_000</span>);
-<a href=#3255 id=3255 data-nosnippet>3255</a>        <span class="macro">assert_eq!</span>(parsed.v3_payload_limits().max_points_per_payload, <span class="number">10_000</span>);
-<a href=#3256 id=3256 data-nosnippet>3256</a>
-<a href=#3257 id=3257 data-nosnippet>3257</a>        <span class="comment">// Explicit value should round-trip.
-<a href=#3258 id=3258 data-nosnippet>3258</a>        </span><span class="kw">let </span>cfg = ConfigurationLoader::default()
-<a href=#3259 id=3259 data-nosnippet>3259</a>            .with_key_aliases(KEY_ALIASES)
-<a href=#3260 id=3260 data-nosnippet>3260</a>            .add_providers([figment::providers::Serialized::defaults(<span class="macro">json!</span>({
-<a href=#3261 id=3261 data-nosnippet>3261</a>                <span class="string">"serializer_max_series_points_per_payload"</span>: <span class="number">500</span>,
-<a href=#3262 id=3262 data-nosnippet>3262</a>            }))])
-<a href=#3263 id=3263 data-nosnippet>3263</a>            .into_generic()
-<a href=#3264 id=3264 data-nosnippet>3264</a>            .<span class="kw">await
-<a href=#3265 id=3265 data-nosnippet>3265</a>            </span>.expect(<span class="string">"config should load"</span>);
-<a href=#3266 id=3266 data-nosnippet>3266</a>        <span class="kw">let </span>parsed: DatadogMetricsConfiguration = cfg.as_typed().expect(<span class="string">"should deserialize"</span>);
-<a href=#3267 id=3267 data-nosnippet>3267</a>        <span class="macro">assert_eq!</span>(parsed.max_series_points_per_payload, <span class="number">500</span>);
-<a href=#3268 id=3268 data-nosnippet>3268</a>        <span class="macro">assert_eq!</span>(parsed.v3_payload_limits().max_points_per_payload, <span class="number">500</span>);
-<a href=#3269 id=3269 data-nosnippet>3269</a>    }
-<a href=#3270 id=3270 data-nosnippet>3270</a>
-<a href=#3271 id=3271 data-nosnippet>3271</a>    <span class="attr">#[test]
-<a href=#3272 id=3272 data-nosnippet>3272</a>    </span><span class="kw">fn </span>clamps_series_payload_limit_keys_to_api_limits() {
-<a href=#3273 id=3273 data-nosnippet>3273</a>        <span class="kw">let </span>(uncompressed_limit, compressed_limit) = clamp_payload_limits(
-<a href=#3274 id=3274 data-nosnippet>3274</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT + <span class="number">1</span>,
-<a href=#3275 id=3275 data-nosnippet>3275</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT + <span class="number">1</span>,
-<a href=#3276 id=3276 data-nosnippet>3276</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
-<a href=#3277 id=3277 data-nosnippet>3277</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
-<a href=#3278 id=3278 data-nosnippet>3278</a>        );
-<a href=#3279 id=3279 data-nosnippet>3279</a>        <span class="macro">assert_eq!</span>(uncompressed_limit, v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT);
-<a href=#3280 id=3280 data-nosnippet>3280</a>        <span class="macro">assert_eq!</span>(compressed_limit, v2::SERIES_V2_COMPRESSED_SIZE_LIMIT);
-<a href=#3281 id=3281 data-nosnippet>3281</a>
-<a href=#3282 id=3282 data-nosnippet>3282</a>        <span class="kw">let </span>(uncompressed_limit, compressed_limit) = clamp_payload_limits(
-<a href=#3283 id=3283 data-nosnippet>3283</a>            <span class="number">5678</span>,
-<a href=#3284 id=3284 data-nosnippet>3284</a>            <span class="number">1234</span>,
-<a href=#3285 id=3285 data-nosnippet>3285</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
-<a href=#3286 id=3286 data-nosnippet>3286</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
-<a href=#3287 id=3287 data-nosnippet>3287</a>        );
-<a href=#3288 id=3288 data-nosnippet>3288</a>        <span class="macro">assert_eq!</span>(uncompressed_limit, <span class="number">5678</span>);
-<a href=#3289 id=3289 data-nosnippet>3289</a>        <span class="macro">assert_eq!</span>(compressed_limit, <span class="number">1234</span>);
-<a href=#3290 id=3290 data-nosnippet>3290</a>    }
-<a href=#3291 id=3291 data-nosnippet>3291</a>}
+<a href=#3082 id=3082 data-nosnippet>3082</a>    <span class="attr">#[tokio::test]
+<a href=#3083 id=3083 data-nosnippet>3083</a>    </span><span class="kw">async fn </span>smoke_test() {
+<a href=#3084 id=3084 data-nosnippet>3084</a>        run_config_smoke_tests(
+<a href=#3085 id=3085 data-nosnippet>3085</a>            structs::DATADOG_METRICS_CONFIGURATION,
+<a href=#3086 id=3086 data-nosnippet>3086</a>            <span class="kw-2">&amp;</span>[
+<a href=#3087 id=3087 data-nosnippet>3087</a>                <span class="string">"serializer_experimental_use_v3_api.sketches.beta_route"</span>,
+<a href=#3088 id=3088 data-nosnippet>3088</a>                <span class="string">"serializer_experimental_use_v3_api.sketches.shadow_sample_rate"</span>,
+<a href=#3089 id=3089 data-nosnippet>3089</a>                <span class="string">"serializer_experimental_use_v3_api.sketches.shadow_sites"</span>,
+<a href=#3090 id=3090 data-nosnippet>3090</a>                <span class="string">"serializer_experimental_use_v3_api.sketches.use_beta"</span>,
+<a href=#3091 id=3091 data-nosnippet>3091</a>            ],
+<a href=#3092 id=3092 data-nosnippet>3092</a>            <span class="macro">json!</span>({}),
+<a href=#3093 id=3093 data-nosnippet>3093</a>            |cfg| {
+<a href=#3094 id=3094 data-nosnippet>3094</a>                cfg.as_typed::&lt;DatadogMetricsConfiguration&gt;()
+<a href=#3095 id=3095 data-nosnippet>3095</a>                    .expect(<span class="string">"DatadogMetricsConfiguration should deserialize"</span>)
+<a href=#3096 id=3096 data-nosnippet>3096</a>            },
+<a href=#3097 id=3097 data-nosnippet>3097</a>            KEY_ALIASES,
+<a href=#3098 id=3098 data-nosnippet>3098</a>            DatadogRemapper::new,
+<a href=#3099 id=3099 data-nosnippet>3099</a>        )
+<a href=#3100 id=3100 data-nosnippet>3100</a>        .<span class="kw">await
+<a href=#3101 id=3101 data-nosnippet>3101</a>    </span>}
+<a href=#3102 id=3102 data-nosnippet>3102</a>}
+<a href=#3103 id=3103 data-nosnippet>3103</a>
+<a href=#3104 id=3104 data-nosnippet>3104</a><span class="attr">#[cfg(test)]
+<a href=#3105 id=3105 data-nosnippet>3105</a></span><span class="kw">mod </span>use_v2_api_series_default {
+<a href=#3106 id=3106 data-nosnippet>3106</a>    <span class="kw">use </span>saluki_config::ConfigurationLoader;
+<a href=#3107 id=3107 data-nosnippet>3107</a>    <span class="kw">use </span>serde_json::json;
+<a href=#3108 id=3108 data-nosnippet>3108</a>
+<a href=#3109 id=3109 data-nosnippet>3109</a>    <span class="kw">use </span>super::{v2, DatadogMetricsConfiguration};
+<a href=#3110 id=3110 data-nosnippet>3110</a>    <span class="kw">use </span>crate::{common::datadog::clamp_payload_limits, config::KEY_ALIASES};
+<a href=#3111 id=3111 data-nosnippet>3111</a>
+<a href=#3112 id=3112 data-nosnippet>3112</a>    <span class="doccomment">/// `use_v2_api_series` defaults to `true`, preserving V2 protobuf behavior when the flag is absent.
+<a href=#3113 id=3113 data-nosnippet>3113</a>    </span><span class="attr">#[tokio::test]
+<a href=#3114 id=3114 data-nosnippet>3114</a>    </span><span class="kw">async fn </span>defaults_to_true_when_absent() {
+<a href=#3115 id=3115 data-nosnippet>3115</a>        <span class="kw">let </span>cfg = ConfigurationLoader::default()
+<a href=#3116 id=3116 data-nosnippet>3116</a>            .with_key_aliases(KEY_ALIASES)
+<a href=#3117 id=3117 data-nosnippet>3117</a>            .add_providers([figment::providers::Serialized::defaults(<span class="macro">json!</span>({}))])
+<a href=#3118 id=3118 data-nosnippet>3118</a>            .into_generic()
+<a href=#3119 id=3119 data-nosnippet>3119</a>            .<span class="kw">await
+<a href=#3120 id=3120 data-nosnippet>3120</a>            </span>.expect(<span class="string">"config should load"</span>);
+<a href=#3121 id=3121 data-nosnippet>3121</a>        <span class="kw">let </span>parsed: DatadogMetricsConfiguration = cfg.as_typed().expect(<span class="string">"should deserialize"</span>);
+<a href=#3122 id=3122 data-nosnippet>3122</a>        <span class="macro">assert!</span>(parsed.use_v2_api_series);
+<a href=#3123 id=3123 data-nosnippet>3123</a>    }
+<a href=#3124 id=3124 data-nosnippet>3124</a>
+<a href=#3125 id=3125 data-nosnippet>3125</a>    <span class="attr">#[tokio::test]
+<a href=#3126 id=3126 data-nosnippet>3126</a>    </span><span class="kw">async fn </span>deserializes_payload_limit_keys() {
+<a href=#3127 id=3127 data-nosnippet>3127</a>        <span class="kw">let </span>cfg = ConfigurationLoader::default()
+<a href=#3128 id=3128 data-nosnippet>3128</a>            .with_key_aliases(KEY_ALIASES)
+<a href=#3129 id=3129 data-nosnippet>3129</a>            .add_providers([figment::providers::Serialized::defaults(<span class="macro">json!</span>({
+<a href=#3130 id=3130 data-nosnippet>3130</a>                <span class="string">"serializer_max_payload_size"</span>: <span class="number">4321</span>,
+<a href=#3131 id=3131 data-nosnippet>3131</a>                <span class="string">"serializer_max_uncompressed_payload_size"</span>: <span class="number">8765</span>,
+<a href=#3132 id=3132 data-nosnippet>3132</a>                <span class="string">"serializer_max_series_payload_size"</span>: <span class="number">1234</span>,
+<a href=#3133 id=3133 data-nosnippet>3133</a>                <span class="string">"serializer_max_series_uncompressed_payload_size"</span>: <span class="number">5678</span>,
+<a href=#3134 id=3134 data-nosnippet>3134</a>            }))])
+<a href=#3135 id=3135 data-nosnippet>3135</a>            .into_generic()
+<a href=#3136 id=3136 data-nosnippet>3136</a>            .<span class="kw">await
+<a href=#3137 id=3137 data-nosnippet>3137</a>            </span>.expect(<span class="string">"config should load"</span>);
+<a href=#3138 id=3138 data-nosnippet>3138</a>        <span class="kw">let </span>parsed: DatadogMetricsConfiguration = cfg.as_typed().expect(<span class="string">"should deserialize"</span>);
+<a href=#3139 id=3139 data-nosnippet>3139</a>
+<a href=#3140 id=3140 data-nosnippet>3140</a>        <span class="macro">assert_eq!</span>(parsed.max_payload_size, <span class="number">4321</span>);
+<a href=#3141 id=3141 data-nosnippet>3141</a>        <span class="macro">assert_eq!</span>(parsed.max_uncompressed_payload_size, <span class="number">8765</span>);
+<a href=#3142 id=3142 data-nosnippet>3142</a>        <span class="macro">assert_eq!</span>(parsed.max_series_payload_size, <span class="number">1234</span>);
+<a href=#3143 id=3143 data-nosnippet>3143</a>        <span class="macro">assert_eq!</span>(parsed.max_series_uncompressed_payload_size, <span class="number">5678</span>);
+<a href=#3144 id=3144 data-nosnippet>3144</a>    }
+<a href=#3145 id=3145 data-nosnippet>3145</a>
+<a href=#3146 id=3146 data-nosnippet>3146</a>    <span class="attr">#[tokio::test]
+<a href=#3147 id=3147 data-nosnippet>3147</a>    </span><span class="kw">async fn </span>deserializes_max_series_points_per_payload() {
+<a href=#3148 id=3148 data-nosnippet>3148</a>        <span class="comment">// Default should be 10,000.
+<a href=#3149 id=3149 data-nosnippet>3149</a>        </span><span class="kw">let </span>cfg = ConfigurationLoader::default()
+<a href=#3150 id=3150 data-nosnippet>3150</a>            .with_key_aliases(KEY_ALIASES)
+<a href=#3151 id=3151 data-nosnippet>3151</a>            .add_providers([figment::providers::Serialized::defaults(<span class="macro">json!</span>({}))])
+<a href=#3152 id=3152 data-nosnippet>3152</a>            .into_generic()
+<a href=#3153 id=3153 data-nosnippet>3153</a>            .<span class="kw">await
+<a href=#3154 id=3154 data-nosnippet>3154</a>            </span>.expect(<span class="string">"config should load"</span>);
+<a href=#3155 id=3155 data-nosnippet>3155</a>        <span class="kw">let </span>parsed: DatadogMetricsConfiguration = cfg.as_typed().expect(<span class="string">"should deserialize"</span>);
+<a href=#3156 id=3156 data-nosnippet>3156</a>        <span class="macro">assert_eq!</span>(parsed.max_series_points_per_payload, <span class="number">10_000</span>);
+<a href=#3157 id=3157 data-nosnippet>3157</a>        <span class="macro">assert_eq!</span>(parsed.v3_payload_limits().max_points_per_payload, <span class="number">10_000</span>);
+<a href=#3158 id=3158 data-nosnippet>3158</a>
+<a href=#3159 id=3159 data-nosnippet>3159</a>        <span class="comment">// Explicit value should round-trip.
+<a href=#3160 id=3160 data-nosnippet>3160</a>        </span><span class="kw">let </span>cfg = ConfigurationLoader::default()
+<a href=#3161 id=3161 data-nosnippet>3161</a>            .with_key_aliases(KEY_ALIASES)
+<a href=#3162 id=3162 data-nosnippet>3162</a>            .add_providers([figment::providers::Serialized::defaults(<span class="macro">json!</span>({
+<a href=#3163 id=3163 data-nosnippet>3163</a>                <span class="string">"serializer_max_series_points_per_payload"</span>: <span class="number">500</span>,
+<a href=#3164 id=3164 data-nosnippet>3164</a>            }))])
+<a href=#3165 id=3165 data-nosnippet>3165</a>            .into_generic()
+<a href=#3166 id=3166 data-nosnippet>3166</a>            .<span class="kw">await
+<a href=#3167 id=3167 data-nosnippet>3167</a>            </span>.expect(<span class="string">"config should load"</span>);
+<a href=#3168 id=3168 data-nosnippet>3168</a>        <span class="kw">let </span>parsed: DatadogMetricsConfiguration = cfg.as_typed().expect(<span class="string">"should deserialize"</span>);
+<a href=#3169 id=3169 data-nosnippet>3169</a>        <span class="macro">assert_eq!</span>(parsed.max_series_points_per_payload, <span class="number">500</span>);
+<a href=#3170 id=3170 data-nosnippet>3170</a>        <span class="macro">assert_eq!</span>(parsed.v3_payload_limits().max_points_per_payload, <span class="number">500</span>);
+<a href=#3171 id=3171 data-nosnippet>3171</a>    }
+<a href=#3172 id=3172 data-nosnippet>3172</a>
+<a href=#3173 id=3173 data-nosnippet>3173</a>    <span class="attr">#[test]
+<a href=#3174 id=3174 data-nosnippet>3174</a>    </span><span class="kw">fn </span>clamps_series_payload_limit_keys_to_api_limits() {
+<a href=#3175 id=3175 data-nosnippet>3175</a>        <span class="kw">let </span>(uncompressed_limit, compressed_limit) = clamp_payload_limits(
+<a href=#3176 id=3176 data-nosnippet>3176</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT + <span class="number">1</span>,
+<a href=#3177 id=3177 data-nosnippet>3177</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT + <span class="number">1</span>,
+<a href=#3178 id=3178 data-nosnippet>3178</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
+<a href=#3179 id=3179 data-nosnippet>3179</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
+<a href=#3180 id=3180 data-nosnippet>3180</a>        );
+<a href=#3181 id=3181 data-nosnippet>3181</a>        <span class="macro">assert_eq!</span>(uncompressed_limit, v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT);
+<a href=#3182 id=3182 data-nosnippet>3182</a>        <span class="macro">assert_eq!</span>(compressed_limit, v2::SERIES_V2_COMPRESSED_SIZE_LIMIT);
+<a href=#3183 id=3183 data-nosnippet>3183</a>
+<a href=#3184 id=3184 data-nosnippet>3184</a>        <span class="kw">let </span>(uncompressed_limit, compressed_limit) = clamp_payload_limits(
+<a href=#3185 id=3185 data-nosnippet>3185</a>            <span class="number">5678</span>,
+<a href=#3186 id=3186 data-nosnippet>3186</a>            <span class="number">1234</span>,
+<a href=#3187 id=3187 data-nosnippet>3187</a>            v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT,
+<a href=#3188 id=3188 data-nosnippet>3188</a>            v2::SERIES_V2_COMPRESSED_SIZE_LIMIT,
+<a href=#3189 id=3189 data-nosnippet>3189</a>        );
+<a href=#3190 id=3190 data-nosnippet>3190</a>        <span class="macro">assert_eq!</span>(uncompressed_limit, <span class="number">5678</span>);
+<a href=#3191 id=3191 data-nosnippet>3191</a>        <span class="macro">assert_eq!</span>(compressed_limit, <span class="number">1234</span>);
+<a href=#3192 id=3192 data-nosnippet>3192</a>    }
+<a href=#3193 id=3193 data-nosnippet>3193</a>}
 </code></pre></div></section></main></body></html>
