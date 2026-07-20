@@ -259,7 +259,7 @@
 <a href=#259 id=259 data-nosnippet>259</a>    <span class="doccomment">/// `otlp_config.metrics.histograms.mode`-OTLP histogram bucket reporting mode
 <a href=#260 id=260 data-nosnippet>260</a>    </span>OTLP_CONFIG_METRICS_HISTOGRAMS_MODE = SalukiAnnotation {
 <a href=#261 id=261 data-nosnippet>261</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_HISTOGRAMS_MODE,
-<a href=#262 id=262 data-nosnippet>262</a>        support_level: SupportLevel::Partial,
+<a href=#262 id=262 data-nosnippet>262</a>        support_level: SupportLevel::Full,
 <a href=#263 id=263 data-nosnippet>263</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#264 id=264 data-nosnippet>264</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#265 id=265 data-nosnippet>265</a>        used_by: <span class="kw-2">&amp;</span>[structs::OTLP_CONFIGURATION],
@@ -267,49 +267,60 @@
 <a href=#267 id=267 data-nosnippet>267</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""counters""#</span>),
 <a href=#268 id=268 data-nosnippet>268</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#269 id=269 data-nosnippet>269</a>    };
-<a href=#270 id=270 data-nosnippet>270</a>    <span class="doccomment">/// `otlp_config.metrics.resource_attributes_as_tags`-Add scalar resource attributes as raw tags.
-<a href=#271 id=271 data-nosnippet>271</a>    </span>OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS = SalukiAnnotation {
-<a href=#272 id=272 data-nosnippet>272</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS,
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="doccomment">/// `otlp_config.metrics.histograms.send_aggregation_metrics`-Emit OTLP histogram aggregation metrics.
+<a href=#271 id=271 data-nosnippet>271</a>    </span>OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS = SalukiAnnotation {
+<a href=#272 id=272 data-nosnippet>272</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS,
 <a href=#273 id=273 data-nosnippet>273</a>        support_level: SupportLevel::Full,
 <a href=#274 id=274 data-nosnippet>274</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#275 id=275 data-nosnippet>275</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#276 id=276 data-nosnippet>276</a>        used_by: <span class="kw-2">&amp;</span>[structs::OTLP_CONFIGURATION],
 <a href=#277 id=277 data-nosnippet>277</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#278 id=278 data-nosnippet>278</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#278 id=278 data-nosnippet>278</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">"true"</span>),
 <a href=#279 id=279 data-nosnippet>279</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#280 id=280 data-nosnippet>280</a>    };
-<a href=#281 id=281 data-nosnippet>281</a>    <span class="doccomment">/// `otlp_config.metrics.sums.cumulative_monotonic_mode`-Cumulative monotonic sum reporting mode.
-<a href=#282 id=282 data-nosnippet>282</a>    </span>OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE = SalukiAnnotation {
-<a href=#283 id=283 data-nosnippet>283</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE,
+<a href=#281 id=281 data-nosnippet>281</a>    <span class="doccomment">/// `otlp_config.metrics.resource_attributes_as_tags`-Add scalar resource attributes as raw tags.
+<a href=#282 id=282 data-nosnippet>282</a>    </span>OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS = SalukiAnnotation {
+<a href=#283 id=283 data-nosnippet>283</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS,
 <a href=#284 id=284 data-nosnippet>284</a>        support_level: SupportLevel::Full,
 <a href=#285 id=285 data-nosnippet>285</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#286 id=286 data-nosnippet>286</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#287 id=287 data-nosnippet>287</a>        used_by: <span class="kw-2">&amp;</span>[structs::OTLP_CONFIGURATION],
 <a href=#288 id=288 data-nosnippet>288</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#289 id=289 data-nosnippet>289</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""raw_value""#</span>),
+<a href=#289 id=289 data-nosnippet>289</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#290 id=290 data-nosnippet>290</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#291 id=291 data-nosnippet>291</a>    };
-<a href=#292 id=292 data-nosnippet>292</a>    <span class="doccomment">/// `otlp_config.metrics.sums.initial_cumulative_monotonic_value`-Initial cumulative sum reporting behavior.
-<a href=#293 id=293 data-nosnippet>293</a>    </span>OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE = SalukiAnnotation {
-<a href=#294 id=294 data-nosnippet>294</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE,
+<a href=#292 id=292 data-nosnippet>292</a>    <span class="doccomment">/// `otlp_config.metrics.sums.cumulative_monotonic_mode`-Cumulative monotonic sum reporting mode.
+<a href=#293 id=293 data-nosnippet>293</a>    </span>OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE = SalukiAnnotation {
+<a href=#294 id=294 data-nosnippet>294</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE,
 <a href=#295 id=295 data-nosnippet>295</a>        support_level: SupportLevel::Full,
 <a href=#296 id=296 data-nosnippet>296</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#297 id=297 data-nosnippet>297</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#298 id=298 data-nosnippet>298</a>        used_by: <span class="kw-2">&amp;</span>[structs::OTLP_CONFIGURATION],
 <a href=#299 id=299 data-nosnippet>299</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#300 id=300 data-nosnippet>300</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""drop""#</span>),
+<a href=#300 id=300 data-nosnippet>300</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""raw_value""#</span>),
 <a href=#301 id=301 data-nosnippet>301</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#302 id=302 data-nosnippet>302</a>    };
-<a href=#303 id=303 data-nosnippet>303</a>    <span class="doccomment">/// `otlp_config.metrics.tags`-Comma-separated tags for all OTLP metrics.
-<a href=#304 id=304 data-nosnippet>304</a>    </span>OTLP_CONFIG_METRICS_TAGS = SalukiAnnotation {
-<a href=#305 id=305 data-nosnippet>305</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_TAGS,
+<a href=#303 id=303 data-nosnippet>303</a>    <span class="doccomment">/// `otlp_config.metrics.sums.initial_cumulative_monotonic_value`-Initial cumulative sum reporting behavior.
+<a href=#304 id=304 data-nosnippet>304</a>    </span>OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE = SalukiAnnotation {
+<a href=#305 id=305 data-nosnippet>305</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE,
 <a href=#306 id=306 data-nosnippet>306</a>        support_level: SupportLevel::Full,
 <a href=#307 id=307 data-nosnippet>307</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#308 id=308 data-nosnippet>308</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#309 id=309 data-nosnippet>309</a>        used_by: <span class="kw-2">&amp;</span>[structs::OTLP_CONFIGURATION],
 <a href=#310 id=310 data-nosnippet>310</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#311 id=311 data-nosnippet>311</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#311 id=311 data-nosnippet>311</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#""drop""#</span>),
 <a href=#312 id=312 data-nosnippet>312</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#313 id=313 data-nosnippet>313</a>    };
-<a href=#314 id=314 data-nosnippet>314</a>}
+<a href=#314 id=314 data-nosnippet>314</a>    <span class="doccomment">/// `otlp_config.metrics.tags`-Comma-separated tags for all OTLP metrics.
+<a href=#315 id=315 data-nosnippet>315</a>    </span>OTLP_CONFIG_METRICS_TAGS = SalukiAnnotation {
+<a href=#316 id=316 data-nosnippet>316</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_TAGS,
+<a href=#317 id=317 data-nosnippet>317</a>        support_level: SupportLevel::Full,
+<a href=#318 id=318 data-nosnippet>318</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#319 id=319 data-nosnippet>319</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#320 id=320 data-nosnippet>320</a>        used_by: <span class="kw-2">&amp;</span>[structs::OTLP_CONFIGURATION],
+<a href=#321 id=321 data-nosnippet>321</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#322 id=322 data-nosnippet>322</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#323 id=323 data-nosnippet>323</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
+<a href=#324 id=324 data-nosnippet>324</a>    };
+<a href=#325 id=325 data-nosnippet>325</a>}
 </code></pre></div></section></main></body></html>
