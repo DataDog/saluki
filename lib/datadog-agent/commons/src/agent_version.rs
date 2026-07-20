@@ -22,7 +22,7 @@ include!(concat!(env!("OUT_DIR"), "/details.rs"));
 
 /// Raw Agent version string that ADP was built against, as detected at build time.
 ///
-/// This is the verbatim `DD_AGENT_VERSION` value (for example, `"7.81.0-full"` or `"nightly"`), suitable for display in
+/// This is the verbatim `DD_AGENT_VERSION` value (for example, `"7.81.1-full"` or `"nightly"`), suitable for display in
 /// diagnostics. Returns `None` when `DD_AGENT_VERSION` was not set at build time.
 pub fn version_string() -> Option<&'static str> {
     if DETECTED_AGENT_VERSION.is_empty() {
@@ -75,7 +75,7 @@ pub struct AgentVersion {
 impl AgentVersion {
     /// Parses an Agent version from a version string.
     ///
-    /// Accepts values such as `7.81.0`, `7.81.0-full`, `7.83.0-devel`, and bare development markers such as `nightly`.
+    /// Accepts values such as `7.81.1`, `7.81.1-full`, `7.83.0-devel`, and bare development markers such as `nightly`.
     /// Development/pre-release builds (identified by a `devel`, `dev`, `nightly`, or `master` marker) are considered
     /// newer than every numbered release, since they track the bleeding edge of Agent behavior.
     ///
@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn parses_plain_release() {
-        let version = AgentVersion::parse("7.81.0").expect("should parse");
+        let version = AgentVersion::parse("7.81.1").expect("should parse");
         assert_eq!(
             version,
             AgentVersion {
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn parses_release_with_flavor_suffix() {
-        let version = AgentVersion::parse("7.81.0-full").expect("should parse");
+        let version = AgentVersion::parse("7.81.1-full").expect("should parse");
         assert_eq!(
             version,
             AgentVersion {
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn meets_compares_release_versions() {
-        let v = AgentVersion::parse("7.81.0").unwrap();
+        let v = AgentVersion::parse("7.81.1").unwrap();
         assert!(v.meets(7, 80, 0));
         assert!(v.meets(7, 81, 0));
         assert!(!v.meets(7, 82, 0));
