@@ -1307,12 +1307,16 @@ pub struct OtlpConfigMetricsHistograms {
         default = "defaults::datadog_configuration_otlp_config_metrics_histograms_mode"
     )]
     pub mode: String,
+
+    #[serde(default)]
+    pub send_aggregation_metrics: bool,
 }
 
 impl Default for OtlpConfigMetricsHistograms {
     fn default() -> Self {
         Self {
             mode: defaults::datadog_configuration_otlp_config_metrics_histograms_mode(),
+            send_aggregation_metrics: Default::default(),
         }
     }
 }

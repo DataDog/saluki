@@ -883,6 +883,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_otlp_config_metrics_histograms_send_aggregation_metrics(&mut self, value: bool) {
+        self.config.domains.otlp.metrics.send_histogram_aggregations = value;
+    }
+
     fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool) {
         self.config.domains.otlp.metrics.resource_attributes_as_tags = value;
     }

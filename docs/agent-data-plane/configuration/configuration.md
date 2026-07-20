@@ -234,7 +234,6 @@ default values.
 | `log_level`                            | Log verbosity directives                  |
 | `min_tls_version`                      | Minimum TLS version for HTTPS connections |
 | `multi_region_failover.enabled`        | Enable multi-region failover mode         |
-| `otlp_config.metrics.histograms.mode`  | OTLP histogram bucket reporting mode      |
 | `serializer_zstd_compressor_level`     | Zstd compression level (Agent)            |
 | `skip_ssl_validation`                  | Skip TLS cert validation                  |
 | `statsd_forward_host`                  | UDP packet forwarding destination host    |
@@ -371,12 +370,6 @@ is enabled.
 | `multi_region_failover.api_key`          | API key for the failover-region endpoint.                                  | unset   |
 | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
 | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
-
-### `otlp_config.metrics.histograms.mode`
-
-ADP supports the `counters` and `distributions` modes. The `nobuckets` mode requires
-`otlp_config.metrics.histograms.send_aggregation_metrics` to be enabled, but ADP does not yet
-read that setting, so selecting `nobuckets` prevents the OTLP source from starting.
 
 ### `serializer_zstd_compressor_level`
 
@@ -700,6 +693,8 @@ compressed wire payload bytes.
 | `origin_detection_unified`                                     | Unified origin detection mode                      |
 | `otlp_config.logs.enabled`                                     | otlp_config.logs.enabled                           |
 | `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
+| `otlp_config.metrics.histograms.mode`                          | OTLP histogram bucket reporting mode               |
+| `otlp_config.metrics.histograms.send_aggregation_metrics`      | Emit OTLP histogram aggregation metrics.           |
 | `otlp_config.metrics.resource_attributes_as_tags`              | Add scalar resource attributes as raw tags.        |
 | `otlp_config.metrics.sums.cumulative_monotonic_mode`           | Cumulative monotonic sum reporting mode.           |
 | `otlp_config.metrics.sums.initial_cumulative_monotonic_value`  | Initial cumulative sum reporting behavior.         |
@@ -768,4 +763,3 @@ compressed wire payload bytes.
 [#1753]: https://github.com/DataDog/saluki/issues/1753
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
-[#2021]: https://github.com/DataDog/saluki/issues/2021

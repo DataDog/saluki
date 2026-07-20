@@ -29,6 +29,11 @@ pub struct Metrics {
     /// How explicit histogram buckets are reported.
     pub histogram_mode: HistogramMode,
 
+    /// Whether histogram count, sum, minimum, and maximum metrics are emitted when available.
+    ///
+    /// The `nobuckets` mode requires this setting. Defaults to `false`.
+    pub send_histogram_aggregations: bool,
+
     /// Whether every resource attribute is added as a raw metric tag, in addition to the
     /// semantic-convention mappings that are always applied.
     pub resource_attributes_as_tags: bool,
