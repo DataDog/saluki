@@ -1,11 +1,17 @@
+use std::sync::Arc;
+
+use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config_system::ConfigurationSystem;
+use arc_swap::ArcSwap;
 use saluki_app::logging::LoggingOverrideController;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
 use saluki_error::GenericError;
 
 use crate::config::DataPlaneConfiguration;
+
+mod config_internal;
 
 mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;
@@ -35,9 +41,10 @@ mod telemetry;
 ///
 /// If the supervisor can't be created, an error is returned.
 pub async fn create_internal_supervisor(
-    config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
+    config: &ConfigurationSystem, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
     health_registry: HealthRegistry, control_surfaces: TopologyControlSurfaces,
     ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
+    current_config: Arc<ArcSwap<SalukiConfiguration>>,
 ) -> Result<Supervisor, GenericError> {
     // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
     // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
@@ -54,6 +61,7 @@ pub async fn create_internal_supervisor(
             control_surfaces,
             ra_bootstrap,
             logging_controller,
+            current_config,
         )
         .await?,
     );

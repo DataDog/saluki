@@ -5,7 +5,7 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 // Pull in the Antithesis coverage-instrumentation runtime shim only when
@@ -14,9 +14,10 @@ use std::time::Instant;
 #[cfg(feature = "antithesis")]
 use antithesis_instrumentation as _;
 use datadog_agent_commons::platform::PlatformSettings;
+// TODO: remove after migration to typed config; bootstrap still feeds legacy flat-key consumers.
+use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
 use metrics::Level;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
-use saluki_components::config::{DatadogRemapper, KEY_ALIASES};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -96,6 +97,7 @@ async fn main() -> Result<(), GenericError> {
     let maybe_exit_code = run_inner(
         cli.action,
         started,
+        bootstrap_config_path,
         bootstrap_config,
         &mut bootstrap_guard,
         bootstrap_supervisor,
@@ -171,8 +173,8 @@ fn parse_metrics_level(config: &GenericConfiguration) -> Result<Level, GenericEr
 }
 
 async fn run_inner(
-    action: Action, started: Instant, bootstrap_config: GenericConfiguration, bootstrap_guard: &mut BootstrapGuard,
-    bootstrap_supervisor: Supervisor,
+    action: Action, started: Instant, config_path: PathBuf, bootstrap_config: GenericConfiguration,
+    bootstrap_guard: &mut BootstrapGuard, bootstrap_supervisor: Supervisor,
 ) -> Result<Option<i32>, GenericError> {
     match action {
         Action::Run(cmd) => {
@@ -185,23 +187,25 @@ async fn run_inner(
                 }
             }
 
-            let exit_code =
-                match handle_run_command(started, bootstrap_config, bootstrap_guard, bootstrap_supervisor).await {
-                    Ok(()) => {
-                        info!("Agent Data Plane stopped.");
-                        None
-                    }
-                    Err(e) => {
-                        error!("{:?}", e);
-                        // Same boot property as the config-load gate, distinguished by `phase` in the details.
-                        saluki_antithesis::always_or_unreachable!(
-                            false,
-                            "agent-data-plane boots under sampled config",
-                            { "phase": "run_setup", "error": format!("{e:?}") }
-                        );
-                        Some(1)
-                    }
-                };
+            // `Run` owns the full configuration lifecycle, so it takes the config path and builds the
+            // loader itself; the static `bootstrap_config` serves only the other subcommands below.
+            let exit_code = match handle_run_command(started, config_path, bootstrap_guard, bootstrap_supervisor).await
+            {
+                Ok(()) => {
+                    info!("Agent Data Plane stopped.");
+                    None
+                }
+                Err(e) => {
+                    error!("{:?}", e);
+                    // Same boot property as the config-load gate, distinguished by `phase` in the details.
+                    saluki_antithesis::always_or_unreachable!(
+                        false,
+                        "agent-data-plane boots under sampled config",
+                        { "phase": "run_setup", "error": format!("{e:?}") }
+                    );
+                    Some(1)
+                }
+            };
 
             // Remove the PID file, if configured.
             if let Some(pid_file) = &cmd.pid_file {
