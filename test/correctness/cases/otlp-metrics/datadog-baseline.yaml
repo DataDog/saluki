@@ -17,6 +17,7 @@ dd_url: "http://datadog-intake:2049"
 otlp_config:
   metrics:
     batch:
+      # TODO: remove after #2160 is fixed
       min_size: 1000000000
       max_size: 0
       flush_timeout: 5s
