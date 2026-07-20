@@ -98,3 +98,65 @@ impl ContextResolvers {
         &mut self.tags
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use bytesize::ByteSize;
+
+    use super::*;
+    use crate::sources::dogstatsd::DogStatsDConfiguration;
+
+    fn test_context() -> ComponentContext {
+        ComponentContext::test_source("dogstatsd_resolver_test")
+    }
+
+    #[test]
+    fn new_rejects_zero_interner_size() {
+        // Documented `# Errors`: an invalid (zero-byte) string interner size must be rejected.
+        let config = DogStatsDConfiguration {
+            context_string_interner_size_bytes: Some(ByteSize::b(0)),
+            ..Default::default()
+        };
+
+        let err = ContextResolvers::new(&config, &test_context(), None)
+            .err()
+            .expect("a zero interner size must be rejected");
+        assert!(
+            err.to_string()
+                .contains("context_string_interner_size must be greater than 0"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn new_builds_working_resolvers_from_the_shared_interner() {
+        // Exercises the real production constructor (rather than the `manual` test bypass): a valid config yields
+        // usable primary and no-aggregation resolvers. The three resolvers share one interner, but that sharing isn't
+        // observable through the public API, so we assert instead that both resolvers construct and resolve contexts
+        // correctly from it.
+        //
+        // NOTE: `#[derive(Default)]` uses each field's own default (a zero interner size) rather than the serde config
+        // defaults, so we must set a non-zero interner size explicitly to reach the success path.
+        let config = DogStatsDConfiguration {
+            context_string_interner_size_bytes: Some(ByteSize::kib(64)),
+            ..Default::default()
+        };
+        let mut resolvers =
+            ContextResolvers::new(&config, &test_context(), None).expect("valid config should build resolvers");
+
+        let primary = resolvers
+            .primary()
+            .resolve("my.metric", ["env:prod"], None)
+            .expect("primary resolver should resolve a context");
+        assert_eq!(primary.name(), "my.metric");
+        assert!(primary.tags().has_tag("env:prod"));
+
+        let no_agg = resolvers
+            .no_agg()
+            .resolve("my.metric", ["env:prod"], None)
+            .expect("no-agg resolver should resolve a context");
+        assert_eq!(no_agg.name(), "my.metric");
+        assert!(no_agg.tags().has_tag("env:prod"));
+    }
+}

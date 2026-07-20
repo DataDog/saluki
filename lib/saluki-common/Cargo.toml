@@ -19,6 +19,7 @@ papaya = { workspace = true }
 pin-project = { workspace = true }
 quick_cache = { workspace = true }
 regex = { workspace = true, features = ["unicode-perl", "unicode-case"] }
+saluki-antithesis = { workspace = true }
 saluki-error = { workspace = true }
 saluki-metrics = { workspace = true }
 serde = { workspace = true }

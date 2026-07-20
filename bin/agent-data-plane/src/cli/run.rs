@@ -1,9 +1,11 @@
 use std::{
     collections::HashSet,
+    env,
     path::PathBuf,
     time::{Duration, Instant},
 };
 
+use agent_data_plane_config_system::{ConfigurationSystem, EnvPrecedence, LoadedConfiguration};
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
@@ -13,9 +15,7 @@ use saluki_app::{
     metrics::emit_startup_metrics,
 };
 use saluki_components::{
-    config::{
-        AutoscalingFailoverConfiguration, ClusterAgentConfiguration, DatadogRemapper, MrfConfiguration, KEY_ALIASES,
-    },
+    config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
     encoders::{
@@ -32,7 +32,7 @@ use saluki_components::{
         MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError};
@@ -67,8 +67,7 @@ pub struct RunCommand {
 
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
-    started: Instant, bootstrap_config: GenericConfiguration, bootstrap_guard: &mut BootstrapGuard,
-    bootstrap_supervisor: Supervisor,
+    started: Instant, config_path: PathBuf, bootstrap_guard: &mut BootstrapGuard, bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
@@ -80,108 +79,110 @@ pub async fn handle_run_command(
         "Agent Data Plane starting..."
     );
 
-    // Load our "bootstrap" configuration.
-    //
-    // If remote agent mode is enabled, we'll register as a remote agent, which will unlock the ability to receive
-    // configuration updates from the Core Agent, which we'll use to build our final, updated configuration. Otherwise,
-    // we keep the bootstrap configuration and use it as-is.
-    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&bootstrap_config)
+    // Load the local configuration sources (file + environment) once. The configuration system owns
+    // the loader wiring; we supply the file path and the environment precedence. Environment
+    // variables sit above the file so ADP-specific overrides (log level, etc.) win.
+    let loaded = LoadedConfiguration::load(&config_path, EnvPrecedence::AfterFile)
+        .await
+        .error_context("Failed to load configuration.")?;
+
+    // A static snapshot of the local sources, used only for decisions the Agent stream can never
+    // change: whether we run standalone, and the remote-agent registration parameters.
+    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&loaded.raw_config())
         .error_context("Failed to load data plane configuration.")?;
+    let standalone = bootstrap_dp_config.standalone_mode();
 
-    let in_standalone_mode = bootstrap_dp_config.standalone_mode();
-    let remote_agent_enabled = bootstrap_dp_config.remote_agent_enabled();
-    let use_new_config_stream_endpoint = bootstrap_dp_config.use_new_config_stream_endpoint();
-    let should_bootstrap_remote_agent = !in_standalone_mode && (remote_agent_enabled || use_new_config_stream_endpoint);
-
-    let ra_bootstrap = if should_bootstrap_remote_agent {
-        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&bootstrap_config, &bootstrap_dp_config)
+    // Resolve the authoritative configuration. Connected mode registers as a remote agent and takes
+    // the Core Agent's config stream as authority; standalone mode treats the local sources as
+    // authoritative. Both terminals block until the first configuration is received, deserialized,
+    // and translated, failing the boot if it cannot be -- the strict startup gate.
+    let (config_sys, ra_bootstrap) = if standalone {
+        let config_sys = loaded
+            .standalone()
+            .await
+            .error_context("Failed to load configuration.")?;
+        (config_sys, None)
+    } else {
+        // Blocks until the Core Agent acknowledges registration.
+        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&loaded.raw_config(), &bootstrap_dp_config)
             .await
             .error_context("Failed to bootstrap remote agent state.")?;
 
-        Some(ra_bootstrap)
-    } else {
-        None
+        // The configuration system owns the config stream: it reads `ConfigUpdate`s directly to
+        // build the typed model and forwards them to the legacy compat map. `create_config_stream`
+        // stays on `ra_bootstrap`, which we keep to build the status/flare/telemetry services below.
+        let config_stream = ra_bootstrap.create_config_stream();
+
+        info!("Waiting for initial configuration from Datadog Agent...");
+        let config_sys = loaded
+            .run(config_stream)
+            .await
+            .error_context("Failed to load initial configuration from the Datadog Agent.")?;
+        info!("Initial configuration received.");
+
+        (config_sys, Some(ra_bootstrap))
     };
 
-    let (config, dp_config) = match &ra_bootstrap {
-        Some(ra_bootstrap) if use_new_config_stream_endpoint => {
-            // Build a new configuration that uses the configuration sent by the control plane as the authoritative
-            // configuration source, but with environment variables on top of that to allow for ADP-specific overriding: log
-            // level, etc.
-            let dynamic_config = ConfigurationLoader::default()
-                .with_key_aliases(KEY_ALIASES)
-                .add_providers([DatadogRemapper::new()])
-                .from_environment(PlatformSettings::get_env_var_prefix())?
-                .with_dynamic_configuration(ra_bootstrap.create_config_stream())
-                .into_generic()
-                .await?;
+    // Hand un-migrated components the resolved configuration as the legacy `GenericConfiguration`
+    // they still read from. Raw reads go through `config`; typed/live reads go through `config_sys`.
+    let dp_config = DataPlaneConfiguration::from_configuration(&config_sys.raw_map())
+        .error_context("Failed to load data plane configuration.")?;
 
-            info!("Waiting for initial configuration from Datadog Agent...");
-            dynamic_config.ready().await;
-            info!("Initial configuration received.");
-
-            // Now that the Datadog Agent has supplied its authoritative configuration, reload the logging subsystem
-            // so its destinations, format, and level reflect what the Agent specifies rather than the bootstrap-phase
-            // defaults.
-            match LoggingConfigurationTranslator::translate(&dynamic_config) {
-                Ok(logging_config) => {
-                    if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
-                        warn!(
-                            error = %e,
-                            "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
-                        );
-                    }
+    // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative
+    // config, so reload logging to match. Standalone resolves the same local sources seen at
+    // bootstrap, making a reload redundant.
+    if !standalone {
+        match LoggingConfigurationTranslator::translate(&config_sys.raw_map()) {
+            Ok(logging_config) => {
+                if let Err(e) = bootstrap_guard.logging_mut().reload(logging_config).await {
+                    warn!(
+                        error = %e,
+                        "Failed to reload logging from Agent configuration; continuing with bootstrap logging settings."
+                    );
                 }
-                Err(e) => warn!(
-                    error = %e,
-                    "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
-                ),
             }
-
-            // Reload our data plane configuration based on the dynamic configuration.
-            let dynamic_dp_config = DataPlaneConfiguration::from_configuration(&dynamic_config)
-                .error_context("Failed to load data plane configuration.")?;
-
-            (dynamic_config, dynamic_dp_config)
+            Err(e) => warn!(
+                error = %e,
+                "Failed to translate logging configuration from Agent; continuing with bootstrap logging settings."
+            ),
         }
+    }
 
-        // If dynamic configuration is disabled, the bootstrap configuration is already the complete and final configuration.
-        _ => (bootstrap_config, bootstrap_dp_config),
-    };
-
-    if !in_standalone_mode && !dp_config.enabled() {
+    if !standalone && !dp_config.enabled() {
         info!("Agent Data Plane is not enabled. Exiting.");
         return Ok(());
     }
 
     let active_pipelines = active_pipelines(&dp_config);
-    check_and_warn_config(&config, &active_pipelines).error_context("Incompatible configuration detected.")?;
+    check_and_warn_config(&config_sys, &active_pipelines).error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
     let (env_provider, maybe_env_supervisor) =
-        ADPEnvironmentProvider::from_configuration(&config, &dp_config, &component_registry, &health_registry).await?;
+        ADPEnvironmentProvider::from_configuration(&config_sys, &dp_config, &component_registry, &health_registry)
+            .await?;
 
     // Create the blueprint for our primary topology.
     let (mut blueprint, control_surfaces) =
-        create_topology(&config, &dp_config, &env_provider, &component_registry).await?;
+        create_topology(&config_sys, &dp_config, &env_provider, &component_registry).await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
-        &config,
+        &config_sys,
         &dp_config,
         &component_registry,
         health_registry.clone(),
         control_surfaces,
         ra_bootstrap,
         bootstrap_guard.logging().controller(),
+        config_sys.current_handle(),
     )
     .await
     .error_context("Failed to create internal supervisor.")?;
 
     // Run memory bounds validation to ensure that we can launch the topology with our configured memory limit, if any.
-    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config)?;
+    let bounds_config = MemoryBoundsConfiguration::try_from_config(&config_sys.raw_map())?;
     let memory_limiter = initialize_memory_bounds(bounds_config, component_registry.root())?;
 
     if let Ok(val) = std::env::var("DD_ADP_WRITE_SIZING_GUIDE") {
@@ -298,11 +299,13 @@ fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
 /// individual keys are logged at error level during iteration.
 ///
 fn check_and_warn_config(
-    config: &GenericConfiguration, active_pipelines: &HashSet<Pipeline>,
+    config: &ConfigurationSystem, active_pipelines: &HashSet<Pipeline>,
 ) -> Result<(), GenericError> {
     let classifier = ConfigClassifier::new();
     let mut high_severity_incompatibilities = 0u32;
     debug!("Analyzing configuration.");
+    // TODO: transfer this functionality to the config system
+    let config = config.raw_map();
     for (key, val) in config
         .flattened_keys()
         .error_context("Unable to flatten configuration into a list of dot-separated keys.")?
@@ -370,7 +373,7 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
 }
 
 async fn create_topology(
-    config: &GenericConfiguration, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
+    config_system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
     component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
@@ -398,43 +401,46 @@ async fn create_topology(
         || dp_config.service_checks_pipeline_required()
         || dp_config.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(&config_system.raw_map())
             .error_context("Failed to configure Datadog forwarder.")?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
     if dp_config.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
+        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), dp_config, env_provider)
+            .await?;
     }
 
     if dp_config.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
     if dp_config.events_pipeline_required() {
-        add_baseline_events_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
     if dp_config.service_checks_pipeline_required() {
-        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, config).await?;
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
     if dp_config.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
     // Now we move on to our actual data pipelines.
     if dp_config.checks().enabled() {
-        add_checks_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        add_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
     if dp_config.dogstatsd().enabled() {
-        let dsd_control_surface = add_dsd_pipeline_to_blueprint(&mut blueprint, config, env_provider).await?;
+        let dsd_control_surface =
+            add_dsd_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), config_system, env_provider)
+                .await?;
         control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
     if dp_config.otlp().enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config, dp_config, env_provider).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), dp_config, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
@@ -672,7 +678,12 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint,
+    config: &GenericConfiguration,
+    // Threaded in ready for the typed-config component cutover (aggregate/debug-log); unused until
+    // those components read from it, hence the leading underscore.
+    _config_system: &ConfigurationSystem,
+    env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
     // and enriching/processing them in DSD-specific ways, relevant to how the Datadog Agent is expected to behave.
@@ -840,9 +851,15 @@ async fn add_otlp_pipeline_to_blueprint(
             .get_hostname()
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
-        let otlp_config = OtlpConfiguration::from_configuration(config)?
+        let mut otlp_config = OtlpConfiguration::from_configuration(config)?
             .with_default_hostname(default_hostname)
             .with_workload_provider(env_provider.workload().clone());
+        if let Ok(grpc_endpoint) = env::var("DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_GRPC_ENDPOINT") {
+            otlp_config = otlp_config.with_grpc_endpoint(grpc_endpoint);
+        }
+        if let Ok(http_endpoint) = env::var("DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_HTTP_ENDPOINT") {
+            otlp_config = otlp_config.with_http_endpoint(http_endpoint);
+        }
 
         blueprint
             // Components.

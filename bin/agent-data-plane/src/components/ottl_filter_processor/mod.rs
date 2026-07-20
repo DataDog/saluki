@@ -160,8 +160,7 @@ mod tests {
             trace::{AttributeValue, Span, Trace},
             Event,
         },
-        support::SubsystemIdentifier,
-        topology::{ComponentId, EventsBuffer},
+        topology::EventsBuffer,
     };
     use stringtheory::MetaString;
 
@@ -200,10 +199,7 @@ mod tests {
     }
 
     fn test_component_context() -> ComponentContext {
-        ComponentContext::transform(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("ottl_filter").unwrap(),
-        )
+        ComponentContext::test_transform("ottl_filter")
     }
 
     /// When `ottl_filter_config` is absent, config defaults to empty conditions and no spans are dropped.

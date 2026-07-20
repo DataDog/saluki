@@ -105,6 +105,7 @@ pub struct DatadogConfiguration {
     pub dogstatsd_entity_id_precedence: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub dogstatsd_eol_required: Vec<String>,
 
     #[serde(default = "defaults::default_u64::<i64, 300>")]
@@ -122,6 +123,7 @@ pub struct DatadogConfiguration {
     pub dogstatsd_log_file_max_rolls: i64,
 
     #[serde(default = "defaults::datadog_configuration_dogstatsd_log_file_max_size")]
+    #[serde(deserialize_with = "crate::string_de::deserialize_string_or_integer")]
     pub dogstatsd_log_file_max_size: String,
 
     #[serde(default = "defaults::default_bool::<true>")]
@@ -176,6 +178,7 @@ pub struct DatadogConfiguration {
     pub dogstatsd_tag_cardinality: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub dogstatsd_tags: Vec<String>,
 
     #[serde(
@@ -264,6 +267,7 @@ pub struct DatadogConfiguration {
     pub forwarder_timeout: i64,
 
     #[serde(default = "defaults::datadog_configuration_histogram_aggregates")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub histogram_aggregates: Vec<String>,
 
     #[serde(default)]
@@ -273,12 +277,14 @@ pub struct DatadogConfiguration {
     pub histogram_copy_to_distribution_prefix: String,
 
     #[serde(default = "defaults::datadog_configuration_histogram_percentiles")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub histogram_percentiles: Vec<String>,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
     pub log_file_max_rolls: i64,
 
     #[serde(default = "defaults::datadog_configuration_log_file_max_size")]
+    #[serde(deserialize_with = "crate::string_de::deserialize_string_or_integer")]
     pub log_file_max_size: String,
 
     #[serde(default)]
@@ -300,6 +306,7 @@ pub struct DatadogConfiguration {
     pub log_to_syslog: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub metric_filterlist: Vec<String>,
 
     #[serde(default)]
@@ -372,6 +379,7 @@ pub struct DatadogConfiguration {
     pub statsd_forward_port: i64,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub statsd_metric_blocklist: Vec<String>,
 
     #[serde(default)]
@@ -385,6 +393,7 @@ pub struct DatadogConfiguration {
     )]
     /// Alias defined in schema overlay.
     #[serde(alias = "statsd_metric_namespace_blocklist")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub statsd_metric_namespace_blacklist: Vec<String>,
 
     #[serde(default)]
@@ -584,6 +593,7 @@ pub struct ApmConfig {
     pub obfuscation: ApmConfigObfuscation,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub peer_tags: Vec<String>,
 
     #[serde(default = "defaults::default_bool::<true>")]
@@ -676,6 +686,7 @@ pub struct ApmConfigObfuscationCreditCards {
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub keep_values: Vec<String>,
 
     #[serde(default)]
@@ -698,9 +709,11 @@ pub struct ApmConfigObfuscationElasticsearch {
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub keep_values: Vec<String>,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub obfuscate_sql_values: Vec<String>,
 }
 
@@ -756,9 +769,11 @@ pub struct ApmConfigObfuscationMongodb {
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub keep_values: Vec<String>,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub obfuscate_sql_values: Vec<String>,
 }
 
@@ -778,9 +793,11 @@ pub struct ApmConfigObfuscationOpensearch {
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub keep_values: Vec<String>,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub obfuscate_sql_values: Vec<String>,
 }
 
@@ -870,6 +887,7 @@ pub struct AutoscalingFailover {
     pub enabled: bool,
 
     #[serde(default = "defaults::datadog_configuration_autoscaling_failover_metrics")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub metrics: Vec<String>,
 }
 
@@ -1145,6 +1163,7 @@ pub struct MultiRegionFailover {
     pub failover_metrics: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub metric_allowlist: Vec<String>,
 
     #[serde(default)]
@@ -1258,7 +1277,13 @@ pub struct OtlpConfigMetrics {
     pub enabled: bool,
 
     #[serde(default)]
+    pub histograms: OtlpConfigMetricsHistograms,
+
+    #[serde(default)]
     pub resource_attributes_as_tags: bool,
+
+    #[serde(default)]
+    pub sums: OtlpConfigMetricsSums,
 
     #[serde(default)]
     pub tags: String,
@@ -1268,8 +1293,52 @@ impl Default for OtlpConfigMetrics {
     fn default() -> Self {
         Self {
             enabled: defaults::default_bool::<true>(),
+            histograms: Default::default(),
             resource_attributes_as_tags: Default::default(),
+            sums: Default::default(),
             tags: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigMetricsHistograms {
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_histograms_mode"
+    )]
+    pub mode: String,
+
+    #[serde(default)]
+    pub send_aggregation_metrics: bool,
+}
+
+impl Default for OtlpConfigMetricsHistograms {
+    fn default() -> Self {
+        Self {
+            mode: defaults::datadog_configuration_otlp_config_metrics_histograms_mode(),
+            send_aggregation_metrics: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigMetricsSums {
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode"
+    )]
+    pub cumulative_monotonic_mode: String,
+
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_sums_initial_cumulative_monotonic_value"
+    )]
+    pub initial_cumulative_monotonic_value: String,
+}
+
+impl Default for OtlpConfigMetricsSums {
+    fn default() -> Self {
+        Self {
+            cumulative_monotonic_mode: defaults::datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode(),
+            initial_cumulative_monotonic_value: defaults::datadog_configuration_otlp_config_metrics_sums_initial_cumulative_monotonic_value(),
         }
     }
 }
@@ -1395,6 +1464,7 @@ pub struct Proxy {
     pub https: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub no_proxy: Vec<String>,
 }
 
@@ -1438,6 +1508,7 @@ pub struct SerializerExperimentalUseV3ApiSeries {
     pub beta_route: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
 
     #[serde(
@@ -1448,6 +1519,7 @@ pub struct SerializerExperimentalUseV3ApiSeries {
     #[serde(
         default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sites"
     )]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub shadow_sites: Vec<String>,
 
     #[serde(default)]
@@ -1473,6 +1545,7 @@ impl Default for SerializerExperimentalUseV3ApiSeries {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct SerializerExperimentalUseV3ApiSketches {
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub endpoints: Vec<String>,
 
     #[serde(default)]
@@ -1713,6 +1786,15 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint() -> String {
         "127.0.0.1:4319".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_histograms_mode() -> String {
+        "distributions".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode() -> String {
+        "to_delta".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_sums_initial_cumulative_monotonic_value() -> String {
+        "auto".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint() -> String {
         "localhost:4317".to_string()

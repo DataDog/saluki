@@ -5,11 +5,13 @@ use std::{
     io::Write as _,
     net::{Ipv4Addr, TcpStream, UdpSocket},
     path::Path,
+    time::Duration,
 };
 
 use prost::bytes::Bytes;
 use saluki_error::{ErrorContext as _, GenericError};
 use tonic::{client::Grpc, transport::Channel};
+use tracing::warn;
 
 use crate::config::{Config, TargetAddress};
 
@@ -149,37 +151,74 @@ fn create_unix_stream_backend(path: &Path) -> Result<(TargetBackend, Option<toki
     ))
 }
 
+/// Inner async gRPC send, returning the raw `tonic::Status` on failure so the caller can inspect
+/// the error code and decide whether to retry.
+async fn try_grpc_unary(channel: Channel, service_method_path: &str, payload: &[u8]) -> Result<(), tonic::Status> {
+    let mut grpc_client = Grpc::new(channel);
+
+    grpc_client
+        .ready()
+        .await
+        .map_err(|e| tonic::Status::internal(format!("gRPC client not ready: {}", e)))?;
+
+    let codec = NoopCodec {};
+    let request = tonic::Request::new(Bytes::copy_from_slice(payload));
+    let path = tonic::codegen::http::uri::PathAndQuery::try_from(service_method_path)
+        .map_err(|e| tonic::Status::internal(format!("Invalid gRPC path: {}", e)))?;
+
+    grpc_client.unary(request, path, codec).await.map(|_| ())
+}
+
 /// Sends a payload via gRPC using the provided runtime and channel.
 ///
 /// The payload is sent as raw bytes without encoding, using a no-op codec.
 /// This is necessary because millstone receives already-encoded protobuf messages.
 ///
+/// `UNAVAILABLE` responses are retried with exponential backoff (up to `MAX_RETRIES` attempts)
+/// because gRPC semantics define `UNAVAILABLE` as a transient, retriable condition. The most
+/// common cause in correctness tests is a momentary "sending queue is full" response from the
+/// target's pipeline when the millstone burst briefly outpaces the downstream consumer.
+///
 /// # Errors
 ///
-/// Returns an error if the gRPC call fails for any reason.
+/// Returns an error if a non-retriable gRPC status is received, or if the call fails after all
+/// retry attempts are exhausted.
 fn send_grpc_payload(
     runtime: &tokio::runtime::Runtime, channel: Channel, service_method_path: &str, payload: &[u8],
 ) -> Result<(), GenericError> {
-    runtime.block_on(async move {
-        let mut grpc_client = Grpc::new(channel);
+    const MAX_RETRIES: u32 = 5;
+    const BASE_DELAY_MS: u64 = 100;
 
-        grpc_client
-            .ready()
-            .await
-            .map_err(|e| saluki_error::generic_error!("gRPC client not ready: {}", e))?;
+    let mut last_status: Option<tonic::Status> = None;
 
-        let codec = NoopCodec {};
-        let request = tonic::Request::new(Bytes::copy_from_slice(payload));
-        let path = tonic::codegen::http::uri::PathAndQuery::try_from(service_method_path)
-            .map_err(|e| saluki_error::generic_error!("Invalid gRPC path: {}", e))?;
+    for attempt in 0..=MAX_RETRIES {
+        if let Some(ref status) = last_status {
+            let delay_ms = BASE_DELAY_MS * (1u64 << attempt.saturating_sub(1));
+            warn!(
+                attempt,
+                delay_ms,
+                status = %status,
+                "Retriable gRPC error, retrying after backoff."
+            );
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
 
-        grpc_client
-            .unary(request, path, codec)
-            .await
-            .map_err(|e| saluki_error::generic_error!("gRPC call failed: {}", e))?;
+        match runtime.block_on(try_grpc_unary(channel.clone(), service_method_path, payload)) {
+            Ok(()) => return Ok(()),
+            Err(status) if status.code() == tonic::Code::Unavailable => {
+                last_status = Some(status);
+            }
+            Err(status) => {
+                return Err(saluki_error::generic_error!("gRPC call failed: {}", status));
+            }
+        }
+    }
 
-        Ok(())
-    })
+    Err(saluki_error::generic_error!(
+        "gRPC call failed after {} retries: {}",
+        MAX_RETRIES,
+        last_status.unwrap()
+    ))
 }
 
 /// Creates a generic gRPC backend with a tokio runtime for the given gRPC URL.

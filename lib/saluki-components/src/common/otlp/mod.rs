@@ -342,8 +342,7 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 mod tests {
     use std::sync::Arc;
 
-    use saluki_core::accounting::MemoryLimiter;
-    use saluki_core::{components::ComponentContext, support::SubsystemIdentifier, topology::ComponentId};
+    use saluki_core::{accounting::MemoryLimiter, components::ComponentContext};
     use saluki_metrics::test::TestRecorder;
 
     use super::*;
@@ -380,10 +379,7 @@ mod tests {
     }
 
     fn test_component_context() -> ComponentContext {
-        ComponentContext::source(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("otlp_test").unwrap(),
-        )
+        ComponentContext::test_source("otlp_test")
     }
 
     #[tokio::test]

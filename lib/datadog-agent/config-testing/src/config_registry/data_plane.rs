@@ -12,6 +12,14 @@ static DATA_PLANE_METRICS_V3_SERIES_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
     default: Some("false"),
 };
 
+static DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.serializer_zstd_compressor_level",
+    env_vars: &[],
+    value_type: ValueType::Integer,
+    default: Some("3"),
+};
+
 static DATA_PLANE_STOP_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "data_plane.stop_timeout",
@@ -105,6 +113,17 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.serializer_zstd_compressor_level`
+    DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL = SalukiAnnotation {
+        schema: &DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::DATADOG_TRACE_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,

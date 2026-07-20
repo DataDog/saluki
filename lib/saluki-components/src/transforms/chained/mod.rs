@@ -90,13 +90,17 @@ impl Transform for Chained {
         );
 
         // We have to re-associate each subtransform with their allocation group token here, as we don't have access to
-        // it when the bounds are initially defined.
+        // it when the bounds are initially defined. Each subtransform's resource group is addressed by its absolute
+        // identity: this component's canonical identity with the subtransform's relative id appended.
+        let component_id = context.component_context().identity();
         let mut subtransforms = self
             .subtransforms
             .into_iter()
             .map(|(subtransform_id, subtransform)| {
                 (
-                    context.component_registry().get_or_create(subtransform_id).token(),
+                    context
+                        .component_registry()
+                        .get_resource_group_token(&component_id.clone().child(&subtransform_id)),
                     subtransform,
                 )
             })

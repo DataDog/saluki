@@ -10,6 +10,7 @@ use super::{
     api::ResourceAPIHandler, BoundsVerifier, ComponentBounds, MemoryBounds, MemoryGrant, UsageExpr, VerifiedBounds,
     VerifierError,
 };
+use crate::support::SubsystemIdentifier;
 
 pub(crate) struct ComponentMetadata {
     full_name: Option<String>,
@@ -154,75 +155,46 @@ impl ComponentMetadata {
 /// Every component is also able to be registered with its own resource group when using the tracking allocator
 /// implementation. This is done on demand when the component's token is requested, which avoids polluting the tracking
 /// allocator with components that are never actually used, such as those used for organizational/aesthetic purposes.
+#[derive(Clone)]
 pub struct ComponentRegistry {
-    inner: Arc<Mutex<ComponentMetadata>>,
-    root: Option<Arc<Mutex<ComponentMetadata>>>,
+    root: Arc<Mutex<ComponentMetadata>>,
 }
 
 impl ComponentRegistry {
-    fn get_root(&self) -> Arc<Mutex<ComponentMetadata>> {
-        match &self.root {
-            Some(root) => Arc::clone(root),
-            None => Arc::clone(&self.inner),
-        }
-    }
-
     /// Creates a handle to this registry.
     ///
     /// The handle provides read-only access to root-level operations like creating API handlers and verifying bounds. It
     /// can be freely cloned and shared.
     pub fn root(&self) -> ComponentRegistryHandle {
-        ComponentRegistryHandle { inner: self.get_root() }
-    }
-
-    /// Gets a component by name, or creates it if it doesn't exist.
-    ///
-    /// The name provided can be given in a direct (`component_name`) or nested (`path.to.component_name`) form. If the
-    /// nested form is given, each component in the path will be created if it doesn't exist.
-    ///
-    /// Returns a `ComponentRegistry` scoped to the component.
-    pub fn get_or_create<S>(&self, name: S) -> Self
-    where
-        S: AsRef<str>,
-    {
-        let mut inner = self.inner.lock().unwrap();
-        Self {
-            inner: inner.get_or_create(name),
-            root: Some(self.get_root()),
+        ComponentRegistryHandle {
+            inner: Arc::clone(&self.root),
         }
     }
 
-    /// Gets a bounds builder attached to the root component.
-    pub fn bounds_builder(&mut self) -> MemoryBoundsBuilder<'_> {
-        MemoryBoundsBuilder {
-            inner: Self {
-                inner: Arc::clone(&self.inner),
-                root: Some(self.get_root()),
-            },
-            _lt: PhantomData,
-        }
-    }
-
-    /// Gets the tracking token for the component scoped to this registry.
+    /// Gets a bounds builder for the component identified by `id`, creating the component -- and any intermediate
+    /// components -- if it doesn't already exist.
     ///
-    /// If the component is the root component (has no name), the root allocation token is returned. Otherwise, the
-    /// component is registered (using its full name) if it hasn't already been, and that token is returned.
-    pub fn token(&mut self) -> ResourceGroupToken {
-        let mut inner = self.inner.lock().unwrap();
-        inner.token()
+    /// `id` is a fully qualified, absolute identifier: the component is addressed directly from the root, so callers
+    /// never need to track how deeply nested a registry is.
+    pub fn bounds_builder(&self, id: &SubsystemIdentifier) -> MemoryBoundsBuilder<'_> {
+        let node = self.root.lock().unwrap().get_or_create(id.to_string());
+        MemoryBoundsBuilder { node, _lt: PhantomData }
     }
 
-    /// Gets the total minimum required bytes for this component and all subcomponents.
+    /// Gets the resource group tracking token for the component identified by `id`, creating the component -- and any
+    /// intermediate components -- if it doesn't already exist.
+    ///
+    /// The component's resource group is registered (using its full name) the first time its token is requested. `id`
+    /// is a fully qualified, absolute identifier, addressed directly from the root.
+    pub fn get_resource_group_token(&self, id: &SubsystemIdentifier) -> ResourceGroupToken {
+        let node = self.root.lock().unwrap().get_or_create(id.to_string());
+        let mut node = node.lock().unwrap();
+        node.token()
+    }
+
+    /// Gets the memory bounds for all components in the registry.
     pub fn as_bounds(&self) -> ComponentBounds {
-        self.inner.lock().unwrap().as_bounds()
-    }
-
-    /// Returns the fully qualified, dotted name of the component this registry is scoped to.
-    ///
-    /// The root registry has no name and returns `None`; every named subcomponent returns its full path (for
-    /// example, `topology.primary.sources.dsd_in`).
-    pub fn full_name(&self) -> Option<String> {
-        self.inner.lock().unwrap().full_name.clone()
+        self.root.lock().unwrap().as_bounds()
     }
 }
 
@@ -311,23 +283,10 @@ impl ComponentRegistryHandle {
     }
 }
 
-impl ComponentRegistry {
-    #[cfg(test)]
-    fn inner_ptr_eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
-    }
-
-    #[cfg(test)]
-    fn root_ptr_eq(&self, handle: &ComponentRegistryHandle) -> bool {
-        Arc::ptr_eq(&self.get_root(), &handle.inner)
-    }
-}
-
 impl Default for ComponentRegistry {
     fn default() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(ComponentMetadata::from_full_name(None))),
-            root: None,
+            root: Arc::new(Mutex::new(ComponentMetadata::from_full_name(None))),
         }
     }
 }
@@ -366,7 +325,7 @@ impl BoundsMutator for Firm {
 /// declaring subcomponents. For example, a topology can contain its own "self" memory bounds, and then define the
 /// individual bounds for each component in the topology.
 pub struct MemoryBoundsBuilder<'a> {
-    inner: ComponentRegistry,
+    node: Arc<Mutex<ComponentMetadata>>,
     _lt: PhantomData<&'a ()>,
 }
 
@@ -374,7 +333,7 @@ impl MemoryBoundsBuilder<'static> {
     #[cfg(test)]
     pub(crate) fn for_test() -> Self {
         Self {
-            inner: ComponentRegistry::default(),
+            node: Arc::new(Mutex::new(ComponentMetadata::from_full_name(None))),
             _lt: PhantomData,
         }
     }
@@ -386,13 +345,13 @@ impl MemoryBoundsBuilder<'_> {
     /// This can be used in scenarios where the bounds of a component need to be redefined after they have been
     /// specified, as not all components are able to be defined in a single pass.
     pub fn reset(&mut self) {
-        let mut inner = self.inner.inner.lock().unwrap();
-        inner.reset();
+        let mut node = self.node.lock().unwrap();
+        node.reset();
     }
 
     /// Gets a builder object for defining the minimum bounds of the current component.
     pub fn minimum(&mut self) -> BoundsBuilder<'_, Minimum> {
-        let bounds = self.inner.inner.lock().unwrap();
+        let bounds = self.node.lock().unwrap();
         BoundsBuilder::<'_, Minimum>::new(bounds)
     }
 
@@ -401,7 +360,7 @@ impl MemoryBoundsBuilder<'_> {
     /// The firm limit is additive with the minimum required memory, so entries that are added via `minimum` don't need
     /// to be added again here.
     pub fn firm(&mut self) -> BoundsBuilder<'_, Firm> {
-        let bounds = self.inner.inner.lock().unwrap();
+        let bounds = self.node.lock().unwrap();
         BoundsBuilder::<'_, Firm>::new(bounds)
     }
 
@@ -409,15 +368,19 @@ impl MemoryBoundsBuilder<'_> {
     ///
     /// This allows for defining the bounds of various subcomponents within a larger component, which are then rolled up
     /// into the calculated bounds for the parent component.
+    ///
+    /// `name` is a relative label (single segment, or a dotted path for further nesting) that is sanitized and appended
+    /// beneath the current component.
     pub fn subcomponent<S>(&mut self, name: S) -> MemoryBoundsBuilder<'_>
     where
         S: AsRef<str>,
     {
-        let component = self.inner.get_or_create(name);
-        MemoryBoundsBuilder {
-            inner: component,
-            _lt: PhantomData,
-        }
+        let node = self
+            .node
+            .lock()
+            .unwrap()
+            .get_or_create(SubsystemIdentifier::from_dotted(name.as_ref()).to_string());
+        MemoryBoundsBuilder { node, _lt: PhantomData }
     }
 
     /// Creates a nested subcomponent based on the given component.
@@ -436,7 +399,7 @@ impl MemoryBoundsBuilder<'_> {
 
     #[cfg(test)]
     pub(crate) fn as_bounds(&self) -> ComponentBounds {
-        self.inner.inner.lock().unwrap().as_bounds()
+        self.node.lock().unwrap().as_bounds()
     }
 }
 
@@ -520,54 +483,85 @@ impl<'a, S: BoundsMutator> BoundsBuilder<'a, S> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn root_handle_from_root_registry_points_to_root() {
-        let registry = ComponentRegistry::default();
-        let handle = registry.root();
-
-        assert!(registry.root_ptr_eq(&handle));
+    fn id(dotted: &str) -> SubsystemIdentifier {
+        SubsystemIdentifier::from_dotted(dotted)
     }
 
     #[test]
-    fn root_handle_from_subcomponent_points_to_root() {
+    fn bounds_builder_records_bounds_under_absolute_id() {
         let registry = ComponentRegistry::default();
-        let child = registry.get_or_create("child");
+        registry
+            .bounds_builder(&id("topology.primary.sources.dsd_in"))
+            .firm()
+            .with_fixed_amount("buffer", 128);
 
-        let handle = child.root();
-
-        assert!(registry.root_ptr_eq(&handle));
-        assert!(!child.inner_ptr_eq(&registry));
+        assert_eq!(registry.as_bounds().total_firm_limit_bytes(), 128);
     }
 
     #[test]
-    fn root_handle_from_deeply_nested_subcomponent_points_to_root() {
+    fn repeated_bounds_builder_for_same_id_targets_the_same_node() {
+        // Two `bounds_builder` calls with the same identifier resolve to the same component node, so their bounds
+        // accumulate rather than replace.
         let registry = ComponentRegistry::default();
-        let grandchild = registry.get_or_create("child").get_or_create("grandchild");
+        let component = id("topology.primary.transforms.enrich");
 
-        let handle = grandchild.root();
+        registry
+            .bounds_builder(&component)
+            .firm()
+            .with_fixed_amount("first", 100);
+        registry
+            .bounds_builder(&component)
+            .firm()
+            .with_fixed_amount("second", 200);
 
-        assert!(registry.root_ptr_eq(&handle));
+        assert_eq!(registry.as_bounds().total_firm_limit_bytes(), 300);
     }
 
     #[test]
-    fn root_handle_from_dotted_path_subcomponent_points_to_root() {
+    fn distinct_absolute_ids_roll_up_to_the_root() {
+        // Distinct absolute identifiers that share a prefix create a nested structure whose bounds roll up.
         let registry = ComponentRegistry::default();
-        let nested = registry.get_or_create("a.b.c");
+        registry
+            .bounds_builder(&id("topology.primary.sources.in"))
+            .firm()
+            .with_fixed_amount("a", 100);
+        registry
+            .bounds_builder(&id("topology.primary.destinations.out"))
+            .firm()
+            .with_fixed_amount("b", 200);
 
-        let handle = nested.root();
-
-        assert!(registry.root_ptr_eq(&handle));
+        assert_eq!(registry.as_bounds().total_firm_limit_bytes(), 300);
     }
 
     #[test]
-    fn cloned_handle_points_to_root() {
+    fn relative_subcomponents_roll_up_under_their_component() {
+        // The bounds builder's relative `subcomponent` nests beneath the component addressed by its absolute id.
         let registry = ComponentRegistry::default();
-        let child = registry.get_or_create("child");
+        {
+            let mut builder = registry.bounds_builder(&id("env_provider.workload.remote_agent"));
+            builder.firm().with_fixed_amount("self", 10);
+            builder
+                .subcomponent("string_interner")
+                .firm()
+                .with_fixed_amount("interner", 90);
+        }
 
-        let handle = child.root();
-        let cloned = handle.clone();
+        assert_eq!(registry.as_bounds().total_firm_limit_bytes(), 100);
+    }
 
-        assert!(Arc::ptr_eq(&handle.inner, &cloned.inner));
-        assert!(registry.root_ptr_eq(&cloned));
+    #[test]
+    fn resource_group_token_and_bounds_builder_share_the_same_node() {
+        // Taking a resource group token creates the component node; declaring bounds for the same identifier targets
+        // that same node, and the read-only handle observes the result.
+        let registry = ComponentRegistry::default();
+        let component = id("topology.primary.sources.dsd_in");
+
+        let _token = registry.get_resource_group_token(&component);
+        registry
+            .bounds_builder(&component)
+            .minimum()
+            .with_fixed_amount("buffer", 64);
+
+        assert_eq!(registry.root().as_bounds().total_minimum_required_bytes(), 64);
     }
 }

@@ -6,7 +6,7 @@ use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use datadog_protos::metrics::{MetricPayload, SketchPayload};
+use datadog_protos::metrics::{metric_payload::MetricSeries, MetricPayload, SketchPayload};
 use serde::{Deserialize, Serialize};
 use stele::{Metric, MetricValue};
 use tracing::warn;
@@ -163,10 +163,31 @@ impl State {
     }
 }
 
+/// Longest metric name propjoe stores, in bytes (`model.MaxMetricLen`).
+const MAX_METRIC_NAME_LEN: usize = 350;
+/// Most tags propjoe keeps on a series (`model.MaxTagThresh`).
+const MAX_TAG_COUNT: usize = 100;
+/// Most resources propjoe keeps on a series (`model.MaxResourceThresh`).
+const MAX_RESOURCE_COUNT: usize = 500;
+
+/// Whether propjoe's v2 ingest keeps this series. It drops any series with an invalid metric
+/// name (`ValidateMetricName`: empty, over `MaxMetricLen` bytes, or no ASCII-alphabetic byte),
+/// more than `MaxTagThresh` tags, or more than `MaxResourceThresh` resources. Matching keeps
+/// our captured context set equal to what production would store.
+pub(crate) fn series_kept_by_intake(series: &MetricSeries) -> bool {
+    let name = series.metric.as_str();
+    let name_ok =
+        !name.is_empty() && name.len() <= MAX_METRIC_NAME_LEN && name.bytes().any(|b| b.is_ascii_alphabetic());
+    name_ok && series.tags.len() <= MAX_TAG_COUNT && series.resources.len() <= MAX_RESOURCE_COUNT
+}
+
 /// Decodes a `/api/v2/series` payload into contexts with stele's `Metric::try_from_series_v2`.
 fn observe_series(target: Target, payload: MetricPayload) -> Vec<Context> {
     let mut contexts = Vec::new();
     for series in payload.series {
+        if !series_kept_by_intake(&series) {
+            continue;
+        }
         let mut single = MetricPayload::new();
         single.series.push(series);
         match Metric::try_from_series_v2(single) {

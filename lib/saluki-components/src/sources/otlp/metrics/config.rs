@@ -1,49 +1,18 @@
 use std::time::Duration;
 
+use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
 use saluki_error::{generic_error, GenericError};
 
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
 const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
-
-// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L131-L140
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-#[derive(Default)]
-pub enum HistogramMode {
-    NoBuckets,
-    Counters,
-    #[default]
-    Distributions,
-}
-
-// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L178-L190
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-#[derive(Default)]
-pub enum NumberMode {
-    #[default]
-    CumulativeToDelta,
-    RawValue,
-}
-
-// https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go#L209-L224
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-#[derive(Default)]
-pub enum InitialCumulMonoValueMode {
-    #[default]
-    Auto,
-    Drop,
-    Keep,
-}
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub struct OtlpMetricsTranslatorConfig {
     pub hist_mode: HistogramMode,
     pub send_histogram_aggregations: bool,
-    pub number_mode: NumberMode,
-    pub initial_cumul_mono_value_mode: InitialCumulMonoValueMode,
+    pub cumulative_monotonic_mode: CumulativeMonotonicMode,
+    pub initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
     pub instrumentation_scope_metadata_as_tags: bool,
     pub instrumentation_library_metadata_as_tags: bool,
     // Whether scalar resource attributes should be added as raw tags on emitted metrics, in
@@ -86,10 +55,10 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
-    pub fn with_initial_cumul_mono_value_mode(
-        mut self, initial_cumul_mono_value_mode: InitialCumulMonoValueMode,
+    pub fn with_initial_cumulative_monotonic_value(
+        mut self, initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
     ) -> Self {
-        self.initial_cumul_mono_value_mode = initial_cumul_mono_value_mode;
+        self.initial_cumulative_monotonic_value = initial_cumulative_monotonic_value;
         self
     }
 
@@ -98,8 +67,8 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
-    pub fn with_number_mode(mut self, number_mode: NumberMode) -> Self {
-        self.number_mode = number_mode;
+    pub fn with_cumulative_monotonic_mode(mut self, cumulative_monotonic_mode: CumulativeMonotonicMode) -> Self {
+        self.cumulative_monotonic_mode = cumulative_monotonic_mode;
         self
     }
 
@@ -151,8 +120,8 @@ impl Default for OtlpMetricsTranslatorConfig {
         Self {
             hist_mode: HistogramMode::default(),
             send_histogram_aggregations: false,
-            number_mode: NumberMode::default(),
-            initial_cumul_mono_value_mode: InitialCumulMonoValueMode::default(),
+            cumulative_monotonic_mode: CumulativeMonotonicMode::default(),
+            initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue::default(),
             instrumentation_scope_metadata_as_tags: true,
             instrumentation_library_metadata_as_tags: false,
             resource_attributes_as_tags: false,

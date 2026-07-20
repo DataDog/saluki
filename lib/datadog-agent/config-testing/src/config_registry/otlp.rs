@@ -256,6 +256,28 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `otlp_config.metrics.histograms.mode`-OTLP histogram bucket reporting mode
+    OTLP_CONFIG_METRICS_HISTOGRAMS_MODE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_HISTOGRAMS_MODE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::OTLP_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#""counters""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.metrics.histograms.send_aggregation_metrics`-Emit OTLP histogram aggregation metrics.
+    OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::OTLP_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `otlp_config.metrics.resource_attributes_as_tags`-Add scalar resource attributes as raw tags.
     OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS,
@@ -265,6 +287,28 @@ crate::declare_annotations! {
         used_by: &[structs::OTLP_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.metrics.sums.cumulative_monotonic_mode`-Cumulative monotonic sum reporting mode.
+    OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::OTLP_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#""raw_value""#),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.metrics.sums.initial_cumulative_monotonic_value`-Initial cumulative sum reporting behavior.
+    OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::OTLP_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#""drop""#),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
     /// `otlp_config.metrics.tags`-Comma-separated tags for all OTLP metrics.

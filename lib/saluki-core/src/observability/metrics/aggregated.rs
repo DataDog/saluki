@@ -313,16 +313,7 @@ mod tests {
     use crate::data_model::event::{metric::Metric, Event};
 
     fn process_metrics(metrics: Vec<Event>) -> Vec<(String, AggregatedMetricValue)> {
-        let processor = AggregatedMetricsProcessor;
-        let state = processor.build_initial_state();
-
-        processor.process(
-            MetricsSnapshot {
-                upserts: metrics,
-                evictions: Vec::new(),
-            },
-            &state,
-        );
+        let state = super::super::aggregate_upserts(metrics);
 
         let mut result = Vec::new();
         state.visit_metrics(|context, value| {

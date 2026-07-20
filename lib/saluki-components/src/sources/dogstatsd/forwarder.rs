@@ -172,3 +172,88 @@ impl PacketForwarder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{net::SocketAddr, time::Duration};
+
+    use bytes::Bytes;
+    use saluki_core::components::ComponentContext;
+    use saluki_io::net::ListenAddress;
+    use stringtheory::MetaString;
+    use tokio::{net::UdpSocket, time::timeout};
+
+    use super::super::metrics::build_metrics;
+    use super::{PacketForwarder, PacketForwarderTarget};
+
+    fn build_forwarder(host: &str, port: u16) -> PacketForwarder {
+        let context = ComponentContext::test_source("dogstatsd_forwarder_test");
+        let listen_addr = ListenAddress::Udp("127.0.0.1:0".parse::<SocketAddr>().expect("valid listen addr"));
+        let metrics = build_metrics(&listen_addr, &context, false);
+        PacketForwarderTarget::new(MetaString::from(host), port).to_forwarder(metrics)
+    }
+
+    #[tokio::test]
+    async fn connect_enables_forwarding_and_delivers_payload() {
+        // Connecting to a live UDP target enables forwarding, and `forward` delivers the payload verbatim.
+        let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
+        let target_addr = target.local_addr().expect("target should have an address");
+
+        let forwarder = build_forwarder(&target_addr.ip().to_string(), target_addr.port());
+        forwarder.connect().await;
+        assert!(
+            forwarder.connected.get().is_some(),
+            "connecting to a live target must enable forwarding"
+        );
+
+        forwarder.forward(Bytes::from_static(b"metric.name:1|c")).await;
+
+        let mut buf = [0u8; 64];
+        let received = timeout(Duration::from_secs(5), target.recv(&mut buf))
+            .await
+            .expect("forwarded payload should arrive before the timeout")
+            .expect("recv should succeed");
+        assert_eq!(&buf[..received], b"metric.name:1|c");
+    }
+
+    #[tokio::test]
+    async fn connect_is_idempotent() {
+        // A second connect must not replace the already-established sender (the `OnceLock::set` is a no-op once set).
+        let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
+        let target_addr = target.local_addr().expect("target should have an address");
+        let forwarder = build_forwarder(&target_addr.ip().to_string(), target_addr.port());
+
+        forwarder.connect().await;
+        let first = forwarder
+            .connected
+            .get()
+            .expect("first connect should enable forwarding")
+            .clone();
+
+        forwarder.connect().await;
+        let second = forwarder
+            .connected
+            .get()
+            .expect("forwarding should stay enabled after a second connect");
+
+        assert!(
+            second.same_channel(&first),
+            "a second connect must keep the original sender, not replace it"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_failure_leaves_forwarding_disabled() {
+        // When the target can't be connected (here, an unresolvable host), forwarding stays disabled: `connected` is
+        // never set, and `forward` becomes a safe no-op rather than panicking.
+        let forwarder = build_forwarder("invalid host", 8125);
+        forwarder.connect().await;
+        assert!(
+            forwarder.connected.get().is_none(),
+            "a failed connect must leave forwarding disabled"
+        );
+
+        // Must not panic even though forwarding is disabled.
+        forwarder.forward(Bytes::from_static(b"metric.name:1|c")).await;
+    }
+}

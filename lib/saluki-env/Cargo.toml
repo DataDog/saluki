@@ -8,6 +8,10 @@ repository = { workspace = true }
 [lints]
 workspace = true
 
+[features]
+# Exposes in-memory test doubles (e.g. `TestWorkloadProvider`) for downstream crates to use as a dev-dependency.
+test-util = []
+
 [dependencies]
 arc-swap = { workspace = true }
 async-stream = { workspace = true }
@@ -39,4 +43,5 @@ twox-hash = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+saluki-config = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

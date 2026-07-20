@@ -1773,78 +1773,111 @@ mod tests {
     const SEMCONV_HTTP_RESPONSE_STATUS_CODE: &str = "http.response.status_code";
     const SEMCONV_DB_NAMESPACE: &str = "db.namespace";
 
+    /// A single attribute-precedence case for the `get_otel_*` string extractors.
+    ///
+    /// `get_otel_env`, `get_otel_version`, and `get_otel_container_id` share an identical signature and precedence
+    /// contract (span attributes win over resource attributes, Datadog-namespaced keys are honored, and
+    /// `ignore_missing_datadog_fields` suppresses the semantic-convention fallback), so their tests share this case
+    /// shape and the `run_attribute_extraction_cases` runner rather than each redefining an identical harness.
+    struct AttributeExtractionCase {
+        name: &'static str,
+        span_attrs: Vec<KeyValue>,
+        resource_attrs: Vec<KeyValue>,
+        expected: &'static str,
+        ignore_missing_datadog_fields: bool,
+    }
+
+    /// Drives `extractor` over every case with a shared interner/string builder and asserts the extracted string
+    /// equals the case's `expected` value, reporting the failing case name.
+    #[allow(clippy::type_complexity)]
+    fn run_attribute_extraction_cases(
+        extractor: fn(
+            &[KeyValue],
+            &[KeyValue],
+            bool,
+            &GenericMapInterner,
+            &mut StringBuilder<GenericMapInterner>,
+        ) -> MetaString,
+        cases: Vec<AttributeExtractionCase>,
+    ) {
+        let interner = test_interner();
+        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
+        for tc in cases {
+            let result = extractor(
+                &tc.span_attrs,
+                &tc.resource_attrs,
+                tc.ignore_missing_datadog_fields,
+                &interner,
+                &mut string_builder,
+            );
+            assert_eq!(result.as_ref(), tc.expected, "test case: {}", tc.name);
+        }
+    }
+
     /// TestGetOTelEnv - Tests GetOTelEnv function
     /// Note: The Rust implementation doesn't have a direct GetOTelEnv function,
     /// but the logic is embedded in `otel_span_to_dd_span`. This test verifies
     /// the expected behavior based on Go's test cases.
     #[test]
     fn test_get_otel_env() {
-        struct TestCase {
-            name: &'static str,
-            span_attrs: Vec<KeyValue>,
-            resource_attrs: Vec<KeyValue>,
-            expected: &'static str,
-            ignore_missing_datadog_fields: bool,
-        }
-
         let test_cases = vec![
-            TestCase {
+            AttributeExtractionCase {
                 name: "neither set",
                 span_attrs: vec![],
                 resource_attrs: vec![],
                 expected: "",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "only in resource (semconv127)",
                 span_attrs: vec![],
                 resource_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT_NAME, "env-res-127")],
                 expected: "env-res-127",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "only in resource (semconv117)",
                 span_attrs: vec![],
                 resource_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT, "env-res")],
                 expected: "env-res",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "only in span (semconv127)",
                 span_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT_NAME, "env-span-127")],
                 resource_attrs: vec![],
                 expected: "env-span-127",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "only in span (semconv117)",
                 span_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT, "env-span")],
                 resource_attrs: vec![],
                 expected: "env-span",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "both set (span wins)",
                 span_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT, "env-span")],
                 resource_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT, "env-res")],
                 expected: "env-span",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "normalization",
                 span_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT, "  ENV ")],
                 resource_attrs: vec![],
                 expected: "_env",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "ignore missing datadog fields",
                 span_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT, "env-span")],
                 resource_attrs: vec![kv_str(SEMCONV_DEPLOYMENT_ENVIRONMENT, "env-span")],
                 expected: "",
                 ignore_missing_datadog_fields: true,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "read from datadog fields",
                 span_attrs: vec![
                     kv_str(KEY_DATADOG_ENVIRONMENT, "env-span"),
@@ -1859,18 +1892,7 @@ mod tests {
             },
         ];
 
-        let interner = test_interner();
-        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
-        for tc in test_cases {
-            let result = get_otel_env(
-                &tc.span_attrs,
-                &tc.resource_attrs,
-                tc.ignore_missing_datadog_fields,
-                &interner,
-                &mut string_builder,
-            );
-            assert_eq!(result.as_ref(), tc.expected, "test case: {}", tc.name);
-        }
+        run_attribute_extraction_cases(get_otel_env, test_cases);
     }
 
     #[test]
@@ -1920,58 +1942,50 @@ mod tests {
     /// TestGetOTelVersion - Tests GetOTelVersion function
     #[test]
     fn test_get_otel_version() {
-        struct TestCase {
-            name: &'static str,
-            span_attrs: Vec<KeyValue>,
-            resource_attrs: Vec<KeyValue>,
-            expected: &'static str,
-            ignore_missing_datadog_fields: bool,
-        }
-
         let test_cases = vec![
-            TestCase {
+            AttributeExtractionCase {
                 name: "neither set",
                 span_attrs: vec![],
                 resource_attrs: vec![],
                 expected: "",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "only in resource",
                 span_attrs: vec![],
                 resource_attrs: vec![kv_str(SEMCONV_SERVICE_VERSION, "v1")],
                 expected: "v1",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "only in span",
                 span_attrs: vec![kv_str(SEMCONV_SERVICE_VERSION, "v3")],
                 resource_attrs: vec![],
                 expected: "v3",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "both set (span wins)",
                 span_attrs: vec![kv_str(SEMCONV_SERVICE_VERSION, "v3")],
                 resource_attrs: vec![kv_str(SEMCONV_SERVICE_VERSION, "v4")],
                 expected: "v3",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "normalization",
                 span_attrs: vec![kv_str(SEMCONV_SERVICE_VERSION, "  V1 ")],
                 resource_attrs: vec![],
                 expected: "_v1",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "ignore missing datadog fields",
                 span_attrs: vec![kv_str(SEMCONV_SERVICE_VERSION, "v3")],
                 resource_attrs: vec![kv_str(SEMCONV_SERVICE_VERSION, "v4")],
                 expected: "",
                 ignore_missing_datadog_fields: true,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "read from datadog fields",
                 span_attrs: vec![
                     kv_str(KEY_DATADOG_VERSION, "v3"),
@@ -1986,75 +2000,56 @@ mod tests {
             },
         ];
 
-        let interner = test_interner();
-        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
-        for tc in test_cases {
-            let result = get_otel_version(
-                &tc.span_attrs,
-                &tc.resource_attrs,
-                tc.ignore_missing_datadog_fields,
-                &interner,
-                &mut string_builder,
-            );
-            assert_eq!(result.as_ref(), tc.expected, "test case: {}", tc.name);
-        }
+        run_attribute_extraction_cases(get_otel_version, test_cases);
     }
 
     /// TestGetOTelContainerID - Tests GetOTelContainerID function
     #[test]
     fn test_get_otel_container_id() {
-        struct TestCase {
-            name: &'static str,
-            span_attrs: Vec<KeyValue>,
-            resource_attrs: Vec<KeyValue>,
-            expected: &'static str,
-            ignore_missing_datadog_fields: bool,
-        }
-
         let test_cases = vec![
-            TestCase {
+            AttributeExtractionCase {
                 name: "neither set",
                 span_attrs: vec![],
                 resource_attrs: vec![],
                 expected: "",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "only in resource",
                 span_attrs: vec![],
                 resource_attrs: vec![kv_str(SEMCONV_CONTAINER_ID, "cid-res")],
                 expected: "cid-res",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "only in span",
                 span_attrs: vec![kv_str(SEMCONV_CONTAINER_ID, "cid-span")],
                 resource_attrs: vec![],
                 expected: "cid-span",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "both set (span wins)",
                 span_attrs: vec![kv_str(SEMCONV_CONTAINER_ID, "cid-span")],
                 resource_attrs: vec![kv_str(SEMCONV_CONTAINER_ID, "cid-res")],
                 expected: "cid-span",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "normalization",
                 span_attrs: vec![kv_str(SEMCONV_CONTAINER_ID, "  CID ")],
                 resource_attrs: vec![],
                 expected: "_cid",
                 ignore_missing_datadog_fields: false,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "ignore missing datadog fields",
                 span_attrs: vec![kv_str(SEMCONV_CONTAINER_ID, "cid-span")],
                 resource_attrs: vec![kv_str(SEMCONV_CONTAINER_ID, "cid-span")],
                 expected: "",
                 ignore_missing_datadog_fields: true,
             },
-            TestCase {
+            AttributeExtractionCase {
                 name: "read from datadog fields",
                 span_attrs: vec![
                     kv_str(KEY_DATADOG_CONTAINER_ID, "cid-span"),
@@ -2069,18 +2064,7 @@ mod tests {
             },
         ];
 
-        let interner = test_interner();
-        let mut string_builder = StringBuilder::new().with_interner(interner.clone());
-        for tc in test_cases {
-            let result = get_otel_container_id(
-                &tc.span_attrs,
-                &tc.resource_attrs,
-                tc.ignore_missing_datadog_fields,
-                &interner,
-                &mut string_builder,
-            );
-            assert_eq!(result.as_ref(), tc.expected, "test case: {}", tc.name);
-        }
+        run_attribute_extraction_cases(get_otel_container_id, test_cases);
     }
 
     /// TestGetOTelStatusCode - Tests GetOTelStatusCode function

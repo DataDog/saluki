@@ -24,6 +24,22 @@ static SKETCH_CONFIG: Config = Config::new(
 );
 const MAX_BIN_WIDTH: u32 = u32::MAX;
 
+#[cfg(feature = "serde")]
+mod serde_helpers {
+    use serde::{Deserialize, Deserializer};
+
+    /// Deserializes an `f64` field, restoring JSON `null` to `NaN`.
+    ///
+    /// `serde_json` serializes non-finite floating-point values as `null`. This preserves the value's non-finite
+    /// semantics when a sketch is round-tripped through JSON without fabricating a zero value.
+    pub(super) fn null_as_nan<'de, D>(deserializer: D) -> Result<f64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or(f64::NAN))
+    }
+}
+
 /// [DDSketch][ddsketch] implementation based on the [Datadog Agent][ddagent].
 ///
 /// This implementation is subtly different from the open-source implementations of `DDSketch`, as Datadog made some
@@ -62,15 +78,19 @@ pub struct DDSketch {
     count: u64,
 
     /// The minimum value of all observations within the sketch.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_nan"))]
     min: f64,
 
     /// The maximum value of all observations within the sketch.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_nan"))]
     max: f64,
 
     /// The sum of all observations within the sketch.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_nan"))]
     sum: f64,
 
     /// The average value of all observations within the sketch.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "serde_helpers::null_as_nan"))]
     avg: f64,
 }
 
@@ -159,6 +179,11 @@ impl DDSketch {
         }
     }
 
+    /// Returns the stored sum summary field without considering the sample count.
+    pub fn stored_sum(&self) -> f64 {
+        self.sum
+    }
+
     /// Average value seen by this sketch.
     ///
     /// Returns `None` if the sketch is empty.
@@ -168,6 +193,21 @@ impl DDSketch {
         } else {
             Some(self.avg)
         }
+    }
+
+    /// Returns the stored average summary field without considering the sample count.
+    pub fn stored_avg(&self) -> f64 {
+        self.avg
+    }
+
+    /// Returns the stored minimum summary field without considering the sample count.
+    pub fn stored_min(&self) -> f64 {
+        self.min
+    }
+
+    /// Returns the stored maximum summary field without considering the sample count.
+    pub fn stored_max(&self) -> f64 {
+        self.max
     }
 
     /// Returns the current bins of this sketch.
@@ -478,15 +518,21 @@ impl DDSketch {
         }
 
         for bucket in buckets {
+            let original_upper = bucket.upper_limit;
             let mut upper = bucket.upper_limit;
             if upper.is_sign_positive() && upper.is_infinite() {
                 upper = lower;
             } else if lower.is_sign_negative() && lower.is_infinite() {
                 lower = upper;
+            } else if lower == 0.0 && upper > 0.0 {
+                // OpenTelemetry explicit buckets use (lower, upper]. After a zero boundary, the
+                // next bucket is (0, upper] and excludes zero. Collapse interpolation to `upper`
+                // so it does not add samples at zero.
+                lower = upper;
             }
 
             self.insert_interpolate_bucket(lower, upper, bucket.count);
-            lower = bucket.upper_limit;
+            lower = original_upper;
         }
 
         Ok(())
@@ -548,19 +594,31 @@ impl DDSketch {
     ///
     /// All samples present in the other sketch will be correctly represented in this sketch, and summary statistics
     /// such as the sum, average, count, min, and max, will represent the sum of samples from both sketches.
+    ///
+    /// A zero-count sketch can retain bins after an upstream cumulative-to-delta conversion. Its summary fields do not
+    /// describe samples in the current interval, so they do not contribute to the merged summary. Its bins are still
+    /// merged.
     pub fn merge(&mut self, other: &DDSketch) {
-        // Merge the basic statistics together.
-        self.count += other.count;
-        if other.max > self.max {
-            self.max = other.max;
-        }
-        if other.min < self.min {
+        // Zero-count destination matches other summary but does not affect an existing summary
+        if self.count == 0 {
+            self.count = other.count;
             self.min = other.min;
+            self.max = other.max;
+            self.sum = other.sum;
+            self.avg = other.avg;
+        } else if other.count > 0 {
+            self.count += other.count;
+            if other.max > self.max {
+                self.max = other.max;
+            }
+            if other.min < self.min {
+                self.min = other.min;
+            }
+            self.sum += other.sum;
+            self.avg = self.avg + (other.avg - self.avg) * other.count as f64 / self.count as f64;
         }
-        self.sum += other.sum;
-        self.avg = self.avg + (other.avg - self.avg) * other.count as f64 / self.count as f64;
 
-        // Now merge the bins.
+        // Merge the bins regardless of the summary count.
         let mut temp = SmallVec::<[Bin; 4]>::new();
 
         let mut bins_idx = 0;
@@ -859,6 +917,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn interpolate_buckets_does_not_seed_zero_bin_for_positive_bucket_after_zero_bound() {
+        let mut sketch = DDSketch::default();
+
+        sketch
+            .insert_interpolate_buckets(vec![
+                Bucket {
+                    upper_limit: 0.0,
+                    count: 0,
+                },
+                Bucket {
+                    upper_limit: 10.0,
+                    count: 10,
+                },
+            ])
+            .expect("buckets should interpolate");
+
+        assert_eq!(sketch.count(), 10);
+        assert!(
+            sketch.min().expect("sketch should not be empty") > 0.0,
+            "positive bucket after a zero lower bound must not seed a zero minimum"
+        );
+    }
+
     /// When the accumulated missing mass plus the first kept bin's existing count exceeds
     /// u32::MAX, increment saturates at u32::MAX and the remainder is discarded.
     ///
@@ -902,6 +984,59 @@ mod tests {
         let mut bins = make_bins(&pairs);
         trim_left(&mut bins, 4);
         assert_eq!(to_pairs(&bins), vec![(6, 7), (7, 1), (8, 1), (9, 1)]);
+    }
+
+    #[test]
+    fn merge_handles_zero_count_summaries_without_dropping_bins() {
+        for (name, destination_is_zero_count, source_is_zero_count, expected_summary) in [
+            ("zero-count source", false, true, 10.0),
+            ("zero-count destination", true, false, 20.0),
+        ] {
+            let mut destination = DDSketch::default();
+            destination.insert(10.0);
+
+            let mut source = DDSketch::default();
+            source.insert(20.0);
+
+            if destination_is_zero_count {
+                destination.set_count(0);
+                destination.set_min(-1.0);
+                destination.set_max(100.0);
+                destination.set_sum(999.0);
+                destination.set_avg(f64::NAN);
+            }
+
+            if source_is_zero_count {
+                source.set_count(0);
+                source.set_min(-1.0);
+                source.set_max(100.0);
+                source.set_sum(999.0);
+                source.set_avg(f64::NAN);
+            }
+
+            destination.merge(&source);
+
+            assert_eq!(destination.count(), 1, "{name}");
+            assert_eq!(destination.stored_min(), expected_summary, "{name}");
+            assert_eq!(destination.stored_max(), expected_summary, "{name}");
+            assert_eq!(destination.stored_sum(), expected_summary, "{name}");
+            assert_eq!(destination.stored_avg(), expected_summary, "{name}");
+            assert_eq!(destination.bin_count(), 2, "{name}");
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn json_null_summary_round_trips_as_nan() {
+        let mut sketch = DDSketch::default();
+        sketch.insert(42.0);
+        sketch.set_avg(f64::NAN);
+
+        let encoded = serde_json::to_string(&sketch).expect("sketch should serialize");
+        assert!(encoded.contains("\"avg\":null"));
+
+        let decoded: DDSketch = serde_json::from_str(&encoded).expect("sketch should deserialize");
+        assert!(decoded.avg().expect("sketch should not be empty").is_nan());
     }
 }
 

@@ -87,6 +87,7 @@ RUN --mount=type=cache,target=/tools/target,id=antithesis-tools-target \
     cp /tools/target/release/antithesis-intake /usr/local/bin/antithesis-intake && \
     cp /tools/target/release/parallel_driver_send_dogstatsd /usr/local/bin/parallel_driver_send_dogstatsd && \
     cp /tools/target/release/parallel_driver_sketchburst /usr/local/bin/parallel_driver_sketchburst && \
+    cp /tools/target/release/parallel_driver_poll_stats /usr/local/bin/parallel_driver_poll_stats && \
     cp /tools/target/release/eventually_adp_alive /usr/local/bin/eventually_adp_alive && \
     cp /tools/target/release/first_sample_config /usr/local/bin/first_sample_config
 
@@ -125,7 +126,7 @@ ENTRYPOINT ["/usr/local/bin/antithesis-intake"]
 # ---------------------------------------------------------------------------
 FROM build-base AS agent-symbols
 # Version bumped by .github/workflows/update-agent-version.yml alongside .datadog-agent-version.
-ARG DD_AGENT_VERSION=7.81.0
+ARG DD_AGENT_VERSION=7.81.1
 ARG TARGETARCH=amd64
 RUN curl -fsSL -o /tmp/agent-dbg.deb \
         "https://s3.amazonaws.com/apt.datadoghq.com/pool/d/da/datadog-agent-dbg_${DD_AGENT_VERSION}-1_${TARGETARCH}.deb" && \
@@ -151,6 +152,7 @@ COPY test/antithesis/scenarios/general/workload/test/ /opt/antithesis/test/
 COPY --from=tools-builder --chmod=755 /usr/local/bin/first_sample_config /opt/antithesis/test/v1/main/first_sample_config
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_send_dogstatsd /opt/antithesis/test/v1/main/parallel_driver_send_dogstatsd
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_sketchburst /opt/antithesis/test/v1/main/parallel_driver_sketchburst
+COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_poll_stats /opt/antithesis/test/v1/main/parallel_driver_poll_stats
 COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_adp_alive /opt/antithesis/test/v1/main/eventually_adp_alive
 # Datadog Agent debug symbols. Antithesis scans /symbols in every pushed image and
 # matches by build-id, so this symbolizes the Core Agent running in the SUT.

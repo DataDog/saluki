@@ -110,3 +110,77 @@ impl<T: Poolable> ReclaimStrategy<T> for OnDemandStrategy<T> {
         self.metrics.in_use().decrement(1.0);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use saluki_metrics::test::TestRecorder;
+    use tokio_test::{assert_ready, task::spawn};
+
+    use super::*;
+    use crate::pooled;
+
+    pooled! {
+        struct PooledValue {
+            value: u32,
+        }
+
+        clear => |this| this.value = 0
+    }
+
+    impl std::fmt::Debug for PooledValue {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("PooledValue").finish_non_exhaustive()
+        }
+    }
+
+    #[test]
+    fn allocates_a_fresh_item_on_every_acquire_without_blocking() {
+        let recorder = TestRecorder::default();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let pool = OnDemandObjectPool::<PooledValue>::new("test");
+
+        // Documented contract: this pool performs no actual pooling. Every acquire builds a brand-new
+        // item and completes immediately, even while a previously-acquired item is still outstanding
+        // (a fixed-size pool would instead block on the second acquire here).
+        let mut first_acquire = spawn(pool.acquire());
+        let first = assert_ready!(first_acquire.poll());
+        let mut second_acquire = spawn(pool.acquire());
+        let second = assert_ready!(second_acquire.poll());
+
+        // Both acquisitions allocated on demand, so two items were created and two are in use.
+        assert_eq!(
+            recorder.counter((PoolMetrics::created_name(), &[("pool_name", "test")])),
+            Some(2)
+        );
+        assert_eq!(
+            recorder.gauge((PoolMetrics::in_use_name(), &[("pool_name", "test")])),
+            Some(2.0)
+        );
+
+        // Releasing items drops them (nothing is retained) and drives the in-use gauge back to zero.
+        drop(first);
+        drop(second);
+        assert_eq!(
+            recorder.counter((PoolMetrics::released_name(), &[("pool_name", "test")])),
+            Some(2)
+        );
+        assert_eq!(
+            recorder.gauge((PoolMetrics::in_use_name(), &[("pool_name", "test")])),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn reports_effectively_unbounded_capacity() {
+        // The pool never enforces a ceiling, which it advertises via the capacity gauge as `usize::MAX`.
+        let recorder = TestRecorder::default();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        let _pool = OnDemandObjectPool::<PooledValue>::new("test");
+        assert_eq!(
+            recorder.gauge((PoolMetrics::capacity_name(), &[("pool_name", "test")])),
+            Some(usize::MAX as f64)
+        );
+    }
+}

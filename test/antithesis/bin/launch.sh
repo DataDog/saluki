@@ -15,7 +15,7 @@
 #   SCENARIO_DESCRIPTION    human description; the git commit is appended
 #   SCENARIO_FAULT_NODES    space-separated SUT container names to node-fault;
 #                           empty means no node termination/hang/throttle at all
-#   SCENARIO_WEBHOOK        optional; tenant webhook, default persistent_storage
+#   SCENARIO_WEBHOOK        optional; tenant webhook, default run_test
 #
 # Required environment, read by snouty:
 #   ANTITHESIS_TENANT       tenant name
@@ -27,8 +27,12 @@
 #   TEST_NAME=<name>        default SCENARIO_TEST_NAME
 #   DESCRIPTION=<text>      default SCENARIO_DESCRIPTION; commit is appended
 #   FAULT_NODES=<names>     default SCENARIO_FAULT_NODES
-#   WEBHOOK=<name>          default SCENARIO_WEBHOOK or persistent_storage
-#   SOURCE=<identifier>     property-history key; default is the git branch
+#   WEBHOOK=<name>          default SCENARIO_WEBHOOK or run_test
+#   SOURCE=<identifier>     antithesis.source, default datadog_agent
+#   SIMULTANEOUS_FAULTS=<bool>       default false. Same node faults on all
+#                                    FAULT_NODES at once, no-op without FAULT_NODES
+#   FORCE_DISABLE_ALL_FAULTS=<bool>  default false. Master switch over every
+#                                    fault above, runs with none
 #   DRY_RUN=1               print the exact command and exit without submitting
 set -euo pipefail
 
@@ -61,39 +65,51 @@ if [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
 fi
 export ANTITHESIS_IMAGE_TAG="$GIT_SHA"
 
-WEBHOOK="${WEBHOOK:-${SCENARIO_WEBHOOK:-persistent_storage}}"
+WEBHOOK="${WEBHOOK:-${SCENARIO_WEBHOOK:-run_test}}"
 DURATION="${DURATION:-30}"
 TEST_NAME="${TEST_NAME:-${SCENARIO_TEST_NAME:?launch.env must set SCENARIO_TEST_NAME}}"
 DESCRIPTION="${DESCRIPTION:-$SCENARIO_DESCRIPTION} (commit ${GIT_SHA})"
 # May be empty: an empty node list means no node faults for this scenario.
 FAULT_NODES="${FAULT_NODES-$SCENARIO_FAULT_NODES}"
+# run_test global fault toggles. Defaults match the endpoint defaults so a plain
+# shot behaves as it did before the move off persistent_storage.
+SIMULTANEOUS_FAULTS="${SIMULTANEOUS_FAULTS:-false}"
+FORCE_DISABLE_ALL_FAULTS="${FORCE_DISABLE_ALL_FAULTS:-false}"
 
-# Property-history key. Passing --source makes the run tracked, not ephemeral,
-# so findings are produced and each property's history is grouped by this key.
-# Default to the branch so history follows the branch; without it snouty runs
-# ephemeral and no findings are available to triage.
-SOURCE="${SOURCE:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
+# antithesis.source. On the unified run_test endpoint this one identifier both
+# selects the datadog_agent customization block -- title "Datadog Agent" and the
+# 20 GB VM bump -- and groups this project's property history under a single
+# datadog_agent bucket. It also tracks the run rather than running it ephemeral.
+# Without it snouty runs ephemeral and surfaces no findings to triage. Fixed to
+# datadog_agent for every shot so all runs share one history and the right
+# customizations.
+SOURCE="${SOURCE:-datadog_agent}"
 
-# Pinned fault profile, submitted to the persistent_storage endpoint. cpu_mod and
+# Pinned fault profile, submitted to the run_test endpoint. cpu_mod and
 # clock_jitter are global and symmetric, so every scenario gets them; clock_jitter
 # is what exercises the AWS-LC CPU-jitter entropy path. Network faults stay on
-# everywhere and heal before judging.
+# everywhere and heal before judging. force_disable_all_faults rides at its false
+# default so the shot is self-describing. Flip it to true to run one fault-free
+# shot without editing anything else.
 #
 # Node termination, hang, and throttle apply only to the containers in FAULT_NODES,
 # so a scenario gets none by leaving it empty. The differential A/B does: node
 # termination, hang, or throttle on one SUT but not the other -- or on both at
 # different times -- drops data unevenly and manufactures a divergence that is a
 # fault artifact, not an ADP defect. All three are unfair for the same reason, so
-# all three are gated together on FAULT_NODES.
+# all three are gated together on FAULT_NODES. simultaneous_faults rides with them
+# because it only means anything when node faults hit two or more containers.
 FAULTS=(
   --param custom.cpu_mod=true
   --param custom.clock_jitter=true
+  --param custom.force_disable_all_faults="$FORCE_DISABLE_ALL_FAULTS"
 )
 if [[ -n "$FAULT_NODES" ]]; then
   FAULTS+=(
     --param custom.include_for_node_termination="$FAULT_NODES"
     --param custom.include_for_node_hang="$FAULT_NODES"
     --param custom.include_for_node_throttle="$FAULT_NODES"
+    --param custom.simultaneous_faults="$SIMULTANEOUS_FAULTS"
   )
 fi
 

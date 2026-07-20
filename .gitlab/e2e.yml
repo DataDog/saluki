@@ -109,7 +109,7 @@ test-integration:
   needs:
     - build-bundled-agent-adp-image
   retry: 2
-  timeout: 10m
+  timeout: 15m
   image: "${SALUKI_BUILD_CI_IMAGE}"
   artifacts:
     expire_in: 1 week

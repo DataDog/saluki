@@ -2,11 +2,13 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
 use ::ddsketch::canonical::mapping::IndexMapping;
+use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
 use datadog_protos::metrics::Dogsketch;
 use ddsketch::canonical::mapping::LogarithmicMapping;
 use ddsketch::canonical::store::DenseStore;
@@ -29,7 +31,7 @@ use stringtheory::MetaString;
 use tracing::{debug, trace, warn};
 
 use super::cache::PointsCache;
-use super::config::{HistogramMode, NumberMode, OtlpMetricsTranslatorConfig};
+use super::config::OtlpMetricsTranslatorConfig;
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
@@ -37,7 +39,6 @@ use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
 use crate::common::otlp::attributes::translator::AttributeTranslator;
 use crate::common::otlp::attributes::{raw_origin_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::util::{Source, SourceKind};
-use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
 use crate::sources::otlp::Metrics;
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
@@ -107,6 +108,27 @@ fn get_bounds(explicit_bounds: &[f64], idx: usize) -> (f64, f64) {
     (lower, upper)
 }
 
+fn validate_histogram_buckets(point_dims: &Dimensions, p: &OtlpHistogramDataPoint) -> Result<(), GenericError> {
+    let bucket_count = p.bucket_counts.len();
+    let bound_count = p.explicit_bounds.len();
+    if bucket_count == 0 && bound_count != 0 {
+        return Err(generic_error!(
+            "Histogram '{}' has no bucket counts but {} explicit bounds; explicit bounds must be empty when bucket counts are empty.",
+            point_dims.name,
+            bound_count
+        ));
+    }
+    if bucket_count > 0 && bucket_count != bound_count + 1 {
+        return Err(generic_error!(
+            "Histogram '{}' has {} bucket counts but {} explicit bounds; bucket count must equal bound count plus one.",
+            point_dims.name,
+            bucket_count,
+            bound_count
+        ));
+    }
+    Ok(())
+}
+
 fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
     if start_ts == 0 || start_ts > ts {
         return 0;
@@ -121,46 +143,54 @@ fn infer_delta_interval(start_ts: u64, ts: u64) -> i64 {
     0
 }
 
-fn format_float(f: f64) -> String {
-    if f == f64::INFINITY {
-        return "inf".to_string();
-    } else if f == f64::NEG_INFINITY {
-        return "-inf".to_string();
-    } else if f.is_nan() {
-        return "nan".to_string();
-    } else if f == 0.0 {
-        return "0".to_string();
-    }
+/// Formats a float using Go semantics directly into the caller's output buffer.
+struct GoFloat(f64);
 
-    // Mirror Go's strconv.FormatFloat(f, 'g', -1, 64): switch to scientific
-    // notation below 1e-4 and at/above 1e6, with a zero-padded two-digit
-    // signed exponent.
-    if f.abs() < 1e-4 || f.abs() >= 1e6 {
-        let s = format!("{f:e}");
-        let (mantissa, exp_part) = s.split_once('e').expect("{:e} always contains 'e'");
-        let (sign, digits) = if let Some(d) = exp_part.strip_prefix('-') {
-            ("-", d)
-        } else {
-            ("+", exp_part.strip_prefix('+').unwrap_or(exp_part))
-        };
-        let s = if digits.len() < 2 {
-            format!("{mantissa}e{sign}0{digits}")
-        } else {
-            format!("{mantissa}e{sign}{digits}")
-        };
-        return if f == f.floor() { format!("{s}.0") } else { s };
-    }
+impl fmt::Display for GoFloat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let v = self.0;
+        if v == f64::INFINITY {
+            return f.write_str("inf");
+        } else if v == f64::NEG_INFINITY {
+            return f.write_str("-inf");
+        } else if v.is_nan() {
+            return f.write_str("nan");
+        } else if v == 0.0 {
+            return f.write_str("0");
+        }
 
-    let s = format!("{f}");
-    if f == f.floor() {
-        format!("{s}.0")
-    } else {
-        s
+        // Mirror Go's strconv.FormatFloat(f, 'g', -1, 64): switch to scientific
+        // notation below 1e-4 and at/above 1e6, with a zero-padded two-digit
+        // signed exponent.
+        if v.abs() < 1e-4 || v.abs() >= 1e6 {
+            let s = format!("{v:e}");
+            let (mantissa, exp_part) = s.split_once('e').expect("{:e} always contains 'e'");
+            let (sign, digits) = if let Some(d) = exp_part.strip_prefix('-') {
+                ("-", d)
+            } else {
+                ("+", exp_part.strip_prefix('+').unwrap_or(exp_part))
+            };
+            if digits.len() < 2 {
+                write!(f, "{mantissa}e{sign}0{digits}")?;
+            } else {
+                write!(f, "{mantissa}e{sign}{digits}")?;
+            }
+            if v == v.floor() {
+                f.write_str(".0")?;
+            }
+            return Ok(());
+        }
+
+        write!(f, "{v}")?;
+        if v == v.floor() {
+            f.write_str(".0")?;
+        }
+        Ok(())
     }
 }
 
 fn format_quantile_tag(quantile: f64) -> String {
-    "quantile:".to_string() + format_float(quantile).as_str()
+    format!("quantile:{}", GoFloat(quantile))
 }
 
 fn to_store(b: Option<&OtlpExponentialHistogramBuckets>) -> DenseStore {
@@ -579,11 +609,11 @@ impl OtlpMetricsTranslator {
                 OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
                     Ok(AggregationTemporality::Cumulative) => {
                         if sum.is_monotonic {
-                            match self.config.number_mode {
-                                NumberMode::CumulativeToDelta => {
+                            match self.config.cumulative_monotonic_mode {
+                                CumulativeMonotonicMode::ToDelta => {
                                     self.map_number_monotonic_metrics(base_dims, sum.data_points, &context)
                                 }
-                                NumberMode::RawValue => {
+                                CumulativeMonotonicMode::RawValue => {
                                     self.map_number_metrics(base_dims, sum.data_points, DataType::Gauge, &context)
                                 }
                             }
@@ -728,7 +758,7 @@ impl OtlpMetricsTranslator {
                     if is_skippable(quantile.value) {
                         continue;
                     }
-                    let quantile_dims = base_quantile_dims.add_tags(&[format_quantile_tag(quantile.quantile)]);
+                    let quantile_dims = base_quantile_dims.add_tags([format_quantile_tag(quantile.quantile)]);
                     self.record_metric_event(
                         &quantile_dims,
                         quantile.value,
@@ -875,6 +905,8 @@ impl OtlpMetricsTranslator {
         let mut explicit_bounds = p.explicit_bounds.clone();
 
         if bucket_counts.is_empty() && hist_info.ok {
+            explicit_bounds.clear();
+
             if hist_info.has_min_from_last_time_window {
                 bucket_counts.push(0);
                 explicit_bounds.push(p.min.unwrap_or(0.0));
@@ -895,9 +927,9 @@ impl OtlpMetricsTranslator {
             let (lower_bound, upper_bound) = get_bounds(&explicit_bounds, j);
             let (original_lower_bound, original_upper_bound) = (lower_bound, upper_bound);
 
-            let bucket_dims = point_dims.add_tags(&[
-                "lower_bound:".to_string() + format_float(lower_bound).as_str(),
-                "upper_bound:".to_string() + format_float(upper_bound).as_str(),
+            let bucket_dims = point_dims.add_tags([
+                format!("lower_bound:{}", GoFloat(lower_bound)),
+                format!("upper_bound:{}", GoFloat(upper_bound)),
             ]);
 
             let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
@@ -936,6 +968,12 @@ impl OtlpMetricsTranslator {
 
         if hist_info.ok {
             qa.set_count(hist_info.count);
+
+            if hist_info.count == 0 {
+                self.record_sketch_event(&point_dims, qa, ts, events, context, 0);
+                return Ok(());
+            }
+
             qa.set_sum(hist_info.sum);
             qa.set_avg(hist_info.sum / hist_info.count as f64);
         }
@@ -1005,7 +1043,7 @@ impl OtlpMetricsTranslator {
     fn get_legacy_buckets(
         &mut self, context: &TranslationContext, point_dims: Dimensions, p: OtlpHistogramDataPoint, delta: bool,
         events: &mut Vec<Event>,
-    ) {
+    ) -> Result<(), GenericError> {
         let start_ts = p.start_time_unix_nano;
         let ts = p.time_unix_nano;
 
@@ -1013,9 +1051,9 @@ impl OtlpMetricsTranslator {
         for idx in 0..p.bucket_counts.len() {
             let (lower_bound, upper_bound) = get_bounds(&p.explicit_bounds, idx);
 
-            let bucket_dims = base_bucket_dims.add_tags(&[
-                "lower_bound:".to_string() + format_float(lower_bound).as_str(),
-                "upper_bound:".to_string() + format_float(upper_bound).as_str(),
+            let bucket_dims = base_bucket_dims.add_tags([
+                format!("lower_bound:{}", GoFloat(lower_bound)),
+                format!("upper_bound:{}", GoFloat(upper_bound)),
             ]);
             let count = p.bucket_counts[idx];
             let (dx, ok) = self.prev_pts.diff(&bucket_dims, start_ts, ts, count as f64);
@@ -1025,6 +1063,7 @@ impl OtlpMetricsTranslator {
                 self.record_metric_event(&bucket_dims, dx, ts, DataType::Count, events, context);
             }
         }
+        Ok(())
     }
 
     fn map_histogram_metrics(
@@ -1043,6 +1082,13 @@ impl OtlpMetricsTranslator {
                 .resource_attributes_as_tags
                 .then_some(context.resource_attributes);
             let point_dims = base_dims.with_attribute_map(&dp.attributes, shadowing_resource_attributes);
+
+            // Validate before updating cumulative state.
+            if let Err(e) = validate_histogram_buckets(&point_dims, &dp) {
+                warn!(error = %e, "Failed to validate histogram buckets, dropping data point.");
+                continue;
+            }
+
             let mut hist_info = HistogramInfo {
                 ok: true,
                 ..Default::default()
@@ -1129,13 +1175,14 @@ impl OtlpMetricsTranslator {
                 }
             }
 
-            // TODO: Implement bucket-to-sketch conversion.
             match self.config.hist_mode {
                 HistogramMode::NoBuckets => {
                     continue;
                 }
                 HistogramMode::Counters => {
-                    self.get_legacy_buckets(context, point_dims, dp, delta, &mut events);
+                    if let Err(e) = self.get_legacy_buckets(context, point_dims, dp, delta, &mut events) {
+                        warn!(error = %e, "Failed to convert histogram buckets to counters, dropping data point.");
+                    }
                 }
                 HistogramMode::Distributions => {
                     if let Err(e) = self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info) {
@@ -1230,6 +1277,10 @@ impl OtlpMetricsTranslator {
                 }
             }
 
+            if self.config.hist_mode == HistogramMode::NoBuckets {
+                continue;
+            }
+
             let exp_hist_dd_sketch = match exponential_histogram_to_ddsketch(dp, delta) {
                 Ok(sketch) => sketch,
                 Err(e) => {
@@ -1290,13 +1341,13 @@ impl OtlpMetricsTranslator {
 
     /// Determines if the initial value of a cumulative monotonic metric should be consumed.
     fn should_consume_initial_value(&self, start_ts: u64, ts: u64) -> bool {
-        match self.config.initial_cumul_mono_value_mode {
-            InitialCumulMonoValueMode::Auto => {
+        match self.config.initial_cumulative_monotonic_value {
+            InitialCumulativeMonotonicValue::Auto => {
                 // We report the first value if the timeseries started after the translator process started.
                 self.process_start_time_ns < start_ts && start_ts != ts
             }
-            InitialCumulMonoValueMode::Keep => true,
-            InitialCumulMonoValueMode::Drop => false,
+            InitialCumulativeMonotonicValue::Keep => true,
+            InitialCumulativeMonotonicValue::Drop => false,
         }
     }
 }
@@ -1446,9 +1497,217 @@ mod tests {
         s * 1_000_000_000
     }
 
+    // Matches the Agent's rejection of malformed explicit histograms:
+    // https://github.com/DataDog/datadog-agent/blob/087bbbe6d66864dbc8374ed2c66f71f3c1259c36/pkg/opentelemetry-mapping-go/otlp/metrics/default_mapper.go#L348-L352
+    fn map_malformed_histogram(mode: HistogramMode, bucket_counts: Vec<u64>, explicit_bounds: Vec<f64>) -> Vec<Event> {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.hist_mode = mode;
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let dims = Dimensions {
+            name: "malformed.histogram".to_string(),
+            ..Default::default()
+        };
+        let point = OtlpHistogramDataPoint {
+            count: 1,
+            sum: Some(0.5),
+            bucket_counts,
+            explicit_bounds,
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+
+        translator.map_histogram_metrics(dims, vec![point], true, &context)
+    }
+
+    #[test]
+    fn mismatched_bucket_and_bound_lengths_emit_no_distribution() {
+        assert!(map_malformed_histogram(HistogramMode::Distributions, vec![1], vec![1.0, 2.0]).is_empty());
+    }
+
+    #[test]
+    fn exponential_histogram_nobuckets_emits_aggregations_without_distribution() {
+        let metrics = Metrics::for_tests();
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let dims = Dimensions {
+            name: "exponential.histogram".to_string(),
+            ..Default::default()
+        };
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.hist_mode = HistogramMode::NoBuckets;
+        translator.config.send_histogram_aggregations = true;
+
+        let point = OtlpExponentialHistogramDataPoint {
+            count: 2,
+            sum: Some(3.0),
+            positive: Some(OtlpExponentialHistogramBuckets {
+                bucket_counts: vec![2],
+                ..Default::default()
+            }),
+            min: Some(1.0),
+            max: Some(2.0),
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+
+        let events = translator.map_exponential_histogram_metrics(dims, vec![point], true, &context);
+
+        let metric_names: Vec<_> = events
+            .iter()
+            .map(|event| {
+                event
+                    .try_as_metric()
+                    .expect("event should be a metric")
+                    .context()
+                    .name()
+            })
+            .collect();
+        assert_eq!(
+            metric_names,
+            vec![
+                "exponential.histogram.count",
+                "exponential.histogram.sum",
+                "exponential.histogram.min",
+                "exponential.histogram.max",
+            ]
+        );
+        assert!(events.iter().all(|event| {
+            !matches!(
+                event.try_as_metric().expect("event should be a metric").values(),
+                MetricValues::Distribution(_)
+            )
+        }));
+    }
+
+    #[test]
+    fn mismatched_bucket_and_bound_lengths_emit_no_bucket_counters() {
+        assert!(map_malformed_histogram(HistogramMode::Counters, vec![1], vec![1.0, 2.0]).is_empty());
+    }
+
+    #[test]
+    fn empty_bucket_counts_with_bounds_emit_no_distribution() {
+        assert!(map_malformed_histogram(HistogramMode::Distributions, vec![], vec![1.0]).is_empty());
+    }
+
+    #[test]
+    fn malformed_cumulative_histogram_does_not_update_aggregation_caches() {
+        let metrics = Metrics::for_tests();
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let dims = Dimensions {
+            name: "malformed.histogram".to_string(),
+            ..Default::default()
+        };
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.hist_mode = HistogramMode::Counters;
+        translator.config.send_histogram_aggregations = true;
+
+        let malformed = OtlpHistogramDataPoint {
+            count: 5,
+            sum: Some(8.0),
+            bucket_counts: vec![1],
+            explicit_bounds: vec![1.0, 2.0],
+            start_time_unix_nano: nanos_from_seconds(1),
+            time_unix_nano: nanos_from_seconds(2),
+            ..Default::default()
+        };
+        let valid = OtlpHistogramDataPoint {
+            count: 12,
+            sum: Some(20.0),
+            bucket_counts: vec![5, 7],
+            explicit_bounds: vec![1.0],
+            start_time_unix_nano: nanos_from_seconds(1),
+            time_unix_nano: nanos_from_seconds(3),
+            ..Default::default()
+        };
+
+        let events = translator.map_histogram_metrics(dims, vec![malformed, valid], false, &context);
+        assert!(events.is_empty());
+    }
+
+    #[track_caller]
+    fn assert_bucket_events(events: &[Event], values: &[f64], timestamp: u64) {
+        let bounds = [("-inf", "1.0"), ("1.0", "inf")];
+        assert_eq!(events.len(), values.len());
+        for ((event, value), (lower, upper)) in events.iter().zip(values).zip(bounds) {
+            let metric = event.try_as_metric().expect("event should be a metric");
+            assert_eq!(metric.context().name(), "valid.histogram.bucket");
+            assert_eq!(metric.values(), &MetricValues::counter((timestamp, *value)));
+            assert_eq!(
+                metric.context().tags().get_single_tag("lower_bound").unwrap().value(),
+                Some(lower)
+            );
+            assert_eq!(
+                metric.context().tags().get_single_tag("upper_bound").unwrap().value(),
+                Some(upper)
+            );
+        }
+    }
+
+    #[test]
+    fn valid_bucket_counters_preserve_bounds_and_cumulative_diffs() {
+        let metrics = Metrics::for_tests();
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let dims = Dimensions {
+            name: "valid.histogram".to_string(),
+            ..Default::default()
+        };
+
+        let mut delta_translator = OtlpMetricsTranslator::for_tests();
+        delta_translator.config.hist_mode = HistogramMode::Counters;
+        let delta_point = OtlpHistogramDataPoint {
+            count: 5,
+            sum: Some(8.0),
+            bucket_counts: vec![2, 3],
+            explicit_bounds: vec![1.0],
+            time_unix_nano: nanos_from_seconds(1),
+            ..Default::default()
+        };
+        let delta_events = delta_translator.map_histogram_metrics(dims.clone(), vec![delta_point], true, &context);
+        assert_bucket_events(&delta_events, &[2.0, 3.0], 1);
+
+        let mut cumulative_translator = OtlpMetricsTranslator::for_tests();
+        cumulative_translator.config.hist_mode = HistogramMode::Counters;
+        let initial_point = OtlpHistogramDataPoint {
+            count: 5,
+            sum: Some(8.0),
+            bucket_counts: vec![2, 3],
+            explicit_bounds: vec![1.0],
+            start_time_unix_nano: nanos_from_seconds(1),
+            time_unix_nano: nanos_from_seconds(2),
+            ..Default::default()
+        };
+        let next_point = OtlpHistogramDataPoint {
+            count: 12,
+            sum: Some(20.0),
+            bucket_counts: vec![5, 7],
+            explicit_bounds: vec![1.0],
+            start_time_unix_nano: nanos_from_seconds(1),
+            time_unix_nano: nanos_from_seconds(3),
+            ..Default::default()
+        };
+        let initial_events =
+            cumulative_translator.map_histogram_metrics(dims.clone(), vec![initial_point], false, &context);
+        assert!(initial_events.is_empty());
+        let cumulative_events = cumulative_translator.map_histogram_metrics(dims, vec![next_point], false, &context);
+        assert_bucket_events(&cumulative_events, &[3.0, 4.0], 3);
+    }
+
+    // Ported from the Go OTLP mapping tests:
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L2225
     #[test]
-    fn test_format_float_go_parity() {
+    fn go_float_matches_go_format_float() {
         let tests = [
             (0.0, "0"),
             (0.001, "0.001"),
@@ -1473,8 +1732,21 @@ mod tests {
         ];
 
         for (input, expected) in tests {
-            assert_eq!(format_float(input), expected);
+            assert_eq!(GoFloat(input).to_string(), expected);
         }
+    }
+
+    #[test]
+    fn bucket_bound_tags_use_go_float_format() {
+        assert_eq!(
+            format!("lower_bound:{}", GoFloat(f64::NEG_INFINITY)),
+            "lower_bound:-inf"
+        );
+        assert_eq!(format!("upper_bound:{}", GoFloat(f64::INFINITY)), "upper_bound:inf");
+        assert_eq!(format!("lower_bound:{}", GoFloat(0.0)), "lower_bound:0");
+        assert_eq!(format!("lower_bound:{}", GoFloat(1.0)), "lower_bound:1.0");
+        assert_eq!(format!("lower_bound:{}", GoFloat(0.001)), "lower_bound:0.001");
+        assert_eq!(format!("upper_bound:{}", GoFloat(1e6)), "upper_bound:1e+06.0");
     }
 
     /// A helper function to build a series of cumulative monotonic integer data points from deltas.
@@ -1559,6 +1831,119 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), Some("resource-host"));
+    }
+
+    #[test]
+    fn raw_value_mode_emits_cumulative_monotonic_sums_as_gauges() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.cumulative_monotonic_mode = CumulativeMonotonicMode::RawValue;
+
+        let events = translator.map_to_dd_format(
+            OtlpMetric {
+                name: "cumulative.sum".to_string(),
+                data: Some(OtlpMetricData::Sum(
+                    otlp_protos::opentelemetry::proto::metrics::v1::Sum {
+                        aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                        is_monotonic: true,
+                        data_points: vec![OtlpNumberDataPoint {
+                            value: Some(OtlpNumberDataPointValue::AsInt(42)),
+                            start_time_unix_nano: nanos_from_seconds(1),
+                            time_unix_nano: nanos_from_seconds(2),
+                            ..Default::default()
+                        }],
+                    },
+                )),
+                ..Default::default()
+            },
+            &SharedTagSet::default(),
+            None,
+            &[],
+            &metrics,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::gauge((2, 42.0))
+        );
+    }
+
+    fn initial_cumulative_monotonic_sum(value: i64, start_time_unix_nano: u64, time_unix_nano: u64) -> OtlpMetric {
+        OtlpMetric {
+            name: "cumulative.sum".to_string(),
+            data: Some(OtlpMetricData::Sum(
+                otlp_protos::opentelemetry::proto::metrics::v1::Sum {
+                    aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                    is_monotonic: true,
+                    data_points: vec![OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsInt(value)),
+                        start_time_unix_nano,
+                        time_unix_nano,
+                        ..Default::default()
+                    }],
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn translate_initial_cumulative_monotonic_sum(
+        translator: &mut OtlpMetricsTranslator, metrics: &Metrics, value: i64, start_time_unix_nano: u64,
+        time_unix_nano: u64,
+    ) -> Vec<Event> {
+        translator.map_to_dd_format(
+            initial_cumulative_monotonic_sum(value, start_time_unix_nano, time_unix_nano),
+            &SharedTagSet::default(),
+            None,
+            &[],
+            metrics,
+        )
+    }
+
+    #[test]
+    fn auto_initial_cumulative_monotonic_value_mode_reports_new_series() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_time = translator.process_start_time_ns + 1;
+        let timestamp = start_time + nanos_from_seconds(1);
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, start_time, timestamp);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::counter((timestamp / 1_000_000_000, 42.0))
+        );
+    }
+
+    #[test]
+    fn keep_initial_cumulative_monotonic_value_mode_reports_first_value() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.initial_cumulative_monotonic_value = InitialCumulativeMonotonicValue::Keep;
+        let timestamp = translator.process_start_time_ns;
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, timestamp, timestamp);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::counter((timestamp / 1_000_000_000, 42.0))
+        );
+    }
+
+    #[test]
+    fn drop_initial_cumulative_monotonic_value_mode_drops_new_series() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.initial_cumulative_monotonic_value = InitialCumulativeMonotonicValue::Drop;
+        let start_time = translator.process_start_time_ns + 1;
+        let timestamp = start_time + nanos_from_seconds(1);
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, start_time, timestamp);
+
+        assert!(events.is_empty());
     }
 
     fn string_attribute(key: &str, value: &str) -> OtlpKeyValue {
@@ -1906,6 +2291,85 @@ mod tests {
         assert_eq!(sketch.count(), 256);
         assert!(sketch.bin_count() > 1);
         assert!(sketch.min().unwrap() < sketch.max().unwrap());
+    }
+
+    #[test]
+    fn cumulative_histogram_preserves_interpolated_summary_when_exact_count_is_zero() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let dims = Dimensions {
+            name: "metric.example".to_string(),
+            ..Default::default()
+        };
+        let context = TranslationContext {
+            resource_attributes: &[],
+            metrics: &metrics,
+        };
+        let start_ts = translator.process_start_time_ns + 1;
+        let mut events = Vec::new();
+
+        let seed = OtlpHistogramDataPoint {
+            start_time_unix_nano: start_ts,
+            time_unix_nano: start_ts + nanos_from_seconds(1),
+            count: 0,
+            sum: Some(0.0),
+            bucket_counts: vec![0, 0],
+            explicit_bounds: vec![100.0],
+            min: Some(0.0),
+            max: Some(100.0),
+            ..Default::default()
+        };
+        translator
+            .get_sketch_buckets(
+                &context,
+                dims.clone(),
+                &seed,
+                false,
+                &mut events,
+                HistogramInfo::default(),
+            )
+            .expect("seeding cumulative bucket state should succeed");
+        assert!(events.is_empty());
+
+        let point = OtlpHistogramDataPoint {
+            start_time_unix_nano: start_ts,
+            time_unix_nano: start_ts + nanos_from_seconds(2),
+            count: 0,
+            sum: Some(0.0),
+            bucket_counts: vec![0, 10],
+            explicit_bounds: vec![100.0],
+            min: Some(0.0),
+            max: Some(100.0),
+            ..Default::default()
+        };
+        translator
+            .get_sketch_buckets(
+                &context,
+                dims,
+                &point,
+                false,
+                &mut events,
+                HistogramInfo {
+                    ok: true,
+                    count: 0,
+                    sum: 0.0,
+                    ..Default::default()
+                },
+            )
+            .expect("translating cumulative bucket deltas should succeed");
+
+        assert_eq!(events.len(), 1);
+        let metric = events[0].try_as_metric().expect("event should be a metric");
+        let MetricValues::Distribution(points) = metric.values() else {
+            panic!("cumulative histogram should produce a distribution");
+        };
+        let (_, sketch) = points.into_iter().next().expect("distribution should contain a sketch");
+        assert_eq!(sketch.count(), 0);
+        assert!(!sketch.bins().is_empty());
+        assert!(sketch.stored_min() > 0.0);
+        assert!(sketch.stored_max() >= sketch.stored_min());
+        assert!(sketch.stored_sum() > 0.0);
+        assert!(sketch.stored_avg() > 0.0);
     }
 
     // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator_test.go#L296

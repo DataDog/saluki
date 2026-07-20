@@ -144,30 +144,24 @@ impl TlsCertificateValidation {
         }
     }
 
-    fn apply_to(self, client_builder: HttpClientBuilder) -> Result<HttpClientBuilder, GenericError> {
-        self.ensure_supported()?;
-
-        Ok(match self {
+    fn apply_to(self, client_builder: HttpClientBuilder) -> HttpClientBuilder {
+        match self {
             Self::Enabled => client_builder,
             Self::Disabled => {
+                #[cfg(feature = "fips")]
+                warn!(
+                    config_key = "skip_ssl_validation",
+                    "Disabling TLS certificate validation in a FIPS build means server certificates are no longer \
+                     verified, even though the underlying TLS cipher suites and key exchange remain FIPS-compliant."
+                );
+                #[cfg(not(feature = "fips"))]
                 warn!(
                     config_key = "skip_ssl_validation",
                     "TLS certificate validation is disabled for Datadog intake forwarding."
                 );
                 client_builder.with_tls_config(|builder| builder.danger_accept_invalid_certs())
             }
-        })
-    }
-
-    fn ensure_supported(self) -> Result<(), GenericError> {
-        #[cfg(feature = "fips")]
-        if matches!(self, Self::Disabled) {
-            return Err(generic_error!(
-                "`skip_ssl_validation: true` is unsupported in FIPS mode because disabling TLS certificate validation is not FIPS-compliant."
-            ));
         }
-
-        Ok(())
     }
 }
 
@@ -229,7 +223,7 @@ where
             client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
         }
 
-        client_builder = TlsCertificateValidation::from_forwarder_config(&config).apply_to(client_builder)?;
+        client_builder = TlsCertificateValidation::from_forwarder_config(&config).apply_to(client_builder);
 
         let client = client_builder.build()?;
 
@@ -981,17 +975,13 @@ mod tests {
     use bytes::Bytes;
     use http::StatusCode;
     use http_body_util::Empty;
-    use rcgen::{generate_simple_self_signed, CertifiedKey};
-    use rustls::{
-        pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
-        version::TLS12,
-        RootCertStore, ServerConfig,
-    };
+    use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::ConfigurationLoader;
-    use saluki_core::{observability::ComponentMetricsExt as _, support::SubsystemIdentifier, topology::ComponentId};
+    use saluki_config::config_from;
+    use saluki_core::observability::ComponentMetricsExt as _;
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
+    use saluki_tls::test_util::SelfSignedCert;
     use serde_json::json;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1010,10 +1000,7 @@ mod tests {
     };
 
     fn test_component_context() -> ComponentContext {
-        ComponentContext::forwarder(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("test_forwarder").unwrap(),
-        )
+        ComponentContext::test_forwarder("test_forwarder")
     }
 
     fn uri(path: &'static str) -> Uri {
@@ -1144,7 +1131,6 @@ app.datadoghq.com: [key-a, key-b]
 
         validation
             .apply_to(client_builder)
-            .expect("TLS certificate validation policy should apply")
             .build()
             .expect("HTTP client should build")
     }
@@ -1164,16 +1150,14 @@ app.datadoghq.com: [key-a, key-b]
     ) -> (String, mpsc::Receiver<String>) {
         init_tls_crypto_provider();
 
-        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_string()]).unwrap();
-        let cert_chain = vec![cert.der().clone()];
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+        let cert = SelfSignedCert::localhost();
         let server_config_builder = match versions {
             TestServerTlsVersions::Default => ServerConfig::builder(),
             TestServerTlsVersions::Tls12Only => ServerConfig::builder_with_protocol_versions(&[&TLS12]),
         };
         let server_config = server_config_builder
             .with_no_client_auth()
-            .with_single_cert(cert_chain, key)
+            .with_single_cert(cert.cert_chain(), cert.private_key())
             .unwrap();
         let acceptor = TlsAcceptor::from(Arc::new(server_config));
 
@@ -1344,15 +1328,16 @@ app.datadoghq.com: [key-a, key-b]
 
     #[cfg(feature = "fips")]
     #[test]
-    fn skip_ssl_validation_rejected_in_fips_mode() {
-        let error = TlsCertificateValidation::Disabled
-            .ensure_supported()
-            .expect_err("skip_ssl_validation should be rejected in FIPS mode");
-        let message = error.to_string();
+    fn skip_ssl_validation_allowed_in_fips_mode() {
+        init_tls_crypto_provider();
 
-        assert!(message.contains("skip_ssl_validation"));
-        assert!(message.contains("FIPS mode"));
-        assert!(message.contains("disabling TLS certificate validation"));
+        let client_builder =
+            HttpClient::builder().with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()));
+
+        TlsCertificateValidation::Disabled
+            .apply_to(client_builder)
+            .build()
+            .expect("HTTP client should build with skip_ssl_validation enabled in FIPS mode");
     }
 
     #[tokio::test]
@@ -1565,8 +1550,7 @@ app.datadoghq.com: [key-a, key-b]
     }
 
     async fn config_with(values: serde_json::Value) -> GenericConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        config
+        config_from(values).await
     }
 
     async fn wait_for_count_at_least(counter: &Arc<AtomicUsize>, target: usize, deadline: Duration) -> usize {

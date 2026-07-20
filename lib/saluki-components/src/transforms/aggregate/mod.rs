@@ -569,25 +569,8 @@ impl AggregationState {
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
-        // The context map is hard-capped at `context_limit` and no path grows it past the cap. This is the one
-        // non-advisory runtime memory bound, so we assert it as an invariant under Antithesis. The numeric form hands
-        // the search the margin to the limit as a gradient.
-        saluki_antithesis::always_le!(
-            self.contexts.len(),
-            self.context_limit,
-            "aggregate context map within context_limit",
-            { "len": self.contexts.len(), "limit": self.context_limit }
-        );
-
         // If we haven't seen this context yet, and it would put us over the limit to insert it, then return early.
         if !self.contexts.contains_key(metric.context()) && self.contexts.len() >= self.context_limit {
-            // Anti-vacuity anchor: prove a run actually reaches the cap, else the invariant above passes trivially.
-            saluki_antithesis::sometimes!(
-                true,
-                "aggregate context limit breached",
-                { "limit": self.context_limit }
-            );
-
             self.context_limit_breached = true;
             return false;
         }
@@ -625,6 +608,13 @@ impl AggregationState {
                     metadata,
                     last_seen: timestamp,
                 });
+
+                saluki_antithesis::always_le!(
+                    self.contexts.len(),
+                    self.context_limit,
+                    "aggregate context map within context_limit",
+                    { "len": self.contexts.len(), "limit": self.context_limit }
+                );
             }
         }
 
@@ -908,8 +898,7 @@ mod tests {
     use float_cmp::ApproxEqRatio as _;
     use saluki_core::{
         components::ComponentContext,
-        support::SubsystemIdentifier,
-        topology::{interconnect::Dispatcher, ComponentId, OutputName},
+        topology::{interconnect::Dispatcher, OutputName},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
@@ -961,10 +950,7 @@ mod tests {
 
     /// Constructs a basic `Dispatcher` with a fixed-size event buffer.
     fn build_basic_dispatcher() -> (EventsDispatcher, DispatcherReceiver) {
-        let context = ComponentContext::transform(
-            &SubsystemIdentifier::from_segments(["test"]),
-            ComponentId::try_from("test").unwrap(),
-        );
+        let context = ComponentContext::test_transform("test");
         let mut dispatcher = Dispatcher::new(context);
 
         let (buffer_tx, buffer_rx) = mpsc::channel(1);

@@ -19,7 +19,7 @@ otherwise keep hand-rolling the thing it replaces.
   plus a cross-link to `docs/development/testing.md`, and add the `property_test_` CI-load-bearing note plus an
   Antithesis-vs-unit-test disambiguation pointer to `AGENTS.md`'s Gotchas section.
 
-- [ ] **G1 — Expose `ComponentContext` test-util helpers cross-crate + heartbeat/context coverage**
+- [x] **G1 — Expose `ComponentContext` test-util helpers cross-crate + heartbeat/context coverage**
   (`tobz/test-cleanup-componentcontext-test-util`, `test(core)`)
   Foundational: unblocks every later group that constructs a `ComponentContext` in a test.
   - [medium/small] `ComponentContext::test_source`/`test_relay`/`test_decoder`/`test_transform`/`test_encoder`/
@@ -32,7 +32,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/small] Documented double-take panics on `*Context::take_health_handle`/`take_shutdown_handle` are
     untested in all 7 context files.
 
-- [ ] **G2 — Shared config test-helper foundation** (`tobz/test-cleanup-config-test-helper-foundation`, `test(config)`)
+- [x] **G2 — Shared config test-helper foundation** (`tobz/test-cleanup-config-test-helper-foundation`, `test(config)`)
   - [low/small] A `xxx_config_from(value) -> XxxConfiguration` async test helper is duplicated verbatim across 15+
     config/component test files.
   - [medium/small] The env-var test mutex guarding `ConfigurationLoader` is fragmented into multiple unsynchronized
@@ -44,7 +44,7 @@ otherwise keep hand-rolling the thing it replaces.
     default/overflow branches have zero test coverage.
   - [low/trivial] Repeated per-test setup/construction boilerplate isn't extracted into a shared helper.
 
-- [ ] **G3 — saluki-tls test suite cleanup** (`tobz/test-cleanup-tls-self-signed-test-helper`, `test(tls)`)
+- [x] **G3 — saluki-tls test suite cleanup** (`tobz/test-cleanup-tls-self-signed-test-helper`, `test(tls)`)
   - [medium/small] Self-signed TLS certificate generation via `rcgen` is duplicated across `saluki-tls`, `saluki-app`,
     and `saluki-components`, and the one copy that could be shared is trapped in a `tests/` directory (KI-5).
   - [medium/small] The public root-cert wrapper and TLS builder security/config methods are never exercised.
@@ -52,7 +52,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/small] `ClientTLSConfigBuilder` methods' documented behavior is never verified end-to-end.
   - [low/trivial] Repeated key-log test setup boilerplate is duplicated across `saluki-tls` tests.
 
-- [ ] **G4 — saluki-core observability/metrics & pooling test cleanup**
+- [x] **G4 — saluki-core observability/metrics & pooling test cleanup**
   (`tobz/test-cleanup-observability-metrics-pooling-tests`, `test(core)`)
   - [low/small] `DebuggingRecorder`/`TestRecorder` metrics-snapshot test helpers are duplicated ad hoc or left unused
     (KI-6) instead of standardizing on one.
@@ -67,7 +67,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] Several small test groups differ only by an input value/scenario and duplicate setup —
     table-driven/merge candidates.
 
-- [ ] **G5 — saluki-core runtime supervision & topology test cleanup**
+- [x] **G5 — saluki-core runtime supervision & topology test cleanup**
   (`tobz/test-cleanup-runtime-topology-wait-until`, `test(core)`)
   - [medium/medium] No shared `wait_until`/`assert_eventually` helper exists repo-wide; bespoke polling loops and
     blind fixed-duration sleeps proliferate as startup/shutdown barriers instead of readiness polling (KI-7).
@@ -91,7 +91,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/medium] The dispatcher's default-output/named-output test pairs are structural clones: 22 functions,
     11 pairs, that could collapse to one table-driven test (KI-11).
 
-- [ ] **G6 — dogstatsd component test cleanup** (`tobz/test-cleanup-dogstatsd-test-cleanup`, `test(components)`)
+- [x] **G6 — dogstatsd component test cleanup** (`tobz/test-cleanup-dogstatsd-test-cleanup`, `test(components)`)
   - [medium/medium] `MockWorkloadProvider` is hand-rolled with 3 divergent shapes across `origin.rs`,
     `replay/reader.rs`, and `replay/writer.rs`, because `NoopWorkloadProvider` offers no configuration seam (KI-2).
   - [high/small] `OriginTagsResolver::resolve_origin_tags`'s live, non-replay production path is never exercised
@@ -137,7 +137,7 @@ otherwise keep hand-rolling the thing it replaces.
     of a shared builder helper; `AggregationRegistry`'s documented ref-counting/eviction/dedup semantics are
     untested and related accessors are dead code.
 
-- [ ] **G8 — Datadog encoders/destinations/forwarders test cleanup**
+- [x] **G8 — Datadog encoders/destinations/forwarders test cleanup**
   (`tobz/test-cleanup-encoders-destinations-test-cleanup`, `test(components)`)
   - [medium/medium] Six `run_request_builder` integration tests in `datadog/metrics/mod.rs` share unextracted
     setup/teardown boilerplate, and are themselves oversized, multi-concern tests (KI-12).
@@ -149,12 +149,17 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] Forwarders' pure mapping/normalization functions are untested (otlp `normalize_endpoint`; datadog
     `get_dd_endpoint_name`/`transaction_metadata_from_payload_metadata`).
 
-- [ ] **G9 — Split oversized, multi-concern test functions into focused single-behavior tests**
+- [x] **G9 — Split oversized, multi-concern test functions into focused single-behavior tests**
   (`tobz/test-cleanup-split-oversized-multiconcern-tests`, `test(components)`)
   - [low/small] Test functions bundle multiple unrelated concerns/scenarios in one body instead of splitting or
     looping (KI-12), and sibling tests duplicate identical setup/driver/struct-literal scaffolding instead of
     sharing a helper — concretely, three otlp transform tests duplicate an identical `TestCase`-struct-and-loop
     table-driven harness that should itself be shared.
+    _Done: the three `common/otlp/traces/transform.rs` `get_otel_*` tests now share one `AttributeExtractionCase` +
+    `run_attribute_extraction_cases` harness. The encoders/metrics oversized functions (KI-12) were already resolved
+    by G8's request-builder harness extraction. A sweep surfaced a larger body of multi-case/duplicated-scaffold
+    tests in `sources/otlp/metrics/translator.rs` and `cache.rs`, but those are otlp-metrics-translation work and
+    were deferred to G13 (noted there) to keep all otlp-metrics test cleanup in one branch rather than splitting it._
 
 - [ ] **G10 — Fix vacuous/weak/tautological assertions and assertion-free proptests repo-wide**
   (`tobz/test-cleanup-fix-vacuous-assertions-sweep`, `test(repo)`)
@@ -214,6 +219,13 @@ otherwise keep hand-rolling the thing it replaces.
     fallback.
   - [low/trivial] The OTLP metrics config `validate()`'s documented histogram-mode/aggregation rejection rule is
     untested.
+  - [medium/medium] **Surfaced by G9's sweep (belongs here, not G9):** `sources/otlp/metrics/translator.rs` has ~11
+    large `test_map_*_monotonic_*` / `test_map_*_metrics` tests that each bundle 2-4 labeled `// Test Case N` blocks,
+    plus a ~40-way duplicated `Dimensions{..} + TranslationContext{..} + map_*_monotonic_metrics(..)` driver triple
+    that wants a shared `run_monotonic(name, slice)` helper; `sources/otlp/metrics/cache.rs`'s
+    `test_monotonic_diff_known_start` (3 phases in one body) / `test_monotonic_diff_unknown_start` share a duplicated
+    `Point`-table + `monotonic_diff` loop harness. Split the multi-case bodies into focused tests and extract the
+    shared driver.
 
 - [ ] **G14 — agent-data-plane filter components & OTTL processors test cleanup** (AU-25/AU-26)
   (`tobz/test-cleanup-adp-filters-ottl-processors-tests`, `test(agent-data-plane)`)

@@ -36,5 +36,6 @@
 pub mod capture;
 pub mod http;
 
+mod lenient_decode;
 mod properties;
 mod series_observation;

@@ -109,6 +109,13 @@ impl Sampler {
         // All traces within the same `BUCKET_DURATION` interval share the same bucket_id
         let bucket_id = now.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / BUCKET_DURATION.as_secs();
         let prev_bucket_id = self.last_bucket_id;
+        saluki_antithesis::always_or_unreachable!(
+            bucket_id >= prev_bucket_id,
+            "trace sampler bucket id did not move backward",
+            { "bucket_id": bucket_id, "prev_bucket_id": prev_bucket_id }
+        );
+        // A backward wall-clock step must not regress the sliding window.
+        let bucket_id = bucket_id.max(prev_bucket_id);
         self.last_bucket_id = bucket_id;
         // If the bucket_id changed then the sliding window advanced and we need to recompute rates
         let update_rate = prev_bucket_id != bucket_id;

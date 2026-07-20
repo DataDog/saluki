@@ -38,14 +38,13 @@ impl AutoscalingFailoverConfiguration {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config::config_from;
     use serde_json::json;
 
     use super::*;
 
     async fn autoscaling_config_from(value: serde_json::Value) -> AutoscalingFailoverConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(value), None, false).await;
-        AutoscalingFailoverConfiguration::from_configuration(&config)
+        AutoscalingFailoverConfiguration::from_configuration(&config_from(value).await)
             .expect("autoscaling failover configuration should deserialize")
     }
 

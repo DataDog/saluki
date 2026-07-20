@@ -25,6 +25,7 @@ use tracing::{error, warn};
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
+    resolve_zstd_compressor_level,
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
 };
@@ -38,10 +39,6 @@ fn default_serializer_compressor_kind() -> String {
     DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
 }
 
-const fn default_zstd_compressor_level() -> i32 {
-    3
-}
-
 /// Datadog Logs incremental encoder.
 #[derive(Deserialize, Debug, Facet)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -53,12 +50,15 @@ pub struct DatadogLogsConfiguration {
     )]
     compressor_kind: String,
 
-    /// Compressor level to use when the compressor kind is `zstd`. Defaults to 3.
-    #[serde(
-        rename = "serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
-    zstd_compressor_level: i32,
+    /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
+    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
+    #[serde(rename = "data_plane_serializer_zstd_compressor_level", default)]
+    data_plane_zstd_compressor_level: Option<i32>,
+
+    /// The Core Agent's zstd compression level, used only when set to a non-default value (not 1).
+    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
+    #[serde(rename = "serializer_zstd_compressor_level", default)]
+    serializer_zstd_compressor_level: Option<i32>,
 }
 
 impl DatadogLogsConfiguration {
@@ -83,7 +83,11 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let zstd_compressor_level = resolve_zstd_compressor_level(
+            self.data_plane_zstd_compressor_level,
+            self.serializer_zstd_compressor_level,
+        );
+        let compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
 
         let mut request_builder =
             RequestBuilder::new(LogsEndpointEncoder::new(), compression_scheme, RB_BUFFER_CHUNK_SIZE).await?;
@@ -258,6 +262,121 @@ impl EndpointEncoder for LogsEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_JSON.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeSet, HashMap};
+
+    use saluki_context::tags::{Tag, TagSet};
+    use saluki_core::data_model::event::log::{Log, LogStatus};
+    use serde_json::json;
+    use stringtheory::MetaString;
+
+    use super::{JsonValue, LogsEndpointEncoder};
+
+    fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
+        tags.into_iter().map(Tag::from_static).collect()
+    }
+
+    #[test]
+    fn build_agent_json_enriches_documented_fields() {
+        let mut encoder = LogsEndpointEncoder::new();
+        let log = Log::new("hello world")
+            .with_status(LogStatus::Error)
+            .with_source(MetaString::from_static("nginx"))
+            .with_hostname(MetaString::from_static("host-a"))
+            .with_service(MetaString::from_static("web"))
+            .with_tags(tag_set(["env:prod", "team:core"]));
+
+        let json = encoder.build_agent_json(&log);
+        let obj = json.as_object().expect("agent JSON should be an object");
+
+        // `message` is itself a JSON string carrying a `{message, service}` object.
+        let message = obj["message"].as_str().expect("message field should be a string");
+        let message_inner: JsonValue = serde_json::from_str(message).expect("message field should itself be JSON");
+        assert_eq!(json!("hello world"), message_inner["message"]);
+        assert_eq!(json!("web"), message_inner["service"]);
+
+        // Status renders via `LogStatus::as_str` (capitalized), and hostname/service/ddsource are lifted out.
+        assert_eq!(json!("Error"), obj["status"]);
+        assert_eq!(json!("host-a"), obj["hostname"]);
+        assert_eq!(json!("web"), obj["service"]);
+        assert_eq!(json!("nginx"), obj["ddsource"]);
+
+        // `ddtags` is the comma-joined tag set.
+        let ddtags = obj["ddtags"].as_str().expect("ddtags should be a string");
+        let ddtags = ddtags.split(',').collect::<BTreeSet<_>>();
+        assert_eq!(BTreeSet::from(["env:prod", "team:core"]), ddtags);
+    }
+
+    #[test]
+    fn build_agent_json_omits_empty_optional_fields() {
+        // A bare log has no status/hostname/service/ddsource/ddtags keys, and its `message` object carries only the
+        // message (no `service`).
+        let mut encoder = LogsEndpointEncoder::new();
+        let json = encoder.build_agent_json(&Log::new("bare"));
+        let obj = json.as_object().expect("agent JSON should be an object");
+
+        assert!(!obj.contains_key("status"));
+        assert!(!obj.contains_key("hostname"));
+        assert!(!obj.contains_key("service"));
+        assert!(!obj.contains_key("ddsource"));
+        assert!(!obj.contains_key("ddtags"));
+
+        let message = obj["message"].as_str().expect("message field should be a string");
+        let message_inner: JsonValue = serde_json::from_str(message).expect("message field should itself be JSON");
+        assert_eq!(json!("bare"), message_inner["message"]);
+        assert!(message_inner.get("service").is_none());
+    }
+
+    #[test]
+    fn build_agent_json_adds_default_timestamp_unless_user_supplied() {
+        let mut encoder = LogsEndpointEncoder::new();
+
+        // With no user timestamp, the encoder injects an RFC3339 `@timestamp` (milliseconds, UTC `Z`).
+        let json = encoder.build_agent_json(&Log::new("no ts"));
+        let ts = json["@timestamp"]
+            .as_str()
+            .expect("default @timestamp should be present");
+        assert!(ts.ends_with('Z'), "default timestamp should be UTC-suffixed: {ts}");
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(ts).is_ok(),
+            "default timestamp should be RFC3339: {ts}"
+        );
+
+        // A user-provided `timestamp` suppresses the default `@timestamp`.
+        let mut props = HashMap::new();
+        props.insert(MetaString::from_static("timestamp"), json!(1_234_567));
+        let json = encoder.build_agent_json(&Log::new("user ts").with_additional_properties(props));
+        assert!(
+            !json.as_object().unwrap().contains_key("@timestamp"),
+            "a user-provided `timestamp` should suppress the default `@timestamp`"
+        );
+        assert_eq!(json!(1_234_567), json["timestamp"]);
+
+        // A user-provided `@timestamp` is preserved as-is instead of being overwritten.
+        let mut props = HashMap::new();
+        props.insert(MetaString::from_static("@timestamp"), json!("2020-01-01T00:00:00Z"));
+        let json = encoder.build_agent_json(&Log::new("user @ts").with_additional_properties(props));
+        assert_eq!(json!("2020-01-01T00:00:00Z"), json["@timestamp"]);
+    }
+
+    #[test]
+    fn build_agent_json_additional_properties_win_over_encoder_fields() {
+        // AdditionalProperties are merged last, so they override the encoder-populated fields (last-write-wins).
+        let mut encoder = LogsEndpointEncoder::new();
+        let mut props = HashMap::new();
+        props.insert(MetaString::from_static("hostname"), json!("override-host"));
+        props.insert(MetaString::from_static("custom"), json!(42));
+        let log = Log::new("msg")
+            .with_hostname(MetaString::from_static("original-host"))
+            .with_additional_properties(props);
+
+        let json = encoder.build_agent_json(&log);
+        assert_eq!(json!("override-host"), json["hostname"]);
+        assert_eq!(json!(42), json["custom"]);
     }
 }
 

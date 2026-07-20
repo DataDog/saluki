@@ -12,8 +12,9 @@ use saluki_core::accounting::{
     ComponentBounds, ComponentRegistry, ComponentRegistryHandle, MemoryGrant, MemoryLimiter,
 };
 use saluki_core::{
-    diagnostic::DiagnosticHandle,
+    diagnostic::DiagnosticsEmitter,
     runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
+    support::SubsystemIdentifier,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::Deserialize;
@@ -330,17 +331,22 @@ impl Supervisable for ResourceTelemetryWorker {
         let memory_routes = DynamicRoute::http(EndpointType::Unprivileged, self.component_registry.api_handler());
 
         let component_registry = self.component_registry.clone();
-        let flare_handle = DiagnosticHandle::new("memory_status.json", move || {
-            component_registry.memory_snapshot_json().into_bytes()
-        });
 
         Ok(Box::pin(async move {
             let dataspace =
                 DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
-            // Register our API routes and diagnostic handle before we actually start running.
+            // Register our API routes before we actually start running.
             dataspace.assert(memory_routes, "resource-telemetry-api");
-            dataspace.assert(flare_handle, "diag-memory");
+
+            // Expose our diagnostic artifact via the diagnostics control surface.
+            let diagnostics = DiagnosticsEmitter::from_dataspace(
+                SubsystemIdentifier::from_segments(["resource-telemetry"]),
+                dataspace,
+            );
+            diagnostics.register_collector("memory_status.json", move || {
+                component_registry.memory_snapshot_json().into_bytes()
+            });
 
             select! {
                 _ = process_shutdown => {},

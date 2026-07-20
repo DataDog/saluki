@@ -12,6 +12,8 @@
 //! source serde (these structs are serialized for the `/config/internal` view but never
 //! deserialized from a source language; that is the source adapter's job).
 
+use std::fmt;
+
 use serde::Serialize;
 
 pub mod control;
@@ -37,4 +39,58 @@ pub struct SalukiConfiguration {
     pub shared: SharedConfiguration,
     /// Per-domain resolved config, grouped by ownership domain.
     pub domains: DomainConfiguration,
+}
+
+/// An error produced while translating a `DatadogConfiguration` or `SalukiOnly` value into a
+/// `SalukiConfiguration` value.
+#[derive(Debug)]
+pub struct Error {
+    context: String,
+    error: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+}
+
+/// A boxed source error that can cross thread boundaries.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+impl Error {
+    /// Create an error that wraps an underlying error.
+    ///
+    /// Displays `{context}: {error}`.
+    pub fn new<S, E>(context: S, error: E) -> Self
+    where
+        S: Into<String>,
+        E: Into<BoxError>,
+    {
+        Self {
+            context: context.into(),
+            error: Some(error.into()),
+        }
+    }
+
+    /// Create an error without an underlying source error.
+    pub fn new_without_source<S>(context: S) -> Self
+    where
+        S: Into<String>,
+    {
+        Self {
+            context: context.into(),
+            error: None,
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.context)?;
+        if let Some(error) = &self.error {
+            write!(f, ": {error}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.error.as_deref().map(|s| s as &(dyn std::error::Error + 'static))
+    }
 }

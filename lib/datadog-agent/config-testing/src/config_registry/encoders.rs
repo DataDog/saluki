@@ -32,7 +32,7 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `serializer_zstd_compressor_level`-Zstd compression level
+    /// `serializer_zstd_compressor_level`-Zstd compression level (Agent)
     SERIALIZER_ZSTD_COMPRESSOR_LEVEL = SalukiAnnotation {
         schema: &schema::SERIALIZER_ZSTD_COMPRESSOR_LEVEL,
         support_level: SupportLevel::Partial,

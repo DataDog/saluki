@@ -13,8 +13,11 @@
 //! only ADP production crate that bridges the source configuration to the model; it constructs no
 //! components and does not depend on `saluki-components`.
 
+mod loaded;
+mod saluki_env_overlay;
 mod saluki_only;
 mod system;
 mod translators;
 
+pub use loaded::{EnvPrecedence, LoadedConfiguration};
 pub use system::{ConfigurationSystem, Error};

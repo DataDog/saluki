@@ -26,6 +26,7 @@ use crate::common::datadog::{
     clamp_payload_limits,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
+    resolve_zstd_compressor_level,
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT,
     DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT,
@@ -39,10 +40,6 @@ static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("applicatio
 
 fn default_serializer_compressor_kind() -> String {
     DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
-}
-
-const fn default_zstd_compressor_level() -> i32 {
-    3
 }
 
 const fn default_max_payload_size() -> usize {
@@ -95,14 +92,15 @@ pub struct DatadogEventsConfiguration {
     )]
     compressor_kind: String,
 
-    /// Compressor level to use when the compressor kind is `zstd`.
-    ///
-    /// Defaults to 3.
-    #[serde(
-        rename = "serializer_zstd_compressor_level",
-        default = "default_zstd_compressor_level"
-    )]
-    zstd_compressor_level: i32,
+    /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
+    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
+    #[serde(rename = "data_plane_serializer_zstd_compressor_level", default)]
+    data_plane_zstd_compressor_level: Option<i32>,
+
+    /// The Core Agent's zstd compression level, used only when set to a non-default value (not 1).
+    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
+    #[serde(rename = "serializer_zstd_compressor_level", default)]
+    serializer_zstd_compressor_level: Option<i32>,
 
     /// Whether to log event payload contents before encoding.
     ///
@@ -135,7 +133,11 @@ impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
+        let zstd_compressor_level = resolve_zstd_compressor_level(
+            self.data_plane_zstd_compressor_level,
+            self.serializer_zstd_compressor_level,
+        );
+        let compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
 
         // Create our request builder.
         let mut request_builder =
@@ -325,6 +327,82 @@ fn encode_eventd(eventd: &EventD, tags_deduplicator: &mut ReusableDeduplicator<T
     event.set_tags(deduplicated_tags.map(|tag| tag.as_str().into()).collect());
 
     event
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use saluki_common::iter::ReusableDeduplicator;
+    use saluki_context::tags::{Tag, TagSet};
+    use saluki_core::data_model::event::eventd::{AlertType, EventD, Priority};
+    use stringtheory::MetaString;
+
+    use super::encode_eventd;
+
+    fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
+        tags.into_iter().map(Tag::from_static).collect()
+    }
+
+    #[test]
+    fn encode_eventd_maps_all_documented_fields() {
+        let eventd = EventD::new("deploy", "release rolled out")
+            .with_timestamp(1_700_000_000u64)
+            .with_priority(Priority::Low)
+            .with_alert_type(AlertType::Error)
+            .with_hostname(MetaString::from_static("host-a"))
+            .with_aggregation_key(MetaString::from_static("deploy-key"))
+            .with_source_type_name(MetaString::from_static("my-source"));
+
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        let encoded = encode_eventd(&eventd, &mut tags_deduplicator);
+
+        assert_eq!("deploy", encoded.title());
+        assert_eq!("release rolled out", encoded.text());
+        assert_eq!(1_700_000_000, encoded.ts());
+        assert_eq!("low", encoded.priority());
+        assert_eq!("error", encoded.alert_type());
+        assert_eq!("host-a", encoded.host());
+        assert_eq!("deploy-key", encoded.aggregation_key());
+        assert_eq!("my-source", encoded.source_type_name());
+    }
+
+    #[test]
+    fn encode_eventd_applies_defaults_and_skips_empty_string_fields() {
+        // `EventD::new` defaults the priority to `normal` and the alert type to `info`. An unset timestamp and the
+        // empty host/aggregation-key/source-type fields are treated as absent and left at their protobuf defaults.
+        let eventd = EventD::new("title-only", "body");
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        let encoded = encode_eventd(&eventd, &mut tags_deduplicator);
+
+        assert_eq!("title-only", encoded.title());
+        assert_eq!("body", encoded.text());
+        assert_eq!(0, encoded.ts());
+        assert_eq!("normal", encoded.priority());
+        assert_eq!("info", encoded.alert_type());
+        assert_eq!("", encoded.host());
+        assert_eq!("", encoded.aggregation_key());
+        assert_eq!("", encoded.source_type_name());
+        assert!(encoded.tags().is_empty());
+    }
+
+    #[test]
+    fn encode_eventd_deduplicates_tags_across_origin_tags() {
+        // Event tags and origin tags are chained then deduplicated, so an overlapping tag is written only once.
+        let eventd = EventD::new("dedup", "body")
+            .with_tags(tag_set(["env:prod", "team:core"]))
+            .with_origin_tags(tag_set(["env:prod", "region:us"]));
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        let encoded = encode_eventd(&eventd, &mut tags_deduplicator);
+
+        let tags = encoded.tags().iter().map(String::as_str).collect::<BTreeSet<_>>();
+        assert_eq!(BTreeSet::from(["env:prod", "team:core", "region:us"]), tags);
+        assert_eq!(
+            3,
+            encoded.tags().len(),
+            "the overlapping `env:prod` tag should not be duplicated"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use datadog_protos::metrics::metric_payload::{MetricPoint, MetricType, Resource};
 use proptest::prelude::*;
 use proptest::strategy::BoxedStrategy;
 use serde_json::json;
@@ -188,4 +189,56 @@ proptest! {
         let after = lanes.contexts(Target::Adp).len();
         prop_assert_eq!(added, after - before);
     }
+}
+
+// --- production-parity per-series drops ---
+
+fn built_series(name: &str, tags: usize, resources: usize) -> MetricSeries {
+    let mut s = MetricSeries::new();
+    s.set_metric(name.to_string());
+    s.set_type(MetricType::COUNT);
+    for i in 0..tags {
+        s.tags.push(format!("k{i}:v"));
+    }
+    for i in 0..resources {
+        let mut r = Resource::new();
+        r.set_type("host".to_string());
+        r.set_name(format!("h{i}"));
+        s.resources.push(r);
+    }
+    let mut p = MetricPoint::new();
+    p.value = 1.0;
+    p.timestamp = 1_600_000_000;
+    s.points.push(p);
+    s
+}
+
+#[test]
+fn series_kept_matches_propjoe_validation() {
+    // Valid, and the count boundaries propjoe keeps.
+    assert!(series_kept_by_intake(&built_series("adp.requests", 1, 1)));
+    assert!(series_kept_by_intake(&built_series(&"a".repeat(350), 1, 1)));
+    assert!(series_kept_by_intake(&built_series("ok", 100, 1)));
+    assert!(series_kept_by_intake(&built_series("ok", 1, 500)));
+
+    // Dropped: empty, no ASCII-alphabetic char, over the byte limit.
+    assert!(!series_kept_by_intake(&built_series("", 1, 1)));
+    assert!(!series_kept_by_intake(&built_series("123.456", 1, 1)));
+    assert!(!series_kept_by_intake(&built_series(&"a".repeat(351), 1, 1)));
+    // Dropped: over the tag and resource count thresholds.
+    assert!(!series_kept_by_intake(&built_series("ok", 101, 1)));
+    assert!(!series_kept_by_intake(&built_series("ok", 1, 501)));
+}
+
+#[test]
+fn observe_series_drops_what_propjoe_drops() {
+    let mut payload = MetricPayload::new();
+    payload.series.push(built_series("adp.requests", 1, 1)); // kept
+    payload.series.push(built_series("", 1, 1)); // empty name
+    payload.series.push(built_series("999", 1, 1)); // no alpha
+    payload.series.push(built_series("adp.toomanytags", 101, 1)); // tag flood
+
+    let contexts = observe_series(Target::Agent, payload);
+    let names: BTreeSet<&str> = contexts.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, BTreeSet::from(["adp.requests"]));
 }

@@ -13,11 +13,13 @@ datadog-agent-config = { workspace = true }
 saluki-config = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 snafu = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+saluki-config = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 
 [lints]

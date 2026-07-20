@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{collections::BTreeMap, fmt};
 
 use datadog_protos::metrics::{v3::Payload as V3Payload, Dogsketch, MetricPayload, MetricType, SketchPayload};
 use ddsketch::DDSketch;
@@ -178,7 +178,7 @@ impl PartialEq for MetricValue {
                     && approx_eq_ratio_optional(sketch_a.avg(), sketch_b.avg(), RATIO_ERROR)
                     && approx_eq_ratio_optional(sketch_a.sum(), sketch_b.sum(), RATIO_ERROR)
                     && sketch_a.count() == sketch_b.count()
-                    && sketch_a.bin_count() == sketch_b.bin_count()
+                    && sketch_bins_equal(sketch_a, sketch_b)
             }
             _ => false,
         }
@@ -836,9 +836,68 @@ fn approx_eq_ratio_optional(a: Option<f64>, b: Option<f64>, ratio: f64) -> bool 
     }
 }
 
+fn sketch_bins_equal(a: &DDSketch, b: &DDSketch) -> bool {
+    let Some(a) = canonical_bin_counts(a) else {
+        return false;
+    };
+    let Some(b) = canonical_bin_counts(b) else {
+        return false;
+    };
+
+    a == b
+}
+
+fn canonical_bin_counts(sketch: &DDSketch) -> Option<BTreeMap<i32, u64>> {
+    let mut counts = BTreeMap::new();
+
+    for bin in sketch.bins() {
+        if bin.count() == 0 {
+            continue;
+        }
+
+        let count = counts.entry(bin.key()).or_insert(0_u64);
+        *count = count.checked_add(u64::from(bin.count()))?;
+    }
+
+    Some(counts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sketch_value(keys: Vec<i32>, counts: Vec<u32>) -> MetricValue {
+        let mut dogsketch = Dogsketch::new();
+        dogsketch.cnt = 70_000;
+        dogsketch.min = 1.0;
+        dogsketch.max = 1.0;
+        dogsketch.avg = 1.0;
+        dogsketch.sum = 70_000.0;
+        dogsketch.set_k(keys);
+        dogsketch.set_n(counts);
+
+        MetricValue::Sketch {
+            sketch: DDSketch::try_from(dogsketch).expect("test sketch should be valid"),
+        }
+    }
+
+    #[test]
+    fn sketch_equality_coalesces_duplicate_bin_keys() {
+        let split = sketch_value(vec![42, 42], vec![u16::MAX.into(), 4_465]);
+        let coalesced = sketch_value(vec![42], vec![70_000]);
+
+        assert_eq!(split, coalesced);
+    }
+
+    #[test]
+    fn sketch_equality_compares_bin_keys_and_counts() {
+        let original = sketch_value(vec![42], vec![70_000]);
+        let different_key = sketch_value(vec![43], vec![70_000]);
+        let different_count = sketch_value(vec![42], vec![69_999]);
+
+        assert_ne!(original, different_key);
+        assert_ne!(original, different_count);
+    }
 
     #[test]
     fn try_from_series_v1_parses_count_gauge_rate() {

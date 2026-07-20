@@ -14,8 +14,9 @@ use saluki_context::{
     tags::{SharedTagSet, TagSet},
 };
 use saluki_core::{
-    diagnostic::DiagnosticHandle,
+    diagnostic::DiagnosticsEmitter,
     runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture},
+    support::SubsystemIdentifier,
 };
 use saluki_env::workload::{
     entity::HighestPrecedenceEntityIdRef,
@@ -210,21 +211,19 @@ impl Supervisable for RemoteAgentWorkloadAPIWorker {
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         let workload_route = DynamicRoute::http(EndpointType::Privileged, &self.handler);
 
-        let state = self.handler.state.clone();
-        let tags_handle = DiagnosticHandle::new("workload-tags-dump.json", move || state.tags_dump_json().into_bytes());
-
-        let state = self.handler.state.clone();
-        let eds_handle = DiagnosticHandle::new("workload-external-data-dump.json", move || {
-            state.eds_dump_json().into_bytes()
-        });
+        let tags_state = self.handler.state.clone();
+        let eds_state = self.handler.state.clone();
 
         Ok(Box::pin(async move {
             let dataspace =
                 DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
             dataspace.assert(workload_route, "workload-api");
-            dataspace.assert(tags_handle, "diag-workload-tags");
-            dataspace.assert(eds_handle, "diag-workload-eds");
+
+            let diagnostics =
+                DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["workload-api"]), dataspace);
+            diagnostics.register_collector("workload-tags-dump.json", move || tags_state.tags_dump_json());
+            diagnostics.register_collector("workload-external-data-dump.json", move || eds_state.eds_dump_json());
 
             process_shutdown.await;
             Ok(())

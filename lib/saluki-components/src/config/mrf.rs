@@ -95,14 +95,13 @@ fn get_non_empty_string(config: &GenericConfiguration, key: &str) -> Result<Opti
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::ConfigurationLoader;
+    use saluki_config::config_from;
     use serde_json::json;
 
     use super::*;
 
     async fn mrf_config_from(value: serde_json::Value) -> MrfConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(value), None, false).await;
-        MrfConfiguration::from_configuration(&config).expect("MRF configuration should deserialize")
+        MrfConfiguration::from_configuration(&config_from(value).await).expect("MRF configuration should deserialize")
     }
 
     #[tokio::test]
@@ -181,6 +180,32 @@ mod tests {
             config.metrics_endpoint_override(),
             Some(("https://mrf.example.com".to_string(), "mrf-api-key".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_override_is_none_when_disabled() {
+        // Even with a fully-populated endpoint and API key, `metrics_endpoint_override` short-circuits to `None`
+        // when multi-region failover is disabled (the `if !self.enabled` guard at the top of the method).
+        let config = mrf_config_from(json!({
+            "multi_region_failover": {
+                "enabled": false,
+                "failover_metrics": true,
+                "api_key": "mrf-api-key",
+                "dd_url": "https://mrf.example.com"
+            }
+        }))
+        .await;
+
+        assert!(!config.is_enabled());
+        assert_eq!(config.metrics_endpoint_override(), None);
+
+        // The endpoint URL itself still resolves from configuration; only the override is gated on `enabled`, which
+        // confirms the `None` above comes from the disabled short-circuit rather than a missing endpoint/API key.
+        assert_eq!(
+            config.metrics_endpoint_url().as_deref(),
+            Some("https://mrf.example.com")
+        );
+        assert_eq!(config.api_key(), Some("mrf-api-key"));
     }
 
     #[tokio::test]

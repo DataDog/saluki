@@ -554,4 +554,51 @@ mod tests {
         drop(first_item);
         drop(third_item);
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn background_shrinker_shrinks_idle_pool_to_min_capacity() {
+        use super::SHRINKER_SLEEP_DURATION;
+
+        // min=1, max=3: one item is preallocated, and up to two more can be burst-allocated on demand.
+        let (pool, shrinker) = ElasticObjectPool::<TestObject>::with_capacity("test", 1, 3);
+
+        // Burst all the way to max capacity, then return every item so the pool is fully idle. The two
+        // burst allocations register as recent "demand" that the shrinker's EWMA has to decay past
+        // before it will start reclaiming items.
+        let mut items = Vec::new();
+        for _ in 0..3 {
+            let mut acquire = spawn(pool.acquire());
+            items.push(assert_ready!(acquire.poll()));
+        }
+        assert_eq!(pool.strategy.active.load(Acquire), 3);
+        drop(items);
+        assert_eq!(pool.strategy.available.available_permits(), 3);
+
+        // Drive the real background shrinker one loop iteration per poll under paused time.
+        let mut shrinker = spawn(shrinker);
+        assert_pending!(shrinker.poll()); // first iteration parks on the initial sleep
+
+        // With no further on-demand demand, the smoothed demand stays below the shrink threshold, so the
+        // shrinker removes exactly one idle item per iteration.
+        tokio::time::advance(SHRINKER_SLEEP_DURATION).await;
+        assert_pending!(shrinker.poll());
+        assert_eq!(pool.strategy.active.load(Acquire), 2);
+        assert_eq!(pool.strategy.available.available_permits(), 2);
+
+        tokio::time::advance(SHRINKER_SLEEP_DURATION).await;
+        assert_pending!(shrinker.poll());
+        assert_eq!(pool.strategy.active.load(Acquire), 1);
+        assert_eq!(pool.strategy.available.available_permits(), 1);
+
+        // Once the pool is back at its minimum capacity, further shrinker iterations leave it untouched:
+        // the pool is documented to only ever shrink down to (never below) its minimum capacity.
+        tokio::time::advance(SHRINKER_SLEEP_DURATION).await;
+        assert_pending!(shrinker.poll());
+        assert_eq!(
+            pool.strategy.active.load(Acquire),
+            1,
+            "the shrinker must never shrink a pool below its minimum capacity"
+        );
+        assert_eq!(pool.strategy.available.available_permits(), 1);
+    }
 }

@@ -36,6 +36,7 @@ use stringtheory::interning::GenericMapInterner;
 
 mod api;
 use self::api::RemoteAgentWorkloadAPIWorker;
+use crate::internal::env::root_provider_id;
 
 mod collectors;
 use self::collectors::{RemoteAgentTaggerMetadataCollector, RemoteAgentWorkloadMetadataCollector};
@@ -72,15 +73,6 @@ pub struct RemoteAgentWorkloadProvider {
     on_demand_pid_resolver: OnDemandPIDResolver,
 }
 
-/// Returns the canonical identifier root shared by every component the workload provider registers.
-///
-/// All of the provider's health and resource-accounting identities descend from this root, and
-/// `ADPEnvironmentProvider::wait_for_ready` matches against it to await the provider's readiness, so registration and
-/// readiness stay in sync by construction.
-pub(crate) fn workload_root() -> SubsystemIdentifier {
-    SubsystemIdentifier::from_segments(["env_provider", "workload"])
-}
-
 impl RemoteAgentWorkloadProvider {
     /// Create a new `RemoteAgentWorkloadProvider` based on the given configuration, along with a [`Supervisor`] that
     /// drives the aggregator and all collector workers.
@@ -90,10 +82,10 @@ impl RemoteAgentWorkloadProvider {
     /// If there is an issue with any of the provider configuration, or creating the underlying metadata collectors, an
     /// error is returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, component_registry: ComponentRegistry, health_registry: &HealthRegistry,
+        config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
-        let mut component_registry = component_registry.get_or_create("remote_agent");
-        let mut provider_bounds = component_registry.bounds_builder();
+        let workload_provider_id = root_provider_id().child("workload").child("remote_agent");
+        let mut provider_bounds = component_registry.bounds_builder(&workload_provider_id);
 
         // Create our string interner which will get used primarily for tags, but also for any other long-ish lived strings.
         let string_interner_size_bytes = config
@@ -108,14 +100,13 @@ impl RemoteAgentWorkloadProvider {
 
         // Construct our metadata aggregator and any relevant metadata collectors based on the detected features we've
         // been given.
-        let remote_agent_root = workload_root().child("remote_agent");
-        let aggregator_id = remote_agent_root.clone().child("aggregator");
+        let aggregator_id = workload_provider_id.clone().child("aggregator");
         let aggregator_health = health_registry
             .register_component(&aggregator_id)
             .ok_or_else(|| generic_error!("Component '{aggregator_id}' already registered in health registry."))?;
         let (mut aggregator, operations_tx) = MetadataAggregator::new(aggregator_health);
 
-        let collectors_root = remote_agent_root.child("collectors");
+        let collectors_root = workload_provider_id.child("collectors");
         let mut collector_bounds = provider_bounds.subcomponent("collectors");
         let mut collector_workers: Vec<MetadataCollectorWorker> = Vec::new();
 

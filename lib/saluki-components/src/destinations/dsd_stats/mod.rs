@@ -113,7 +113,7 @@ impl Destination for DogStatsDStats {
         let mut stats_response_tx: Option<tokio::sync::oneshot::Sender<StatsResponse>> = None;
         let mut current_stats: Option<HashMap<ContextNoOrigin, MetricSample>> = None;
         let mut stats_collection_start_time = 0;
-        let mut stats_collection_end_time = 0;
+        let mut stats_collection_end_time: u64 = 0;
         let collection_done = sleep(std::time::Duration::ZERO);
         pin!(collection_done);
 
@@ -128,7 +128,13 @@ impl Destination for DogStatsDStats {
                     if collection_active {
                         // We're already collecting statistics for another stats request
                         // so inform the caller they need to try again later.
-                        let try_after = stats_collection_end_time - get_coarse_unix_timestamp();
+                        let now = get_coarse_unix_timestamp();
+                        saluki_antithesis::always_or_unreachable!(
+                            now >= stats_collection_start_time,
+                            "dsd_stats collection clock did not move backward",
+                            { "now": now, "start_time": stats_collection_start_time }
+                        );
+                        let try_after = stats_collection_end_time.saturating_sub(now);
 
                         // We don't care if we can successfully send back a response or not.
                         let _ = response_tx.send(StatsResponse::AlreadyRunning { try_after });
@@ -301,5 +307,188 @@ impl MemoryBounds for DogStatsDStatisticsConfiguration {
         builder
             .minimum()
             .with_single_value::<DogStatsDStats>("component struct");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use saluki_context::tags::Tag;
+    use serde_json::json;
+
+    use super::*;
+
+    fn tag_set<const N: usize>(tags: [&'static str; N]) -> TagSet {
+        tags.into_iter().map(Tag::from_static).collect()
+    }
+
+    #[test]
+    fn collected_statistics_serialize_as_flat_metric_entries() {
+        // The `/dogstatsd/stats` endpoint returns `CollectedStatistics`: a start/end window plus a flat array of
+        // per-context samples, where each entry inlines the context (`name`, `tags`) and its `count`/`last_seen`.
+        let mut stats = HashMap::new();
+        stats.insert(
+            ContextNoOrigin {
+                name: MetaString::from("my.counter"),
+                tags: tag_set(["env:prod", "service:web"]),
+            },
+            MetricSample {
+                count: 3,
+                last_seen: 100,
+            },
+        );
+
+        let collected = CollectedStatistics {
+            start_time_unix: 10,
+            end_time_unix: 70,
+            stats: FlattenedStats(stats),
+        };
+        let json = serde_json::to_value(&collected).expect("collected statistics should serialize");
+
+        assert_eq!(json!(10), json["start_time_unix"]);
+        assert_eq!(json!(70), json["end_time_unix"]);
+
+        let entries = json["stats"].as_array().expect("stats should serialize as an array");
+        assert_eq!(1, entries.len());
+        let entry = &entries[0];
+        assert_eq!(json!("my.counter"), entry["name"]);
+        assert_eq!(json!(3), entry["count"]);
+        assert_eq!(json!(100), entry["last_seen"]);
+        let tags = entry["tags"]
+            .as_array()
+            .expect("tags should serialize as an array")
+            .iter()
+            .map(|tag| tag.as_str().expect("each tag should be a string"))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(BTreeSet::from(["env:prod", "service:web"]), tags);
+    }
+
+    #[tokio::test]
+    async fn stats_handler_rejects_excessive_collection_duration() {
+        // The handler caps collection at 600 seconds and short-circuits longer requests with a 400 before any
+        // collection is started.
+        let config = DogStatsDStatisticsConfiguration::new();
+        let state = config.api_handler.state.clone();
+
+        let (status, body) = DogStatsDStatsAPIHandler::stats_handler(
+            State(state),
+            Query(StatsQueryParams {
+                collection_duration_secs: 601,
+            }),
+        )
+        .await;
+
+        assert_eq!(StatusCode::BAD_REQUEST, status);
+        assert_eq!("Collection duration cannot be greater than 600 seconds.", body);
+    }
+
+    #[tokio::test]
+    async fn collection_request_accumulates_metrics_then_responds_on_timeout() {
+        use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
+        use saluki_core::components::ComponentContext;
+        use saluki_core::data_model::event::metric::Metric;
+        use saluki_core::health::HealthRegistry;
+        use saluki_core::runtime::state::DataspaceRegistry;
+        use saluki_core::runtime::Supervisor;
+        use saluki_core::topology::interconnect::Consumer;
+        use saluki_core::topology::{EventsBuffer, TopologyContext};
+        use tokio::runtime::Handle;
+        use tokio::time::timeout;
+
+        // Build the destination and grab the request sender the API handler would normally use.
+        let config = DogStatsDStatisticsConfiguration::new();
+        let request_tx = config.api_handler.state.tx.clone();
+
+        let component_context = ComponentContext::test_destination("test");
+        let destination = config
+            .build(component_context.clone())
+            .await
+            .expect("dsd_stats destination should build");
+
+        // Wire up the destination context: an events channel we control and an idle health handle.
+        let (events_tx, events_rx) = mpsc::channel::<EventsBuffer>(4);
+        let consumer = Consumer::new(component_context.clone(), events_rx);
+        let topology_context = TopologyContext::new(
+            Arc::from("test"),
+            MemoryLimiter::noop(),
+            HealthRegistry::new(),
+            Handle::current(),
+            DataspaceRegistry::new(),
+        );
+        let health = HealthRegistry::new()
+            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
+            .expect("component was not previously registered");
+        let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
+        let context = DestinationContext::new(
+            &topology_context,
+            &component_context,
+            ComponentRegistry::default(),
+            health,
+            consumer,
+            supervisor_handle,
+        );
+
+        let run_handle = tokio::spawn(async move { destination.run(context).await });
+
+        // Start a one-second collection window. Yield afterwards so the current-thread runtime lets the run loop
+        // process the request (marking collection active) before the metrics arrive; otherwise the metrics would be
+        // dropped as "not collecting".
+        let (response_tx, response_rx) = oneshot::channel();
+        request_tx
+            .send((response_tx, 1))
+            .await
+            .expect("collection request should be accepted");
+        tokio::task::yield_now().await;
+
+        // The same context seen twice accumulates a single entry with count 2; a distinct context yields count 1.
+        let mut events = EventsBuffer::default();
+        assert!(events
+            .try_push(Event::Metric(Metric::counter("dsd.stats.repeated", 1.0)))
+            .is_none());
+        assert!(events
+            .try_push(Event::Metric(Metric::counter("dsd.stats.repeated", 1.0)))
+            .is_none());
+        assert!(events
+            .try_push(Event::Metric(Metric::counter("dsd.stats.single", 1.0)))
+            .is_none());
+        events_tx.send(events).await.expect("metrics should be accepted");
+        tokio::task::yield_now().await;
+
+        // The collection window elapses after one second, completing collection and sending the response; the
+        // recv is bounded well above that window so a stalled collection surfaces as a failure, not a hang.
+        let response = timeout(Duration::from_secs(5), response_rx)
+            .await
+            .expect("collection response should arrive before timeout")
+            .expect("collection response channel should remain open");
+
+        let collected = match response {
+            StatsResponse::Statistics(collected) => collected,
+            StatsResponse::AlreadyRunning { .. } => panic!("first request should not report an active collection"),
+        };
+        let samples = collected.stats.0;
+        assert_eq!(2, samples.len(), "each distinct context should have its own sample");
+
+        let repeated = samples
+            .iter()
+            .find(|(ctx, _)| ctx.name.as_ref() == "dsd.stats.repeated")
+            .map(|(_, sample)| sample)
+            .expect("repeated context should be collected");
+        assert_eq!(2, repeated.count, "the repeated context should be counted twice");
+
+        let single = samples
+            .iter()
+            .find(|(ctx, _)| ctx.name.as_ref() == "dsd.stats.single")
+            .map(|(_, sample)| sample)
+            .expect("single context should be collected");
+        assert_eq!(1, single.count);
+
+        // Closing the events channel lets the run loop terminate cleanly.
+        drop(events_tx);
+        timeout(Duration::from_secs(1), run_handle)
+            .await
+            .expect("run task should stop before timeout")
+            .expect("run task should not panic")
+            .expect("run should complete cleanly");
     }
 }

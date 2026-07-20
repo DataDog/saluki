@@ -64,6 +64,8 @@ services:
       ADP_DOGSTATSD_SOCKET: "/var/run/datadog/dsd.socket"
       INTAKE_ADDR: "intake:2049"
       ADP_API_ADDR: "agent:5100"
+      # Privileged API where /dogstatsd/stats lives. HTTPS with no client auth.
+      ADP_SECURE_API_ADDR: "agent:5101"
     volumes:
       - dogstatsd-socket:/var/run/datadog
       - agent-config:/agent-config

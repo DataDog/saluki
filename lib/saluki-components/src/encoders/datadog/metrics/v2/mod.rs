@@ -12,7 +12,7 @@ use tracing::warn;
 
 use super::{
     endpoint::{EndpointConfiguration, MetricsEndpoint},
-    v1,
+    metric_has_emittable_values, sketch_has_emittable_values, v1,
 };
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
@@ -158,7 +158,7 @@ impl EndpointEncoder for MetricsEndpointEncoder {
 
         match self.endpoint {
             MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => is_series_input && v1::has_emittable_point(input),
-            MetricsEndpoint::Sketches => !is_series_input,
+            MetricsEndpoint::Sketches => !is_series_input && metric_has_emittable_values(input),
         }
     }
 
@@ -485,8 +485,7 @@ fn write_dogsketch(
     output_stream: &mut CodedOutputStream<'_>, scratch_buf: &mut Vec<u8>, packed_scratch_buf: &mut Vec<u8>,
     timestamp: Option<NonZeroU64>, sketch: &DDSketch,
 ) -> Result<(), protobuf::Error> {
-    // If the sketch is empty, we don't write it out.
-    if sketch.is_empty() {
+    if !sketch_has_emittable_values(sketch) {
         warn!("Attempted to write an empty sketch to sketches payload, skipping.");
         return Ok(());
     }
@@ -501,10 +500,10 @@ fn write_dogsketch(
                 timestamp.map_or(0, |ts| ts.get() as i64),
             )?;
             os.write_int64(constants::DOGSKETCH_CNT_FIELD_NUMBER, sketch.count() as i64)?;
-            os.write_double(constants::DOGSKETCH_MIN_FIELD_NUMBER, sketch.min().unwrap())?;
-            os.write_double(constants::DOGSKETCH_MAX_FIELD_NUMBER, sketch.max().unwrap())?;
-            os.write_double(constants::DOGSKETCH_AVG_FIELD_NUMBER, sketch.avg().unwrap())?;
-            os.write_double(constants::DOGSKETCH_SUM_FIELD_NUMBER, sketch.sum().unwrap())?;
+            os.write_double(constants::DOGSKETCH_MIN_FIELD_NUMBER, sketch.stored_min())?;
+            os.write_double(constants::DOGSKETCH_MAX_FIELD_NUMBER, sketch.stored_max())?;
+            os.write_double(constants::DOGSKETCH_AVG_FIELD_NUMBER, sketch.stored_avg())?;
+            os.write_double(constants::DOGSKETCH_SUM_FIELD_NUMBER, sketch.stored_sum())?;
 
             let bin_keys = sketch.bins().iter().map(|bin| bin.key());
             write_repeated_packed_from_iter(
@@ -644,6 +643,8 @@ where
 mod tests {
     use std::time::Duration;
 
+    use datadog_protos::metrics::Sketch;
+    use ddsketch::DDSketch;
     use protobuf::{CodedOutputStream, Message};
     use saluki_common::iter::ReusableDeduplicator;
     use saluki_context::{tags::SharedTagSet, Context};
@@ -698,6 +699,55 @@ mod tests {
         }
 
         assert_eq!(histogram_payload, distribution_payload);
+    }
+
+    #[test]
+    fn encodes_zero_count_distribution_with_bins_and_zero_summary() {
+        let mut sketch = DDSketch::default();
+        sketch.insert_n(42.0, 10);
+        sketch.set_count(0);
+        sketch.set_sum(0.0);
+        sketch.set_avg(0.0);
+        sketch.set_min(0.0);
+        sketch.set_max(0.0);
+
+        let metric = Metric::from_parts(
+            Context::from_static_parts("zero.count.distribution", &[]),
+            MetricValues::distribution((123_u64, sketch)),
+            MetricMetadata::default(),
+        );
+
+        let host_tags = SharedTagSet::default();
+        let mut scratch_buf = Vec::new();
+        let mut packed_scratch_buf = Vec::new();
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        let mut payload = Vec::new();
+        {
+            let mut writer = CodedOutputStream::vec(&mut payload);
+            encode_sketch_metric(
+                &metric,
+                &host_tags,
+                &mut writer,
+                &mut scratch_buf,
+                &mut packed_scratch_buf,
+                &mut tags_deduplicator,
+            )
+            .expect("zero-count distribution should encode");
+            writer.flush().expect("payload should flush");
+        }
+
+        let sketch_payload = Sketch::parse_from_bytes(&payload).expect("payload should decode");
+        let dogsketch = sketch_payload
+            .dogsketches()
+            .first()
+            .expect("payload should contain a sketch");
+        assert_eq!(dogsketch.cnt(), 0);
+        assert_eq!(dogsketch.min(), 0.0);
+        assert_eq!(dogsketch.max(), 0.0);
+        assert_eq!(dogsketch.avg(), 0.0);
+        assert_eq!(dogsketch.sum(), 0.0);
+        assert!(!dogsketch.k().is_empty());
+        assert!(!dogsketch.n().is_empty());
     }
 
     #[test]

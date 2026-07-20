@@ -861,6 +861,7 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "DSD log file max size"
+    input_shape: string_or_integer
     test_support:
       used_by: [DogStatsDDebugLogConfiguration]
       test_json: '"42MB"'
@@ -1707,6 +1708,7 @@ inventory:
     support: full
     pipelines: [cross_cutting]
     description: "Max log file size before rolling"
+    input_shape: string_or_integer
     test_support:
       used_by: [NO_SMOKE]
 
@@ -1999,12 +2001,59 @@ inventory:
       additional_attributes:
         config_registry_filename: otlp.rs
 
+  otlp_config.metrics.histograms.mode:
+    support: full
+    pipelines: [otlp]
+    description: "OTLP histogram bucket reporting mode"
+    test_support:
+      used_by: [OtlpConfiguration]
+      test_json: '"counters"'
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.histograms.send_aggregation_metrics:
+    support: full
+    pipelines: [otlp]
+    description: "Emit OTLP histogram aggregation metrics."
+    test_support:
+      used_by: [OtlpConfiguration]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   otlp_config.metrics.resource_attributes_as_tags:
     support: full
     pipelines: [otlp]
     description: "Add scalar resource attributes as raw tags."
     test_support:
       used_by: [OtlpConfiguration]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.sums.cumulative_monotonic_mode:
+    support: full
+    pipelines: [otlp]
+    description: "Cumulative monotonic sum reporting mode."
+    documentation: |-
+      Controls how cumulative monotonic sums are reported. The default `to_delta` converts cumulative values to
+      deltas and reports them as counts. Set this to `raw_value` to report cumulative values as gauges.
+    test_support:
+      used_by: [OtlpConfiguration]
+      test_json: '"raw_value"'
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.sums.initial_cumulative_monotonic_value:
+    support: full
+    pipelines: [otlp]
+    description: "Initial cumulative sum reporting behavior."
+    documentation: |-
+      Controls how the first cumulative monotonic sum value is reported. The default `auto` reports the value only
+      when the series started after the Agent Data Plane process. Set this to `drop` to always discard the first value
+      or `keep` to always report it.
+    test_support:
+      used_by: [OtlpConfiguration]
+      test_json: '"drop"'
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2273,8 +2322,11 @@ inventory:
   serializer_zstd_compressor_level:
     support: partial
     pipelines: [cross_cutting]
-    description: "Zstd compression level"
-    documentation: "ADP defaults to level 3 vs Agent level 1. ADP intentionally compresses better. Key is recognized by both; default divergence is intentional."
+    description: "Zstd compression level (Agent)"
+    documentation: >
+      The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`;
+      when that is unset, ADP applies this value if it has been changed from the Agent default of 1,
+      otherwise it uses its own default of 3.
     test_support:
       used_by:
         [
@@ -2308,9 +2360,7 @@ inventory:
       logs, traces, events, and service checks that flow through the shared forwarder.
 
       This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
-      OTLP proxying to the core agent, or unrelated HTTP clients. In FIPS builds, ADP rejects
-      `skip_ssl_validation: true` because disabling TLS certificate validation is not
-      FIPS-compliant.
+      OTLP proxying to the core agent, or unrelated HTTP clients.
     test_support:
       used_by: [ForwarderConfiguration]
       env_var_override: [DD_SKIP_SSL_VALIDATION]
@@ -3890,13 +3940,9 @@ excluded:
   otlp_config.metrics.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.histograms.mode: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.histograms.send_aggregation_metrics: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.histograms.send_count_sum_metrics: "ignored in initial audit 2026-04-23"
+  otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.summaries.mode: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.sums.cumulative_monotonic_mode: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.sums.initial_cumulative_monotonic_value: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.tag_cardinality: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.include_metadata: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time: "ignored in initial audit 2026-04-23"

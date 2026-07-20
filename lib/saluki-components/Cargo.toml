@@ -13,6 +13,7 @@ default = []
 fips = ["saluki-io/fips"]
 
 [dependencies]
+agent-data-plane-config = { workspace = true }
 arc-swap = { workspace = true }
 async-trait = { workspace = true }
 axum = { workspace = true }
@@ -21,6 +22,9 @@ bytes = { workspace = true }
 bytesize = { workspace = true }
 chrono = { workspace = true }
 datadog-agent-commons = { workspace = true }
+# TODO: remove after migration to typed config. This compatibility re-export is needed while the
+# binary migrates its imports to the new home.
+datadog-agent-config = { workspace = true }
 datadog-agent-metrics-v3 = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch = { workspace = true }
@@ -90,20 +94,19 @@ uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }
 
 [dev-dependencies]
+# TODO: remove after migration to typed config. Only the in-crate tests still reference the moved
+# `KEY_ALIASES`/`DatadogRemapper` (re-exported from `config` under `cfg(test)`).
+datadog-agent-config = { workspace = true }
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 proptest = { workspace = true }
-rcgen = { workspace = true, features = ["crypto", "pem"] }
 rustls = { workspace = true }
+saluki-config = { workspace = true, features = ["test-util"] }
+saluki-core = { workspace = true, features = ["test-util"] }
+saluki-env = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
-saluki-tls = { workspace = true }
+saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-rustls = { workspace = true }
-
-[target.'cfg(not(windows))'.dev-dependencies]
-rcgen = { workspace = true, features = ["aws_lc_rs"] }
-
-[target.'cfg(windows)'.dev-dependencies]
-rcgen = { workspace = true, features = ["ring"] }

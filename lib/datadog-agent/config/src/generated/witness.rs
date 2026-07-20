@@ -160,7 +160,11 @@ pub trait DatadogConfigWitness {
     fn consume_origin_detection_unified(&mut self, value: bool);
     fn consume_otlp_config_logs_enabled(&mut self, value: bool);
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool);
+    fn consume_otlp_config_metrics_histograms_mode(&mut self, value: String);
+    fn consume_otlp_config_metrics_histograms_send_aggregation_metrics(&mut self, value: bool);
     fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool);
+    fn consume_otlp_config_metrics_sums_cumulative_monotonic_mode(&mut self, value: String);
+    fn consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(&mut self, value: String);
     fn consume_otlp_config_metrics_tags(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
@@ -415,8 +419,23 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_origin_detection_unified(config.origin_detection_unified.clone());
     consumer.consume_otlp_config_logs_enabled(config.otlp_config.logs.enabled.clone());
     consumer.consume_otlp_config_metrics_enabled(config.otlp_config.metrics.enabled.clone());
+    consumer.consume_otlp_config_metrics_histograms_mode(config.otlp_config.metrics.histograms.mode.clone());
+    consumer.consume_otlp_config_metrics_histograms_send_aggregation_metrics(
+        config.otlp_config.metrics.histograms.send_aggregation_metrics.clone(),
+    );
     consumer.consume_otlp_config_metrics_resource_attributes_as_tags(
         config.otlp_config.metrics.resource_attributes_as_tags.clone(),
+    );
+    consumer.consume_otlp_config_metrics_sums_cumulative_monotonic_mode(
+        config.otlp_config.metrics.sums.cumulative_monotonic_mode.clone(),
+    );
+    consumer.consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(
+        config
+            .otlp_config
+            .metrics
+            .sums
+            .initial_cumulative_monotonic_value
+            .clone(),
     );
     consumer.consume_otlp_config_metrics_tags(config.otlp_config.metrics.tags.clone());
     consumer.consume_otlp_config_receiver_protocols_grpc_endpoint(

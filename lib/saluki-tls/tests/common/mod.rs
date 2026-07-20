@@ -1,21 +1,15 @@
 //! Shared helpers for `saluki-tls` integration tests.
-//!
-//! Not every test binary uses every helper, so `dead_code` is suppressed for the module as a whole.
 
 #![allow(dead_code)]
 
 use std::{fs, path::Path};
 
-use rcgen::{generate_simple_self_signed, CertifiedKey};
-
 /// A PEM block whose body is not valid base64. `rustls-native-certs` surfaces this as a PEM parsing error.
 const MALFORMED_PEM: &str = "-----BEGIN CERTIFICATE-----\nNOT VALID BASE64!!!\n-----END CERTIFICATE-----\n";
 
-/// Generates a self-signed certificate using `rcgen` and writes it as a PEM file at `path`.
+/// Generates a self-signed certificate and writes it as a PEM file at `path`.
 pub fn write_self_signed_cert(path: &Path) {
-    let CertifiedKey { cert, .. } =
-        generate_simple_self_signed(["example.com".to_owned()]).expect("rcgen should generate a self-signed cert");
-    fs::write(path, cert.pem()).expect("should write generated certificate");
+    saluki_tls::test_util::write_self_signed_cert(path);
 }
 
 /// Writes a syntactically PEM-shaped block with an invalid base64 body to `path`.
