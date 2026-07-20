@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
 use ::ddsketch::canonical::mapping::IndexMapping;
-use agent_data_plane_config::domains::otlp::HistogramMode;
+use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
 use datadog_protos::metrics::Dogsketch;
 use ddsketch::canonical::mapping::LogarithmicMapping;
 use ddsketch::canonical::store::DenseStore;
@@ -31,7 +31,7 @@ use stringtheory::MetaString;
 use tracing::{debug, trace, warn};
 
 use super::cache::PointsCache;
-use super::config::{NumberMode, OtlpMetricsTranslatorConfig};
+use super::config::OtlpMetricsTranslatorConfig;
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
@@ -39,7 +39,6 @@ use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
 use crate::common::otlp::attributes::translator::AttributeTranslator;
 use crate::common::otlp::attributes::{raw_origin_from_attributes, ResourceAttributeTagMode};
 use crate::common::otlp::util::{Source, SourceKind};
-use crate::sources::otlp::metrics::config::InitialCumulMonoValueMode;
 use crate::sources::otlp::Metrics;
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
@@ -610,11 +609,11 @@ impl OtlpMetricsTranslator {
                 OtlpMetricData::Sum(sum) => match AggregationTemporality::try_from(sum.aggregation_temporality) {
                     Ok(AggregationTemporality::Cumulative) => {
                         if sum.is_monotonic {
-                            match self.config.number_mode {
-                                NumberMode::CumulativeToDelta => {
+                            match self.config.cumulative_monotonic_mode {
+                                CumulativeMonotonicMode::ToDelta => {
                                     self.map_number_monotonic_metrics(base_dims, sum.data_points, &context)
                                 }
-                                NumberMode::RawValue => {
+                                CumulativeMonotonicMode::RawValue => {
                                     self.map_number_metrics(base_dims, sum.data_points, DataType::Gauge, &context)
                                 }
                             }
@@ -1338,13 +1337,13 @@ impl OtlpMetricsTranslator {
 
     /// Determines if the initial value of a cumulative monotonic metric should be consumed.
     fn should_consume_initial_value(&self, start_ts: u64, ts: u64) -> bool {
-        match self.config.initial_cumul_mono_value_mode {
-            InitialCumulMonoValueMode::Auto => {
+        match self.config.initial_cumulative_monotonic_value {
+            InitialCumulativeMonotonicValue::Auto => {
                 // We report the first value if the timeseries started after the translator process started.
                 self.process_start_time_ns < start_ts && start_ts != ts
             }
-            InitialCumulMonoValueMode::Keep => true,
-            InitialCumulMonoValueMode::Drop => false,
+            InitialCumulativeMonotonicValue::Keep => true,
+            InitialCumulativeMonotonicValue::Drop => false,
         }
     }
 }
@@ -1771,6 +1770,119 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), Some("resource-host"));
+    }
+
+    #[test]
+    fn raw_value_mode_emits_cumulative_monotonic_sums_as_gauges() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.cumulative_monotonic_mode = CumulativeMonotonicMode::RawValue;
+
+        let events = translator.map_to_dd_format(
+            OtlpMetric {
+                name: "cumulative.sum".to_string(),
+                data: Some(OtlpMetricData::Sum(
+                    otlp_protos::opentelemetry::proto::metrics::v1::Sum {
+                        aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                        is_monotonic: true,
+                        data_points: vec![OtlpNumberDataPoint {
+                            value: Some(OtlpNumberDataPointValue::AsInt(42)),
+                            start_time_unix_nano: nanos_from_seconds(1),
+                            time_unix_nano: nanos_from_seconds(2),
+                            ..Default::default()
+                        }],
+                    },
+                )),
+                ..Default::default()
+            },
+            &SharedTagSet::default(),
+            None,
+            &[],
+            &metrics,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::gauge((2, 42.0))
+        );
+    }
+
+    fn initial_cumulative_monotonic_sum(value: i64, start_time_unix_nano: u64, time_unix_nano: u64) -> OtlpMetric {
+        OtlpMetric {
+            name: "cumulative.sum".to_string(),
+            data: Some(OtlpMetricData::Sum(
+                otlp_protos::opentelemetry::proto::metrics::v1::Sum {
+                    aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                    is_monotonic: true,
+                    data_points: vec![OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsInt(value)),
+                        start_time_unix_nano,
+                        time_unix_nano,
+                        ..Default::default()
+                    }],
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn translate_initial_cumulative_monotonic_sum(
+        translator: &mut OtlpMetricsTranslator, metrics: &Metrics, value: i64, start_time_unix_nano: u64,
+        time_unix_nano: u64,
+    ) -> Vec<Event> {
+        translator.map_to_dd_format(
+            initial_cumulative_monotonic_sum(value, start_time_unix_nano, time_unix_nano),
+            &SharedTagSet::default(),
+            None,
+            &[],
+            metrics,
+        )
+    }
+
+    #[test]
+    fn auto_initial_cumulative_monotonic_value_mode_reports_new_series() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let start_time = translator.process_start_time_ns + 1;
+        let timestamp = start_time + nanos_from_seconds(1);
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, start_time, timestamp);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::counter((timestamp / 1_000_000_000, 42.0))
+        );
+    }
+
+    #[test]
+    fn keep_initial_cumulative_monotonic_value_mode_reports_first_value() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.initial_cumulative_monotonic_value = InitialCumulativeMonotonicValue::Keep;
+        let timestamp = translator.process_start_time_ns;
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, timestamp, timestamp);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::counter((timestamp / 1_000_000_000, 42.0))
+        );
+    }
+
+    #[test]
+    fn drop_initial_cumulative_monotonic_value_mode_drops_new_series() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        translator.config.initial_cumulative_monotonic_value = InitialCumulativeMonotonicValue::Drop;
+        let start_time = translator.process_start_time_ns + 1;
+        let timestamp = start_time + nanos_from_seconds(1);
+
+        let events = translate_initial_cumulative_monotonic_sum(&mut translator, &metrics, 42, start_time, timestamp);
+
+        assert!(events.is_empty());
     }
 
     fn string_attribute(key: &str, value: &str) -> OtlpKeyValue {

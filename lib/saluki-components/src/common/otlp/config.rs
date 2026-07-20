@@ -1,10 +1,10 @@
 //! Shared OTLP receiver configuration.
 
-use agent_data_plane_config::domains::otlp::HistogramMode;
+use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
 use bytesize::ByteSize;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use serde::{de::Error as _, Deserialize, Deserializer};
 
 fn default_grpc_endpoint() -> String {
@@ -180,6 +180,24 @@ pub struct HistogramsConfig {
     pub mode: HistogramMode,
 }
 
+// TODO: delete when this component uses typed config
+fn deserialize_cumulative_monotonic_mode<'de, D>(deserializer: D) -> Result<CumulativeMonotonicMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
+}
+
+// TODO: delete when this component uses typed config
+fn deserialize_initial_cumulative_monotonic_value<'de, D>(
+    deserializer: D,
+) -> Result<InitialCumulativeMonotonicValue, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
+}
+
 /// Configuration for OTLP metrics processing.
 #[derive(Deserialize, Debug)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -211,6 +229,36 @@ pub struct MetricsConfig {
     /// Defaults to empty.
     #[serde(default)]
     pub tags: String,
+
+    /// Configuration for OTLP sums.
+    #[serde(default)]
+    pub sums: SumsConfig,
+}
+
+/// Configuration for OTLP sums.
+#[derive(Deserialize, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+pub struct SumsConfig {
+    /// Controls how cumulative monotonic sums are emitted.
+    ///
+    /// The default `to_delta` converts each cumulative value to a delta and emits it as a count. Set this to
+    /// `raw_value` to emit the cumulative value as a gauge instead. This affects only cumulative monotonic sums;
+    /// delta sums and non-monotonic sums retain their existing behavior. Use `raw_value` when the receiver of the
+    /// translated metrics needs the original cumulative value.
+    ///
+    /// Corresponds to `otlp_config.metrics.sums.cumulative_monotonic_mode`.
+    #[serde(default, deserialize_with = "deserialize_cumulative_monotonic_mode")]
+    pub cumulative_monotonic_mode: CumulativeMonotonicMode,
+
+    /// Controls how the first value of a cumulative monotonic sum is emitted.
+    ///
+    /// The default `auto` reports the first value only when its series started after the translator process. Set this
+    /// to `drop` to always discard the first value or `keep` to always report it. This affects only cumulative
+    /// monotonic sums in `to_delta` mode; `raw_value` emits every value as a gauge.
+    ///
+    /// Corresponds to `otlp_config.metrics.sums.initial_cumulative_monotonic_value`.
+    #[serde(default, deserialize_with = "deserialize_initial_cumulative_monotonic_value")]
+    pub initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
 }
 
 fn default_metrics_enabled() -> bool {
@@ -224,7 +272,32 @@ impl Default for MetricsConfig {
             histograms: HistogramsConfig::default(),
             resource_attributes_as_tags: false,
             tags: String::new(),
+            sums: SumsConfig::default(),
         }
+    }
+}
+
+//TODO: remove env handling with typed config, unblocked by #2094
+impl MetricsConfig {
+    /// Applies environment-variable overrides for sum settings that normal nested deserialization cannot read.
+    pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
+        if let Some(raw_mode) = config.try_get_typed::<String>("otlp_config_metrics_sums_cumulative_monotonic_mode")? {
+            self.sums.cumulative_monotonic_mode = raw_mode.parse().map_err(|error| {
+                generic_error!(
+                    "invalid `otlp_config.metrics.sums.cumulative_monotonic_mode` environment override: {error}"
+                )
+            })?;
+        }
+        if let Some(raw_value) =
+            config.try_get_typed::<String>("otlp_config_metrics_sums_initial_cumulative_monotonic_value")?
+        {
+            self.sums.initial_cumulative_monotonic_value = raw_value.parse().map_err(|error| {
+                generic_error!(
+                    "invalid `otlp_config.metrics.sums.initial_cumulative_monotonic_value` environment override: {error}"
+                )
+            })?;
+        }
+        Ok(())
     }
 }
 

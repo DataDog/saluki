@@ -2025,6 +2025,33 @@ inventory:
       additional_attributes:
         config_registry_filename: otlp.rs
 
+  otlp_config.metrics.sums.cumulative_monotonic_mode:
+    support: full
+    pipelines: [otlp]
+    description: "Cumulative monotonic sum reporting mode."
+    documentation: |-
+      Controls how cumulative monotonic sums are reported. The default `to_delta` converts cumulative values to
+      deltas and reports them as counts. Set this to `raw_value` to report cumulative values as gauges.
+    test_support:
+      used_by: [OtlpConfiguration]
+      test_json: '"raw_value"'
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.sums.initial_cumulative_monotonic_value:
+    support: full
+    pipelines: [otlp]
+    description: "Initial cumulative sum reporting behavior."
+    documentation: |-
+      Controls how the first cumulative monotonic sum value is reported. The default `auto` reports the value only
+      when the series started after the Agent Data Plane process. Set this to `drop` to always discard the first value
+      or `keep` to always report it.
+    test_support:
+      used_by: [OtlpConfiguration]
+      test_json: '"drop"'
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   otlp_config.metrics.tags:
     support: full
     pipelines: [otlp]
@@ -3912,8 +3939,6 @@ excluded:
   otlp_config.metrics.histograms.send_count_sum_metrics: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.summaries.mode: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.sums.cumulative_monotonic_mode: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.sums.initial_cumulative_monotonic_value: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.tag_cardinality: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.include_metadata: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time: "ignored in initial audit 2026-04-23"
