@@ -1789,6 +1789,7 @@ mod tests {
 
     /// Drives `extractor` over every case with a shared interner/string builder and asserts the extracted string
     /// equals the case's `expected` value, reporting the failing case name.
+    #[allow(clippy::type_complexity)]
     fn run_attribute_extraction_cases(
         extractor: fn(
             &[KeyValue],
