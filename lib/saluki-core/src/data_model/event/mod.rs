@@ -255,10 +255,11 @@ mod tests {
     #[test]
     fn core_event_types_stay_within_size_budget() {
         // `Event` and its variants are moved by value through the entire pipeline on every single data point, so
-        // accidental growth (an extra field, a large inline buffer, a widened enum discriminant) is a real
-        // performance regression rather than a cosmetic one. This replaces a print-only `#[ignore]`'d diagnostic with
-        // concrete upper bounds. The budgets below are the current 64-bit layout sizes; if you intentionally change
-        // the layout of one of these types, update the corresponding budget in the same change.
+        // accidental growth (an extra field, a large inline buffer, a widened enum discriminant) is a real performance
+        // regression rather than a cosmetic one.
+        //
+        // The budgets below are the current 64-bit layout sizes; if you intentionally change the layout of one of these
+        // types, update the corresponding budget in the same change.
         macro_rules! assert_size_budget {
             ($ty:ty, $budget:expr) => {{
                 let actual = std::mem::size_of::<$ty>();
