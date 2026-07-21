@@ -7,7 +7,7 @@ mod aggregate;
 #[cfg(feature = "test-util")]
 pub use self::aggregate::{
     aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotBenchmarkHarness,
-    AggregateContextSnapshotResponder,
+    AggregateContextSnapshotPendingResponse, AggregateContextSnapshotResponder,
 };
 pub use self::aggregate::{
     AggregateConfiguration, AggregateContextSnapshotEntry, AggregateContextSnapshotHandle, AggregateMetricType,

@@ -260,7 +260,7 @@ mod tests {
     use saluki_api::{response::Response, APIHandler};
     use saluki_components::transforms::{
         aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotEntry, AggregateContextSnapshotHandle,
-        AggregateMetricType,
+        AggregateContextSnapshotPendingResponse, AggregateMetricType,
     };
     use saluki_context::Context;
     use saluki_error::{generic_error, GenericError};
@@ -450,7 +450,7 @@ mod tests {
         let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
         let coordinator = ContextSnapshotCoordinator::new(vec![handle], Duration::from_secs(1));
         let request = tokio::spawn(async move { coordinator.snapshot().await });
-        let pending_response = responder
+        let pending_response: AggregateContextSnapshotPendingResponse = responder
             .receive()
             .await
             .expect("the owner should accept the snapshot request");
