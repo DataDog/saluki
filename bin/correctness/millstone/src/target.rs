@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use backon::{Backoff, Retryable as _};
+use backon::{Backoff, BackoffBuilder as _, ExponentialBuilder, Retryable as _};
 use prost::bytes::Bytes;
 use saluki_error::{ErrorContext as _, GenericError};
 use tonic::{client::Grpc, transport::Channel};
@@ -16,14 +16,7 @@ use tracing::warn;
 
 use crate::config::{Config, TargetAddress};
 
-const GRPC_RETRY_DELAYS: [Duration; 5] = [
-    Duration::from_millis(100),
-    Duration::from_millis(200),
-    Duration::from_millis(400),
-    Duration::from_millis(800),
-    Duration::from_millis(1600),
-];
-const MAX_RETRIES: usize = GRPC_RETRY_DELAYS.len();
+const MAX_RETRIES: usize = 5;
 
 enum TargetBackend {
     Tcp(TcpStream),
@@ -219,7 +212,11 @@ fn send_grpc_payload(
 }
 
 fn grpc_retry_backoff() -> impl Backoff {
-    GRPC_RETRY_DELAYS.into_iter()
+    ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(100))
+        .with_max_delay(Duration::from_millis(1600))
+        .with_max_times(MAX_RETRIES)
+        .build()
 }
 
 /// Creates a generic gRPC backend with a tokio runtime for the given gRPC URL.
@@ -324,8 +321,6 @@ impl tonic::codec::Decoder for NoopDecoder {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::{create_grpc_client_with_backoff, grpc_retry_backoff};
 
     #[test]
@@ -344,8 +339,8 @@ mod tests {
 
     #[test]
     fn grpc_retry_backoff_uses_bounded_exponential_delays() {
-        let delays = grpc_retry_backoff().collect::<Vec<_>>();
+        let delays_ms = grpc_retry_backoff().map(|delay| delay.as_millis()).collect::<Vec<_>>();
 
-        assert_eq!(delays, [100, 200, 400, 800, 1600].map(Duration::from_millis));
+        assert_eq!(delays_ms, [100, 200, 400, 800, 1600]);
     }
 }
