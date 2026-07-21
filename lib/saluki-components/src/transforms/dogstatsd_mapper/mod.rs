@@ -350,6 +350,13 @@ impl MetricMapper {
     fn cache_len(&self) -> Option<usize> {
         self.cache.as_ref().map(|c| c.len())
     }
+
+    #[cfg(test)]
+    fn cache_contains(&self, metric_name: &str) -> bool {
+        self.cache
+            .as_ref()
+            .is_some_and(|c| c.get(&MetaString::from(metric_name)).is_some())
+    }
 }
 
 impl DogStatsDMapperConfiguration {
@@ -995,19 +1002,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cache_stays_within_capacity_when_evicting() {
+    async fn cache_evicts_older_entry_and_retains_newest_within_capacity() {
         let mut mapper = mapper_with_cache(simple_mapping_profile(), 2).expect("should have parsed mapping config");
 
+        // Insert three distinct metric names into a capacity-2 result cache, in order a, b, then c.
         for suffix in ["a", "b", "c"] {
             let name = format!("test.job.duration.t.{}", suffix);
             let metric = counter_metric(Box::leak(name.into_boxed_str()), &[]);
             mapper.try_map(metric.context()).expect("should have remapped");
         }
 
+        let a = mapper.cache_contains("test.job.duration.t.a");
+        let b = mapper.cache_contains("test.job.duration.t.b");
+        let c = mapper.cache_contains("test.job.duration.t.c");
+
+        // The cache must respect its configured capacity...
         assert!(
             mapper.cache_len().unwrap() <= 2,
             "cache should not exceed configured capacity (got {})",
             mapper.cache_len().unwrap()
+        );
+        // ...eviction must actually have happened (three distinct names cannot all fit in a capacity-2 cache)...
+        assert!(!(a && b && c), "at least one older entry must have been evicted");
+        // ...the most-recently-inserted name ("c") must be the entry that survives eviction...
+        assert!(c, "the most-recently-inserted metric name should survive eviction");
+        // ...and with "c" retained at capacity 2, at most one of the two older names may remain.
+        assert!(
+            !(a && b),
+            "only one older entry may coexist with the newest entry at capacity 2"
         );
     }
 
