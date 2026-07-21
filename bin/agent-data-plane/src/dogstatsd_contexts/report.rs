@@ -6,7 +6,7 @@ use super::artifact::AgentContextRecord;
 const HEADING: &str = "   Contexts\tMetric name\t(number of unique values for each tag)\n";
 
 #[derive(Default)]
-pub(super) struct ContextReport {
+pub(crate) struct ContextReport {
     metrics: HashMap<String, MetricSummary>,
 }
 
@@ -30,7 +30,7 @@ impl ContextReport {
         summary.metric_tags.extend(metric_tags);
     }
 
-    pub(super) fn render(&self, metric_limit: usize, tag_limit: usize) -> String {
+    pub(crate) fn render(&self, metric_limit: usize, tag_limit: usize) -> String {
         let mut output = String::from(HEADING);
         let mut metrics: Vec<_> = self.metrics.iter().collect();
         metrics.sort_unstable_by(|(left_name, left), (right_name, right)| {

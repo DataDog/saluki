@@ -32,7 +32,6 @@ use crate::config::DataPlaneConfiguration;
 pub struct DataPlaneAPIClient {
     client: HttpClient,
     authority: String,
-    #[allow(dead_code, reason = "stored for authenticated privileged API commands")]
     authorization: Option<HeaderValue>,
 }
 
@@ -81,10 +80,6 @@ impl DataPlaneAPIClient {
     /// If the data plane or IPC authentication configuration is invalid, the IPC certificate or authentication token
     /// cannot be read, the token cannot be represented as an HTTP header, or the HTTP client cannot be built, an error
     /// is returned.
-    #[allow(
-        dead_code,
-        reason = "public constructor reserved for authenticated privileged API commands"
-    )]
     pub async fn from_config_with_ipc_auth(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let dp_config = DataPlaneConfiguration::from_configuration(config)?;
         let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
@@ -260,10 +255,6 @@ impl DataPlaneAPIClient {
     ///
     /// If this client was not created with [`Self::from_config_with_ipc_auth`], the request fails, the server rejects
     /// the request, or the successful response does not contain a JSON string path, an error is returned.
-    #[allow(
-        dead_code,
-        reason = "public operation reserved for authenticated context dump commands"
-    )]
     pub async fn dogstatsd_contexts_dump(&mut self) -> Result<PathBuf, GenericError> {
         let authorization = self.authorization.as_ref().ok_or_else(|| {
             generic_error!(
@@ -440,7 +431,6 @@ fn authorization_from_token_file_contents(raw_token: &[u8], token_path: &Path) -
     Ok(authorization)
 }
 
-#[allow(dead_code, reason = "request helper for the authenticated context dump operation")]
 fn build_dogstatsd_contexts_dump_request(uri: Uri, authorization: &HeaderValue) -> Request<String> {
     Request::post(uri)
         .header(AUTHORIZATION, authorization.clone())
@@ -448,7 +438,6 @@ fn build_dogstatsd_contexts_dump_request(uri: Uri, authorization: &HeaderValue) 
         .expect("valid DogStatsD context dump request")
 }
 
-#[allow(dead_code, reason = "response helper for the authenticated context dump operation")]
 fn path_when_context_dump_success(resp: Response<String>) -> Result<PathBuf, GenericError> {
     match resp.status() {
         status if status.is_success() => serde_json::from_str::<PathBuf>(resp.body())

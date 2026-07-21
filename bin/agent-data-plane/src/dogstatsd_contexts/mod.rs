@@ -1,24 +1,22 @@
 use std::path::Path;
 
+use saluki_error::GenericError;
+
 #[allow(
     unused_imports,
     reason = "registered with the privileged API by a subsequent feature task"
 )]
 pub(crate) use self::api::DogStatsDContextDumpAPIHandler;
 pub(crate) use self::artifact::publish_context_dump;
-use self::artifact::ArtifactError;
-#[allow(
-    unused_imports,
-    reason = "used by the DogStatsD CLI and topology wiring in subsequent feature tasks"
-)]
+#[allow(unused_imports, reason = "used by topology wiring in a subsequent feature task")]
 pub(crate) use self::artifact::CONTEXT_DUMP_FILENAME;
-use self::report::ContextReport;
+pub(crate) use self::report::ContextReport;
 
 mod api;
 mod artifact;
 mod report;
 
-fn read_report(path: &Path) -> Result<ContextReport, ArtifactError> {
+pub(crate) fn read_report(path: &Path) -> Result<ContextReport, GenericError> {
     let mut report = ContextReport::new();
     artifact::for_each_record(path, |record| report.ingest(record))?;
     Ok(report)
