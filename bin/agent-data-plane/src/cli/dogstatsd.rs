@@ -220,6 +220,7 @@ async fn run_dogstatsd_command(
             }
         }
         DogstatsdSubcommand::Top(config) => {
+            let config = config.validate()?;
             let mut output = std::io::stdout();
             if config.is_offline() {
                 handle_dogstatsd_top(None, config, &mut output).await

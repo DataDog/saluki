@@ -439,6 +439,65 @@ pub(super) struct AgentContextRecord {
     pub(super) source: u32,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum JsonErrorCategory {
+    Io,
+    Syntax,
+    Data,
+    Eof,
+}
+
+impl JsonErrorCategory {
+    fn from_serde(category: serde_json::error::Category) -> Self {
+        match category {
+            serde_json::error::Category::Io => Self::Io,
+            serde_json::error::Category::Syntax => Self::Syntax,
+            serde_json::error::Category::Data => Self::Data,
+            serde_json::error::Category::Eof => Self::Eof,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Io => "I/O",
+            Self::Syntax => "syntax",
+            Self::Data => "data",
+            Self::Eof => "end-of-file",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ArtifactDecodeError {
+    category: JsonErrorCategory,
+    line: usize,
+    column: usize,
+}
+
+impl ArtifactDecodeError {
+    fn from_serde(error: serde_json::Error) -> Self {
+        Self {
+            category: JsonErrorCategory::from_serde(error.classify()),
+            line: error.line(),
+            column: error.column(),
+        }
+    }
+}
+
+impl fmt::Display for ArtifactDecodeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "JSON {} error at line {}, column {}",
+            self.category.label(),
+            self.line,
+            self.column
+        )
+    }
+}
+
+impl Error for ArtifactDecodeError {}
+
 #[derive(Debug)]
 pub(super) struct ArtifactError {
     path: PathBuf,
@@ -457,6 +516,10 @@ impl ArtifactError {
             record_index,
             source: Box::new(source),
         }
+    }
+
+    fn decode(path: &Path, record_index: usize, source: serde_json::Error) -> Self {
+        Self::new(path, "decode", record_index, ArtifactDecodeError::from_serde(source))
     }
 
     #[cfg(test)]
@@ -517,7 +580,7 @@ fn decode_records<R: Read>(
     let records = serde_json::Deserializer::from_reader(reader).into_iter::<AgentContextRecord>();
     for (index, record) in records.enumerate() {
         let record_index = index + 1;
-        let record = record.map_err(|error| ArtifactError::new(path, "decode", record_index, error))?;
+        let record = record.map_err(|error| ArtifactError::decode(path, record_index, error))?;
         consume(record);
     }
     Ok(())
@@ -1411,6 +1474,9 @@ mod tests {
                     .contains(&format!("decode record {}", case.expected_record_index)),
                 "{error}"
             );
+            assert!(error.to_string().contains("JSON"), "{error}");
+            assert!(error.to_string().contains("line"), "{error}");
+            assert!(error.to_string().contains("column"), "{error}");
         }
     }
 

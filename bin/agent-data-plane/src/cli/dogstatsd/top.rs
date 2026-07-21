@@ -30,18 +30,35 @@ pub(super) struct TopCommand {
 }
 
 impl TopCommand {
+    pub(super) fn validate(self) -> Result<ValidatedTopCommand, GenericError> {
+        let num_tags = match (self.num_tags, self.legacy_num_tags) {
+            (Some(_), Some(_)) => {
+                return Err(saluki_error::generic_error!(
+                    "Cannot use `--num-tags` and legacy `--mum-tags` together; use `--num-tags`."
+                ));
+            }
+            (Some(limit), None) | (None, Some(limit)) => limit,
+            (None, None) => 5,
+        };
+
+        Ok(ValidatedTopCommand {
+            path: self.path,
+            num_metrics: self.num_metrics,
+            num_tags,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct ValidatedTopCommand {
+    path: Option<PathBuf>,
+    num_metrics: usize,
+    num_tags: usize,
+}
+
+impl ValidatedTopCommand {
     pub(super) fn is_offline(&self) -> bool {
         self.path.is_some()
-    }
-
-    fn effective_num_tags(&self) -> Result<usize, GenericError> {
-        match (self.num_tags, self.legacy_num_tags) {
-            (Some(_), Some(_)) => Err(saluki_error::generic_error!(
-                "Cannot use `--num-tags` and legacy `--mum-tags` together; use `--num-tags`."
-            )),
-            (Some(limit), None) | (None, Some(limit)) => Ok(limit),
-            (None, None) => Ok(5),
-        }
     }
 }
 
@@ -63,9 +80,8 @@ impl DogStatsDContextDumpRequester for DataPlaneAPIClient {
 }
 
 pub(super) async fn handle_dogstatsd_top(
-    requester: Option<&mut dyn DogStatsDContextDumpRequester>, cmd: TopCommand, output: &mut dyn Write,
+    requester: Option<&mut dyn DogStatsDContextDumpRequester>, cmd: ValidatedTopCommand, output: &mut dyn Write,
 ) -> Result<(), GenericError> {
-    let num_tags = cmd.effective_num_tags()?;
     let path = match cmd.path {
         Some(path) => path,
         None => {
@@ -83,7 +99,7 @@ pub(super) async fn handle_dogstatsd_top(
 
     let report = read_report(&path)
         .with_error_context(|| format!("Failed to read DogStatsD context report from '{}'.", path.display()))?;
-    let rendered = report.render(cmd.num_metrics, num_tags);
+    let rendered = report.render(cmd.num_metrics, cmd.num_tags);
     output
         .write_all(rendered.as_bytes())
         .with_error_context(|| format!("Failed to write DogStatsD context report for '{}'.", path.display()))?;
@@ -121,7 +137,10 @@ mod tests {
     use async_trait::async_trait;
     use saluki_error::{generic_error, GenericError};
 
-    use super::{handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DogStatsDContextDumpRequester, TopCommand};
+    use super::{
+        handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DogStatsDContextDumpRequester, TopCommand,
+        ValidatedTopCommand,
+    };
     use crate::cli::dogstatsd::{DogstatsdCommand, DogstatsdSubcommand};
 
     const PLAIN_FIXTURE: &str = concat!(
@@ -145,7 +164,10 @@ mod tests {
         assert_eq!(top.num_metrics, 10);
         assert_eq!(top.num_tags, None);
         assert_eq!(top.legacy_num_tags, None);
-        assert_eq!(top.effective_num_tags().unwrap(), 5);
+        let validated = top.validate().expect("defaults should pass preflight");
+        assert_eq!(validated.path, None);
+        assert_eq!(validated.num_metrics, 10);
+        assert_eq!(validated.num_tags, 5);
     }
 
     #[test]
@@ -160,7 +182,10 @@ mod tests {
         assert_eq!(top.num_metrics, 7);
         assert_eq!(top.num_tags, Some(3));
         assert_eq!(top.legacy_num_tags, None);
-        assert_eq!(top.effective_num_tags().unwrap(), 3);
+        let validated = top.validate().expect("short options should pass preflight");
+        assert_eq!(validated.path, Some(PathBuf::from(PLAIN_FIXTURE)));
+        assert_eq!(validated.num_metrics, 7);
+        assert_eq!(validated.num_tags, 3);
     }
 
     #[test]
@@ -172,7 +197,7 @@ mod tests {
 
         assert_eq!(top.num_tags, Some(4));
         assert_eq!(top.legacy_num_tags, None);
-        assert_eq!(top.effective_num_tags().unwrap(), 4);
+        assert_eq!(top.validate().unwrap().num_tags, 4);
     }
 
     #[test]
@@ -184,19 +209,20 @@ mod tests {
 
         assert_eq!(top.num_tags, None);
         assert_eq!(top.legacy_num_tags, Some(6));
-        assert_eq!(top.effective_num_tags().unwrap(), 6);
+        assert_eq!(top.validate().unwrap().num_tags, 6);
     }
 
     #[test]
-    fn dogstatsd_top_rejects_both_num_tags_spellings() {
+    fn dogstatsd_top_preflight_rejects_both_num_tags_spellings() {
         let command = parse_dogstatsd(&["top", "--num-tags", "4", "--mum-tags", "6"])
             .expect("each spelling should parse before conflict validation");
         let DogstatsdSubcommand::Top(top) = command.subcommand else {
             panic!("expected top subcommand");
         };
 
+        let error = top.validate().expect_err("preflight should reject conflicting options");
         assert_eq!(
-            top.effective_num_tags().unwrap_err().to_string(),
+            error.to_string(),
             "Cannot use `--num-tags` and legacy `--mum-tags` together; use `--num-tags`."
         );
     }
@@ -307,6 +333,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dogstatsd_top_redacts_malformed_artifact_values_from_errors() {
+        const SENTINEL: &str = "SECRET_TENANT_TAG";
+
+        let artifact = tempfile::NamedTempFile::new().expect("temporary artifact should be created");
+        let record = format!(
+            "{{\"Name\":\"metric\",\"Host\":\"host\",\"Type\":\"Gauge\",\"TaggerTags\":[],\"MetricTags\":[],\"NoIndex\":\"{SENTINEL}\",\"Source\":1}}\n"
+        );
+        std::fs::write(artifact.path(), record).expect("malformed artifact should be written");
+        let mut output = RecordingWriter::default();
+
+        let error = handle_dogstatsd_top(
+            None,
+            top_command(Some(artifact.path().to_owned()), 10, None, None),
+            &mut output,
+        )
+        .await
+        .expect_err("wrong-typed artifact field should fail");
+
+        let error_chain = format!("{error:#}");
+        assert!(!error_chain.contains(SENTINEL), "{error_chain}");
+        assert!(
+            error_chain.contains(&artifact.path().display().to_string()),
+            "{error_chain}"
+        );
+        assert!(error_chain.contains("decode record 1"), "{error_chain}");
+        assert!(error_chain.contains("line 1"), "{error_chain}");
+        assert!(error_chain.contains("column"), "{error_chain}");
+    }
+
+    #[tokio::test]
     async fn dogstatsd_top_renders_only_the_heading_for_an_empty_artifact() {
         let artifact = tempfile::NamedTempFile::new().expect("temporary artifact should be created");
         let mut output = RecordingWriter::default();
@@ -368,13 +424,15 @@ mod tests {
 
     fn top_command(
         path: Option<PathBuf>, num_metrics: usize, num_tags: Option<usize>, legacy_num_tags: Option<usize>,
-    ) -> TopCommand {
+    ) -> ValidatedTopCommand {
         TopCommand {
             path,
             num_metrics,
             num_tags,
             legacy_num_tags,
         }
+        .validate()
+        .expect("test command should pass preflight")
     }
 
     struct FakeRequester {
