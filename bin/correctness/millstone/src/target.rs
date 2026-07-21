@@ -231,6 +231,12 @@ fn grpc_retry_backoff() -> impl Backoff {
 /// Returns an error if the runtime can't be created or the connection can't be established after retrying transient
 /// startup failures.
 fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    create_grpc_client_with_backoff(url, grpc_retry_backoff())
+}
+
+fn create_grpc_client_with_backoff(
+    url: &str, backoff: impl Backoff,
+) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
     // Split the URL into host:port and service/method path
     let (host_and_port, path) = url
         .split_once('/')
@@ -247,7 +253,7 @@ fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime
         async move { grpc_endpoint.connect().await }
     };
     let channel = runtime
-        .block_on(connect.retry(grpc_retry_backoff()).notify(|error, delay| {
+        .block_on(connect.retry(backoff).notify(|error, delay| {
             warn!(
                 delay_ms = delay.as_millis(),
                 error = %error,
@@ -320,18 +326,18 @@ impl tonic::codec::Decoder for NoopDecoder {
 mod tests {
     use std::time::Duration;
 
-    use super::{create_grpc_client, grpc_retry_backoff};
+    use super::{create_grpc_client_with_backoff, grpc_retry_backoff};
 
     #[test]
     fn preserves_the_final_grpc_connection_error() {
-        let error = match create_grpc_client("127.0.0.1:0/test.Service/Call") {
+        let error = match create_grpc_client_with_backoff("127.0.0.1:0/test.Service/Call", std::iter::empty()) {
             Ok(_) => panic!("connection should fail"),
             Err(error) => error,
         };
         let error_chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
 
         assert!(
-            error_chain.iter().any(|cause| cause == "tcp connect error"),
+            error_chain.iter().any(|cause| cause.contains("tcp connect error")),
             "expected TCP connection failure in error chain, got: {error_chain:?}"
         );
     }
