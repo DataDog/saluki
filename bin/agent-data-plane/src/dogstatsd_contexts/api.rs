@@ -109,7 +109,16 @@ impl ContextSnapshotCoordinator {
             .await
             .map_err(|_| SnapshotError::SnapshotTimedOut)?
             .map_err(|_| SnapshotError::SnapshotUnavailable)?;
-        Ok(owner_snapshots.into_iter().flatten().collect())
+        let total_len = owner_snapshots.iter().map(Vec::len).sum::<usize>();
+        let mut owner_snapshots = owner_snapshots.into_iter();
+        let mut combined = owner_snapshots
+            .next()
+            .expect("a non-empty snapshot handle set always returns at least one owner snapshot");
+        combined.reserve(total_len - combined.len());
+        for snapshot in owner_snapshots {
+            combined.extend(snapshot);
+        }
+        Ok(combined)
     }
 }
 
@@ -357,16 +366,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_returns_one_owner_snapshot_unchanged() {
+    async fn coordinator_reuses_the_one_owner_snapshot_allocation() {
         let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
-        let expected = vec![snapshot_entry("owner.one.first"), snapshot_entry("owner.one.second")];
-        let owner_snapshot = expected.clone();
+        let owner_snapshot = vec![snapshot_entry("owner.one.first"), snapshot_entry("owner.one.second")];
+        let expected = owner_snapshot.clone();
+        let original_pointer = owner_snapshot.as_ptr() as usize;
+        let original_capacity = owner_snapshot.capacity();
         let owner = tokio::spawn(async move { responder.respond(owner_snapshot).await });
         let coordinator = ContextSnapshotCoordinator::new(vec![handle], Duration::from_secs(1));
 
         let actual = coordinator.snapshot().await.expect("snapshot should succeed");
 
         assert_eq!(actual, expected);
+        assert_eq!(actual.as_ptr() as usize, original_pointer);
+        assert_eq!(actual.capacity(), original_capacity);
         owner.await.unwrap().unwrap();
     }
 
@@ -437,15 +450,15 @@ mod tests {
         let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
         let coordinator = ContextSnapshotCoordinator::new(vec![handle], Duration::from_secs(1));
         let request = tokio::spawn(async move { coordinator.snapshot().await });
-        tokio::task::yield_now().await;
+        let pending_response = responder
+            .receive()
+            .await
+            .expect("the owner should accept the snapshot request");
 
         request.abort();
         let _ = request.await;
 
-        responder
-            .respond(vec![snapshot_entry("late.owner.response")])
-            .await
-            .expect("a canceled response receiver should be ignored");
+        pending_response.respond(vec![snapshot_entry("late.owner.response")]);
     }
 
     #[tokio::test]
@@ -639,6 +652,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn blocking_publisher_release_guard_releases_and_notifies_on_drop() {
+        let release = Arc::new((StdMutex::new(false), Condvar::new()));
+        let (waiting_tx, waiting_rx) = mpsc::sync_channel(1);
+
+        std::thread::scope(|scope| {
+            let waiter_release = release.clone();
+            let waiter = scope.spawn(move || {
+                let (released, wake) = &*waiter_release;
+                let released = released.lock().unwrap();
+                waiting_tx.send(()).unwrap();
+                let (released, timeout) = wake
+                    .wait_timeout_while(released, Duration::from_secs(1), |released| !*released)
+                    .unwrap();
+                assert!(!timeout.timed_out(), "release guard should notify the waiter");
+                assert!(*released);
+            });
+            waiting_rx.recv().unwrap();
+
+            let release_guard = BlockingPublisherReleaseGuard::new(release);
+            drop(release_guard);
+            waiter.join().unwrap();
+        });
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authorized_requests_serialize_fixed_path_publisher_executions() {
         let (started_tx, started_rx) = mpsc::sync_channel(1);
@@ -663,15 +701,12 @@ mod tests {
             .await
             .unwrap()
             .expect("first publisher should start");
+        let release_guard = BlockingPublisherReleaseGuard::new(release);
         let second_handler = handler.clone();
         let second = tokio::spawn(async move { send(&second_handler, authorized_post()).await });
         tokio::time::sleep(Duration::from_millis(25)).await;
         assert_eq!(publisher.calls.load(Ordering::SeqCst), 1);
-        {
-            let (released, wake) = &*release;
-            *released.lock().unwrap() = true;
-            wake.notify_all();
-        }
+        drop(release_guard);
 
         assert_eq!(first.await.unwrap().status(), StatusCode::OK);
         assert_eq!(second.await.unwrap().status(), StatusCode::OK);
@@ -702,15 +737,12 @@ mod tests {
             .await
             .unwrap()
             .expect("publisher should start");
+        let release_guard = BlockingPublisherReleaseGuard::new(release);
 
         request.abort();
         let _ = request.await;
         assert_eq!(fs::read(&target).unwrap(), b"original canonical artifact");
-        {
-            let (released, wake) = &*release;
-            *released.lock().unwrap() = true;
-            wake.notify_all();
-        }
+        drop(release_guard);
         tokio::time::timeout(Duration::from_secs(2), async {
             while !completed.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -811,6 +843,25 @@ mod tests {
             &self, _run_path: PathBuf, _snapshot: Vec<AggregateContextSnapshotEntry>,
         ) -> Result<PathBuf, GenericError> {
             panic!("injected publisher panic")
+        }
+    }
+
+    struct BlockingPublisherReleaseGuard {
+        release: Arc<(StdMutex<bool>, Condvar)>,
+    }
+
+    impl BlockingPublisherReleaseGuard {
+        fn new(release: Arc<(StdMutex<bool>, Condvar)>) -> Self {
+            Self { release }
+        }
+    }
+
+    impl Drop for BlockingPublisherReleaseGuard {
+        fn drop(&mut self) {
+            let (released, wake) = &*self.release;
+            let mut released = released.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            *released = true;
+            wake.notify_all();
         }
     }
 

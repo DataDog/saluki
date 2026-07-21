@@ -156,6 +156,22 @@ fn aggregate_context_snapshot_channel() -> (AggregateContextSnapshotHandle, Aggr
     (AggregateContextSnapshotHandle { requests }, receiver)
 }
 
+/// An accepted retained-context snapshot request for test fixtures.
+#[cfg(any(test, feature = "test-util"))]
+pub struct AggregateContextSnapshotPendingResponse {
+    response: AggregateContextSnapshotRequest,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl AggregateContextSnapshotPendingResponse {
+    /// Responds to the accepted snapshot request with the supplied entries.
+    ///
+    /// If the requester was canceled after the request was accepted, the response is discarded.
+    pub fn respond(self, snapshot: Vec<AggregateContextSnapshotEntry>) {
+        let _ = self.response.send(snapshot);
+    }
+}
+
 /// A responder for retained-context snapshot test fixtures.
 #[cfg(any(test, feature = "test-util"))]
 pub struct AggregateContextSnapshotResponder {
@@ -172,13 +188,25 @@ impl AggregateContextSnapshotResponder {
     ///
     /// Returns an error if the request channel closes before a request arrives.
     pub async fn respond(&mut self, snapshot: Vec<AggregateContextSnapshotEntry>) -> Result<(), GenericError> {
+        self.receive().await?.respond(snapshot);
+        Ok(())
+    }
+
+    /// Waits for one snapshot request and returns its pending response.
+    ///
+    /// The returned response lets tests deterministically control whether the owner responds, stops, or outlives a
+    /// canceled requester after accepting the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request channel closes before a request arrives.
+    pub async fn receive(&mut self) -> Result<AggregateContextSnapshotPendingResponse, GenericError> {
         let response = self
             .receiver
             .recv()
             .await
             .ok_or_else(|| generic_error!("aggregate context snapshot request channel is closed"))?;
-        let _ = response.send(snapshot);
-        Ok(())
+        Ok(AggregateContextSnapshotPendingResponse { response })
     }
 
     /// Waits for one snapshot request and stops without responding.
@@ -190,12 +218,7 @@ impl AggregateContextSnapshotResponder {
     ///
     /// Returns an error if the request channel closes before a request arrives.
     pub async fn stop_after_receiving(&mut self) -> Result<(), GenericError> {
-        let response = self
-            .receiver
-            .recv()
-            .await
-            .ok_or_else(|| generic_error!("aggregate context snapshot request channel is closed"))?;
-        drop(response);
+        drop(self.receive().await?);
         Ok(())
     }
 }
@@ -1752,14 +1775,15 @@ mod tests {
     async fn snapshot_responder_ignores_canceled_requester() {
         let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
         let snapshot_task = tokio::spawn(async move { handle.snapshot().await });
-        tokio::task::yield_now().await;
+        let pending_response = responder
+            .receive()
+            .await
+            .expect("responder should accept the snapshot request");
+
         snapshot_task.abort();
         let _ = snapshot_task.await;
 
-        responder
-            .respond(Vec::new())
-            .await
-            .expect("a canceled requester should be a successful no-op delivery");
+        pending_response.respond(Vec::new());
     }
 
     #[test]
