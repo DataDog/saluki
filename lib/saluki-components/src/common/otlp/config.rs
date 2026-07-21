@@ -1,8 +1,6 @@
 //! Shared OTLP receiver configuration.
 
 use bytesize::ByteSize;
-use saluki_config::GenericConfiguration;
-use saluki_error::GenericError;
 use serde::Deserialize;
 
 pub(crate) const fn default_traces_string_interner_size() -> ByteSize {
@@ -45,6 +43,7 @@ pub struct TracesConfig {
     ///
     /// Defaults to 512 KiB.
     #[serde(rename = "string_interner_size", default = "default_traces_string_interner_size")]
+    #[allow(unused)]
     pub string_interner_bytes: ByteSize,
 
     /// The internal port on the Core Agent to forward traces to.
@@ -88,24 +87,6 @@ impl Default for ProbabilisticSampler {
 
 const fn default_enable_otlp_compute_top_level_by_span_kind() -> bool {
     true
-}
-
-impl TracesConfig {
-    /// Applies env var overrides for keys whose `DD_`-stripped flat form can't reach the nested
-    /// struct through normal serde deserialization.
-    ///
-    /// `DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE` strips to flat Figment key
-    /// `otlp_config_traces_probabilistic_sampler_sampling_percentage`. KEY_ALIASES ensures YAML and
-    /// env var land on the same key, but a nested struct can't see a flat key—so we read it
-    /// explicitly and override.
-    pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
-        if let Some(pct) =
-            config.try_get_typed::<f64>("otlp_config_traces_probabilistic_sampler_sampling_percentage")?
-        {
-            self.probabilistic_sampler.sampling_percentage = pct;
-        }
-        Ok(())
-    }
 }
 
 impl Default for TracesConfig {

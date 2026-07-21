@@ -2130,7 +2130,7 @@ inventory:
     pipelines: [traces]
     description: "otlp_config.traces.internal_port"
     test_support:
-      used_by: [OtlpDecoderConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2140,7 +2140,7 @@ inventory:
     pipelines: [traces]
     description: "OTLP trace sampling percentage"
     test_support:
-      used_by: [OtlpDecoderConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 

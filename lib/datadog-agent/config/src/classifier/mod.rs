@@ -66,8 +66,6 @@ pub mod structs {
     pub const DATADOG_APM_STATS_ENCODER_CONFIGURATION: &str = "DatadogApmStatsEncoderConfiguration";
     /// Identifier for `MrfConfiguration`.
     pub const MRF_CONFIGURATION: &str = "MrfConfiguration";
-    /// Identifier for `OtlpDecoderConfiguration`.
-    pub const OTLP_DECODER_CONFIGURATION: &str = "OtlpDecoderConfiguration";
     /// Identifier for `TraceObfuscationConfiguration`.
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
     /// Identifier for `RemoteAgentClientConfiguration`.
