@@ -595,7 +595,10 @@ async fn run_endpoint_io_loop<B>(
             // While we're not done and there are pending transactions, wait for the service to become ready and then
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
-                Ok(svc) => if let Some(txn) = pending_txns.pop().await {
+                Ok(svc) => if let Some(pending_txn) = pending_txns.pop().await {
+                    let txn = match pending_txn {
+                        PendingTransaction::HighPriority(txn) | PendingTransaction::Retry(txn) => txn,
+                    };
                     let (metadata, request) = txn.into_parts();
                     in_flight.spawn(svc.call(request).map(move |result| (metadata, result)));
 
@@ -763,6 +766,11 @@ async fn process_http_response(
     }
 }
 
+enum PendingTransaction<T> {
+    HighPriority(T),
+    Retry(T),
+}
+
 /// A queue of pending transactions waiting to be sent.
 ///
 /// This queue is split into two parts: a high-priority queue and a low-priority queue. The high-priority queue is used
@@ -855,8 +863,9 @@ impl<T: Retryable> PendingTransactions<T> {
 
     /// Pops the next transaction from the queue.
     ///
-    /// The high-priority queue is drained first before attempting to pop from the low-priority queue.
-    pub async fn pop(&mut self) -> Option<T> {
+    /// The high-priority queue is drained first before attempting to pop from the low-priority queue. The returned
+    /// variant identifies the queue that contained the transaction.
+    pub async fn pop(&mut self) -> Option<PendingTransaction<T>> {
         // We bias towards handling enqueued transactions first, since those are our "high priority" transactions, and we
         // want to keep them flowing as fast as possible.
         loop {
@@ -867,7 +876,7 @@ impl<T: Retryable> PendingTransactions<T> {
                     high_prio_queue_len = self.high_priority.len(),
                     "Dequeued pending transaction from high-priority queue."
                 );
-                return Some(transaction);
+                return Some(PendingTransaction::HighPriority(transaction));
             }
 
             let pop_result = self.low_priority.pop().await;
@@ -888,7 +897,7 @@ impl<T: Retryable> PendingTransactions<T> {
                         low_prio_queue_len = self.low_priority.len(),
                         "Dequeued pending transaction from low-priority queue."
                     );
-                    return Some(transaction);
+                    return Some(PendingTransaction::Retry(transaction));
                 }
                 Ok(None) => {
                     self.record_retry_queue_size();
@@ -1214,6 +1223,69 @@ app.datadoghq.com: [key-a, key-b]
     }
 
     #[tokio::test]
+    async fn pending_transactions_pop_reports_high_priority_source() {
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
+
+        let push_result = pending_txns
+            .push_high_priority("high priority".to_string())
+            .await
+            .expect("push should succeed");
+        assert!(!push_result.had_drops());
+
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::HighPriority(transaction)) if transaction == "high priority"
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_transactions_pop_reports_explicit_low_priority_source_as_retry() {
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
+
+        let push_result = pending_txns
+            .push_low_priority("retry".to_string())
+            .await
+            .expect("push should succeed");
+        assert!(!push_result.had_drops());
+
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::Retry(transaction)) if transaction == "retry"
+        ));
+    }
+
+    #[tokio::test]
+    async fn pending_transactions_pop_reports_high_priority_overflow_as_retry() {
+        let (telemetry, domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
+
+        let push_result = pending_txns
+            .push_high_priority("high priority".to_string())
+            .await
+            .expect("first push should succeed");
+        assert!(!push_result.had_drops());
+        let push_result = pending_txns
+            .push_high_priority("overflow".to_string())
+            .await
+            .expect("overflow push should succeed");
+        assert!(!push_result.had_drops());
+
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::HighPriority(transaction)) if transaction == "high priority"
+        ));
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::Retry(transaction)) if transaction == "overflow"
+        ));
+    }
+
+    #[tokio::test]
     async fn retry_queue_bytes_per_sec_tracks_incoming_transaction_payloads() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
@@ -1263,7 +1335,10 @@ app.datadoghq.com: [key-a, key-b]
         assert!(!push_result.had_drops());
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
-        assert_eq!(pending_txns.pop().await.as_deref(), Some("retry"));
+        assert!(matches!(
+            pending_txns.pop().await,
+            Some(PendingTransaction::Retry(transaction)) if transaction == "retry"
+        ));
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
 
