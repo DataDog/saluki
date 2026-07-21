@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -77,24 +77,29 @@ impl Error for ArtifactError {
 }
 
 pub(super) fn for_each_record(path: &Path, mut consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
+    let reader = open_buffered_reader(path)?;
+    decode_records(path, reader, &mut consume)
+}
+
+fn open_buffered_reader(path: &Path) -> Result<Box<dyn BufRead>, ArtifactError> {
     let file = File::open(path).map_err(|error| ArtifactError::new(path, "open", 0, error))?;
-    let mut reader = BufReader::new(file);
-    let is_compressed = reader
+    let mut compressed_input = BufReader::new(file);
+    let is_compressed = compressed_input
         .fill_buf()
         .map_err(|error| ArtifactError::new(path, "inspect compression magic for", 0, error))?
         .starts_with(ZSTD_MAGIC);
 
     if is_compressed {
-        let decoder = zstd::stream::read::Decoder::with_buffer(reader)
+        let decoder = zstd::stream::read::Decoder::with_buffer(compressed_input)
             .map_err(|error| ArtifactError::new(path, "initialize zstd decoder for", 0, error))?;
-        decode_records(path, decoder, &mut consume)
+        Ok(Box::new(BufReader::new(decoder)))
     } else {
-        decode_records(path, reader, &mut consume)
+        Ok(Box::new(compressed_input))
     }
 }
 
 fn decode_records(
-    path: &Path, reader: impl Read, consume: &mut impl FnMut(AgentContextRecord),
+    path: &Path, reader: impl BufRead, consume: &mut impl FnMut(AgentContextRecord),
 ) -> Result<(), ArtifactError> {
     let records = serde_json::Deserializer::from_reader(reader).into_iter::<AgentContextRecord>();
     for (index, record) in records.enumerate() {
@@ -115,9 +120,10 @@ fn collect_records(path: &Path) -> Result<Vec<AgentContextRecord>, ArtifactError
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::BufRead;
     use std::path::PathBuf;
 
-    use super::{collect_records, AgentContextRecord};
+    use super::{collect_records, open_buffered_reader, AgentContextRecord};
 
     const PLAIN_FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -203,6 +209,22 @@ mod tests {
             assert_eq!(
                 collect_records(&path).expect("artifact should decode"),
                 expected,
+                "{path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn opens_plain_and_compressed_artifacts_as_buffered_readers() {
+        for path in [
+            PathBuf::from(PLAIN_FIXTURE_PATH),
+            PathBuf::from(COMPRESSED_FIXTURE_PATH),
+        ] {
+            let mut reader: Box<dyn BufRead> = open_buffered_reader(&path).expect("artifact reader should open");
+            let buffered = reader.fill_buf().expect("artifact reader should fill its buffer");
+
+            assert!(
+                buffered.starts_with(br#"{"Name":"z.metric","Host":"node-a""#),
                 "{path:?}"
             );
         }

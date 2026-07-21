@@ -29,7 +29,10 @@ use crate::internal::logging::LoggingConfigurationTranslator;
 
 mod components;
 mod config;
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "wired into the DogStatsD CLI and API by subsequent feature tasks"
+)]
 mod dogstatsd_contexts;
 mod internal;
 
