@@ -132,6 +132,9 @@ pub struct AggregateContextSnapshotHandle {
 impl AggregateContextSnapshotHandle {
     /// Requests the aggregate transform's current retained contexts.
     ///
+    /// The returned snapshot uses O(context count) memory. After delivery, the caller owns this memory, so callers that
+    /// retain snapshots must include their retained size in their own memory accounting.
+    ///
     /// # Errors
     ///
     /// Returns an error if the aggregate owner is unavailable or stops before responding.
@@ -480,6 +483,12 @@ impl MemoryBounds for AggregateConfiguration {
                     UsageExpr::struct_size::<Context>("context"),
                     UsageExpr::struct_size::<AggregatedMetric>("aggregated metric"),
                 ),
+                UsageExpr::config("aggregate_context_limit", self.context_limit),
+            ))
+            // A snapshot is constructed while the aggregation state remains live, so its peak allocation is additive.
+            .with_expr(UsageExpr::product(
+                "retained context snapshot",
+                UsageExpr::struct_size::<AggregateContextSnapshotEntry>("snapshot entry"),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
             ));
     }
@@ -1176,15 +1185,25 @@ const fn is_bucket_closed(
 // then we run it to make sure that we are always generating sequential timestamps for data points, etc.
 #[cfg(test)]
 mod tests {
+    use std::mem::size_of;
+
     use float_cmp::ApproxEqRatio as _;
     use saluki_context::tags::{Tag, TagSet};
     use saluki_core::{
-        components::ComponentContext,
-        topology::{interconnect::Dispatcher, OutputName},
+        accounting::{ComponentRegistry, MemoryLimiter},
+        components::{
+            destinations::{Destination, DestinationBuilder, DestinationContext},
+            sources::{Source, SourceBuilder, SourceContext},
+            ComponentContext,
+        },
+        health::HealthRegistry,
+        runtime::Supervisor,
+        support::SubsystemIdentifier,
+        topology::{interconnect::Dispatcher, OutputDefinition, OutputName, TopologyBlueprint},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
 
     use super::config::HistogramStatistic;
     use super::*;
@@ -1207,6 +1226,83 @@ mod tests {
     /// Gets the flush timestamp for the given step.
     const fn flush_ts(step: u64) -> u64 {
         BUCKET_WIDTH_SECS.get() * (step + 1)
+    }
+
+    struct ControlledMetricSource {
+        events: mpsc::Receiver<Event>,
+    }
+
+    #[async_trait]
+    impl Source for ControlledMetricSource {
+        async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            let shutdown = context.take_shutdown_handle();
+            tokio::pin!(shutdown);
+            let mut events_open = true;
+
+            loop {
+                select! {
+                    _ = &mut shutdown => break,
+                    maybe_event = self.events.recv(), if events_open => match maybe_event {
+                        Some(event) => context.dispatcher().dispatch_one(event).await?,
+                        None => events_open = false,
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct ControlledMetricSourceBuilder {
+        events: Mutex<Option<mpsc::Receiver<Event>>>,
+        outputs: Vec<OutputDefinition<EventType>>,
+    }
+
+    #[async_trait]
+    impl SourceBuilder for ControlledMetricSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            let events = self
+                .events
+                .lock()
+                .map_err(|_| generic_error!("controlled metric source receiver lock is poisoned"))?
+                .take()
+                .ok_or_else(|| generic_error!("controlled metric source receiver has already been taken"))?;
+            Ok(Box::new(ControlledMetricSource { events }))
+        }
+    }
+
+    impl MemoryBounds for ControlledMetricSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    struct DrainingMetricDestination;
+
+    #[async_trait]
+    impl Destination for DrainingMetricDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while context.events().next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    struct DrainingMetricDestinationBuilder;
+
+    #[async_trait]
+    impl DestinationBuilder for DrainingMetricDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(DrainingMetricDestination))
+        }
+    }
+
+    impl MemoryBounds for DrainingMetricDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
     struct DispatcherReceiver {
@@ -1395,7 +1491,7 @@ mod tests {
 
         let mut snapshot = state.snapshot_contexts();
         assert_eq!(snapshot.len(), 2);
-        assert_eq!(snapshot.capacity(), state.contexts.len());
+        assert!(snapshot.capacity() >= state.contexts.len());
         snapshot.sort_by(|a, b| a.context().host().cmp(&b.context().host()));
 
         assert_eq!(snapshot[0].context(), &histogram_context);
@@ -1450,6 +1546,110 @@ mod tests {
 
         let _ = get_flushed_metrics(flush_ts(3), &mut state).await;
         assert!(state.snapshot_contexts().is_empty());
+    }
+
+    #[test]
+    fn aggregate_memory_bounds_include_peak_context_snapshot() {
+        let mut config = AggregateConfiguration::with_defaults();
+        config.context_limit = 17;
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let bounds = registry.as_bounds();
+
+        let expected_minimum = size_of::<Aggregate>();
+        let aggregation_state_bytes = config.context_limit * (size_of::<Context>() + size_of::<AggregatedMetric>());
+        let context_snapshot_bytes = config.context_limit * size_of::<AggregateContextSnapshotEntry>();
+
+        assert_eq!(bounds.total_minimum_required_bytes(), expected_minimum);
+        assert_eq!(
+            bounds.total_firm_limit_bytes(),
+            expected_minimum + aggregation_state_bytes + context_snapshot_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn production_owner_loop_serves_snapshots_and_stops_after_cancellation() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut config = AggregateConfiguration::with_defaults();
+            config.primary_flush_interval = Duration::from_secs(60);
+            let snapshot_handle = config.context_snapshot_handle();
+
+            let available_request_capacity = snapshot_handle.requests.capacity();
+            let canceled_request = tokio::spawn({
+                let snapshot_handle = snapshot_handle.clone();
+                async move { snapshot_handle.snapshot().await }
+            });
+            while snapshot_handle.requests.capacity() == available_request_capacity {
+                tokio::task::yield_now().await;
+            }
+            canceled_request.abort();
+            assert!(canceled_request
+                .await
+                .expect_err("snapshot requester should be canceled")
+                .is_cancelled());
+
+            let (events_tx, events_rx) = mpsc::channel(1);
+            let source = ControlledMetricSourceBuilder {
+                events: Mutex::new(Some(events_rx)),
+                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+            };
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("aggregate_snapshot_owner", &component_registry);
+            blueprint
+                .add_source("source", source)
+                .expect("controlled source should be accepted")
+                .add_transform("aggregate", config)
+                .expect("aggregate transform should be accepted")
+                .add_destination("destination", DrainingMetricDestinationBuilder)
+                .expect("draining destination should be accepted");
+            blueprint
+                .connect_components_in_order(["source", "aggregate", "destination"])
+                .expect("test topology should connect");
+            blueprint
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_ambient_worker_pool();
+
+            let mut supervisor =
+                Supervisor::new("aggregate-snapshot-owner").expect("test supervisor should be created");
+            supervisor.add_worker(blueprint);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+            let expected_context = Context::from_static_name("owner.loop.gauge");
+            events_tx
+                .send(Event::Metric(Metric::gauge(expected_context.clone(), 1.0)))
+                .await
+                .expect("controlled source should accept an event");
+
+            let snapshot = loop {
+                let snapshot = snapshot_handle
+                    .snapshot()
+                    .await
+                    .expect("running aggregate should fulfill snapshots");
+                if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            };
+            let entry = snapshot
+                .iter()
+                .find(|entry| entry.context() == &expected_context)
+                .expect("snapshot should retain the inserted context");
+            assert_eq!(entry.metric_type(), AggregateMetricType::Gauge);
+            assert_eq!(entry.unit(), None);
+
+            drop(events_tx);
+            drop(snapshot_handle);
+            shutdown_tx.send(()).expect("test topology should still be running");
+            let topology_result = topology_task.await.expect("topology task should not panic");
+            assert!(
+                topology_result.is_ok(),
+                "topology should stop cleanly: {topology_result:?}"
+            );
+        })
+        .await
+        .expect("production aggregate owner loop should complete without spinning or hanging");
     }
 
     #[tokio::test]
