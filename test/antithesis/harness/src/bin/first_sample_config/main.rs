@@ -14,7 +14,7 @@ use antithesis_sdk::prelude::*;
 use antithesis_sdk::random::AntithesisRng;
 use anyhow::Context;
 use clap::Parser;
-use harness::config::DatadogConfig;
+use harness::config::{ContextSourceConfig, DatadogConfig};
 use rand::rand_core::UnwrapErr;
 use serde_json::json;
 
@@ -66,6 +66,11 @@ fn main() -> anyhow::Result<()> {
     let driver_path = cli.config_dir.join("driver.yaml");
     fs::write(&driver_path, config.driver_config(&mut rng).to_yaml()?.as_bytes())
         .with_context(|| format!("write driver config {}", driver_path.display()))?;
+
+    // Context-source view: the cap on the shared context pool this timeline mints.
+    let context_path = cli.config_dir.join("context_source.yaml");
+    fs::write(&context_path, ContextSourceConfig::sample(&mut rng).to_yaml()?.as_bytes())
+        .with_context(|| format!("write context source config {}", context_path.display()))?;
 
     // Per-timeline anchor: counting these in triage tells us how many distinct
     // configs the run sampled.

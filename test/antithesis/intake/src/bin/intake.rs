@@ -6,8 +6,12 @@
 mod unix_intake {
     use std::future::IntoFuture;
 
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     use antithesis_intake::{
         capture::State,
+        context_pool::Pool,
         http::{build_router, state::AppState},
     };
     use antithesis_sdk::prelude::*;
@@ -30,6 +34,10 @@ mod unix_intake {
         /// Optional ADP-target HTTP bind address.
         #[arg(long = "adp-listen-addr", env = "ADP_LISTEN_ADDR")]
         adp_listen_addr: Option<String>,
+        /// Directory holding this timeline's `context_source.yaml`, read on the first
+        /// `/contexts` request to size the shared context pool.
+        #[arg(long = "config-dir", env = "CONFIG_DIR", default_value = "/agent-config")]
+        config_dir: PathBuf,
     }
 
     #[tokio::main]
@@ -60,6 +68,9 @@ mod unix_intake {
         spawn_signal_handlers(shutdown_tx).context("Failed to configure signal handlers.")?;
 
         let capture = State::new();
+        // One pool backs both lane routers; it resolves its cap from context_source.yaml on
+        // the first /contexts request (always after first_sample_config has written it).
+        let pool = Arc::new(Pool::new(config.config_dir.clone()));
 
         if let (Some(agent_addr), Some(adp_addr)) = (config.agent_listen_addr.as_ref(), config.adp_listen_addr.as_ref())
         {
@@ -74,8 +85,8 @@ mod unix_intake {
                 agent_addr, adp_addr
             );
 
-            let agent_router = build_router(AppState::agent(&capture));
-            let adp_router = build_router(AppState::adp(&capture));
+            let agent_router = build_router(AppState::agent(&capture, &pool));
+            let adp_router = build_router(AppState::adp(&capture, &pool));
 
             // Both servers drain in flight requests on the shared shutdown signal.
             let agent_server = axum::serve(agent_listener, agent_router)
@@ -93,7 +104,7 @@ mod unix_intake {
                 .context("Failed to bind HTTP intake listener.")?;
             info!("antithesis-intake started: listening on {}.", config.listen_addr);
 
-            axum::serve(listener, build_router(AppState::adp(&capture)))
+            axum::serve(listener, build_router(AppState::adp(&capture, &pool)))
                 .with_graceful_shutdown(wait_for_shutdown(shutdown_rx))
                 .await
                 .map_err(Into::into)

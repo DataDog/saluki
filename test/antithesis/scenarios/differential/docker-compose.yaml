@@ -16,6 +16,10 @@ services:
       DD_HOSTNAME: "antithesis-differential"
       AGENT_LISTEN_ADDR: "0.0.0.0:2049"
       ADP_LISTEN_ADDR: "0.0.0.0:2050"
+      # Read on the first /contexts request to size the shared context pool.
+      CONFIG_DIR: "/agent-config"
+    volumes:
+      - agent-config:/agent-config:ro
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2049'"]
       interval: 2s

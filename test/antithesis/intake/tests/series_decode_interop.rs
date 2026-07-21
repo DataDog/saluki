@@ -59,7 +59,8 @@ async fn adp_async_compression(raw: &[u8]) -> Vec<u8> {
 const AGENT_UA: &str = "datadog-agent/7.55.0";
 
 async fn post_series(encoding: Option<&str>, user_agent: Option<&str>, body: Vec<u8>) -> StatusCode {
-    let state = AppState::agent(&capture::State::new());
+    let pool = std::sync::Arc::new(antithesis_intake::context_pool::Pool::new(std::env::temp_dir()));
+    let state = AppState::agent(&capture::State::new(), &pool);
     let app = build_router(state);
     let mut builder = Request::builder()
         .method("POST")

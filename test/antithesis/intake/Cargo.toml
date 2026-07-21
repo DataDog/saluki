@@ -14,15 +14,16 @@ path = "src/bin/intake.rs"
 workspace = true
 
 [dependencies]
-antithesis_sdk = { workspace = true, features = ["full"] }
+antithesis_sdk = { workspace = true, features = ["full", "rand_v0_10"] }
 anyhow = { workspace = true, features = ["std"] }
-axum = { workspace = true, features = ["http1", "json", "tokio", "tracing"] }
+axum = { workspace = true, features = ["http1", "json", "query", "tokio", "tracing"] }
 clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
 datadog-protos = { workspace = true }
 harness = { path = "../harness" }
 headers = { workspace = true }
 mime = { workspace = true }
 protobuf = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = [

@@ -3,6 +3,8 @@
 use std::time::Duration;
 
 pub mod config;
+pub mod context;
+pub mod dogstatsd;
 #[cfg(unix)]
 pub mod driver;
 pub mod payload;
