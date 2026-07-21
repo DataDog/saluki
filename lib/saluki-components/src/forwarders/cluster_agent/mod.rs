@@ -205,7 +205,7 @@ mod tests {
     use crate::common::datadog::endpoints::EndpointRoute;
 
     #[test]
-    fn request_mapper_targets_cluster_agent_series_endpoint_with_bearer_auth() {
+    fn request_mapper_preserves_cluster_agent_series_identity_and_sets_bearer_auth() {
         let auth_header_value = bearer_auth_header_value("secret-token").expect("auth header should be valid");
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://cluster-agent.example.com:5005", "secret-token")
             .expect("endpoint should resolve");
@@ -217,35 +217,18 @@ mod tests {
             .body(TransactionBody::<()>::Rehydrated(None))
             .expect("request should build");
 
+        let input_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
         let request = mapper(request);
+        let mapped_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
 
+        assert_eq!(input_endpoint_name.as_deref(), Some("cluster_agent_series"));
+        assert_eq!(mapped_endpoint_name.as_deref(), Some("cluster_agent_series"));
         assert_eq!(
             request.uri().to_string(),
             "https://cluster-agent.example.com:5005/series"
         );
         assert_eq!(request.headers().get(AUTHORIZATION).unwrap(), "Bearer secret-token");
         assert!(request.headers().get("dd-api-key").is_none());
-    }
-
-    #[test]
-    fn endpoint_name_is_stable_across_request_mapping() {
-        let auth_header_value = bearer_auth_header_value("secret-token").expect("auth header should be valid");
-        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://cluster-agent.example.com:5005", "secret-token")
-            .expect("endpoint should resolve");
-        let mut mapper = cluster_agent_request_mapper::<()>(endpoint, auth_header_value);
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri("/api/v2/series")
-            .body(TransactionBody::<()>::Rehydrated(None))
-            .expect("request should build");
-
-        let input_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
-        let mapped_request = mapper(request);
-        let retry_endpoint_name = get_cluster_agent_endpoint_name(mapped_request.uri());
-
-        assert_eq!(input_endpoint_name.as_deref(), Some("cluster_agent_series"));
-        assert_eq!(retry_endpoint_name.as_deref(), Some("cluster_agent_series"));
-        assert_eq!(input_endpoint_name, retry_endpoint_name);
     }
 
     #[test]

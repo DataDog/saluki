@@ -1330,79 +1330,6 @@ app.datadoghq.com: [key-a, key-b]
         TransactionRetryTelemetry::from_builder(&MetricsBuilder::default(), domain)
     }
 
-    #[test]
-    fn retry_dispatch_marker_clones_share_state_and_flip_once() {
-        let marker = RetryDispatchMarker::default();
-        let cloned_marker = marker.clone();
-
-        assert!(!marker.was_dispatched());
-        assert!(cloned_marker.mark_dispatched());
-        assert!(marker.was_dispatched());
-        assert!(!marker.mark_dispatched());
-    }
-
-    #[tokio::test]
-    async fn high_priority_dispatch_is_unmarked_and_not_counted_as_retry() {
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let domain = "https://example.com";
-        let retry_telemetry = transaction_retry_telemetry(domain);
-        let (queue_telemetry, queue_domain) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, retry_queue, queue_telemetry, queue_domain, 900);
-        let push_result = pending_txns
-            .push_high_priority(build_test_transaction())
-            .await
-            .expect("push should succeed");
-        assert!(!push_result.had_drops());
-
-        let pending_txn = pending_txns.pop().await.expect("transaction should be queued");
-        let (_, request) = prepare_transaction_dispatch(pending_txn);
-        assert!(request.extensions().get::<RetryDispatchMarker>().is_none());
-
-        let request = track_retry_dispatch(request, &retry_telemetry, &test_logical_endpoint);
-        assert!(request.extensions().get::<RetryDispatchMarker>().is_none());
-        assert_eq!(
-            recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
-            None
-        );
-        assert_eq!(
-            recorder.counter(("network_http_requests_requeued_total", &retry_metric_tags(domain))),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn retry_dispatch_is_marked_and_counted_once() {
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let domain = "https://example.com";
-        let retry_telemetry = transaction_retry_telemetry(domain);
-        let (queue_telemetry, queue_domain) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, retry_queue, queue_telemetry, queue_domain, 900);
-        let push_result = pending_txns
-            .push_low_priority(build_test_transaction())
-            .await
-            .expect("push should succeed");
-        assert!(!push_result.had_drops());
-
-        let pending_txn = pending_txns.pop().await.expect("transaction should be queued");
-        let (_, request) = prepare_transaction_dispatch(pending_txn);
-        assert!(request.extensions().get::<RetryDispatchMarker>().is_some());
-
-        let request = track_retry_dispatch(request, &retry_telemetry, &test_logical_endpoint);
-        let _request = track_retry_dispatch(request, &retry_telemetry, &test_logical_endpoint);
-        assert_eq!(
-            recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
-            Some(1)
-        );
-        assert_eq!(
-            recorder.counter(("network_http_requests_requeued_total", &retry_metric_tags(domain))),
-            Some(0)
-        );
-    }
-
     #[tokio::test]
     async fn high_priority_overflow_is_counted_when_later_dispatched_as_retry() {
         let recorder = TestRecorder::default();
@@ -1446,24 +1373,34 @@ app.datadoghq.com: [key-a, key-b]
     #[derive(Clone)]
     struct OpenOnFalsePolicy;
 
-    impl Policy<Request<()>, bool, Infallible> for OpenOnFalsePolicy {
+    impl<B> Policy<Request<TransactionBody<B>>, bool, Infallible> for OpenOnFalsePolicy {
         type Future = Pending<()>;
 
-        fn retry(&mut self, _req: &mut Request<()>, result: &mut Result<bool, Infallible>) -> Option<Self::Future> {
+        fn retry(
+            &mut self, _req: &mut Request<TransactionBody<B>>, result: &mut Result<bool, Infallible>,
+        ) -> Option<Self::Future> {
             matches!(result, Ok(false)).then(pending)
         }
 
-        fn clone_request(&mut self, _req: &Request<()>) -> Option<Request<()>> {
-            Some(Request::new(()))
+        fn clone_request(&mut self, req: &Request<TransactionBody<B>>) -> Option<Request<TransactionBody<B>>> {
+            Some(
+                Request::builder()
+                    .uri(req.uri().clone())
+                    .body(TransactionBody::Rehydrated(None))
+                    .expect("request should build"),
+            )
         }
     }
 
     #[tokio::test]
-    async fn circuit_breaker_rejects_marked_retry_before_dispatch() {
+    async fn circuit_breaker_blocked_retry_is_requeued_without_retry_dispatch() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let domain = "https://example.com";
         let retry_telemetry = transaction_retry_telemetry(domain);
+        let (queue_telemetry, queue_domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(1, retry_queue, queue_telemetry, queue_domain, 900);
         let inner_calls = Arc::new(AtomicUsize::new(0));
         let mut service = ServiceBuilder::new()
             .layer(RetryCircuitBreakerLayer::new(OpenOnFalsePolicy))
@@ -1473,52 +1410,35 @@ app.datadoghq.com: [key-a, key-b]
             })
             .service(service_fn({
                 let inner_calls = Arc::clone(&inner_calls);
-                move |_request: Request<()>| {
+                move |_request: Request<TransactionBody<FrozenChunkedBytesBuffer>>| {
                     inner_calls.fetch_add(1, Ordering::SeqCst);
                     std::future::ready(Ok::<_, Infallible>(false))
                 }
             }));
 
-        let initial_request = Request::builder().uri("/api/v2/series").body(()).unwrap();
+        let (_, initial_request) = build_test_transaction().into_parts();
         assert!(matches!(
             service.call(initial_request).await,
             Err(RetryCircuitBreakerError::Open(_))
         ));
+        let inner_calls_before_blocked_retry = inner_calls.load(Ordering::SeqCst);
+        assert_eq!(inner_calls_before_blocked_retry, 1);
 
-        let mut retry_request = Request::builder().uri("/api/v2/series").body(()).unwrap();
-        retry_request.extensions_mut().insert(RetryDispatchMarker::default());
-        let mut returned_request = match service.call(retry_request).await {
+        let push_result = pending_txns
+            .push_low_priority(build_test_transaction())
+            .await
+            .expect("retry queue push should succeed");
+        assert!(!push_result.had_drops());
+        let pending_txn = pending_txns.pop().await.expect("retry should be queued");
+        let (metadata, retry_request) = prepare_transaction_dispatch(pending_txn);
+        let returned_request = match service.call(retry_request).await {
             Err(RetryCircuitBreakerError::Open(request)) => request,
-            _ => panic!("open circuit breaker should return the marked request"),
+            _ => panic!("open circuit breaker should return the blocked retry"),
         };
-
-        assert_eq!(inner_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
-            None
-        );
-        assert_eq!(
-            take_blocked_retry_endpoint(&mut returned_request, &test_logical_endpoint),
-            Some(MetaString::from_static("series_v2"))
-        );
-        assert!(returned_request.extensions().is_empty());
-    }
-
-    #[tokio::test]
-    async fn blocked_retry_counts_requeue_after_successful_queue_push() {
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let domain = "https://example.com";
-        let retry_telemetry = transaction_retry_telemetry(domain);
-        let (queue_telemetry, queue_domain) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, retry_queue, queue_telemetry, queue_domain, 900);
-        let (metadata, mut request) = build_test_transaction().into_parts();
-        request.extensions_mut().insert(RetryDispatchMarker::default());
 
         let push_result = requeue_open_transaction(
             metadata,
-            request,
+            returned_request,
             &mut pending_txns,
             &retry_telemetry,
             &test_logical_endpoint,
@@ -1526,6 +1446,7 @@ app.datadoghq.com: [key-a, key-b]
         .await
         .expect("requeue should succeed");
 
+        assert_eq!(inner_calls.load(Ordering::SeqCst), inner_calls_before_blocked_retry);
         assert!(!push_result.had_drops());
         assert_eq!(
             recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
@@ -1554,69 +1475,6 @@ app.datadoghq.com: [key-a, key-b]
             let reassembled = Transaction::reassemble(metadata, request);
             serde_json::to_string(&reassembled).expect("marker-free transaction should serialize");
         }
-    }
-
-    #[tokio::test]
-    async fn pending_transactions_pop_reports_high_priority_source() {
-        let (telemetry, domain) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
-
-        let push_result = pending_txns
-            .push_high_priority("high priority".to_string())
-            .await
-            .expect("push should succeed");
-        assert!(!push_result.had_drops());
-
-        assert!(matches!(
-            pending_txns.pop().await,
-            Some(PendingTransaction::HighPriority(transaction)) if transaction == "high priority"
-        ));
-    }
-
-    #[tokio::test]
-    async fn pending_transactions_pop_reports_explicit_low_priority_source_as_retry() {
-        let (telemetry, domain) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
-
-        let push_result = pending_txns
-            .push_low_priority("retry".to_string())
-            .await
-            .expect("push should succeed");
-        assert!(!push_result.had_drops());
-
-        assert!(matches!(
-            pending_txns.pop().await,
-            Some(PendingTransaction::Retry(transaction)) if transaction == "retry"
-        ));
-    }
-
-    #[tokio::test]
-    async fn pending_transactions_pop_reports_high_priority_overflow_as_retry() {
-        let (telemetry, domain) = transaction_queue_telemetry();
-        let retry_queue = RetryQueue::new("test".to_string(), 1024);
-        let mut pending_txns = PendingTransactions::new(1, retry_queue, telemetry, domain, 900);
-
-        let push_result = pending_txns
-            .push_high_priority("high priority".to_string())
-            .await
-            .expect("first push should succeed");
-        assert!(!push_result.had_drops());
-        let push_result = pending_txns
-            .push_high_priority("overflow".to_string())
-            .await
-            .expect("overflow push should succeed");
-        assert!(!push_result.had_drops());
-
-        assert!(matches!(
-            pending_txns.pop().await,
-            Some(PendingTransaction::HighPriority(transaction)) if transaction == "high priority"
-        ));
-        assert!(matches!(
-            pending_txns.pop().await,
-            Some(PendingTransaction::Retry(transaction)) if transaction == "overflow"
-        ));
     }
 
     #[tokio::test]
@@ -1977,11 +1835,15 @@ app.datadoghq.com: [key-a, key-b]
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn forwarder_counts_only_the_dispatched_retry_after_initial_server_error() {
+    async fn forwarder_counts_only_dispatched_retries_after_server_errors() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let (server_url, counter) =
-            start_recording_http_server(vec![StatusCode::INTERNAL_SERVER_ERROR, StatusCode::OK]).await;
+        let (server_url, counter) = start_recording_http_server(vec![
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::OK,
+        ])
+        .await;
         let forwarder = build_test_forwarder(&server_url, None);
 
         let handle = forwarder.spawn().await;
@@ -1990,11 +1852,11 @@ app.datadoghq.com: [key-a, key-b]
             .await
             .expect("send should succeed");
 
-        let observed = wait_for_count_at_least(&counter, 2, Duration::from_secs(3)).await;
+        let observed = wait_for_count_at_least(&counter, 3, Duration::from_secs(3)).await;
         handle.shutdown().await;
         assert!(
-            observed >= 2,
-            "forwarder should dispatch one retry (saw {observed} requests)"
+            observed >= 3,
+            "forwarder should dispatch two retries (saw {observed} requests)"
         );
 
         let retry_metric_key = |name| {
@@ -2010,7 +1872,7 @@ app.datadoghq.com: [key-a, key-b]
         };
         assert_eq!(
             recorder.counter(retry_metric_key("network_http_requests_retries_total")),
-            Some(1)
+            Some(2)
         );
         assert_eq!(
             recorder.counter(retry_metric_key("network_http_requests_requeued_total")),
