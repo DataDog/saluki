@@ -9,6 +9,8 @@ use stringtheory::MetaString;
 use super::{retry_capacity::RetryQueueCapacityAggregator, transaction::Metadata};
 
 const NETWORK_HTTP_REQUESTS_ERRORS_TOTAL: &str = "network_http_requests_errors_total";
+const NETWORK_HTTP_REQUESTS_REQUEUED_TOTAL: &str = "network_http_requests_requeued_total";
+const NETWORK_HTTP_REQUESTS_RETRIES_TOTAL: &str = "network_http_requests_retries_total";
 const ERROR_TYPE_SENT_REQUEST: &str = "sent_request_error";
 const ERROR_SCOPE_TRANSACTION: &str = "transaction";
 
@@ -23,6 +25,60 @@ impl TransactionInputTelemetry {
     pub(super) fn track(&self, bytes: u64) {
         self.count.increment(1);
         self.bytes.increment(bytes);
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct TransactionRetryTelemetry {
+    builder: MetricsBuilder,
+    domain: MetaString,
+    counters_by_endpoint: Arc<Mutex<FastHashMap<MetaString, TransactionRetryCounters>>>,
+}
+
+struct TransactionRetryCounters {
+    retries: Counter,
+    requeued: Counter,
+}
+
+impl TransactionRetryTelemetry {
+    /// Creates retry telemetry for a fixed intake domain.
+    pub(super) fn from_builder(builder: &MetricsBuilder, domain: &str) -> Self {
+        Self {
+            builder: builder.clone(),
+            domain: MetaString::from(domain),
+            counters_by_endpoint: Arc::new(Mutex::new(FastHashMap::default())),
+        }
+    }
+
+    /// Tracks a transaction being retried for the logical endpoint.
+    pub(super) fn increment_retries(&self, endpoint: &str) {
+        self.increment_counter(endpoint, |counters| &counters.retries);
+    }
+
+    /// Tracks a transaction being requeued for the logical endpoint.
+    pub(super) fn increment_requeued(&self, endpoint: &str) {
+        self.increment_counter(endpoint, |counters| &counters.requeued);
+    }
+
+    fn increment_counter(&self, endpoint: &str, select: fn(&TransactionRetryCounters) -> &Counter) {
+        let mut counters_by_endpoint = self.counters_by_endpoint.lock().unwrap();
+        if let Some(counters) = counters_by_endpoint.get(endpoint) {
+            select(counters).increment(1);
+            return;
+        }
+
+        let endpoint = MetaString::from(endpoint);
+        let tags = [("domain", self.domain.to_string()), ("endpoint", endpoint.to_string())];
+        let counters = TransactionRetryCounters {
+            retries: self
+                .builder
+                .register_counter_with_tags(NETWORK_HTTP_REQUESTS_RETRIES_TOTAL, tags.clone()),
+            requeued: self
+                .builder
+                .register_counter_with_tags(NETWORK_HTTP_REQUESTS_REQUEUED_TOTAL, tags),
+        };
+        select(&counters).increment(1);
+        counters_by_endpoint.insert(endpoint, counters);
     }
 }
 
@@ -450,6 +506,48 @@ mod tests {
         assert_eq!(
             recorder.counter(("network_http_requests_input_bytes_total", tags)),
             Some(42)
+        );
+    }
+
+    #[test]
+    fn transaction_retry_telemetry_records_counters_by_logical_endpoint() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let builder = MetricsBuilder::default().add_default_tag(("component_id", "forwarder"));
+        let telemetry = TransactionRetryTelemetry::from_builder(&builder, "https://example.com");
+        let cloned_telemetry = telemetry.clone();
+
+        telemetry.increment_retries("series_v2");
+        cloned_telemetry.increment_retries("series_v2");
+        telemetry.increment_requeued("series_v2");
+        telemetry.increment_retries("sketches_v2");
+
+        let series_tags = &[
+            ("component_id", "forwarder"),
+            ("domain", "https://example.com"),
+            ("endpoint", "series_v2"),
+        ];
+        assert_eq!(
+            recorder.counter(("network_http_requests_retries_total", series_tags)),
+            Some(2)
+        );
+        assert_eq!(
+            recorder.counter(("network_http_requests_requeued_total", series_tags)),
+            Some(1)
+        );
+
+        let sketches_tags = &[
+            ("component_id", "forwarder"),
+            ("domain", "https://example.com"),
+            ("endpoint", "sketches_v2"),
+        ];
+        assert_eq!(
+            recorder.counter(("network_http_requests_retries_total", sketches_tags)),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter(("network_http_requests_requeued_total", sketches_tags)),
+            Some(0)
         );
     }
 
