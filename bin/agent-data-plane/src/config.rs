@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use agent_data_plane_config::{domains::otlp, SalukiConfiguration};
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
@@ -43,8 +44,20 @@ impl DataPlaneConfiguration {
                 .unwrap_or_else(|| ListenAddress::any_tcp(5101)),
             checks: DataPlaneChecksConfiguration::from_configuration(config)?,
             dogstatsd: DataPlaneDogStatsDConfiguration::from_configuration(config)?,
-            otlp: DataPlaneOtlpConfiguration::from_configuration(config)?,
+            // The OTLP configuration is sourced from the typed configuration system, which is not
+            // available at bootstrap. It is attached on the runtime path via `with_otlp`; until
+            // then it stays disabled. Bootstrap and the API client never read it.
+            otlp: DataPlaneOtlpConfiguration::default(),
         })
+    }
+
+    /// Attaches the OTLP configuration resolved from the typed configuration system.
+    ///
+    /// The topology-shaping OTLP decisions (activation and proxy gating) come from the typed model
+    /// rather than the raw configuration map, so they are supplied once runtime authority exists.
+    pub fn with_otlp(mut self, otlp: DataPlaneOtlpConfiguration) -> Self {
+        self.otlp = otlp;
+        self
     }
 
     /// Returns `true` if the data plane is enabled.
@@ -214,18 +227,23 @@ impl DataPlaneDogStatsDConfiguration {
 }
 
 /// OTLP-specific data plane configuration.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct DataPlaneOtlpConfiguration {
     enabled: bool,
     proxy: DataPlaneOtlpProxyConfiguration,
 }
 
 impl DataPlaneOtlpConfiguration {
-    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(Self {
-            enabled: config.try_get_typed("data_plane.otlp.enabled")?.unwrap_or(false),
-            proxy: DataPlaneOtlpProxyConfiguration::from_configuration(config)?,
-        })
+    /// Builds the OTLP data plane configuration from the resolved typed configuration.
+    ///
+    /// The activation gate is read from the control slice (`data_plane.otlp.enabled`) and the proxy
+    /// settings from the OTLP domain, both resolved by the typed configuration system rather than
+    /// deserialized from the raw configuration map.
+    pub fn from_configuration(config: &SalukiConfiguration) -> Self {
+        Self {
+            enabled: config.control.otlp,
+            proxy: DataPlaneOtlpProxyConfiguration::from_configuration(&config.domains.otlp.proxy),
+        }
     }
 
     /// Returns `true` if the OTLP pipeline is enabled.
@@ -244,20 +262,19 @@ impl DataPlaneOtlpConfiguration {
 /// In proxy mode, ADP takes over the normal "OTLP Ingest" endpoints that the Core Agent would typically listen on,
 /// so the Core Agent must be configured to listen on a different, separate port than it usually would so that ADP
 /// can proxy to it.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
+#[derive(Clone, Debug, Default)]
 pub struct DataPlaneOtlpProxyConfiguration {
     /// Whether or not to proxy all signals to the Agent.
     ///
     /// When enabled, OTLP signals which aren't supported by ADP will be proxied to the Agent. Depending on the signal
     /// type, they may be proxied to either the Core Agent or Trace Agent.
     ///
-    /// Defaults to `true`.
+    /// Defaults to `false`.
     enabled: bool,
 
     /// OTLP gRPC endpoint on the Core Agent to proxy signals to.
     ///
-    /// Defaults to `http://localhost:4319`.
+    /// Defaults to `127.0.0.1:4319`.
     core_agent_otlp_grpc_endpoint: String,
 
     /// Whether or not to proxy traces to the Core Agent.
@@ -277,28 +294,19 @@ pub struct DataPlaneOtlpProxyConfiguration {
 }
 
 impl DataPlaneOtlpProxyConfiguration {
-    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let enabled = config.try_get_typed("data_plane.otlp.proxy.enabled")?.unwrap_or(false);
-        let core_agent_otlp_grpc_endpoint = config
-            .try_get_typed("data_plane.otlp.proxy.receiver.protocols.grpc.endpoint")?
-            .unwrap_or("http://localhost:4319".to_string());
-        let proxy_traces = config
-            .try_get_typed("data_plane.otlp.proxy.traces.enabled")?
-            .unwrap_or(true);
-        let proxy_metrics = config
-            .try_get_typed("data_plane.otlp.proxy.metrics.enabled")?
-            .unwrap_or(true);
-        let proxy_logs = config
-            .try_get_typed("data_plane.otlp.proxy.logs.enabled")?
-            .unwrap_or(true);
-
-        Ok(Self {
-            enabled,
-            core_agent_otlp_grpc_endpoint,
-            proxy_traces,
-            proxy_metrics,
-            proxy_logs,
-        })
+    /// Builds the OTLP proxy configuration from the resolved OTLP proxy domain slice.
+    ///
+    /// Every value (the proxy gate, the Core Agent gRPC endpoint, and the per-signal proxy flags)
+    /// comes from the typed OTLP domain, which the typed configuration system populates with the
+    /// Datadog schema defaults.
+    fn from_configuration(proxy: &otlp::Proxy) -> Self {
+        Self {
+            enabled: proxy.enabled,
+            core_agent_otlp_grpc_endpoint: proxy.grpc_endpoint.clone(),
+            proxy_traces: proxy.traces_enabled,
+            proxy_metrics: proxy.metrics_enabled,
+            proxy_logs: proxy.logs_enabled,
+        }
     }
 
     /// Returns `true` if the OTLP proxy is enabled.
@@ -337,6 +345,17 @@ mod tests {
     async fn dp_config_from(value: serde_json::Value) -> DataPlaneConfiguration {
         DataPlaneConfiguration::from_configuration(&config_from(value).await)
             .expect("data plane configuration should parse")
+    }
+
+    // Builds the typed-backed OTLP configuration the way the runtime path does, exercising the
+    // control-slice activation gate and the OTLP proxy domain the migration now reads from. Only
+    // the fields the pipeline-requirement predicates consult are set; the rest keep model defaults.
+    fn otlp_config(enabled: bool, proxy_enabled: bool, proxy_traces: bool) -> DataPlaneOtlpConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.control.otlp = enabled;
+        config.domains.otlp.proxy.enabled = proxy_enabled;
+        config.domains.otlp.proxy.traces_enabled = proxy_traces;
+        DataPlaneOtlpConfiguration::from_configuration(&config)
     }
 
     // ADP ignores `use_dogstatsd`. The Core Agent evaluates that key and delivers the resolved
@@ -413,7 +432,6 @@ mod tests {
                 "enabled": true,
                 "checks": { "enabled": true },
                 "dogstatsd": { "enabled": false },
-                "otlp": { "enabled": false },
             },
         }))
         .await;
@@ -429,13 +447,10 @@ mod tests {
     #[tokio::test]
     async fn otlp_without_proxy_requires_metrics_logs_and_traces_pipelines() {
         let dp = dp_config_from(json!({
-            "data_plane": {
-                "enabled": true,
-                "dogstatsd": { "enabled": false },
-                "otlp": { "enabled": true, "proxy": { "enabled": false } },
-            },
+            "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } },
         }))
-        .await;
+        .await
+        .with_otlp(otlp_config(true, false, true));
 
         assert!(dp.data_pipelines_enabled());
         assert!(dp.metrics_pipeline_required());
@@ -450,13 +465,10 @@ mod tests {
         // With proxy mode enabled and traces still proxied to the Core Agent (the default), ADP handles no signals
         // itself, so no baseline pipeline is required even though a data pipeline (OTLP) is enabled.
         let dp = dp_config_from(json!({
-            "data_plane": {
-                "enabled": true,
-                "dogstatsd": { "enabled": false },
-                "otlp": { "enabled": true, "proxy": { "enabled": true } },
-            },
+            "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } },
         }))
-        .await;
+        .await
+        .with_otlp(otlp_config(true, true, true));
 
         assert!(dp.data_pipelines_enabled());
         assert!(!dp.metrics_pipeline_required());
@@ -471,16 +483,10 @@ mod tests {
         // Proxy mode is enabled but trace proxying is turned off, so ADP must handle traces locally and the traces
         // pipeline becomes required again while the other baseline pipelines stay off.
         let dp = dp_config_from(json!({
-            "data_plane": {
-                "enabled": true,
-                "dogstatsd": { "enabled": false },
-                "otlp": {
-                    "enabled": true,
-                    "proxy": { "enabled": true, "traces": { "enabled": false } },
-                },
-            },
+            "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } },
         }))
-        .await;
+        .await
+        .with_otlp(otlp_config(true, true, false));
 
         assert!(dp.data_pipelines_enabled());
         assert!(!dp.metrics_pipeline_required());
@@ -497,7 +503,6 @@ mod tests {
                 "enabled": true,
                 "checks": { "enabled": false },
                 "dogstatsd": { "enabled": false },
-                "otlp": { "enabled": false },
             },
         }))
         .await;

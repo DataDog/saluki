@@ -607,21 +607,25 @@ inventory:
     pipelines: [cross_cutting]
     description: "Enable the OTLP pipeline"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
 
   data_plane.otlp.proxy.enabled:
     support: full
     pipelines: [otlp]
     description: "Enable OTLP proxy to Core Agent"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
 
   data_plane.otlp.proxy.logs.enabled:
     support: full
     pipelines: [otlp]
     description: "Proxy OTLP logs to Core Agent"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: data_plane.rs
 
@@ -630,7 +634,7 @@ inventory:
     pipelines: [otlp]
     description: "Proxy OTLP metrics to Core Agent"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: data_plane.rs
 
@@ -639,14 +643,16 @@ inventory:
     pipelines: [otlp]
     description: "OTLP proxy gRPC receiver endpoint"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
 
   data_plane.otlp.proxy.traces.enabled:
     support: full
     pipelines: [otlp]
     description: "Proxy OTLP traces to Core Agent"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: data_plane.rs
 

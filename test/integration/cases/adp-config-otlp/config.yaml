@@ -46,6 +46,14 @@ env:
   DD_OTLP_CACHED_TAGSETS_LIMIT: "234567"
   DD_OTLP_ALLOW_CONTEXT_HEAP_ALLOCS: "false"
 
+  # OTLP proxy -- Datadog schema keys. OTLP itself stays disabled so no proxy topology is built;
+  # these assert only that the migrated proxy values resolve through the typed configuration.
+  DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
+  DD_DATA_PLANE_OTLP_PROXY_LOGS_ENABLED: "false"
+  DD_DATA_PLANE_OTLP_PROXY_METRICS_ENABLED: "false"
+  DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
+  DD_DATA_PLANE_OTLP_PROXY_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "127.0.0.1:24319"
+
 container:
   exposed_ports:
     - "55101/tcp"
@@ -175,6 +183,33 @@ procedure:
     endpoint: "https://localhost:55101/config/internal"
     key: domains.otlp.contexts.allow_context_heap_allocs
     value: false
+    timeout: 60s
+
+  # OTLP proxy -- Datadog schema keys
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.proxy.enabled
+    value: true
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.proxy.logs_enabled
+    value: false
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.proxy.metrics_enabled
+    value: false
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.proxy.traces_enabled
+    value: false
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.proxy.grpc_endpoint
+    value: "127.0.0.1:24319"
     timeout: 60s
 
   - parallel:

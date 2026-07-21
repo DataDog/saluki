@@ -78,13 +78,35 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `data_plane.otlp.enabled`-Enable the OTLP pipeline
+    DATA_PLANE_OTLP_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `data_plane.otlp.proxy.enabled`-Enable OTLP proxy to Core Agent
+    DATA_PLANE_OTLP_PROXY_ENABLED = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_PROXY_ENABLED,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `data_plane.otlp.proxy.logs.enabled`-Proxy OTLP logs to Core Agent
     DATA_PLANE_OTLP_PROXY_LOGS_ENABLED = SalukiAnnotation {
         schema: &schema::DATA_PLANE_OTLP_PROXY_LOGS_ENABLED,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::GET_TYPED],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
@@ -95,7 +117,18 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::GET_TYPED],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`-OTLP proxy gRPC receiver endpoint
+    DATA_PLANE_OTLP_PROXY_RECEIVER_PROTOCOLS_GRPC_ENDPOINT = SalukiAnnotation {
+        schema: &schema::DATA_PLANE_OTLP_PROXY_RECEIVER_PROTOCOLS_GRPC_ENDPOINT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
@@ -106,7 +139,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::GET_TYPED],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),

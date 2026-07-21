@@ -53,7 +53,10 @@ use crate::{
         DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
-use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
+use crate::{
+    config::{DataPlaneConfiguration, DataPlaneOtlpConfiguration},
+    internal::env::ADPEnvironmentProvider,
+};
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
@@ -124,8 +127,11 @@ pub async fn handle_run_command(
 
     // Hand un-migrated components the resolved configuration as the legacy `GenericConfiguration`
     // they still read from. Raw reads go through `config`; typed/live reads go through `config_sys`.
+    // The OTLP activation and proxy decisions are attached from the typed model rather than the raw
+    // map now that the configuration system is resolved.
     let dp_config = DataPlaneConfiguration::from_configuration(&config_sys.raw_map())
-        .error_context("Failed to load data plane configuration.")?;
+        .error_context("Failed to load data plane configuration.")?
+        .with_otlp(DataPlaneOtlpConfiguration::from_configuration(&config_sys.config()));
 
     // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative
     // config, so reload logging to match. Standalone resolves the same local sources seen at
