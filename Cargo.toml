@@ -158,6 +158,7 @@ rustls-webpki = { version = "0.103", default-features = false }
 schemars = { version = "0.8", default-features = false }
 similar-asserts = { version = "2.0", default-features = false }
 slab = { version = "0.4.12", default-features = false }
+subtle = { version = "2.6", default-features = false }
 syn = { version = "2", default-features = false, features = ["full", "parsing", "visit-mut"] }
 tokio-util = { version = "0.7.18", default-features = false }
 tower = { version = "0.5", default-features = false }

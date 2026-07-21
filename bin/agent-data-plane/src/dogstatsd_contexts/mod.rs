@@ -1,10 +1,16 @@
 use std::path::Path;
 
+#[allow(
+    unused_imports,
+    reason = "registered with the privileged API by a subsequent feature task"
+)]
+pub(crate) use self::api::DogStatsDContextDumpAPIHandler;
 use self::artifact::ArtifactError;
 #[allow(unused_imports, reason = "wired into the DogStatsD API by a subsequent feature task")]
 pub(crate) use self::artifact::{publish_context_dump, CONTEXT_DUMP_FILENAME};
 use self::report::ContextReport;
 
+mod api;
 mod artifact;
 mod report;
 

@@ -56,6 +56,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true }
 stringtheory = { workspace = true }
+subtle = { workspace = true }
 tokio = { workspace = true, features = [
   "macros",
   "net",
@@ -95,3 +96,4 @@ saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
