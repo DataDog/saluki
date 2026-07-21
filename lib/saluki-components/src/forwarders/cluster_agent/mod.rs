@@ -191,11 +191,8 @@ fn cluster_agent_request_mapper<B>(
     })
 }
 
-fn get_cluster_agent_endpoint_name(uri: &Uri) -> Option<MetaString> {
-    match uri.path() {
-        CLUSTER_AGENT_SERIES_PATH => Some(MetaString::from_static("cluster_agent_series")),
-        _ => None,
-    }
+fn get_cluster_agent_endpoint_name(_uri: &Uri) -> Option<MetaString> {
+    Some(MetaString::from_static("cluster_agent_series"))
 }
 
 #[cfg(test)]
@@ -228,6 +225,27 @@ mod tests {
         );
         assert_eq!(request.headers().get(AUTHORIZATION).unwrap(), "Bearer secret-token");
         assert!(request.headers().get("dd-api-key").is_none());
+    }
+
+    #[test]
+    fn endpoint_name_is_stable_across_request_mapping() {
+        let auth_header_value = bearer_auth_header_value("secret-token").expect("auth header should be valid");
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://cluster-agent.example.com:5005", "secret-token")
+            .expect("endpoint should resolve");
+        let mut mapper = cluster_agent_request_mapper::<()>(endpoint, auth_header_value);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/api/v2/series")
+            .body(TransactionBody::<()>::Rehydrated(None))
+            .expect("request should build");
+
+        let input_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
+        let mapped_request = mapper(request);
+        let retry_endpoint_name = get_cluster_agent_endpoint_name(mapped_request.uri());
+
+        assert_eq!(input_endpoint_name.as_deref(), Some("cluster_agent_series"));
+        assert_eq!(retry_endpoint_name.as_deref(), Some("cluster_agent_series"));
+        assert_eq!(input_endpoint_name, retry_endpoint_name);
     }
 
     #[test]
