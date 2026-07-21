@@ -19,9 +19,10 @@ use hyper_util::{
 };
 use metrics::Counter;
 use pin_project::pin_project;
+use rustls::ClientConfig;
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use saluki_tls::{ClientTLSConfigBuilder, TlsMinimumVersion};
+use saluki_tls::{ensure_client_config_fips_compliant, ClientTLSConfigBuilder, TlsMinimumVersion};
 use stringtheory::MetaString;
 use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _};
 
@@ -165,6 +166,7 @@ pub struct HttpClientBuilder {
     connector_builder: HttpsCapableConnectorBuilder,
     hyper_builder: Builder,
     tls_builder: ClientTLSConfigBuilder,
+    client_tls_config: Option<ClientConfig>,
     request_timeout: Option<Duration>,
     endpoint_telemetry: Option<EndpointTelemetryLayer>,
     proxies: Option<Vec<Proxy>>,
@@ -283,9 +285,19 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Sets a complete client TLS configuration.
+    ///
+    /// The supplied configuration takes precedence over all options applied through [`Self::with_tls_config`] and
+    /// [`Self::with_min_tls_version`], regardless of call order.
+    pub fn with_client_tls_config(mut self, config: ClientConfig) -> Self {
+        self.client_tls_config = Some(config);
+        self
+    }
+
     /// Sets the TLS configuration.
     ///
-    /// A TLS configuration builder is provided to allow for more advanced configuration of the TLS connection.
+    /// A TLS configuration builder is provided to allow for more advanced configuration of the TLS connection. These
+    /// options are ignored when a complete configuration is supplied through [`Self::with_client_tls_config`].
     pub fn with_tls_config<F>(mut self, f: F) -> Self
     where
         F: FnOnce(ClientTLSConfigBuilder) -> ClientTLSConfigBuilder,
@@ -299,7 +311,8 @@ impl HttpClientBuilder {
     /// Defaults to TLS 1.2.
     ///
     /// This updates the same TLS builder configured by [`Self::with_tls_config`], so call order matters when both
-    /// methods change the minimum TLS version.
+    /// methods change the minimum TLS version. This option is ignored when a complete configuration is supplied
+    /// through [`Self::with_client_tls_config`].
     pub fn with_min_tls_version(mut self, version: TlsMinimumVersion) -> Self {
         self.tls_builder = self.tls_builder.with_min_tls_version(version);
         self
@@ -332,9 +345,15 @@ impl HttpClientBuilder {
     ///
     /// # Errors
     ///
-    /// If there was an error building the TLS configuration for the client, an error will be returned.
+    /// If there was an error building or validating the TLS configuration for the client, an error will be returned.
     pub fn build(self) -> Result<HttpClient, GenericError> {
-        let tls_config = self.tls_builder.build()?;
+        let tls_config = match self.client_tls_config {
+            Some(config) => {
+                ensure_client_config_fips_compliant(&config)?;
+                config
+            }
+            None => self.tls_builder.build()?,
+        };
         let connector = self.connector_builder.build(tls_config)?;
         // TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
         // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
@@ -369,6 +388,7 @@ impl Default for HttpClientBuilder {
             connector_builder: HttpsCapableConnectorBuilder::default(),
             hyper_builder,
             tls_builder: ClientTLSConfigBuilder::new(),
+            client_tls_config: None,
             request_timeout: Some(Duration::from_secs(20)),
             endpoint_telemetry: None,
             proxies: None,
@@ -389,5 +409,35 @@ mod tests {
         let converted = into_client_body(body);
 
         assert_eq!(Some(5), converted.size_hint().exact());
+    }
+
+    #[cfg(not(windows))]
+    fn test_crypto_provider() -> rustls::crypto::CryptoProvider {
+        rustls::crypto::aws_lc_rs::default_provider()
+    }
+
+    #[cfg(windows)]
+    fn test_crypto_provider() -> rustls::crypto::CryptoProvider {
+        rustls_cng_crypto::default_provider()
+    }
+
+    #[test]
+    fn accepts_complete_client_tls_configuration() {
+        let tls_config = rustls::ClientConfig::builder_with_provider(test_crypto_provider().into())
+            .with_safe_default_protocol_versions()
+            .expect("default protocol versions should be valid")
+            .with_root_certificates(rustls::RootCertStore::empty())
+            .with_no_client_auth();
+
+        HttpClient::builder()
+            .with_client_tls_config(tls_config.clone())
+            .with_min_tls_version(TlsMinimumVersion::Tls13)
+            .build()
+            .expect("a complete TLS configuration should take precedence over later builder options");
+        HttpClient::builder()
+            .with_min_tls_version(TlsMinimumVersion::Tls13)
+            .with_client_tls_config(tls_config)
+            .build()
+            .expect("a complete TLS configuration should take precedence over earlier builder options");
     }
 }
