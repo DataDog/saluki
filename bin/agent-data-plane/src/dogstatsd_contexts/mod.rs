@@ -1,6 +1,8 @@
 use std::path::Path;
 
 use self::artifact::ArtifactError;
+#[allow(unused_imports, reason = "wired into the DogStatsD API by a subsequent feature task")]
+pub(crate) use self::artifact::{publish_context_dump, CONTEXT_DUMP_FILENAME};
 use self::report::ContextReport;
 
 mod artifact;

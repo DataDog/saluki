@@ -77,13 +77,19 @@ tikv-jemallocator = { workspace = true, features = [
   "stats",
 ] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+] }
+
 [build-dependencies]
 chrono = { workspace = true }
 
 [dev-dependencies]
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
-saluki-components = { workspace = true }
+saluki-components = { workspace = true, features = ["test-util"] }
 saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }

@@ -1,12 +1,291 @@
 use std::error::Error;
 use std::fmt;
-use std::fs::File;
-use std::io::{BufRead, BufReader, Read};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use saluki_components::transforms::{AggregateContextSnapshotEntry, AggregateMetricType};
+use saluki_context::tags::TagSet;
+use saluki_error::{ErrorContext as _, GenericError};
+use serde::{ser::SerializeStruct as _, Deserialize, Serialize, Serializer};
+use uuid::Uuid;
 
 const ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
+pub(crate) const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
+
+struct AgentContextSnapshotRecord<'a>(&'a AggregateContextSnapshotEntry);
+
+impl Serialize for AgentContextSnapshotRecord<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let entry = self.0;
+        let context = entry.context();
+        let name: &str = context.name().as_ref();
+        let mut record = serializer.serialize_struct("AgentContextRecord", 7)?;
+        record.serialize_field("Name", name)?;
+        record.serialize_field("Host", context.host().unwrap_or_default())?;
+        record.serialize_field("Type", agent_metric_type(entry))?;
+        record.serialize_field("TaggerTags", &BorrowedTags(context.origin_tags()))?;
+        record.serialize_field("MetricTags", &BorrowedTags(context.tags()))?;
+        record.serialize_field("NoIndex", &false)?;
+        record.serialize_field("Source", &1u32)?;
+        record.end()
+    }
+}
+
+struct BorrowedTags<'a>(&'a TagSet);
+
+impl Serialize for BorrowedTags<'_> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_seq(self.0.into_iter().map(|tag| tag.as_str()))
+    }
+}
+
+fn agent_metric_type(entry: &AggregateContextSnapshotEntry) -> &'static str {
+    match entry.metric_type() {
+        AggregateMetricType::Counter => "Counter",
+        AggregateMetricType::Rate => "Rate",
+        AggregateMetricType::Gauge => "Gauge",
+        AggregateMetricType::Set => "Set",
+        AggregateMetricType::Distribution => "Distribution",
+        AggregateMetricType::Histogram if entry.unit() == Some("millisecond") => "Historate",
+        AggregateMetricType::Histogram => "Histogram",
+    }
+}
+
+fn write_snapshot_records<W: Write>(
+    writer: &mut W, snapshot: &[AggregateContextSnapshotEntry], path: &Path,
+) -> Result<(), GenericError> {
+    for (index, entry) in snapshot.iter().enumerate() {
+        serde_json::to_writer(&mut *writer, &AgentContextSnapshotRecord(entry)).with_error_context(|| {
+            format!(
+                "Failed to serialize DogStatsD context dump record {} for '{}'.",
+                index + 1,
+                path.display()
+            )
+        })?;
+        writer.write_all(b"\n").with_error_context(|| {
+            format!(
+                "Failed to write DogStatsD context dump record {} terminator for '{}'.",
+                index + 1,
+                path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+pub(crate) fn publish_context_dump(
+    run_path: &Path, snapshot: &[AggregateContextSnapshotEntry],
+) -> Result<PathBuf, GenericError> {
+    publish_context_dump_with(run_path, snapshot, &FileSystemAtomicReplace)
+}
+
+fn publish_context_dump_with<R: AtomicReplace>(
+    run_path: &Path, snapshot: &[AggregateContextSnapshotEntry], replacer: &R,
+) -> Result<PathBuf, GenericError> {
+    let target = run_path.join(CONTEXT_DUMP_FILENAME);
+    if run_path.as_os_str().is_empty() {
+        return Err(saluki_error::generic_error!(
+            "Failed to validate run path for DogStatsD context dump target '{}': the run path is empty.",
+            target.display()
+        ));
+    }
+
+    let temporary_path = run_path.join(format!(
+        ".{CONTEXT_DUMP_FILENAME}.{}.tmp",
+        Uuid::new_v4().as_hyphenated()
+    ));
+    let file = open_temporary_file(&temporary_path).with_error_context(|| {
+        format!(
+            "Failed to create temporary DogStatsD context dump for target '{}'.",
+            target.display()
+        )
+    })?;
+
+    publish_open_temporary(file, &temporary_path, &target, snapshot, replacer)?;
+    Ok(target)
+}
+
+fn open_temporary_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
+
+fn publish_open_temporary<W, R>(
+    writer: W, temporary_path: &Path, target: &Path, snapshot: &[AggregateContextSnapshotEntry], replacer: &R,
+) -> Result<(), GenericError>
+where
+    W: Write + SyncAll,
+    R: AtomicReplace,
+{
+    publish_buffered_temporary(BufWriter::new(writer), temporary_path, target, snapshot, replacer)
+}
+
+fn publish_buffered_temporary<W, R>(
+    buffer: BufWriter<W>, temporary_path: &Path, target: &Path, snapshot: &[AggregateContextSnapshotEntry],
+    replacer: &R,
+) -> Result<(), GenericError>
+where
+    W: Write + SyncAll,
+    R: AtomicReplace,
+{
+    let mut cleanup = TemporaryPathCleanup::new(temporary_path);
+    let writer = write_compressed_snapshot(buffer, snapshot, target)?;
+    writer.sync_all().with_error_context(|| {
+        format!(
+            "Failed to sync temporary DogStatsD context dump for target '{}'.",
+            target.display()
+        )
+    })?;
+    drop(writer);
+
+    replacer.replace(temporary_path, target).with_error_context(|| {
+        format!(
+            "Failed to atomically replace DogStatsD context dump target '{}'.",
+            target.display()
+        )
+    })?;
+    cleanup.disarm();
+    Ok(())
+}
+
+fn write_compressed_snapshot<W: Write>(
+    buffer: BufWriter<W>, snapshot: &[AggregateContextSnapshotEntry], target: &Path,
+) -> Result<W, GenericError> {
+    let mut encoder = zstd::stream::write::Encoder::new(buffer, 0).with_error_context(|| {
+        format!(
+            "Failed to initialize zstd stream for DogStatsD context dump target '{}'.",
+            target.display()
+        )
+    })?;
+    write_snapshot_records(&mut encoder, snapshot, target)?;
+    let buffer = finish_zstd_encoder(encoder, target)?;
+    finish_buffered_writer(buffer, target)
+}
+
+fn finish_zstd_encoder<'a, W: Write>(
+    encoder: zstd::stream::write::Encoder<'a, W>, target: &Path,
+) -> Result<W, GenericError> {
+    encoder.finish().with_error_context(|| {
+        format!(
+            "Failed to finalize zstd stream for DogStatsD context dump target '{}'.",
+            target.display()
+        )
+    })
+}
+
+fn finish_buffered_writer<W: Write>(buffer: BufWriter<W>, target: &Path) -> Result<W, GenericError> {
+    buffer
+        .into_inner()
+        .map_err(|error| error.into_error())
+        .with_error_context(|| {
+            format!(
+                "Failed to finalize buffered DogStatsD context dump output for target '{}'.",
+                target.display()
+            )
+        })
+}
+
+trait SyncAll {
+    fn sync_all(&self) -> io::Result<()>;
+}
+
+impl SyncAll for File {
+    fn sync_all(&self) -> io::Result<()> {
+        File::sync_all(self)
+    }
+}
+
+trait AtomicReplace {
+    fn replace(&self, source: &Path, target: &Path) -> io::Result<()>;
+}
+
+struct FileSystemAtomicReplace;
+
+impl AtomicReplace for FileSystemAtomicReplace {
+    fn replace(&self, source: &Path, target: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            fs::rename(source, target)
+        }
+
+        #[cfg(windows)]
+        {
+            move_file_replace(source, target)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn move_file_replace(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+
+    fn nul_terminated(path: &Path) -> io::Result<Vec<u16>> {
+        let mut encoded: Vec<_> = path.as_os_str().encode_wide().collect();
+        if encoded.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path contains an interior NUL",
+            ));
+        }
+        encoded.push(0);
+        Ok(encoded)
+    }
+
+    let source = nul_terminated(source)?;
+    let target = nul_terminated(target)?;
+    // SAFETY: Both path buffers are NUL-terminated, contain no interior NULs, and remain alive for the duration of the
+    // call. The flags request same-filesystem replacement with write-through semantics.
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+struct TemporaryPathCleanup<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl<'a> TemporaryPathCleanup<'a> {
+    fn new(path: &'a Path) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for TemporaryPathCleanup<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = fs::remove_file(self.path);
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "PascalCase")]
@@ -115,9 +394,27 @@ fn collect_records(path: &Path) -> Result<Vec<AgentContextRecord>, ArtifactError
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::{self, BufWriter, Write as _};
     use std::path::PathBuf;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
 
-    use super::{collect_records, AgentContextRecord};
+    use saluki_components::transforms::{AggregateContextSnapshotEntry, AggregateMetricType};
+    use saluki_context::{
+        tags::{Tag, TagSet},
+        Context,
+    };
+    use serde_json::json;
+    use stringtheory::MetaString;
+
+    use super::{
+        collect_records, finish_buffered_writer, finish_zstd_encoder, publish_buffered_temporary, publish_context_dump,
+        publish_context_dump_with, publish_open_temporary, write_snapshot_records, AgentContextRecord, AtomicReplace,
+        SyncAll, CONTEXT_DUMP_FILENAME,
+    };
+    use crate::dogstatsd_contexts::read_report;
 
     const PLAIN_FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -181,6 +478,523 @@ mod tests {
                 source: 1,
             },
         ]
+    }
+
+    #[test]
+    fn streams_exact_agent_schema_for_every_metric_type() {
+        let cases = [
+            (AggregateMetricType::Counter, None, "Counter"),
+            (AggregateMetricType::Rate, None, "Rate"),
+            (AggregateMetricType::Gauge, None, "Gauge"),
+            (AggregateMetricType::Set, None, "Set"),
+            (AggregateMetricType::Distribution, None, "Distribution"),
+            (AggregateMetricType::Histogram, None, "Histogram"),
+            (AggregateMetricType::Histogram, Some("second"), "Histogram"),
+            (AggregateMetricType::Histogram, Some("millisecond"), "Historate"),
+        ];
+        let snapshot: Vec<_> = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (metric_type, unit, _))| {
+                snapshot_entry(
+                    Box::leak(format!("metric.{index}").into_boxed_str()),
+                    (index == 0).then_some("node-a"),
+                    *metric_type,
+                    unit.unwrap_or_default(),
+                    &["client:value", "bare"],
+                    &["origin:value"],
+                )
+            })
+            .collect();
+        let mut output = Vec::new();
+
+        write_snapshot_records(&mut output, &snapshot, PathBuf::from("plain-stream").as_path())
+            .expect("snapshot should serialize");
+
+        let output = String::from_utf8(output).expect("serialized output should be UTF-8");
+        let lines: Vec<_> = output.lines().collect();
+        assert_eq!(lines.len(), cases.len());
+        assert_eq!(output.bytes().filter(|byte| *byte == b'\n').count(), cases.len());
+        assert!(output.ends_with('\n'));
+        for (index, ((_, _, expected_type), line)) in cases.iter().zip(&lines).enumerate() {
+            let expected_host = if index == 0 { "node-a" } else { "" };
+            let expected = json!({
+                "Name": format!("metric.{index}"),
+                "Host": expected_host,
+                "Type": expected_type,
+                "TaggerTags": ["origin:value"],
+                "MetricTags": ["client:value", "bare"],
+                "NoIndex": false,
+                "Source": 1,
+            });
+            assert_eq!(serde_json::from_str::<serde_json::Value>(line).unwrap(), expected);
+            assert_eq!(
+                *line,
+                format!(
+                    "{{\"Name\":\"metric.{index}\",\"Host\":\"{expected_host}\",\"Type\":\"{expected_type}\",\"TaggerTags\":[\"origin:value\"],\"MetricTags\":[\"client:value\",\"bare\"],\"NoIndex\":false,\"Source\":1}}"
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn plain_stream_round_trips_through_reader_and_report() {
+        let snapshot = vec![
+            snapshot_entry(
+                "shared.metric",
+                Some("node-a"),
+                AggregateMetricType::Gauge,
+                "",
+                &["env:prod", "service:web"],
+                &["pod_name:web-a"],
+            ),
+            snapshot_entry(
+                "shared.metric",
+                None,
+                AggregateMetricType::Counter,
+                "",
+                &["env:staging", "service:web"],
+                &["pod_name:web-b"],
+            ),
+        ];
+        let artifact = tempfile::NamedTempFile::new().expect("temporary artifact should be created");
+        let mut file = artifact.reopen().expect("temporary artifact should reopen");
+
+        write_snapshot_records(&mut file, &snapshot, artifact.path()).expect("snapshot should serialize");
+        file.flush().expect("plain stream should flush");
+
+        assert_eq!(
+            collect_records(artifact.path()).expect("plain stream should decode"),
+            vec![
+                AgentContextRecord {
+                    name: "shared.metric".to_owned(),
+                    host: "node-a".to_owned(),
+                    metric_type: "Gauge".to_owned(),
+                    tagger_tags: vec!["pod_name:web-a".to_owned()],
+                    metric_tags: vec!["env:prod".to_owned(), "service:web".to_owned()],
+                    no_index: false,
+                    source: 1,
+                },
+                AgentContextRecord {
+                    name: "shared.metric".to_owned(),
+                    host: String::new(),
+                    metric_type: "Counter".to_owned(),
+                    tagger_tags: vec!["pod_name:web-b".to_owned()],
+                    metric_tags: vec!["env:staging".to_owned(), "service:web".to_owned()],
+                    no_index: false,
+                    source: 1,
+                },
+            ]
+        );
+        assert_eq!(
+            read_report(artifact.path())
+                .expect("plain stream report should build")
+                .render(10, 10),
+            concat!(
+                "   Contexts\tMetric name\t(number of unique values for each tag)\n",
+                "          2\tshared.metric\t(2 env, 1 service)\n",
+            )
+        );
+    }
+
+    #[test]
+    fn surfaces_a_partial_writer_failure_with_record_and_path_context() {
+        let snapshot = [snapshot_entry(
+            "write.failure",
+            None,
+            AggregateMetricType::Gauge,
+            "",
+            &["env:test"],
+            &[],
+        )];
+        let path = PathBuf::from("/run/test/dogstatsd_contexts.json.zstd");
+        let mut writer = FailAfterBytes::new(12);
+
+        let error = write_snapshot_records(&mut writer, &snapshot, &path).expect_err("write failure should surface");
+
+        assert_eq!(writer.written.len(), 12);
+        assert!(error.to_string().contains("serialize DogStatsD context dump record 1"));
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert!(format!("{error:#}").contains("injected write failure"));
+    }
+
+    #[test]
+    fn publishes_a_decodable_mode_0600_dump_and_replaces_the_canonical_artifact() {
+        let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
+        let target = run_directory.path().join(CONTEXT_DUMP_FILENAME);
+        fs::write(&target, b"old canonical artifact").expect("old canonical artifact should be written");
+        let snapshot = vec![
+            snapshot_entry(
+                "published.metric",
+                Some("node-a"),
+                AggregateMetricType::Histogram,
+                "millisecond",
+                &["env:prod"],
+                &["pod_name:web-a"],
+            ),
+            snapshot_entry(
+                "published.metric",
+                None,
+                AggregateMetricType::Distribution,
+                "",
+                &["env:staging"],
+                &["pod_name:web-b"],
+            ),
+        ];
+
+        let published = publish_context_dump(run_directory.path(), &snapshot).expect("snapshot should publish");
+
+        assert_eq!(published, target);
+        assert_eq!(
+            collect_records(&target)
+                .expect("published artifact should decode")
+                .len(),
+            2
+        );
+        assert_eq!(
+            read_report(&target)
+                .expect("published report should build")
+                .render(10, 10),
+            concat!(
+                "   Contexts\tMetric name\t(number of unique values for each tag)\n",
+                "          2\tpublished.metric\t(2 env)\n",
+            )
+        );
+        assert_eq!(
+            directory_entries(run_directory.path()),
+            vec![CONTEXT_DUMP_FILENAME.to_owned()]
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            assert_eq!(fs::metadata(&target).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn rejects_empty_missing_and_non_directory_run_paths_with_target_and_operation_context() {
+        let temporary_directory = tempfile::tempdir().expect("temporary directory should be created");
+        let missing = temporary_directory.path().join("missing");
+        let not_directory = temporary_directory.path().join("not-a-directory");
+        fs::write(&not_directory, b"file").expect("non-directory fixture should be written");
+        let cases = [
+            (PathBuf::new(), "validate run path"),
+            (missing, "create temporary"),
+            (not_directory, "create temporary"),
+        ];
+
+        for (run_path, expected_operation) in cases {
+            let error = publish_context_dump(&run_path, &[]).expect_err("invalid run path should fail");
+            let message = format!("{error:#}");
+            assert!(message.contains(CONTEXT_DUMP_FILENAME), "{message}");
+            assert!(message.contains(expected_operation), "{message}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_an_unwritable_run_directory_with_target_and_operation_context() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
+        let original_permissions = fs::metadata(run_directory.path()).unwrap().permissions();
+        fs::set_permissions(run_directory.path(), fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = publish_context_dump(run_directory.path(), &[]);
+        fs::set_permissions(run_directory.path(), original_permissions).unwrap();
+
+        let error = result.expect_err("unwritable run path should fail");
+        let message = format!("{error:#}");
+        assert!(message.contains(CONTEXT_DUMP_FILENAME), "{message}");
+        assert!(message.contains("create temporary"), "{message}");
+        assert_eq!(directory_entries(run_directory.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn injected_replace_failure_preserves_the_canonical_artifact_and_removes_the_temporary_file() {
+        let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
+        let target = run_directory.path().join(CONTEXT_DUMP_FILENAME);
+        let original = b"original canonical artifact";
+        fs::write(&target, original).expect("canonical fixture should be written");
+        let snapshot = [snapshot_entry(
+            "replacement.failure",
+            None,
+            AggregateMetricType::Gauge,
+            "",
+            &[],
+            &[],
+        )];
+
+        let error = publish_context_dump_with(run_directory.path(), &snapshot, &FailingReplace)
+            .expect_err("replacement should fail");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("atomically replace"), "{message}");
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(
+            directory_entries(run_directory.path()),
+            vec![CONTEXT_DUMP_FILENAME.to_owned()]
+        );
+    }
+
+    #[test]
+    fn zstd_finalization_failure_preserves_the_canonical_artifact_and_removes_the_temporary_file() {
+        let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
+        let target = run_directory.path().join(CONTEXT_DUMP_FILENAME);
+        let temporary = run_directory.path().join(".injected-zstd-failure.tmp");
+        let original = b"original canonical artifact";
+        fs::write(&target, original).expect("canonical fixture should be written");
+        let file = fs::File::create(&temporary).expect("temporary fixture should be created");
+        let writer = InjectableFile {
+            file,
+            fail_writes: true,
+            fail_sync: false,
+        };
+        let buffer = BufWriter::with_capacity(0, writer);
+        let snapshot = [snapshot_entry(
+            "zstd.failure",
+            None,
+            AggregateMetricType::Gauge,
+            "",
+            &[],
+            &[],
+        )];
+
+        let error = publish_buffered_temporary(buffer, &temporary, &target, &snapshot, &FailingReplace)
+            .expect_err("zstd finalization should fail");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("finalize zstd stream"), "{message}");
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(message.contains("injected write failure"), "{message}");
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(
+            directory_entries(run_directory.path()),
+            vec![CONTEXT_DUMP_FILENAME.to_owned()]
+        );
+    }
+
+    #[test]
+    fn buffered_finalization_failure_preserves_the_canonical_artifact_and_removes_the_temporary_file() {
+        let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
+        let target = run_directory.path().join(CONTEXT_DUMP_FILENAME);
+        let temporary = run_directory.path().join(".injected-buffer-failure.tmp");
+        let original = b"original canonical artifact";
+        fs::write(&target, original).expect("canonical fixture should be written");
+        let file = fs::File::create(&temporary).expect("temporary fixture should be created");
+        let writer = InjectableFile {
+            file,
+            fail_writes: true,
+            fail_sync: false,
+        };
+        let snapshot = [snapshot_entry(
+            "buffer.failure",
+            None,
+            AggregateMetricType::Gauge,
+            "",
+            &[],
+            &[],
+        )];
+
+        let error = publish_open_temporary(writer, &temporary, &target, &snapshot, &FailingReplace)
+            .expect_err("buffer finalization should fail");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("finalize buffered"), "{message}");
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(message.contains("injected write failure"), "{message}");
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(
+            directory_entries(run_directory.path()),
+            vec![CONTEXT_DUMP_FILENAME.to_owned()]
+        );
+    }
+
+    #[test]
+    fn sync_failure_preserves_the_canonical_artifact_and_removes_the_temporary_file() {
+        let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
+        let target = run_directory.path().join(CONTEXT_DUMP_FILENAME);
+        let temporary = run_directory.path().join(".injected-sync-failure.tmp");
+        let original = b"original canonical artifact";
+        fs::write(&target, original).expect("canonical fixture should be written");
+        let file = fs::File::create(&temporary).expect("temporary fixture should be created");
+        let writer = InjectableFile {
+            file,
+            fail_writes: false,
+            fail_sync: true,
+        };
+
+        let error =
+            publish_open_temporary(writer, &temporary, &target, &[], &FailingReplace).expect_err("sync should fail");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("sync temporary"), "{message}");
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(message.contains("injected sync failure"), "{message}");
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(
+            directory_entries(run_directory.path()),
+            vec![CONTEXT_DUMP_FILENAME.to_owned()]
+        );
+    }
+
+    #[test]
+    fn zstd_and_buffer_finalizers_surface_their_own_error_context() {
+        let target = PathBuf::from("/run/test/dogstatsd_contexts.json.zstd");
+        let snapshot = [snapshot_entry(
+            "finalize.failure",
+            None,
+            AggregateMetricType::Gauge,
+            "",
+            &[],
+            &[],
+        )];
+
+        let zstd_failure = Arc::new(AtomicBool::new(false));
+        let mut encoder = zstd::stream::write::Encoder::new(ToggleFailureWriter::new(zstd_failure.clone()), 0)
+            .expect("encoder should initialize");
+        write_snapshot_records(&mut encoder, &snapshot, &target).expect("records should stream before failure");
+        zstd_failure.store(true, Ordering::Relaxed);
+        let error = finish_zstd_encoder(encoder, &target).expect_err("zstd finalization should fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("finalize zstd stream"), "{message}");
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(message.contains("injected finalization failure"), "{message}");
+
+        let buffer_failure = Arc::new(AtomicBool::new(false));
+        let buffer = BufWriter::new(ToggleFailureWriter::new(buffer_failure.clone()));
+        let mut encoder = zstd::stream::write::Encoder::new(buffer, 0).expect("encoder should initialize");
+        write_snapshot_records(&mut encoder, &snapshot, &target).expect("records should stream before failure");
+        let buffer = finish_zstd_encoder(encoder, &target).expect("zstd stream should finalize");
+        buffer_failure.store(true, Ordering::Relaxed);
+        let error = finish_buffered_writer(buffer, &target).expect_err("buffer finalization should fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("finalize buffered"), "{message}");
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(message.contains("injected finalization failure"), "{message}");
+    }
+
+    struct InjectableFile {
+        file: fs::File,
+        fail_writes: bool,
+        fail_sync: bool,
+    }
+
+    impl io::Write for InjectableFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.fail_writes {
+                Err(io::Error::other("injected write failure"))
+            } else {
+                self.file.write(bytes)
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.fail_writes {
+                Err(io::Error::other("injected write failure"))
+            } else {
+                self.file.flush()
+            }
+        }
+    }
+
+    impl SyncAll for InjectableFile {
+        fn sync_all(&self) -> io::Result<()> {
+            if self.fail_sync {
+                Err(io::Error::other("injected sync failure"))
+            } else {
+                self.file.sync_all()
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct ToggleFailureWriter {
+        failure_enabled: Arc<AtomicBool>,
+    }
+
+    impl ToggleFailureWriter {
+        fn new(failure_enabled: Arc<AtomicBool>) -> Self {
+            Self { failure_enabled }
+        }
+    }
+
+    impl io::Write for ToggleFailureWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.failure_enabled.load(Ordering::Relaxed) {
+                Err(io::Error::other("injected finalization failure"))
+            } else {
+                Ok(bytes.len())
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            if self.failure_enabled.load(Ordering::Relaxed) {
+                Err(io::Error::other("injected finalization failure"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct FailingReplace;
+
+    impl AtomicReplace for FailingReplace {
+        fn replace(&self, _source: &std::path::Path, _target: &std::path::Path) -> io::Result<()> {
+            Err(io::Error::other("injected replacement failure"))
+        }
+    }
+
+    fn directory_entries(path: &std::path::Path) -> Vec<String> {
+        let mut entries: Vec<_> = fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort_unstable();
+        entries
+    }
+
+    struct FailAfterBytes {
+        remaining: usize,
+        written: Vec<u8>,
+    }
+
+    impl FailAfterBytes {
+        fn new(remaining: usize) -> Self {
+            Self {
+                remaining,
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl io::Write for FailAfterBytes {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(io::Error::other("injected write failure"));
+            }
+            let written = self.remaining.min(bytes.len());
+            self.written.extend_from_slice(&bytes[..written]);
+            self.remaining -= written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn snapshot_entry(
+        name: &'static str, host: Option<&'static str>, metric_type: AggregateMetricType, unit: &'static str,
+        metric_tags: &[&'static str], origin_tags: &[&'static str],
+    ) -> AggregateContextSnapshotEntry {
+        let context = Context::from_static_parts(name, metric_tags)
+            .with_host(host.map(MetaString::from_static))
+            .with_origin_tags(origin_tags.iter().map(|tag| Tag::from_static(tag)).collect::<TagSet>());
+        AggregateContextSnapshotEntry::for_test(context, metric_type, MetaString::from_static(unit))
     }
 
     #[test]
