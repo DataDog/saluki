@@ -155,7 +155,7 @@ impl ConfigurationSystem {
     where
         T: Clone + PartialEq + 'static,
     {
-        Live::dynamic(Arc::clone(&self.current), self.tick.subscribe(), project)
+        Live::new_dynamic(Arc::clone(&self.current), self.tick.subscribe(), project)
     }
 
     /// Loads the current translated configuration.
@@ -604,7 +604,7 @@ mod tests {
         )
         .await;
         let mut view = system.live(|c| &c.domains.dogstatsd.debug_log);
-        assert!(!view.current().metrics_stats_enable);
+        assert!(!view.metrics_stats_enable);
 
         agent_tx
             .send(ConfigUpdate::Partial {
@@ -614,11 +614,11 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::timeout(Duration::from_secs(2), view.changed())
+        let updated = tokio::time::timeout(Duration::from_secs(2), view.changed())
             .await
             .expect("view observes the debug-log update");
-        assert!(view.current().metrics_stats_enable);
-        // `Deref` reflects the value observed at the last `changed`.
+        assert!(updated.metrics_stats_enable);
+        // `Deref` reflects the value returned by the last `changed`.
         assert!(view.metrics_stats_enable);
     }
 
@@ -632,7 +632,7 @@ mod tests {
         )
         .await;
         let mut stats = system.live(|c| &c.domains.dogstatsd.debug_log.metrics_stats_enable);
-        assert!(!stats.current());
+        assert!(!*stats);
 
         agent_tx
             .send(ConfigUpdate::Partial {
@@ -642,17 +642,16 @@ mod tests {
             .await
             .unwrap();
 
-        tokio::time::timeout(Duration::from_secs(2), stats.changed())
+        let updated = tokio::time::timeout(Duration::from_secs(2), stats.changed())
             .await
             .expect("field view observes its field's update");
-        assert!(stats.current());
+        assert!(updated);
         assert!(*stats);
     }
 
     #[tokio::test]
     async fn fixed_view_never_changes() {
-        let mut view: Live<bool> = Live::fixed(true);
-        assert!(view.current());
+        let mut view: Live<bool> = Live::new_fixed(true);
         assert!(*view);
         // A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
         assert!(tokio::time::timeout(Duration::from_millis(100), view.changed())
@@ -671,18 +670,14 @@ mod tests {
         .expect("system builds");
         let config = system.config();
 
-        assert_eq!(
-            system.live(|c| &c.domains.dogstatsd.debug_log).current(),
-            config.domains.dogstatsd.debug_log
-        );
-        assert_eq!(
-            system.live(|c| &c.domains.dogstatsd.prefix_filter).current(),
-            config.domains.dogstatsd.prefix_filter
-        );
-        assert_eq!(
-            system.live(|c| &c.domains.multi_region_failover).current(),
-            config.domains.multi_region_failover
-        );
+        let debug_log = system.live(|c| &c.domains.dogstatsd.debug_log);
+        assert_eq!(&*debug_log, &config.domains.dogstatsd.debug_log);
+
+        let prefix_filter = system.live(|c| &c.domains.dogstatsd.prefix_filter);
+        assert_eq!(&*prefix_filter, &config.domains.dogstatsd.prefix_filter);
+
+        let multi_region_failover = system.live(|c| &c.domains.multi_region_failover);
+        assert_eq!(&*multi_region_failover, &config.domains.multi_region_failover);
     }
 
     #[test]
