@@ -155,7 +155,7 @@
 <a href=#155 id=155 data-nosnippet>155</a>    <span class="kw">where
 <a href=#156 id=156 data-nosnippet>156</a>        </span>T: Clone + PartialEq + <span class="lifetime">'static</span>,
 <a href=#157 id=157 data-nosnippet>157</a>    {
-<a href=#158 id=158 data-nosnippet>158</a>        Live::dynamic(Arc::clone(<span class="kw-2">&amp;</span><span class="self">self</span>.current), <span class="self">self</span>.tick.subscribe(), project)
+<a href=#158 id=158 data-nosnippet>158</a>        Live::new_dynamic(Arc::clone(<span class="kw-2">&amp;</span><span class="self">self</span>.current), <span class="self">self</span>.tick.subscribe(), project)
 <a href=#159 id=159 data-nosnippet>159</a>    }
 <a href=#160 id=160 data-nosnippet>160</a>
 <a href=#161 id=161 data-nosnippet>161</a>    <span class="doccomment">/// Loads the current translated configuration.
@@ -604,7 +604,7 @@
 <a href=#604 id=604 data-nosnippet>604</a>        )
 <a href=#605 id=605 data-nosnippet>605</a>        .<span class="kw">await</span>;
 <a href=#606 id=606 data-nosnippet>606</a>        <span class="kw">let </span><span class="kw-2">mut </span>view = system.live(|c| <span class="kw-2">&amp;</span>c.domains.dogstatsd.debug_log);
-<a href=#607 id=607 data-nosnippet>607</a>        <span class="macro">assert!</span>(!view.current().metrics_stats_enable);
+<a href=#607 id=607 data-nosnippet>607</a>        <span class="macro">assert!</span>(!view.metrics_stats_enable);
 <a href=#608 id=608 data-nosnippet>608</a>
 <a href=#609 id=609 data-nosnippet>609</a>        agent_tx
 <a href=#610 id=610 data-nosnippet>610</a>            .send(ConfigUpdate::Partial {
@@ -614,11 +614,11 @@
 <a href=#614 id=614 data-nosnippet>614</a>            .<span class="kw">await
 <a href=#615 id=615 data-nosnippet>615</a>            </span>.unwrap();
 <a href=#616 id=616 data-nosnippet>616</a>
-<a href=#617 id=617 data-nosnippet>617</a>        tokio::time::timeout(Duration::from_secs(<span class="number">2</span>), view.changed())
+<a href=#617 id=617 data-nosnippet>617</a>        <span class="kw">let </span>updated = tokio::time::timeout(Duration::from_secs(<span class="number">2</span>), view.changed())
 <a href=#618 id=618 data-nosnippet>618</a>            .<span class="kw">await
 <a href=#619 id=619 data-nosnippet>619</a>            </span>.expect(<span class="string">"view observes the debug-log update"</span>);
-<a href=#620 id=620 data-nosnippet>620</a>        <span class="macro">assert!</span>(view.current().metrics_stats_enable);
-<a href=#621 id=621 data-nosnippet>621</a>        <span class="comment">// `Deref` reflects the value observed at the last `changed`.
+<a href=#620 id=620 data-nosnippet>620</a>        <span class="macro">assert!</span>(updated.metrics_stats_enable);
+<a href=#621 id=621 data-nosnippet>621</a>        <span class="comment">// `Deref` reflects the value returned by the last `changed`.
 <a href=#622 id=622 data-nosnippet>622</a>        </span><span class="macro">assert!</span>(view.metrics_stats_enable);
 <a href=#623 id=623 data-nosnippet>623</a>    }
 <a href=#624 id=624 data-nosnippet>624</a>
@@ -632,7 +632,7 @@
 <a href=#632 id=632 data-nosnippet>632</a>        )
 <a href=#633 id=633 data-nosnippet>633</a>        .<span class="kw">await</span>;
 <a href=#634 id=634 data-nosnippet>634</a>        <span class="kw">let </span><span class="kw-2">mut </span>stats = system.live(|c| <span class="kw-2">&amp;</span>c.domains.dogstatsd.debug_log.metrics_stats_enable);
-<a href=#635 id=635 data-nosnippet>635</a>        <span class="macro">assert!</span>(!stats.current());
+<a href=#635 id=635 data-nosnippet>635</a>        <span class="macro">assert!</span>(!<span class="kw-2">*</span>stats);
 <a href=#636 id=636 data-nosnippet>636</a>
 <a href=#637 id=637 data-nosnippet>637</a>        agent_tx
 <a href=#638 id=638 data-nosnippet>638</a>            .send(ConfigUpdate::Partial {
@@ -642,135 +642,130 @@
 <a href=#642 id=642 data-nosnippet>642</a>            .<span class="kw">await
 <a href=#643 id=643 data-nosnippet>643</a>            </span>.unwrap();
 <a href=#644 id=644 data-nosnippet>644</a>
-<a href=#645 id=645 data-nosnippet>645</a>        tokio::time::timeout(Duration::from_secs(<span class="number">2</span>), stats.changed())
+<a href=#645 id=645 data-nosnippet>645</a>        <span class="kw">let </span>updated = tokio::time::timeout(Duration::from_secs(<span class="number">2</span>), stats.changed())
 <a href=#646 id=646 data-nosnippet>646</a>            .<span class="kw">await
 <a href=#647 id=647 data-nosnippet>647</a>            </span>.expect(<span class="string">"field view observes its field's update"</span>);
-<a href=#648 id=648 data-nosnippet>648</a>        <span class="macro">assert!</span>(stats.current());
+<a href=#648 id=648 data-nosnippet>648</a>        <span class="macro">assert!</span>(updated);
 <a href=#649 id=649 data-nosnippet>649</a>        <span class="macro">assert!</span>(<span class="kw-2">*</span>stats);
 <a href=#650 id=650 data-nosnippet>650</a>    }
 <a href=#651 id=651 data-nosnippet>651</a>
 <a href=#652 id=652 data-nosnippet>652</a>    <span class="attr">#[tokio::test]
 <a href=#653 id=653 data-nosnippet>653</a>    </span><span class="kw">async fn </span>fixed_view_never_changes() {
-<a href=#654 id=654 data-nosnippet>654</a>        <span class="kw">let </span><span class="kw-2">mut </span>view: Live&lt;bool&gt; = Live::fixed(<span class="bool-val">true</span>);
-<a href=#655 id=655 data-nosnippet>655</a>        <span class="macro">assert!</span>(view.current());
-<a href=#656 id=656 data-nosnippet>656</a>        <span class="macro">assert!</span>(<span class="kw-2">*</span>view);
-<a href=#657 id=657 data-nosnippet>657</a>        <span class="comment">// A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
-<a href=#658 id=658 data-nosnippet>658</a>        </span><span class="macro">assert!</span>(tokio::time::timeout(Duration::from_millis(<span class="number">100</span>), view.changed())
-<a href=#659 id=659 data-nosnippet>659</a>            .<span class="kw">await
-<a href=#660 id=660 data-nosnippet>660</a>            </span>.is_err());
-<a href=#661 id=661 data-nosnippet>661</a>    }
-<a href=#662 id=662 data-nosnippet>662</a>
-<a href=#663 id=663 data-nosnippet>663</a>    <span class="attr">#[tokio::test]
-<a href=#664 id=664 data-nosnippet>664</a>    </span><span class="kw">async fn </span>live_views_reflect_startup_configuration() {
-<a href=#665 id=665 data-nosnippet>665</a>        <span class="kw">let </span>system = standalone_system(
-<a href=#666 id=666 data-nosnippet>666</a>            <span class="prelude-val">Some</span>(<span class="macro">json!</span>({ <span class="string">"dogstatsd_metrics_stats_enable"</span>: <span class="bool-val">true </span>})),
-<a href=#667 id=667 data-nosnippet>667</a>            <span class="prelude-val">None</span>,
-<a href=#668 id=668 data-nosnippet>668</a>            EnvOverlayMode::Fallback,
-<a href=#669 id=669 data-nosnippet>669</a>        )
-<a href=#670 id=670 data-nosnippet>670</a>        .<span class="kw">await
-<a href=#671 id=671 data-nosnippet>671</a>        </span>.expect(<span class="string">"system builds"</span>);
-<a href=#672 id=672 data-nosnippet>672</a>        <span class="kw">let </span>config = system.config();
-<a href=#673 id=673 data-nosnippet>673</a>
-<a href=#674 id=674 data-nosnippet>674</a>        <span class="macro">assert_eq!</span>(
-<a href=#675 id=675 data-nosnippet>675</a>            system.live(|c| <span class="kw-2">&amp;</span>c.domains.dogstatsd.debug_log).current(),
-<a href=#676 id=676 data-nosnippet>676</a>            config.domains.dogstatsd.debug_log
-<a href=#677 id=677 data-nosnippet>677</a>        );
-<a href=#678 id=678 data-nosnippet>678</a>        <span class="macro">assert_eq!</span>(
-<a href=#679 id=679 data-nosnippet>679</a>            system.live(|c| <span class="kw-2">&amp;</span>c.domains.dogstatsd.prefix_filter).current(),
-<a href=#680 id=680 data-nosnippet>680</a>            config.domains.dogstatsd.prefix_filter
-<a href=#681 id=681 data-nosnippet>681</a>        );
-<a href=#682 id=682 data-nosnippet>682</a>        <span class="macro">assert_eq!</span>(
-<a href=#683 id=683 data-nosnippet>683</a>            system.live(|c| <span class="kw-2">&amp;</span>c.domains.multi_region_failover).current(),
-<a href=#684 id=684 data-nosnippet>684</a>            config.domains.multi_region_failover
-<a href=#685 id=685 data-nosnippet>685</a>        );
-<a href=#686 id=686 data-nosnippet>686</a>    }
-<a href=#687 id=687 data-nosnippet>687</a>
-<a href=#688 id=688 data-nosnippet>688</a>    <span class="attr">#[test]
-<a href=#689 id=689 data-nosnippet>689</a>    </span><span class="kw">fn </span>translate_small_map_through_witness_and_seed() {
-<a href=#690 id=690 data-nosnippet>690</a>        <span class="comment">// A small raw Datadog source map exercising a scalar conversion, an enum parse, a
-<a href=#691 id=691 data-nosnippet>691</a>        // duration parse, and the raw endpoint inputs.
-<a href=#692 id=692 data-nosnippet>692</a>        </span><span class="kw">let </span>datadog: DatadogConfiguration = serde_json::from_value(<span class="macro">json!</span>({
-<a href=#693 id=693 data-nosnippet>693</a>            <span class="string">"api_key"</span>: <span class="string">"abc"</span>,
-<a href=#694 id=694 data-nosnippet>694</a>            <span class="string">"dd_url"</span>: <span class="string">"https://custom.example.com"</span>,
-<a href=#695 id=695 data-nosnippet>695</a>            <span class="string">"dogstatsd_port"</span>: <span class="number">9125</span>,
-<a href=#696 id=696 data-nosnippet>696</a>            <span class="string">"dogstatsd_tag_cardinality"</span>: <span class="string">"high"</span>,
-<a href=#697 id=697 data-nosnippet>697</a>            <span class="string">"expected_tags_duration"</span>: <span class="string">"15s"</span>,
-<a href=#698 id=698 data-nosnippet>698</a>            <span class="string">"telemetry"</span>: { <span class="string">"dogstatsd_origin"</span>: <span class="bool-val">true </span>},
-<a href=#699 id=699 data-nosnippet>699</a>        }))
-<a href=#700 id=700 data-nosnippet>700</a>        .expect(<span class="string">"datadog source deserializes"</span>);
-<a href=#701 id=701 data-nosnippet>701</a>
-<a href=#702 id=702 data-nosnippet>702</a>        <span class="comment">// A small Saluki-only source setting one seeded field.
-<a href=#703 id=703 data-nosnippet>703</a>        </span><span class="kw">let </span>saluki: SalukiOnly = serde_json::from_value(<span class="macro">json!</span>({
-<a href=#704 id=704 data-nosnippet>704</a>            <span class="string">"dogstatsd_tcp_port"</span>: <span class="number">8126</span>,
-<a href=#705 id=705 data-nosnippet>705</a>        }))
-<a href=#706 id=706 data-nosnippet>706</a>        .expect(<span class="string">"saluki-only source deserializes"</span>);
-<a href=#707 id=707 data-nosnippet>707</a>
-<a href=#708 id=708 data-nosnippet>708</a>        <span class="kw">let </span>(config, errors) = translate(<span class="kw-2">&amp;</span>datadog, <span class="kw-2">&amp;</span>saluki);
-<a href=#709 id=709 data-nosnippet>709</a>        <span class="macro">assert!</span>(errors.is_none(), <span class="string">"translation of a valid map records no error"</span>);
-<a href=#710 id=710 data-nosnippet>710</a>
-<a href=#711 id=711 data-nosnippet>711</a>        <span class="comment">// Driven scalar conversion: i64 -&gt; u16.
-<a href=#712 id=712 data-nosnippet>712</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.port, <span class="number">9125</span>);
-<a href=#713 id=713 data-nosnippet>713</a>        <span class="comment">// Driven enum parse.
-<a href=#714 id=714 data-nosnippet>714</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#715 id=715 data-nosnippet>715</a>            config.domains.dogstatsd.origin.tag_cardinality,
-<a href=#716 id=716 data-nosnippet>716</a>            OriginTagCardinality::High
-<a href=#717 id=717 data-nosnippet>717</a>        );
-<a href=#718 id=718 data-nosnippet>718</a>        <span class="comment">// Driven `format: duration` parse: a Go duration string becomes a `Duration`.
-<a href=#719 id=719 data-nosnippet>719</a>        </span><span class="macro">assert_eq!</span>(config.shared.tags.expected_tags_duration, Duration::from_secs(<span class="number">15</span>));
-<a href=#720 id=720 data-nosnippet>720</a>        <span class="comment">// Driven bool in a nested Datadog section.
-<a href=#721 id=721 data-nosnippet>721</a>        </span><span class="macro">assert!</span>(config.domains.dogstatsd.telemetry.origin_breakdown);
-<a href=#722 id=722 data-nosnippet>722</a>        <span class="comment">// Raw endpoint inputs: carried through without resolution (see #1965).
-<a href=#723 id=723 data-nosnippet>723</a>        </span><span class="macro">assert_eq!</span>(config.shared.endpoints.api_key, <span class="string">"abc"</span>);
-<a href=#724 id=724 data-nosnippet>724</a>        <span class="macro">assert_eq!</span>(
-<a href=#725 id=725 data-nosnippet>725</a>            config.shared.endpoints.dd_url.as_deref(),
-<a href=#726 id=726 data-nosnippet>726</a>            <span class="prelude-val">Some</span>(<span class="string">"https://custom.example.com"</span>)
-<a href=#727 id=727 data-nosnippet>727</a>        );
-<a href=#728 id=728 data-nosnippet>728</a>        <span class="comment">// Seeded Saluki-only field.
-<a href=#729 id=729 data-nosnippet>729</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.tcp_port, <span class="number">8126</span>);
-<a href=#730 id=730 data-nosnippet>730</a>    }
-<a href=#731 id=731 data-nosnippet>731</a>
-<a href=#732 id=732 data-nosnippet>732</a>    <span class="comment">// A map-typed schema leaf (`additional_endpoints`) is replaced wholesale, not key-unioned: the
-<a href=#733 id=733 data-nosnippet>733</a>    // overlay's map fully supplants the base's rather than the two being merged.
-<a href=#734 id=734 data-nosnippet>734</a>    </span><span class="attr">#[test]
-<a href=#735 id=735 data-nosnippet>735</a>    </span><span class="kw">fn </span>merge_replaces_a_map_typed_leaf_wholesale() {
-<a href=#736 id=736 data-nosnippet>736</a>        <span class="kw">let </span>base = <span class="macro">json!</span>({ <span class="string">"additional_endpoints"</span>: { <span class="string">"https://a.example.com"</span>: [<span class="string">"k1"</span>] } });
-<a href=#737 id=737 data-nosnippet>737</a>        <span class="kw">let </span>overlay = <span class="macro">json!</span>({ <span class="string">"additional_endpoints"</span>: { <span class="string">"https://b.example.com"</span>: [<span class="string">"k2"</span>] } });
-<a href=#738 id=738 data-nosnippet>738</a>
-<a href=#739 id=739 data-nosnippet>739</a>        <span class="kw">let </span>merged = deep_merge(base, overlay);
-<a href=#740 id=740 data-nosnippet>740</a>
-<a href=#741 id=741 data-nosnippet>741</a>        <span class="macro">assert_eq!</span>(
-<a href=#742 id=742 data-nosnippet>742</a>            merged,
-<a href=#743 id=743 data-nosnippet>743</a>            <span class="macro">json!</span>({ <span class="string">"additional_endpoints"</span>: { <span class="string">"https://b.example.com"</span>: [<span class="string">"k2"</span>] } })
-<a href=#744 id=744 data-nosnippet>744</a>        );
-<a href=#745 id=745 data-nosnippet>745</a>    }
-<a href=#746 id=746 data-nosnippet>746</a>
-<a href=#747 id=747 data-nosnippet>747</a>    <span class="comment">// A schema section (`apm_config`) is recursed into: leaves from both sources coexist, and a leaf
-<a href=#748 id=748 data-nosnippet>748</a>    // set by both sources takes the overlay's value.
-<a href=#749 id=749 data-nosnippet>749</a>    </span><span class="attr">#[test]
-<a href=#750 id=750 data-nosnippet>750</a>    </span><span class="kw">fn </span>merge_recurses_into_a_section_and_replaces_leaves_within_it() {
-<a href=#751 id=751 data-nosnippet>751</a>        <span class="kw">let </span>base = <span class="macro">json!</span>({ <span class="string">"apm_config"</span>: { <span class="string">"compute_stats_by_span_kind"</span>: <span class="bool-val">true</span>, <span class="string">"enable_rare_sampler"</span>: <span class="bool-val">true </span>} });
-<a href=#752 id=752 data-nosnippet>752</a>        <span class="kw">let </span>overlay = <span class="macro">json!</span>({ <span class="string">"apm_config"</span>: { <span class="string">"enable_rare_sampler"</span>: <span class="bool-val">false </span>} });
-<a href=#753 id=753 data-nosnippet>753</a>
-<a href=#754 id=754 data-nosnippet>754</a>        <span class="kw">let </span>merged = deep_merge(base, overlay);
-<a href=#755 id=755 data-nosnippet>755</a>
-<a href=#756 id=756 data-nosnippet>756</a>        <span class="macro">assert_eq!</span>(
-<a href=#757 id=757 data-nosnippet>757</a>            merged,
-<a href=#758 id=758 data-nosnippet>758</a>            <span class="macro">json!</span>({ <span class="string">"apm_config"</span>: { <span class="string">"compute_stats_by_span_kind"</span>: <span class="bool-val">true</span>, <span class="string">"enable_rare_sampler"</span>: <span class="bool-val">false </span>} })
-<a href=#759 id=759 data-nosnippet>759</a>        );
-<a href=#760 id=760 data-nosnippet>760</a>    }
-<a href=#761 id=761 data-nosnippet>761</a>
-<a href=#762 id=762 data-nosnippet>762</a>    <span class="comment">// A scalar leaf still replaces, and a colliding array leaf is replaced rather than adjoined.
-<a href=#763 id=763 data-nosnippet>763</a>    </span><span class="attr">#[test]
-<a href=#764 id=764 data-nosnippet>764</a>    </span><span class="kw">fn </span>merge_replaces_scalar_and_array_leaves() {
-<a href=#765 id=765 data-nosnippet>765</a>        <span class="kw">let </span>base = <span class="macro">json!</span>({ <span class="string">"dogstatsd_port"</span>: <span class="number">8125</span>, <span class="string">"dogstatsd_mapper_profiles"</span>: [<span class="string">"a"</span>] });
-<a href=#766 id=766 data-nosnippet>766</a>        <span class="kw">let </span>overlay = <span class="macro">json!</span>({ <span class="string">"dogstatsd_port"</span>: <span class="number">9125</span>, <span class="string">"dogstatsd_mapper_profiles"</span>: [<span class="string">"b"</span>] });
-<a href=#767 id=767 data-nosnippet>767</a>
-<a href=#768 id=768 data-nosnippet>768</a>        <span class="kw">let </span>merged = deep_merge(base, overlay);
-<a href=#769 id=769 data-nosnippet>769</a>
-<a href=#770 id=770 data-nosnippet>770</a>        <span class="macro">assert_eq!</span>(
-<a href=#771 id=771 data-nosnippet>771</a>            merged,
-<a href=#772 id=772 data-nosnippet>772</a>            <span class="macro">json!</span>({ <span class="string">"dogstatsd_port"</span>: <span class="number">9125</span>, <span class="string">"dogstatsd_mapper_profiles"</span>: [<span class="string">"b"</span>] })
-<a href=#773 id=773 data-nosnippet>773</a>        );
-<a href=#774 id=774 data-nosnippet>774</a>    }
-<a href=#775 id=775 data-nosnippet>775</a>}
+<a href=#654 id=654 data-nosnippet>654</a>        <span class="kw">let </span><span class="kw-2">mut </span>view: Live&lt;bool&gt; = Live::new_fixed(<span class="bool-val">true</span>);
+<a href=#655 id=655 data-nosnippet>655</a>        <span class="macro">assert!</span>(<span class="kw-2">*</span>view);
+<a href=#656 id=656 data-nosnippet>656</a>        <span class="comment">// A fixed view never resolves, so this bound is deterministic rather than timing-dependent.
+<a href=#657 id=657 data-nosnippet>657</a>        </span><span class="macro">assert!</span>(tokio::time::timeout(Duration::from_millis(<span class="number">100</span>), view.changed())
+<a href=#658 id=658 data-nosnippet>658</a>            .<span class="kw">await
+<a href=#659 id=659 data-nosnippet>659</a>            </span>.is_err());
+<a href=#660 id=660 data-nosnippet>660</a>    }
+<a href=#661 id=661 data-nosnippet>661</a>
+<a href=#662 id=662 data-nosnippet>662</a>    <span class="attr">#[tokio::test]
+<a href=#663 id=663 data-nosnippet>663</a>    </span><span class="kw">async fn </span>live_views_reflect_startup_configuration() {
+<a href=#664 id=664 data-nosnippet>664</a>        <span class="kw">let </span>system = standalone_system(
+<a href=#665 id=665 data-nosnippet>665</a>            <span class="prelude-val">Some</span>(<span class="macro">json!</span>({ <span class="string">"dogstatsd_metrics_stats_enable"</span>: <span class="bool-val">true </span>})),
+<a href=#666 id=666 data-nosnippet>666</a>            <span class="prelude-val">None</span>,
+<a href=#667 id=667 data-nosnippet>667</a>            EnvOverlayMode::Fallback,
+<a href=#668 id=668 data-nosnippet>668</a>        )
+<a href=#669 id=669 data-nosnippet>669</a>        .<span class="kw">await
+<a href=#670 id=670 data-nosnippet>670</a>        </span>.expect(<span class="string">"system builds"</span>);
+<a href=#671 id=671 data-nosnippet>671</a>        <span class="kw">let </span>config = system.config();
+<a href=#672 id=672 data-nosnippet>672</a>
+<a href=#673 id=673 data-nosnippet>673</a>        <span class="kw">let </span>debug_log = system.live(|c| <span class="kw-2">&amp;</span>c.domains.dogstatsd.debug_log);
+<a href=#674 id=674 data-nosnippet>674</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>debug_log, <span class="kw-2">&amp;</span>config.domains.dogstatsd.debug_log);
+<a href=#675 id=675 data-nosnippet>675</a>
+<a href=#676 id=676 data-nosnippet>676</a>        <span class="kw">let </span>prefix_filter = system.live(|c| <span class="kw-2">&amp;</span>c.domains.dogstatsd.prefix_filter);
+<a href=#677 id=677 data-nosnippet>677</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>prefix_filter, <span class="kw-2">&amp;</span>config.domains.dogstatsd.prefix_filter);
+<a href=#678 id=678 data-nosnippet>678</a>
+<a href=#679 id=679 data-nosnippet>679</a>        <span class="kw">let </span>multi_region_failover = system.live(|c| <span class="kw-2">&amp;</span>c.domains.multi_region_failover);
+<a href=#680 id=680 data-nosnippet>680</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>multi_region_failover, <span class="kw-2">&amp;</span>config.domains.multi_region_failover);
+<a href=#681 id=681 data-nosnippet>681</a>    }
+<a href=#682 id=682 data-nosnippet>682</a>
+<a href=#683 id=683 data-nosnippet>683</a>    <span class="attr">#[test]
+<a href=#684 id=684 data-nosnippet>684</a>    </span><span class="kw">fn </span>translate_small_map_through_witness_and_seed() {
+<a href=#685 id=685 data-nosnippet>685</a>        <span class="comment">// A small raw Datadog source map exercising a scalar conversion, an enum parse, a
+<a href=#686 id=686 data-nosnippet>686</a>        // duration parse, and the raw endpoint inputs.
+<a href=#687 id=687 data-nosnippet>687</a>        </span><span class="kw">let </span>datadog: DatadogConfiguration = serde_json::from_value(<span class="macro">json!</span>({
+<a href=#688 id=688 data-nosnippet>688</a>            <span class="string">"api_key"</span>: <span class="string">"abc"</span>,
+<a href=#689 id=689 data-nosnippet>689</a>            <span class="string">"dd_url"</span>: <span class="string">"https://custom.example.com"</span>,
+<a href=#690 id=690 data-nosnippet>690</a>            <span class="string">"dogstatsd_port"</span>: <span class="number">9125</span>,
+<a href=#691 id=691 data-nosnippet>691</a>            <span class="string">"dogstatsd_tag_cardinality"</span>: <span class="string">"high"</span>,
+<a href=#692 id=692 data-nosnippet>692</a>            <span class="string">"expected_tags_duration"</span>: <span class="string">"15s"</span>,
+<a href=#693 id=693 data-nosnippet>693</a>            <span class="string">"telemetry"</span>: { <span class="string">"dogstatsd_origin"</span>: <span class="bool-val">true </span>},
+<a href=#694 id=694 data-nosnippet>694</a>        }))
+<a href=#695 id=695 data-nosnippet>695</a>        .expect(<span class="string">"datadog source deserializes"</span>);
+<a href=#696 id=696 data-nosnippet>696</a>
+<a href=#697 id=697 data-nosnippet>697</a>        <span class="comment">// A small Saluki-only source setting one seeded field.
+<a href=#698 id=698 data-nosnippet>698</a>        </span><span class="kw">let </span>saluki: SalukiOnly = serde_json::from_value(<span class="macro">json!</span>({
+<a href=#699 id=699 data-nosnippet>699</a>            <span class="string">"dogstatsd_tcp_port"</span>: <span class="number">8126</span>,
+<a href=#700 id=700 data-nosnippet>700</a>        }))
+<a href=#701 id=701 data-nosnippet>701</a>        .expect(<span class="string">"saluki-only source deserializes"</span>);
+<a href=#702 id=702 data-nosnippet>702</a>
+<a href=#703 id=703 data-nosnippet>703</a>        <span class="kw">let </span>(config, errors) = translate(<span class="kw-2">&amp;</span>datadog, <span class="kw-2">&amp;</span>saluki);
+<a href=#704 id=704 data-nosnippet>704</a>        <span class="macro">assert!</span>(errors.is_none(), <span class="string">"translation of a valid map records no error"</span>);
+<a href=#705 id=705 data-nosnippet>705</a>
+<a href=#706 id=706 data-nosnippet>706</a>        <span class="comment">// Driven scalar conversion: i64 -&gt; u16.
+<a href=#707 id=707 data-nosnippet>707</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.port, <span class="number">9125</span>);
+<a href=#708 id=708 data-nosnippet>708</a>        <span class="comment">// Driven enum parse.
+<a href=#709 id=709 data-nosnippet>709</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#710 id=710 data-nosnippet>710</a>            config.domains.dogstatsd.origin.tag_cardinality,
+<a href=#711 id=711 data-nosnippet>711</a>            OriginTagCardinality::High
+<a href=#712 id=712 data-nosnippet>712</a>        );
+<a href=#713 id=713 data-nosnippet>713</a>        <span class="comment">// Driven `format: duration` parse: a Go duration string becomes a `Duration`.
+<a href=#714 id=714 data-nosnippet>714</a>        </span><span class="macro">assert_eq!</span>(config.shared.tags.expected_tags_duration, Duration::from_secs(<span class="number">15</span>));
+<a href=#715 id=715 data-nosnippet>715</a>        <span class="comment">// Driven bool in a nested Datadog section.
+<a href=#716 id=716 data-nosnippet>716</a>        </span><span class="macro">assert!</span>(config.domains.dogstatsd.telemetry.origin_breakdown);
+<a href=#717 id=717 data-nosnippet>717</a>        <span class="comment">// Raw endpoint inputs: carried through without resolution (see #1965).
+<a href=#718 id=718 data-nosnippet>718</a>        </span><span class="macro">assert_eq!</span>(config.shared.endpoints.api_key, <span class="string">"abc"</span>);
+<a href=#719 id=719 data-nosnippet>719</a>        <span class="macro">assert_eq!</span>(
+<a href=#720 id=720 data-nosnippet>720</a>            config.shared.endpoints.dd_url.as_deref(),
+<a href=#721 id=721 data-nosnippet>721</a>            <span class="prelude-val">Some</span>(<span class="string">"https://custom.example.com"</span>)
+<a href=#722 id=722 data-nosnippet>722</a>        );
+<a href=#723 id=723 data-nosnippet>723</a>        <span class="comment">// Seeded Saluki-only field.
+<a href=#724 id=724 data-nosnippet>724</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.tcp_port, <span class="number">8126</span>);
+<a href=#725 id=725 data-nosnippet>725</a>    }
+<a href=#726 id=726 data-nosnippet>726</a>
+<a href=#727 id=727 data-nosnippet>727</a>    <span class="comment">// A map-typed schema leaf (`additional_endpoints`) is replaced wholesale, not key-unioned: the
+<a href=#728 id=728 data-nosnippet>728</a>    // overlay's map fully supplants the base's rather than the two being merged.
+<a href=#729 id=729 data-nosnippet>729</a>    </span><span class="attr">#[test]
+<a href=#730 id=730 data-nosnippet>730</a>    </span><span class="kw">fn </span>merge_replaces_a_map_typed_leaf_wholesale() {
+<a href=#731 id=731 data-nosnippet>731</a>        <span class="kw">let </span>base = <span class="macro">json!</span>({ <span class="string">"additional_endpoints"</span>: { <span class="string">"https://a.example.com"</span>: [<span class="string">"k1"</span>] } });
+<a href=#732 id=732 data-nosnippet>732</a>        <span class="kw">let </span>overlay = <span class="macro">json!</span>({ <span class="string">"additional_endpoints"</span>: { <span class="string">"https://b.example.com"</span>: [<span class="string">"k2"</span>] } });
+<a href=#733 id=733 data-nosnippet>733</a>
+<a href=#734 id=734 data-nosnippet>734</a>        <span class="kw">let </span>merged = deep_merge(base, overlay);
+<a href=#735 id=735 data-nosnippet>735</a>
+<a href=#736 id=736 data-nosnippet>736</a>        <span class="macro">assert_eq!</span>(
+<a href=#737 id=737 data-nosnippet>737</a>            merged,
+<a href=#738 id=738 data-nosnippet>738</a>            <span class="macro">json!</span>({ <span class="string">"additional_endpoints"</span>: { <span class="string">"https://b.example.com"</span>: [<span class="string">"k2"</span>] } })
+<a href=#739 id=739 data-nosnippet>739</a>        );
+<a href=#740 id=740 data-nosnippet>740</a>    }
+<a href=#741 id=741 data-nosnippet>741</a>
+<a href=#742 id=742 data-nosnippet>742</a>    <span class="comment">// A schema section (`apm_config`) is recursed into: leaves from both sources coexist, and a leaf
+<a href=#743 id=743 data-nosnippet>743</a>    // set by both sources takes the overlay's value.
+<a href=#744 id=744 data-nosnippet>744</a>    </span><span class="attr">#[test]
+<a href=#745 id=745 data-nosnippet>745</a>    </span><span class="kw">fn </span>merge_recurses_into_a_section_and_replaces_leaves_within_it() {
+<a href=#746 id=746 data-nosnippet>746</a>        <span class="kw">let </span>base = <span class="macro">json!</span>({ <span class="string">"apm_config"</span>: { <span class="string">"compute_stats_by_span_kind"</span>: <span class="bool-val">true</span>, <span class="string">"enable_rare_sampler"</span>: <span class="bool-val">true </span>} });
+<a href=#747 id=747 data-nosnippet>747</a>        <span class="kw">let </span>overlay = <span class="macro">json!</span>({ <span class="string">"apm_config"</span>: { <span class="string">"enable_rare_sampler"</span>: <span class="bool-val">false </span>} });
+<a href=#748 id=748 data-nosnippet>748</a>
+<a href=#749 id=749 data-nosnippet>749</a>        <span class="kw">let </span>merged = deep_merge(base, overlay);
+<a href=#750 id=750 data-nosnippet>750</a>
+<a href=#751 id=751 data-nosnippet>751</a>        <span class="macro">assert_eq!</span>(
+<a href=#752 id=752 data-nosnippet>752</a>            merged,
+<a href=#753 id=753 data-nosnippet>753</a>            <span class="macro">json!</span>({ <span class="string">"apm_config"</span>: { <span class="string">"compute_stats_by_span_kind"</span>: <span class="bool-val">true</span>, <span class="string">"enable_rare_sampler"</span>: <span class="bool-val">false </span>} })
+<a href=#754 id=754 data-nosnippet>754</a>        );
+<a href=#755 id=755 data-nosnippet>755</a>    }
+<a href=#756 id=756 data-nosnippet>756</a>
+<a href=#757 id=757 data-nosnippet>757</a>    <span class="comment">// A scalar leaf still replaces, and a colliding array leaf is replaced rather than adjoined.
+<a href=#758 id=758 data-nosnippet>758</a>    </span><span class="attr">#[test]
+<a href=#759 id=759 data-nosnippet>759</a>    </span><span class="kw">fn </span>merge_replaces_scalar_and_array_leaves() {
+<a href=#760 id=760 data-nosnippet>760</a>        <span class="kw">let </span>base = <span class="macro">json!</span>({ <span class="string">"dogstatsd_port"</span>: <span class="number">8125</span>, <span class="string">"dogstatsd_mapper_profiles"</span>: [<span class="string">"a"</span>] });
+<a href=#761 id=761 data-nosnippet>761</a>        <span class="kw">let </span>overlay = <span class="macro">json!</span>({ <span class="string">"dogstatsd_port"</span>: <span class="number">9125</span>, <span class="string">"dogstatsd_mapper_profiles"</span>: [<span class="string">"b"</span>] });
+<a href=#762 id=762 data-nosnippet>762</a>
+<a href=#763 id=763 data-nosnippet>763</a>        <span class="kw">let </span>merged = deep_merge(base, overlay);
+<a href=#764 id=764 data-nosnippet>764</a>
+<a href=#765 id=765 data-nosnippet>765</a>        <span class="macro">assert_eq!</span>(
+<a href=#766 id=766 data-nosnippet>766</a>            merged,
+<a href=#767 id=767 data-nosnippet>767</a>            <span class="macro">json!</span>({ <span class="string">"dogstatsd_port"</span>: <span class="number">9125</span>, <span class="string">"dogstatsd_mapper_profiles"</span>: [<span class="string">"b"</span>] })
+<a href=#768 id=768 data-nosnippet>768</a>        );
+<a href=#769 id=769 data-nosnippet>769</a>    }
+<a href=#770 id=770 data-nosnippet>770</a>}
 </code></pre></div></section></main></body></html>
