@@ -291,6 +291,10 @@ pub static ENV_OVERLAY_KEYS: &[EnvOverlayKey] = &[
         path: &["otlp_config", "metrics", "resource_attributes_as_tags"],
     },
     EnvOverlayKey {
+        flats: &["otlp_config_metrics_summaries_mode"],
+        path: &["otlp_config", "metrics", "summaries", "mode"],
+    },
+    EnvOverlayKey {
         flats: &["otlp_config_metrics_sums_cumulative_monotonic_mode"],
         path: &["otlp_config", "metrics", "sums", "cumulative_monotonic_mode"],
     },
