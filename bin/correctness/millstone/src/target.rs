@@ -225,8 +225,8 @@ fn grpc_retry_backoff() -> impl Backoff {
 ///
 /// # Errors
 ///
-/// Returns an error if the runtime can't be created or the connection can't be established after retrying transient
-/// startup failures.
+/// Returns an error if the runtime can't be created or the connection can't be established after exhausting the
+/// configured retries.
 fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
     create_grpc_client_with_backoff(url, grpc_retry_backoff())
 }
