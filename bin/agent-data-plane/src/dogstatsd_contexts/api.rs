@@ -527,6 +527,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn owner_stopped_after_accepting_request_returns_service_unavailable() {
+        let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
+        let handler = test_handler(vec![handle], PathBuf::from("unused"), Arc::new(NoOpPublisher));
+        let owner = tokio::spawn(async move { responder.stop_after_receiving().await });
+
+        let response = send(&handler, authorized_post()).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response_body(response).await,
+            "DogStatsD context snapshot is unavailable; retry after the aggregate owner is running."
+        );
+        owner.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn snapshot_deadline_returns_gateway_timeout() {
         let (handle, _responder) = aggregate_context_snapshot_channel_for_test();
         let handler = DogStatsDContextDumpAPIHandler::new_for_test(

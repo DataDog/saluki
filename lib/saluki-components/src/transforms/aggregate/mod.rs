@@ -180,6 +180,24 @@ impl AggregateContextSnapshotResponder {
         let _ = response.send(snapshot);
         Ok(())
     }
+
+    /// Waits for one snapshot request and stops without responding.
+    ///
+    /// This accepts the request from the owner channel before dropping its one-shot response sender, allowing tests to
+    /// distinguish an owner that stops mid-request from an owner whose request channel is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request channel closes before a request arrives.
+    pub async fn stop_after_receiving(&mut self) -> Result<(), GenericError> {
+        let response = self
+            .receiver
+            .recv()
+            .await
+            .ok_or_else(|| generic_error!("aggregate context snapshot request channel is closed"))?;
+        drop(response);
+        Ok(())
+    }
 }
 
 /// Creates a retained-context snapshot handle and owner-side responder for tests.
@@ -1684,6 +1702,23 @@ mod tests {
             .await
             .expect_err("snapshot should fail after its owner is dropped");
         assert!(error.to_string().contains("unavailable"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_responder_stops_after_accepting_request_and_cancels_response() {
+        let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
+        let snapshot_task = tokio::spawn(async move { handle.snapshot().await });
+
+        responder
+            .stop_after_receiving()
+            .await
+            .expect("responder should accept the snapshot request before stopping");
+
+        let error = snapshot_task
+            .await
+            .expect("snapshot task should complete")
+            .expect_err("snapshot should fail when the accepted response is dropped");
+        assert!(error.to_string().contains("stopped before responding"));
     }
 
     #[tokio::test]
