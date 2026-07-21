@@ -201,6 +201,7 @@ fn open_temporary_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
+#[cfg(test)]
 fn publish_open_temporary<W, R>(
     writer: W, temporary_path: &Path, target: &Path, snapshot: &[AggregateContextSnapshotEntry], replacer: &R,
 ) -> Result<(), GenericError>
@@ -213,6 +214,7 @@ where
     })
 }
 
+#[cfg(test)]
 fn publish_buffered_temporary<W, R>(
     buffer: BufWriter<W>, temporary_path: &Path, target: &Path, snapshot: &[AggregateContextSnapshotEntry],
     replacer: &R,

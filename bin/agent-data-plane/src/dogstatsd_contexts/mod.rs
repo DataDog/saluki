@@ -2,14 +2,8 @@ use std::path::Path;
 
 use saluki_error::GenericError;
 
-#[allow(
-    unused_imports,
-    reason = "registered with the privileged API by a subsequent feature task"
-)]
 pub(crate) use self::api::DogStatsDContextDumpAPIHandler;
 pub(crate) use self::artifact::publish_context_dump;
-#[allow(unused_imports, reason = "used by topology wiring in a subsequent feature task")]
-pub(crate) use self::artifact::CONTEXT_DUMP_FILENAME;
 pub(crate) use self::report::ContextReport;
 
 mod api;

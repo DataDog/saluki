@@ -271,7 +271,10 @@ mod tests {
         ContextDumpPublisher, ContextSnapshotCoordinator, DogStatsDContextDumpAPIHandler,
         FileSystemContextDumpPublisher, SnapshotError,
     };
-    use crate::dogstatsd_contexts::{artifact::for_each_record, publish_context_dump, CONTEXT_DUMP_FILENAME};
+    use crate::dogstatsd_contexts::{
+        artifact::{for_each_record, CONTEXT_DUMP_FILENAME},
+        publish_context_dump,
+    };
 
     const AUTH_TOKEN: &str = "expected-agent-token";
     const ROUTE: &str = "/dogstatsd/contexts/dump";
