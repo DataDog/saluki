@@ -96,11 +96,13 @@ impl AggregateContextSnapshotEntry {
         self.metric_type
     }
 
-    /// Returns the unit attached to the retained metric values.
-    ///
-    /// An empty value indicates that no unit is attached.
-    pub fn unit(&self) -> &MetaString {
-        &self.unit
+    /// Returns the unit attached to the retained metric values, if one is set.
+    pub fn unit(&self) -> Option<&str> {
+        if self.unit.is_empty() {
+            None
+        } else {
+            Some(&self.unit)
+        }
     }
 
     /// Creates a snapshot entry for downstream test and benchmark fixtures.
@@ -1400,11 +1402,11 @@ mod tests {
         assert_eq!(snapshot[0].context().tags().len(), 1);
         assert_eq!(snapshot[0].context().origin_tags().len(), 1);
         assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Histogram);
-        assert_eq!(snapshot[0].unit(), "millisecond");
+        assert_eq!(snapshot[0].unit(), Some("millisecond"));
 
         assert_eq!(snapshot[1].context(), &gauge_context);
         assert_eq!(snapshot[1].metric_type(), AggregateMetricType::Gauge);
-        assert!(snapshot[1].unit().is_empty());
+        assert_eq!(snapshot[1].unit(), None);
     }
 
     #[tokio::test]
