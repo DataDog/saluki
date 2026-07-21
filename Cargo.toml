@@ -223,6 +223,7 @@ iana-time-zone = { version = "0.1", default-features = false }
 backon = { version = "1", default-features = false }
 http-serde-ext = { version = "1", default-features = false }
 uuid = { version = "1.23", default-features = false }
+getrandom = { version = "0.4", default-features = false }
 rcgen = { version = "0.14", default-features = false }
 tikv-jemallocator = { version = "0.7", default-features = false }
 axum-extra = { version = "0.12", default-features = false }

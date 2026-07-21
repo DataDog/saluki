@@ -29,6 +29,7 @@ datadog-agent-config = { workspace = true }
 datadog-protos = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
+getrandom = { workspace = true }
 hashbrown = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
