@@ -2,6 +2,7 @@
 use std::os::unix::net::{UnixDatagram, UnixStream};
 use std::{
     fs::File,
+    future::Future,
     io::Write as _,
     net::{Ipv4Addr, TcpStream, UdpSocket},
     path::Path,
@@ -14,6 +15,9 @@ use tonic::{client::Grpc, transport::Channel};
 use tracing::warn;
 
 use crate::config::{Config, TargetAddress};
+
+const MAX_RETRIES: u32 = 5;
+const BASE_RETRY_DELAY_MS: u64 = 100;
 
 enum TargetBackend {
     Tcp(TcpStream),
@@ -186,14 +190,11 @@ async fn try_grpc_unary(channel: Channel, service_method_path: &str, payload: &[
 fn send_grpc_payload(
     runtime: &tokio::runtime::Runtime, channel: Channel, service_method_path: &str, payload: &[u8],
 ) -> Result<(), GenericError> {
-    const MAX_RETRIES: u32 = 5;
-    const BASE_DELAY_MS: u64 = 100;
-
     let mut last_status: Option<tonic::Status> = None;
 
     for attempt in 0..=MAX_RETRIES {
         if let Some(ref status) = last_status {
-            let delay_ms = BASE_DELAY_MS * (1u64 << attempt.saturating_sub(1));
+            let delay_ms = retry_delay_ms(attempt);
             warn!(
                 attempt,
                 delay_ms,
@@ -221,6 +222,40 @@ fn send_grpc_payload(
     ))
 }
 
+const fn retry_delay_ms(attempt: u32) -> u64 {
+    BASE_RETRY_DELAY_MS * (1u64 << attempt.saturating_sub(1))
+}
+
+async fn retry_with_backoff<T, E, F, Fut>(operation_name: &str, mut operation: F) -> Result<T, E>
+where
+    E: std::fmt::Display,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut last_error = None;
+
+    for attempt in 0..=MAX_RETRIES {
+        if let Some(ref error) = last_error {
+            let delay_ms = retry_delay_ms(attempt);
+            warn!(
+                operation_name,
+                attempt,
+                delay_ms,
+                error = %error,
+                "Operation failed, retrying after backoff."
+            );
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.expect("retry loop always makes at least one attempt"))
+}
+
 /// Creates a generic gRPC backend with a tokio runtime for the given gRPC URL.
 ///
 /// The URL should be in the format: `<host>:<port>/<service>/<method>`.
@@ -238,14 +273,14 @@ fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime
     let runtime = tokio::runtime::Runtime::new().error_context("Failed to create tokio runtime for gRPC client.")?;
     let endpoint = format!("http://{}", host_and_port);
 
+    let grpc_endpoint = Channel::from_shared(endpoint.clone())
+        .map_err(|e| saluki_error::generic_error!("Invalid gRPC endpoint: {}", e))?;
     let channel = runtime
-        .block_on(async {
-            Channel::from_shared(endpoint.clone())
-                .map_err(|e| saluki_error::generic_error!("Invalid gRPC endpoint: {}", e))?
-                .connect()
-                .await
-                .map_err(|e| saluki_error::generic_error!("Failed to connect to gRPC endpoint: {}", e))
-        })
+        .block_on(retry_with_backoff("connect to gRPC endpoint", || {
+            let grpc_endpoint = grpc_endpoint.clone();
+            async move { grpc_endpoint.connect().await }
+        }))
+        .error_context("Failed to connect to gRPC endpoint.")
         .with_error_context(|| format!("Failed to connect to gRPC target '{}'.", endpoint))?;
 
     let backend = GrpcBackend {
@@ -304,5 +339,46 @@ impl tonic::codec::Decoder for NoopDecoder {
         let mut bytes = vec![0u8; len];
         buf.copy_to_slice(&mut bytes);
         Ok(Some(Bytes::from(bytes)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{create_grpc_client, retry_with_backoff};
+
+    #[test]
+    fn preserves_the_final_grpc_connection_error() {
+        let error = match create_grpc_client("127.0.0.1:0/test.Service/Call") {
+            Ok(_) => panic!("connection should fail"),
+            Err(error) => error,
+        };
+        let error_chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert!(
+            error_chain.iter().any(|cause| cause == "tcp connect error"),
+            "expected TCP connection failure in error chain, got: {error_chain:?}"
+        );
+    }
+
+    #[test]
+    fn retries_transient_failures_until_the_operation_succeeds() {
+        let attempts = AtomicUsize::new(0);
+        let runtime = tokio::runtime::Runtime::new().expect("runtime should be created");
+
+        let result = runtime.block_on(retry_with_backoff("test operation", || {
+            let attempt = attempts.fetch_add(1, Ordering::Relaxed);
+            async move {
+                if attempt < 2 {
+                    Err("target is not ready")
+                } else {
+                    Ok("connected")
+                }
+            }
+        }));
+
+        assert_eq!(result, Ok("connected"));
+        assert_eq!(attempts.load(Ordering::Relaxed), 3);
     }
 }
