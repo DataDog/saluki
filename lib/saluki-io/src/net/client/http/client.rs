@@ -288,7 +288,9 @@ impl HttpClientBuilder {
     /// Sets a complete client TLS configuration.
     ///
     /// The supplied configuration takes precedence over all options applied through [`Self::with_tls_config`] and
-    /// [`Self::with_min_tls_version`], regardless of call order.
+    /// [`Self::with_min_tls_version`], regardless of call order. All supplied settings are preserved except ALPN:
+    /// [`ClientConfig::alpn_protocols`] is cleared before connector construction so [`Self::with_http_protocol`]
+    /// selects the advertised protocols. By default, [`HttpProtocol::Auto`] advertises HTTP/2 with HTTP/1.1 fallback.
     pub fn with_client_tls_config(mut self, config: ClientConfig) -> Self {
         self.client_tls_config = Some(config);
         self
@@ -348,8 +350,9 @@ impl HttpClientBuilder {
     /// If there was an error building or validating the TLS configuration for the client, an error will be returned.
     pub fn build(self) -> Result<HttpClient, GenericError> {
         let tls_config = match self.client_tls_config {
-            Some(config) => {
+            Some(mut config) => {
                 ensure_client_config_fips_compliant(&config)?;
+                config.alpn_protocols.clear();
                 config
             }
             None => self.tls_builder.build()?,
@@ -421,13 +424,17 @@ mod tests {
         rustls_cng_crypto::default_provider()
     }
 
-    #[test]
-    fn accepts_complete_client_tls_configuration() {
-        let tls_config = rustls::ClientConfig::builder_with_provider(test_crypto_provider().into())
+    fn empty_client_tls_config() -> rustls::ClientConfig {
+        rustls::ClientConfig::builder_with_provider(test_crypto_provider().into())
             .with_safe_default_protocol_versions()
             .expect("default protocol versions should be valid")
             .with_root_certificates(rustls::RootCertStore::empty())
-            .with_no_client_auth();
+            .with_no_client_auth()
+    }
+
+    #[test]
+    fn accepts_complete_client_tls_configuration() {
+        let tls_config = empty_client_tls_config();
 
         HttpClient::builder()
             .with_client_tls_config(tls_config.clone())
@@ -439,5 +446,16 @@ mod tests {
             .with_client_tls_config(tls_config)
             .build()
             .expect("a complete TLS configuration should take precedence over earlier builder options");
+    }
+
+    #[test]
+    fn accepts_complete_client_tls_configuration_with_alpn() {
+        let mut tls_config = empty_client_tls_config();
+        tls_config.alpn_protocols = vec![b"h2".to_vec()];
+
+        HttpClient::builder()
+            .with_client_tls_config(tls_config)
+            .build()
+            .expect("the HTTP client should normalize ALPN from a supplied TLS configuration");
     }
 }
