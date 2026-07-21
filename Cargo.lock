@@ -64,12 +64,14 @@ dependencies = [
  "serde_json",
  "serde_with",
  "stringtheory",
+ "tempfile",
  "tikv-jemallocator",
  "tokio",
  "tokio-util",
  "tonic",
  "tracing",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
