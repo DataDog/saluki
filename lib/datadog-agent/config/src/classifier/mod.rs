@@ -68,8 +68,6 @@ pub mod structs {
     pub const MRF_CONFIGURATION: &str = "MrfConfiguration";
     /// Identifier for `OtlpDecoderConfiguration`.
     pub const OTLP_DECODER_CONFIGURATION: &str = "OtlpDecoderConfiguration";
-    /// Identifier for `OtlpRelayConfiguration`.
-    pub const OTLP_RELAY_CONFIGURATION: &str = "OtlpRelayConfiguration";
     /// Identifier for `TraceObfuscationConfiguration`.
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
     /// Identifier for `RemoteAgentClientConfiguration`.

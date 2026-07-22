@@ -1,6 +1,5 @@
 use std::{
     collections::HashSet,
-    env,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -822,8 +821,10 @@ async fn add_otlp_pipeline_to_blueprint(
             "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
         );
 
+        let typed = config_system.config();
+        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&typed.domains.otlp.receiver);
+
         let raw_map = config_system.raw_map();
-        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&raw_map)?;
         let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&raw_map)?;
 
         let local_agent_otlp_forwarder_config =
@@ -853,15 +854,9 @@ async fn add_otlp_pipeline_to_blueprint(
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
         let typed = config_system.config();
-        let mut otlp_config = OtlpConfiguration::from_configuration(&typed.domains.otlp)
+        let otlp_config = OtlpConfiguration::from_configuration(&typed.domains.otlp)
             .with_default_hostname(default_hostname)
             .with_workload_provider(env_provider.workload().clone());
-        if let Ok(grpc_endpoint) = env::var("DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_GRPC_ENDPOINT") {
-            otlp_config = otlp_config.with_grpc_endpoint(grpc_endpoint);
-        }
-        if let Ok(http_endpoint) = env::var("DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_HTTP_ENDPOINT") {
-            otlp_config = otlp_config.with_http_endpoint(http_endpoint);
-        }
 
         blueprint
             // Components.

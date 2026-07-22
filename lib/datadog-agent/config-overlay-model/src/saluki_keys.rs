@@ -309,7 +309,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
-        used_by: &["OTLP_RELAY_CONFIGURATION", "TYPED_CONFIG_SYSTEM"],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Otlp])",
         filename: "otlp.rs",
