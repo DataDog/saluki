@@ -930,7 +930,7 @@
 <a href=#930 id=930 data-nosnippet>930</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#931 id=931 data-nosnippet>931</a>
 <a href=#932 id=932 data-nosnippet>932</a>    <span class="attr">#[tokio::test]
-<a href=#933 id=933 data-nosnippet>933</a>    </span><span class="kw">async fn </span>test_static_configuration() {
+<a href=#933 id=933 data-nosnippet>933</a>    </span><span class="kw">async fn </span>static_configuration() {
 <a href=#934 id=934 data-nosnippet>934</a>        <span class="kw">let </span>(cfg, <span class="kw">_</span>) = ConfigurationLoader::for_tests(
 <a href=#935 id=935 data-nosnippet>935</a>            <span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({
 <a href=#936 id=936 data-nosnippet>936</a>                <span class="string">"foo"</span>: <span class="string">"bar"</span>,
@@ -954,7 +954,7 @@
 <a href=#954 id=954 data-nosnippet>954</a>    }
 <a href=#955 id=955 data-nosnippet>955</a>
 <a href=#956 id=956 data-nosnippet>956</a>    <span class="attr">#[tokio::test]
-<a href=#957 id=957 data-nosnippet>957</a>    </span><span class="kw">async fn </span>test_dynamic_configuration() {
+<a href=#957 id=957 data-nosnippet>957</a>    </span><span class="kw">async fn </span>dynamic_configuration() {
 <a href=#958 id=958 data-nosnippet>958</a>        <span class="kw">let </span>(cfg, sender) = ConfigurationLoader::for_tests(
 <a href=#959 id=959 data-nosnippet>959</a>            <span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({
 <a href=#960 id=960 data-nosnippet>960</a>                <span class="string">"foo"</span>: <span class="string">"bar"</span>,
@@ -1098,7 +1098,7 @@
 <a href=#1098 id=1098 data-nosnippet>1098</a>    }
 <a href=#1099 id=1099 data-nosnippet>1099</a>
 <a href=#1100 id=1100 data-nosnippet>1100</a>    <span class="attr">#[tokio::test]
-<a href=#1101 id=1101 data-nosnippet>1101</a>    </span><span class="kw">async fn </span>test_environment_precedence_over_dynamic() {
+<a href=#1101 id=1101 data-nosnippet>1101</a>    </span><span class="kw">async fn </span>environment_precedence_over_dynamic() {
 <a href=#1102 id=1102 data-nosnippet>1102</a>        <span class="kw">let </span>(cfg, sender) = ConfigurationLoader::for_tests(
 <a href=#1103 id=1103 data-nosnippet>1103</a>            <span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({
 <a href=#1104 id=1104 data-nosnippet>1104</a>                <span class="string">"foo"</span>: <span class="string">"bar"</span>,
@@ -1168,7 +1168,7 @@
 <a href=#1168 id=1168 data-nosnippet>1168</a>    }
 <a href=#1169 id=1169 data-nosnippet>1169</a>
 <a href=#1170 id=1170 data-nosnippet>1170</a>    <span class="attr">#[tokio::test]
-<a href=#1171 id=1171 data-nosnippet>1171</a>    </span><span class="kw">async fn </span>test_dynamic_configuration_add_new_nested_key() {
+<a href=#1171 id=1171 data-nosnippet>1171</a>    </span><span class="kw">async fn </span>dynamic_configuration_add_new_nested_key() {
 <a href=#1172 id=1172 data-nosnippet>1172</a>        <span class="kw">let </span>(cfg, sender) = ConfigurationLoader::for_tests(
 <a href=#1173 id=1173 data-nosnippet>1173</a>            <span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({
 <a href=#1174 id=1174 data-nosnippet>1174</a>                <span class="string">"foo"</span>: <span class="string">"bar"</span>,
@@ -1214,7 +1214,7 @@
 <a href=#1214 id=1214 data-nosnippet>1214</a>    }
 <a href=#1215 id=1215 data-nosnippet>1215</a>
 <a href=#1216 id=1216 data-nosnippet>1216</a>    <span class="attr">#[tokio::test]
-<a href=#1217 id=1217 data-nosnippet>1217</a>    </span><span class="kw">async fn </span>test_underscore_fallback_on_get() {
+<a href=#1217 id=1217 data-nosnippet>1217</a>    </span><span class="kw">async fn </span>underscore_fallback_on_get() {
 <a href=#1218 id=1218 data-nosnippet>1218</a>        <span class="kw">let </span>(cfg, <span class="kw">_</span>) = ConfigurationLoader::for_tests(
 <a href=#1219 id=1219 data-nosnippet>1219</a>            <span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({})),
 <a href=#1220 id=1220 data-nosnippet>1220</a>            <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[(<span class="string">"RANDOM_KEY"</span>.to_string(), <span class="string">"from_env_only"</span>.to_string())]),
@@ -1227,7 +1227,7 @@
 <a href=#1227 id=1227 data-nosnippet>1227</a>    }
 <a href=#1228 id=1228 data-nosnippet>1228</a>
 <a href=#1229 id=1229 data-nosnippet>1229</a>    <span class="attr">#[tokio::test]
-<a href=#1230 id=1230 data-nosnippet>1230</a>    </span><span class="kw">async fn </span>test_underscore_fallback_on_get_multi_segment_key() {
+<a href=#1230 id=1230 data-nosnippet>1230</a>    </span><span class="kw">async fn </span>underscore_fallback_on_get_multi_segment_key() {
 <a href=#1231 id=1231 data-nosnippet>1231</a>        <span class="comment">// A single-underscore Agent-style env var (e.g. `DD_DATA_PLANE_API_LISTEN_ADDRESS`, which
 <a href=#1232 id=1232 data-nosnippet>1232</a>        // `for_tests` simulates with the `TEST_` prefix) produces a flat figment key. A deeply
 <a href=#1233 id=1233 data-nosnippet>1233</a>        // nested `get`/`try_get_typed` query must still resolve it via the dot-to-underscore
@@ -1250,7 +1250,7 @@
 <a href=#1250 id=1250 data-nosnippet>1250</a>    }
 <a href=#1251 id=1251 data-nosnippet>1251</a>
 <a href=#1252 id=1252 data-nosnippet>1252</a>    <span class="attr">#[tokio::test]
-<a href=#1253 id=1253 data-nosnippet>1253</a>    </span><span class="kw">async fn </span>test_static_configuration_ready_and_subscribe() {
+<a href=#1253 id=1253 data-nosnippet>1253</a>    </span><span class="kw">async fn </span>static_configuration_ready_and_subscribe() {
 <a href=#1254 id=1254 data-nosnippet>1254</a>        <span class="kw">let </span>(cfg, maybe_sender) = ConfigurationLoader::for_tests(<span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({})), <span class="prelude-val">None</span>, <span class="bool-val">false</span>).<span class="kw">await</span>;
 <a href=#1255 id=1255 data-nosnippet>1255</a>        <span class="macro">assert!</span>(maybe_sender.is_none());
 <a href=#1256 id=1256 data-nosnippet>1256</a>
@@ -1262,7 +1262,7 @@
 <a href=#1262 id=1262 data-nosnippet>1262</a>    }
 <a href=#1263 id=1263 data-nosnippet>1263</a>
 <a href=#1264 id=1264 data-nosnippet>1264</a>    <span class="attr">#[tokio::test]
-<a href=#1265 id=1265 data-nosnippet>1265</a>    </span><span class="kw">async fn </span>test_dynamic_configuration_ready_requires_initial_snapshot() {
+<a href=#1265 id=1265 data-nosnippet>1265</a>    </span><span class="kw">async fn </span>dynamic_configuration_ready_requires_initial_snapshot() {
 <a href=#1266 id=1266 data-nosnippet>1266</a>        <span class="comment">// Enable dynamic but do not send the initial snapshot.
 <a href=#1267 id=1267 data-nosnippet>1267</a>        </span><span class="kw">let </span>(cfg, maybe_sender) = ConfigurationLoader::for_tests(<span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({})), <span class="prelude-val">None</span>, <span class="bool-val">true</span>).<span class="kw">await</span>;
 <a href=#1268 id=1268 data-nosnippet>1268</a>        <span class="macro">assert!</span>(maybe_sender.is_some());
@@ -1273,7 +1273,7 @@
 <a href=#1273 id=1273 data-nosnippet>1273</a>    }
 <a href=#1274 id=1274 data-nosnippet>1274</a>
 <a href=#1275 id=1275 data-nosnippet>1275</a>    <span class="attr">#[tokio::test]
-<a href=#1276 id=1276 data-nosnippet>1276</a>    </span><span class="kw">async fn </span>test_flattened_keys_flat_and_nested() {
+<a href=#1276 id=1276 data-nosnippet>1276</a>    </span><span class="kw">async fn </span>flattened_keys_flat_and_nested() {
 <a href=#1277 id=1277 data-nosnippet>1277</a>        <span class="kw">let </span>(cfg, <span class="kw">_</span>) = ConfigurationLoader::for_tests(
 <a href=#1278 id=1278 data-nosnippet>1278</a>            <span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({
 <a href=#1279 id=1279 data-nosnippet>1279</a>                <span class="string">"top"</span>: <span class="string">"value"</span>,
@@ -1297,7 +1297,7 @@
 <a href=#1297 id=1297 data-nosnippet>1297</a>    }
 <a href=#1298 id=1298 data-nosnippet>1298</a>
 <a href=#1299 id=1299 data-nosnippet>1299</a>    <span class="attr">#[tokio::test]
-<a href=#1300 id=1300 data-nosnippet>1300</a>    </span><span class="kw">async fn </span>test_flattened_keys_arrays_are_leaves() {
+<a href=#1300 id=1300 data-nosnippet>1300</a>    </span><span class="kw">async fn </span>flattened_keys_arrays_are_leaves() {
 <a href=#1301 id=1301 data-nosnippet>1301</a>        <span class="kw">let </span>(cfg, <span class="kw">_</span>) = ConfigurationLoader::for_tests(
 <a href=#1302 id=1302 data-nosnippet>1302</a>            <span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({
 <a href=#1303 id=1303 data-nosnippet>1303</a>                <span class="string">"tags"</span>: [<span class="string">"a"</span>, <span class="string">"b"</span>],
@@ -1318,7 +1318,7 @@
 <a href=#1318 id=1318 data-nosnippet>1318</a>    }
 <a href=#1319 id=1319 data-nosnippet>1319</a>
 <a href=#1320 id=1320 data-nosnippet>1320</a>    <span class="attr">#[tokio::test]
-<a href=#1321 id=1321 data-nosnippet>1321</a>    </span><span class="kw">async fn </span>test_flattened_keys_null_values_absent() {
+<a href=#1321 id=1321 data-nosnippet>1321</a>    </span><span class="kw">async fn </span>flattened_keys_null_values_absent() {
 <a href=#1322 id=1322 data-nosnippet>1322</a>        <span class="kw">let </span>(cfg, <span class="kw">_</span>) = ConfigurationLoader::for_tests(
 <a href=#1323 id=1323 data-nosnippet>1323</a>            <span class="prelude-val">Some</span>(<span class="macro">serde_json::json!</span>({
 <a href=#1324 id=1324 data-nosnippet>1324</a>                <span class="string">"present"</span>: <span class="string">"yes"</span>,

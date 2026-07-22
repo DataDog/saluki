@@ -184,7 +184,7 @@
 <a href=#184 id=184 data-nosnippet>184</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#185 id=185 data-nosnippet>185</a>
 <a href=#186 id=186 data-nosnippet>186</a>    <span class="attr">#[test]
-<a href=#187 id=187 data-nosnippet>187</a>    </span><span class="kw">fn </span>test_exact_metric_name_matching() {
+<a href=#187 id=187 data-nosnippet>187</a>    </span><span class="kw">fn </span>exact_metric_name_matching() {
 <a href=#188 id=188 data-nosnippet>188</a>        <span class="kw">let </span>router = MetricRouter::new(MetricRouterConfiguration {
 <a href=#189 id=189 data-nosnippet>189</a>            metric_names: <span class="macro">vec!</span>[<span class="string">"test.counter"</span>.to_string(), <span class="string">"another.metric"</span>.to_string()],
 <a href=#190 id=190 data-nosnippet>190</a>        })
@@ -208,7 +208,7 @@
 <a href=#208 id=208 data-nosnippet>208</a>    }
 <a href=#209 id=209 data-nosnippet>209</a>
 <a href=#210 id=210 data-nosnippet>210</a>    <span class="attr">#[test]
-<a href=#211 id=211 data-nosnippet>211</a>    </span><span class="kw">fn </span>test_empty_metric_names_list() {
+<a href=#211 id=211 data-nosnippet>211</a>    </span><span class="kw">fn </span>empty_metric_names_list() {
 <a href=#212 id=212 data-nosnippet>212</a>        <span class="kw">let </span>router = MetricRouter::new(MetricRouterConfiguration { metric_names: <span class="macro">vec!</span>[] })
 <a href=#213 id=213 data-nosnippet>213</a>            .expect(<span class="string">"Should create router successfully"</span>);
 <a href=#214 id=214 data-nosnippet>214</a>

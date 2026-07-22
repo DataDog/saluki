@@ -286,10 +286,10 @@
 <a href=#286 id=286 data-nosnippet>286</a>
 <a href=#287 id=287 data-nosnippet>287</a>    <span class="macro">proptest!</span> {
 <a href=#288 id=288 data-nosnippet>288</a>        <span class="attr">#[test]
-<a href=#289 id=289 data-nosnippet>289</a>        </span><span class="kw">fn </span>property_test_raw_tags_filter_include_exclude_dispoint((inputs, filters) <span class="kw">in </span>arb_raw_tags_and_filters()) {
+<a href=#289 id=289 data-nosnippet>289</a>        </span><span class="kw">fn </span>property_test_raw_tags_filter_include_exclude_disjoint((inputs, filters) <span class="kw">in </span>arb_raw_tags_and_filters()) {
 <a href=#290 id=290 data-nosnippet>290</a>            <span class="comment">// We handle the raw tags, and the filtered tags, as hash sets.
 <a href=#291 id=291 data-nosnippet>291</a>            //
-<a href=#292 id=292 data-nosnippet>292</a>            // This is because we may have duplicate tags in the input, and so we need to discard all of thos duplicates
+<a href=#292 id=292 data-nosnippet>292</a>            // This is because we may have duplicate tags in the input, and so we need to discard all of those duplicates
 <a href=#293 id=293 data-nosnippet>293</a>            // when ensuring that the resulting filtered sets are disjoint, and that they both add up to the original
 <a href=#294 id=294 data-nosnippet>294</a>            // set of raw tags.
 <a href=#295 id=295 data-nosnippet>295</a>

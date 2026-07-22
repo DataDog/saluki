@@ -515,7 +515,7 @@
 <a href=#515 id=515 data-nosnippet>515</a>    <span class="kw">use </span><span class="kw">crate</span>::transforms::apm_stats::statsraw::new_aggregation_from_span;
 <a href=#516 id=516 data-nosnippet>516</a>
 <a href=#517 id=517 data-nosnippet>517</a>    <span class="attr">#[test]
-<a href=#518 id=518 data-nosnippet>518</a>    </span><span class="kw">fn </span>test_get_status_code() {
+<a href=#518 id=518 data-nosnippet>518</a>    </span><span class="kw">fn </span>get_status_code_from_attributes() {
 <a href=#519 id=519 data-nosnippet>519</a>        <span class="comment">// Empty attrs
 <a href=#520 id=520 data-nosnippet>520</a>        </span><span class="kw">let </span>attrs: FastHashMap&lt;MetaString, AV&gt; = FastHashMap::default();
 <a href=#521 id=521 data-nosnippet>521</a>        <span class="macro">assert_eq!</span>(get_status_code(<span class="kw-2">&amp;</span>attrs), <span class="number">0</span>);
@@ -545,7 +545,7 @@
 <a href=#545 id=545 data-nosnippet>545</a>    }
 <a href=#546 id=546 data-nosnippet>546</a>
 <a href=#547 id=547 data-nosnippet>547</a>    <span class="attr">#[test]
-<a href=#548 id=548 data-nosnippet>548</a>    </span><span class="kw">fn </span>test_get_grpc_status_code() {
+<a href=#548 id=548 data-nosnippet>548</a>    </span><span class="kw">fn </span>get_grpc_status_code_from_attributes() {
 <a href=#549 id=549 data-nosnippet>549</a>        <span class="comment">// Empty attrs
 <a href=#550 id=550 data-nosnippet>550</a>        </span><span class="kw">let </span>attrs: FastHashMap&lt;MetaString, AV&gt; = FastHashMap::default();
 <a href=#551 id=551 data-nosnippet>551</a>        <span class="macro">assert_eq!</span>(get_grpc_status_code(<span class="kw-2">&amp;</span>attrs), GrpcStatusCode::Unset);
@@ -618,7 +618,7 @@
 <a href=#618 id=618 data-nosnippet>618</a>    }
 <a href=#619 id=619 data-nosnippet>619</a>
 <a href=#620 id=620 data-nosnippet>620</a>    <span class="attr">#[test]
-<a href=#621 id=621 data-nosnippet>621</a>    </span><span class="kw">fn </span>test_new_aggregation() {
+<a href=#621 id=621 data-nosnippet>621</a>    </span><span class="kw">fn </span>new_aggregation() {
 <a href=#622 id=622 data-nosnippet>622</a>        <span class="comment">// Helper to create a span with given service, meta, and metrics
 <a href=#623 id=623 data-nosnippet>623</a>        </span><span class="kw">let </span>make_span = |service: <span class="kw-2">&amp;</span>str,
 <a href=#624 id=624 data-nosnippet>624</a>                         meta: FastHashMap&lt;MetaString, MetaString&gt;,
@@ -736,7 +736,7 @@
 <a href=#736 id=736 data-nosnippet>736</a>    }
 <a href=#737 id=737 data-nosnippet>737</a>
 <a href=#738 id=738 data-nosnippet>738</a>    <span class="attr">#[test]
-<a href=#739 id=739 data-nosnippet>739</a>    </span><span class="kw">fn </span>test_peer_tags_to_aggregate_for_span() {
+<a href=#739 id=739 data-nosnippet>739</a>    </span><span class="kw">fn </span>peer_tags_to_aggregate_for_span() {
 <a href=#740 id=740 data-nosnippet>740</a>        <span class="comment">// Tests that peer tags are only returned for client/producer/consumer span kinds
 <a href=#741 id=741 data-nosnippet>741</a>        </span><span class="kw">let </span>peer_tags = <span class="macro">vec!</span>[MetaString::from(<span class="string">"server.address"</span>), MetaString::from(<span class="string">"_dd.base_service"</span>)];
 <a href=#742 id=742 data-nosnippet>742</a>
@@ -782,7 +782,7 @@
 <a href=#782 id=782 data-nosnippet>782</a>    }
 <a href=#783 id=783 data-nosnippet>783</a>
 <a href=#784 id=784 data-nosnippet>784</a>    <span class="attr">#[test]
-<a href=#785 id=785 data-nosnippet>785</a>    </span><span class="kw">fn </span>test_is_root_span() {
+<a href=#785 id=785 data-nosnippet>785</a>    </span><span class="kw">fn </span>is_root_span() {
 <a href=#786 id=786 data-nosnippet>786</a>        <span class="kw">let </span>concentrator = SpanConcentrator::new(<span class="bool-val">true</span>, <span class="bool-val">true</span>, <span class="kw-2">&amp;</span>[], <span class="number">0</span>);
 <a href=#787 id=787 data-nosnippet>787</a>
 <a href=#788 id=788 data-nosnippet>788</a>        <span class="comment">// Span with parent_id = 0 -&gt; is_trace_root = true
