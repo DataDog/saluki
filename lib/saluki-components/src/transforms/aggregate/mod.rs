@@ -156,6 +156,17 @@ fn aggregate_context_snapshot_channel() -> (AggregateContextSnapshotHandle, Aggr
     (AggregateContextSnapshotHandle { requests }, receiver)
 }
 
+#[inline]
+fn send_context_snapshot_if_open(
+    response: AggregateContextSnapshotRequest, build_snapshot: impl FnOnce() -> AggregateContextSnapshot,
+) {
+    if response.is_closed() {
+        return;
+    }
+
+    let _ = response.send(build_snapshot());
+}
+
 /// An accepted retained-context snapshot request for test fixtures.
 #[cfg(any(test, feature = "test-util"))]
 pub struct AggregateContextSnapshotPendingResponse {
@@ -606,8 +617,7 @@ impl Transform for Aggregate {
                 snapshot_request = receive_context_snapshot_request(&mut self.context_snapshot_requests) => {
                     match snapshot_request {
                         Some(response) => {
-                            let snapshot = self.state.snapshot_contexts();
-                            let _ = response.send(snapshot);
+                            send_context_snapshot_if_open(response, || self.state.snapshot_contexts());
                         }
                         None => self.context_snapshot_requests = None,
                     }
@@ -1226,7 +1236,7 @@ const fn is_bucket_closed(
 // then we run it to make sure that we are always generating sequential timestamps for data points, etc.
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
+    use std::{cell::Cell, mem::size_of};
 
     use float_cmp::ApproxEqRatio as _;
     use saluki_context::tags::{Tag, TagSet};
@@ -1593,6 +1603,62 @@ mod tests {
 
         let _ = get_flushed_metrics(flush_ts(3), &mut state).await;
         assert!(state.snapshot_contexts().is_empty());
+    }
+
+    #[test]
+    fn canceled_snapshot_response_skips_snapshot_construction() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        assert!(state.insert(
+            insert_ts(1),
+            Metric::gauge(Context::from_static_name("canceled.snapshot"), 1.0),
+        ));
+        let (response, receiver) = oneshot::channel();
+        drop(receiver);
+        let snapshot_calls = Cell::new(0);
+
+        send_context_snapshot_if_open(response, || {
+            snapshot_calls.set(snapshot_calls.get() + 1);
+            state.snapshot_contexts()
+        });
+
+        assert_eq!(snapshot_calls.get(), 0);
+    }
+
+    #[test]
+    fn open_snapshot_response_constructs_once_and_returns_exact_entries() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let context = Context::from_static_name("open.snapshot");
+        assert!(state.insert(insert_ts(1), Metric::gauge(context.clone(), 1.0)));
+        let expected = vec![AggregateContextSnapshotEntry {
+            context,
+            metric_type: AggregateMetricType::Gauge,
+            unit: MetaString::empty(),
+        }];
+        let (response, mut receiver) = oneshot::channel();
+        let snapshot_calls = Cell::new(0);
+
+        send_context_snapshot_if_open(response, || {
+            snapshot_calls.set(snapshot_calls.get() + 1);
+            state.snapshot_contexts()
+        });
+
+        assert_eq!(snapshot_calls.get(), 1);
+        assert_eq!(
+            receiver.try_recv().expect("open requester should receive a snapshot"),
+            expected
+        );
     }
 
     #[test]
