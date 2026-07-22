@@ -1075,7 +1075,6 @@ impl<T: Retryable> PendingTransactions<T> {
 #[cfg(test)]
 mod tests {
     use std::{
-        convert::Infallible,
         future::{pending, Pending},
         sync::{
             atomic::{AtomicUsize, Ordering},
@@ -1445,15 +1444,15 @@ app.datadoghq.com: [key-a, key-b]
     }
 
     #[derive(Clone)]
-    struct OpenOnFalsePolicy;
+    struct OpenOnErrorPolicy;
 
-    impl<B> Policy<Request<TransactionBody<B>>, bool, Infallible> for OpenOnFalsePolicy {
+    impl<B> Policy<Request<TransactionBody<B>>, Response<Incoming>, BoxError> for OpenOnErrorPolicy {
         type Future = Pending<()>;
 
         fn retry(
-            &mut self, _req: &mut Request<TransactionBody<B>>, result: &mut Result<bool, Infallible>,
+            &mut self, _req: &mut Request<TransactionBody<B>>, result: &mut Result<Response<Incoming>, BoxError>,
         ) -> Option<Self::Future> {
-            matches!(result, Ok(false)).then(pending)
+            result.is_err().then(pending)
         }
 
         fn clone_request(&mut self, req: &Request<TransactionBody<B>>) -> Option<Request<TransactionBody<B>>> {
@@ -1471,18 +1470,21 @@ app.datadoghq.com: [key-a, key-b]
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let domain = "https://example.com";
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
         let mut retry_telemetry = transaction_retry_telemetry(domain);
         let (queue_telemetry, queue_domain) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
         let mut pending_txns = PendingTransactions::new(1, retry_queue, queue_telemetry, queue_domain, 900);
         let inner_calls = Arc::new(AtomicUsize::new(0));
         let mut service = ServiceBuilder::new()
-            .layer(RetryCircuitBreakerLayer::new(OpenOnFalsePolicy))
+            .layer(RetryCircuitBreakerLayer::new(OpenOnErrorPolicy))
             .service(service_fn({
                 let inner_calls = Arc::clone(&inner_calls);
                 move |_request: Request<TransactionBody<FrozenChunkedBytesBuffer>>| {
                     inner_calls.fetch_add(1, Ordering::SeqCst);
-                    std::future::ready(Ok::<_, Infallible>(false))
+                    std::future::ready(Err::<Response<Incoming>, BoxError>(Box::new(std::io::Error::other(
+                        "request failed",
+                    ))))
                 }
             }));
 
@@ -1503,17 +1505,22 @@ app.datadoghq.com: [key-a, key-b]
         let (metadata, request, retry_counters) =
             prepare_transaction_for_dispatch(pending_txn, &mut retry_telemetry, &test_logical_endpoint);
         let result = service.call(request).await;
-        let returned_request = match result {
-            Err(RetryCircuitBreakerError::Open(request)) => request,
-            _ => panic!("open circuit breaker should return the blocked retry"),
-        };
+        assert!(matches!(&result, Err(RetryCircuitBreakerError::Open(_))));
 
-        let push_result = requeue_transaction(metadata, returned_request, &mut pending_txns, retry_counters.as_ref())
-            .await
-            .expect("requeue should succeed");
+        handle_in_flight_transaction_result::<FrozenChunkedBytesBuffer>(
+            Ok(InFlightTransaction {
+                metadata,
+                retry_counters,
+                result,
+            }),
+            &mut pending_txns,
+            &telemetry,
+            domain,
+            domain,
+        )
+        .await;
 
         assert_eq!(inner_calls.load(Ordering::SeqCst), inner_calls_before_blocked_retry);
-        assert!(!push_result.had_drops());
         assert_eq!(pending_txns.low_priority.len(), 1);
         assert_eq!(
             recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
