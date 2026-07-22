@@ -82,7 +82,8 @@ where
 {
     let (txn, retry_counters) = match pending_txn {
         PendingTransaction::HighPriority(txn) => (txn, None),
-        PendingTransaction::Retry(txn) => {
+        PendingTransaction::LowPriority(txn) => {
+            // Low-priority provenance drives Core Agent-compatible retry accounting, including input overflow.
             let resolved = endpoint_name(txn.request_uri());
             let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
             let counters = retry_telemetry.counters_for(logical);
@@ -849,7 +850,7 @@ async fn process_http_response(
 
 enum PendingTransaction<T> {
     HighPriority(T),
-    Retry(T),
+    LowPriority(T),
 }
 
 /// A queue of pending transactions waiting to be sent.
@@ -978,7 +979,7 @@ impl<T: Retryable> PendingTransactions<T> {
                         low_prio_queue_len = self.low_priority.len(),
                         "Dequeued pending transaction from low-priority queue."
                     );
-                    return Some(PendingTransaction::Retry(transaction));
+                    return Some(PendingTransaction::LowPriority(transaction));
                 }
                 Ok(None) => {
                     self.record_retry_queue_size();
@@ -1568,7 +1569,7 @@ app.datadoghq.com: [key-a, key-b]
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
         assert!(matches!(
             pending_txns.pop().await,
-            Some(PendingTransaction::Retry(transaction)) if transaction == "retry"
+            Some(PendingTransaction::LowPriority(transaction)) if transaction == "retry"
         ));
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
