@@ -30,6 +30,7 @@ apis
 inlined
 json
 backoff
+batcher(s?)
 proxied
 linux
 darwin
