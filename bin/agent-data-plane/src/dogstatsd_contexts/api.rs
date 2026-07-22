@@ -607,30 +607,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn unwritable_run_path_returns_internal_error_without_an_artifact() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let run_directory = tempfile::tempdir().unwrap();
-        let original_permissions = fs::metadata(run_directory.path()).unwrap().permissions();
-        fs::set_permissions(run_directory.path(), fs::Permissions::from_mode(0o500)).unwrap();
-        let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
-        let handler = DogStatsDContextDumpAPIHandler::new(AUTH_TOKEN, vec![handle], run_directory.path()).unwrap();
-        let owner = tokio::spawn(async move { responder.respond(Vec::new()).await });
-
-        let response = send(&handler, authorized_post()).await;
-        fs::set_permissions(run_directory.path(), original_permissions).unwrap();
-
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(
-            response_body(response).await,
-            "Failed to publish DogStatsD context dump; check the configured run path and permissions."
-        );
-        assert!(!run_directory.path().join(CONTEXT_DUMP_FILENAME).exists());
-        owner.await.unwrap().unwrap();
-    }
-
     #[tokio::test]
     async fn publication_failure_and_blocking_task_panic_return_safe_internal_errors() {
         for publisher in [

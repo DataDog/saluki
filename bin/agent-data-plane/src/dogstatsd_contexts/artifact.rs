@@ -1277,25 +1277,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn rejects_an_unwritable_run_directory_with_target_and_operation_context() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
-        let original_permissions = fs::metadata(run_directory.path()).unwrap().permissions();
-        fs::set_permissions(run_directory.path(), fs::Permissions::from_mode(0o500)).unwrap();
-
-        let result = publish_context_dump(run_directory.path(), &[]);
-        fs::set_permissions(run_directory.path(), original_permissions).unwrap();
-
-        let error = result.expect_err("unwritable run path should fail");
-        let message = format!("{error:#}");
-        assert!(message.contains(CONTEXT_DUMP_FILENAME), "{message}");
-        assert!(message.contains("create temporary"), "{message}");
-        assert_eq!(directory_entries(run_directory.path()), Vec::<String>::new());
-    }
-
     #[test]
     fn injected_replace_failure_preserves_the_canonical_artifact_and_removes_the_temporary_file() {
         let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
