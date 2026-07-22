@@ -4524,6 +4524,7 @@ dependencies = [
  "libc",
  "memchr",
  "metrics",
+ "metrics-util",
  "nom 8.0.0",
  "pin-project",
  "pin-project-lite",

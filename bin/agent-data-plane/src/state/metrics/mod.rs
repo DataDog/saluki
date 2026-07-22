@@ -50,6 +50,28 @@ mod tests {
                 ),
                 3.0,
             )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_success_total",
+                    &[
+                        "domain:https://api.datadoghq.com",
+                        "endpoint:/api/v1/series",
+                        "proto_version:HTTP/2.0",
+                    ],
+                ),
+                5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_success_sent_bytes_total",
+                    &[
+                        "domain:https://api.datadoghq.com",
+                        "endpoint:/api/v1/series",
+                        "proto_version:HTTP/2.0",
+                    ],
+                ),
+                123.0,
+            )),
             // This metric should NOT appear in output (no matching rule).
             Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.some_unrelated_metric", &[]),
@@ -64,6 +86,17 @@ mod tests {
         assert!(output.contains("dogstatsd__packet_pool "));
         assert!(output.contains("point__sent{domain=\"https://api.datadoghq.com\"} 12"));
         assert!(output.contains("point__dropped{domain=\"https://api.datadoghq.com\"} 3"));
+        assert!(output.contains(concat!(
+            "transactions__success{domain=\"https://api.datadoghq.com\",",
+            "endpoint=\"/api/v1/series\",proto_version=\"HTTP/2.0\"} 5"
+        )));
+        assert!(output.contains(
+            "transactions__success_bytes{domain=\"https://api.datadoghq.com\",endpoint=\"/api/v1/series\"} 123"
+        ));
+        assert!(!output.contains(concat!(
+            "transactions__success_bytes{domain=\"https://api.datadoghq.com\",",
+            "endpoint=\"/api/v1/series\",proto_version="
+        )));
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
