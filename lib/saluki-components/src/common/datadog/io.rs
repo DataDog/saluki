@@ -571,8 +571,8 @@ async fn run_endpoint_io_loop<B>(
     // of the URI, adding the API key as a header, and so on.
     //
     // The body type conversion from `TransactionBody<B>` to `ClientBody` happens as the innermost layer,
-    // after the retry circuit breaker. This ensures that `RetryCircuitBreakerError::Open(req)` returns
-    // the original `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
+    // after the retry circuit breaker. This ensures that retry and open errors return the original
+    // `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
     let mut service = ServiceBuilder::new()
         // Set the request's URI and endpoint-specific headers.
         .map_request({
@@ -694,7 +694,9 @@ async fn run_endpoint_io_loop<B>(
                         error!(endpoint_url, error = %e, error_source = ?e.source(), "Unexpected error when querying service for readiness.");
                         break;
                     },
-                    RetryCircuitBreakerError::Open(_) => unreachable!("should not get open error when querying service for readiness"),
+                    RetryCircuitBreakerError::Retry(_) | RetryCircuitBreakerError::Open(_) => {
+                        unreachable!("should not get retry or open error when querying service for readiness")
+                    },
                 }
             },
 
@@ -713,10 +715,9 @@ async fn run_endpoint_io_loop<B>(
                             error!(endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
                         },
 
-                        // Our endpoint circuit breaker is open, which means this request either didn't go through at
-                        // all or needs to be retried... so we'll re-enqueue it to the low-priority queue to be retried
-                        // later.
-                        Err(RetryCircuitBreakerError::Open(req)) => {
+                        // The request either completed and needs to be retried or was rejected before inward dispatch,
+                        // so re-enqueue it to the low-priority queue to be retried later.
+                        Err(RetryCircuitBreakerError::Retry(req) | RetryCircuitBreakerError::Open(req)) => {
                             match requeue_open_transaction(
                                 metadata,
                                 req,
@@ -1419,7 +1420,7 @@ app.datadoghq.com: [key-a, key-b]
         let (_, initial_request) = build_test_transaction().into_parts();
         assert!(matches!(
             service.call(initial_request).await,
-            Err(RetryCircuitBreakerError::Open(_))
+            Err(RetryCircuitBreakerError::Retry(_))
         ));
         let inner_calls_before_blocked_retry = inner_calls.load(Ordering::SeqCst);
         assert_eq!(inner_calls_before_blocked_retry, 1);

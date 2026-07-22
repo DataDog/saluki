@@ -14,10 +14,13 @@ use tracing::debug;
 /// An error from [`RetryCircuitBreaker`].
 #[derive(Debug)]
 pub enum Error<E, R> {
-    /// The inner service responded with an error.
+    /// The inner service responded with a final error.
     Service(E),
 
-    /// The circuit breaker is open and requests are being rejected.
+    /// The inner service was called and completed, and `Policy::retry` returned `Some(backoff)`.
+    Retry(R),
+
+    /// The circuit breaker was already in backoff at call time, so the inner service was not called.
     Open(R),
 }
 
@@ -29,7 +32,7 @@ where
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Service(e) => Some(e),
-            Self::Open(_) => None,
+            Self::Retry(_) | Self::Open(_) => None,
         }
     }
 }
@@ -41,6 +44,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Service(e) => write!(f, "service error: {}", e),
+            Self::Retry(_) => write!(f, "request should be retried"),
             Self::Open(_) => write!(f, "circuit breaker open"),
         }
     }
@@ -54,6 +58,7 @@ where
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Service(a), Self::Service(b)) => a == b,
+            (Self::Retry(a), Self::Retry(b)) => a == b,
             (Self::Open(a), Self::Open(b)) => a == b,
             _ => false,
         }
@@ -108,7 +113,7 @@ where
                             state.backoff = Some(backoff.boxed());
                         }
 
-                        Poll::Ready(Err(Error::Open(req)))
+                        Poll::Ready(Err(Error::Retry(req)))
                     }
                     None => {
                         debug!("request completed, no retry indicated");
@@ -294,6 +299,10 @@ mod tests {
             }
         }
 
+        fn as_retry_response(&self) -> Result<String, Error<String, Self>> {
+            Err(Error::Retry(self.clone()))
+        }
+
         fn as_open_response(&self) -> Result<String, Error<String, Self>> {
             Err(Error::Open(self.clone()))
         }
@@ -389,7 +398,7 @@ mod tests {
         let svc = circuit_breaker.ready().await.expect("should never fail to be ready");
         let fut = svc.call(bad_req.clone());
         let result = fut.await;
-        assert_eq!(result, bad_req.as_open_response());
+        assert_eq!(result, bad_req.as_retry_response());
 
         // When trying to make our third request, we should have to wait for the backoff duration before the service
         // indicates that it's ready for another call.
@@ -459,7 +468,7 @@ mod tests {
         let good_fut = svc.call(good_req.clone());
 
         let bad_result = bad_fut.await;
-        assert_eq!(bad_result, bad_req.as_open_response());
+        assert_eq!(bad_result, bad_req.as_retry_response());
 
         let good_result = good_fut.await;
         assert_eq!(good_result, good_req.as_service_response());
@@ -488,11 +497,11 @@ mod tests {
         // call yet.
         let svc = circuit_breaker.ready().await.expect("should never fail to be ready");
 
-        // Run our bad request first and ensure it fails with an open error.
+        // Run our bad request first and ensure it reports that the completed request should be retried.
         let bad_result = bad_fut.await;
-        assert_eq!(bad_result, bad_req.as_open_response());
+        assert_eq!(bad_result, bad_req.as_retry_response());
 
-        // Now _create_ the good request and ensure that it also fails with an open error.
+        // Now _create_ the good request and ensure that it fails with an open error without reaching the inner service.
         let good_fut = svc.call(good_req.clone());
         let good_result = good_fut.await;
         assert_eq!(good_result, good_req.as_open_response());
