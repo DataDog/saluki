@@ -12,7 +12,7 @@ use stringtheory::{
     CheapMetaString, MetaString,
 };
 use tokio::time::sleep;
-use tracing::debug;
+use tracing::trace;
 
 use crate::{
     context::{Context, ContextInner},
@@ -538,7 +538,7 @@ impl ContextResolver {
 
             let context = self.create_context(context_key, name, host, tag_set, origin_tags)?;
 
-            debug!(?context_key, ?context, "Resolved new non-cached context.");
+            trace!(?context_key, ?context, "Resolved new non-cached context.");
             return Some(context);
         }
 
@@ -567,7 +567,7 @@ impl ContextResolver {
                 let context = self.create_context(context_key, name, host, tag_set, origin_tags)?;
                 self.context_cache.insert(context_key, context.clone());
 
-                debug!(?context_key, ?context, "Resolved new context.");
+                trace!(?context_key, ?context, "Resolved new context.");
                 Some(context)
             }
         }

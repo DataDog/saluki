@@ -253,6 +253,7 @@ lru-slab = { version = "0.1.2", default-features = false }
 antithesis-instrumentation = { version = "0.1" }
 antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "78c9db56771f0f6b01cb5404765c5a96852c159c", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
 mime = "0.3"
+thingbuf = { version = "0.1", default-features = false }
 
 [patch.crates-io]
 # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
