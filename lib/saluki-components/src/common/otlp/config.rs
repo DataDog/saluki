@@ -1,6 +1,8 @@
 //! Shared OTLP receiver configuration.
 
-use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
+use agent_data_plane_config::domains::otlp::{
+    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+};
 use bytesize::ByteSize;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
@@ -207,6 +209,14 @@ where
     String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
 }
 
+// TODO: delete when this component uses typed config
+fn deserialize_summary_mode<'de, D>(deserializer: D) -> Result<SummaryMode, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
+}
+
 /// Configuration for OTLP metrics processing.
 #[derive(Deserialize, Debug)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
@@ -242,6 +252,10 @@ pub struct MetricsConfig {
     /// Configuration for OTLP sums.
     #[serde(default)]
     pub sums: SumsConfig,
+
+    /// Summary processing configuration.
+    #[serde(default)]
+    pub summaries: SummariesConfig,
 }
 
 /// Configuration for OTLP sums.
@@ -270,6 +284,19 @@ pub struct SumsConfig {
     pub initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
 }
 
+/// Configuration for OTLP summaries.
+#[derive(Deserialize, Debug, Default)]
+#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
+pub struct SummariesConfig {
+    /// Controls how summary quantiles are emitted.
+    ///
+    /// The default `gauges` emits one gauge metric per quantile. Set this to `noquantiles` to omit quantile metrics.
+    ///
+    /// Corresponds to `otlp_config.metrics.summaries.mode`.
+    #[serde(default, deserialize_with = "deserialize_summary_mode")]
+    pub mode: SummaryMode,
+}
+
 fn default_metrics_enabled() -> bool {
     true
 }
@@ -282,6 +309,7 @@ impl Default for MetricsConfig {
             resource_attributes_as_tags: false,
             tags: String::new(),
             sums: SumsConfig::default(),
+            summaries: SummariesConfig::default(),
         }
     }
 }
@@ -311,6 +339,11 @@ impl MetricsConfig {
                 generic_error!(
                     "invalid `otlp_config.metrics.sums.initial_cumulative_monotonic_value` environment override: {error}"
                 )
+            })?;
+        }
+        if let Some(raw_mode) = config.try_get_typed::<String>("otlp_config_metrics_summaries_mode")? {
+            self.summaries.mode = raw_mode.parse().map_err(|error| {
+                generic_error!("invalid `otlp_config.metrics.summaries.mode` environment override: {error}")
             })?;
         }
         Ok(())

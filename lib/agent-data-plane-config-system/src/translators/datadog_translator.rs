@@ -23,7 +23,9 @@ use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
-use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
+use agent_data_plane_config::domains::otlp::{
+    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+};
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
@@ -911,6 +913,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_otlp_config_metrics_summaries_mode(&mut self, value: String) {
+        match value.parse::<SummaryMode>() {
+            Ok(mode) => self.config.domains.otlp.metrics.summaries.mode = mode,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.metrics.summaries.mode", error)),
+        }
+    }
+
     fn consume_otlp_config_metrics_tags(&mut self, value: String) {
         self.config.domains.otlp.metrics.tags = value;
     }
@@ -1129,7 +1138,7 @@ mod tests {
 
     use agent_data_plane_config::domains::{
         dogstatsd::OriginTagCardinality,
-        otlp::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue},
+        otlp::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode},
     };
     use datadog_agent_config::DatadogConfiguration;
     use serde_json::json;
@@ -1280,6 +1289,46 @@ mod tests {
 
         // The error is still surfaced, so startup's strict gate rejects the config.
         assert!(errors.is_some(), "an unknown action must record a translation error");
+    }
+
+    #[test]
+    fn summary_mode_translates_known_values() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "summaries": {
+                        "mode": "noquantiles"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.metrics.summaries.mode, SummaryMode::NoQuantiles);
+    }
+
+    #[test]
+    fn invalid_summary_mode_records_error_and_keeps_default() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "summaries": {
+                        "mode": "unsupported"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert_eq!(config.domains.otlp.metrics.summaries.mode, SummaryMode::Gauges);
+        let errors = errors.expect("invalid mode should record a translation error");
+        assert!(errors.to_string().contains("otlp_config.metrics.summaries.mode"));
+        assert!(errors.to_string().contains("unknown summary mode `unsupported`"));
     }
 
     #[test]

@@ -1283,6 +1283,9 @@ pub struct OtlpConfigMetrics {
     pub resource_attributes_as_tags: bool,
 
     #[serde(default)]
+    pub summaries: OtlpConfigMetricsSummaries,
+
+    #[serde(default)]
     pub sums: OtlpConfigMetricsSums,
 
     #[serde(default)]
@@ -1295,6 +1298,7 @@ impl Default for OtlpConfigMetrics {
             enabled: defaults::default_bool::<true>(),
             histograms: Default::default(),
             resource_attributes_as_tags: Default::default(),
+            summaries: Default::default(),
             sums: Default::default(),
             tags: Default::default(),
         }
@@ -1317,6 +1321,22 @@ impl Default for OtlpConfigMetricsHistograms {
         Self {
             mode: defaults::datadog_configuration_otlp_config_metrics_histograms_mode(),
             send_aggregation_metrics: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigMetricsSummaries {
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_summaries_mode"
+    )]
+    pub mode: String,
+}
+
+impl Default for OtlpConfigMetricsSummaries {
+    fn default() -> Self {
+        Self {
+            mode: defaults::datadog_configuration_otlp_config_metrics_summaries_mode(),
         }
     }
 }
@@ -1789,6 +1809,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_otlp_config_metrics_histograms_mode() -> String {
         "distributions".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_summaries_mode() -> String {
+        "gauges".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode() -> String {
         "to_delta".to_string()

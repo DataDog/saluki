@@ -1,0 +1,9 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "grpc://$GROUP:54317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+aggregation_bucket_width_secs: 10
+volume: 1
+corpus:
+  size: 1
+  payload:
+    # ExportMetricsServiceRequest with one SummaryDataPoint and two quantiles.
+    static_base64: "CmMSYRJfChZvdGxwLnN1bW1hcnkucXVhbnRpbGVzWkUKQxkAACo2/pyXFyEKAAAAAAAAACkAAAAAAABZQDISCQAAAAAAAOA/EQAAAAAAAClAMhIJrkfhehSu7z8RAAAAAAAAOUA="

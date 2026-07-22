@@ -163,6 +163,7 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_metrics_histograms_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_histograms_send_aggregation_metrics(&mut self, value: bool);
     fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool);
+    fn consume_otlp_config_metrics_summaries_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_sums_cumulative_monotonic_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(&mut self, value: String);
     fn consume_otlp_config_metrics_tags(&mut self, value: String);
@@ -426,6 +427,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_otlp_config_metrics_resource_attributes_as_tags(
         config.otlp_config.metrics.resource_attributes_as_tags.clone(),
     );
+    consumer.consume_otlp_config_metrics_summaries_mode(config.otlp_config.metrics.summaries.mode.clone());
     consumer.consume_otlp_config_metrics_sums_cumulative_monotonic_mode(
         config.otlp_config.metrics.sums.cumulative_monotonic_mode.clone(),
     );

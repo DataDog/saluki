@@ -2030,6 +2030,19 @@ inventory:
       additional_attributes:
         config_registry_filename: otlp.rs
 
+  otlp_config.metrics.summaries.mode:
+    support: full
+    pipelines: [otlp]
+    description: "OTLP summary quantile reporting mode."
+    documentation: |-
+      Controls how summary quantiles are reported. The default `gauges` emits one gauge metric per quantile. Set this
+      to `noquantiles` to omit quantile metrics.
+    test_support:
+      used_by: [OtlpConfiguration]
+      test_json: '"noquantiles"'
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   otlp_config.metrics.sums.cumulative_monotonic_mode:
     support: full
     pipelines: [otlp]
@@ -3942,7 +3955,6 @@ excluded:
   otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.summaries.mode: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.tag_cardinality: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.include_metadata: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time: "ignored in initial audit 2026-04-23"

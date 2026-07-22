@@ -43,6 +43,9 @@ pub struct Metrics {
 
     /// Comma-separated list of tags to add to every emitted metric.
     pub tags: String,
+
+    /// OTLP summary translation settings.
+    pub summaries: Summaries,
 }
 
 /// How explicit OTLP histogram buckets are reported.
@@ -142,6 +145,41 @@ pub struct Sums {
     /// Defaults to `auto`, which reports the value only when its series started after the translator process.
     /// Set this to `drop` to always discard the first value or `keep` to always report it.
     pub initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
+}
+
+/// OTLP summary translation settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Summaries {
+    /// How summary quantiles are reported.
+    ///
+    /// Defaults to `gauges`, which emits one gauge metric per quantile. Set to `noquantiles` to omit quantile
+    /// metrics.
+    pub mode: SummaryMode,
+}
+
+/// How OTLP summary quantiles are reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum SummaryMode {
+    /// Report one gauge metric per quantile.
+    #[default]
+    Gauges,
+
+    /// Omit quantile metrics.
+    NoQuantiles,
+}
+
+impl FromStr for SummaryMode {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "gauges" => Ok(Self::Gauges),
+            "noquantiles" => Ok(Self::NoQuantiles),
+            other => Err(Error::new_without_source(format!(
+                "unknown summary mode `{other}`; expected `gauges` or `noquantiles`"
+            ))),
+        }
+    }
 }
 
 /// OTLP receiver transports and per-signal activation.

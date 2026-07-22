@@ -156,7 +156,7 @@ impl OtlpConfiguration {
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
         metrics::config::OtlpMetricsTranslatorConfig::default()
             .with_remapping(true)
-            .with_quantiles(true)
+            .with_summary_mode(self.otlp_config.metrics.summaries.mode)
             .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
             .with_send_histogram_aggregations(self.otlp_config.metrics.histograms.send_aggregation_metrics)
             .with_cumulative_monotonic_mode(self.otlp_config.metrics.sums.cumulative_monotonic_mode)
@@ -613,6 +613,47 @@ mod tests {
 
             assert_eq!(otlp_config.metrics_translator_config().hist_mode, expected_mode);
         }
+    }
+
+    #[tokio::test]
+    async fn summary_mode_flows_to_metrics_translator() {
+        let cases = [("gauges", true), ("noquantiles", false)];
+
+        for (configured_mode, expected_quantiles) in cases {
+            let config = config_from(json!({
+                "otlp_config": {
+                    "metrics": {
+                        "summaries": {
+                            "mode": configured_mode
+                        }
+                    }
+                }
+            }))
+            .await;
+            let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
+
+            assert_eq!(otlp_config.metrics_translator_config().quantiles, expected_quantiles);
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_mode_is_configurable_via_environment_variable() {
+        let env_vars = [(
+            "OTLP_CONFIG_METRICS_SUMMARIES_MODE".to_string(),
+            "noquantiles".to_string(),
+        )];
+        let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            Some(json!({ "otlp_config": {} })),
+            Some(&env_vars),
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::new,
+        )
+        .await;
+        let config =
+            OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
+
+        assert!(!config.metrics_translator_config().quantiles);
     }
 
     #[tokio::test]

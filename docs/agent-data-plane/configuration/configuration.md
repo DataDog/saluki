@@ -696,6 +696,7 @@ compressed wire payload bytes.
 | `otlp_config.metrics.histograms.mode`                          | OTLP histogram bucket reporting mode               |
 | `otlp_config.metrics.histograms.send_aggregation_metrics`      | Emit OTLP histogram aggregation metrics.           |
 | `otlp_config.metrics.resource_attributes_as_tags`              | Add scalar resource attributes as raw tags.        |
+| `otlp_config.metrics.summaries.mode`                           | OTLP summary quantile reporting mode.              |
 | `otlp_config.metrics.sums.cumulative_monotonic_mode`           | Cumulative monotonic sum reporting mode.           |
 | `otlp_config.metrics.sums.initial_cumulative_monotonic_value`  | Initial cumulative sum reporting behavior.         |
 | `otlp_config.metrics.tags`                                     | Comma-separated tags for all OTLP metrics.         |
