@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     task::{ready, Context, Poll},
 };
 
@@ -178,10 +178,32 @@ impl<S> Layer<S> for EndpointTelemetryLayer {
     }
 }
 
+#[derive(Default)]
+struct SuccessCounters {
+    http_09: OnceLock<Counter>,
+    http_10: OnceLock<Counter>,
+    http_11: OnceLock<Counter>,
+    http_2: OnceLock<Counter>,
+    http_3: OnceLock<Counter>,
+}
+
+impl SuccessCounters {
+    fn slot_for_version(&self, version: Version) -> (&OnceLock<Counter>, &'static str) {
+        match version {
+            Version::HTTP_09 => (&self.http_09, "HTTP/0.9"),
+            Version::HTTP_10 => (&self.http_10, "HTTP/1.0"),
+            Version::HTTP_11 => (&self.http_11, "HTTP/1.1"),
+            Version::HTTP_2 => (&self.http_2, "HTTP/2.0"),
+            Version::HTTP_3 => (&self.http_3, "HTTP/3.0"),
+            _ => unreachable!("unsupported HTTP version"),
+        }
+    }
+}
+
 struct PerEndpointTelemetry {
     builder: MetricsBuilder,
     dropped: Counter,
-    success_map: Mutex<HashMap<Version, Counter>>,
+    success: SuccessCounters,
     success_bytes: Counter,
     http_errors_map: Mutex<HashMap<StatusCode, Counter>>,
 }
@@ -200,14 +222,14 @@ impl PerEndpointTelemetry {
             .add_default_tag(("endpoint", endpoint_name.to_string()));
 
         let dropped = builder.register_counter("network_http_requests_failed_total");
-        let success_map = Mutex::new(HashMap::new());
+        let success = SuccessCounters::default();
         let success_bytes = builder.register_counter("network_http_requests_success_sent_bytes_total");
         let http_errors_map = Mutex::new(HashMap::new());
 
         Self {
             builder,
             dropped,
-            success_map,
+            success,
             success_bytes,
             http_errors_map,
         }
@@ -218,19 +240,14 @@ impl PerEndpointTelemetry {
     }
 
     fn increment_success(&self, version: Version) {
-        let counter = {
-            let mut success_map = self.success_map.lock().unwrap();
-            success_map
-                .entry(version)
-                .or_insert_with(|| {
-                    self.builder.register_counter_with_tags(
-                        "network_http_requests_success_total",
-                        [("proto_version", format!("{version:?}"))],
-                    )
-                })
-                .clone()
-        };
-        counter.increment(1);
+        let (slot, proto_version) = self.success.slot_for_version(version);
+        slot.get_or_init(|| {
+            self.builder.register_counter_with_tags(
+                "network_http_requests_success_total",
+                [("proto_version", proto_version)],
+            )
+        })
+        .increment(1);
     }
 
     fn increment_success_bytes(&self, len: u64) {
@@ -437,6 +454,24 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn success_counter_slots_cover_supported_http_versions() {
+        let counters = SuccessCounters::default();
+        let cases = [
+            (Version::HTTP_09, &counters.http_09, "HTTP/0.9"),
+            (Version::HTTP_10, &counters.http_10, "HTTP/1.0"),
+            (Version::HTTP_11, &counters.http_11, "HTTP/1.1"),
+            (Version::HTTP_2, &counters.http_2, "HTTP/2.0"),
+            (Version::HTTP_3, &counters.http_3, "HTTP/3.0"),
+        ];
+
+        for (version, expected_slot, expected_label) in cases {
+            let (slot, label) = counters.slot_for_version(version);
+            assert!(std::ptr::eq(slot, expected_slot));
+            assert_eq!(label, expected_label);
+        }
+    }
 
     #[test]
     fn successful_requests_are_counted_by_response_protocol_without_splitting_bytes() {
