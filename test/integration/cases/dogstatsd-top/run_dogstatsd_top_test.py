@@ -18,6 +18,8 @@ AUTH_TOKEN = Path("/etc/datadog-agent/auth_token")
 API_URL = "https://127.0.0.1:55101/dogstatsd/contexts/dump"
 DUMP_FILENAME = "dogstatsd_contexts.json.zstd"
 COPIED_DUMP = Path("/tmp/dogstatsd-top-copied.json.zstd")
+AGENT_FIXTURE_COMPRESSED = Path("/dogstatsd-top/agent-7.80.3-contexts.json.zstd")
+AGENT_FIXTURE_PLAIN = Path("/dogstatsd-top/agent-7.80.3-contexts.ndjson")
 ONLINE_OUTPUT = Path("/tmp/dogstatsd-top-online-output")
 OFFLINE_OUTPUT = Path("/tmp/dogstatsd-top-offline-output")
 AGENT_OUTPUT = Path("/tmp/dogstatsd-top-agent-output")
@@ -119,6 +121,19 @@ def validate_online_api(token):
         raise AssertionError(f"authenticated API returned an invalid artifact path: {path}")
 
 
+def validate_agent_fixture_interoperability():
+    reports = []
+    for fixture in [AGENT_FIXTURE_COMPRESSED, AGENT_FIXTURE_PLAIN]:
+        reports.append(run_adp("top", "--path", str(fixture)))
+        reports.append(run([str(AGENT), "dogstatsd", "top", "--path", str(fixture)]))
+
+    normalized = [normalize_report(report) for report in reports]
+    if any(report != normalized[0] for report in normalized[1:]):
+        raise AssertionError(f"Agent-produced fixture reports differ: {reports}")
+    if "interop.agent.requests" not in normalized[0]:
+        raise AssertionError(f"Agent-produced fixture did not contain expected contexts: {normalized[0]}")
+
+
 def validate_dump_and_offline_interoperability():
     dump_path = parse_written_path(run_adp("dump-contexts"))
     if stat.S_IMODE(dump_path.stat().st_mode) != 0o600:
@@ -137,11 +152,12 @@ def validate_dump_and_offline_interoperability():
 
 
 def main():
-    for required_path in [ADP, AGENT, CONFIG, AUTH_TOKEN]:
+    for required_path in [ADP, AGENT, CONFIG, AUTH_TOKEN, AGENT_FIXTURE_COMPRESSED, AGENT_FIXTURE_PLAIN]:
         if not required_path.exists():
             raise AssertionError(f"required test path does not exist: {required_path}")
 
     assert_unauthorized_request()
+    validate_agent_fixture_interoperability()
     send_dogstatsd_contexts()
     online = wait_for_online_report()
     if not online.startswith("Wrote "):

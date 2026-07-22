@@ -14,6 +14,10 @@ env:
 container:
   files:
     - "run_dogstatsd_top_test.py:/dogstatsd-top/run_dogstatsd_top_test.py"
+    # Produced by Datadog Agent 7.80.3 `dogstatsd dump-contexts`; the NDJSON file is the exact
+    # decompressed content of the zstd artifact.
+    - "agent-7.80.3-contexts.json.zstd:/dogstatsd-top/agent-7.80.3-contexts.json.zstd"
+    - "agent-7.80.3-contexts.ndjson:/dogstatsd-top/agent-7.80.3-contexts.ndjson"
   exposed_ports:
     - "58125/udp"
     - "55101/tcp"

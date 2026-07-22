@@ -1,0 +1,4 @@
+{"Name":"interop.agent.requests","Host":"agent-b","Type":"Counter","TaggerTags":[],"MetricTags":["env:prod","instance:b"],"NoIndex":false,"Source":1}
+{"Name":"interop.agent.queue","Host":"dogstatsd-interop-agent","Type":"Counter","TaggerTags":[],"MetricTags":["queue:alpha"],"NoIndex":false,"Source":1}
+{"Name":"datadog.agent.started","Host":"dogstatsd-interop-agent","Type":"Count","TaggerTags":[],"MetricTags":["version:7.80.3","package_version:bin"],"NoIndex":false,"Source":0}
+{"Name":"interop.agent.requests","Host":"agent-a","Type":"Counter","TaggerTags":[],"MetricTags":["env:prod","instance:a"],"NoIndex":false,"Source":1}
