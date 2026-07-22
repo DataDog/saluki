@@ -5,7 +5,10 @@
 //! only want the definitive codegen defaults rather than restating values that can drift (see
 //! #1802).
 
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, time::Duration};
+
+/// Default timeout before a partially filled encoder payload is flushed.
+pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Default OTLP trace string interner capacity: 512 KiB.
 pub const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap();

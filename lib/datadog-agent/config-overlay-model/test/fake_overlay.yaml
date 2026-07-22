@@ -24,7 +24,7 @@ inventory:
     pipelines: [dogstatsd, traces]
     description: "Enable APM trace pipeline"
     test_support:
-      used_by: [DatadogTraceConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 

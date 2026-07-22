@@ -54,8 +54,6 @@ pub mod structs {
     pub const DOGSTATSD_PREFIX_FILTER_CONFIGURATION: &str = "DogStatsDPrefixFilterConfiguration";
     /// Identifier for `DatadogMetricsConfiguration`.
     pub const DATADOG_METRICS_CONFIGURATION: &str = "DatadogMetricsConfiguration";
-    /// Identifier for `DatadogTraceConfiguration`.
-    pub const DATADOG_TRACE_CONFIGURATION: &str = "DatadogTraceConfiguration";
     /// Identifier for `DatadogLogsConfiguration`.
     pub const DATADOG_LOGS_CONFIGURATION: &str = "DatadogLogsConfiguration";
     /// Identifier for `DatadogEventsConfiguration`.
