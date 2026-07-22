@@ -156,10 +156,7 @@ impl OtlpConfiguration {
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
         metrics::config::OtlpMetricsTranslatorConfig::default()
             .with_remapping(true)
-            .with_quantiles(matches!(
-                self.otlp_config.metrics.summaries.mode,
-                agent_data_plane_config::domains::otlp::SummaryMode::Gauges
-            ))
+            .with_summary_mode(self.otlp_config.metrics.summaries.mode)
             .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
             .with_send_histogram_aggregations(self.otlp_config.metrics.histograms.send_aggregation_metrics)
             .with_cumulative_monotonic_mode(self.otlp_config.metrics.sums.cumulative_monotonic_mode)
