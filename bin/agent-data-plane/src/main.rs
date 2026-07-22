@@ -35,10 +35,21 @@ pub(crate) mod state;
 
 #[cfg(all(target_os = "linux", not(system_allocator)))]
 #[global_allocator]
-static ALLOC: saluki_common::resource_tracking::TrackingAllocator<tikv_jemallocator::Jemalloc> =
-    saluki_common::resource_tracking::TrackingAllocator::new(tikv_jemallocator::Jemalloc);
+static ALLOC: libdd_profiling_heap_allocator::SampledAllocator<
+    saluki_common::resource_tracking::TrackingAllocator<tikv_jemallocator::Jemalloc>,
+> = libdd_profiling_heap_allocator::SampledAllocator::new(saluki_common::resource_tracking::TrackingAllocator::new(
+    tikv_jemallocator::Jemalloc,
+));
 
-#[cfg(any(not(target_os = "linux"), system_allocator))]
+#[cfg(all(target_os = "linux", system_allocator))]
+#[global_allocator]
+static ALLOC: libdd_profiling_heap_allocator::SampledAllocator<
+    saluki_common::resource_tracking::TrackingAllocator<std::alloc::System>,
+> = libdd_profiling_heap_allocator::SampledAllocator::new(saluki_common::resource_tracking::TrackingAllocator::new(
+    std::alloc::System,
+));
+
+#[cfg(not(target_os = "linux"))]
 #[global_allocator]
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<std::alloc::System> =
     saluki_common::resource_tracking::TrackingAllocator::new(std::alloc::System);

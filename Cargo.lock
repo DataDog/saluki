@@ -42,6 +42,7 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
+ "libdd-profiling-heap-allocator",
  "metrics",
  "ottl",
  "process-memory",
@@ -430,7 +431,7 @@ version = "0.13.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3d619165468401dec3caa3366ebffbcb83f2f31883e5b3932f8e2dec2ddc568"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "cc",
  "cmake",
  "dunce",
@@ -578,6 +579,26 @@ name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
+
+[[package]]
+name = "bindgen"
+version = "0.71.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+dependencies = [
+ "bitflags",
+ "cexpr",
+ "clang-sys",
+ "itertools",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash 2.1.2",
+ "shlex",
+ "syn",
+]
 
 [[package]]
 name = "bindgen"
@@ -2649,6 +2670,23 @@ name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+
+[[package]]
+name = "libdd-profiling-heap-allocator"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog?branch=sgg%2Ffix-saluki#f5f496dac5f1330f32d1601f841a1b0ffd4efcf2"
+dependencies = [
+ "libdd-profiling-heap-sampler",
+]
+
+[[package]]
+name = "libdd-profiling-heap-sampler"
+version = "0.1.0"
+source = "git+https://github.com/DataDog/libdatadog?branch=sgg%2Ffix-saluki#f5f496dac5f1330f32d1601f841a1b0ffd4efcf2"
+dependencies = [
+ "bindgen 0.71.1",
+ "cc",
+]
 
 [[package]]
 name = "libloading"

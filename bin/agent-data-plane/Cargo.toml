@@ -75,6 +75,7 @@ tikv-jemallocator = { workspace = true, features = [
   "unprefixed_malloc_on_supported_platforms",
   "stats",
 ] }
+libdd-profiling-heap-allocator = { workspace = true }
 
 [build-dependencies]
 chrono = { workspace = true }
