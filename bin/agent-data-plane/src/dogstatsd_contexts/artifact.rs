@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -12,6 +14,8 @@ use uuid::Uuid;
 
 const ZSTD_MAGIC: &[u8; 4] = b"\x28\xb5\x2f\xfd";
 pub(crate) const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
+#[cfg(windows)]
+const WINDOWS_CONTEXT_DUMP_SDDL: &str = "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)";
 
 struct AgentContextSnapshotRecord<'a>(&'a AggregateContextSnapshotEntry);
 
@@ -100,7 +104,7 @@ fn publish_context_dump_with<R: AtomicReplace>(
 }
 
 fn publish_context_dump_with_services<R, E, P, C>(
-    run_path: &Path, snapshot: &[AggregateContextSnapshotEntry], replacer: &R, entropy: &E, permissions: &P,
+    run_path: &Path, snapshot: &[AggregateContextSnapshotEntry], replacer: &R, entropy: &E, _permissions: &P,
     cleanup: &C,
 ) -> Result<PathBuf, GenericError>
 where
@@ -126,7 +130,8 @@ where
     })?;
 
     run_with_temporary_cleanup(&temporary_path, &target, cleanup, || {
-        permissions.normalize(&file).with_error_context(|| {
+        #[cfg(unix)]
+        _permissions.normalize(&file).with_error_context(|| {
             format!(
                 "Failed to set owner-only permissions on temporary DogStatsD context dump '{}' for target '{}'.",
                 temporary_path.display(),
@@ -167,12 +172,14 @@ impl EntropySource for SystemEntropy {
 }
 
 trait PermissionNormalizer {
+    #[cfg(unix)]
     fn normalize(&self, file: &File) -> io::Result<()>;
 }
 
 struct OwnerOnlyPermissions;
 
 impl PermissionNormalizer for OwnerOnlyPermissions {
+    #[cfg(unix)]
     fn normalize(&self, file: &File) -> io::Result<()> {
         set_owner_only_permissions(file)
     }
@@ -185,11 +192,7 @@ fn set_owner_only_permissions(file: &File) -> io::Result<()> {
     file.set_permissions(fs::Permissions::from_mode(0o600))
 }
 
-#[cfg(not(unix))]
-fn set_owner_only_permissions(_file: &File) -> io::Result<()> {
-    Ok(())
-}
-
+#[cfg(not(windows))]
 fn open_temporary_file(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -199,6 +202,117 @@ fn open_temporary_file(path: &Path) -> io::Result<File> {
         options.mode(0o600);
     }
     options.open(path)
+}
+
+#[cfg(windows)]
+fn open_temporary_file(path: &Path) -> io::Result<File> {
+    use std::os::windows::{
+        ffi::OsStrExt as _,
+        io::{FromRawHandle as _, OwnedHandle},
+    };
+    use std::ptr;
+
+    use windows_sys::Win32::{
+        Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE},
+        Storage::FileSystem::{
+            CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        },
+    };
+
+    let mut wide_path: Vec<_> = path.as_os_str().encode_wide().collect();
+    if wide_path.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains an interior NUL",
+        ));
+    }
+    wide_path.push(0);
+
+    let security_attributes = WindowsSecurityAttributes::from_sddl(WINDOWS_CONTEXT_DUMP_SDDL)?;
+    // SAFETY: The path is a live NUL-terminated UTF-16 buffer, the security attributes refer to a live self-relative
+    // descriptor, and the null template handle is valid for a new file. A successful call transfers one owned handle.
+    let handle = unsafe {
+        CreateFileW(
+            wide_path.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            security_attributes.as_ptr(),
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+
+    // SAFETY: `CreateFileW` returned a valid handle whose ownership has not been transferred elsewhere.
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    Ok(File::from(handle))
+}
+
+#[cfg(windows)]
+struct WindowsSecurityAttributes {
+    descriptor: *mut std::ffi::c_void,
+    attributes: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+}
+
+#[cfg(windows)]
+impl WindowsSecurityAttributes {
+    fn from_sddl(sddl: &str) -> io::Result<Self> {
+        use std::ptr;
+
+        use windows_sys::Win32::{
+            Foundation::FALSE,
+            Security::{
+                Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1},
+                SECURITY_ATTRIBUTES,
+            },
+        };
+
+        let wide_sddl: Vec<_> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut descriptor = ptr::null_mut();
+        // SAFETY: The SDDL is a live NUL-terminated UTF-16 buffer, `descriptor` is a valid output pointer, and the
+        // optional descriptor-size output is null. A successful call transfers ownership of the descriptor.
+        let result = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide_sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                ptr::null_mut(),
+            )
+        };
+        if result == FALSE {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(Self {
+            descriptor,
+            attributes: SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor,
+                bInheritHandle: FALSE,
+            },
+        })
+    }
+
+    fn as_ptr(&self) -> *const windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
+        &self.attributes
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsSecurityAttributes {
+    fn drop(&mut self) {
+        if !self.descriptor.is_null() {
+            use windows_sys::Win32::Foundation::{LocalFree, HLOCAL};
+
+            // SAFETY: The descriptor was allocated by the SDDL conversion API and remains owned by this value.
+            unsafe {
+                let _ = LocalFree(self.descriptor as HLOCAL);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -613,13 +727,17 @@ mod tests {
     use serde_json::json;
     use stringtheory::MetaString;
 
+    #[cfg(windows)]
+    use super::open_temporary_file;
     use super::{
         collect_records, finish_buffered_writer, finish_zstd_encoder, publish_buffered_temporary, publish_context_dump,
         publish_context_dump_with, publish_context_dump_with_services, publish_open_temporary,
-        set_owner_only_permissions, temporary_context_dump_path, write_snapshot_records, AgentContextRecord,
-        AtomicReplace, EntropySource, FileSystemAtomicReplace, FileSystemCleanup, OwnerOnlyPermissions,
-        PermissionNormalizer, SyncAll, TemporaryFileCleanup, TemporaryPathCleanup, CONTEXT_DUMP_FILENAME,
+        temporary_context_dump_path, write_snapshot_records, AgentContextRecord, AtomicReplace, EntropySource,
+        FileSystemAtomicReplace, FileSystemCleanup, OwnerOnlyPermissions, SyncAll, TemporaryFileCleanup,
+        TemporaryPathCleanup, CONTEXT_DUMP_FILENAME,
     };
+    #[cfg(unix)]
+    use super::{set_owner_only_permissions, PermissionNormalizer};
     use crate::dogstatsd_contexts::read_report;
 
     const PLAIN_FIXTURE_BYTES: &[u8] = include_bytes!(concat!(
@@ -638,6 +756,102 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/dogstatsd_contexts_agent.ndjson.zstd"
     );
+
+    #[cfg(windows)]
+    struct LocalAllocation(*mut std::ffi::c_void);
+
+    #[cfg(windows)]
+    impl Drop for LocalAllocation {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                use windows_sys::Win32::Foundation::{LocalFree, HLOCAL};
+
+                // SAFETY: This pointer was allocated by a Windows security API that transfers ownership to the caller.
+                unsafe {
+                    let _ = LocalFree(self.0 as HLOCAL);
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    fn windows_file_dacl_sddl(path: &std::path::Path) -> io::Result<(u16, String)> {
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::{ptr, slice};
+
+        use windows_sys::Win32::{
+            Foundation::ERROR_SUCCESS,
+            Security::{
+                Authorization::{
+                    ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW, SDDL_REVISION_1,
+                    SE_FILE_OBJECT,
+                },
+                GetSecurityDescriptorControl, DACL_SECURITY_INFORMATION,
+            },
+        };
+
+        let mut wide_path: Vec<_> = path.as_os_str().encode_wide().collect();
+        if wide_path.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "path contains an interior NUL",
+            ));
+        }
+        wide_path.push(0);
+
+        let mut descriptor = ptr::null_mut();
+        // SAFETY: The path is NUL-terminated and remains alive during the call. All unused output pointers are null,
+        // and `descriptor` receives an allocation owned by the caller on success.
+        let result = unsafe {
+            GetNamedSecurityInfoW(
+                wide_path.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if result != ERROR_SUCCESS {
+            return Err(io::Error::from_raw_os_error(result as i32));
+        }
+        let descriptor = LocalAllocation(descriptor);
+
+        let mut control = 0;
+        let mut revision = 0;
+        // SAFETY: `descriptor` is a valid security descriptor allocation and both output pointers are valid writes.
+        let result = unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut sddl = ptr::null_mut();
+        let mut sddl_len = 0;
+        // SAFETY: `descriptor` remains valid during the call, and both output pointers are valid writes. The returned
+        // string allocation is owned by the caller on success.
+        let result = unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                descriptor.0,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut sddl,
+                &mut sddl_len,
+            )
+        };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let sddl_allocation = LocalAllocation(sddl.cast());
+        // SAFETY: The conversion API returned `sddl_len` initialized UTF-16 code units in the live `sddl` allocation.
+        let wide_sddl = unsafe { slice::from_raw_parts(sddl, sddl_len as usize) };
+        let wide_sddl = wide_sddl.strip_suffix(&[0]).unwrap_or(wide_sddl);
+        let sddl = String::from_utf16(wide_sddl).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        drop(sddl_allocation);
+
+        Ok((control, sddl))
+    }
 
     // These fixtures and expectations mirror ContextDebugRepr and the `dogstatsd top` command at Datadog Agent
     // commit 9de2a8371cf8d95794f238939709491907893288.
@@ -879,6 +1093,32 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn temporary_dump_is_created_with_a_protected_restrictive_dacl() {
+        use windows_sys::Win32::Security::SE_DACL_PROTECTED;
+
+        let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
+        let target = run_directory.path().join(CONTEXT_DUMP_FILENAME);
+        let staging_path = temporary_context_dump_path(run_directory.path(), &target, &FixedEntropy)
+            .expect("temporary dump path should be generated");
+        let _file = open_temporary_file(&staging_path).expect("temporary dump should be created");
+
+        let (control, sddl) = windows_file_dacl_sddl(&staging_path).expect("temporary dump DACL should be readable");
+
+        assert_ne!(control & SE_DACL_PROTECTED, 0, "DACL must be protected: {sddl}");
+        assert!(sddl.contains("D:P"), "DACL SDDL must carry the protected flag: {sddl}");
+        for required_ace in ["(A;;FA;;;OW)", "(A;;FA;;;SY)", "(A;;FA;;;BA)"] {
+            assert!(sddl.contains(required_ace), "DACL is missing {required_ace}: {sddl}");
+        }
+        assert_eq!(sddl.matches('(').count(), 3, "DACL contains an unexpected ACE: {sddl}");
+        assert!(!sddl.contains(";;;WD)"), "DACL must not grant Everyone access: {sddl}");
+        assert!(
+            !sddl.contains(";;;BU)"),
+            "DACL must not grant Builtin Users access: {sddl}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn publication_normalizes_restrictive_temporary_permissions_to_exactly_0600() {
@@ -942,6 +1182,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn permission_failure_closes_and_removes_the_new_temporary_file() {
         let run_directory = tempfile::tempdir().expect("temporary run directory should be created");
@@ -1300,8 +1541,10 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     struct FailingPermissions;
 
+    #[cfg(unix)]
     impl PermissionNormalizer for FailingPermissions {
         fn normalize(&self, _file: &fs::File) -> io::Result<()> {
             Err(io::Error::other("injected permission failure"))

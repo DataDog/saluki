@@ -84,6 +84,8 @@ tikv-jemallocator = { workspace = true, features = [
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { workspace = true, features = [
   "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
 ] }
 
