@@ -28,16 +28,28 @@ impl TransactionInputTelemetry {
     }
 }
 
-#[derive(Clone)]
 pub(super) struct TransactionRetryTelemetry {
     builder: MetricsBuilder,
     domain: MetaString,
-    counters_by_endpoint: Arc<Mutex<FastHashMap<MetaString, TransactionRetryCounters>>>,
+    counters_by_endpoint: FastHashMap<MetaString, TransactionRetryCounters>,
 }
 
-struct TransactionRetryCounters {
+#[derive(Clone)]
+pub(super) struct TransactionRetryCounters {
     retries: Counter,
     requeued: Counter,
+}
+
+impl TransactionRetryCounters {
+    /// Tracks a completed retry dispatch.
+    pub(super) fn increment_retries(&self) {
+        self.retries.increment(1);
+    }
+
+    /// Tracks a retry that was requeued before dispatch.
+    pub(super) fn increment_requeued(&self) {
+        self.requeued.increment(1);
+    }
 }
 
 impl TransactionRetryTelemetry {
@@ -46,25 +58,14 @@ impl TransactionRetryTelemetry {
         Self {
             builder: builder.clone(),
             domain: MetaString::from(domain),
-            counters_by_endpoint: Arc::new(Mutex::new(FastHashMap::default())),
+            counters_by_endpoint: FastHashMap::default(),
         }
     }
 
-    /// Tracks a transaction being retried for the logical endpoint.
-    pub(super) fn increment_retries(&self, endpoint: &str) {
-        self.increment_counter(endpoint, |counters| &counters.retries);
-    }
-
-    /// Tracks a transaction being requeued for the logical endpoint.
-    pub(super) fn increment_requeued(&self, endpoint: &str) {
-        self.increment_counter(endpoint, |counters| &counters.requeued);
-    }
-
-    fn increment_counter(&self, endpoint: &str, select: fn(&TransactionRetryCounters) -> &Counter) {
-        let mut counters_by_endpoint = self.counters_by_endpoint.lock().unwrap();
-        if let Some(counters) = counters_by_endpoint.get(endpoint) {
-            select(counters).increment(1);
-            return;
+    /// Returns cached retry counter handles for the logical endpoint, registering them on first use.
+    pub(super) fn counters_for(&mut self, endpoint: &str) -> TransactionRetryCounters {
+        if let Some(counters) = self.counters_by_endpoint.get(endpoint) {
+            return counters.clone();
         }
 
         let endpoint = MetaString::from(endpoint);
@@ -77,8 +78,8 @@ impl TransactionRetryTelemetry {
                 .builder
                 .register_counter_with_tags(NETWORK_HTTP_REQUESTS_REQUEUED_TOTAL, tags),
         };
-        select(&counters).increment(1);
-        counters_by_endpoint.insert(endpoint, counters);
+        self.counters_by_endpoint.insert(endpoint, counters.clone());
+        counters
     }
 }
 
@@ -510,18 +511,22 @@ mod tests {
     }
 
     #[test]
-    fn transaction_retry_telemetry_records_counters_by_logical_endpoint() {
+    fn transaction_retry_telemetry_caches_counters_by_logical_endpoint() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let builder = MetricsBuilder::default().add_default_tag(("component_id", "forwarder"));
-        let telemetry = TransactionRetryTelemetry::from_builder(&builder, "https://example.com");
-        let cloned_telemetry = telemetry.clone();
+        let mut telemetry = TransactionRetryTelemetry::from_builder(&builder, "https://example.com");
 
-        telemetry.increment_retries("series_v2");
-        cloned_telemetry.increment_retries("series_v2");
-        telemetry.increment_requeued("series_v2");
-        telemetry.increment_retries("sketches_v2");
+        let first_series = telemetry.counters_for("series_v2");
+        let second_series = telemetry.counters_for("series_v2");
+        let sketches = telemetry.counters_for("sketches_v2");
 
+        first_series.increment_retries();
+        second_series.increment_retries();
+        second_series.increment_requeued();
+        sketches.increment_retries();
+
+        assert_eq!(telemetry.counters_by_endpoint.len(), 2);
         let series_tags = &[
             ("component_id", "forwarder"),
             ("domain", "https://example.com"),

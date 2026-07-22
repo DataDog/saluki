@@ -9,10 +9,7 @@ use std::{
     collections::VecDeque,
     error::Error as _,
     path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -52,7 +49,7 @@ use super::{
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
     telemetry::{
         ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionInputTelemetry, TransactionQueueTelemetry,
-        TransactionRetryTelemetry,
+        TransactionRetryCounters, TransactionRetryTelemetry,
     },
     transaction::{Metadata, Transaction, TransactionBody},
     validation::ApiKeyValidator,
@@ -61,77 +58,73 @@ use super::{
 
 type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
 
-#[derive(Clone, Default)]
-struct RetryDispatchMarker {
-    dispatched: Arc<AtomicBool>,
-}
-
-impl RetryDispatchMarker {
-    fn mark_dispatched(&self) -> bool {
-        !self.dispatched.swap(true, Ordering::AcqRel)
-    }
-
-    fn was_dispatched(&self) -> bool {
-        self.dispatched.load(Ordering::Acquire)
-    }
-}
-
-fn resolve_logical_endpoint(endpoint_name: &EndpointNameFn, uri: &Uri) -> MetaString {
-    endpoint_name(uri).unwrap_or_else(|| MetaString::from(uri.path()))
-}
-
-fn prepare_transaction_dispatch<B>(
-    pending_txn: PendingTransaction<Transaction<B>>,
-) -> (Metadata, Request<TransactionBody<B>>)
+struct TransactionDispatch<B>
 where
     B: Buf + Clone,
 {
-    let (txn, is_retry) = match pending_txn {
-        PendingTransaction::HighPriority(txn) => (txn, false),
-        PendingTransaction::Retry(txn) => (txn, true),
-    };
-    let (metadata, mut request) = txn.into_parts();
-    if is_retry {
-        request.extensions_mut().insert(RetryDispatchMarker::default());
-    }
-
-    (metadata, request)
+    metadata: Metadata,
+    request: Request<TransactionBody<B>>,
+    retry_counters: Option<TransactionRetryCounters>,
 }
 
-fn track_retry_dispatch<B>(
-    request: Request<B>, telemetry: &TransactionRetryTelemetry, endpoint_name: &EndpointNameFn,
-) -> Request<B> {
-    let first_dispatch = request
-        .extensions()
-        .get::<RetryDispatchMarker>()
-        .is_some_and(RetryDispatchMarker::mark_dispatched);
-    if first_dispatch {
-        let logical_endpoint = resolve_logical_endpoint(endpoint_name, request.uri());
-        telemetry.increment_retries(&logical_endpoint);
-    }
-
-    request
+struct InFlightTransaction<R> {
+    metadata: Metadata,
+    retry_counters: Option<TransactionRetryCounters>,
+    result: R,
 }
 
-fn take_blocked_retry_endpoint<B>(request: &mut Request<B>, endpoint_name: &EndpointNameFn) -> Option<MetaString> {
-    let marker = request.extensions_mut().remove::<RetryDispatchMarker>()?;
-    (!marker.was_dispatched()).then(|| resolve_logical_endpoint(endpoint_name, request.uri()))
-}
-
-async fn requeue_open_transaction<B>(
-    metadata: Metadata, mut request: Request<TransactionBody<B>>,
-    pending_txns: &mut PendingTransactions<Transaction<B>>, telemetry: &TransactionRetryTelemetry,
+fn prepare_transaction_dispatch<B>(
+    pending_txn: PendingTransaction<Transaction<B>>, retry_telemetry: &mut TransactionRetryTelemetry,
     endpoint_name: &EndpointNameFn,
+) -> TransactionDispatch<B>
+where
+    B: Buf + Clone,
+{
+    let (txn, retry_counters) = match pending_txn {
+        PendingTransaction::HighPriority(txn) => (txn, None),
+        PendingTransaction::Retry(txn) => {
+            let resolved = endpoint_name(txn.request_uri());
+            let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
+            let counters = retry_telemetry.counters_for(logical);
+            (txn, Some(counters))
+        }
+    };
+    let (metadata, request) = txn.into_parts();
+
+    TransactionDispatch {
+        metadata,
+        request,
+        retry_counters,
+    }
+}
+
+fn account_retry_result<'a, T, E, R>(
+    retry_counters: Option<&'a TransactionRetryCounters>, result: &Result<T, RetryCircuitBreakerError<E, R>>,
+) -> Option<&'a TransactionRetryCounters> {
+    match result {
+        Ok(_) | Err(RetryCircuitBreakerError::Service(_) | RetryCircuitBreakerError::Retry(_)) => {
+            if let Some(counters) = retry_counters {
+                counters.increment_retries();
+            }
+            None
+        }
+        Err(RetryCircuitBreakerError::Open(_)) => retry_counters,
+        Err(_) => unreachable!("unsupported retry circuit breaker error variant during telemetry accounting"),
+    }
+}
+
+async fn requeue_transaction<B>(
+    metadata: Metadata, request: Request<TransactionBody<B>>, pending_txns: &mut PendingTransactions<Transaction<B>>,
+    requeued_counters: Option<&TransactionRetryCounters>,
 ) -> Result<PushResult, GenericError>
 where
     B: Buf + Clone,
 {
-    let blocked_retry_endpoint = take_blocked_retry_endpoint(&mut request, endpoint_name);
     let push_result = pending_txns
         .push_low_priority(Transaction::reassemble(metadata, request))
         .await?;
-    if let Some(logical_endpoint) = blocked_retry_endpoint {
-        telemetry.increment_requeued(&logical_endpoint);
+    if let Some(counters) = requeued_counters {
+        counters.increment_requeued();
     }
 
     Ok(push_result)
@@ -520,7 +513,7 @@ async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
     telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry,
-    retry_telemetry: TransactionRetryTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
+    mut retry_telemetry: TransactionRetryTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
     endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
@@ -592,12 +585,6 @@ async fn run_endpoint_io_loop<B>(
         .layer(RetryCircuitBreakerLayer::new(
             config.retry().to_default_http_retry_policy(live_config),
         ))
-        // Count marked retries only after they cross the circuit breaker and reach the inward service.
-        .map_request({
-            let retry_telemetry = retry_telemetry.clone();
-            let endpoint_name = Arc::clone(&endpoint_name);
-            move |request| track_retry_dispatch(request, &retry_telemetry, endpoint_name.as_ref())
-        })
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
 
@@ -656,13 +643,13 @@ async fn run_endpoint_io_loop<B>(
                         strip_metrics_validation_headers(txn)
                     };
                     let transaction_size = txn.size_bytes();
-                    let transaction_endpoint_name =
-                        resolve_logical_endpoint(endpoint_name.as_ref(), txn.request_uri());
+                    let resolved = endpoint_name(txn.request_uri());
+                    let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
                     track_transaction_input_for_endpoint(
                         &mut transaction_input_telemetry_by_endpoint,
                         &telemetry,
                         &endpoint_domain,
-                        &transaction_endpoint_name,
+                        logical,
                         transaction_size,
                     );
 
@@ -683,8 +670,16 @@ async fn run_endpoint_io_loop<B>(
             // next the next available pending transaction.
             svc = service.ready(), if !done && !pending_txns.is_empty() => match svc {
                 Ok(svc) => if let Some(pending_txn) = pending_txns.pop().await {
-                    let (metadata, request) = prepare_transaction_dispatch(pending_txn);
-                    in_flight.spawn(svc.call(request).map(move |result| (metadata, result)));
+                    let dispatch = prepare_transaction_dispatch(
+                        pending_txn,
+                        &mut retry_telemetry,
+                        endpoint_name.as_ref(),
+                    );
+                    in_flight.spawn(svc.call(dispatch.request).map(move |result| InFlightTransaction {
+                        metadata: dispatch.metadata,
+                        retry_counters: dispatch.retry_counters,
+                        result,
+                    }));
 
                     debug!(endpoint_url, "Request sent.");
                 },
@@ -707,37 +702,32 @@ async fn run_endpoint_io_loop<B>(
             maybe_result = in_flight.join_next(), if !in_flight.is_empty() => {
                 let task_result = maybe_result.expect("in_flight marked as not being empty");
                 match task_result {
-                    Ok((metadata, result)) => match result {
-                        // We got a response -- maybe successful, maybe not -- so just process that.
-                        Ok(http_response) => process_http_response(http_response, metadata, &telemetry, &endpoint_url, &endpoint_domain).await,
+                    Ok(InFlightTransaction { metadata, retry_counters, result }) => {
+                        let requeued_counters = account_retry_result(retry_counters.as_ref(), &result);
+                        match result {
+                            // We got a response -- maybe successful, maybe not -- so just process that.
+                            Ok(http_response) => process_http_response(http_response, metadata, &telemetry, &endpoint_url, &endpoint_domain).await,
 
-                        // The service itself encountered an error while sending the request or receiving the response:
-                        // connection reset by peer, I/O error, etc.
-                        Err(RetryCircuitBreakerError::Service(e)) => {
-                            telemetry.track_permanently_failed_transaction(&metadata, None, &endpoint_domain);
-                            error!(endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
-                        },
+                            // The service itself encountered an error while sending the request or receiving the response:
+                            // connection reset by peer, I/O error, etc.
+                            Err(RetryCircuitBreakerError::Service(e)) => {
+                                telemetry.track_permanently_failed_transaction(&metadata, None, &endpoint_domain);
+                                error!(endpoint_url, error = %e, error_source = ?e.source(), "Failed to send request.");
+                            },
 
-                        // The request either completed and needs to be retried or was rejected before inward dispatch,
-                        // so re-enqueue it to the low-priority queue to be retried later.
-                        Err(RetryCircuitBreakerError::Retry(req) | RetryCircuitBreakerError::Open(req)) => {
-                            match requeue_open_transaction(
-                                metadata,
-                                req,
-                                &mut pending_txns,
-                                &retry_telemetry,
-                                endpoint_name.as_ref(),
-                            )
-                            .await
-                            {
-                                Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
-                                Err(e) => error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost."),
-                            }
-                        },
+                            // The request either completed and needs to be retried or was rejected before inward dispatch,
+                            // so re-enqueue it to the low-priority queue to be retried later.
+                            Err(RetryCircuitBreakerError::Retry(req) | RetryCircuitBreakerError::Open(req)) => {
+                                match requeue_transaction(metadata, req, &mut pending_txns, requeued_counters).await {
+                                    Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
+                                    Err(e) => error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost."),
+                                }
+                            },
 
-                        Err(_) => {
-                            unreachable!("unsupported retry circuit breaker error variant after request completion")
-                        },
+                            Err(_) => {
+                                unreachable!("unsupported retry circuit breaker error variant after request completion")
+                            },
+                        }
                     },
 
                     // Our transaction task itself failed, which means something weirdly bad happened: panic, etc.
@@ -1338,12 +1328,48 @@ app.datadoghq.com: [key-a, key-b]
         TransactionRetryTelemetry::from_builder(&MetricsBuilder::default(), domain)
     }
 
+    #[test]
+    fn input_telemetry_reuses_cached_handles_for_a_long_unknown_path() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let mut telemetry_by_endpoint = FastHashMap::default();
+        let endpoint_domain = "https://example.com";
+        let unknown_uri: Uri = format!("/{}", "unknown/".repeat(128))
+            .parse()
+            .expect("long unknown path should parse");
+        let resolved = test_logical_endpoint(&unknown_uri);
+        let logical = resolved.as_deref().unwrap_or_else(|| unknown_uri.path());
+
+        track_transaction_input_for_endpoint(&mut telemetry_by_endpoint, &telemetry, endpoint_domain, logical, 12);
+        track_transaction_input_for_endpoint(&mut telemetry_by_endpoint, &telemetry, endpoint_domain, logical, 30);
+
+        assert_eq!(telemetry_by_endpoint.len(), 1);
+        let metric_key = |name| {
+            metrics::Key::from_parts(
+                name,
+                vec![
+                    metrics::Label::new("domain", endpoint_domain.to_string()),
+                    metrics::Label::new("endpoint", logical.to_string()),
+                ],
+            )
+        };
+        assert_eq!(
+            recorder.counter(metric_key("network_http_requests_input_total")),
+            Some(2)
+        );
+        assert_eq!(
+            recorder.counter(metric_key("network_http_requests_input_bytes_total")),
+            Some(42)
+        );
+    }
+
     #[tokio::test]
     async fn high_priority_overflow_is_counted_when_later_dispatched_as_retry() {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let domain = "https://example.com";
-        let retry_telemetry = transaction_retry_telemetry(domain);
+        let mut retry_telemetry = transaction_retry_telemetry(domain);
         let (queue_telemetry, queue_domain) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
         let mut pending_txns = PendingTransactions::new(1, retry_queue, queue_telemetry, queue_domain, 900);
@@ -1362,16 +1388,19 @@ app.datadoghq.com: [key-a, key-b]
             .pop()
             .await
             .expect("high-priority transaction should be queued");
-        let (_, first_request) = prepare_transaction_dispatch(first);
-        let _first_request = track_retry_dispatch(first_request, &retry_telemetry, &test_logical_endpoint);
+        let first_dispatch = prepare_transaction_dispatch(first, &mut retry_telemetry, &test_logical_endpoint);
+        assert!(first_dispatch.retry_counters.is_none());
+        let completed: Result<(), RetryCircuitBreakerError<(), ()>> = Ok(());
+        assert!(account_retry_result(first_dispatch.retry_counters.as_ref(), &completed).is_none());
         assert_eq!(
             recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
             None
         );
 
         let overflow = pending_txns.pop().await.expect("overflow transaction should be queued");
-        let (_, overflow_request) = prepare_transaction_dispatch(overflow);
-        let _overflow_request = track_retry_dispatch(overflow_request, &retry_telemetry, &test_logical_endpoint);
+        let overflow_dispatch = prepare_transaction_dispatch(overflow, &mut retry_telemetry, &test_logical_endpoint);
+        assert!(overflow_dispatch.retry_counters.is_some());
+        assert!(account_retry_result(overflow_dispatch.retry_counters.as_ref(), &completed).is_none());
         assert_eq!(
             recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
             Some(1)
@@ -1405,17 +1434,13 @@ app.datadoghq.com: [key-a, key-b]
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let domain = "https://example.com";
-        let retry_telemetry = transaction_retry_telemetry(domain);
+        let mut retry_telemetry = transaction_retry_telemetry(domain);
         let (queue_telemetry, queue_domain) = transaction_queue_telemetry();
         let retry_queue = RetryQueue::new("test".to_string(), 1024);
         let mut pending_txns = PendingTransactions::new(1, retry_queue, queue_telemetry, queue_domain, 900);
         let inner_calls = Arc::new(AtomicUsize::new(0));
         let mut service = ServiceBuilder::new()
             .layer(RetryCircuitBreakerLayer::new(OpenOnFalsePolicy))
-            .map_request({
-                let retry_telemetry = retry_telemetry.clone();
-                move |request| track_retry_dispatch(request, &retry_telemetry, &test_logical_endpoint)
-            })
             .service(service_fn({
                 let inner_calls = Arc::clone(&inner_calls);
                 move |_request: Request<TransactionBody<FrozenChunkedBytesBuffer>>| {
@@ -1438,24 +1463,26 @@ app.datadoghq.com: [key-a, key-b]
             .expect("retry queue push should succeed");
         assert!(!push_result.had_drops());
         let pending_txn = pending_txns.pop().await.expect("retry should be queued");
-        let (metadata, retry_request) = prepare_transaction_dispatch(pending_txn);
-        let returned_request = match service.call(retry_request).await {
+        let dispatch = prepare_transaction_dispatch(pending_txn, &mut retry_telemetry, &test_logical_endpoint);
+        let result = service.call(dispatch.request).await;
+        let requeued_counters = account_retry_result(dispatch.retry_counters.as_ref(), &result);
+        let returned_request = match result {
             Err(RetryCircuitBreakerError::Open(request)) => request,
             _ => panic!("open circuit breaker should return the blocked retry"),
         };
 
-        let push_result = requeue_open_transaction(
-            metadata,
+        let push_result = requeue_transaction(
+            dispatch.metadata,
             returned_request,
             &mut pending_txns,
-            &retry_telemetry,
-            &test_logical_endpoint,
+            requeued_counters,
         )
         .await
         .expect("requeue should succeed");
 
         assert_eq!(inner_calls.load(Ordering::SeqCst), inner_calls_before_blocked_retry);
         assert!(!push_result.had_drops());
+        assert_eq!(pending_txns.low_priority.len(), 1);
         assert_eq!(
             recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
             Some(0)
@@ -1466,23 +1493,35 @@ app.datadoghq.com: [key-a, key-b]
         );
     }
 
-    #[test]
-    fn returned_retry_markers_are_removed_before_reassembly_and_serialization() {
-        for was_dispatched in [false, true] {
-            let (metadata, mut request) = build_test_transaction().into_parts();
-            let marker = RetryDispatchMarker::default();
-            if was_dispatched {
-                assert!(marker.mark_dispatched());
-            }
-            request.extensions_mut().insert(marker);
+    #[tokio::test]
+    async fn retry_sourced_service_completion_is_counted_without_requeue() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let domain = "https://example.com";
+        let mut retry_telemetry = transaction_retry_telemetry(domain);
+        let (queue_telemetry, queue_domain) = transaction_queue_telemetry();
+        let retry_queue = RetryQueue::new("test".to_string(), 1024);
+        let mut pending_txns = PendingTransactions::new(1, retry_queue, queue_telemetry, queue_domain, 900);
+        let push_result = pending_txns
+            .push_low_priority(build_test_transaction())
+            .await
+            .expect("retry queue push should succeed");
+        assert!(!push_result.had_drops());
+        let pending_txn = pending_txns.pop().await.expect("retry should be queued");
+        let dispatch = prepare_transaction_dispatch(pending_txn, &mut retry_telemetry, &test_logical_endpoint);
+        let service_error: Result<(), RetryCircuitBreakerError<&str, ()>> =
+            Err(RetryCircuitBreakerError::Service("request failed"));
 
-            let blocked_endpoint = take_blocked_retry_endpoint(&mut request, &test_logical_endpoint);
-
-            assert_eq!(blocked_endpoint.is_some(), !was_dispatched);
-            assert!(request.extensions().is_empty());
-            let reassembled = Transaction::reassemble(metadata, request);
-            serde_json::to_string(&reassembled).expect("marker-free transaction should serialize");
-        }
+        assert!(account_retry_result(dispatch.retry_counters.as_ref(), &service_error).is_none());
+        assert!(pending_txns.is_empty());
+        assert_eq!(
+            recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter(("network_http_requests_requeued_total", &retry_metric_tags(domain))),
+            Some(0)
+        );
     }
 
     #[tokio::test]
