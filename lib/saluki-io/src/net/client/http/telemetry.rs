@@ -218,13 +218,18 @@ impl PerEndpointTelemetry {
     }
 
     fn increment_success(&self, version: Version) {
-        let mut success_map = self.success_map.lock().unwrap();
-        let counter = success_map.entry(version).or_insert_with(|| {
-            self.builder.register_counter_with_tags(
-                "network_http_requests_success_total",
-                [("proto_version", format!("{version:?}"))],
-            )
-        });
+        let counter = {
+            let mut success_map = self.success_map.lock().unwrap();
+            success_map
+                .entry(version)
+                .or_insert_with(|| {
+                    self.builder.register_counter_with_tags(
+                        "network_http_requests_success_total",
+                        [("proto_version", format!("{version:?}"))],
+                    )
+                })
+                .clone()
+        };
         counter.increment(1);
     }
 
@@ -437,8 +442,9 @@ mod tests {
     fn successful_requests_are_counted_by_response_protocol_without_splitting_bytes() {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
-        let inner = tower::service_fn(|request: Request<Full<Bytes>>| {
-            let version = request.version();
+        let mut response_versions = [http::Version::HTTP_11, http::Version::HTTP_2].into_iter();
+        let inner = tower::service_fn(move |_request: Request<Full<Bytes>>| {
+            let version = response_versions.next().expect("response version should be available");
             async move {
                 Ok::<_, Infallible>(
                     Response::builder()
@@ -450,22 +456,22 @@ mod tests {
         });
         let mut service = EndpointTelemetryLayer::default().layer(inner);
 
-        let http_11_request = Request::builder()
+        let first_request = Request::builder()
             .uri("https://example.com/api/v1/series")
-            .version(http::Version::HTTP_11)
+            .version(http::Version::HTTP_10)
             .body(Full::new(Bytes::from_static(b"hello")))
             .expect("request should be valid");
         metrics::with_local_recorder(&recorder, || {
-            tokio_test::block_on(service.call(http_11_request)).expect("request should succeed")
+            tokio_test::block_on(service.call(first_request)).expect("request should succeed")
         });
 
-        let http_2_request = Request::builder()
+        let second_request = Request::builder()
             .uri("https://example.com/api/v1/series")
-            .version(http::Version::HTTP_2)
+            .version(http::Version::HTTP_10)
             .body(Full::new(Bytes::from_static(b"goodbye")))
             .expect("request should be valid");
         metrics::with_local_recorder(&recorder, || {
-            tokio_test::block_on(service.call(http_2_request)).expect("request should succeed")
+            tokio_test::block_on(service.call(second_request)).expect("request should succeed")
         });
 
         let snapshot = snapshotter.snapshot().into_hashmap();
