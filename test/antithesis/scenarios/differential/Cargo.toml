@@ -13,7 +13,12 @@ workspace = true
 antithesis_sdk = { workspace = true, features = ["full", "rand_v0_10"] }
 anyhow = { workspace = true, features = ["std"] }
 clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
+ddsketch = { workspace = true }
 harness = { path = "../../harness" }
 reqwest = { workspace = true, features = ["blocking", "json"] }
+rustls = { workspace = true, features = ["aws_lc_rs"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
