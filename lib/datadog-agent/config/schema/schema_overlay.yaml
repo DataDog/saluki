@@ -1992,6 +1992,46 @@ inventory:
       additional_attributes:
         config_registry_filename: otlp.rs
 
+  otlp_config.metrics.batch.flush_timeout:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "OTLP metrics batch flush timeout"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP translates each OTLP resource before batching the resulting metric events for topology dispatch.
+      The shared metrics encoder then batches, limits, and splits encoded payloads before forwarding.
+
+      ADP does not expose a separate pre-translation timeout because its bounded source channel, event
+      dispatcher, and encoder already provide backpressure and batching at their respective stages.
+      The encoder enforces payload byte limits after translation, which is the relevant boundary for
+      avoiding oversized intake requests. Setting this key has no effect in ADP.
+
+  otlp_config.metrics.batch.max_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Maximum OTLP metrics batch size"
+    documentation: |-
+      ADP does not implement the core Agent's pre-translation OTLP metrics batcher. Its source channel
+      bounds in-flight resources, and its shared metrics encoder applies item-count and byte-size limits
+      to the encoded payload that is ultimately forwarded. A raw OTLP item count cannot reliably bound
+      encoded payload size after translation. Setting this key has no effect in ADP.
+
+  otlp_config.metrics.batch.min_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Minimum OTLP metrics batch size"
+    documentation: |-
+      ADP batches translated metric events before enrichment and batches encoded payloads before forwarding.
+      It does not wait for a configured number of raw OTLP metric items before translation. This avoids
+      adding a second buffering stage without a demonstrated translation-throughput requirement.
+      Setting this key has no effect in ADP.
+
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
@@ -3936,9 +3976,6 @@ excluded:
   otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.flush_timeout: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.max_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
