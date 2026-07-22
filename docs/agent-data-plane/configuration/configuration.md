@@ -179,9 +179,7 @@ topology, but only collects data during a time-bounded request. To collect stati
 `agent-data-plane dogstatsd stats --duration-secs N` or call the privileged
 `/dogstatsd/stats?collection_duration_secs=N` API. The handler waits for the requested collection
 window, then returns count and last-seen time per metric context inline as JSON. The CLI uses the
-same API and renders the result as either summary or cardinality analysis. To inspect contexts retained by the
-aggregate transform instead of samples observed during a collection window, follow the
-[retained DogStatsD context dump workflow](../dogstatsd-top.md).
+same API and renders the result as either summary or cardinality analysis.
 
 ADP also exposes aggregate DogStatsD counters through its internal telemetry scrape endpoint. This
 endpoint is separate from `/dogstatsd/stats`: it does not return the per-metric count and last-seen
