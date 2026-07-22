@@ -289,7 +289,7 @@ mod tests {
         fn property_test_raw_tags_filter_include_exclude_disjoint((inputs, filters) in arb_raw_tags_and_filters()) {
             // We handle the raw tags, and the filtered tags, as hash sets.
             //
-            // This is because we may have duplicate tags in the input, and so we need to discard all of thos duplicates
+            // This is because we may have duplicate tags in the input, and so we need to discard all of those duplicates
             // when ensuring that the resulting filtered sets are disjoint, and that they both add up to the original
             // set of raw tags.
 
