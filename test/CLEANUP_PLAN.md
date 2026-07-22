@@ -180,8 +180,12 @@ otherwise keep hand-rolling the thing it replaces.
     `decode_packet`/event/service-check parsers (KI-16).
   - [low/trivial] `with_slop_factor`'s test checks `Ok`/`Err` only, never the documented percentage arithmetic.
 
-- [ ] **G11 — Repo-wide test naming and proptest-authoring-style consistency sweep**
+- [x] **G11 — Repo-wide test naming and proptest-authoring-style consistency sweep**
   (`tobz/test-cleanup-test-naming-style-sweep`, `chore(repo)`)
+  _Scope note: KI-15 `test_`-prefix conversion was applied to the mixed-style files (47 fns across 8 files) rather
+  than swept repo-wide, matching testing-patterns.md's incremental-as-touched convention. The `translator.rs` and
+  `dogstatsd_prefix_filter` renames were deferred to G13/G14 respectively, since those groups rebuild those exact
+  tests — renaming them here would be throwaway churn._
   - [low/small] Inconsistent test function naming convention across the repo: `test_` prefix vs. bare descriptive
     names (KI-15) — see `docs/development/testing-patterns.md` for the now-documented convention.
   - [low/trivial] Two proptest authoring styles coexist with no prior documented convention: `#[test_strategy::proptest]`

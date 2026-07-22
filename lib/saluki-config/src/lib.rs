@@ -930,7 +930,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_static_configuration() {
+    async fn static_configuration() {
         let (cfg, _) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({
                 "foo": "bar",
@@ -954,7 +954,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dynamic_configuration() {
+    async fn dynamic_configuration() {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({
                 "foo": "bar",
@@ -1098,7 +1098,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_environment_precedence_over_dynamic() {
+    async fn environment_precedence_over_dynamic() {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({
                 "foo": "bar",
@@ -1168,7 +1168,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dynamic_configuration_add_new_nested_key() {
+    async fn dynamic_configuration_add_new_nested_key() {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({
                 "foo": "bar",
@@ -1214,7 +1214,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_underscore_fallback_on_get() {
+    async fn underscore_fallback_on_get() {
         let (cfg, _) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({})),
             Some(&[("RANDOM_KEY".to_string(), "from_env_only".to_string())]),
@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_underscore_fallback_on_get_multi_segment_key() {
+    async fn underscore_fallback_on_get_multi_segment_key() {
         // A single-underscore Agent-style env var (e.g. `DD_DATA_PLANE_API_LISTEN_ADDRESS`, which
         // `for_tests` simulates with the `TEST_` prefix) produces a flat figment key. A deeply
         // nested `get`/`try_get_typed` query must still resolve it via the dot-to-underscore
@@ -1250,7 +1250,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_static_configuration_ready_and_subscribe() {
+    async fn static_configuration_ready_and_subscribe() {
         let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, false).await;
         assert!(maybe_sender.is_none());
 
@@ -1262,7 +1262,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dynamic_configuration_ready_requires_initial_snapshot() {
+    async fn dynamic_configuration_ready_requires_initial_snapshot() {
         // Enable dynamic but do not send the initial snapshot.
         let (cfg, maybe_sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
         assert!(maybe_sender.is_some());
@@ -1273,7 +1273,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_flattened_keys_flat_and_nested() {
+    async fn flattened_keys_flat_and_nested() {
         let (cfg, _) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({
                 "top": "value",
@@ -1297,7 +1297,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_flattened_keys_arrays_are_leaves() {
+    async fn flattened_keys_arrays_are_leaves() {
         let (cfg, _) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({
                 "tags": ["a", "b"],
@@ -1318,7 +1318,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_flattened_keys_null_values_absent() {
+    async fn flattened_keys_null_values_absent() {
         let (cfg, _) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({
                 "present": "yes",
