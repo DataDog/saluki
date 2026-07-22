@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["CumulativeMonotonicMode","HistogramMode","InitialCumulativeMonotonicValue"],"struct":["Contexts","Domain","GrpcReceiver","HttpReceiver","Metrics","Proxy","Receiver","Sums"]};
+window.SIDEBAR_ITEMS = {"enum":["CumulativeMonotonicMode","HistogramMode","InitialCumulativeMonotonicValue","SummaryMode"],"struct":["Contexts","Domain","GrpcReceiver","HttpReceiver","Metrics","Proxy","Receiver","Summaries","Sums"]};
