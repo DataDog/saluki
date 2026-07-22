@@ -3,7 +3,7 @@ use std::path::Path;
 use saluki_error::GenericError;
 
 pub(crate) use self::api::DogStatsDContextDumpAPIHandler;
-pub(crate) use self::artifact::publish_context_dump;
+pub(crate) use self::artifact::{for_each_record, publish_context_dump};
 pub(crate) use self::report::ContextReport;
 
 mod api;
@@ -12,7 +12,7 @@ mod report;
 
 pub(crate) fn read_report(path: &Path) -> Result<ContextReport, GenericError> {
     let mut report = ContextReport::new();
-    artifact::for_each_record(path, |record| report.ingest(record))?;
+    for_each_record(path, |record| report.ingest(record))?;
     Ok(report)
 }
 

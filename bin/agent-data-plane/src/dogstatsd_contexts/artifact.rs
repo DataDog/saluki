@@ -201,7 +201,7 @@ fn open_temporary_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-#[cfg(all(test, not(feature = "context-dump-benchmark")))]
+#[cfg(test)]
 fn publish_open_temporary<W, R>(
     writer: W, temporary_path: &Path, target: &Path, snapshot: &[AggregateContextSnapshotEntry], replacer: &R,
 ) -> Result<(), GenericError>
@@ -214,7 +214,7 @@ where
     })
 }
 
-#[cfg(all(test, not(feature = "context-dump-benchmark")))]
+#[cfg(test)]
 fn publish_buffered_temporary<W, R>(
     buffer: BufWriter<W>, temporary_path: &Path, target: &Path, snapshot: &[AggregateContextSnapshotEntry],
     replacer: &R,
@@ -430,7 +430,7 @@ impl<C: TemporaryFileCleanup + ?Sized> Drop for TemporaryPathCleanup<'_, C> {
 
 #[derive(Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "PascalCase")]
-pub(super) struct AgentContextRecord {
+pub(crate) struct AgentContextRecord {
     pub(super) name: String,
     pub(super) host: String,
     #[serde(rename = "Type")]
@@ -501,7 +501,7 @@ impl fmt::Display for ArtifactDecodeError {
 impl Error for ArtifactDecodeError {}
 
 #[derive(Debug)]
-pub(super) struct ArtifactError {
+pub(crate) struct ArtifactError {
     path: PathBuf,
     operation: &'static str,
     record_index: usize,
@@ -524,17 +524,17 @@ impl ArtifactError {
         Self::new(path, "decode", record_index, ArtifactDecodeError::from_serde(source))
     }
 
-    #[cfg(all(test, not(feature = "context-dump-benchmark")))]
+    #[cfg(test)]
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
 
-    #[cfg(all(test, not(feature = "context-dump-benchmark")))]
+    #[cfg(test)]
     pub(super) fn operation(&self) -> &'static str {
         self.operation
     }
 
-    #[cfg(all(test, not(feature = "context-dump-benchmark")))]
+    #[cfg(test)]
     pub(super) fn record_index(&self) -> usize {
         self.record_index
     }
@@ -559,7 +559,7 @@ impl Error for ArtifactError {
     }
 }
 
-pub(super) fn for_each_record(path: &Path, mut consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
+pub(crate) fn for_each_record(path: &Path, mut consume: impl FnMut(AgentContextRecord)) -> Result<(), ArtifactError> {
     let file = File::open(path).map_err(|error| ArtifactError::new(path, "open", 0, error))?;
     let mut compressed_input = BufReader::new(file);
     let is_compressed = compressed_input
@@ -588,14 +588,14 @@ fn decode_records<R: Read>(
     Ok(())
 }
 
-#[cfg(all(test, not(feature = "context-dump-benchmark")))]
+#[cfg(test)]
 fn collect_records(path: &Path) -> Result<Vec<AgentContextRecord>, ArtifactError> {
     let mut records = Vec::new();
     for_each_record(path, |record| records.push(record))?;
     Ok(records)
 }
 
-#[cfg(all(test, not(feature = "context-dump-benchmark")))]
+#[cfg(test)]
 mod tests {
     use std::fs;
     use std::io::{self, BufWriter, Write as _};

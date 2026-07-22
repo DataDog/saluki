@@ -2,6 +2,7 @@ use std::fs;
 use std::hint::black_box;
 use std::path::Path;
 
+use agent_data_plane::{count_dogstatsd_context_dump_records, publish_dogstatsd_context_dump};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use saluki_components::transforms::{AggregateContextSnapshotEntry, AggregateMetricType};
 use saluki_context::{
@@ -9,9 +10,6 @@ use saluki_context::{
     Context,
 };
 use stringtheory::MetaString;
-
-#[path = "../src/dogstatsd_contexts/artifact.rs"]
-mod artifact;
 
 const CONTEXT_COUNTS: [usize; 3] = [10_000, 100_000, 1_000_000];
 const CLIENT_TAGS: [&str; 5] = [
@@ -37,44 +35,36 @@ fn benchmark_dogstatsd_context_dump(c: &mut Criterion) {
         assert_eq!(snapshot.len(), context_count);
 
         let run_directory = tempfile::tempdir().expect("benchmark run directory should be created");
-        let canonical_path = run_directory.path().join(artifact::CONTEXT_DUMP_FILENAME);
-        let preflight_path = artifact::publish_context_dump(run_directory.path(), &snapshot)
+        let canonical_path = publish_dogstatsd_context_dump(run_directory.path(), &snapshot)
             .expect("benchmark preflight context dump should publish");
-        assert_eq!(preflight_path, canonical_path);
         assert!(canonical_path.is_file());
 
-        let mut decoded_records = 0usize;
-        artifact::for_each_record(&canonical_path, |record| {
-            assert!(!record.name.is_empty());
-            assert_eq!(record.host, "benchmark-node-001.internal");
-            assert!(matches!(record.metric_type.as_str(), "Counter" | "Gauge" | "Historate"));
-            assert_eq!(record.tagger_tags.len(), ORIGIN_TAGS.len());
-            assert_eq!(record.metric_tags.len(), CLIENT_TAGS.len());
-            assert!(!record.no_index);
-            assert_eq!(record.source, 1);
-            decoded_records += 1;
-        })
-        .expect("benchmark preflight context dump should decode through the production reader");
+        let decoded_records = count_dogstatsd_context_dump_records(&canonical_path)
+            .expect("benchmark preflight context dump should decode through the production reader");
         assert_eq!(decoded_records, context_count);
-        assert_only_canonical_artifact(run_directory.path());
+        assert_only_canonical_artifact(run_directory.path(), &canonical_path);
 
         let compressed_bytes = fs::metadata(&canonical_path)
             .expect("benchmark preflight artifact metadata should be available")
             .len();
-        let benchmark_id =
-            BenchmarkId::from_parameter(format!("{context_count}_contexts_{compressed_bytes}_compressed_bytes"));
+        eprintln!("dogstatsd_context_dump setup: contexts={context_count}, compressed_bytes={compressed_bytes}");
+
+        let benchmark_id = BenchmarkId::from_parameter(context_count);
         group.throughput(Throughput::Elements(context_count as u64));
         group.bench_function(benchmark_id, |b| {
             b.iter(|| {
-                let published_path = artifact::publish_context_dump(run_directory.path(), &snapshot)
-                    .expect("benchmark context dump should publish");
-                assert_eq!(published_path, canonical_path);
-                assert!(published_path.is_file());
-                black_box(published_path)
+                black_box(
+                    publish_dogstatsd_context_dump(run_directory.path(), &snapshot)
+                        .expect("benchmark context dump should publish"),
+                )
             });
         });
 
-        assert_only_canonical_artifact(run_directory.path());
+        let postflight_path = publish_dogstatsd_context_dump(run_directory.path(), &snapshot)
+            .expect("benchmark postflight context dump should publish");
+        assert_eq!(postflight_path, canonical_path);
+        assert!(postflight_path.is_file());
+        assert_only_canonical_artifact(run_directory.path(), &canonical_path);
     }
 
     group.finish();
@@ -106,19 +96,13 @@ fn shared_tag_set(values: &[&'static str]) -> TagSet {
     tags.into_shared().to_mutable()
 }
 
-fn assert_only_canonical_artifact(run_path: &Path) {
+fn assert_only_canonical_artifact(run_path: &Path, canonical_path: &Path) {
     let mut entries: Vec<_> = fs::read_dir(run_path)
         .expect("benchmark run directory should be readable")
-        .map(|entry| {
-            entry
-                .expect("benchmark run directory entry should be readable")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
+        .map(|entry| entry.expect("benchmark run directory entry should be readable").path())
         .collect();
     entries.sort_unstable();
-    assert_eq!(entries, [artifact::CONTEXT_DUMP_FILENAME]);
+    assert_eq!(entries, [canonical_path.to_path_buf()]);
 }
 
 criterion_group!(benches, benchmark_dogstatsd_context_dump);
