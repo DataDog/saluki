@@ -13,8 +13,9 @@ use tracing::debug;
 
 /// An error from [`RetryCircuitBreaker`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error<E, R> {
-    /// The inner service responded with a final error.
+    /// The inner service returned a readiness error or a final request error that will not be retried.
     Service(E),
 
     /// The inner service was called and completed, and `Policy::retry` returned `Some(backoff)`.
