@@ -123,7 +123,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::DATADOG_TRACE_CONFIGURATION],
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,

@@ -57,8 +57,6 @@ pub mod structs {
     pub const DOGSTATSD_PREFIX_FILTER_CONFIGURATION: &str = "DogStatsDPrefixFilterConfiguration";
     /// Identifier for `DatadogMetricsConfiguration`.
     pub const DATADOG_METRICS_CONFIGURATION: &str = "DatadogMetricsConfiguration";
-    /// Identifier for `DatadogTraceConfiguration`.
-    pub const DATADOG_TRACE_CONFIGURATION: &str = "DatadogTraceConfiguration";
     /// Identifier for `DatadogLogsConfiguration`.
     pub const DATADOG_LOGS_CONFIGURATION: &str = "DatadogLogsConfiguration";
     /// Identifier for `DatadogEventsConfiguration`.
@@ -79,6 +77,8 @@ pub mod structs {
     pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
     /// Identifier for `TagFilterlistConfiguration`.
     pub const TAG_FILTERLIST_CONFIGURATION: &str = "TagFilterlistConfiguration";
+    /// Keys consumed through the typed configuration translation system.
+    pub const TYPED_CONFIG_SYSTEM: &str = "TypedConfigSystem";
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     pub const GET_TYPED: &str = "get_typed";
 }

@@ -123,8 +123,20 @@ pub struct Compression {
     /// Which compression algorithm the encoder uses.
     pub compressor_kind: String,
 
-    /// Compression level used when the algorithm is zstd.
+    /// The Core Agent's zstd compression level (`serializer_zstd_compressor_level`).
+    ///
+    /// This is the value as forwarded by the Core Agent. Encoders resolve the effective level by
+    /// preferring `data_plane_zstd_compressor_level`, then this value when it differs from the
+    /// Agent's default of `1`, and otherwise ADP's own default.
     pub zstd_compressor_level: i32,
+
+    /// ADP-specific zstd compression level override (`data_plane.serializer_zstd_compressor_level`,
+    /// not in the Datadog Agent config schema).
+    ///
+    /// When set, it takes precedence over `zstd_compressor_level`. `None` means it was not
+    /// configured, so encoders fall back to the Agent value or ADP's default. Absence is meaningful,
+    /// so this is modeled as an `Option` rather than carrying a value-layer default.
+    pub data_plane_zstd_compressor_level: Option<i32>,
 }
 
 /// HTTP protocol the forwarder negotiates with the intake.
@@ -211,10 +223,13 @@ pub struct GlobalTags {
 
 /// Metrics-encoder settings reused across the metrics-emitting pipelines (DogStatsD, checks, and
 /// OTLP): histogram settings, payload limits, and the encoder flush timeout.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MetricsEncoding {
     /// How long the encoder waits before flushing a partially filled payload. (not in Datadog Agent
     /// config schema)
+    ///
+    /// Shared by the metrics-emitting pipelines and the traces encoder, all of which read the
+    /// `flush_timeout_secs` key. Defaults to 2 seconds.
     pub flush_timeout: Duration,
 
     /// Maximum number of metrics packed into a single payload. (not in Datadog Agent config schema)
@@ -253,6 +268,29 @@ pub struct MetricsEncoding {
     /// ADP-only safety gate that authorizes V3 series (`data_plane.metrics.v3.series.enabled`, not
     /// in the Datadog Agent config schema).
     pub v3_series_enabled: bool,
+}
+
+impl Default for MetricsEncoding {
+    fn default() -> Self {
+        Self {
+            // The `flush_timeout_secs` key is Saluki-only, so its default lives here in the model
+            // rather than at the source layer, and it must match the encoders' historical default
+            // of 2 seconds.
+            flush_timeout: Duration::from_secs(2),
+            max_metrics_per_payload: 0,
+            max_payload_size: 0,
+            max_series_payload_size: 0,
+            max_series_points_per_payload: 0,
+            max_series_uncompressed_payload_size: 0,
+            max_uncompressed_payload_size: 0,
+            use_v2_series_api: false,
+            log_payloads: false,
+            histogram: HistogramEncoding::default(),
+            v3_api: V3ApiEncoding::default(),
+            v3_series_mode: V3SeriesMode::default(),
+            v3_series_enabled: false,
+        }
+    }
 }
 
 /// V3 metrics-intake protocol settings for the series and sketches payloads

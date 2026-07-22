@@ -64,7 +64,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
             "DATADOG_EVENTS_CONFIGURATION",
             "DATADOG_LOGS_CONFIGURATION",
             "DATADOG_SERVICE_CHECKS_CONFIGURATION",
-            "DATADOG_TRACE_CONFIGURATION",
+            "TYPED_CONFIG_SYSTEM",
         ],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::CrossCutting",
@@ -540,7 +540,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         used_by: &[
             "DATADOG_APM_STATS_ENCODER_CONFIGURATION",
             "DATADOG_METRICS_CONFIGURATION",
-            "DATADOG_TRACE_CONFIGURATION",
+            "TYPED_CONFIG_SYSTEM",
         ],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::Traces, Pipeline::DogStatsD])",

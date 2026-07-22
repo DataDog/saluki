@@ -170,6 +170,8 @@ pub struct DataPlane {
     pub stop_timeout: Option<u64>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
+    /// ADP-specific zstd compression level (`data_plane.serializer_zstd_compressor_level`).
+    pub serializer_zstd_compressor_level: Option<i32>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
     /// Metrics-intake knobs (`data_plane.metrics.*`).
@@ -380,6 +382,9 @@ impl SalukiOnly {
         if let Some(v) = self.flush_timeout_secs {
             config.shared.metrics_encoding.flush_timeout = Duration::from_secs(v);
         }
+        if let Some(v) = self.data_plane.serializer_zstd_compressor_level {
+            config.shared.endpoints.compression.data_plane_zstd_compressor_level = Some(v);
+        }
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
@@ -565,6 +570,7 @@ mod tests {
             "data_plane": {
                 "stop_timeout": 45,
                 "standalone_mode": true,
+                "serializer_zstd_compressor_level": 6,
                 "checks": { "enabled": true },
                 "metrics": { "v3": { "series": { "enabled": true } } }
             },
@@ -613,6 +619,10 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
+        assert_eq!(
+            config.shared.endpoints.compression.data_plane_zstd_compressor_level,
+            Some(6)
+        );
         assert!(config.shared.metrics_encoding.v3_series_enabled);
 
         // domains.dogstatsd
@@ -702,5 +712,13 @@ mod tests {
         assert_eq!(agg.context_limit, 1_000_000);
         assert_eq!(agg.flush_interval, Duration::from_secs(15));
         assert_eq!(agg.passthrough_idle_flush_timeout, Duration::from_secs(1));
+
+        // The encoder flush timeout defaults to 2 seconds, and the ADP-only zstd level override
+        // stays absent so encoders fall back to the Agent value or ADP's default.
+        assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(2));
+        assert_eq!(
+            config.shared.endpoints.compression.data_plane_zstd_compressor_level,
+            None
+        );
     }
 }

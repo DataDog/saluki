@@ -1,19 +1,16 @@
-#![allow(dead_code)]
-
 use std::{fmt::Write, time::Duration};
 
+use agent_data_plane_config::{domains, SharedConfiguration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AgentPayloadBuilder,
     AttributeAnyValueBuilder, AttributeArrayValueBuilder,
 };
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::FastHashMap;
 use saluki_common::strings::StringBuilder;
 use saluki_common::task::HandleExt as _;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::trace::AttributeValue;
@@ -32,7 +29,6 @@ use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::{
@@ -43,14 +39,12 @@ use tokio::{
 use tracing::{debug, error};
 
 use crate::common::datadog::{
-    apm::ApmConfig,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     resolve_zstd_compressor_level,
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, TAG_DECISION_MAKER,
 };
-use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::util::{
     attributes_to_source, extract_container_tags_from_attributes_map, Source as OtlpSource,
     SourceKind as OtlpSourceKind, KEY_DATADOG_CONTAINER_TAGS,
@@ -64,86 +58,84 @@ static CONTENT_TYPE_PROTOBUF: HeaderValue = HeaderValue::from_static("applicatio
 const TAG_OTLP_SAMPLING_RATE: &str = "_dd.otlp_sr";
 const DEFAULT_CHUNK_PRIORITY: i32 = 1; // PRIORITY_AUTO_KEEP
 
-fn default_serializer_compressor_kind() -> String {
-    "zstd".to_string()
-}
-
-const fn default_flush_timeout_secs() -> u64 {
-    2
-}
-
-fn default_env() -> String {
-    "none".to_string()
-}
-
 /// Configuration for the Datadog Traces encoder.
 ///
 /// This encoder converts trace events into Datadog's TracerPayload protobuf format and sends them
 /// to the Datadog traces intake endpoint (`/api/v0.2/traces`). It handles batching, compression,
 /// and enrichment with metadata such as hostname, environment, and container tags.
-#[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogTraceConfiguration {
-    #[serde(
-        rename = "serializer_compressor_kind",  // renames the field in the user_configuration from "serializer_compressor_kind" to "compressor_kind".
-        default = "default_serializer_compressor_kind"
-    )]
+    /// Compression algorithm applied to outgoing payloads.
     compressor_kind: String,
 
-    /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
-    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
-    #[serde(rename = "data_plane_serializer_zstd_compressor_level", default)]
-    data_plane_zstd_compressor_level: Option<i32>,
+    /// Effective zstd compression level, already resolved from the ADP-specific override and the
+    /// Core Agent value by [`resolve_zstd_compressor_level`].
+    zstd_compressor_level: i32,
 
-    /// The Core Agent's zstd compression level, used only when set to a non-default value (not 1).
-    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
-    #[serde(rename = "serializer_zstd_compressor_level", default)]
-    serializer_zstd_compressor_level: Option<i32>,
-
-    /// Flush timeout for pending requests, in seconds.
+    /// How long the encoder waits before flushing a partially filled payload.
     ///
-    /// When the encoder has written traces to the in-flight request payload, but it hasn't yet reached the
-    /// payload size limits that would force the payload to be flushed, the encoder will wait for a period of time
-    /// before flushing the in-flight request payload.
-    ///
-    /// Defaults to 2 seconds.
-    #[serde(default = "default_flush_timeout_secs")]
-    flush_timeout_secs: u64,
+    /// A zero duration is treated as "flush almost immediately" during `build`.
+    flush_timeout: Duration,
 
-    #[serde(skip)]
+    /// Global environment tag applied to emitted payloads.
+    env: String,
+
+    /// Target sampled traces per second, forwarded to the intake as `target_tps`.
+    target_traces_per_second: f64,
+
+    /// Target sampled error traces per second, forwarded to the intake as `error_tps`.
+    errors_per_second: f64,
+
+    /// Whether Error Tracking standalone mode is enabled.
+    error_tracking_standalone: bool,
+
+    /// Whether spans missing intake-required fields are ingested rather than rejected.
+    ignore_missing_datadog_fields: bool,
+
+    /// Percentage of OTLP traces the probabilistic sampler keeps.
+    sampling_percentage: f64,
+
+    /// Default hostname, resolved from the environment provider.
     default_hostname: Option<String>,
 
-    #[serde(skip)]
+    /// ADP version string embedded in emitted payloads.
     version: String,
-
-    #[serde(skip)]
-    #[facet(opaque)]
-    apm_config: ApmConfig,
-
-    #[serde(skip)]
-    #[facet(opaque)]
-    otlp_traces: TracesConfig,
-
-    #[serde(default = "default_env")]
-    env: String,
 }
 
 impl DatadogTraceConfiguration {
-    /// Creates a new `DatadogTraceConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut trace_config: Self = config.as_typed()?;
-
+    /// Creates a new `DatadogTraceConfiguration` from the resolved traces and shared configuration.
+    pub fn from_configuration(traces: &domains::traces::Domain, shared: &SharedConfiguration) -> Self {
         let app_details = saluki_metadata::get_app_details();
-        trace_config.version = format!("agent-data-plane/{}", app_details.version().raw());
+        let version = format!("agent-data-plane/{}", app_details.version().raw());
 
-        trace_config.apm_config = ApmConfig::from_configuration(config)?;
-        trace_config.otlp_traces = config.try_get_typed("otlp_config.traces")?.unwrap_or_default();
+        let compression = &shared.endpoints.compression;
+        let zstd_compressor_level = resolve_zstd_compressor_level(
+            compression.data_plane_zstd_compressor_level,
+            Some(compression.zstd_compressor_level),
+        );
 
-        Ok(trace_config)
+        // ADP defaults the global environment tag to `none` rather than the Core Agent's empty
+        // string, so normalize an empty resolved value back to `none`.
+        let env = if traces.env.is_empty() {
+            "none".to_string()
+        } else {
+            traces.env.clone()
+        };
+
+        Self {
+            compressor_kind: compression.compressor_kind.clone(),
+            zstd_compressor_level,
+            flush_timeout: shared.metrics_encoding.flush_timeout,
+            env,
+            target_traces_per_second: traces.target_traces_per_second,
+            errors_per_second: traces.errors_per_second,
+            error_tracking_standalone: traces.error_tracking_standalone_enabled,
+            ignore_missing_datadog_fields: traces.otlp.ignore_missing_datadog_fields,
+            sampling_percentage: traces.otlp.probabilistic_sampler_sampling_percentage,
+            default_hostname: None,
+            version,
+        }
     }
-}
 
-impl DatadogTraceConfiguration {
     /// Sets the `default_hostname` using the environment provider
     pub async fn with_environment_provider<E>(mut self, environment_provider: E) -> Result<Self, GenericError>
     where
@@ -169,11 +161,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
-        let zstd_compressor_level = resolve_zstd_compressor_level(
-            self.data_plane_zstd_compressor_level,
-            self.serializer_zstd_compressor_level,
-        );
-        let compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
+        let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
         let default_hostname = self.default_hostname.clone().unwrap_or_default();
         let default_hostname = MetaString::from(default_hostname);
@@ -185,8 +173,11 @@ impl EncoderBuilder for DatadogTraceConfiguration {
                 default_hostname,
                 self.version.clone(),
                 self.env.clone(),
-                self.apm_config.clone(),
-                self.otlp_traces.clone(),
+                self.target_traces_per_second,
+                self.errors_per_second,
+                self.error_tracking_standalone,
+                self.ignore_missing_datadog_fields,
+                self.sampling_percentage,
             ),
             compression_scheme,
             RB_BUFFER_CHUNK_SIZE,
@@ -194,11 +185,12 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         .await?;
         trace_rb.with_max_inputs_per_payload(MAX_TRACES_PER_PAYLOAD);
 
-        let flush_timeout = match self.flush_timeout_secs {
+        let flush_timeout = if self.flush_timeout.is_zero() {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
             // batching, while still practically flushing things almost immediately.
-            0 => Duration::from_millis(10),
-            secs => Duration::from_secs(secs),
+            Duration::from_millis(10)
+        } else {
+            self.flush_timeout
         };
 
         Ok(Box::new(DatadogTrace {
@@ -413,8 +405,10 @@ struct TraceEndpointEncoder {
     agent_hostname: String,
     version: String,
     env: String,
-    apm_config: ApmConfig,
-    otlp_traces: TracesConfig,
+    target_traces_per_second: f64,
+    errors_per_second: f64,
+    ignore_missing_datadog_fields: bool,
+    sampling_percentage: f64,
     string_builder: StringBuilder,
     error_tracking_standalone: bool,
     extra_headers: Vec<(HeaderName, HeaderValue)>,
@@ -422,9 +416,10 @@ struct TraceEndpointEncoder {
 
 impl TraceEndpointEncoder {
     fn new(
-        default_hostname: MetaString, version: String, env: String, apm_config: ApmConfig, otlp_traces: TracesConfig,
+        default_hostname: MetaString, version: String, env: String, target_traces_per_second: f64,
+        errors_per_second: f64, error_tracking_standalone: bool, ignore_missing_datadog_fields: bool,
+        sampling_percentage: f64,
     ) -> Self {
-        let error_tracking_standalone = apm_config.error_tracking_standalone_enabled();
         let extra_headers = if error_tracking_standalone {
             vec![(
                 HeaderName::from_static("x-datadog-error-tracking-standalone"),
@@ -439,8 +434,10 @@ impl TraceEndpointEncoder {
             default_hostname,
             version,
             env,
-            apm_config,
-            otlp_traces,
+            target_traces_per_second,
+            errors_per_second,
+            ignore_missing_datadog_fields,
+            sampling_percentage,
             string_builder: StringBuilder::new(),
             error_tracking_standalone,
             extra_headers,
@@ -463,14 +460,11 @@ impl TraceEndpointEncoder {
             None
         };
         let tracer_version = format!("otlp-{}", trace.payload.tracer_version.as_ref());
-        let container_tags = resolve_container_tags_from_attrs(
-            &trace.attributes,
-            source.as_ref(),
-            self.otlp_traces.ignore_missing_datadog_fields,
-        );
+        let container_tags =
+            resolve_container_tags_from_attrs(&trace.attributes, source.as_ref(), self.ignore_missing_datadog_fields);
         let env = if !trace.payload.env.is_empty() {
             Some(trace.payload.env.as_ref())
-        } else if self.otlp_traces.ignore_missing_datadog_fields {
+        } else if self.ignore_missing_datadog_fields {
             Some("")
         } else {
             None
@@ -479,7 +473,7 @@ impl TraceEndpointEncoder {
             trace.payload.hostname.as_ref(),
             source.as_ref(),
             Some(self.default_hostname.as_ref()),
-            self.otlp_traces.ignore_missing_datadog_fields,
+            self.ignore_missing_datadog_fields,
         );
         let app_version = if !trace.payload.app_version.is_empty() {
             Some(trace.payload.app_version.as_ref())
@@ -500,8 +494,8 @@ impl TraceEndpointEncoder {
             .host_name(&self.agent_hostname)?
             .env(&self.env)?
             .agent_version(&self.version)?
-            .target_tps(self.apm_config.target_traces_per_second())?
-            .error_tps(self.apm_config.errors_per_second())?;
+            .target_tps(self.target_traces_per_second)?
+            .error_tps(self.errors_per_second)?;
 
         ap_builder.add_tracer_payloads(|tp| {
             if let Some(cid) = container_id {
@@ -664,7 +658,7 @@ impl TraceEndpointEncoder {
     }
 
     fn sampling_rate(&self) -> f64 {
-        let rate = self.otlp_traces.probabilistic_sampler.sampling_percentage / 100.0;
+        let rate = self.sampling_percentage / 100.0;
         if rate <= 0.0 || rate >= 1.0 {
             return 1.0;
         }
@@ -844,37 +838,28 @@ mod tests {
 
     use datadog_protos::traces::AgentPayload;
     use protobuf::Message as _;
-    use saluki_config::ConfigurationLoader;
     use saluki_context::tags::Tag;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
     use stringtheory::MetaString;
 
     use super::*;
-    use crate::common::datadog::apm::ApmConfig;
-    use crate::common::otlp::config::TracesConfig;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
-    async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
-        let env_vars: Vec<(String, String)> = if ets_enabled {
-            vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())]
-        } else {
-            vec![]
-        };
-        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            None,
-            Some(&env_vars),
-            false,
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await;
-        let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
+    // The APM sampler defaults: 10 target and error traces per second.
+    const DEFAULT_TARGET_TPS: f64 = 10.0;
+    const DEFAULT_ERRORS_PER_SECOND: f64 = 10.0;
+    // Keep-everything sampling percentage (the OTLP probabilistic sampler default).
+    const DEFAULT_SAMPLING_PERCENTAGE: f64 = 100.0;
+
+    fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
         TraceEndpointEncoder::new(
             MetaString::from("test-host"),
             "0.0.0".to_string(),
             "none".to_string(),
-            apm_config,
-            TracesConfig::default(),
+            DEFAULT_TARGET_TPS,
+            DEFAULT_ERRORS_PER_SECOND,
+            ets_enabled,
+            false,
+            DEFAULT_SAMPLING_PERCENTAGE,
         )
     }
 
@@ -912,24 +897,24 @@ mod tests {
         trace
     }
 
-    #[tokio::test]
-    async fn ets_header_present_when_enabled() {
-        let encoder = make_encoder(true).await;
+    #[test]
+    fn ets_header_present_when_enabled() {
+        let encoder = make_encoder(true);
         let headers = encoder.additional_headers();
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].0.as_str(), "x-datadog-error-tracking-standalone");
         assert_eq!(headers[0].1, "true");
     }
 
-    #[tokio::test]
-    async fn ets_header_absent_when_disabled() {
-        let encoder = make_encoder(false).await;
+    #[test]
+    fn ets_header_absent_when_disabled() {
+        let encoder = make_encoder(false);
         assert!(encoder.additional_headers().is_empty());
     }
 
-    #[tokio::test]
-    async fn ets_chunk_tag_present_for_error_trace() {
-        let mut encoder = make_encoder(true).await;
+    #[test]
+    fn ets_chunk_tag_present_for_error_trace() {
+        let mut encoder = make_encoder(true);
         let trace = make_error_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
@@ -951,9 +936,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn ets_chunk_tag_absent_for_non_error_trace() {
-        let mut encoder = make_encoder(true).await;
+    #[test]
+    fn ets_chunk_tag_absent_for_non_error_trace() {
+        let mut encoder = make_encoder(true);
         let trace = make_trace(); // no error
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
@@ -966,9 +951,9 @@ mod tests {
         assert!(!has_tag, "ETS chunk tag should be absent for non-error traces");
     }
 
-    #[tokio::test]
-    async fn ets_chunk_tag_absent_when_disabled() {
-        let mut encoder = make_encoder(false).await;
+    #[test]
+    fn ets_chunk_tag_absent_when_disabled() {
+        let mut encoder = make_encoder(false);
         let trace = make_trace();
         let mut buf = Vec::new();
         encoder.encode(&trace, &mut buf).expect("encode should succeed");
@@ -981,15 +966,10 @@ mod tests {
         assert!(!has_tag, "ETS chunk tag should be absent when ETS is disabled");
     }
 
-    #[tokio::test]
-    async fn sampling_rate_clamps_percentage_to_unit_interval() {
+    #[test]
+    fn sampling_rate_clamps_percentage_to_unit_interval() {
         // `sampling_percentage` is a 0..100 percentage; only strictly in-range values map to a fractional rate, and
         // anything <= 0 or >= 100 collapses to 1.0 (sample everything).
-        let (cfg, _) =
-            ConfigurationLoader::for_tests_with_provider_factory(None, None, false, KEY_ALIASES, DatadogRemapper::new)
-                .await;
-        let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
-
         let cases = [
             (25.0, 0.25),
             (50.0, 0.5),
@@ -999,14 +979,15 @@ mod tests {
             (150.0, 1.0),
         ];
         for (percentage, expected) in cases {
-            let mut traces_config = TracesConfig::default();
-            traces_config.probabilistic_sampler.sampling_percentage = percentage;
             let encoder = TraceEndpointEncoder::new(
                 MetaString::from("test-host"),
                 "0.0.0".to_string(),
                 "none".to_string(),
-                apm_config.clone(),
-                traces_config,
+                DEFAULT_TARGET_TPS,
+                DEFAULT_ERRORS_PER_SECOND,
+                false,
+                false,
+                percentage,
             );
             assert_eq!(expected, encoder.sampling_rate(), "sampling_rate for {percentage}%");
         }
@@ -1113,9 +1094,9 @@ mod tests {
         assert_eq!(None, resolve_container_tags_from_attrs(&attributes, None, false));
     }
 
-    #[tokio::test]
-    async fn encode_prefixes_tracer_version_and_writes_otlp_sampling_rate() {
-        let mut encoder = make_encoder(false).await;
+    #[test]
+    fn encode_prefixes_tracer_version_and_writes_otlp_sampling_rate() {
+        let mut encoder = make_encoder(false);
         let mut trace = make_trace();
         trace.payload.tracer_version = MetaString::from("1.2.3");
         trace.otlp_sampling_rate = Some(0.5);
@@ -1138,31 +1119,5 @@ mod tests {
             .find_map(|chunk| chunk.tags.get("_dd.otlp_sr"))
             .expect("chunk should carry the _dd.otlp_sr tag");
         assert_eq!("0.50", otlp_sr.as_str());
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DatadogTraceConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_TRACE_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogTraceConfiguration>()
-                    .expect("DatadogTraceConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }
