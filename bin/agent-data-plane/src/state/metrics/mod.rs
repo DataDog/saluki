@@ -50,6 +50,34 @@ mod tests {
                 ),
                 3.0,
             )),
+            // This metric should NOT appear in output (no matching rule).
+            Event::Metric(Metric::counter(
+                Context::from_static_parts("adp.some_unrelated_metric", &[]),
+                100.0,
+            )),
+        ];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        // Matched metrics should appear with remapped names.
+        assert!(output.contains("dogstatsd__packet_pool_get "));
+        assert!(output.contains("dogstatsd__packet_pool "));
+        assert!(output.contains("point__sent{domain=\"https://api.datadoghq.com\"} 12"));
+        assert!(output.contains("point__dropped{domain=\"https://api.datadoghq.com\"} 3"));
+
+        // Unmatched metrics should NOT appear.
+        assert!(!output.contains("some_unrelated_metric"));
+
+        // Should have TYPE headers.
+        assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
+        assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
+        assert!(output.contains("# TYPE point__sent gauge"));
+        assert!(output.contains("# TYPE point__dropped gauge"));
+    }
+
+    #[test]
+    fn rar_transaction_success_preserves_protocol_only_for_counts() {
+        let metrics = vec![
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
                     "adp.network_http_requests_success_total",
@@ -72,20 +100,10 @@ mod tests {
                 ),
                 123.0,
             )),
-            // This metric should NOT appear in output (no matching rule).
-            Event::Metric(Metric::counter(
-                Context::from_static_parts("adp.some_unrelated_metric", &[]),
-                100.0,
-            )),
         ];
 
         let output = render_with(get_datadog_agent_remappings(), metrics);
 
-        // Matched metrics should appear with remapped names.
-        assert!(output.contains("dogstatsd__packet_pool_get "));
-        assert!(output.contains("dogstatsd__packet_pool "));
-        assert!(output.contains("point__sent{domain=\"https://api.datadoghq.com\"} 12"));
-        assert!(output.contains("point__dropped{domain=\"https://api.datadoghq.com\"} 3"));
         assert!(output.contains(concat!(
             "transactions__success{domain=\"https://api.datadoghq.com\",",
             "endpoint=\"/api/v1/series\",proto_version=\"HTTP/2.0\"} 5"
@@ -97,15 +115,6 @@ mod tests {
             "transactions__success_bytes{domain=\"https://api.datadoghq.com\",",
             "endpoint=\"/api/v1/series\",proto_version="
         )));
-
-        // Unmatched metrics should NOT appear.
-        assert!(!output.contains("some_unrelated_metric"));
-
-        // Should have TYPE headers.
-        assert!(output.contains("# TYPE dogstatsd__packet_pool_get counter"));
-        assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
-        assert!(output.contains("# TYPE point__sent gauge"));
-        assert!(output.contains("# TYPE point__dropped gauge"));
     }
 
     #[test]
