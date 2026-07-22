@@ -13,7 +13,6 @@ use tracing::debug;
 
 /// An error from [`RetryCircuitBreaker`].
 #[derive(Debug)]
-#[non_exhaustive]
 pub enum Error<E, R> {
     /// The inner service returned a readiness error or a final request error that will not be retried.
     Service(E),

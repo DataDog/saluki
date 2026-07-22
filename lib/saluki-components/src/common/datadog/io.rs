@@ -109,7 +109,6 @@ fn account_retry_result<'a, T, E, R>(
             None
         }
         Err(RetryCircuitBreakerError::Open(_)) => retry_counters,
-        Err(_) => unreachable!("unsupported retry circuit breaker error variant during telemetry accounting"),
     }
 }
 
@@ -692,9 +691,6 @@ async fn run_endpoint_io_loop<B>(
                     RetryCircuitBreakerError::Retry(_) | RetryCircuitBreakerError::Open(_) => {
                         unreachable!("should not get retry or open error when querying service for readiness")
                     },
-                    _ => unreachable!(
-                        "unsupported retry circuit breaker error variant while querying service readiness"
-                    ),
                 }
             },
 
@@ -722,10 +718,6 @@ async fn run_endpoint_io_loop<B>(
                                     Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
                                     Err(e) => error!(endpoint_url, error = %e, "Failed to re-enqueue failed transaction. Events may be permanently lost."),
                                 }
-                            },
-
-                            Err(_) => {
-                                unreachable!("unsupported retry circuit breaker error variant after request completion")
                             },
                         }
                     },
