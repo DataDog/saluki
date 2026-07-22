@@ -14,6 +14,13 @@ const MAX_TAGS_PER_SERIES: usize = 100;
 /// Metric name byte-length cap (Pyld10).
 const MAX_METRIC_NAME_BYTES: usize = 350;
 
+// The origin ordinal bounds below are enum ceilings and deprecated-ordinal gaps from the dd-source
+// origin proto, which is not vendored in this repo. The Datadog Agent pins the same proto publicly in
+// pkg/serializer/internal/metrics/origin_mapping.go, which carries this permalink:
+// https://github.com/DataDog/dd-source/blob/276882b71d84785ec89c31973046ab66d5a01807/domains/metrics/shared/libs/proto/origin/origin.proto#L277
+// These bounds drift when that proto changes. A new ordinal then false-reds and a removed one
+// false-greens until they are refreshed against it.
+
 /// Origin product ordinal upper bound (Pyld16).
 const ORIGIN_PRODUCT_MAX: u32 = 45;
 
@@ -31,6 +38,26 @@ const ORIGIN_SERVICE_RESERVED: [u32; 8] = [8, 31, 32, 33, 46, 88, 123, 159];
 
 /// Tag prefixes the Agent reserves for resource promotion.
 const RESERVED_TAG_PREFIXES: [&str; 2] = ["device:", "dd.internal.resource:"];
+
+/// Pyld16-v3 -- whether a v3 origin triple is out of enum domain, returning the offending field and its
+/// value. A field is in domain when non-negative, at or below its enum ceiling, and not a reserved gap.
+/// Mirrors the v2 `origin` check over the raw i32 `dictOriginInfo` triple.
+pub(crate) fn origin_triple_out_of_domain(product: i32, category: i32, service: i32) -> Option<(&'static str, i32)> {
+    if !ordinal_in_domain(product, ORIGIN_PRODUCT_MAX, &[]) {
+        Some(("origin_product", product))
+    } else if !ordinal_in_domain(category, ORIGIN_CATEGORY_MAX, &ORIGIN_CATEGORY_RESERVED) {
+        Some(("origin_category", category))
+    } else if !ordinal_in_domain(service, ORIGIN_SERVICE_MAX, &ORIGIN_SERVICE_RESERVED) {
+        Some(("origin_service", service))
+    } else {
+        None
+    }
+}
+
+/// A raw i32 origin ordinal is in domain when non-negative, at or below `max`, and not reserved.
+fn ordinal_in_domain(value: i32, max: u32, reserved: &[u32]) -> bool {
+    u32::try_from(value).is_ok_and(|v| v <= max && !reserved.contains(&v))
+}
 
 /// Pyld09 -- metric name non-empty.
 pub(crate) fn metric_non_empty(target: Target, ms: &MetricSeries) {
@@ -135,7 +162,8 @@ pub(crate) fn origin(target: Target, ms: &MetricSeries) {
     );
 }
 
-/// Pyld23 -- each tag at most `MAX_TAG_LENGTH_BYTES` bytes.
+/// Pyld23 -- each tag at most `MAX_TAG_LENGTH_BYTES` bytes. A longer tag is silently clipped by the
+/// intake, so a non-lax Agent must not emit one.
 pub(crate) fn tag_length(target: Target, ms: &MetricSeries) {
     let over = ms
         .tags

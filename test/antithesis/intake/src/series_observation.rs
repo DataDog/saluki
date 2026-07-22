@@ -7,7 +7,7 @@ use datadog_protos::metrics::{metric_payload::MetricSeries, MetricPayload};
 use serde_json::json;
 
 use crate::capture::Target;
-use crate::lenient_decode::Rejection;
+use crate::lenient_decode::{decode_metric_payload, Rejection, Source};
 use crate::properties::payload::{metric_payload, point, resource, series};
 
 /// A decoded `/api/v2/series` payload.
@@ -19,14 +19,21 @@ pub(crate) struct SeriesObservation {
 impl SeriesObservation {
     /// Decode a raw `/api/v2/series` body and fire the Pyld07 production-faithful decode assertion.
     ///
-    /// Returns the observation when the body decoded, and whether the intake accepted it.
-    /// A non-UTF-8 non-tag field is rejected exactly as production rejects it, so it is not
-    /// a decode defect — only genuinely malformed wire fails Pyld07.
-    pub(crate) fn decode(target: Target, body_bytes: &[u8], decompression_applied: bool) -> (Option<Self>, bool) {
-        let outcome = crate::lenient_decode::decode_metric_payload(body_bytes);
+    /// `source` is classified from the request `User-Agent` and gates v2 tag handling exactly as the
+    /// backend does: `datadog-agent` sanitizes a feral tag, every other source whole-payload-rejects it.
+    ///
+    /// Returns the observation when the body decoded, and whether the intake accepted it. A correct
+    /// Agent produces a payload the intake accepts cleanly, so any reject fails Pyld07: malformed wire,
+    /// a non-UTF-8 non-tag field, or a non-UTF-8 tag from a non-`datadog-agent` source. A feral tag
+    /// from the `datadog-agent` source is coerced to `Ok` and so never reaches this as a rejection.
+    pub(crate) fn decode(
+        target: Target, body_bytes: &[u8], decompression_applied: bool, source: Source,
+    ) -> (Option<Self>, bool) {
+        let outcome = decode_metric_payload(body_bytes, source);
         let (production_faithful, label) = match &outcome {
             Ok(_) => (true, "accepted"),
-            Err(Rejection::NonUtf8StrictField) => (true, "rejected_non_utf8_field"),
+            Err(Rejection::NonUtf8StrictField) => (false, "rejected_non_utf8_field"),
+            Err(Rejection::NonUtf8Tag) => (false, "rejected_non_utf8_tag"),
             Err(Rejection::MalformedWire) => (false, "malformed_wire"),
         };
         metric_payload::decode_production_faithful(
@@ -67,12 +74,12 @@ impl SeriesObservation {
         metric_payload::point_count(target, &self.payload);
         resource::host_consistent(target, &self.payload, established_host);
         for ms in &self.payload.series {
-            // Only series production keeps get per-series property checks. Production drops a
-            // series with an invalid name or a tag or resource flood, so asserting well-formedness
-            // on those would flag payloads the intake itself treats as acceptable and discards.
-            if crate::capture::series_kept_by_intake(ms) {
-                evaluate_series(target, ms, now_secs);
-            }
+            // Every emitted series is asserted for correct shape. The intake charter is that ADP
+            // emits correctly-shaped data, so a series ADP emits gets its shape checked whether or
+            // not the intake would keep it. The keep-filter (series_kept_by_intake) governs context
+            // capture in `capture.rs`, not assertion scope: gating the checks on it would silently
+            // absorb a malformed emission the intake happens to drop, leaving the property untested.
+            evaluate_series(target, ms, now_secs);
         }
     }
 
