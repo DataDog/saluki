@@ -209,14 +209,10 @@ async fn validate_and_send_readiness(
     let targets = collect_validation_targets(endpoints);
     let readiness = validate_targets(client, &targets).await;
 
-    // When every configured key has been proven invalid, surface a diagnostic event so that interested subscribers
-    // (such as the Core Agent, via the remote agent event reporter) can react to the credentials being rejected. This
-    // mirrors the `NotReady` health signal, and re-emits on each validation cycle so that a subscriber which appears
-    // later still observes the condition.
     if readiness == ValidationReadiness::NotReady {
         if let Some(emitter) = emitter {
             emitter.emit(DiagnosticEvent::new(
-                "The configured Datadog API key(s) were rejected as invalid.",
+                "All configured Datadog API key(s) were rejected as invalid.",
                 DiagnosticDetails::InvalidApiKey,
             ));
         }

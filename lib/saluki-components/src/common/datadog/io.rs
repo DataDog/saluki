@@ -8,6 +8,7 @@
 use std::{
     collections::VecDeque,
     error::Error as _,
+    marker::PhantomData,
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -15,7 +16,7 @@ use std::{
 
 use bytes::Buf;
 use futures::FutureExt as _;
-use http::{Request, Uri};
+use http::{Request, StatusCode, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
@@ -106,10 +107,10 @@ where
 /// Minimum interval between successive `InvalidApiKey` diagnostic events emitted from the request I/O path for a single
 /// endpoint.
 ///
-/// A persistently rejected API key returns `403` on every forwarded request, so the raw event rate is unbounded. This
-/// interval rate-limits emission so that the first rejection is surfaced immediately while a continuously invalid key
-/// cannot flood subscribers with one event per failed request.
-const INVALID_API_KEY_EMIT_INTERVAL: Duration = Duration::from_secs(60);
+/// We want to ensure there's a steady stream of these events while the invalid API key condition is still present, but
+/// we want to avoid sending a deluge of events if there happens to be some bug that causes us to rapidly fire off
+/// requests at a rate of more than one per second.
+const INVALID_API_KEY_EMIT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Transaction forwarder for Datadog endpoints.
 pub struct TransactionForwarder<B> {
@@ -123,7 +124,7 @@ pub struct TransactionForwarder<B> {
     endpoints: Vec<RoutableEndpoint>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     emitter: Option<DiagnosticsEmitter>,
-    _marker: std::marker::PhantomData<B>,
+    _marker: PhantomData<B>,
 }
 
 /// Builds request mappers for resolved endpoints.
@@ -254,7 +255,7 @@ where
             endpoints,
             endpoint_request_mapper_factory,
             emitter: None,
-            _marker: std::marker::PhantomData,
+            _marker: PhantomData,
         })
     }
 
@@ -580,10 +581,7 @@ async fn run_endpoint_io_loop<B>(
     let mut in_flight = JoinSet::new();
     let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
     let mut done = false;
-
-    // Tracks the last time we emitted an `InvalidApiKey` diagnostic from this endpoint's request path, so a
-    // continuously-rejected key is surfaced promptly but not on every single failed request.
-    let mut last_invalid_key_emit: Option<Instant> = None;
+    let mut last_invalid_key_emit = None;
 
     loop {
         select! {
@@ -657,11 +655,8 @@ async fn run_endpoint_io_loop<B>(
                     Ok((metadata, result)) => match result {
                         // We got a response -- maybe successful, maybe not -- so just process that.
                         Ok(http_response) => {
-                            let credentials_rejected = process_http_response(http_response, metadata, &telemetry, &endpoint_url, &endpoint_domain).await;
-
-                            // A `403` from a real forwarded request means the API key is invalid. Surface it right away
-                            // (rate-limited) rather than waiting for the next API key validation cycle.
-                            if credentials_rejected {
+                            let response_status = process_http_response(http_response, metadata, &telemetry, &endpoint_url, &endpoint_domain).await;
+                            if response_status == StatusCode::FORBIDDEN {
                                 maybe_emit_invalid_api_key(emitter.as_ref(), &mut last_invalid_key_emit, &endpoint_url);
                             }
                         }
@@ -776,11 +771,10 @@ fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: 
 
 /// Processes an HTTP response to a forwarded intake request, updating telemetry and logging as appropriate.
 ///
-/// Returns `true` if the response indicates the configured API key was rejected as invalid (HTTP 403), so the caller
-/// can surface an `InvalidApiKey` diagnostic event.
+/// Returns the status code from the responses.
 async fn process_http_response(
     response: Response<Incoming>, metadata: Metadata, telemetry: &ComponentTelemetry, endpoint_url: &str, domain: &str,
-) -> bool {
+) -> StatusCode {
     let status = response.status();
     if status.is_success() {
         debug!(endpoint_url, %status, "Request completed.");
@@ -798,8 +792,6 @@ async fn process_http_response(
         );
 
         telemetry.track_successful_transaction(&metadata, domain);
-
-        false
     } else {
         telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);
 
@@ -813,9 +805,9 @@ async fn process_http_response(
                 error!(endpoint_url, %status, error = %e, "Failed to read response body of non-success response.");
             }
         }
-
-        status == http::StatusCode::FORBIDDEN
     }
+
+    status
 }
 
 /// Emits an `InvalidApiKey` diagnostic event via `emitter`, rate-limited to at most once per

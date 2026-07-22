@@ -143,11 +143,6 @@ impl Forwarder for Datadog {
 
         let mut health = context.take_health_handle();
 
-        // Build a diagnostics emitter scoped to this forwarder so that both API key validation and the request I/O path
-        // can surface an "invalid API key" diagnostic event to interested subscribers. The dataspace is captured here,
-        // where it is available, and handed to the forwarder explicitly, since its tasks are spawned onto fresh runtime
-        // tasks that do not inherit the ambient dataspace. Diagnostics are best-effort, so a missing dataspace simply
-        // disables emission rather than failing the forwarder.
         let emitter = DiagnosticsEmitter::from_current(context.component_context().identity()).ok();
         let forwarder = forwarder.with_diagnostics_emitter(emitter);
 
