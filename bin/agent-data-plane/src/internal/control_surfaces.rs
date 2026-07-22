@@ -103,6 +103,22 @@ mod tests {
         server.await.unwrap().unwrap();
     }
 
+    #[tokio::test]
+    #[should_panic(expected = "timed out waiting for DogStatsD context dump route response")]
+    async fn context_dump_request_exchange_times_out_when_peer_does_not_close() {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("test listener should bind");
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.expect("test listener should accept");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+        let stream = TcpStream::connect(address).await.expect("test client should connect");
+
+        exchange_context_dump_request(stream, Instant::now() + Duration::from_millis(20)).await;
+    }
+
     fn reserve_tcp_address() -> std::net::SocketAddr {
         TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .expect("ephemeral TCP address should bind")
@@ -112,22 +128,14 @@ mod tests {
 
     async fn post_context_dump_eventually(address: std::net::SocketAddr) -> StatusCode {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
+        let stream = loop {
             if let Ok(stream) = TcpStream::connect(address).await {
                 break stream;
             }
             assert!(Instant::now() < deadline, "dynamic API did not start before deadline");
             tokio::time::sleep(Duration::from_millis(25)).await;
         };
-        stream
-            .write_all(
-                b"POST /dogstatsd/contexts/dump HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \
-                  configured-agent-token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-            )
-            .await
-            .unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.unwrap();
+        let response = exchange_context_dump_request(stream, deadline).await;
         let status_digits = response
             .get(9..12)
             .expect("HTTP response should have a three-digit status code");
@@ -135,5 +143,23 @@ mod tests {
             digit.is_ascii_digit().then(|| status * 10 + u16::from(*digit - b'0'))
         });
         StatusCode::from_u16(status.expect("HTTP response status should be numeric")).unwrap()
+    }
+
+    async fn exchange_context_dump_request(mut stream: TcpStream, deadline: Instant) -> Vec<u8> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        tokio::time::timeout(remaining, async {
+            stream
+                .write_all(
+                    b"POST /dogstatsd/contexts/dump HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \
+                      configured-agent-token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await?;
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await?;
+            Ok::<_, std::io::Error>(response)
+        })
+        .await
+        .expect("timed out waiting for DogStatsD context dump route response")
+        .expect("DogStatsD context dump route request should complete")
     }
 }
