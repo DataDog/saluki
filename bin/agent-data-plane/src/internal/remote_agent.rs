@@ -6,6 +6,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datadog_agent_commons::ipc::client::RemoteAgentClient;
 use datadog_agent_commons::ipc::session::{SessionId, SessionIdHandle};
+use datadog_protos::agent::v1::{
+    event::Details as RemoteAgentEventDetails, Event as RemoteAgentEvent, InvalidApiKeyEvent,
+    ReportRemoteAgentEventRequest,
+};
 use datadog_protos::agent::{
     config_event,
     flare::v1::{flare_provider_server::*, *},
@@ -20,10 +24,10 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
 use saluki_core::{
-    diagnostic::DiagnosticCollector,
+    diagnostic::{subscribe_events, DiagnosticCollector, DiagnosticDetails, DiagnosticEvent},
     observability::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor},
     runtime::{
-        state::{DataspaceRegistry, IdentifierFilter},
+        state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter, Subscription},
         InitializationError, Supervisable, SupervisorFuture,
     },
 };
@@ -33,6 +37,7 @@ use serde_json::{Map, Value};
 use tokio::task::spawn_blocking;
 use tokio::time::{timeout, Instant};
 use tokio::{
+    select,
     sync::{mpsc, oneshot, Mutex},
     time::{interval, MissedTickBehavior},
 };
@@ -133,17 +138,24 @@ impl RemoteAgentBootstrap {
         }
     }
 
-    /// Creates a worker that captures the dataspace from the supervisor context and makes it
-    /// available to the diagnostic artifact collection service.
+    /// Creates a worker that captures the dataspace from the supervisor context and makes it available to the
+    /// diagnostic artifact collection service.
     ///
-    /// This worker must be added to the control plane supervisor. When it initializes, it runs
-    /// inside the supervisor process where the dataspace task-local is set, and fills the shared
-    /// [`OnceLock`] so that `get_flare_files` can collect diagnostic artifacts at request time.
-    /// Without this, the gRPC handler tasks spawned by tonic would not have access to the
-    /// dataspace since tonic's `tokio::spawn` does not propagate task-locals.
+    /// This worker must be added to the control plane supervisor. When it initializes, it runs inside the supervisor
+    /// process where the dataspace task-local is set, and fills the shared [`OnceLock`] so that `get_flare_files` can
+    /// collect diagnostic artifacts at request time. Without this, the gRPC handler tasks spawned by tonic would not
+    /// have access to the dataspace since tonic's `tokio::spawn` does not propagate task-locals.
     pub fn create_dataspace_anchor(&self) -> DataspaceAnchorWorker {
         DataspaceAnchorWorker {
             dataspace: Arc::clone(&self.dataspace),
+        }
+    }
+
+    /// Creates a worker that reports diagnostic events to the Core Agent as remote agent events.
+    pub fn create_event_reporter(&self) -> RemoteAgentEventReporter {
+        RemoteAgentEventReporter {
+            client: self.client.clone(),
+            session_id: self.session_id.clone(),
         }
     }
 
@@ -701,6 +713,89 @@ impl Supervisable for DataspaceAnchorWorker {
     }
 }
 
+/// A worker that reports diagnostic events to the Core Agent as remote agent events.
+///
+/// It subscribes to [`DiagnosticEvent`]s emitted anywhere in the process converts the ones it recognizes into the
+/// Datadog Agent's remote agent event representation, and reports them to the Core Agent over the remote agent gRPC
+/// API.
+pub struct RemoteAgentEventReporter {
+    client: RemoteAgentClient,
+    session_id: SessionIdHandle,
+}
+
+#[async_trait]
+impl Supervisable for RemoteAgentEventReporter {
+    fn name(&self) -> &str {
+        "remote_agent_event_reporter"
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let client = self.client.clone();
+        let session_id = self.session_id.clone();
+
+        Ok(Box::pin(async move {
+            let subscription = subscribe_events(IdentifierFilter::all())
+                .map_err(|e| generic_error!("Failed to subscribe to diagnostic events: {}", e))?;
+
+            select! {
+                _ = process_shutdown => Ok(()),
+                result = run_event_reporter(client, session_id, subscription) => result,
+            }
+        }))
+    }
+}
+
+async fn run_event_reporter(
+    mut client: RemoteAgentClient, session_id: SessionIdHandle, mut subscription: Subscription<DiagnosticEvent>,
+) -> Result<(), GenericError> {
+    debug!("Remote Agent event reporter started.");
+
+    while let Some(update) = subscription.recv().await {
+        let DataspaceUpdate::Message(_, event) = update else {
+            continue;
+        };
+
+        let Some(remote_agent_event) = diagnostic_to_remote_agent_event(&event) else {
+            debug!("Received diagnostic event with no remote agent event mapping; skipping.");
+            continue;
+        };
+
+        let Some(session_id) = session_id.get() else {
+            debug!("No active remote agent session; dropping diagnostic event.");
+            continue;
+        };
+
+        let request = ReportRemoteAgentEventRequest {
+            session_id: session_id.as_str().to_string(),
+            events: vec![remote_agent_event],
+        };
+
+        if let Err(e) = client.report_remote_agent_event(request).await {
+            warn!(error = %e, "Failed to report remote agent event to the Datadog Agent.");
+        }
+    }
+
+    debug!("Remote Agent event reporter stopped.");
+    Ok(())
+}
+
+/// Converts a [`DiagnosticEvent`] into the Datadog Agent's remote agent event representation.
+///
+/// Returns `None` for diagnostic details that have no corresponding remote agent event variant, in which case the
+/// event is not reported.
+fn diagnostic_to_remote_agent_event(event: &DiagnosticEvent) -> Option<RemoteAgentEvent> {
+    let details = match event.details() {
+        DiagnosticDetails::InvalidApiKey => RemoteAgentEventDetails::InvalidApiKey(InvalidApiKeyEvent {}),
+        // `DiagnosticDetails` is `#[non_exhaustive]`; any future variant without a remote agent mapping is skipped.
+        _ => return None,
+    };
+
+    Some(RemoteAgentEvent {
+        message: event.message().to_string(),
+        details: Some(details),
+    })
+}
+
 struct StatusBuilder {
     main_section: StatusSection,
     named_sections: HashMap<String, StatusSection>,
@@ -787,5 +882,18 @@ mod tests {
         let input = vec![b'y'; DIAGNOSTIC_ARTIFACT_MAX_BYTES];
         let output = cap_artifact_data(input.clone());
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn diagnostic_to_remote_agent_event_maps_invalid_api_key() {
+        let event = DiagnosticEvent::new("credentials rejected", DiagnosticDetails::InvalidApiKey);
+        let converted =
+            diagnostic_to_remote_agent_event(&event).expect("InvalidApiKey should map to a remote agent event");
+
+        assert_eq!(converted.message, "credentials rejected");
+        assert!(matches!(
+            converted.details,
+            Some(RemoteAgentEventDetails::InvalidApiKey(_))
+        ));
     }
 }

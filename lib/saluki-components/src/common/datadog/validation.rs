@@ -6,6 +6,7 @@ use http_body_util::Empty;
 use regex::Regex;
 use saluki_common::task::spawn_traced_named;
 use saluki_config::GenericConfiguration;
+use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClient;
 use tokio::{
@@ -41,19 +42,24 @@ pub(crate) struct ApiKeyValidator {
     client: HttpClient,
     live_config: Option<GenericConfiguration>,
     interval: Duration,
+    emitter: Option<DiagnosticsEmitter>,
 }
 
 impl ApiKeyValidator {
     /// Creates API key validation for the given startup endpoint set.
+    ///
+    /// When present, `emitter` is used to surface a diagnostic event whenever validation determines that every
+    /// configured API key is invalid.
     pub(crate) fn new(
         endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
-        interval: Duration,
+        interval: Duration, emitter: Option<DiagnosticsEmitter>,
     ) -> Self {
         Self {
             endpoints,
             client,
             live_config,
             interval,
+            emitter,
         }
     }
 
@@ -66,6 +72,7 @@ impl ApiKeyValidator {
             self.live_config,
             self.interval,
             readiness_tx,
+            self.emitter,
         );
 
         ApiKeyValidationHandle {
@@ -126,19 +133,19 @@ enum KeyValidationResult {
 
 fn spawn_validation_task(
     endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
-    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>,
+    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: Option<DiagnosticsEmitter>,
 ) -> JoinHandle<()> {
     spawn_traced_named(
         "dd-api-key-validation",
-        run_validation_loop(endpoints, client, live_config, interval, readiness_tx),
+        run_validation_loop(endpoints, client, live_config, interval, readiness_tx, emitter),
     )
 }
 
 async fn run_validation_loop(
     mut endpoints: Vec<RoutableEndpoint>, mut client: HttpClient, live_config: Option<GenericConfiguration>,
-    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>,
+    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: Option<DiagnosticsEmitter>,
 ) {
-    if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
+    if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, emitter.as_ref()).await {
         return;
     }
 
@@ -154,12 +161,12 @@ async fn run_validation_loop(
     loop {
         select! {
             _ = interval.tick() => {
-                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
+                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, emitter.as_ref()).await {
                     return;
                 }
             },
             _ = wait_for_validation_config_change(&mut config_updates_rx) => {
-                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx).await {
+                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, emitter.as_ref()).await {
                     return;
                 }
             },
@@ -197,9 +204,23 @@ fn is_validation_trigger_key(key: &str) -> bool {
 
 async fn validate_and_send_readiness(
     endpoints: &mut [RoutableEndpoint], client: &mut HttpClient, readiness_tx: &mpsc::Sender<ValidationReadiness>,
+    emitter: Option<&DiagnosticsEmitter>,
 ) -> bool {
     let targets = collect_validation_targets(endpoints);
     let readiness = validate_targets(client, &targets).await;
+
+    // When every configured key has been proven invalid, surface a diagnostic event so that interested subscribers
+    // (such as the Core Agent, via the remote agent event reporter) can react to the credentials being rejected. This
+    // mirrors the `NotReady` health signal, and re-emits on each validation cycle so that a subscriber which appears
+    // later still observes the condition.
+    if readiness == ValidationReadiness::NotReady {
+        if let Some(emitter) = emitter {
+            emitter.emit(DiagnosticEvent::new(
+                "The configured Datadog API key(s) were rejected as invalid.",
+                DiagnosticDetails::InvalidApiKey,
+            ));
+        }
+    }
 
     if readiness_tx.send(readiness).await.is_err() {
         debug!("API key validation readiness receiver dropped; stopping validation task.");
@@ -573,6 +594,87 @@ mod tests {
             ValidationReadiness::Ready
         );
         assert_eq!(later_requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn not_ready_emits_invalid_api_key_diagnostic() {
+        use saluki_core::runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter};
+        use saluki_core::support::SubsystemIdentifier;
+
+        let _ = initialize_default_crypto_provider();
+
+        // A validation server that rejects the key with a 403, so validation concludes it is invalid.
+        let invalid_url = start_validation_server(StatusCode::FORBIDDEN).await;
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "api_key": "primary-key", "dd_url": invalid_url })),
+            None,
+            false,
+        )
+        .await;
+        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let mut endpoints = forwarder_config
+            .build_routable_endpoints(Some(config))
+            .expect("endpoints should resolve");
+
+        // Subscribe to diagnostic events on a dataspace, then build an emitter that publishes to that same dataspace.
+        let dataspace = DataspaceRegistry::new();
+        let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
+        let emitter =
+            DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["test-forwarder"]), dataspace);
+
+        let mut client = test_client(Duration::from_secs(1));
+        let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
+
+        assert!(validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, Some(&emitter)).await);
+        assert_eq!(readiness_rx.recv().await, Some(ValidationReadiness::NotReady));
+
+        // The rejected key must have produced an `InvalidApiKey` diagnostic event.
+        match events.recv().await {
+            Some(DataspaceUpdate::Message(_, event)) => {
+                assert_eq!(event.details(), &DiagnosticDetails::InvalidApiKey);
+            }
+            other => panic!("expected an InvalidApiKey diagnostic event, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ready_does_not_emit_diagnostic() {
+        use saluki_core::runtime::state::{DataspaceRegistry, IdentifierFilter};
+        use saluki_core::support::SubsystemIdentifier;
+
+        let _ = initialize_default_crypto_provider();
+
+        // A validation server that accepts the key, so validation concludes it is valid.
+        let valid_url = start_validation_server(StatusCode::OK).await;
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({ "api_key": "primary-key", "dd_url": valid_url })),
+            None,
+            false,
+        )
+        .await;
+        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let mut endpoints = forwarder_config
+            .build_routable_endpoints(Some(config))
+            .expect("endpoints should resolve");
+
+        let dataspace = DataspaceRegistry::new();
+        let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
+        let emitter =
+            DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["test-forwarder"]), dataspace);
+
+        let mut client = test_client(Duration::from_secs(1));
+        let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
+
+        assert!(validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, Some(&emitter)).await);
+        assert_eq!(readiness_rx.recv().await, Some(ValidationReadiness::Ready));
+
+        // A valid key must not produce any diagnostic event.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), events.recv())
+                .await
+                .is_err(),
+            "no diagnostic event should be emitted when the API key is valid"
+        );
     }
 
     fn target_for(base_url: &str) -> ValidationTarget {

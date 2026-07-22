@@ -10,7 +10,7 @@ use std::{
     error::Error as _,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Buf;
@@ -24,6 +24,7 @@ use saluki_common::{
 };
 use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
+use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
     client::http::{into_client_body, HttpClient, HttpClientBuilder},
@@ -102,6 +103,14 @@ where
     }
 }
 
+/// Minimum interval between successive `InvalidApiKey` diagnostic events emitted from the request I/O path for a single
+/// endpoint.
+///
+/// A persistently rejected API key returns `403` on every forwarded request, so the raw event rate is unbounded. This
+/// interval rate-limits emission so that the first rejection is surfaced immediately while a continuously invalid key
+/// cannot flood subscribers with one event per failed request.
+const INVALID_API_KEY_EMIT_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Transaction forwarder for Datadog endpoints.
 pub struct TransactionForwarder<B> {
     context: ComponentContext,
@@ -113,6 +122,7 @@ pub struct TransactionForwarder<B> {
     endpoint_name: Arc<EndpointNameFn>,
     endpoints: Vec<RoutableEndpoint>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    emitter: Option<DiagnosticsEmitter>,
     _marker: std::marker::PhantomData<B>,
 }
 
@@ -243,8 +253,18 @@ where
             endpoint_name,
             endpoints,
             endpoint_request_mapper_factory,
+            emitter: None,
             _marker: std::marker::PhantomData,
         })
+    }
+
+    /// Sets the diagnostics emitter used to surface forwarder-level diagnostic events, such as an invalid API key.
+    ///
+    /// The emitter is used by both the API key validation task and the request I/O path. When no emitter is set (the
+    /// default), no diagnostic events are emitted.
+    pub(crate) fn with_diagnostics_emitter(mut self, emitter: Option<DiagnosticsEmitter>) -> Self {
+        self.emitter = emitter;
+        self
     }
 
     /// Spawns the I/O task for the forwarder, and any associated endpoint I/O tasks.
@@ -266,6 +286,7 @@ where
             endpoint_name,
             endpoints,
             endpoint_request_mapper_factory,
+            emitter,
             _marker,
         } = self;
 
@@ -283,6 +304,7 @@ where
                 endpoint_name,
                 endpoints,
                 endpoint_request_mapper_factory,
+                emitter,
             ),
         );
 
@@ -293,12 +315,17 @@ where
     }
 
     /// Returns API key validation for the startup endpoint set.
+    ///
+    /// The forwarder's diagnostics emitter (see [`with_diagnostics_emitter`][Self::with_diagnostics_emitter]) is used to
+    /// surface a diagnostic event when validation determines that every configured API key is invalid, allowing
+    /// interested subscribers to react to the credentials being rejected.
     pub(crate) fn api_key_validator(&self) -> ApiKeyValidator {
         ApiKeyValidator::new(
             self.endpoints.clone(),
             self.client.clone(),
             self.live_config.clone(),
             self.config.api_key_validation_interval(),
+            self.emitter.clone(),
         )
     }
 }
@@ -309,7 +336,7 @@ async fn run_io_loop<B>(
     context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
-    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: Option<DiagnosticsEmitter>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -350,6 +377,7 @@ async fn run_io_loop<B>(
                 route,
                 resolved_endpoint,
                 endpoint_request_mapper_factory.clone(),
+                emitter.clone(),
             ),
         );
 
@@ -445,6 +473,7 @@ async fn run_endpoint_io_loop<B>(
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
     telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry, endpoint_name: Arc<EndpointNameFn>,
     route: EndpointRoute, endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    emitter: Option<DiagnosticsEmitter>,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -552,6 +581,10 @@ async fn run_endpoint_io_loop<B>(
     let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
     let mut done = false;
 
+    // Tracks the last time we emitted an `InvalidApiKey` diagnostic from this endpoint's request path, so a
+    // continuously-rejected key is surfaced promptly but not on every single failed request.
+    let mut last_invalid_key_emit: Option<Instant> = None;
+
     loop {
         select! {
             // Try and drain the next transaction from our channel, and push it into the pending transactions queue.
@@ -623,7 +656,15 @@ async fn run_endpoint_io_loop<B>(
                 match task_result {
                     Ok((metadata, result)) => match result {
                         // We got a response -- maybe successful, maybe not -- so just process that.
-                        Ok(http_response) => process_http_response(http_response, metadata, &telemetry, &endpoint_url, &endpoint_domain).await,
+                        Ok(http_response) => {
+                            let credentials_rejected = process_http_response(http_response, metadata, &telemetry, &endpoint_url, &endpoint_domain).await;
+
+                            // A `403` from a real forwarded request means the API key is invalid. Surface it right away
+                            // (rate-limited) rather than waiting for the next API key validation cycle.
+                            if credentials_rejected {
+                                maybe_emit_invalid_api_key(emitter.as_ref(), &mut last_invalid_key_emit, &endpoint_url);
+                            }
+                        }
 
                         // The service itself encountered an error while sending the request or receiving the response:
                         // connection reset by peer, I/O error, etc.
@@ -733,9 +774,13 @@ fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: 
     telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
 }
 
+/// Processes an HTTP response to a forwarded intake request, updating telemetry and logging as appropriate.
+///
+/// Returns `true` if the response indicates the configured API key was rejected as invalid (HTTP 403), so the caller
+/// can surface an `InvalidApiKey` diagnostic event.
 async fn process_http_response(
     response: Response<Incoming>, metadata: Metadata, telemetry: &ComponentTelemetry, endpoint_url: &str, domain: &str,
-) {
+) -> bool {
     let status = response.status();
     if status.is_success() {
         debug!(endpoint_url, %status, "Request completed.");
@@ -753,6 +798,8 @@ async fn process_http_response(
         );
 
         telemetry.track_successful_transaction(&metadata, domain);
+
+        false
     } else {
         telemetry.track_permanently_failed_transaction(&metadata, Some(status), domain);
 
@@ -766,7 +813,32 @@ async fn process_http_response(
                 error!(endpoint_url, %status, error = %e, "Failed to read response body of non-success response.");
             }
         }
+
+        status == http::StatusCode::FORBIDDEN
     }
+}
+
+/// Emits an `InvalidApiKey` diagnostic event via `emitter`, rate-limited to at most once per
+/// [`INVALID_API_KEY_EMIT_INTERVAL`].
+///
+/// `last_emit` records the previous emission time and is updated in place. Does nothing when no emitter is configured.
+fn maybe_emit_invalid_api_key(
+    emitter: Option<&DiagnosticsEmitter>, last_emit: &mut Option<Instant>, endpoint_url: &str,
+) {
+    let Some(emitter) = emitter else {
+        return;
+    };
+
+    let now = Instant::now();
+    if last_emit.is_some_and(|last| now.duration_since(last) < INVALID_API_KEY_EMIT_INTERVAL) {
+        return;
+    }
+    *last_emit = Some(now);
+
+    emitter.emit(DiagnosticEvent::new(
+        format!("Datadog API key rejected as invalid (HTTP 403) when forwarding to '{endpoint_url}'."),
+        DiagnosticDetails::InvalidApiKey,
+    ));
 }
 
 /// A queue of pending transactions waiting to be sent.
@@ -1595,5 +1667,38 @@ app.datadoghq.com: [key-a, key-b]
             "with secrets configured, 403 must be retried at least once (saw {} requests)",
             observed
         );
+    }
+
+    #[tokio::test]
+    async fn forwarder_emits_invalid_api_key_diagnostic_on_403() {
+        use saluki_core::runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter};
+        use saluki_core::support::SubsystemIdentifier;
+
+        // The intake server rejects every request with a 403. Without secrets configured, a 403 is not retried, so the
+        // single forwarded request flows straight through to response handling.
+        let (server_url, _counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN]).await;
+
+        // Subscribe to diagnostic events, then build a forwarder whose emitter publishes to that same dataspace.
+        let dataspace = DataspaceRegistry::new();
+        let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
+        let emitter =
+            DiagnosticsEmitter::from_dataspace(SubsystemIdentifier::from_segments(["test-forwarder"]), dataspace);
+
+        let forwarder = build_test_forwarder(&server_url, None).with_diagnostics_emitter(Some(emitter));
+        let handle = forwarder.spawn().await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+
+        // The 403 response to the real request must produce an `InvalidApiKey` diagnostic event.
+        match timeout(Duration::from_secs(3), events.recv()).await {
+            Ok(Some(DataspaceUpdate::Message(_, event))) => {
+                assert_eq!(event.details(), &DiagnosticDetails::InvalidApiKey);
+            }
+            other => panic!("expected an InvalidApiKey diagnostic event, got: {other:?}"),
+        }
+
+        handle.shutdown().await;
     }
 }
