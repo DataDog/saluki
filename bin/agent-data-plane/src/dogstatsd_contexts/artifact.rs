@@ -201,7 +201,7 @@ fn open_temporary_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "context-dump-benchmark")))]
 fn publish_open_temporary<W, R>(
     writer: W, temporary_path: &Path, target: &Path, snapshot: &[AggregateContextSnapshotEntry], replacer: &R,
 ) -> Result<(), GenericError>
@@ -214,7 +214,7 @@ where
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "context-dump-benchmark")))]
 fn publish_buffered_temporary<W, R>(
     buffer: BufWriter<W>, temporary_path: &Path, target: &Path, snapshot: &[AggregateContextSnapshotEntry],
     replacer: &R,
@@ -524,17 +524,17 @@ impl ArtifactError {
         Self::new(path, "decode", record_index, ArtifactDecodeError::from_serde(source))
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "context-dump-benchmark")))]
     pub(super) fn path(&self) -> &Path {
         &self.path
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "context-dump-benchmark")))]
     pub(super) fn operation(&self) -> &'static str {
         self.operation
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "context-dump-benchmark")))]
     pub(super) fn record_index(&self) -> usize {
         self.record_index
     }
@@ -588,14 +588,14 @@ fn decode_records<R: Read>(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "context-dump-benchmark")))]
 fn collect_records(path: &Path) -> Result<Vec<AgentContextRecord>, ArtifactError> {
     let mut records = Vec::new();
     for_each_record(path, |record| records.push(record))?;
     Ok(records)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "context-dump-benchmark")))]
 mod tests {
     use std::fs;
     use std::io::{self, BufWriter, Write as _};
