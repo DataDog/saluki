@@ -51,6 +51,7 @@ SCENARIO_DIR="$ANTITHESIS_DIR/scenarios/$SCENARIO"
 SCENARIO_TEST_NAME=""
 SCENARIO_DESCRIPTION=""
 SCENARIO_FAULT_NODES=""
+SCENARIO_EXCLUDE_FROM_NETWORK_FAULTS=""
 SCENARIO_WEBHOOK=""
 # shellcheck source=/dev/null
 . "$SCENARIO_DIR/launch.env"
@@ -71,6 +72,8 @@ TEST_NAME="${TEST_NAME:-${SCENARIO_TEST_NAME:?launch.env must set SCENARIO_TEST_
 DESCRIPTION="${DESCRIPTION:-$SCENARIO_DESCRIPTION} (commit ${GIT_SHA})"
 # May be empty: an empty node list means no node faults for this scenario.
 FAULT_NODES="${FAULT_NODES-$SCENARIO_FAULT_NODES}"
+# May be empty: an empty list means no container is exempted from network faults.
+EXCLUDE_FROM_NETWORK_FAULTS="${EXCLUDE_FROM_NETWORK_FAULTS-$SCENARIO_EXCLUDE_FROM_NETWORK_FAULTS}"
 # run_test global fault toggles. Defaults match the endpoint defaults so a plain
 # shot behaves as it did before the move off persistent_storage.
 SIMULTANEOUS_FAULTS="${SIMULTANEOUS_FAULTS:-false}"
@@ -88,9 +91,12 @@ SOURCE="${SOURCE:-datadog_agent}"
 # Pinned fault profile, submitted to the run_test endpoint. cpu_mod and
 # clock_jitter are global and symmetric, so every scenario gets them; clock_jitter
 # is what exercises the AWS-LC CPU-jitter entropy path. Network faults stay on
-# everywhere and heal before judging. force_disable_all_faults rides at its false
-# default so the shot is self-describing. Flip it to true to run one fault-free
-# shot without editing anything else.
+# everywhere except for the containers a scenario names in
+# EXCLUDE_FROM_NETWORK_FAULTS, empty by default; the differential A/B exempts its
+# capture and driver so an asymmetric partition can't skew its cumulative counts.
+# force_disable_all_faults rides at its false default so the shot is
+# self-describing. Flip it to true to run one fault-free shot without editing
+# anything else.
 #
 # Node termination, hang, and throttle apply only to the containers in FAULT_NODES,
 # so a scenario gets none by leaving it empty. The differential A/B does: node
@@ -102,6 +108,7 @@ SOURCE="${SOURCE:-datadog_agent}"
 FAULTS=(
   --param custom.cpu_mod=true
   --param custom.clock_jitter=true
+  --param custom.exclude_from_network_faults="$EXCLUDE_FROM_NETWORK_FAULTS"
   --param custom.force_disable_all_faults="$FORCE_DISABLE_ALL_FAULTS"
 )
 if [[ -n "$FAULT_NODES" ]]; then

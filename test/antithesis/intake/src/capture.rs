@@ -83,12 +83,13 @@ pub(crate) struct Context {
     pub(crate) kind: MetricKind,
 }
 
-/// A context and the time it first arrived on its lane.
+/// A context, the time it first arrived on its lane, and its cumulative point count.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ContextAt {
     #[serde(flatten)]
     pub(crate) context: Context,
     pub(crate) first_seen: EpochSeconds,
+    pub(crate) points: u64,
 }
 
 /// One lane's contexts and the intake's current time.
@@ -98,21 +99,34 @@ pub(crate) struct LaneView {
     pub(crate) contexts: Vec<ContextAt>,
 }
 
+/// A context's first-arrival time on a lane and its cumulative point count.
+#[derive(Clone, Copy, Debug)]
+struct Seen {
+    first_seen: EpochSeconds,
+    points: u64,
+}
+
 #[derive(Debug, Default)]
 struct Lanes {
-    seen: BTreeMap<(Target, Context), EpochSeconds>,
+    seen: BTreeMap<(Target, Context), Seen>,
 }
 
 impl Lanes {
-    fn record(&mut self, target: Target, contexts: &[Context], now: EpochSeconds) -> usize {
+    fn record(&mut self, target: Target, contexts: &[(Context, u64)], now: EpochSeconds) -> usize {
         let mut added = 0;
-        for context in contexts {
+        for (context, points) in contexts {
             if context.name.starts_with(SELF_TELEMETRY_PREFIX) {
                 continue;
             }
-            if let Entry::Vacant(slot) = self.seen.entry((target, context.clone())) {
-                slot.insert(now);
-                added += 1;
+            match self.seen.entry((target, context.clone())) {
+                Entry::Vacant(slot) => {
+                    slot.insert(Seen {
+                        first_seen: now,
+                        points: *points,
+                    });
+                    added += 1;
+                }
+                Entry::Occupied(mut slot) => slot.get_mut().points += *points,
             }
         }
         added
@@ -122,9 +136,10 @@ impl Lanes {
         self.seen
             .iter()
             .filter(|((lane, _), _)| *lane == target)
-            .map(|((_, context), &first_seen)| ContextAt {
+            .map(|((_, context), seen)| ContextAt {
                 context: context.clone(),
-                first_seen,
+                first_seen: seen.first_seen,
+                points: seen.points,
             })
             .collect()
     }
@@ -181,8 +196,9 @@ pub(crate) fn series_kept_by_intake(series: &MetricSeries) -> bool {
     name_ok && series.tags.len() <= MAX_TAG_COUNT && series.resources.len() <= MAX_RESOURCE_COUNT
 }
 
-/// Decodes a `/api/v2/series` payload into contexts with stele's `Metric::try_from_series_v2`.
-fn observe_series(target: Target, payload: MetricPayload) -> Vec<Context> {
+/// Decodes a `/api/v2/series` payload into contexts and their point counts with stele's
+/// `Metric::try_from_series_v2`. A metric contributes as many points as it carries values.
+fn observe_series(target: Target, payload: MetricPayload) -> Vec<(Context, u64)> {
     let mut contexts = Vec::new();
     for series in payload.series {
         if !series_kept_by_intake(&series) {
@@ -191,7 +207,11 @@ fn observe_series(target: Target, payload: MetricPayload) -> Vec<Context> {
         let mut single = MetricPayload::new();
         single.series.push(series);
         match Metric::try_from_series_v2(single) {
-            Ok(metrics) => contexts.extend(metrics.iter().filter_map(context_of)),
+            Ok(metrics) => contexts.extend(
+                metrics
+                    .iter()
+                    .filter_map(|metric| Some((context_of(metric)?, metric.values().len() as u64))),
+            ),
             Err(error) => {
                 warn!(target = target.as_str(), %error, "skipped a series that did not convert to a stele metric");
             }
@@ -200,14 +220,18 @@ fn observe_series(target: Target, payload: MetricPayload) -> Vec<Context> {
     contexts
 }
 
-/// Decodes a sketch payload into contexts.
-fn observe_sketches(target: Target, payload: SketchPayload) -> Vec<Context> {
+/// Decodes a sketch payload into contexts and their point counts.
+fn observe_sketches(target: Target, payload: SketchPayload) -> Vec<(Context, u64)> {
     let mut contexts = Vec::new();
     for sketch in payload.sketches {
         let mut single = SketchPayload::new();
         single.sketches.push(sketch);
         match Metric::try_from_sketch(single) {
-            Ok(metrics) => contexts.extend(metrics.iter().filter_map(context_of)),
+            Ok(metrics) => contexts.extend(
+                metrics
+                    .iter()
+                    .filter_map(|metric| Some((context_of(metric)?, metric.values().len() as u64))),
+            ),
             Err(error) => {
                 warn!(target = target.as_str(), %error, "skipped a sketch that did not convert to a stele metric");
             }

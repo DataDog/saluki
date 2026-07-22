@@ -194,6 +194,7 @@ dependencies = [
 name = "antithesis-intake"
 version = "0.1.0"
 dependencies = [
+ "antithesis-scenario-differential",
  "antithesis_sdk",
  "anyhow",
  "async-compression",
