@@ -1,6 +1,7 @@
-//! Feral `DogStatsD` load generator. Drives one batch of sampled lines to the
-//! dogstatsd socket via the shared `harness::driver` engine. Antithesis runs
-//! many of these in parallel to drive concurrency and push context limits.
+//! `DogStatsD` load generator. Fetches a context working set from the intake and
+//! drives packed metric lines to the dogstatsd socket via the shared
+//! `harness::driver` engine. Antithesis runs many of these in parallel to drive
+//! concurrency and push context limits.
 
 #[cfg(unix)]
 mod unix_driver {
@@ -10,7 +11,7 @@ mod unix_driver {
     use antithesis_sdk::random::AntithesisRng;
     use clap::Parser;
     use harness::config::DriverConfig;
-    use harness::driver::{self, Batch};
+    use harness::driver;
     use serde_json::json;
 
     #[derive(Debug, Parser)]
@@ -26,6 +27,9 @@ mod unix_driver {
         /// to the SUT's sampled receive buffer.
         #[arg(long = "config-dir", env = "CONFIG_DIR", default_value = "/agent-config")]
         config_dir: PathBuf,
+        /// Intake address the driver samples its context working set from.
+        #[arg(long = "intake-addr", env = "INTAKE_ADDR", default_value = "intake:2049")]
+        intake_addr: String,
     }
 
     pub(super) fn run() -> anyhow::Result<()> {
@@ -39,10 +43,9 @@ mod unix_driver {
         };
 
         let driver_config = DriverConfig::read(&config.config_dir)?;
-        let batch = driver::sample(&mut AntithesisRng);
         let stats = driver::run(
             AntithesisRng,
-            batch,
+            &config.intake_addr,
             driver_config.payload_byte_limit,
             driver_config.datagram_count,
             vec![socket],
@@ -51,7 +54,7 @@ mod unix_driver {
         let max_packed = stats.max_packed[0];
 
         assert_reachable!(
-            "workload ran a dogstatsd batch",
+            "workload ran a dogstatsd load",
             &json!({
                 "sent": sent,
                 "timed_out": stats.timed_out,
@@ -63,21 +66,6 @@ mod unix_driver {
             max_packed > 0,
             "workload emitted a multi-value metric",
             &json!({ "sent": sent, "max_packed_values": max_packed })
-        );
-        assert_sometimes!(
-            sent > 0 && matches!(batch, Batch::Clean),
-            "workload ran a fully clean batch",
-            &json!({ "sent": sent })
-        );
-        assert_sometimes!(
-            sent > 0 && matches!(batch, Batch::Feral),
-            "workload ran a fully feral batch",
-            &json!({ "sent": sent })
-        );
-        assert_sometimes!(
-            sent > 0 && matches!(batch, Batch::Mixed),
-            "workload ran a mixed batch",
-            &json!({ "sent": sent })
         );
 
         Ok(())

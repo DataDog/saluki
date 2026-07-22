@@ -3,6 +3,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::capture;
+use crate::context_pool::Pool;
 
 /// Per-router state: the shared recorder handle plus the lane this router writes to.
 #[derive(Clone, Debug)]
@@ -12,26 +13,30 @@ pub struct AppState {
     /// First non-empty host resolved on this lane, set once. Pyld17 requires every series across all
     /// inbound traffic on the lane to resolve to this same host.
     pub(crate) established_host: Arc<OnceLock<String>>,
+    /// The shared context pool the `/contexts` route serves from. One pool backs both lane routers.
+    pub(crate) pool: Arc<Pool>,
 }
 
 impl AppState {
     /// Creates router state for Datadog Agent intake.
     #[must_use]
-    pub fn agent(recorder: &capture::State) -> Self {
+    pub fn agent(recorder: &capture::State, pool: &Arc<Pool>) -> Self {
         Self {
             recorder: recorder.clone(),
             target: capture::Target::Agent,
             established_host: Arc::default(),
+            pool: Arc::clone(pool),
         }
     }
 
     /// Creates router state for ADP intake.
     #[must_use]
-    pub fn adp(recorder: &capture::State) -> Self {
+    pub fn adp(recorder: &capture::State, pool: &Arc<Pool>) -> Self {
         Self {
             recorder: recorder.clone(),
             target: capture::Target::Adp,
             established_host: Arc::default(),
+            pool: Arc::clone(pool),
         }
     }
 }

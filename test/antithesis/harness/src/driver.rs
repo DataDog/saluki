@@ -1,9 +1,11 @@
 //! Shared `DogStatsD` load-driver engine.
 //!
-//! A producer thread samples lines into a bounded channel; a consumer thread
-//! fans each line out to every socket and tallies per-socket sends. Drivers
-//! differ only in how many sockets they target and which anchors they fire, so
-//! both the single-socket and differential drivers run on this one engine.
+//! A run fetches a working set of contexts from the intake's pool, then a producer
+//! thread packs metric lines for those contexts into a bounded channel while a
+//! consumer thread fans each datagram out to every socket and tallies per-socket
+//! sends. Drivers differ only in how many sockets they target and which anchors
+//! they fire, so both the single-socket and differential drivers run on this one
+//! engine.
 //!
 //! NOTE: this driver intentionally blocks on backpressure from the SUT. Retry
 //! and backoff timers are meant to endure transient errors.
@@ -15,24 +17,25 @@ use std::sync::mpsc::sync_channel;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
-use rand::seq::IndexedRandom;
-use rand::Rng;
+use antithesis_sdk::prelude::*;
+use rand::{Rng, RngExt};
+use serde_json::json;
 
+use crate::context::{decode_response, Context};
+use crate::dogstatsd::is_malformed;
 use crate::payload::dogstatsd;
-pub use crate::payload::dogstatsd::Batch;
 
 const SEND_RETRY_BUDGET: Duration = Duration::from_secs(5);
 const SEND_RETRY_BACKOFF: Duration = Duration::from_millis(1);
 
-/// Sample a line composition: half clean, a quarter feral, a quarter mixed.
-#[must_use]
-pub fn sample<R: Rng + ?Sized>(rng: &mut R) -> Batch {
-    match [Batch::Clean, Batch::Clean, Batch::Feral, Batch::Mixed].choose(rng) {
-        Some(Batch::Feral) => Batch::Feral,
-        Some(Batch::Mixed) => Batch::Mixed,
-        _ => Batch::Clean,
-    }
-}
+/// How long to wait for the intake's pool to serve contexts before giving up.
+const CONTEXT_FETCH_BUDGET: Duration = Duration::from_secs(30);
+const CONTEXT_FETCH_BACKOFF: Duration = Duration::from_millis(250);
+
+/// Largest working set a single invocation samples from the pool. Each invocation
+/// touches at most this many contexts, so coverage of a large pool builds across
+/// invocations and recurrence emerges once cumulative samples exceed the cap.
+const MAX_WORKING_SET: usize = 1_024;
 
 /// A generated payload queued for the sockets: the packed bytes and what they hold.
 struct Datagram {
@@ -58,28 +61,90 @@ pub struct Stats {
     pub timed_out: bool,
 }
 
-/// Drive `count` sampled `DogStatsD` datagrams to every socket, packing each to
-/// at most `limit_bytes` and blocking through transient backpressure so every
-/// datagram reaches every socket. Both `count` and `limit_bytes` come from a load
-/// generator's [`crate::config::DriverConfig`], so a datagram never truncates on
-/// receive.
+impl Stats {
+    /// A run that shipped nothing, for a socket count of `sockets`.
+    fn empty(sockets: usize) -> Self {
+        Self {
+            received: 0,
+            sent: vec![0; sockets],
+            max_packed: vec![0; sockets],
+            timed_out: false,
+        }
+    }
+}
+
+/// Fetch a working set of contexts from `http://{intake_addr}/contexts`, retrying
+/// through the pool's config not being ready yet. Returns `None` if the intake
+/// stays unreachable past [`CONTEXT_FETCH_BUDGET`].
+fn fetch_contexts(intake_addr: &str, n: usize) -> Option<Vec<Context>> {
+    let url = format!("http://{intake_addr}/contexts?n={n}");
+    // reqwest resolves with rustls-no-provider across the workspace, so a crypto
+    // provider must be installed before a Client is built, even for plain HTTP, or
+    // the build panics on its internal runtime thread. Idempotent, so ignore the
+    // already-installed error.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // Build fallibly so a builder failure degrades to None like every other fetch path.
+    let client = reqwest::blocking::Client::builder().build().ok()?;
+    let deadline = Instant::now() + CONTEXT_FETCH_BUDGET;
+    loop {
+        if let Some(contexts) = try_fetch(&client, &url) {
+            return Some(contexts);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        sleep(CONTEXT_FETCH_BACKOFF);
+    }
+}
+
+/// One fetch attempt: a successful body decoded into contexts, else `None`.
+fn try_fetch(client: &reqwest::blocking::Client, url: &str) -> Option<Vec<Context>> {
+    let response = client.get(url).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    decode_response(&response.bytes().ok()?)
+}
+
+/// Fetch a sampled working set from `intake_addr`, then drive `count` datagrams of
+/// metric lines for those contexts to every socket, packing each to at most
+/// `limit_bytes` and blocking through transient backpressure so every datagram
+/// reaches every socket. `limit_bytes` and `count` come from a load generator's
+/// [`crate::config::DriverConfig`], so a datagram never truncates on receive.
 ///
 /// A peer that leaves mid-batch, or backpressure that outlasts the retry budget,
-/// ends the run early with a partial [`Stats`] rather than an error.
+/// ends the run early with a partial [`Stats`] rather than an error. An intake that
+/// never serves the working set ends the run as a no-op [`Stats::empty`], not an
+/// error, so a transient intake outage does not fail the scenario.
 ///
 /// # Errors
 ///
-/// Errors if a worker thread panics. Sustained backpressure is reported via
-/// [`Stats::timed_out`], not as an error.
+/// Errors if a worker thread panics.
 pub fn run<R: Rng + Send + 'static>(
-    mut rng: R, batch: Batch, limit_bytes: usize, count: usize, sockets: Vec<UnixDatagram>,
+    mut rng: R, intake_addr: &str, limit_bytes: usize, count: usize, sockets: Vec<UnixDatagram>,
 ) -> anyhow::Result<Stats> {
+    let working_set = rng.random_range(1..=MAX_WORKING_SET);
+    let Some(contexts) = fetch_contexts(intake_addr, working_set) else {
+        return Ok(Stats::empty(sockets.len()));
+    };
+
     let (tx, rx) = sync_channel::<Datagram>(2024);
 
     let producer = thread::spawn(move || {
         for _ in 0..count {
             let mut bytes = Vec::new();
-            let payload = dogstatsd::write_payload(&mut rng, &mut bytes, batch, limit_bytes);
+            let payload = dogstatsd::write_payload(&mut rng, &mut bytes, &contexts, limit_bytes);
+            // A tiny limit can leave the first line unable to fit, yielding an empty
+            // buffer. Do not ship a zero-length datagram.
+            if bytes.is_empty() {
+                continue;
+            }
+            // Assertion #1: the generator only ever emits well-formed payloads.
+            assert_always!(
+                is_malformed(&bytes).is_none(),
+                "driver payload is well-formed",
+                &json!({ "lines": payload.lines })
+            );
             if tx.send(Datagram { bytes, payload }).is_err() {
                 break;
             }

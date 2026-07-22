@@ -6,7 +6,10 @@
 //! Mirrors the old `count_oracle_e2e.rs`: same drive-through-HTTP, read-back-over-the-control-route
 //! shape, now judging the value-bearing curve rather than a point-count skew.
 
+use std::sync::Arc;
+
 use antithesis_intake::capture;
+use antithesis_intake::context_pool::Pool;
 use antithesis_intake::http::build_router;
 use antithesis_intake::http::state::AppState;
 use axum::body::{to_bytes, Body};
@@ -16,6 +19,11 @@ use datadog_protos::metrics::MetricPayload;
 use protobuf::Message as _;
 use serde_json::Value;
 use tower::ServiceExt as _;
+
+/// A throwaway pool for capture tests that never hit `/contexts`, so the config dir is unread.
+fn test_pool() -> Arc<Pool> {
+    Arc::new(Pool::new(std::env::temp_dir()))
+}
 
 /// A one-series `/api/v2/series` payload for `name` carrying a single point `(timestamp, value)`.
 fn series_payload(name: &str, timestamp: i64, value: f64) -> Vec<u8> {
@@ -79,7 +87,7 @@ fn context_by_name<'a>(view: &'a Value, name: &str) -> Option<&'a Value> {
 #[tokio::test]
 async fn settled_bucket_surfaces_its_value() {
     let capture = capture::State::new();
-    let agent = AppState::agent(&capture);
+    let agent = AppState::agent(&capture, &test_pool());
     flush(&agent, "adp.requests", 1_600_000_000, 7.0).await;
 
     let view = curves(&agent, "agent").await;
@@ -96,7 +104,7 @@ async fn settled_bucket_surfaces_its_value() {
 #[tokio::test]
 async fn same_bucket_differing_values_surface_a_conflict() {
     let capture = capture::State::new();
-    let adp = AppState::adp(&capture);
+    let adp = AppState::adp(&capture, &test_pool());
     flush(&adp, "adp.requests", 1_600_000_000, 1.0).await;
     flush(&adp, "adp.requests", 1_600_000_000, 2.0).await;
 
@@ -112,7 +120,7 @@ async fn same_bucket_differing_values_surface_a_conflict() {
 #[tokio::test]
 async fn unsettled_future_bucket_is_withheld() {
     let capture = capture::State::new();
-    let adp = AppState::adp(&capture);
+    let adp = AppState::adp(&capture, &test_pool());
     // Year 2096: far ahead of the intake's wall clock, so the bucket cannot be settled.
     flush(&adp, "adp.future", 4_000_000_000, 5.0).await;
 

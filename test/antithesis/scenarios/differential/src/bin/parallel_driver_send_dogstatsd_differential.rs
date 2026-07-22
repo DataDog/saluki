@@ -1,8 +1,8 @@
-//! Feral `DogStatsD` load generator for the differential scenario.
+//! `DogStatsD` load generator for the differential scenario.
 //!
-//! Drives one batch of sampled lines, via the shared `harness::driver` engine,
-//! to both the Datadog Agent socket and the ADP socket so their handling can be
-//! compared.
+//! Fetches a context working set from the intake and drives packed metric lines,
+//! via the shared `harness::driver` engine, to both the Datadog Agent socket and
+//! the ADP socket so their handling can be compared.
 
 #[cfg(unix)]
 mod unix_driver {
@@ -34,6 +34,9 @@ mod unix_driver {
         /// to the shared sampled receive buffer.
         #[arg(long = "config-dir", env = "CONFIG_DIR", default_value = "/agent-config")]
         config_dir: PathBuf,
+        /// Intake control address the driver samples its context working set from.
+        #[arg(long = "intake-control-addr", env = "INTAKE_CONTROL_ADDR", default_value = "intake:2049")]
+        intake_control_addr: String,
     }
 
     pub(super) fn run() -> anyhow::Result<()> {
@@ -62,10 +65,9 @@ mod unix_driver {
         // Both targets share one receive buffer, so one payload limit keeps neither from truncating.
         let driver_config = DriverConfig::read(&config.config_dir)?;
         // Agent first, ADP second: `stats.sent` and `stats.max_packed` are indexed in this order.
-        let batch = driver::sample(&mut AntithesisRng);
         let stats = driver::run(
             AntithesisRng,
-            batch,
+            &config.intake_control_addr,
             driver_config.payload_byte_limit,
             driver_config.datagram_count,
             vec![agent_socket, adp_socket],
@@ -76,7 +78,7 @@ mod unix_driver {
         let multi_value_both = stats.max_packed[0] > 0 && stats.max_packed[1] > 0;
 
         assert_reachable!(
-            "differential workload ran a dogstatsd batch",
+            "differential workload ran a dogstatsd load",
             &json!({
                 "payloads_received": payloads_received,
                 "agent_sent": agent_sent,

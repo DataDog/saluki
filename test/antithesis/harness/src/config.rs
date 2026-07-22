@@ -237,6 +237,61 @@ impl DriverConfig {
     }
 }
 
+/// Largest context cap the pool will ever hold.
+const MAX_CONTEXT_CAP: u64 = 1_000_000;
+
+/// Config sizing the intake's context pool.
+///
+/// `first_sample_config` samples this beside `datadog.yaml` from one draw and
+/// writes `context_source.yaml` to the shared config volume; the intake reads it on
+/// the first `/contexts` request. Only the cap is sampled, so pool size joins the
+/// state space Antithesis explores while context content stays minted in-intake.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct ContextSourceConfig {
+    /// Hard cap `T` on distinct contexts. The intake mints a new context per request
+    /// slot until the pool holds `T`, then draws an existing one at random, so once
+    /// cumulative requests exceed `T` the pool is exhausted and contexts recur across
+    /// flushes.
+    pub context_cap: usize,
+}
+
+impl ContextSourceConfig {
+    /// Sample the cap from `rng`. With an Antithesis-backed rng each timeline draws
+    /// its own pool size after the snapshot.
+    #[must_use]
+    pub fn sample<R: Rng + ?Sized>(rng: &mut R) -> Self {
+        // Boundary-biased and log-uniform: small caps (dense recurrence, sharp
+        // curves) and the extremes all appear, not just large sparse pools.
+        let cap = Probe::new(1, MAX_CONTEXT_CAP).sample(rng);
+        // MAX_CONTEXT_CAP fits usize on every supported target, so the fallback is
+        // unreachable.
+        Self {
+            context_cap: usize::try_from(cap).unwrap_or(usize::MAX),
+        }
+    }
+
+    /// Render `self` as a `context_source.yaml` string.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization fails.
+    pub fn to_yaml(&self) -> anyhow::Result<String> {
+        serde_yaml::to_string(self).context("serialize context_source.yaml")
+    }
+
+    /// Read the config from the `context_source.yaml` that `first_sample_config`
+    /// wrote to `config_dir`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file is unreadable or is not valid YAML.
+    pub fn read(config_dir: &Path) -> anyhow::Result<Self> {
+        let path = config_dir.join("context_source.yaml");
+        let yaml = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        serde_yaml::from_str(&yaml).with_context(|| format!("parse context source config from {}", path.display()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::convert::Infallible;
