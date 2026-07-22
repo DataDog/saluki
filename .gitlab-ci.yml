@@ -93,6 +93,9 @@ variables:
 
 default:
   tags: ["arch:amd64"]
+  image:
+    name: "${SALUKI_BUILD_CI_IMAGE}"
+    pull_policy: always
 
 # Run a job on official releases (i.e. tagged).
 .on_official_release:
