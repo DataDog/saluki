@@ -5,7 +5,7 @@ use http::{Request, StatusCode, Uri};
 use http_body_util::Empty;
 use regex::Regex;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::GenericConfiguration;
+use saluki_config::{dynamic::ConfigChangeEvent, GenericConfiguration};
 use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::client::http::HttpClient;
@@ -42,7 +42,7 @@ pub(crate) struct ApiKeyValidator {
     client: HttpClient,
     live_config: Option<GenericConfiguration>,
     interval: Duration,
-    emitter: Option<DiagnosticsEmitter>,
+    emitter: DiagnosticsEmitter,
 }
 
 impl ApiKeyValidator {
@@ -52,7 +52,7 @@ impl ApiKeyValidator {
     /// configured API key is invalid.
     pub(crate) fn new(
         endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
-        interval: Duration, emitter: Option<DiagnosticsEmitter>,
+        interval: Duration, emitter: DiagnosticsEmitter,
     ) -> Self {
         Self {
             endpoints,
@@ -133,7 +133,7 @@ enum KeyValidationResult {
 
 fn spawn_validation_task(
     endpoints: Vec<RoutableEndpoint>, client: HttpClient, live_config: Option<GenericConfiguration>,
-    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: Option<DiagnosticsEmitter>,
+    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: DiagnosticsEmitter,
 ) -> JoinHandle<()> {
     spawn_traced_named(
         "dd-api-key-validation",
@@ -143,9 +143,9 @@ fn spawn_validation_task(
 
 async fn run_validation_loop(
     mut endpoints: Vec<RoutableEndpoint>, mut client: HttpClient, live_config: Option<GenericConfiguration>,
-    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: Option<DiagnosticsEmitter>,
+    interval: Duration, readiness_tx: mpsc::Sender<ValidationReadiness>, emitter: DiagnosticsEmitter,
 ) {
-    if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, emitter.as_ref()).await {
+    if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await {
         return;
     }
 
@@ -161,12 +161,12 @@ async fn run_validation_loop(
     loop {
         select! {
             _ = interval.tick() => {
-                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, emitter.as_ref()).await {
+                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await {
                     return;
                 }
             },
             _ = wait_for_validation_config_change(&mut config_updates_rx) => {
-                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, emitter.as_ref()).await {
+                if !validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await {
                     return;
                 }
             },
@@ -174,9 +174,7 @@ async fn run_validation_loop(
     }
 }
 
-async fn wait_for_validation_config_change(
-    rx: &mut Option<broadcast::Receiver<saluki_config::dynamic::ConfigChangeEvent>>,
-) {
+async fn wait_for_validation_config_change(rx: &mut Option<broadcast::Receiver<ConfigChangeEvent>>) {
     let Some(rx) = rx else {
         std::future::pending::<()>().await;
         return;
@@ -204,18 +202,16 @@ fn is_validation_trigger_key(key: &str) -> bool {
 
 async fn validate_and_send_readiness(
     endpoints: &mut [RoutableEndpoint], client: &mut HttpClient, readiness_tx: &mpsc::Sender<ValidationReadiness>,
-    emitter: Option<&DiagnosticsEmitter>,
+    emitter: &DiagnosticsEmitter,
 ) -> bool {
     let targets = collect_validation_targets(endpoints);
     let readiness = validate_targets(client, &targets).await;
 
     if readiness == ValidationReadiness::NotReady {
-        if let Some(emitter) = emitter {
-            emitter.emit(DiagnosticEvent::new(
-                "All configured Datadog API key(s) were rejected as invalid.",
-                DiagnosticDetails::InvalidApiKey,
-            ));
-        }
+        emitter.emit(DiagnosticEvent::new(
+            "All configured Datadog API key(s) were rejected as invalid.",
+            DiagnosticDetails::InvalidApiKey,
+        ));
     }
 
     if readiness_tx.send(readiness).await.is_err() {
@@ -621,7 +617,7 @@ mod tests {
         let mut client = test_client(Duration::from_secs(1));
         let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
 
-        assert!(validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, Some(&emitter)).await);
+        assert!(validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await);
         assert_eq!(readiness_rx.recv().await, Some(ValidationReadiness::NotReady));
 
         // The rejected key must have produced an `InvalidApiKey` diagnostic event.
@@ -661,7 +657,7 @@ mod tests {
         let mut client = test_client(Duration::from_secs(1));
         let (readiness_tx, mut readiness_rx) = mpsc::channel(1);
 
-        assert!(validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, Some(&emitter)).await);
+        assert!(validate_and_send_readiness(&mut endpoints, &mut client, &readiness_tx, &emitter).await);
         assert_eq!(readiness_rx.recv().await, Some(ValidationReadiness::Ready));
 
         // A valid key must not produce any diagnostic event.

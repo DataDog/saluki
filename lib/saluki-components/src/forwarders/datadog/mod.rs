@@ -6,7 +6,6 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
     data_model::payload::{PayloadMetadata, PayloadType},
-    diagnostic::DiagnosticsEmitter,
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
@@ -142,9 +141,6 @@ impl Forwarder for Datadog {
         let Self { forwarder } = *self;
 
         let mut health = context.take_health_handle();
-
-        let emitter = DiagnosticsEmitter::from_current(context.component_context().identity()).ok();
-        let forwarder = forwarder.with_diagnostics_emitter(emitter);
 
         let mut validation = forwarder.api_key_validator().spawn();
 
