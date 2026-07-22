@@ -1558,7 +1558,10 @@ mod tests {
         let context = Context::from_static_name("active.gauge");
 
         assert!(state.insert(insert_ts(1), Metric::gauge(context.clone(), 1.0)));
-        assert_eq!(state.snapshot_contexts().len(), 1);
+        let active_snapshot = state.snapshot_contexts();
+        assert_eq!(active_snapshot.len(), 1);
+        assert_eq!(active_snapshot[0].context(), &context);
+        assert_eq!(active_snapshot[0].metric_type(), AggregateMetricType::Gauge);
 
         let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
         assert!(state.snapshot_contexts().is_empty());
@@ -1583,7 +1586,10 @@ mod tests {
         assert_eq!(first_snapshot[0].metric_type(), AggregateMetricType::Counter);
 
         let _ = get_flushed_metrics(flush_ts(2), &mut state).await;
-        assert_eq!(state.snapshot_contexts().len(), 1);
+        let second_snapshot = state.snapshot_contexts();
+        assert_eq!(second_snapshot.len(), 1);
+        assert_eq!(second_snapshot[0].context(), &context);
+        assert_eq!(second_snapshot[0].metric_type(), AggregateMetricType::Counter);
 
         let _ = get_flushed_metrics(flush_ts(3), &mut state).await;
         assert!(state.snapshot_contexts().is_empty());
@@ -1657,28 +1663,42 @@ mod tests {
             let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
             let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
 
-            let expected_context = Context::from_static_name("owner.loop.gauge");
+            let passthrough_context = Context::from_static_name("owner.loop.timestamped.gauge");
             events_tx
-                .send(Event::Metric(Metric::gauge(expected_context.clone(), 1.0)))
+                .send(Event::Metric(Metric::gauge(
+                    passthrough_context.clone(),
+                    (insert_ts(1), 1.0),
+                )))
                 .await
-                .expect("controlled source should accept an event");
+                .expect("controlled source should accept a timestamped event");
+
+            let retained_context = Context::from_static_name("owner.loop.mixed.counter");
+            let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(insert_ts(1)), 3.0)]);
+            events_tx
+                .send(Event::Metric(Metric::counter(retained_context.clone(), mixed_values)))
+                .await
+                .expect("controlled source should accept a mixed event");
 
             let snapshot = loop {
                 let snapshot = snapshot_handle
                     .snapshot()
                     .await
                     .expect("running aggregate should fulfill snapshots");
-                if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                if snapshot.iter().any(|entry| entry.context() == &retained_context) {
                     break snapshot;
                 }
                 tokio::task::yield_now().await;
             };
-            let entry = snapshot
-                .iter()
-                .find(|entry| entry.context() == &expected_context)
-                .expect("snapshot should retain the inserted context");
-            assert_eq!(entry.metric_type(), AggregateMetricType::Gauge);
+            assert_eq!(
+                snapshot.len(),
+                1,
+                "only the mixed metric's retained portion belongs in state"
+            );
+            let entry = &snapshot[0];
+            assert_eq!(entry.context(), &retained_context);
+            assert_eq!(entry.metric_type(), AggregateMetricType::Counter);
             assert_eq!(entry.unit(), None);
+            assert!(snapshot.iter().all(|entry| entry.context() != &passthrough_context));
 
             drop(events_tx);
             drop(snapshot_handle);

@@ -926,27 +926,188 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{fs, path::Path, sync::Mutex, time::Duration};
 
+    use async_trait::async_trait;
     use http::{header::AUTHORIZATION, Request, StatusCode};
     use http_body_util::{BodyExt as _, Empty};
     use hyper::body::Bytes;
     use saluki_api::{response::Response, APIHandler as _};
     use saluki_components::transforms::{
-        aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotEntry, AggregateMetricType,
+        aggregate_context_snapshot_channel_for_test, AggregateConfiguration, AggregateContextSnapshotEntry,
+        AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
     };
     use saluki_config::{config_from, GenericConfiguration};
     use saluki_context::Context;
+    use saluki_core::{
+        accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
+        components::{
+            destinations::{Destination, DestinationBuilder, DestinationContext},
+            sources::{Source, SourceBuilder, SourceContext},
+            ComponentContext,
+        },
+        data_model::event::{metric::Metric, Event, EventType},
+        health::HealthRegistry,
+        runtime::Supervisor,
+        topology::{OutputDefinition, TopologyBlueprint},
+    };
+    use saluki_error::{generic_error, GenericError};
     use serde_json::json;
     use stringtheory::MetaString;
+    use tokio::sync::{mpsc, oneshot};
     use tower::ServiceExt as _;
 
     use super::build_dogstatsd_context_dump_api_handler;
-    use crate::dogstatsd_contexts::DogStatsDContextDumpAPIHandler;
+    use crate::{
+        components::{
+            dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, tag_filterlist::TagFilterlistConfiguration,
+        },
+        dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
+    };
 
     const AUTH_TOKEN: &[u8] = b"configured-agent-token";
     const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
     const CONTEXT_DUMP_ROUTE: &str = "/dogstatsd/contexts/dump";
+
+    #[tokio::test]
+    async fn retained_context_identity_follows_dogstatsd_post_processing() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let config = config_from(json!({
+                "dogstatsd_mapper_profiles": [{
+                    "name": "retained-context-test",
+                    "prefix": "raw.requests.",
+                    "mappings": [{
+                        "match": "raw.requests.*",
+                        "name": "mapped.requests",
+                        "tags": { "route": "$1" }
+                    }]
+                }],
+                "statsd_metric_namespace": "tenant",
+                "statsd_metric_namespace_blocklist": [],
+                "metric_filterlist": ["tenant.raw.blocked"],
+                "metric_filterlist_match_prefix": false,
+                "metric_tag_filterlist": [{
+                    "metric_name": "tenant.mapped.requests",
+                    "action": "exclude",
+                    "tags": ["remove"]
+                }],
+                "aggregate_flush_interval": { "secs": 60, "nanos": 0 }
+            }))
+            .await;
+
+            let mapper =
+                DogStatsDMapperConfiguration::from_configuration(&config).expect("mapper configuration should parse");
+            let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
+            let prefix_filter = DogStatsDPrefixFilterConfiguration::from_configuration(&config)
+                .expect("prefix filter configuration should parse");
+            let tag_filter =
+                TagFilterlistConfiguration::from_configuration(&config).expect("tag filter configuration should parse");
+            let aggregate =
+                AggregateConfiguration::from_configuration(&config).expect("aggregate configuration should parse");
+            let snapshot_handle = aggregate.context_snapshot_handle();
+
+            let (events_tx, events_rx) = mpsc::channel(2);
+            let source = ControlledMetricSourceBuilder {
+                events: Mutex::new(Some(events_rx)),
+                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+            };
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("dogstatsd_retained_identity", &component_registry);
+            blueprint
+                .add_source("source", source)
+                .expect("controlled source should be accepted")
+                .add_transform("mapper", mapper_chain)
+                .expect("mapper should be accepted")
+                .add_transform("prefix_filter", prefix_filter)
+                .expect("prefix filter should be accepted")
+                .add_transform("tag_filter", tag_filter)
+                .expect("tag filter should be accepted")
+                .add_transform("aggregate", aggregate)
+                .expect("aggregate should be accepted")
+                .add_destination("destination", DrainingMetricDestinationBuilder)
+                .expect("draining destination should be accepted");
+            blueprint
+                .connect_components_in_order([
+                    "source",
+                    "mapper",
+                    "prefix_filter",
+                    "tag_filter",
+                    "aggregate",
+                    "destination",
+                ])
+                .expect("DogStatsD post-processing topology should connect");
+            blueprint
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_ambient_worker_pool();
+
+            let mut supervisor =
+                Supervisor::new("dogstatsd-retained-identity").expect("test supervisor should be created");
+            supervisor.add_worker(blueprint);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+            events_tx
+                .send(Event::Metric(Metric::counter("raw.blocked", 1.0)))
+                .await
+                .expect("controlled source should accept the blocked metric");
+            let input_context = Context::from_static_parts("raw.requests.checkout", &["keep:client", "remove:secret"]);
+            events_tx
+                .send(Event::Metric(Metric::counter(input_context.clone(), 1.0)))
+                .await
+                .expect("controlled source should accept the retained metric");
+
+            let expected_context =
+                Context::from_static_parts("tenant.mapped.requests", &["keep:client", "route:checkout"]);
+            let snapshot = loop {
+                let snapshot = snapshot_handle
+                    .snapshot()
+                    .await
+                    .expect("running aggregate should fulfill snapshots");
+                if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            };
+
+            assert_eq!(snapshot.len(), 1);
+            assert_eq!(snapshot[0].context(), &expected_context);
+            assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Counter);
+            assert_eq!(snapshot[0].context().tags().len(), 2);
+            assert_eq!(
+                snapshot[0]
+                    .context()
+                    .tags()
+                    .get_single_tag("keep")
+                    .and_then(|tag| tag.value()),
+                Some("client")
+            );
+            assert_eq!(
+                snapshot[0]
+                    .context()
+                    .tags()
+                    .get_single_tag("route")
+                    .and_then(|tag| tag.value()),
+                Some("checkout")
+            );
+            assert!(snapshot[0].context().tags().get_single_tag("remove").is_none());
+            assert!(snapshot.iter().all(|entry| entry.context() != &input_context));
+            assert!(snapshot
+                .iter()
+                .all(|entry| { !matches!(entry.context().name().as_ref(), "raw.blocked" | "tenant.raw.blocked") }));
+
+            drop(events_tx);
+            drop(snapshot_handle);
+            shutdown_tx.send(()).expect("test topology should still be running");
+            let topology_result = topology_task.await.expect("topology task should not panic");
+            assert!(
+                topology_result.is_ok(),
+                "topology should stop cleanly: {topology_result:?}"
+            );
+        })
+        .await
+        .expect("DogStatsD retained identity test should complete without hanging");
+    }
 
     #[tokio::test]
     async fn context_dump_handler_reads_configured_credentials_and_run_path_and_uses_supplied_owner() {
@@ -1041,6 +1202,83 @@ mod tests {
             assert!(!cwd_artifact.exists());
             owner.await.unwrap().unwrap();
         }
+    }
+
+    struct ControlledMetricSource {
+        events: mpsc::Receiver<Event>,
+    }
+
+    #[async_trait]
+    impl Source for ControlledMetricSource {
+        async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            let shutdown = context.take_shutdown_handle();
+            tokio::pin!(shutdown);
+            let mut events_open = true;
+
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown => break,
+                    maybe_event = self.events.recv(), if events_open => match maybe_event {
+                        Some(event) => context.dispatcher().dispatch_one(event).await?,
+                        None => events_open = false,
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct ControlledMetricSourceBuilder {
+        events: Mutex<Option<mpsc::Receiver<Event>>>,
+        outputs: Vec<OutputDefinition<EventType>>,
+    }
+
+    #[async_trait]
+    impl SourceBuilder for ControlledMetricSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            let events = self
+                .events
+                .lock()
+                .map_err(|_| generic_error!("controlled metric source receiver lock is poisoned"))?
+                .take()
+                .ok_or_else(|| generic_error!("controlled metric source receiver has already been taken"))?;
+            Ok(Box::new(ControlledMetricSource { events }))
+        }
+    }
+
+    impl MemoryBounds for ControlledMetricSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    struct DrainingMetricDestination;
+
+    #[async_trait]
+    impl Destination for DrainingMetricDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while context.events().next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    struct DrainingMetricDestinationBuilder;
+
+    #[async_trait]
+    impl DestinationBuilder for DrainingMetricDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(DrainingMetricDestination))
+        }
+    }
+
+    impl MemoryBounds for DrainingMetricDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
     async fn context_dump_config(run_path: Option<&Path>, token_path: &Path) -> GenericConfiguration {
