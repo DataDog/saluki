@@ -13,7 +13,6 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use protobuf::Message;
 use tracing::{debug, error, info};
 
 use crate::capture::EpochSeconds;
@@ -82,6 +81,14 @@ pub(crate) async fn handle_series(State(state): State<AppState>, request: Reques
     }
 
     let headers = parts.headers;
+    // Classify the submitter source from the User-Agent, gating v2 tag handling exactly as the backend
+    // does: `datadog-agent` sanitizes a feral tag, every other source whole-payload-rejects it. A
+    // header that is not visible ASCII cannot be the ASCII `datadog-agent` prefix, so it is `Other`.
+    let source = crate::lenient_decode::Source::from_user_agent(
+        headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok()),
+    );
     let uncompressed_len = body_bytes.len() as u64;
 
     // Envelope and byte-size properties.
@@ -92,7 +99,7 @@ pub(crate) async fn handle_series(State(state): State<AppState>, request: Reques
     let uncompressed_ok = bytes::uncompressed_size(state.target, uncompressed_len, decompression_applied);
     bytes::content_length(state.target, declared_content_length, compressed_len);
 
-    let (observation, decode_ok) = SeriesObservation::decode(state.target, &body_bytes, decompression_applied);
+    let (observation, decode_ok) = SeriesObservation::decode(state.target, &body_bytes, decompression_applied, source);
 
     if let Some(observation) = observation.as_ref() {
         observation.assert_payload_properties(state.target, now_secs, &state.established_host);
@@ -138,10 +145,13 @@ pub(crate) async fn handle_sketches(State(state): State<AppState>, body: Body) -
             return StatusCode::PAYLOAD_TOO_LARGE;
         }
     };
-    let payload = match datadog_protos::metrics::SketchPayload::parse_from_bytes(&body) {
+    // Lenient decode: the Datadog Agent forwards feral non-UTF-8 tags on sketches the same way it
+    // does on series, and the real intake keeps them. Strict parsing dropped whole agent-lane sketch
+    // payloads and starved the differential of distribution contexts (#2039 fixed this for series only).
+    let payload = match crate::lenient_decode::decode_sketch_payload(&body) {
         Ok(payload) => payload,
-        Err(e) => {
-            error!(target = state.target.as_str(), error = %e, "failed to parse sketch payload");
+        Err(rejection) => {
+            error!(target = state.target.as_str(), ?rejection, "rejected sketch payload");
             return StatusCode::BAD_REQUEST;
         }
     };
@@ -149,6 +159,41 @@ pub(crate) async fn handle_sketches(State(state): State<AppState>, body: Body) -
         .recorder
         .record_sketches(state.target, payload, EpochSeconds::from_epoch_secs(now_secs));
     info!(target = state.target.as_str(), count, "captured sketch metrics");
+    StatusCode::ACCEPTED
+}
+
+/// Handler for `POST /api/intake/metrics/v3/series`.
+///
+/// The v3 native series API is dictionary + delta encoded columnar protobuf. tower-http has already
+/// decompressed the body, so `decode_series_v3` runs an independent reimplementation of the Datadog
+/// production v3 intake decoder (not ADP's own), applying the two-tier failure model: a whole-payload
+/// abort on any dictionary, structural, or strict-UTF-8 error, and a per-series drop on validation
+/// failure. Tags stay UTF-8-lenient and names strict, mirroring the v2 policy. Unlike `handle_series`
+/// this fires no payload-shape assertions, so it shares the decoded-payload middleware stack and takes
+/// a plain body, like `handle_sketches`. v3 series carry no `{}` connectivity probe.
+pub(crate) async fn handle_series_v3(State(state): State<AppState>, body: Body) -> StatusCode {
+    let Ok(now_secs) = now_epoch_secs() else {
+        error!("System clock is not readable as seconds since the Unix epoch.");
+        return StatusCode::INTERNAL_SERVER_ERROR;
+    };
+    let body = match to_bytes(body, MAX_DECOMPRESSED_BODY_BYTES).await {
+        Ok(body) => body,
+        Err(e) => {
+            error!(target = state.target.as_str(), error = %e, cap = MAX_DECOMPRESSED_BODY_BYTES, "Rejected v3 series body at the decompressed cap.");
+            return StatusCode::PAYLOAD_TOO_LARGE;
+        }
+    };
+    let series = match crate::lenient_decode::decode_series_v3(&body) {
+        Ok(series) => series,
+        Err(rejection) => {
+            error!(target = state.target.as_str(), ?rejection, "rejected v3 series payload");
+            return StatusCode::BAD_REQUEST;
+        }
+    };
+    let count = state
+        .recorder
+        .record_series_v3(state.target, series, EpochSeconds::from_epoch_secs(now_secs));
+    info!(target = state.target.as_str(), count, "captured v3 series metrics");
     StatusCode::ACCEPTED
 }
 

@@ -4,6 +4,9 @@
 //!
 //! - `POST /api/v2/series`: accepts metric series payloads, records payload
 //!   shape assertions, and captures scalar metric contexts.
+//! - `POST /api/intake/metrics/v3/series`: accepts the Datadog Agent's v3 native
+//!   series payloads (dictionary + delta encoded columnar protobuf) and captures
+//!   scalar metric contexts.
 //! - `POST /api/beta/sketches`: accepts distribution sketch payloads and
 //!   captures sketch contexts.
 //! - `POST /api/v1/events_batch`: accepts protobuf event batches.
@@ -54,6 +57,7 @@ fn series_route() -> Router<AppState> {
 fn decoded_payload_routes() -> Router<AppState> {
     Router::new()
         .route("/api/beta/sketches", post(metrics::handle_sketches))
+        .route("/api/intake/metrics/v3/series", post(metrics::handle_series_v3))
         .route("/api/v1/events_batch", post(events::handle_events_batch))
         .route("/api/v1/events", post(events::handle_events_v1))
         .route("/intake/", post(events::handle_intake))

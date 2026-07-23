@@ -7,7 +7,7 @@ use datadog_protos::metrics::{metric_payload::MetricSeries, MetricPayload};
 use serde_json::json;
 
 use crate::capture::Target;
-use crate::lenient_decode::Rejection;
+use crate::lenient_decode::{Rejection, Source};
 use crate::properties::payload::{metric_payload, point, resource, series};
 
 /// A decoded `/api/v2/series` payload.
@@ -19,11 +19,16 @@ pub(crate) struct SeriesObservation {
 impl SeriesObservation {
     /// Decode a raw `/api/v2/series` body and fire the Pyld07 production-faithful decode assertion.
     ///
+    /// `source` is classified from the request `User-Agent` and gates v2 tag handling exactly as the
+    /// backend does: `datadog-agent` sanitizes a feral tag, every other source whole-payload-rejects it.
+    ///
     /// Returns the observation when the body decoded, and whether the intake accepted it.
-    /// A non-UTF-8 non-tag field is rejected exactly as production rejects it, so it is not
-    /// a decode defect — only genuinely malformed wire fails Pyld07.
-    pub(crate) fn decode(target: Target, body_bytes: &[u8], decompression_applied: bool) -> (Option<Self>, bool) {
-        let outcome = crate::lenient_decode::decode_metric_payload(body_bytes);
+    /// A non-UTF-8 field rejected exactly as production rejects it is not a decode defect — only
+    /// genuinely malformed wire fails Pyld07.
+    pub(crate) fn decode(
+        target: Target, body_bytes: &[u8], decompression_applied: bool, source: Source,
+    ) -> (Option<Self>, bool) {
+        let outcome = crate::lenient_decode::decode_metric_payload(body_bytes, source);
         let (production_faithful, label) = match &outcome {
             Ok(_) => (true, "accepted"),
             Err(Rejection::NonUtf8StrictField) => (true, "rejected_non_utf8_field"),

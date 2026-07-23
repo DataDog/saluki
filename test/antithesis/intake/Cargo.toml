@@ -19,13 +19,14 @@ anyhow = { workspace = true, features = ["std"] }
 axum = { workspace = true, features = ["http1", "json", "tokio", "tracing"] }
 clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
 datadog-protos = { workspace = true }
+harness = { path = "../harness" }
 headers = { workspace = true }
 mime = { workspace = true }
 protobuf = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-stele = { workspace = true }
 tokio = { workspace = true, features = [
+  "io-util",
   "macros",
   "net",
   "rt",
