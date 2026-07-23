@@ -1,7 +1,6 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
-use std::collections::HashSet;
 use std::fmt;
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +21,7 @@ use otlp_protos::opentelemetry::proto::metrics::v1::{
     HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
     ResourceMetrics as OtlpResourceMetrics, SummaryDataPoint as OtlpSummaryDataPoint,
 };
+use saluki_common::collections::FastHashSet;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
 use saluki_core::data_model::event::metric::{Metric, MetricMetadata, MetricValues};
@@ -42,8 +42,8 @@ use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::Metrics;
 
 // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L48-L63
-static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    let mut m = HashSet::new();
+static RATE_AS_GAUGE_METRICS: LazyLock<FastHashSet<&'static str>> = LazyLock::new(|| {
+    let mut m = FastHashSet::default();
     m.insert("kafka.net.bytes_out.rate");
     m.insert("kafka.net.bytes_in.rate");
     m.insert("kafka.replication.isr_shrinks.rate");
@@ -69,6 +69,19 @@ enum DataType {
     Rate,
 }
 
+enum RateAsTypeAttribute<'a> {
+    Rate,
+    NoOp,
+    Unsupported(&'a str),
+}
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+enum RateAsTypeWarningKind {
+    InvalidType,
+    ZeroInterval,
+    UnsupportedValue,
+}
+
 struct TranslationContext<'a> {
     resource_attributes: &'a [OtlpKeyValue],
     metrics: &'a Metrics,
@@ -82,8 +95,8 @@ pub struct OtlpMetricsTranslator {
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
     attribute_translator: AttributeTranslator,
-    // Metric names for which we have warned about emitting an unnormalized Rate.
-    warned_rate_without_interval_metrics: HashSet<String>,
+    // One-shot warnings emitted for each metric and `datadog.metric.as_type` error kind.
+    rate_as_type_warnings: FastHashSet<(String, RateAsTypeWarningKind)>,
     // Configured tags (`otlp_config.metrics.tags`) added to every emitted metric.
     metric_tags: SharedTagSet,
 }
@@ -441,7 +454,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
-            warned_rate_without_interval_metrics: HashSet::new(),
+            rate_as_type_warnings: FastHashSet::default(),
             metric_tags,
         })
     }
@@ -583,7 +596,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::for_tests(),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
-            warned_rate_without_interval_metrics: HashSet::new(),
+            rate_as_type_warnings: FastHashSet::default(),
             metric_tags: SharedTagSet::default(),
         }
     }
@@ -805,22 +818,36 @@ impl OtlpMetricsTranslator {
             }
 
             let ts = dp.time_unix_nano;
-            let data_type = if data_type == DataType::Count && has_rate_as_type_attribute(&dp.attributes) {
-                DataType::Rate
-            } else {
-                data_type
+            let data_type = match rate_as_type_attribute(&dp.attributes) {
+                Some(RateAsTypeAttribute::Rate) if data_type == DataType::Count => {
+                    warn_rate_as_type_once(
+                        &mut self.rate_as_type_warnings,
+                        point_dims.name.as_str(),
+                        RateAsTypeWarningKind::ZeroInterval,
+                        None,
+                    );
+                    DataType::Rate
+                }
+                Some(RateAsTypeAttribute::Rate) => {
+                    warn_rate_as_type_once(
+                        &mut self.rate_as_type_warnings,
+                        point_dims.name.as_str(),
+                        RateAsTypeWarningKind::InvalidType,
+                        None,
+                    );
+                    data_type
+                }
+                Some(RateAsTypeAttribute::Unsupported(attribute_value)) => {
+                    warn_rate_as_type_once(
+                        &mut self.rate_as_type_warnings,
+                        point_dims.name.as_str(),
+                        RateAsTypeWarningKind::UnsupportedValue,
+                        Some(attribute_value),
+                    );
+                    data_type
+                }
+                None | Some(RateAsTypeAttribute::NoOp) => data_type,
             };
-
-            if data_type == DataType::Rate
-                && self
-                    .warned_rate_without_interval_metrics
-                    .insert(point_dims.name.clone())
-            {
-                warn!(
-                    metric_name = %point_dims.name,
-                    "Emitting OTLP delta Sum with `datadog.metric.as_type=rate` as an unnormalized Rate because no delta interval is available."
-                );
-            }
 
             self.record_metric_event(&point_dims, value, ts, data_type, &mut events, context);
         }
@@ -1500,19 +1527,52 @@ fn get_number_data_point_value(dp: &OtlpNumberDataPoint) -> f64 {
 
 const DELTA_SUM_RATE_ATTRIBUTE_KEY: &str = "datadog.metric.as_type";
 
-fn has_rate_as_type_attribute(attributes: &[OtlpKeyValue]) -> bool {
-    attributes.iter().any(|attribute| {
-        attribute.key == DELTA_SUM_RATE_ATTRIBUTE_KEY
-            && attribute
-                .value
-                .as_ref()
-                .and_then(|value| value.value.as_ref())
-                .and_then(|value| match value {
-                    otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value) => Some(value),
-                    _ => None,
-                })
-                .is_some_and(|value| value.eq_ignore_ascii_case("rate"))
-    })
+fn rate_as_type_attribute(attributes: &[OtlpKeyValue]) -> Option<RateAsTypeAttribute<'_>> {
+    let attribute = attributes
+        .iter()
+        .find(|attribute| attribute.key == DELTA_SUM_RATE_ATTRIBUTE_KEY)?;
+    let value = attribute
+        .value
+        .as_ref()
+        .and_then(|value| value.value.as_ref())
+        .and_then(|value| match value {
+            otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .unwrap_or_default();
+
+    if value.eq_ignore_ascii_case("rate") {
+        Some(RateAsTypeAttribute::Rate)
+    } else if value.eq_ignore_ascii_case("count") || value.eq_ignore_ascii_case("gauge") {
+        Some(RateAsTypeAttribute::NoOp)
+    } else {
+        Some(RateAsTypeAttribute::Unsupported(value))
+    }
+}
+
+fn warn_rate_as_type_once(
+    warnings: &mut FastHashSet<(String, RateAsTypeWarningKind)>, metric_name: &str, kind: RateAsTypeWarningKind,
+    attribute_value: Option<&str>,
+) {
+    if !warnings.insert((metric_name.to_owned(), kind)) {
+        return;
+    }
+
+    match kind {
+        RateAsTypeWarningKind::InvalidType => warn!(
+            metric_name,
+            "Ignoring `datadog.metric.as_type=rate`: it is only supported on OTLP delta Sum metrics."
+        ),
+        RateAsTypeWarningKind::ZeroInterval => warn!(
+            metric_name,
+            "Emitting OTLP delta Sum with `datadog.metric.as_type=rate` as an unnormalized Rate because no delta interval is available."
+        ),
+        RateAsTypeWarningKind::UnsupportedValue => warn!(
+            metric_name,
+            attribute_value = attribute_value.unwrap_or_default(),
+            "Ignoring unsupported `datadog.metric.as_type` value; accepted values are `rate`, `count`, and `gauge`."
+        ),
+    }
 }
 
 /// Checks if a metric value is `NaN` or `Infinity`.
@@ -2052,15 +2112,16 @@ mod tests {
         let events = translator.map_to_dd_format(metric, &SharedTagSet::default(), None, &[], &metrics);
 
         assert_eq!(events.len(), 2);
-        assert_eq!(translator.warned_rate_without_interval_metrics.len(), 1);
-        assert!(translator.warned_rate_without_interval_metrics.contains("delta.sum"));
+        assert!(translator
+            .rate_as_type_warnings
+            .contains(&("delta.sum".to_string(), RateAsTypeWarningKind::ZeroInterval,)));
     }
 
     #[test]
     fn delta_sum_non_rate_as_type_values_emit_counts() {
         let metrics = Metrics::for_tests();
 
-        for as_type in ["count", "gauge", "unsupported"] {
+        for as_type in ["count", "gauge"] {
             let mut translator = OtlpMetricsTranslator::for_tests();
             let events = translator.map_to_dd_format(
                 delta_sum_with_as_type(42, as_type),
@@ -2077,6 +2138,24 @@ mod tests {
                 "expected Count for {as_type}"
             );
         }
+    }
+
+    #[test]
+    fn unsupported_rate_as_type_value_warns_once_per_metric() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut metric = delta_sum_with_as_type(42, "unsupported");
+        let Some(OtlpMetricData::Sum(sum)) = metric.data.as_mut() else {
+            unreachable!("expected delta Sum metric");
+        };
+        sum.data_points.push(sum.data_points[0].clone());
+
+        let events = translator.map_to_dd_format(metric, &SharedTagSet::default(), None, &[], &metrics);
+
+        assert_eq!(events.len(), 2);
+        assert!(translator
+            .rate_as_type_warnings
+            .contains(&("delta.sum".to_string(), RateAsTypeWarningKind::UnsupportedValue,)));
     }
 
     #[test]
@@ -2109,6 +2188,9 @@ mod tests {
             events[0].try_as_metric().expect("metric event").values(),
             &MetricValues::gauge((2, 42.0))
         );
+        assert!(translator
+            .rate_as_type_warnings
+            .contains(&("gauge".to_string(), RateAsTypeWarningKind::InvalidType,)));
     }
 
     fn single_gauge_with_resource_attributes(attributes: Vec<OtlpKeyValue>) -> OtlpResourceMetrics {
