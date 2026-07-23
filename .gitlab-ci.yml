@@ -49,14 +49,10 @@ variables:
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_PREFIX: "saluki"
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/${SALUKI_IMAGE_REPO_PREFIX}"
-  # Temporarily pinned to the branch-built `build-ci` image so this pipeline exercises the glibc/crosstool-NG rebase.
-  #
-  # The `build-ci` image must be rebuilt on `main` after this change is merged, and then promoted, and a follow-up PR
-  # made to switch us back to using the `latest` tag here for weekly image rebuild updates.
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:v124381425-b616d9fd"
-  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
-  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
-  SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:newest"
+  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:newest"
+  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:newest"
+  SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:newest"
   SPDX_LICENSES_IMAGE: "registry.ddbuild.io/images/spdx-license-list-data:3.28.0"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
@@ -97,6 +93,9 @@ variables:
 
 default:
   tags: ["arch:amd64"]
+  image:
+    name: "${SALUKI_BUILD_CI_IMAGE}"
+    pull_policy: always
 
 # Run a job on official releases (i.e. tagged).
 .on_official_release:

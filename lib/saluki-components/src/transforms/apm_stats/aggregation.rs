@@ -515,7 +515,7 @@ mod tests {
     use crate::transforms::apm_stats::statsraw::new_aggregation_from_span;
 
     #[test]
-    fn test_get_status_code() {
+    fn get_status_code_from_attributes() {
         // Empty attrs
         let attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
         assert_eq!(get_status_code(&attrs), 0);
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_grpc_status_code() {
+    fn get_grpc_status_code_from_attributes() {
         // Empty attrs
         let attrs: FastHashMap<MetaString, AV> = FastHashMap::default();
         assert_eq!(get_grpc_status_code(&attrs), GrpcStatusCode::Unset);
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_aggregation() {
+    fn new_aggregation() {
         // Helper to create a span with given service, meta, and metrics
         let make_span = |service: &str,
                          meta: FastHashMap<MetaString, MetaString>,
@@ -736,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn test_peer_tags_to_aggregate_for_span() {
+    fn peer_tags_to_aggregate_for_span() {
         // Tests that peer tags are only returned for client/producer/consumer span kinds
         let peer_tags = vec![MetaString::from("server.address"), MetaString::from("_dd.base_service")];
 
@@ -782,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_root_span() {
+    fn is_root_span() {
         let concentrator = SpanConcentrator::new(true, true, &[], 0);
 
         // Span with parent_id = 0 -> is_trace_root = true

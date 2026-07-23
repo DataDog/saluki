@@ -45,14 +45,14 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::broadcast;
+use tokio::{sync::broadcast, task_local};
 
 use super::{Identifier, IdentifierFilter};
 use crate::runtime::process::Id;
 
 const DEFAULT_CHANNEL_CAPACITY: usize = 16;
 
-tokio::task_local! {
+task_local! {
     pub(crate) static CURRENT_DATASPACE: DataspaceRegistry;
 }
 
@@ -269,6 +269,19 @@ impl DataspaceRegistry {
     /// Returns the dataspace registry for the current supervision tree, if one exists.
     pub fn try_current() -> Option<Self> {
         CURRENT_DATASPACE.try_with(|ds| ds.clone()).ok()
+    }
+
+    /// Runs the given closure with this dataspace set as the current dataspace.
+    ///
+    /// This can be used to override the dataspace that gets returned in calls to
+    /// [`DataspaceRegistry::try_current`][Self::try_current], which can be difficult to achieve otherwise without fully
+    /// executing code under supervision.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_current<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        CURRENT_DATASPACE.sync_scope(self.clone(), f)
     }
 
     /// Creates a new empty registry with the given channel capacity for broadcast channels.

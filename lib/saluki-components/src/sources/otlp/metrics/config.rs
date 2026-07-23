@@ -1,6 +1,8 @@
 use std::time::Duration;
 
-use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
+use agent_data_plane_config::domains::otlp::{
+    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+};
 use saluki_error::{generic_error, GenericError};
 
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
@@ -77,8 +79,9 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
-    pub fn with_quantiles(mut self, quantiles: bool) -> Self {
-        self.quantiles = quantiles;
+    /// Sets how OTLP summary quantiles are reported.
+    pub fn with_summary_mode(mut self, summary_mode: SummaryMode) -> Self {
+        self.quantiles = matches!(summary_mode, SummaryMode::Gauges);
         self
     }
 

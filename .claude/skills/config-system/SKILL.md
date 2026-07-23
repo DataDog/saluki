@@ -178,8 +178,12 @@ the witnessed model.
    defaults from the component.
 8. Update topology call sites and tests. Preserve behavior tests using typed inputs; remove tests
    only when they tested legacy deserialization and nothing else.
+   - Do *not* rename `from_configuration`. Just change its signature to take typed configuration.
 9. Remove the component's `run_config_smoke_tests` invocation once it no longer deserializes from
-   `GenericConfiguration`. Keep `used_by`; it drives legacy smoke-test codegen.
+   `GenericConfiguration`. Replace migrated structs in the `used_by` field with
+   `TYPED_CONFIG_SYSTEM`.
+10. Higher risk cutovers should be tested with correctness or integration tests that exercise the
+    affected configurations.
 
 A cutover should be behaviorally transparent. If the old behavior conflicts with the source schema
 or typed-system invariants, surface the conflict rather than silently choosing one.

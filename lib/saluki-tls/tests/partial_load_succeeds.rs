@@ -6,7 +6,7 @@ mod common;
 use tempfile::TempDir;
 
 #[test]
-fn partial_load_succeeds_with_valid_certificates() {
+fn partial_load_succeeds() {
     let temp_dir = TempDir::new().expect("should create temp dir");
     common::write_self_signed_cert(&temp_dir.path().join("good.pem"));
     common::write_malformed_pem(&temp_dir.path().join("bad.pem"));

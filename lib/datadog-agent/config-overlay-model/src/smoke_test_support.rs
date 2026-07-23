@@ -3,15 +3,10 @@
 //! time the smoke tests will be rendered inert and can be removed.
 use serde::{Deserialize, Serialize};
 
-/// A struct in the Saluki repository that deserializes Datadog Agent configuration.
+/// A configuration consumer tracked by the legacy smoke-test registry.
 ///
-/// Used as values in `schema_overlay.yaml` `used_by` fields to declare which structs consume a
-/// given key. Adding a new struct here is the first step when registering its configuration keys.
-///
-/// This construct has been carried over from the original `config_registry` in order to support
-/// configuration smoke test code generation. Each variant in this enum should be an exact name
-/// match to a struct that consumes its value directly from Agent configuration either by
-/// deserializing or by environment variable.
+/// Most variants name structs that consume Agent configuration directly. Sentinel variants track
+/// consumers that do not fit the legacy deserialization test model.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
 pub enum ConfigurationStruct {
     AggregateConfiguration,
@@ -28,13 +23,14 @@ pub enum ConfigurationStruct {
     DogStatsDPrefixFilterConfiguration,
     ForwarderConfiguration,
     MrfConfiguration,
-    OtlpConfiguration,
     OtlpDecoderConfiguration,
-    OtlpRelayConfiguration,
     ProxyConfiguration,
     RemoteAgentClientConfiguration,
     TagFilterlistConfiguration,
     TraceObfuscationConfiguration,
+
+    /// Keys consumed through the typed configuration translation system.
+    TypedConfigSystem,
 
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     #[serde(rename = "get_typed")]
@@ -68,13 +64,12 @@ impl ConfigurationStruct {
             ConfigurationStruct::DogStatsDPrefixFilterConfiguration => "DOGSTATSD_PREFIX_FILTER_CONFIGURATION",
             ConfigurationStruct::ForwarderConfiguration => "FORWARDER_CONFIGURATION",
             ConfigurationStruct::MrfConfiguration => "MRF_CONFIGURATION",
-            ConfigurationStruct::OtlpConfiguration => "OTLP_CONFIGURATION",
             ConfigurationStruct::OtlpDecoderConfiguration => "OTLP_DECODER_CONFIGURATION",
-            ConfigurationStruct::OtlpRelayConfiguration => "OTLP_RELAY_CONFIGURATION",
             ConfigurationStruct::ProxyConfiguration => "PROXY_CONFIGURATION",
             ConfigurationStruct::RemoteAgentClientConfiguration => "REMOTE_AGENT_CLIENT_CONFIGURATION",
             ConfigurationStruct::TagFilterlistConfiguration => "TAG_FILTERLIST_CONFIGURATION",
             ConfigurationStruct::TraceObfuscationConfiguration => "TRACE_OBFUSCATION_CONFIGURATION",
+            ConfigurationStruct::TypedConfigSystem => "TYPED_CONFIG_SYSTEM",
             ConfigurationStruct::GetTyped => "GET_TYPED",
             ConfigurationStruct::NoSmoke => "NO_SMOKE",
         }

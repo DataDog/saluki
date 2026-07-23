@@ -23,7 +23,10 @@ use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
-use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
+use agent_data_plane_config::domains::otlp::{
+    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+    DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+};
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
@@ -911,6 +914,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_otlp_config_metrics_summaries_mode(&mut self, value: String) {
+        match value.parse::<SummaryMode>() {
+            Ok(mode) => self.config.domains.otlp.metrics.summaries.mode = mode,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.metrics.summaries.mode", error)),
+        }
+    }
+
     fn consume_otlp_config_metrics_tags(&mut self, value: String) {
         self.config.domains.otlp.metrics.tags = value;
     }
@@ -920,7 +930,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64) {
-        self.config.domains.otlp.receiver.grpc.max_recv_msg_size_mib = value.max(0) as u64;
+        // A configured `0` selects grpc-go's built-in limit; carry the effective value in the model.
+        let mib = value.max(0) as u64;
+        self.config.domains.otlp.receiver.grpc.max_recv_msg_size_mib = if mib == 0 {
+            DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB
+        } else {
+            mib
+        };
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String) {
@@ -932,18 +948,18 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_traces_enabled(&mut self, value: bool) {
-        self.config.domains.traces.otlp.enabled = value;
+        self.config.domains.otlp.traces.enabled = value;
     }
 
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64) {
-        self.config.domains.traces.otlp.internal_port = to_port(value);
+        self.config.domains.otlp.traces.internal_port = to_port(value);
     }
 
     fn consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
         self.config
             .domains
-            .traces
             .otlp
+            .traces
             .probabilistic_sampler_sampling_percentage = value;
     }
 
@@ -1129,7 +1145,9 @@ mod tests {
 
     use agent_data_plane_config::domains::{
         dogstatsd::OriginTagCardinality,
-        otlp::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue},
+        otlp::{
+            CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+        },
     };
     use datadog_agent_config::DatadogConfiguration;
     use serde_json::json;
@@ -1283,6 +1301,46 @@ mod tests {
     }
 
     #[test]
+    fn summary_mode_translates_known_values() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "summaries": {
+                        "mode": "noquantiles"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.metrics.summaries.mode, SummaryMode::NoQuantiles);
+    }
+
+    #[test]
+    fn invalid_summary_mode_records_error_and_keeps_default() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "summaries": {
+                        "mode": "unsupported"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert_eq!(config.domains.otlp.metrics.summaries.mode, SummaryMode::Gauges);
+        let errors = errors.expect("invalid mode should record a translation error");
+        assert!(errors.to_string().contains("otlp_config.metrics.summaries.mode"));
+        assert!(errors.to_string().contains("unknown summary mode `unsupported`"));
+    }
+
+    #[test]
     fn cumulative_monotonic_sum_mode_translates_known_values() {
         let datadog: DatadogConfiguration = serde_json::from_value(json!({
             "otlp_config": {
@@ -1386,5 +1444,29 @@ mod tests {
         assert!(errors
             .to_string()
             .contains("unknown initial cumulative monotonic value `unsupported`"));
+    }
+
+    #[test]
+    fn grpc_max_recv_msg_size_zero_translates_to_grpc_go_default() {
+        // The schema default of `0` selects grpc-go's built-in 4 MiB limit, so translation must
+        // substitute the default; any positive value is carried through unchanged.
+        for (configured, expected) in [
+            (json!({}), DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB),
+            (
+                json!({ "max_recv_msg_size_mib": 0 }),
+                DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+            ),
+            (json!({ "max_recv_msg_size_mib": 8 }), 8),
+        ] {
+            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+                "otlp_config": { "receiver": { "protocols": { "grpc": configured } } }
+            }))
+            .expect("datadog source deserializes");
+
+            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+            assert!(errors.is_none());
+            assert_eq!(config.domains.otlp.receiver.grpc.max_recv_msg_size_mib, expected);
+        }
     }
 }

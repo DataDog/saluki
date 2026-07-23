@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_cheaply_cloneable() {
+    fn is_cheaply_cloneable() {
         // Owned strings are never cheap to clone.
         let s =
             String::from("big ol' stringy string that can't be inlined and lives out its bleak existence in the heap");

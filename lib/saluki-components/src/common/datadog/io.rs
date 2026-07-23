@@ -8,14 +8,15 @@
 use std::{
     collections::VecDeque,
     error::Error as _,
+    marker::PhantomData,
     path::PathBuf,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use bytes::Buf;
 use futures::FutureExt as _;
-use http::{Request, Uri};
+use http::{Request, StatusCode, Uri};
 use http_body::Body;
 use http_body_util::BodyExt as _;
 use hyper::{body::Incoming, Response};
@@ -24,11 +25,12 @@ use saluki_common::{
 };
 use saluki_config::GenericConfiguration;
 use saluki_core::components::ComponentContext;
-use saluki_error::{generic_error, GenericError};
+use saluki_core::diagnostic::{DiagnosticDetails, DiagnosticEvent, DiagnosticsEmitter};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{
     client::http::{into_client_body, HttpClient, HttpClientBuilder},
     util::{
-        middleware::{RetryCircuitBreakerError, RetryCircuitBreakerLayer},
+        middleware::{HttpInspectionLayer, RetryCircuitBreakerError, RetryCircuitBreakerLayer},
         retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, PushResult, RetryQueue, Retryable},
     },
 };
@@ -135,7 +137,9 @@ async fn handle_in_flight_transaction_result<B>(
     }
 
     match result {
-        // We got a response -- maybe successful, maybe not -- so just process that.
+        // We got a response -- maybe successful, maybe not -- so just process that. A rejected API key (HTTP 403) is
+        // surfaced by the inspection layer in the service stack rather than here, since a retriable 403 becomes a
+        // `Retry` result and never reaches this arm.
         Ok(http_response) => {
             process_http_response(http_response, metadata, telemetry, endpoint_url, endpoint_domain).await
         }
@@ -214,6 +218,14 @@ where
     }
 }
 
+/// Minimum interval between successive `InvalidApiKey` diagnostic events emitted from the request I/O path for a single
+/// endpoint.
+///
+/// We want to ensure there's a steady stream of these events while the invalid API key condition is still present, but
+/// we want to avoid sending a deluge of events if there happens to be some bug that causes us to rapidly fire off
+/// requests at a rate of more than one per second.
+const INVALID_API_KEY_EMIT_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Transaction forwarder for Datadog endpoints.
 pub struct TransactionForwarder<B> {
     context: ComponentContext,
@@ -225,7 +237,8 @@ pub struct TransactionForwarder<B> {
     endpoint_name: Arc<EndpointNameFn>,
     endpoints: Vec<RoutableEndpoint>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
-    _marker: std::marker::PhantomData<B>,
+    emitter: DiagnosticsEmitter,
+    _marker: PhantomData<B>,
 }
 
 /// Builds request mappers for resolved endpoints.
@@ -339,6 +352,9 @@ where
 
         let client = client_builder.build()?;
 
+        let emitter = DiagnosticsEmitter::from_current(context.identity())
+            .error_context("Failed to create diagnostics emitter for transaction forwarder.")?;
+
         Ok(Self {
             context,
             config,
@@ -349,7 +365,8 @@ where
             endpoint_name,
             endpoints,
             endpoint_request_mapper_factory,
-            _marker: std::marker::PhantomData,
+            emitter,
+            _marker: PhantomData,
         })
     }
 
@@ -372,6 +389,7 @@ where
             endpoint_name,
             endpoints,
             endpoint_request_mapper_factory,
+            emitter,
             _marker,
         } = self;
 
@@ -389,6 +407,7 @@ where
                 endpoint_name,
                 endpoints,
                 endpoint_request_mapper_factory,
+                emitter,
             ),
         );
 
@@ -399,12 +418,17 @@ where
     }
 
     /// Returns API key validation for the startup endpoint set.
+    ///
+    /// The forwarder's diagnostics emitter (see [`with_diagnostics_emitter`][Self::with_diagnostics_emitter]) is used to
+    /// surface a diagnostic event when validation determines that every configured API key is invalid, allowing
+    /// interested subscribers to react to the credentials being rejected.
     pub(crate) fn api_key_validator(&self) -> ApiKeyValidator {
         ApiKeyValidator::new(
             self.endpoints.clone(),
             self.client.clone(),
             self.live_config.clone(),
             self.config.api_key_validation_interval(),
+            self.emitter.clone(),
         )
     }
 }
@@ -415,7 +439,7 @@ async fn run_io_loop<B>(
     context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
-    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -458,6 +482,7 @@ async fn run_io_loop<B>(
                 route,
                 resolved_endpoint,
                 endpoint_request_mapper_factory.clone(),
+                emitter.clone(),
             ),
         );
 
@@ -554,6 +579,7 @@ async fn run_endpoint_io_loop<B>(
     telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry,
     mut retry_telemetry: TransactionRetryTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
     endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
+    emitter: DiagnosticsEmitter,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -605,6 +631,11 @@ async fn run_endpoint_io_loop<B>(
     // The body type conversion from `TransactionBody<B>` to `ClientBody` happens as the innermost layer,
     // after the retry circuit breaker. This ensures that retry and open errors return the original
     // `Request<TransactionBody<B>>` so we can reassemble it into a `Transaction<B>` for re-enqueuing.
+    //
+    // The invalid API key inspection layer sits *below* the retry circuit breaker so that it observes the raw response
+    // from the client. When secrets management is enabled, a 403 is classified as retriable and the circuit breaker
+    // converts it into a `RetryCircuitBreakerError::Retry` error that only re-enqueues the transaction — it never
+    // surfaces the response to the loop below — so this layer is the only place that reliably sees the rejection.
     let mut service = ServiceBuilder::new()
         // Set the request's URI and endpoint-specific headers.
         .map_request({
@@ -624,6 +655,7 @@ async fn run_endpoint_io_loop<B>(
         .layer(RetryCircuitBreakerLayer::new(
             config.retry().to_default_http_retry_policy(live_config),
         ))
+        .layer(build_diagnostics_layer(emitter, endpoint_url.clone()))
         .map_request(|req: Request<TransactionBody<B>>| req.map(into_client_body))
         .service(service);
 
@@ -828,6 +860,7 @@ fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: 
     telemetry.track_data_points_dropped(domain, push_result.data_points_dropped);
 }
 
+/// Processes an HTTP response to a forwarded intake request, updating telemetry and logging as appropriate.
 async fn process_http_response(
     response: Response<Incoming>, metadata: Metadata, telemetry: &ComponentTelemetry, endpoint_url: &str, domain: &str,
 ) {
@@ -862,6 +895,27 @@ async fn process_http_response(
             }
         }
     }
+}
+
+fn build_diagnostics_layer(emitter: DiagnosticsEmitter, endpoint_url: String) -> HttpInspectionLayer {
+    let last_emit = Mutex::new(None::<Instant>);
+    let forbidden_inspector = move || {
+        let now = Instant::now();
+        {
+            let mut last_emit = last_emit.lock().expect("invalid API key emit mutex poisoned");
+            if last_emit.is_some_and(|last| now.duration_since(last) < INVALID_API_KEY_EMIT_INTERVAL) {
+                return;
+            }
+            *last_emit = Some(now);
+        }
+
+        emitter.emit(DiagnosticEvent::new(
+            format!("Datadog API key rejected as invalid (HTTP 403) when forwarding to '{endpoint_url}'."),
+            DiagnosticDetails::InvalidApiKey,
+        ));
+    };
+
+    HttpInspectionLayer::new().with_inspector(StatusCode::FORBIDDEN, forbidden_inspector)
 }
 
 enum PendingTransaction<T> {
@@ -1088,7 +1142,10 @@ mod tests {
     use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
     use saluki_config::config_from;
-    use saluki_core::observability::ComponentMetricsExt as _;
+    use saluki_core::{
+        observability::ComponentMetricsExt as _,
+        runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
+    };
     use saluki_io::net::client::http::TlsMinimumVersion;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
@@ -1865,7 +1922,7 @@ app.datadoghq.com: [key-a, key-b]
 
     fn build_test_forwarder(
         forwarder_url: &str, live_config: Option<GenericConfiguration>,
-    ) -> TransactionForwarder<FrozenChunkedBytesBuffer> {
+    ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
         // forwarder is pointed at a plain HTTP endpoint.
         init_tls_crypto_provider();
@@ -1891,15 +1948,21 @@ app.datadoghq.com: [key-a, key-b]
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 
-        TransactionForwarder::<FrozenChunkedBytesBuffer>::from_config(
-            context,
-            forwarder_config,
-            live_config,
-            test_logical_endpoint,
-            telemetry,
-            metrics_builder,
-        )
-        .expect("forwarder should build")
+        let dataspace = DataspaceRegistry::new();
+        let forwarder = dataspace
+            .with_current(|| {
+                TransactionForwarder::<FrozenChunkedBytesBuffer>::from_config(
+                    context,
+                    forwarder_config,
+                    live_config,
+                    test_logical_endpoint,
+                    telemetry,
+                    metrics_builder,
+                )
+            })
+            .expect("forwarder should build");
+
+        (dataspace, forwarder)
     }
 
     fn build_test_transaction() -> Transaction<FrozenChunkedBytesBuffer> {
@@ -1943,7 +2006,7 @@ app.datadoghq.com: [key-a, key-b]
             StatusCode::OK,
         ])
         .await;
-        let forwarder = build_test_forwarder(&server_url, None);
+        let (_, forwarder) = build_test_forwarder(&server_url, None);
 
         let handle = forwarder.spawn().await;
         handle
@@ -1985,7 +2048,7 @@ app.datadoghq.com: [key-a, key-b]
         // at least one retry to observe the second request.
         let (server_url, counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN, StatusCode::OK]).await;
         let live_config = config_with(json!({ "secret_backend_command": "/bin/true" })).await;
-        let forwarder = build_test_forwarder(&server_url, Some(live_config));
+        let (_, forwarder) = build_test_forwarder(&server_url, Some(live_config));
 
         let handle = forwarder.spawn().await;
         handle
@@ -2001,5 +2064,61 @@ app.datadoghq.com: [key-a, key-b]
             "with secrets configured, 403 must be retried at least once (saw {} requests)",
             observed
         );
+    }
+
+    #[tokio::test]
+    async fn forwarder_emits_invalid_api_key_diagnostic_on_403() {
+        // The intake server rejects every request with a 403. Without secrets configured, a 403 is not retried, so the
+        // single forwarded request flows straight through to response handling.
+        let (server_url, _counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN]).await;
+
+        // Build a forwarder and then subscribe to diagnostic events from the dataspace it's attached to.
+        let (dataspace, forwarder) = build_test_forwarder(&server_url, None);
+        let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
+
+        let handle = forwarder.spawn().await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+
+        // The 403 response to the real request must produce an `InvalidApiKey` diagnostic event.
+        match timeout(Duration::from_secs(3), events.recv()).await {
+            Ok(Some(DataspaceUpdate::Message(_, event))) => {
+                assert_eq!(event.details(), &DiagnosticDetails::InvalidApiKey);
+            }
+            other => panic!("expected an InvalidApiKey diagnostic event, got: {other:?}"),
+        }
+
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn forwarder_emits_invalid_api_key_diagnostic_on_403_when_secrets_in_use() {
+        // With secrets management enabled, a 403 is classified as retriable, so the retry circuit breaker converts it
+        // into a `Retry` error that never reaches the response-handling arm of the I/O loop. The diagnostic must still
+        // be emitted, because it is produced by the inspection layer sitting below the retry circuit breaker. Without
+        // that layer, the rejected key would be retried indefinitely without ever notifying anyone.
+        let (server_url, _counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN]).await;
+        let live_config = config_with(json!({ "secret_backend_command": "/bin/true" })).await;
+
+        // Build a forwarder and then subscribe to diagnostic events from the dataspace it's attached to.
+        let (dataspace, forwarder) = build_test_forwarder(&server_url, Some(live_config));
+        let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
+
+        let handle = forwarder.spawn().await;
+        handle
+            .send_transaction(build_test_transaction())
+            .await
+            .expect("send should succeed");
+
+        match timeout(Duration::from_secs(3), events.recv()).await {
+            Ok(Some(DataspaceUpdate::Message(_, event))) => {
+                assert_eq!(event.details(), &DiagnosticDetails::InvalidApiKey);
+            }
+            other => panic!("expected an InvalidApiKey diagnostic event, got: {other:?}"),
+        }
+
+        handle.shutdown().await;
     }
 }

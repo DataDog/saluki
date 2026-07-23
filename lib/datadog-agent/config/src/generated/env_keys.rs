@@ -766,6 +766,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_METRICS_SUMMARIES_MODE"],
+        path: &["otlp_config", "metrics", "summaries", "mode"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE"],
         path: &["otlp_config", "metrics", "sums", "cumulative_monotonic_mode"],
         decode: EnvDecode::RawString,

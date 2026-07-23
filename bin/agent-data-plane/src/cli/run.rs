@@ -1,6 +1,5 @@
 use std::{
     collections::HashSet,
-    env,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -440,7 +439,7 @@ async fn create_topology(
     }
 
     if dp_config.otlp().enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), dp_config, env_provider).await?;
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, dp_config, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
@@ -805,7 +804,7 @@ async fn add_dsd_pipeline_to_blueprint(
 }
 
 async fn add_otlp_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     if dp_config.otlp().proxy().enabled() {
@@ -822,11 +821,14 @@ async fn add_otlp_pipeline_to_blueprint(
             "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
         );
 
-        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(config)?;
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(config)?;
+        let typed = config_system.config();
+        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&typed.domains.otlp.receiver);
+
+        let raw_map = config_system.raw_map();
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&raw_map)?;
 
         let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::from_configuration(config, core_agent_otlp_grpc_endpoint)?;
+            OtlpForwarderConfiguration::from_configuration(&raw_map, core_agent_otlp_grpc_endpoint)?;
 
         blueprint
             // Components.
@@ -851,15 +853,10 @@ async fn add_otlp_pipeline_to_blueprint(
             .get_hostname()
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
-        let mut otlp_config = OtlpConfiguration::from_configuration(config)?
+        let typed = config_system.config();
+        let otlp_config = OtlpConfiguration::from_configuration(&typed.domains.otlp)
             .with_default_hostname(default_hostname)
             .with_workload_provider(env_provider.workload().clone());
-        if let Ok(grpc_endpoint) = env::var("DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_GRPC_ENDPOINT") {
-            otlp_config = otlp_config.with_grpc_endpoint(grpc_endpoint);
-        }
-        if let Ok(http_endpoint) = env::var("DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_HTTP_ENDPOINT") {
-            otlp_config = otlp_config.with_http_endpoint(http_endpoint);
-        }
 
         blueprint
             // Components.

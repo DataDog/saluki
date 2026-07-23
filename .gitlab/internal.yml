@@ -42,7 +42,7 @@
       allow_failure: true
   script:
     - export IMAGE_REF=${SALUKI_IMAGE_REPO_BASE}/${IMAGE_NAME}:v${CI_PIPELINE_ID}-${CI_COMMIT_SHORT_SHA}
-    - crane tag ${IMAGE_REF} latest
+    - crane tag ${IMAGE_REF} newest
 
 generate-build-ci-image:
   extends: [.generate-ci-image-definition]

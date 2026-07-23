@@ -16,6 +16,9 @@ pub struct Domain {
     /// OTLP metrics translation settings.
     pub metrics: Metrics,
 
+    /// OTLP trace ingestion settings.
+    pub traces: Traces,
+
     /// OTLP proxy gating and endpoint.
     pub proxy: Proxy,
 
@@ -43,6 +46,9 @@ pub struct Metrics {
 
     /// Comma-separated list of tags to add to every emitted metric.
     pub tags: String,
+
+    /// OTLP summary translation settings.
+    pub summaries: Summaries,
 }
 
 /// How explicit OTLP histogram buckets are reported.
@@ -144,6 +150,41 @@ pub struct Sums {
     pub initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
 }
 
+/// OTLP summary translation settings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Summaries {
+    /// How summary quantiles are reported.
+    ///
+    /// Defaults to `gauges`, which emits one gauge metric per quantile. Set to `noquantiles` to omit quantile
+    /// metrics.
+    pub mode: SummaryMode,
+}
+
+/// How OTLP summary quantiles are reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum SummaryMode {
+    /// Report one gauge metric per quantile.
+    #[default]
+    Gauges,
+
+    /// Omit quantile metrics.
+    NoQuantiles,
+}
+
+impl FromStr for SummaryMode {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "gauges" => Ok(Self::Gauges),
+            "noquantiles" => Ok(Self::NoQuantiles),
+            other => Err(Error::new_without_source(format!(
+                "unknown summary mode `{other}`; expected `gauges` or `noquantiles`"
+            ))),
+        }
+    }
+}
+
 /// OTLP receiver transports and per-signal activation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Receiver {
@@ -160,6 +201,13 @@ pub struct Receiver {
     pub http: HttpReceiver,
 }
 
+/// Default gRPC maximum inbound message size, in MiB.
+///
+/// The Datadog schema default for `max_recv_msg_size_mib` is `0`, which grpc-go treats as "apply the
+/// built-in 4 MiB limit". Translation substitutes this constant for a configured `0` so the model
+/// always carries an effective limit.
+pub const DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB: u64 = 4;
+
 /// OTLP gRPC receiver.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct GrpcReceiver {
@@ -174,7 +222,7 @@ pub struct GrpcReceiver {
 }
 
 /// OTLP HTTP receiver.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct HttpReceiver {
     /// Address the HTTP receiver listens on.
     pub endpoint: String,
@@ -182,6 +230,53 @@ pub struct HttpReceiver {
     /// Transport the HTTP receiver binds (for example, `tcp` or `unix`). (not in Datadog Agent
     /// config schema)
     pub transport: String,
+}
+
+impl Default for HttpReceiver {
+    fn default() -> Self {
+        Self {
+            // Witnessed; overwritten during drive.
+            endpoint: String::new(),
+            transport: "tcp".to_string(),
+        }
+    }
+}
+
+/// OTLP trace ingestion settings.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Traces {
+    /// Whether OTLP trace ingestion is enabled.
+    pub enabled: bool,
+
+    /// Internal port the OTLP trace receiver forwards to.
+    pub internal_port: u16,
+
+    /// Percentage of OTLP traces the probabilistic sampler keeps.
+    pub probabilistic_sampler_sampling_percentage: f64,
+
+    /// Size, in bytes, of the OTLP trace context interner. (not in Datadog Agent config schema)
+    pub string_interner_size: u64,
+
+    /// Whether top-level spans are computed from span kind on OTLP traces. (not in Datadog Agent
+    /// config schema)
+    pub enable_compute_top_level_by_span_kind: bool,
+
+    /// Whether spans missing intake-required fields are ingested rather than rejected. (not in
+    /// Datadog Agent config schema)
+    pub ignore_missing_datadog_fields: bool,
+}
+
+impl Default for Traces {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            internal_port: 0,
+            probabilistic_sampler_sampling_percentage: 0.0,
+            string_interner_size: 512 * 1024,
+            enable_compute_top_level_by_span_kind: true,
+            ignore_missing_datadog_fields: false,
+        }
+    }
 }
 
 /// OTLP proxy gating: which signals the proxy forwards, and the proxy receiver endpoint.
@@ -204,7 +299,7 @@ pub struct Proxy {
 }
 
 /// OTLP context cache sizing.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Contexts {
     /// Whether contexts may be heap-allocated when the interner is full. (not in Datadog Agent
     /// config schema)
@@ -216,8 +311,19 @@ pub struct Contexts {
     /// Maximum number of tagsets held in the cache. (not in Datadog Agent config schema)
     pub cached_tagsets_limit: usize,
 
-    /// Number of entries the context string interner holds. (not in Datadog Agent config schema)
+    /// Size, in bytes, of the context string interner. (not in Datadog Agent config schema)
     pub string_interner_size: u64,
+}
+
+impl Default for Contexts {
+    fn default() -> Self {
+        Self {
+            allow_context_heap_allocs: true,
+            cached_contexts_limit: 500_000,
+            cached_tagsets_limit: 500_000,
+            string_interner_size: 2 * 1024 * 1024,
+        }
+    }
 }
 
 #[cfg(test)]

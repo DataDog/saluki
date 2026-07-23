@@ -32,10 +32,9 @@ mod classifier;
 
 pub use classifier::{Classification, ConfigClassifier};
 
-/// Identifiers for known configuration structs.
+/// Identifiers for known configuration consumers.
 ///
-/// Used as values in annotation `used_by` fields to declare which structs consume a given key.
-/// Adding a new struct here is the first step when registering its configuration keys.
+/// Used as values in annotation `used_by` fields to declare which consumers incorporate a key.
 pub mod structs {
     /// Identifier for `ProxyConfiguration`.
     pub const PROXY_CONFIGURATION: &str = "ProxyConfiguration";
@@ -45,8 +44,6 @@ pub mod structs {
     pub const DOGSTATSD_CONFIGURATION: &str = "DogStatsDConfiguration";
     /// Identifier for `ContainerdConfiguration`.
     pub const CONTAINERD_CONFIGURATION: &str = "ContainerdConfiguration";
-    /// Identifier for `OtlpConfiguration`.
-    pub const OTLP_CONFIGURATION: &str = "OtlpConfiguration";
     /// Identifier for `AggregateConfiguration`.
     pub const AGGREGATE_CONFIGURATION: &str = "AggregateConfiguration";
     /// Identifier for `DogStatsDMapperConfiguration`.
@@ -71,14 +68,14 @@ pub mod structs {
     pub const MRF_CONFIGURATION: &str = "MrfConfiguration";
     /// Identifier for `OtlpDecoderConfiguration`.
     pub const OTLP_DECODER_CONFIGURATION: &str = "OtlpDecoderConfiguration";
-    /// Identifier for `OtlpRelayConfiguration`.
-    pub const OTLP_RELAY_CONFIGURATION: &str = "OtlpRelayConfiguration";
     /// Identifier for `TraceObfuscationConfiguration`.
     pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
     /// Identifier for `RemoteAgentClientConfiguration`.
     pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
     /// Identifier for `TagFilterlistConfiguration`.
     pub const TAG_FILTERLIST_CONFIGURATION: &str = "TagFilterlistConfiguration";
+    /// Keys consumed through the typed configuration translation system.
+    pub const TYPED_CONFIG_SYSTEM: &str = "TypedConfigSystem";
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
     pub const GET_TYPED: &str = "get_typed";
 }
