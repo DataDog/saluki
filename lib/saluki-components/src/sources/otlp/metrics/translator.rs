@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::sync::LazyLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::vec::IntoIter;
 
 use ::ddsketch::canonical::mapping::IndexMapping;
@@ -66,6 +66,7 @@ static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(||
 enum DataType {
     Gauge,
     Count,
+    Rate,
 }
 
 struct TranslationContext<'a> {
@@ -81,6 +82,8 @@ pub struct OtlpMetricsTranslator {
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
     attribute_translator: AttributeTranslator,
+    // Metric names for which we have warned about emitting an unnormalized Rate.
+    warned_rate_without_interval_metrics: HashSet<String>,
     // Configured tags (`otlp_config.metrics.tags`) added to every emitted metric.
     metric_tags: SharedTagSet,
 }
@@ -438,6 +441,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
+            warned_rate_without_interval_metrics: HashSet::new(),
             metric_tags,
         })
     }
@@ -579,6 +583,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::for_tests(),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
+            warned_rate_without_interval_metrics: HashSet::new(),
             metric_tags: SharedTagSet::default(),
         }
     }
@@ -697,6 +702,7 @@ impl OtlpMetricsTranslator {
                 let values = match data_type {
                     DataType::Gauge => MetricValues::gauge((timestamp_s, value)),
                     DataType::Count => MetricValues::counter((timestamp_s, value)),
+                    DataType::Rate => MetricValues::rate((timestamp_s, value), Duration::ZERO),
                 };
 
                 let metric = Metric::from_parts(resolved_context, values, MetricMetadata::default());
@@ -799,6 +805,22 @@ impl OtlpMetricsTranslator {
             }
 
             let ts = dp.time_unix_nano;
+            let data_type = if data_type == DataType::Count && has_rate_as_type_attribute(&dp.attributes) {
+                DataType::Rate
+            } else {
+                data_type
+            };
+
+            if data_type == DataType::Rate
+                && self
+                    .warned_rate_without_interval_metrics
+                    .insert(point_dims.name.clone())
+            {
+                warn!(
+                    metric_name = %point_dims.name,
+                    "Emitting OTLP delta Sum with `datadog.metric.as_type=rate` as an unnormalized Rate because no delta interval is available."
+                );
+            }
 
             self.record_metric_event(&point_dims, value, ts, data_type, &mut events, context);
         }
@@ -1476,6 +1498,23 @@ fn get_number_data_point_value(dp: &OtlpNumberDataPoint) -> f64 {
     }
 }
 
+const DELTA_SUM_RATE_ATTRIBUTE_KEY: &str = "datadog.metric.as_type";
+
+fn has_rate_as_type_attribute(attributes: &[OtlpKeyValue]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.key == DELTA_SUM_RATE_ATTRIBUTE_KEY
+            && attribute
+                .value
+                .as_ref()
+                .and_then(|value| value.value.as_ref())
+                .and_then(|value| match value {
+                    otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value) => Some(value),
+                    _ => None,
+                })
+                .is_some_and(|value| value.eq_ignore_ascii_case("rate"))
+    })
+}
+
 /// Checks if a metric value is `NaN` or `Infinity`.
 fn is_skippable(value: f64) -> bool {
     value.is_nan() || value.is_infinite()
@@ -1955,6 +1994,121 @@ mod tests {
                 ),
             }),
         }
+    }
+
+    fn delta_sum_with_as_type(value: i64, as_type: &str) -> OtlpMetric {
+        OtlpMetric {
+            name: "delta.sum".to_string(),
+            data: Some(OtlpMetricData::Sum(
+                otlp_protos::opentelemetry::proto::metrics::v1::Sum {
+                    aggregation_temporality: AggregationTemporality::Delta as i32,
+                    data_points: vec![OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsInt(value)),
+                        time_unix_nano: nanos_from_seconds(2),
+                        attributes: vec![string_attribute(DELTA_SUM_RATE_ATTRIBUTE_KEY, as_type)],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn delta_sum_rate_as_type_emits_rate_and_preserves_attribute_tag() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let events = translator.map_to_dd_format(
+            delta_sum_with_as_type(42, "RaTe"),
+            &SharedTagSet::default(),
+            None,
+            &[],
+            &metrics,
+        );
+
+        assert_eq!(events.len(), 1);
+        let metric = events[0].try_as_metric().expect("metric event");
+        assert_eq!(
+            metric.values(),
+            &MetricValues::rate((2, 42.0), std::time::Duration::ZERO)
+        );
+        assert_eq!(
+            metric.context().tags().get_single_tag(DELTA_SUM_RATE_ATTRIBUTE_KEY),
+            Some(&Tag::from("datadog.metric.as_type:RaTe"))
+        );
+    }
+
+    #[test]
+    fn delta_sum_rate_as_type_warns_once_per_metric() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut metric = delta_sum_with_as_type(42, "rate");
+        let Some(OtlpMetricData::Sum(sum)) = metric.data.as_mut() else {
+            unreachable!("expected delta Sum metric");
+        };
+        sum.data_points.push(sum.data_points[0].clone());
+
+        let events = translator.map_to_dd_format(metric, &SharedTagSet::default(), None, &[], &metrics);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(translator.warned_rate_without_interval_metrics.len(), 1);
+        assert!(translator.warned_rate_without_interval_metrics.contains("delta.sum"));
+    }
+
+    #[test]
+    fn delta_sum_non_rate_as_type_values_emit_counts() {
+        let metrics = Metrics::for_tests();
+
+        for as_type in ["count", "gauge", "unsupported"] {
+            let mut translator = OtlpMetricsTranslator::for_tests();
+            let events = translator.map_to_dd_format(
+                delta_sum_with_as_type(42, as_type),
+                &SharedTagSet::default(),
+                None,
+                &[],
+                &metrics,
+            );
+
+            assert_eq!(events.len(), 1, "expected one event for {as_type}");
+            assert_eq!(
+                events[0].try_as_metric().expect("metric event").values(),
+                &MetricValues::counter((2, 42.0)),
+                "expected Count for {as_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn rate_as_type_does_not_convert_gauges() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let events = translator.map_to_dd_format(
+            OtlpMetric {
+                name: "gauge".to_string(),
+                data: Some(OtlpMetricData::Gauge(
+                    otlp_protos::opentelemetry::proto::metrics::v1::Gauge {
+                        data_points: vec![OtlpNumberDataPoint {
+                            value: Some(OtlpNumberDataPointValue::AsInt(42)),
+                            time_unix_nano: nanos_from_seconds(2),
+                            attributes: vec![string_attribute(DELTA_SUM_RATE_ATTRIBUTE_KEY, "rate")],
+                            ..Default::default()
+                        }],
+                    },
+                )),
+                ..Default::default()
+            },
+            &SharedTagSet::default(),
+            None,
+            &[],
+            &metrics,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].try_as_metric().expect("metric event").values(),
+            &MetricValues::gauge((2, 42.0))
+        );
     }
 
     fn single_gauge_with_resource_attributes(attributes: Vec<OtlpKeyValue>) -> OtlpResourceMetrics {
