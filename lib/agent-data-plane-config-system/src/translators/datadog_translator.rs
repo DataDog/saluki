@@ -952,7 +952,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64) {
-        self.config.domains.otlp.traces.internal_port = to_port(value);
+        match u16::try_from(value) {
+            Ok(port) => self.config.domains.otlp.traces.internal_port = port,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.traces.internal_port", error)),
+        }
     }
 
     fn consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
@@ -1298,6 +1301,37 @@ mod tests {
 
         // The error is still surfaced, so startup's strict gate rejects the config.
         assert!(errors.is_some(), "an unknown action must record a translation error");
+    }
+
+    #[test]
+    fn otlp_trace_internal_port_preserves_u16_validation() {
+        // The typed forwarder receives this value after translation. Rejecting conversion here
+        // preserves the u16 validation formerly provided by GenericConfiguration instead of
+        // clamping invalid ports.
+        for value in [0, 5003, u16::MAX as i64] {
+            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+                "otlp_config": { "traces": { "internal_port": value } }
+            }))
+            .expect("datadog source deserializes");
+
+            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+            assert!(errors.is_none());
+            assert_eq!(config.domains.otlp.traces.internal_port, value as u16);
+        }
+
+        for value in [-1, u16::MAX as i64 + 1] {
+            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+                "otlp_config": { "traces": { "internal_port": value } }
+            }))
+            .expect("datadog source deserializes");
+
+            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+            assert_eq!(config.domains.otlp.traces.internal_port, 0);
+            let errors = errors.expect("an out-of-range port should record a translation error");
+            assert!(errors.to_string().contains("otlp_config.traces.internal_port"));
+        }
     }
 
     #[test]
