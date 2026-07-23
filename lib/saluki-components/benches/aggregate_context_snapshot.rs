@@ -1,3 +1,11 @@
+//! Measures the aggregate-owner pause required to clone retained context handles.
+//!
+//! Run with:
+//! `cargo bench -p saluki-components --features test-util --bench aggregate_context_snapshot -- --sample-size 10`
+//!
+//! PR #2185's Apple Silicon baseline was approximately 45.8 µs at 10k contexts, 1.02 ms at 100k, and 20.8 ms at
+//! one million. These values provide scale context, not regression thresholds; compare runs on equivalent hardware.
+
 use std::hint::black_box;
 use std::mem::size_of;
 
