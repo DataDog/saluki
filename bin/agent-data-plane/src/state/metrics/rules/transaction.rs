@@ -16,7 +16,7 @@ pub fn get_transaction_remappings() -> Vec<RemapperRule> {
             .with_original_tags(["domain", "endpoint"])
             .with_help_text("Transaction drop count"),
         RemapperRule::by_name("adp.network_http_requests_success_total", "transactions.success")
-            .with_original_tags(["domain", "endpoint"])
+            .with_original_tags(["domain", "endpoint", "proto_version"])
             .with_help_text("Successful transaction count"),
         RemapperRule::by_name(
             "adp.network_http_requests_success_sent_bytes_total",

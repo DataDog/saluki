@@ -25,7 +25,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_rar_telemetry() {
+    fn render_rar_telemetry() {
         // Simulate internal metrics that match remapper rules.
         let metrics = vec![
             Event::Metric(Metric::counter(
@@ -76,7 +76,49 @@ mod tests {
     }
 
     #[test]
-    fn test_render_compat_telemetry() {
+    fn rar_transaction_success_preserves_protocol_only_for_counts() {
+        let metrics = vec![
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_success_total",
+                    &[
+                        "domain:https://api.datadoghq.com",
+                        "endpoint:/api/v1/series",
+                        "proto_version:HTTP/2.0",
+                    ],
+                ),
+                5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_success_sent_bytes_total",
+                    &[
+                        "domain:https://api.datadoghq.com",
+                        "endpoint:/api/v1/series",
+                        "proto_version:HTTP/2.0",
+                    ],
+                ),
+                123.0,
+            )),
+        ];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        assert!(output.contains(concat!(
+            "transactions__success{domain=\"https://api.datadoghq.com\",",
+            "endpoint=\"/api/v1/series\",proto_version=\"HTTP/2.0\"} 5"
+        )));
+        assert!(output.contains(
+            "transactions__success_bytes{domain=\"https://api.datadoghq.com\",endpoint=\"/api/v1/series\"} 123"
+        ));
+        assert!(!output.contains(concat!(
+            "transactions__success_bytes{domain=\"https://api.datadoghq.com\",",
+            "endpoint=\"/api/v1/series\",proto_version="
+        )));
+    }
+
+    #[test]
+    fn render_compat_telemetry() {
         let metrics = vec![
             Event::Metric(Metric::counter(
                 Context::from_static_parts(
@@ -214,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compat_remappings_cover_expected_names() {
+    fn compat_remappings_cover_expected_names() {
         let rules = get_compat_remappings();
         let expected_names = [
             "dogstatsd_event_packets",
@@ -254,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn test_match_context() {
+    fn match_context() {
         let rules = get_datadog_agent_remappings();
 
         let context = Context::from_static_parts("adp.object_pool_acquired", &["pool_name:dsd_packet_bufs"]);
@@ -280,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn test_match_context_preserves_dogstatsd_origin() {
+    fn match_context_preserves_dogstatsd_origin() {
         let rules = get_datadog_agent_remappings();
 
         let context = Context::from_static_parts(
@@ -304,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rar_telemetry_deduplicates_remapped_metrics() {
+    fn rar_telemetry_deduplicates_remapped_metrics() {
         // Two source metrics with different source tags that remap to the same (name, tags) identity
         // should be deduplicated (counters summed) in the RAR output.
         let metrics = vec![
@@ -349,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn test_render_rar_telemetry_remaps_filterlist_metrics() {
+    fn render_rar_telemetry_remaps_filterlist_metrics() {
         let metrics = vec![
             Event::Metric(Metric::gauge(
                 Context::from_static_parts("adp.metric_filterlist_size", &["component_id:dsd_prefix_filter"]),
@@ -429,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rar_rules_carry_expected_help_text() {
+    fn rar_rules_carry_expected_help_text() {
         // Ensure that the help text for overlapped metric names matches what the Datadog Agent expects.
         // The Datadog Agent will fail to parse metrics whose `# HELP` text doesn't match its registered
         // help text, so this guards against drift.

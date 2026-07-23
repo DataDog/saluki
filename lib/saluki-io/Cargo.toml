@@ -87,6 +87,7 @@ rustls-cng-crypto = { workspace = true }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+metrics-util = { workspace = true, features = ["debugging"] }
 proptest = { workspace = true }
 rand_distr = { workspace = true }
 tempfile = { workspace = true }
