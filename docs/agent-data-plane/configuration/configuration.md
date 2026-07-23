@@ -220,27 +220,17 @@ deployment path, ADP does not implement `heroku_dyno`. See [#1753].
 ### `otlp_config.metrics.batch.flush_timeout`
 
 The core Agent batches OTLP metric input before translation through its serializer exporter queue.
-ADP translates each OTLP resource before batching the resulting metric events for topology dispatch.
-The shared metrics encoder then batches, limits, and splits encoded payloads before forwarding.
-
-ADP does not expose a separate pre-translation timeout because its bounded source channel, event
-dispatcher, and encoder already provide backpressure and batching at their respective stages.
-The encoder enforces payload byte limits after translation, which is the relevant boundary for
-avoiding oversized intake requests. Setting this key has no effect in ADP.
+ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
 ### `otlp_config.metrics.batch.max_size`
 
-ADP does not implement the core Agent's pre-translation OTLP metrics batcher. Its source channel
-bounds in-flight resources, and its shared metrics encoder applies item-count and byte-size limits
-to the encoded payload that is ultimately forwarded. A raw OTLP item count cannot reliably bound
-encoded payload size after translation. Setting this key has no effect in ADP.
+The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
 ### `otlp_config.metrics.batch.min_size`
 
-ADP batches translated metric events before enrichment and batches encoded payloads before forwarding.
-It does not wait for a configured number of raw OTLP metric items before translation. This avoids
-adding a second buffering stage without a demonstrated translation-throughput requirement.
-Setting this key has no effect in ADP.
+The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
 
 ## Behavioral Differences
