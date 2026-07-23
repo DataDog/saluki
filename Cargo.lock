@@ -39,7 +39,6 @@ dependencies = [
  "derive-where",
  "foldhash 0.2.0",
  "futures",
- "getrandom 0.4.2",
  "hashbrown 0.17.1",
  "http",
  "http-body-util",

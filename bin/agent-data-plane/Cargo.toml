@@ -30,7 +30,6 @@ datadog-agent-config = { workspace = true }
 datadog-protos = { workspace = true }
 foldhash = { workspace = true }
 futures = { workspace = true }
-getrandom = { workspace = true }
 hashbrown = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
@@ -58,6 +57,7 @@ serde_json = { workspace = true }
 serde_with = { workspace = true }
 stringtheory = { workspace = true }
 subtle = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = [
   "fs",
   "macros",
@@ -103,7 +103,6 @@ saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
-tempfile = { workspace = true }
 tokio-rustls = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 
