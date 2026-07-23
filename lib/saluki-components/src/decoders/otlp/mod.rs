@@ -13,7 +13,7 @@ use saluki_core::{
     data_model::{event::EventType, payload::PayloadType},
     topology::interconnect::EventBufferManager,
 };
-use saluki_error::{generic_error, GenericError};
+use saluki_error::GenericError;
 use tokio::{
     select,
     time::{interval, MissedTickBehavior},
@@ -52,14 +52,12 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(&context);
-        let traces_interner_size = std::num::NonZeroUsize::new(self.traces.string_interner_size as usize)
-            .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
         let traces_config = TracesConfig {
             enable_otlp_compute_top_level_by_span_kind: self.traces.enable_compute_top_level_by_span_kind,
             ignore_missing_datadog_fields: self.traces.ignore_missing_datadog_fields,
             ..Default::default()
         };
-        let traces_translator = OtlpTracesTranslator::new(traces_config, traces_interner_size);
+        let traces_translator = OtlpTracesTranslator::new(traces_config, self.traces.string_interner_size);
 
         Ok(Box::new(OtlpDecoder {
             traces_translator,
