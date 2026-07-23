@@ -185,18 +185,33 @@ struct SuccessCounters {
     http_11: OnceLock<Counter>,
     http_2: OnceLock<Counter>,
     http_3: OnceLock<Counter>,
+    fallback: OnceLock<Mutex<HashMap<Version, Counter>>>,
 }
 
 impl SuccessCounters {
-    fn slot_for_version(&self, version: Version) -> (&OnceLock<Counter>, &'static str) {
+    fn slot_for_version(&self, version: Version) -> Option<(&OnceLock<Counter>, &'static str)> {
         match version {
-            Version::HTTP_09 => (&self.http_09, "HTTP/0.9"),
-            Version::HTTP_10 => (&self.http_10, "HTTP/1.0"),
-            Version::HTTP_11 => (&self.http_11, "HTTP/1.1"),
-            Version::HTTP_2 => (&self.http_2, "HTTP/2.0"),
-            Version::HTTP_3 => (&self.http_3, "HTTP/3.0"),
-            _ => unreachable!("unsupported HTTP version"),
+            Version::HTTP_09 => Some((&self.http_09, "HTTP/0.9")),
+            Version::HTTP_10 => Some((&self.http_10, "HTTP/1.0")),
+            Version::HTTP_11 => Some((&self.http_11, "HTTP/1.1")),
+            Version::HTTP_2 => Some((&self.http_2, "HTTP/2.0")),
+            Version::HTTP_3 => Some((&self.http_3, "HTTP/3.0")),
+            _ => None,
         }
+    }
+
+    fn fallback_counter(&self, builder: &MetricsBuilder, version: Version) -> Counter {
+        let fallback = self.fallback.get_or_init(|| Mutex::new(HashMap::new()));
+        let mut counters = fallback.lock().unwrap();
+        counters
+            .entry(version)
+            .or_insert_with(|| {
+                builder.register_counter_with_tags(
+                    "network_http_requests_success_total",
+                    [("proto_version", format!("{version:?}"))],
+                )
+            })
+            .clone()
     }
 }
 
@@ -240,14 +255,19 @@ impl PerEndpointTelemetry {
     }
 
     fn increment_success(&self, version: Version) {
-        let (slot, proto_version) = self.success.slot_for_version(version);
-        slot.get_or_init(|| {
-            self.builder.register_counter_with_tags(
-                "network_http_requests_success_total",
-                [("proto_version", proto_version)],
-            )
-        })
-        .increment(1);
+        if let Some((slot, proto_version)) = self.success.slot_for_version(version) {
+            slot.get_or_init(|| {
+                self.builder.register_counter_with_tags(
+                    "network_http_requests_success_total",
+                    [("proto_version", proto_version)],
+                )
+            })
+            .increment(1);
+        } else {
+            // A dependency upgrade may add HTTP versions. The lazy fallback prevents an unfamiliar version from
+            // turning telemetry into a process-level failure without adding overhead to known-version requests.
+            self.success.fallback_counter(&self.builder, version).increment(1);
+        }
     }
 
     fn increment_success_bytes(&self, len: u64) {
@@ -467,10 +487,54 @@ mod tests {
         ];
 
         for (version, expected_slot, expected_label) in cases {
-            let (slot, label) = counters.slot_for_version(version);
+            let (slot, label) = counters
+                .slot_for_version(version)
+                .expect("known HTTP version should have a dedicated counter slot");
             assert!(std::ptr::eq(slot, expected_slot));
             assert_eq!(label, expected_label);
         }
+    }
+
+    #[test]
+    fn fallback_success_counters_are_registered_lazily_and_reused() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let builder = MetricsBuilder::default();
+        let counters = SuccessCounters::default();
+        let version = Version::HTTP_11;
+        let expected_label = "HTTP/1.1";
+
+        assert!(counters.fallback.get().is_none());
+        assert_eq!(format!("{version:?}"), expected_label);
+
+        metrics::with_local_recorder(&recorder, || {
+            counters.fallback_counter(&builder, version).increment(2);
+            counters.fallback_counter(&builder, version).increment(3);
+        });
+
+        let fallback = counters
+            .fallback
+            .get()
+            .expect("fallback cache should be initialized after first use");
+        assert_eq!(fallback.lock().unwrap().len(), 1);
+
+        let snapshot = snapshotter.snapshot().into_hashmap();
+        let success_keys = snapshot
+            .keys()
+            .filter(|key| key.key().name() == "network_http_requests_success_total")
+            .count();
+        assert_eq!(success_keys, 1);
+        let key = CompositeKey::new(
+            MetricKind::Counter,
+            Key::from_parts(
+                "network_http_requests_success_total",
+                vec![Label::new("proto_version", expected_label)],
+            ),
+        );
+        let (_, _, value) = snapshot
+            .get(&key)
+            .expect("fallback success counter should use the version's Debug label");
+        assert_eq!(value, &DebugValue::Counter(5));
     }
 
     #[test]
