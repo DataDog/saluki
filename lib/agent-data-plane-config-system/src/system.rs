@@ -107,7 +107,7 @@ impl ConfigurationSystem {
         // check instead rejects the offending update and keeps the last-known-good configuration,
         // because a runtime update must never take the system down.
         let merged = deep_merge(base.clone(), agent.clone());
-        let config = translate_gate(&merged, overlay)?;
+        let config = translate_strict(&merged, overlay)?;
 
         let current = Arc::new(ArcSwap::from_pointee(config));
         // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
@@ -132,21 +132,17 @@ impl ConfigurationSystem {
         })
     }
 
-    /// Standalone authority: the local sources are authoritative, with no stream and no update task.
-    /// Also a strict startup gate.
+    /// Installs a static configuration without an update task.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the configuration cannot be deserialized or translated from `base`.
-    pub(crate) fn standalone(compat_map: GenericConfiguration, base: Value, overlay: EnvOverlayMode) -> Result<Self> {
-        let config = translate_gate(&base, overlay)?;
+    /// Live views retain their initial values because this system sends no update notifications.
+    pub(crate) fn standalone(compat_map: GenericConfiguration, config: SalukiConfiguration) -> Self {
         let current = Arc::new(ArcSwap::from_pointee(config));
         let (tick, _) = watch::channel(());
-        Ok(Self {
+        Self {
             raw_map: compat_map,
             current,
             tick: Arc::new(tick),
-        })
+        }
     }
 
     /// Returns a live view of the given projection of the current configuration. Narrow further with
@@ -194,7 +190,7 @@ async fn agent_loop(
         let mut tentative = agent.clone();
         fold(&mut tentative, &update);
         let merged = deep_merge(base.clone(), tentative.clone());
-        match translate_gate(&merged, overlay) {
+        match translate_strict(&merged, overlay) {
             Ok(config) => {
                 agent = tentative;
                 current.store(Arc::new(config));
@@ -239,9 +235,12 @@ async fn forward(compat_tx: &mpsc::Sender<ConfigUpdate>, update: ConfigUpdate) {
     let _ = compat_tx.send(update).await;
 }
 
-/// Startup gate: deserialize and translate the merged sources, failing on any translation error so
-/// the process never boots on bad config.
-fn translate_gate(merged: &Value, overlay: EnvOverlayMode) -> Result<SalukiConfiguration> {
+/// Deserializes and translates merged source values, rejecting partially translated configuration.
+///
+/// # Errors
+///
+/// Returns an error if either source model cannot be deserialized or any key fails translation.
+pub(crate) fn translate_strict(merged: &Value, overlay: EnvOverlayMode) -> Result<SalukiConfiguration> {
     let Sources { datadog, saluki } = deserialize_sources(merged, overlay)?;
     let (config, errors) = translate(&datadog, &saluki);
     if let Some(errors) = errors {
@@ -363,7 +362,7 @@ mod tests {
     use serde_json::{json, Value};
     use tokio::sync::mpsc;
 
-    use super::{deep_merge, translate, ConfigurationSystem, Error, SalukiOnly};
+    use super::{deep_merge, translate, translate_strict, ConfigurationSystem, Error, SalukiOnly};
 
     /// Builds a standalone system whose authority is the local sources (`file` + `env`).
     async fn standalone_system(
@@ -371,7 +370,8 @@ mod tests {
     ) -> Result<ConfigurationSystem, Error> {
         let (compat_map, _) = ConfigurationLoader::for_tests(file, env, false).await;
         let base = compat_map.as_typed::<Value>().expect("base extracts");
-        ConfigurationSystem::standalone(compat_map, base, overlay)
+        let config = translate_strict(&base, overlay)?;
+        Ok(ConfigurationSystem::standalone(compat_map, config))
     }
 
     /// Builds a connected system whose base is `base` and whose authority is the returned Agent
