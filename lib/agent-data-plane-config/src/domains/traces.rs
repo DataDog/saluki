@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 /// Resolved traces configuration.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
     /// Environment tag applied to traces.
     pub env: String,
@@ -56,8 +56,34 @@ pub struct Domain {
     pub ottl_transform: OttlTransform,
 }
 
+impl Default for Domain {
+    fn default() -> Self {
+        Self {
+            env: String::new(),
+            // apm_config.default_env is Saluki-only, so its default lives here beside the model. ADP
+            // tags traces with no explicit environment as "none".
+            default_env: "none".to_string(),
+            compute_stats_by_span_kind: false,
+            peer_tags: Vec::new(),
+            peer_tags_aggregation: false,
+            // apm_config.error_sampling_enabled is Saluki-only and defaults on in ADP.
+            error_sampling_enabled: true,
+            error_tracking_standalone_enabled: false,
+            errors_per_second: 0.0,
+            target_traces_per_second: 0.0,
+            enable_rare_sampler: false,
+            rare_sampler: RareSampler::default(),
+            probabilistic_sampler: ProbabilisticSampler::default(),
+            obfuscation: Obfuscation::default(),
+            otlp: OtlpTraces::default(),
+            ottl_filter: OttlFilter::default(),
+            ottl_transform: OttlTransform::default(),
+        }
+    }
+}
+
 /// Rare-span sampler.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RareSampler {
     /// Maximum number of distinct span signatures tracked. (not in Datadog Agent config schema)
     pub cardinality: usize,
@@ -68,6 +94,18 @@ pub struct RareSampler {
 
     /// Target rare-span traces sampled per second. (not in Datadog Agent config schema)
     pub tps: f64,
+}
+
+impl Default for RareSampler {
+    fn default() -> Self {
+        // apm_config.rare_sampler.* is Saluki-only, so these defaults live beside the model and
+        // match ADP's historical rare-sampler tuning.
+        Self {
+            cardinality: 200,
+            cooldown: 300.0,
+            tps: 5.0,
+        }
+    }
 }
 
 /// APM probabilistic sampler.

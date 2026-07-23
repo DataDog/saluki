@@ -720,5 +720,14 @@ mod tests {
             config.shared.endpoints.compression.data_plane_zstd_compressor_level,
             None
         );
+
+        // Saluki-only trace defaults live in the traces-domain model, so absent keys must leave
+        // ADP's historical sampler defaults in place.
+        let traces = &config.domains.traces;
+        assert_eq!(traces.default_env, "none");
+        assert!(traces.error_sampling_enabled);
+        assert_eq!(traces.rare_sampler.tps, 5.0);
+        assert_eq!(traces.rare_sampler.cooldown, 300.0);
+        assert_eq!(traces.rare_sampler.cardinality, 200);
     }
 }
