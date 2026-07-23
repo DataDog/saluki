@@ -18,10 +18,10 @@ env:
   DD_API_KEY: "00000000000000000000000000000000"
   DD_HOSTNAME: "integration-test-ipc-no-dns"
   DD_DATA_PLANE_ENABLED: "true"
-  # Run standalone for now because converged mode streams the Core Agent OTLP
-  # receiver endpoints back to ADP. That prevents us from configuring ADP to own
-  # the normal OTLP listener ports while the Core Agent listens on dummy upstream
-  # ports for proxying.
+  # Keep this DNS test independent of converged OTLP endpoint ownership.
+  #
+  # TODO(#2177): Run in converged mode after endpoint ownership prevents ADP and the Core Agent
+  # from attempting to bind the same canonical OTLP ports.
   DD_DATA_PLANE_STANDALONE_MODE: "true"
   # OTLP proxy mode keeps ADP running without creating the normal Datadog forwarder,
   # so this test avoids normal intake DNS while /etc/resolv.conf is empty.

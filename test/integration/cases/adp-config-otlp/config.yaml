@@ -22,6 +22,8 @@ env:
   DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE: "raw_value"
   DD_OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE: "drop"
   DD_OTLP_CONFIG_METRICS_TAGS: "env:integration-otlp,team:agent-dataplane"
+  # Core Agent ingress. The distinct ADP values below verify that these schema-backed endpoints do
+  # not control ADP's listeners.
   DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:14317"
   DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB: "7"
   DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT: "unix"
@@ -31,6 +33,10 @@ env:
   DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE: "42.5"
 
   # OTLP -- Saluki-only keys
+  # TODO(#2177): Remove these ADP-only endpoint keys and the precedence assertions below when ADP
+  # uses the canonical schema-provided receiver endpoints.
+  DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:16317"
+  DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:16318"
   DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE: "1MiB"
   DD_OTLP_CONFIG_TRACES_ENABLE_OTLP_COMPUTE_TOP_LEVEL_BY_SPAN_KIND: "false"
   DD_OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS: "true"
@@ -92,10 +98,11 @@ procedure:
     key: domains.otlp.metrics.tags
     value: "env:integration-otlp,team:agent-dataplane"
     timeout: 60s
+  # Verify that the temporary ADP endpoint settings override the schema-backed Agent settings.
   - assertion: adp_config_key_equals
     endpoint: "https://localhost:55101/config/internal"
     key: domains.otlp.receiver.grpc.endpoint
-    value: "0.0.0.0:14317"
+    value: "0.0.0.0:16317"
     timeout: 60s
   - assertion: adp_config_key_equals
     endpoint: "https://localhost:55101/config/internal"
@@ -110,7 +117,7 @@ procedure:
   - assertion: adp_config_key_equals
     endpoint: "https://localhost:55101/config/internal"
     key: domains.otlp.receiver.http.endpoint
-    value: "0.0.0.0:14318"
+    value: "0.0.0.0:16318"
     timeout: 60s
   - assertion: adp_config_key_equals
     endpoint: "https://localhost:55101/config/internal"

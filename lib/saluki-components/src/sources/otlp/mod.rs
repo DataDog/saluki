@@ -103,18 +103,6 @@ impl OtlpConfiguration {
         self
     }
 
-    /// Overrides the OTLP gRPC listener endpoint.
-    pub fn with_grpc_endpoint(mut self, endpoint: String) -> Self {
-        self.otlp.receiver.grpc.endpoint = endpoint;
-        self
-    }
-
-    /// Overrides the OTLP HTTP listener endpoint.
-    pub fn with_http_endpoint(mut self, endpoint: String) -> Self {
-        self.otlp.receiver.http.endpoint = endpoint;
-        self
-    }
-
     /// Sets the workload provider to use for configuring origin detection/enrichment.
     ///
     /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.

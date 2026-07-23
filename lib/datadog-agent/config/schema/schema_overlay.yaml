@@ -2084,7 +2084,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.endpoint"
     test_support:
-      used_by: [OtlpRelayConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2093,7 +2093,7 @@ inventory:
     pipelines: [otlp]
     description: "Max OTLP inbound gRPC message size (MiB)"
     test_support:
-      used_by: [OtlpRelayConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2103,7 +2103,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.transport"
     test_support:
-      used_by: [OtlpRelayConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2112,7 +2112,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.http.endpoint"
     test_support:
-      used_by: [OtlpRelayConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
