@@ -67,14 +67,15 @@
 // TODO: consider separating these into their own namespace, SALUKI_* and saluki.yaml
 // TODO: consider not loading these into the same map as Datadog schema configuration
 
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 use agent_data_plane_config::control::ListenAddress;
+use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// The parsed Saluki-schema-only configuration, shaped to mirror the source key hierarchy.
 ///
@@ -322,18 +323,46 @@ pub struct OtlpConfigReceiverProtocolsHttp {
     pub transport: Option<String>,
 }
 
+fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let size = ByteSize::deserialize(deserializer)?;
+    let bytes = usize::try_from(size.as_u64()).map_err(serde::de::Error::custom)?;
+    let size =
+        NonZeroUsize::new(bytes).ok_or_else(|| serde::de::Error::custom("value of bytes must be greater than zero"))?;
+    if size > MAX_STRING_INTERNER_SIZE_BYTES {
+        return Err(serde::de::Error::custom(format!(
+            "value of bytes must not exceed {} bytes",
+            MAX_STRING_INTERNER_SIZE_BYTES
+        )));
+    }
+    Ok(size)
+}
+
 /// `otlp_config.traces.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct OtlpConfigTraces {
     /// OTLP trace context interner byte budget (`otlp_config.traces.string_interner_size`). Accepts
     /// human-readable sizes such as `512KiB` as well as a plain byte count.
-    pub string_interner_size: Option<ByteSize>,
+    #[serde(deserialize_with = "deserialize_string_interner_size")]
+    pub string_interner_size: NonZeroUsize,
     /// Compute top-level spans by span kind
     /// (`otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`).
     pub enable_otlp_compute_top_level_by_span_kind: Option<bool>,
     /// Ignore missing Datadog fields on OTLP spans (`otlp_config.traces.ignore_missing_datadog_fields`).
     pub ignore_missing_datadog_fields: Option<bool>,
+}
+
+impl Default for OtlpConfigTraces {
+    fn default() -> Self {
+        Self {
+            string_interner_size: DEFAULT_STRING_INTERNER_SIZE_BYTES,
+            enable_otlp_compute_top_level_by_span_kind: None,
+            ignore_missing_datadog_fields: None,
+        }
+    }
 }
 
 /// The `ottl_filter_config` object: OTTL span-drop filter.
@@ -484,9 +513,7 @@ impl SalukiOnly {
         if let Some(v) = self.otlp_config.receiver.protocols.http.transport.clone() {
             otlp.receiver.http.transport = v;
         }
-        if let Some(v) = self.otlp_config.traces.string_interner_size {
-            otlp.traces.string_interner_size = v.as_u64();
-        }
+        otlp.traces.string_interner_size = self.otlp_config.traces.string_interner_size;
         if let Some(v) = self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind {
             otlp.traces.enable_compute_top_level_by_span_kind = v;
         }
@@ -693,7 +720,7 @@ mod tests {
         assert_eq!(otlp.receiver.http.transport, "tcp");
         assert_eq!(otlp.receiver.grpc.endpoint, "0.0.0.0:19317");
         assert_eq!(otlp.receiver.http.endpoint, "0.0.0.0:19318");
-        assert_eq!(otlp.traces.string_interner_size, 777);
+        assert_eq!(otlp.traces.string_interner_size.get(), 777);
         assert!(otlp.traces.enable_compute_top_level_by_span_kind);
         assert!(otlp.traces.ignore_missing_datadog_fields);
 
@@ -762,5 +789,6 @@ mod tests {
         let otlp = &config.domains.otlp;
         assert_eq!(otlp.receiver.grpc.endpoint, "localhost:6317");
         assert_eq!(otlp.receiver.http.endpoint, "localhost:6318");
+        assert_eq!(otlp.traces.string_interner_size, DEFAULT_STRING_INTERNER_SIZE_BYTES);
     }
 }

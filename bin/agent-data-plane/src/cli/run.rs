@@ -823,10 +823,9 @@ async fn add_otlp_pipeline_to_blueprint(
 
         let typed = config_system.config();
         let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&typed.domains.otlp.receiver);
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&typed.domains.otlp.traces);
 
         let raw_map = config_system.raw_map();
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&raw_map)?;
-
         let local_agent_otlp_forwarder_config =
             OtlpForwarderConfiguration::from_configuration(&raw_map, core_agent_otlp_grpc_endpoint)?;
 

@@ -164,16 +164,12 @@ impl SourceBuilder for OtlpConfiguration {
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
-        let traces_interner_size = std::num::NonZeroUsize::new(self.otlp.traces.string_interner_size as usize)
-            .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
-
-        // The OTLP decoder also uses this translator through its raw configuration path.
         let traces_config = TracesConfig {
             enable_otlp_compute_top_level_by_span_kind: self.otlp.traces.enable_compute_top_level_by_span_kind,
             ignore_missing_datadog_fields: self.otlp.traces.ignore_missing_datadog_fields,
             ..Default::default()
         };
-        let traces_translator = OtlpTracesTranslator::new(traces_config, traces_interner_size);
+        let traces_translator = OtlpTracesTranslator::new(traces_config, self.otlp.traces.string_interner_size);
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let metrics = build_metrics(&context);
 

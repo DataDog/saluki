@@ -485,6 +485,43 @@ mod tests {
         assert!(matches!(result, Err(Error::Translate { .. })));
     }
 
+    #[test]
+    fn zero_otlp_trace_interner_size_is_rejected() {
+        // Component builders used to discover this after translation. Reject zero before publishing
+        // an invalid typed model.
+        let error = translate_strict(
+            &json!({ "otlp_config": { "traces": { "string_interner_size": 0 } } }),
+            EnvOverlayMode::Fallback,
+        )
+        .expect_err("zero trace interner size should fail translation");
+
+        assert!(matches!(error, Error::Deserialize { .. }));
+        assert!(error.to_string().contains("value of bytes must be greater than zero"));
+    }
+
+    #[test]
+    fn oversized_otlp_trace_interner_size_is_rejected() {
+        let error = translate_strict(
+            &json!({ "otlp_config": { "traces": { "string_interner_size": "2GiB" } } }),
+            EnvOverlayMode::Fallback,
+        )
+        .expect_err("oversized trace interner should fail translation");
+
+        assert!(matches!(error, Error::Deserialize { .. }));
+        assert!(error.to_string().contains("must not exceed 1073741824 bytes"));
+    }
+
+    #[test]
+    fn positive_otlp_trace_interner_size_is_accepted() {
+        let config = translate_strict(
+            &json!({ "otlp_config": { "traces": { "string_interner_size": "512KiB" } } }),
+            EnvOverlayMode::Fallback,
+        )
+        .expect("positive trace interner size should translate");
+
+        assert_eq!(config.domains.otlp.traces.string_interner_size.get(), 512 * 1024);
+    }
+
     #[tokio::test]
     async fn standalone_loads_numeric_byte_size() {
         // A byte-size setting documented as accepting a bare integer (`10485760`) rather than a

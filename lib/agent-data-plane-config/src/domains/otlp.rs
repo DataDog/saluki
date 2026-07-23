@@ -1,10 +1,11 @@
 //! OTLP domain: the OTLP receiver (gRPC/HTTP transports, logs/metrics activation), the OTLP proxy
 //! gating, and OTLP context sizing. OTLP trace handling lives in the `traces` domain.
 
-use std::str::FromStr;
+use std::{num::NonZeroUsize, str::FromStr};
 
 use serde::Serialize;
 
+use crate::defaults::DEFAULT_STRING_INTERNER_SIZE_BYTES;
 use crate::Error;
 
 /// Resolved OTLP configuration.
@@ -254,8 +255,10 @@ pub struct Traces {
     /// Percentage of OTLP traces the probabilistic sampler keeps.
     pub probabilistic_sampler_sampling_percentage: f64,
 
-    /// Size, in bytes, of the OTLP trace context interner. (not in Datadog Agent config schema)
-    pub string_interner_size: u64,
+    /// Non-zero byte budget for the OTLP trace context interner. (not in Datadog Agent config schema)
+    ///
+    /// Defaults to 512 KiB and cannot exceed 1 GiB.
+    pub string_interner_size: NonZeroUsize,
 
     /// Whether top-level spans are computed from span kind on OTLP traces. (not in Datadog Agent
     /// config schema)
@@ -272,7 +275,7 @@ impl Default for Traces {
             enabled: false,
             internal_port: 0,
             probabilistic_sampler_sampling_percentage: 0.0,
-            string_interner_size: 512 * 1024,
+            string_interner_size: DEFAULT_STRING_INTERNER_SIZE_BYTES,
             enable_compute_top_level_by_span_kind: true,
             ignore_missing_datadog_fields: false,
         }
