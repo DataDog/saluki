@@ -185,7 +185,7 @@ struct SuccessCounters {
     http_11: OnceLock<Counter>,
     http_2: OnceLock<Counter>,
     http_3: OnceLock<Counter>,
-    fallback: OnceLock<Mutex<HashMap<Version, Counter>>>,
+    fallback: Mutex<HashMap<Version, Counter>>,
 }
 
 impl SuccessCounters {
@@ -201,8 +201,7 @@ impl SuccessCounters {
     }
 
     fn fallback_counter(&self, builder: &MetricsBuilder, version: Version) -> Counter {
-        let fallback = self.fallback.get_or_init(|| Mutex::new(HashMap::new()));
-        let mut counters = fallback.lock().unwrap();
+        let mut counters = self.fallback.lock().unwrap();
         counters
             .entry(version)
             .or_insert_with(|| {
@@ -504,7 +503,7 @@ mod tests {
         let version = Version::HTTP_11;
         let expected_label = "HTTP/1.1";
 
-        assert!(counters.fallback.get().is_none());
+        assert!(counters.fallback.lock().unwrap().is_empty());
         assert_eq!(format!("{version:?}"), expected_label);
 
         metrics::with_local_recorder(&recorder, || {
@@ -512,11 +511,7 @@ mod tests {
             counters.fallback_counter(&builder, version).increment(3);
         });
 
-        let fallback = counters
-            .fallback
-            .get()
-            .expect("fallback cache should be initialized after first use");
-        assert_eq!(fallback.lock().unwrap().len(), 1);
+        assert_eq!(counters.fallback.lock().unwrap().len(), 1);
 
         let snapshot = snapshotter.snapshot().into_hashmap();
         let success_keys = snapshot
