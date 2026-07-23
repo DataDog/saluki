@@ -675,12 +675,12 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     )
     .with_environment_provider(env_provider.clone())
     .await?;
+    let trace_sampler_config =
+        TraceSamplerConfiguration::from_configuration(&config.domains.traces, &config.domains.otlp.traces);
 
     // The remaining trace-enrichment components still read from the raw compatibility map.
     let raw_config = config_system.raw_map();
     let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(&raw_config)?;
-    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure Trace Sampler transform.")?;
     let ottl_filter_config = OttlFilterConfiguration::from_configuration(&raw_config)
         .error_context("Failed to configure OTTL filter processor.")?;
     let ottl_transform_config = OttlTransformConfiguration::from_configuration(&raw_config)

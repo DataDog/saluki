@@ -571,7 +571,10 @@ impl SalukiOnly {
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
+    use agent_data_plane_config::defaults::{
+        DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY,
+        DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
+    };
     use serde_json::json;
 
     use super::*;
@@ -805,5 +808,14 @@ mod tests {
             config.shared.metrics_encoding.flush_timeout,
             DEFAULT_ENCODER_FLUSH_TIMEOUT
         );
+
+        // Saluki-only trace defaults live in the traces-domain model, so absent keys must leave
+        // ADP's historical sampler defaults in place.
+        let traces = &config.domains.traces;
+        assert_eq!(traces.default_env, DEFAULT_TRACE_ENV);
+        assert_eq!(traces.error_sampling_enabled, DEFAULT_ERROR_SAMPLING_ENABLED);
+        assert_eq!(traces.rare_sampler.tps, DEFAULT_RARE_SAMPLER_TPS);
+        assert_eq!(traces.rare_sampler.cooldown, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS);
+        assert_eq!(traces.rare_sampler.cardinality, DEFAULT_RARE_SAMPLER_CARDINALITY);
     }
 }

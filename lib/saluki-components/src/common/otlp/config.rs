@@ -27,39 +27,6 @@ pub struct TracesConfig {
     /// Defaults to `true`.
     #[serde(default = "default_enable_otlp_compute_top_level_by_span_kind")]
     pub enable_otlp_compute_top_level_by_span_kind: bool,
-
-    /// Probabilistic sampler configuration for OTLP traces.
-    ///
-    /// Corresponds to `otlp_config.traces.probabilistic_sampler` in the Agent.
-    #[serde(default)]
-    pub probabilistic_sampler: ProbabilisticSampler,
-}
-
-/// Configuration for OTLP traces probabilistic sampling.
-#[derive(Clone, Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct ProbabilisticSampler {
-    /// Percentage of traces to ingest (0, 100].
-    ///
-    /// Invalid values (<= 0 || > 100) are disregarded and the default is used.
-    ///
-    /// Corresponds to `otlp_config.traces.probabilistic_sampler.sampling_percentage` in the Agent.
-    ///
-    /// Defaults to 100.0 (100% sampling).
-    #[serde(default = "default_sampling_percentage")]
-    pub sampling_percentage: f64,
-}
-
-const fn default_sampling_percentage() -> f64 {
-    100.0
-}
-
-impl Default for ProbabilisticSampler {
-    fn default() -> Self {
-        Self {
-            sampling_percentage: default_sampling_percentage(),
-        }
-    }
 }
 
 const fn default_enable_otlp_compute_top_level_by_span_kind() -> bool {
@@ -71,7 +38,6 @@ impl Default for TracesConfig {
         Self {
             ignore_missing_datadog_fields: false,
             enable_otlp_compute_top_level_by_span_kind: default_enable_otlp_compute_top_level_by_span_kind(),
-            probabilistic_sampler: ProbabilisticSampler::default(),
         }
     }
 }

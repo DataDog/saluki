@@ -2,8 +2,13 @@
 
 use serde::Serialize;
 
+use crate::defaults::{
+    DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS,
+    DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
+};
+
 /// Resolved traces configuration.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
     /// Environment tag applied to traces.
     pub env: String,
@@ -53,8 +58,32 @@ pub struct Domain {
     pub ottl_transform: OttlTransform,
 }
 
+impl Default for Domain {
+    fn default() -> Self {
+        Self {
+            // Witnessed fields start as placeholders and are overwritten by Datadog `drive`.
+            env: String::new(),
+            compute_stats_by_span_kind: false,
+            peer_tags: Vec::new(),
+            peer_tags_aggregation: false,
+            error_tracking_standalone_enabled: false,
+            errors_per_second: 0.0,
+            target_traces_per_second: 0.0,
+            enable_rare_sampler: false,
+            probabilistic_sampler: ProbabilisticSampler::default(),
+            obfuscation: Obfuscation::default(),
+            // Saluki-only fields own their absent-key behavior here.
+            default_env: DEFAULT_TRACE_ENV.to_owned(),
+            error_sampling_enabled: DEFAULT_ERROR_SAMPLING_ENABLED,
+            rare_sampler: RareSampler::default(),
+            ottl_filter: OttlFilter::default(),
+            ottl_transform: OttlTransform::default(),
+        }
+    }
+}
+
 /// Rare-span sampler.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RareSampler {
     /// Maximum number of distinct span signatures tracked. (not in Datadog Agent config schema)
     pub cardinality: usize,
@@ -65,6 +94,16 @@ pub struct RareSampler {
 
     /// Target rare-span traces sampled per second. (not in Datadog Agent config schema)
     pub tps: f64,
+}
+
+impl Default for RareSampler {
+    fn default() -> Self {
+        Self {
+            cardinality: DEFAULT_RARE_SAMPLER_CARDINALITY,
+            cooldown: DEFAULT_RARE_SAMPLER_COOLDOWN_SECS,
+            tps: DEFAULT_RARE_SAMPLER_TPS,
+        }
+    }
 }
 
 /// APM probabilistic sampler.

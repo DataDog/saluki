@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
+use agent_data_plane_config::defaults::{DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_TRACE_ENV};
 use async_trait::async_trait;
 use datadog_protos::traces::{
     ClientGroupedStats as ProtoClientGroupedStats, ClientStatsBucket as ProtoClientStatsBucket,
@@ -53,7 +53,7 @@ const fn default_flush_timeout_secs() -> u64 {
 }
 
 fn default_env() -> String {
-    "none".to_string()
+    DEFAULT_TRACE_ENV.to_owned()
 }
 
 /// Configuration for the Datadog APM Stats encoder.
