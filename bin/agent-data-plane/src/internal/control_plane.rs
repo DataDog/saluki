@@ -64,10 +64,9 @@ pub async fn create_control_plane_supervisor(
 
     privileged_api = control_surfaces.register_control_surfaces(privileged_api);
 
-    // If we bootstrapped ourselves as a remote agent, add the necessary gRPC services to the API
-    // and a worker that captures the dataspace for diagnostic artifact collection.
     if let Some(ra_bootstrap) = &ra_bootstrap {
         supervisor.add_worker(ra_bootstrap.create_dataspace_anchor());
+        supervisor.add_worker(ra_bootstrap.create_event_reporter());
         privileged_api = privileged_api
             .with_grpc_service(ra_bootstrap.create_status_service())
             .with_grpc_service(ra_bootstrap.create_flare_service())
