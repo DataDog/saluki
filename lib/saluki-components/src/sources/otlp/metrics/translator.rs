@@ -69,14 +69,13 @@ enum DataType {
     Rate,
 }
 
-enum RateAsTypeAttribute<'a> {
-    Rate,
-    NoOp,
+enum MetricTypeOverride<'a> {
+    Known(DataType),
     Unsupported(&'a str),
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
-enum RateAsTypeWarningKind {
+enum MetricTypeOverrideWarningKind {
     InvalidType,
     ZeroInterval,
     UnsupportedValue,
@@ -95,8 +94,8 @@ pub struct OtlpMetricsTranslator {
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
     attribute_translator: AttributeTranslator,
-    // One-shot warnings emitted for each metric and `datadog.metric.as_type` error kind.
-    rate_as_type_warnings: FastHashSet<(String, RateAsTypeWarningKind)>,
+    // One-shot warnings emitted for each metric and type-override error kind.
+    metric_type_override_warnings: FastHashSet<(String, MetricTypeOverrideWarningKind)>,
     // Configured tags (`otlp_config.metrics.tags`) added to every emitted metric.
     metric_tags: SharedTagSet,
 }
@@ -454,7 +453,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
-            rate_as_type_warnings: FastHashSet::default(),
+            metric_type_override_warnings: FastHashSet::default(),
             metric_tags,
         })
     }
@@ -596,7 +595,7 @@ impl OtlpMetricsTranslator {
             prev_pts: PointsCache::for_tests(),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
-            rate_as_type_warnings: FastHashSet::default(),
+            metric_type_override_warnings: FastHashSet::default(),
             metric_tags: SharedTagSet::default(),
         }
     }
@@ -818,35 +817,35 @@ impl OtlpMetricsTranslator {
             }
 
             let ts = dp.time_unix_nano;
-            let data_type = match rate_as_type_attribute(&dp.attributes) {
-                Some(RateAsTypeAttribute::Rate) if data_type == DataType::Count => {
-                    warn_rate_as_type_once(
-                        &mut self.rate_as_type_warnings,
+            let data_type = match metric_type_override(&dp.attributes) {
+                Some(MetricTypeOverride::Known(DataType::Rate)) if data_type == DataType::Count => {
+                    warn_metric_type_override_once(
+                        &mut self.metric_type_override_warnings,
                         point_dims.name.as_str(),
-                        RateAsTypeWarningKind::ZeroInterval,
+                        MetricTypeOverrideWarningKind::ZeroInterval,
                         None,
                     );
                     DataType::Rate
                 }
-                Some(RateAsTypeAttribute::Rate) => {
-                    warn_rate_as_type_once(
-                        &mut self.rate_as_type_warnings,
+                Some(MetricTypeOverride::Known(DataType::Rate)) => {
+                    warn_metric_type_override_once(
+                        &mut self.metric_type_override_warnings,
                         point_dims.name.as_str(),
-                        RateAsTypeWarningKind::InvalidType,
+                        MetricTypeOverrideWarningKind::InvalidType,
                         None,
                     );
                     data_type
                 }
-                Some(RateAsTypeAttribute::Unsupported(attribute_value)) => {
-                    warn_rate_as_type_once(
-                        &mut self.rate_as_type_warnings,
+                Some(MetricTypeOverride::Unsupported(attribute_value)) => {
+                    warn_metric_type_override_once(
+                        &mut self.metric_type_override_warnings,
                         point_dims.name.as_str(),
-                        RateAsTypeWarningKind::UnsupportedValue,
+                        MetricTypeOverrideWarningKind::UnsupportedValue,
                         Some(attribute_value),
                     );
                     data_type
                 }
-                None | Some(RateAsTypeAttribute::NoOp) => data_type,
+                None | Some(MetricTypeOverride::Known(_)) => data_type,
             };
 
             self.record_metric_event(&point_dims, value, ts, data_type, &mut events, context);
@@ -1525,12 +1524,12 @@ fn get_number_data_point_value(dp: &OtlpNumberDataPoint) -> f64 {
     }
 }
 
-const DELTA_SUM_RATE_ATTRIBUTE_KEY: &str = "datadog.metric.as_type";
+const METRIC_TYPE_ATTRIBUTE_KEY: &str = "datadog.metric.as_type";
 
-fn rate_as_type_attribute(attributes: &[OtlpKeyValue]) -> Option<RateAsTypeAttribute<'_>> {
+fn metric_type_override(attributes: &[OtlpKeyValue]) -> Option<MetricTypeOverride<'_>> {
     let attribute = attributes
         .iter()
-        .find(|attribute| attribute.key == DELTA_SUM_RATE_ATTRIBUTE_KEY)?;
+        .find(|attribute| attribute.key == METRIC_TYPE_ATTRIBUTE_KEY)?;
     let value = attribute
         .value
         .as_ref()
@@ -1541,33 +1540,37 @@ fn rate_as_type_attribute(attributes: &[OtlpKeyValue]) -> Option<RateAsTypeAttri
         })
         .unwrap_or_default();
 
-    if value.eq_ignore_ascii_case("rate") {
-        Some(RateAsTypeAttribute::Rate)
-    } else if value.eq_ignore_ascii_case("count") || value.eq_ignore_ascii_case("gauge") {
-        Some(RateAsTypeAttribute::NoOp)
+    let data_type = if value.eq_ignore_ascii_case("rate") {
+        DataType::Rate
+    } else if value.eq_ignore_ascii_case("count") {
+        DataType::Count
+    } else if value.eq_ignore_ascii_case("gauge") {
+        DataType::Gauge
     } else {
-        Some(RateAsTypeAttribute::Unsupported(value))
-    }
+        return Some(MetricTypeOverride::Unsupported(value));
+    };
+
+    Some(MetricTypeOverride::Known(data_type))
 }
 
-fn warn_rate_as_type_once(
-    warnings: &mut FastHashSet<(String, RateAsTypeWarningKind)>, metric_name: &str, kind: RateAsTypeWarningKind,
-    attribute_value: Option<&str>,
+fn warn_metric_type_override_once(
+    warnings: &mut FastHashSet<(String, MetricTypeOverrideWarningKind)>, metric_name: &str,
+    kind: MetricTypeOverrideWarningKind, attribute_value: Option<&str>,
 ) {
     if !warnings.insert((metric_name.to_owned(), kind)) {
         return;
     }
 
     match kind {
-        RateAsTypeWarningKind::InvalidType => warn!(
+        MetricTypeOverrideWarningKind::InvalidType => warn!(
             metric_name,
             "Ignoring `datadog.metric.as_type=rate`: it is only supported on OTLP delta Sum metrics."
         ),
-        RateAsTypeWarningKind::ZeroInterval => warn!(
+        MetricTypeOverrideWarningKind::ZeroInterval => warn!(
             metric_name,
             "Emitting OTLP delta Sum with `datadog.metric.as_type=rate` as an unnormalized Rate because no delta interval is available."
         ),
-        RateAsTypeWarningKind::UnsupportedValue => warn!(
+        MetricTypeOverrideWarningKind::UnsupportedValue => warn!(
             metric_name,
             attribute_value = attribute_value.unwrap_or_default(),
             "Ignoring unsupported `datadog.metric.as_type` value; accepted values are `rate`, `count`, and `gauge`."
@@ -2065,7 +2068,7 @@ mod tests {
                     data_points: vec![OtlpNumberDataPoint {
                         value: Some(OtlpNumberDataPointValue::AsInt(value)),
                         time_unix_nano: nanos_from_seconds(2),
-                        attributes: vec![string_attribute(DELTA_SUM_RATE_ATTRIBUTE_KEY, as_type)],
+                        attributes: vec![string_attribute(METRIC_TYPE_ATTRIBUTE_KEY, as_type)],
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -2094,7 +2097,7 @@ mod tests {
             &MetricValues::rate((2, 42.0), std::time::Duration::ZERO)
         );
         assert_eq!(
-            metric.context().tags().get_single_tag(DELTA_SUM_RATE_ATTRIBUTE_KEY),
+            metric.context().tags().get_single_tag(METRIC_TYPE_ATTRIBUTE_KEY),
             Some(&Tag::from("datadog.metric.as_type:RaTe"))
         );
     }
@@ -2113,8 +2116,8 @@ mod tests {
 
         assert_eq!(events.len(), 2);
         assert!(translator
-            .rate_as_type_warnings
-            .contains(&("delta.sum".to_string(), RateAsTypeWarningKind::ZeroInterval,)));
+            .metric_type_override_warnings
+            .contains(&("delta.sum".to_string(), MetricTypeOverrideWarningKind::ZeroInterval,)));
     }
 
     #[test]
@@ -2154,8 +2157,8 @@ mod tests {
 
         assert_eq!(events.len(), 2);
         assert!(translator
-            .rate_as_type_warnings
-            .contains(&("delta.sum".to_string(), RateAsTypeWarningKind::UnsupportedValue,)));
+            .metric_type_override_warnings
+            .contains(&("delta.sum".to_string(), MetricTypeOverrideWarningKind::UnsupportedValue,)));
     }
 
     #[test]
@@ -2170,7 +2173,7 @@ mod tests {
                         data_points: vec![OtlpNumberDataPoint {
                             value: Some(OtlpNumberDataPointValue::AsInt(42)),
                             time_unix_nano: nanos_from_seconds(2),
-                            attributes: vec![string_attribute(DELTA_SUM_RATE_ATTRIBUTE_KEY, "rate")],
+                            attributes: vec![string_attribute(METRIC_TYPE_ATTRIBUTE_KEY, "rate")],
                             ..Default::default()
                         }],
                     },
@@ -2189,8 +2192,8 @@ mod tests {
             &MetricValues::gauge((2, 42.0))
         );
         assert!(translator
-            .rate_as_type_warnings
-            .contains(&("gauge".to_string(), RateAsTypeWarningKind::InvalidType,)));
+            .metric_type_override_warnings
+            .contains(&("gauge".to_string(), MetricTypeOverrideWarningKind::InvalidType,)));
     }
 
     fn single_gauge_with_resource_attributes(attributes: Vec<OtlpKeyValue>) -> OtlpResourceMetrics {
