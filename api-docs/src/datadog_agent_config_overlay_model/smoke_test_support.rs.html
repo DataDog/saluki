@@ -3,81 +3,78 @@
 <a href=#3 id=3 data-nosnippet>3</a>//! time the smoke tests will be rendered inert and can be removed.
 <a href=#4 id=4 data-nosnippet>4</a></span><span class="kw">use </span>serde::{Deserialize, Serialize};
 <a href=#5 id=5 data-nosnippet>5</a>
-<a href=#6 id=6 data-nosnippet>6</a><span class="doccomment">/// A struct in the Saluki repository that deserializes Datadog Agent configuration.
+<a href=#6 id=6 data-nosnippet>6</a><span class="doccomment">/// A configuration consumer tracked by the legacy smoke-test registry.
 <a href=#7 id=7 data-nosnippet>7</a>///
-<a href=#8 id=8 data-nosnippet>8</a>/// Used as values in `schema_overlay.yaml` `used_by` fields to declare which structs consume a
-<a href=#9 id=9 data-nosnippet>9</a>/// given key. Adding a new struct here is the first step when registering its configuration keys.
-<a href=#10 id=10 data-nosnippet>10</a>///
-<a href=#11 id=11 data-nosnippet>11</a>/// This construct has been carried over from the original `config_registry` in order to support
-<a href=#12 id=12 data-nosnippet>12</a>/// configuration smoke test code generation. Each variant in this enum should be an exact name
-<a href=#13 id=13 data-nosnippet>13</a>/// match to a struct that consumes its value directly from Agent configuration either by
-<a href=#14 id=14 data-nosnippet>14</a>/// deserializing or by environment variable.
-<a href=#15 id=15 data-nosnippet>15</a></span><span class="attr">#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
-<a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">pub enum </span>ConfigurationStruct {
-<a href=#17 id=17 data-nosnippet>17</a>    AggregateConfiguration,
-<a href=#18 id=18 data-nosnippet>18</a>    ContainerdConfiguration,
-<a href=#19 id=19 data-nosnippet>19</a>    DatadogApmStatsEncoderConfiguration,
-<a href=#20 id=20 data-nosnippet>20</a>    DatadogEventsConfiguration,
-<a href=#21 id=21 data-nosnippet>21</a>    DatadogLogsConfiguration,
-<a href=#22 id=22 data-nosnippet>22</a>    DatadogMetricsConfiguration,
-<a href=#23 id=23 data-nosnippet>23</a>    DatadogServiceChecksConfiguration,
-<a href=#24 id=24 data-nosnippet>24</a>    DatadogTraceConfiguration,
-<a href=#25 id=25 data-nosnippet>25</a>    DogStatsDConfiguration,
-<a href=#26 id=26 data-nosnippet>26</a>    DogStatsDDebugLogConfiguration,
-<a href=#27 id=27 data-nosnippet>27</a>    DogStatsDMapperConfiguration,
-<a href=#28 id=28 data-nosnippet>28</a>    DogStatsDPrefixFilterConfiguration,
-<a href=#29 id=29 data-nosnippet>29</a>    ForwarderConfiguration,
-<a href=#30 id=30 data-nosnippet>30</a>    MrfConfiguration,
-<a href=#31 id=31 data-nosnippet>31</a>    OtlpConfiguration,
-<a href=#32 id=32 data-nosnippet>32</a>    OtlpDecoderConfiguration,
-<a href=#33 id=33 data-nosnippet>33</a>    OtlpRelayConfiguration,
-<a href=#34 id=34 data-nosnippet>34</a>    ProxyConfiguration,
-<a href=#35 id=35 data-nosnippet>35</a>    RemoteAgentClientConfiguration,
-<a href=#36 id=36 data-nosnippet>36</a>    TagFilterlistConfiguration,
-<a href=#37 id=37 data-nosnippet>37</a>    TraceObfuscationConfiguration,
-<a href=#38 id=38 data-nosnippet>38</a>
-<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
-<a href=#40 id=40 data-nosnippet>40</a>    </span><span class="attr">#[serde(rename = <span class="string">"get_typed"</span>)]
-<a href=#41 id=41 data-nosnippet>41</a>    </span>GetTyped,
-<a href=#42 id=42 data-nosnippet>42</a>
-<a href=#43 id=43 data-nosnippet>43</a>    <span class="doccomment">/// Sentinel for supported keys that are being promoted during the transition to
-<a href=#44 id=44 data-nosnippet>44</a>    /// typed-configuration access. These were missing from our inventory when config smoke
-<a href=#45 id=45 data-nosnippet>45</a>    /// testing was introduced and for various reasons may not be legitimate targets for that
-<a href=#46 id=46 data-nosnippet>46</a>    /// testing modality. Regardless, these fields will be part of the typed translation system
-<a href=#47 id=47 data-nosnippet>47</a>    /// and this sentinel can be removed when our testing model moves over to that system.
-<a href=#48 id=48 data-nosnippet>48</a>    </span><span class="attr">#[serde(rename = <span class="string">"NO_SMOKE"</span>)]
-<a href=#49 id=49 data-nosnippet>49</a>    </span>NoSmoke,
-<a href=#50 id=50 data-nosnippet>50</a>}
-<a href=#51 id=51 data-nosnippet>51</a>
-<a href=#52 id=52 data-nosnippet>52</a><span class="kw">impl </span>ConfigurationStruct {
-<a href=#53 id=53 data-nosnippet>53</a>    <span class="doccomment">/// Apparently we travel back and forth between string constant representation and the struct
-<a href=#54 id=54 data-nosnippet>54</a>    /// names themselves. This function recovers the string constant name for a struct.
-<a href=#55 id=55 data-nosnippet>55</a>    </span><span class="kw">pub fn </span>as_smoke_test_const(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
-<a href=#56 id=56 data-nosnippet>56</a>        <span class="kw">match </span><span class="self">self </span>{
-<a href=#57 id=57 data-nosnippet>57</a>            ConfigurationStruct::AggregateConfiguration =&gt; <span class="string">"AGGREGATE_CONFIGURATION"</span>,
-<a href=#58 id=58 data-nosnippet>58</a>            ConfigurationStruct::ContainerdConfiguration =&gt; <span class="string">"CONTAINERD_CONFIGURATION"</span>,
-<a href=#59 id=59 data-nosnippet>59</a>            ConfigurationStruct::DatadogApmStatsEncoderConfiguration =&gt; <span class="string">"DATADOG_APM_STATS_ENCODER_CONFIGURATION"</span>,
-<a href=#60 id=60 data-nosnippet>60</a>            ConfigurationStruct::DatadogEventsConfiguration =&gt; <span class="string">"DATADOG_EVENTS_CONFIGURATION"</span>,
-<a href=#61 id=61 data-nosnippet>61</a>            ConfigurationStruct::DatadogLogsConfiguration =&gt; <span class="string">"DATADOG_LOGS_CONFIGURATION"</span>,
-<a href=#62 id=62 data-nosnippet>62</a>            ConfigurationStruct::DatadogMetricsConfiguration =&gt; <span class="string">"DATADOG_METRICS_CONFIGURATION"</span>,
-<a href=#63 id=63 data-nosnippet>63</a>            ConfigurationStruct::DatadogServiceChecksConfiguration =&gt; <span class="string">"DATADOG_SERVICE_CHECKS_CONFIGURATION"</span>,
-<a href=#64 id=64 data-nosnippet>64</a>            ConfigurationStruct::DatadogTraceConfiguration =&gt; <span class="string">"DATADOG_TRACE_CONFIGURATION"</span>,
-<a href=#65 id=65 data-nosnippet>65</a>            ConfigurationStruct::DogStatsDConfiguration =&gt; <span class="string">"DOGSTATSD_CONFIGURATION"</span>,
-<a href=#66 id=66 data-nosnippet>66</a>            ConfigurationStruct::DogStatsDDebugLogConfiguration =&gt; <span class="string">"DOGSTATSD_DEBUG_LOG_CONFIGURATION"</span>,
-<a href=#67 id=67 data-nosnippet>67</a>            ConfigurationStruct::DogStatsDMapperConfiguration =&gt; <span class="string">"DOGSTATSD_MAPPER_CONFIGURATION"</span>,
-<a href=#68 id=68 data-nosnippet>68</a>            ConfigurationStruct::DogStatsDPrefixFilterConfiguration =&gt; <span class="string">"DOGSTATSD_PREFIX_FILTER_CONFIGURATION"</span>,
-<a href=#69 id=69 data-nosnippet>69</a>            ConfigurationStruct::ForwarderConfiguration =&gt; <span class="string">"FORWARDER_CONFIGURATION"</span>,
-<a href=#70 id=70 data-nosnippet>70</a>            ConfigurationStruct::MrfConfiguration =&gt; <span class="string">"MRF_CONFIGURATION"</span>,
-<a href=#71 id=71 data-nosnippet>71</a>            ConfigurationStruct::OtlpConfiguration =&gt; <span class="string">"OTLP_CONFIGURATION"</span>,
-<a href=#72 id=72 data-nosnippet>72</a>            ConfigurationStruct::OtlpDecoderConfiguration =&gt; <span class="string">"OTLP_DECODER_CONFIGURATION"</span>,
-<a href=#73 id=73 data-nosnippet>73</a>            ConfigurationStruct::OtlpRelayConfiguration =&gt; <span class="string">"OTLP_RELAY_CONFIGURATION"</span>,
-<a href=#74 id=74 data-nosnippet>74</a>            ConfigurationStruct::ProxyConfiguration =&gt; <span class="string">"PROXY_CONFIGURATION"</span>,
-<a href=#75 id=75 data-nosnippet>75</a>            ConfigurationStruct::RemoteAgentClientConfiguration =&gt; <span class="string">"REMOTE_AGENT_CLIENT_CONFIGURATION"</span>,
-<a href=#76 id=76 data-nosnippet>76</a>            ConfigurationStruct::TagFilterlistConfiguration =&gt; <span class="string">"TAG_FILTERLIST_CONFIGURATION"</span>,
-<a href=#77 id=77 data-nosnippet>77</a>            ConfigurationStruct::TraceObfuscationConfiguration =&gt; <span class="string">"TRACE_OBFUSCATION_CONFIGURATION"</span>,
-<a href=#78 id=78 data-nosnippet>78</a>            ConfigurationStruct::GetTyped =&gt; <span class="string">"GET_TYPED"</span>,
-<a href=#79 id=79 data-nosnippet>79</a>            ConfigurationStruct::NoSmoke =&gt; <span class="string">"NO_SMOKE"</span>,
-<a href=#80 id=80 data-nosnippet>80</a>        }
-<a href=#81 id=81 data-nosnippet>81</a>    }
-<a href=#82 id=82 data-nosnippet>82</a>}
+<a href=#8 id=8 data-nosnippet>8</a>/// Most variants name structs that consume Agent configuration directly. Sentinel variants track
+<a href=#9 id=9 data-nosnippet>9</a>/// consumers that do not fit the legacy deserialization test model.
+<a href=#10 id=10 data-nosnippet>10</a></span><span class="attr">#[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Deserialize, Serialize)]
+<a href=#11 id=11 data-nosnippet>11</a></span><span class="kw">pub enum </span>ConfigurationStruct {
+<a href=#12 id=12 data-nosnippet>12</a>    AggregateConfiguration,
+<a href=#13 id=13 data-nosnippet>13</a>    ContainerdConfiguration,
+<a href=#14 id=14 data-nosnippet>14</a>    DatadogApmStatsEncoderConfiguration,
+<a href=#15 id=15 data-nosnippet>15</a>    DatadogEventsConfiguration,
+<a href=#16 id=16 data-nosnippet>16</a>    DatadogLogsConfiguration,
+<a href=#17 id=17 data-nosnippet>17</a>    DatadogMetricsConfiguration,
+<a href=#18 id=18 data-nosnippet>18</a>    DatadogServiceChecksConfiguration,
+<a href=#19 id=19 data-nosnippet>19</a>    DatadogTraceConfiguration,
+<a href=#20 id=20 data-nosnippet>20</a>    DogStatsDConfiguration,
+<a href=#21 id=21 data-nosnippet>21</a>    DogStatsDDebugLogConfiguration,
+<a href=#22 id=22 data-nosnippet>22</a>    DogStatsDMapperConfiguration,
+<a href=#23 id=23 data-nosnippet>23</a>    DogStatsDPrefixFilterConfiguration,
+<a href=#24 id=24 data-nosnippet>24</a>    ForwarderConfiguration,
+<a href=#25 id=25 data-nosnippet>25</a>    MrfConfiguration,
+<a href=#26 id=26 data-nosnippet>26</a>    OtlpDecoderConfiguration,
+<a href=#27 id=27 data-nosnippet>27</a>    OtlpRelayConfiguration,
+<a href=#28 id=28 data-nosnippet>28</a>    ProxyConfiguration,
+<a href=#29 id=29 data-nosnippet>29</a>    RemoteAgentClientConfiguration,
+<a href=#30 id=30 data-nosnippet>30</a>    TagFilterlistConfiguration,
+<a href=#31 id=31 data-nosnippet>31</a>    TraceObfuscationConfiguration,
+<a href=#32 id=32 data-nosnippet>32</a>
+<a href=#33 id=33 data-nosnippet>33</a>    <span class="doccomment">/// Keys consumed through the typed configuration translation system.
+<a href=#34 id=34 data-nosnippet>34</a>    </span>TypedConfigSystem,
+<a href=#35 id=35 data-nosnippet>35</a>
+<a href=#36 id=36 data-nosnippet>36</a>    <span class="doccomment">/// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
+<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="attr">#[serde(rename = <span class="string">"get_typed"</span>)]
+<a href=#38 id=38 data-nosnippet>38</a>    </span>GetTyped,
+<a href=#39 id=39 data-nosnippet>39</a>
+<a href=#40 id=40 data-nosnippet>40</a>    <span class="doccomment">/// Sentinel for supported keys that are being promoted during the transition to
+<a href=#41 id=41 data-nosnippet>41</a>    /// typed-configuration access. These were missing from our inventory when config smoke
+<a href=#42 id=42 data-nosnippet>42</a>    /// testing was introduced and for various reasons may not be legitimate targets for that
+<a href=#43 id=43 data-nosnippet>43</a>    /// testing modality. Regardless, these fields will be part of the typed translation system
+<a href=#44 id=44 data-nosnippet>44</a>    /// and this sentinel can be removed when our testing model moves over to that system.
+<a href=#45 id=45 data-nosnippet>45</a>    </span><span class="attr">#[serde(rename = <span class="string">"NO_SMOKE"</span>)]
+<a href=#46 id=46 data-nosnippet>46</a>    </span>NoSmoke,
+<a href=#47 id=47 data-nosnippet>47</a>}
+<a href=#48 id=48 data-nosnippet>48</a>
+<a href=#49 id=49 data-nosnippet>49</a><span class="kw">impl </span>ConfigurationStruct {
+<a href=#50 id=50 data-nosnippet>50</a>    <span class="doccomment">/// Apparently we travel back and forth between string constant representation and the struct
+<a href=#51 id=51 data-nosnippet>51</a>    /// names themselves. This function recovers the string constant name for a struct.
+<a href=#52 id=52 data-nosnippet>52</a>    </span><span class="kw">pub fn </span>as_smoke_test_const(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
+<a href=#53 id=53 data-nosnippet>53</a>        <span class="kw">match </span><span class="self">self </span>{
+<a href=#54 id=54 data-nosnippet>54</a>            ConfigurationStruct::AggregateConfiguration =&gt; <span class="string">"AGGREGATE_CONFIGURATION"</span>,
+<a href=#55 id=55 data-nosnippet>55</a>            ConfigurationStruct::ContainerdConfiguration =&gt; <span class="string">"CONTAINERD_CONFIGURATION"</span>,
+<a href=#56 id=56 data-nosnippet>56</a>            ConfigurationStruct::DatadogApmStatsEncoderConfiguration =&gt; <span class="string">"DATADOG_APM_STATS_ENCODER_CONFIGURATION"</span>,
+<a href=#57 id=57 data-nosnippet>57</a>            ConfigurationStruct::DatadogEventsConfiguration =&gt; <span class="string">"DATADOG_EVENTS_CONFIGURATION"</span>,
+<a href=#58 id=58 data-nosnippet>58</a>            ConfigurationStruct::DatadogLogsConfiguration =&gt; <span class="string">"DATADOG_LOGS_CONFIGURATION"</span>,
+<a href=#59 id=59 data-nosnippet>59</a>            ConfigurationStruct::DatadogMetricsConfiguration =&gt; <span class="string">"DATADOG_METRICS_CONFIGURATION"</span>,
+<a href=#60 id=60 data-nosnippet>60</a>            ConfigurationStruct::DatadogServiceChecksConfiguration =&gt; <span class="string">"DATADOG_SERVICE_CHECKS_CONFIGURATION"</span>,
+<a href=#61 id=61 data-nosnippet>61</a>            ConfigurationStruct::DatadogTraceConfiguration =&gt; <span class="string">"DATADOG_TRACE_CONFIGURATION"</span>,
+<a href=#62 id=62 data-nosnippet>62</a>            ConfigurationStruct::DogStatsDConfiguration =&gt; <span class="string">"DOGSTATSD_CONFIGURATION"</span>,
+<a href=#63 id=63 data-nosnippet>63</a>            ConfigurationStruct::DogStatsDDebugLogConfiguration =&gt; <span class="string">"DOGSTATSD_DEBUG_LOG_CONFIGURATION"</span>,
+<a href=#64 id=64 data-nosnippet>64</a>            ConfigurationStruct::DogStatsDMapperConfiguration =&gt; <span class="string">"DOGSTATSD_MAPPER_CONFIGURATION"</span>,
+<a href=#65 id=65 data-nosnippet>65</a>            ConfigurationStruct::DogStatsDPrefixFilterConfiguration =&gt; <span class="string">"DOGSTATSD_PREFIX_FILTER_CONFIGURATION"</span>,
+<a href=#66 id=66 data-nosnippet>66</a>            ConfigurationStruct::ForwarderConfiguration =&gt; <span class="string">"FORWARDER_CONFIGURATION"</span>,
+<a href=#67 id=67 data-nosnippet>67</a>            ConfigurationStruct::MrfConfiguration =&gt; <span class="string">"MRF_CONFIGURATION"</span>,
+<a href=#68 id=68 data-nosnippet>68</a>            ConfigurationStruct::OtlpDecoderConfiguration =&gt; <span class="string">"OTLP_DECODER_CONFIGURATION"</span>,
+<a href=#69 id=69 data-nosnippet>69</a>            ConfigurationStruct::OtlpRelayConfiguration =&gt; <span class="string">"OTLP_RELAY_CONFIGURATION"</span>,
+<a href=#70 id=70 data-nosnippet>70</a>            ConfigurationStruct::ProxyConfiguration =&gt; <span class="string">"PROXY_CONFIGURATION"</span>,
+<a href=#71 id=71 data-nosnippet>71</a>            ConfigurationStruct::RemoteAgentClientConfiguration =&gt; <span class="string">"REMOTE_AGENT_CLIENT_CONFIGURATION"</span>,
+<a href=#72 id=72 data-nosnippet>72</a>            ConfigurationStruct::TagFilterlistConfiguration =&gt; <span class="string">"TAG_FILTERLIST_CONFIGURATION"</span>,
+<a href=#73 id=73 data-nosnippet>73</a>            ConfigurationStruct::TraceObfuscationConfiguration =&gt; <span class="string">"TRACE_OBFUSCATION_CONFIGURATION"</span>,
+<a href=#74 id=74 data-nosnippet>74</a>            ConfigurationStruct::TypedConfigSystem =&gt; <span class="string">"TYPED_CONFIG_SYSTEM"</span>,
+<a href=#75 id=75 data-nosnippet>75</a>            ConfigurationStruct::GetTyped =&gt; <span class="string">"GET_TYPED"</span>,
+<a href=#76 id=76 data-nosnippet>76</a>            ConfigurationStruct::NoSmoke =&gt; <span class="string">"NO_SMOKE"</span>,
+<a href=#77 id=77 data-nosnippet>77</a>        }
+<a href=#78 id=78 data-nosnippet>78</a>    }
+<a href=#79 id=79 data-nosnippet>79</a>}
 </code></pre></div></section></main></body></html>

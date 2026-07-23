@@ -32,7 +32,7 @@ Otherwise, this builder will be returned unchanged.</p>
 configuration is not FIPS compliant, an error is returned.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="method.serve" class="method"><a class="src rightside" href="../../src/saluki_app/api.rs.html#145-175">Source</a><h4 class="code-header">pub async fn <a href="#method.serve" class="fn">serve</a>&lt;F&gt;(
     self,
-    listen_address: ListenAddress,
+    listen_address: <a class="enum" href="../../saluki_io/net/addr/enum.ListenAddress.html" title="enum saluki_io::net::addr::ListenAddress">ListenAddress</a>,
     shutdown: F,
 ) -&gt; <a class="enum" href="https://doc.rust-lang.org/nightly/core/result/enum.Result.html" title="enum core::result::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.unit.html">()</a>, <a class="type" href="../../saluki_error/type.GenericError.html" title="type saluki_error::GenericError">GenericError</a>&gt;<div class="where">where
     F: <a class="trait" href="https://doc.rust-lang.org/nightly/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.unit.html">()</a>&gt; + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'static,</div></h4></section></summary><div class="docblock"><p>Serves the API on the given listen address until <code>shutdown</code> resolves.</p>

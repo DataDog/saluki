@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["CumulativeMonotonicMode","HistogramMode","InitialCumulativeMonotonicValue","SummaryMode"],"struct":["Contexts","Domain","GrpcReceiver","HttpReceiver","Metrics","Proxy","Receiver","Summaries","Sums"]};
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB"],"enum":["CumulativeMonotonicMode","HistogramMode","InitialCumulativeMonotonicValue","SummaryMode"],"struct":["Contexts","Domain","GrpcReceiver","HttpReceiver","Metrics","Proxy","Receiver","Summaries","Sums","Traces"]};
