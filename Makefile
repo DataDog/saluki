@@ -75,7 +75,7 @@ export CARGO_TOOL_VERSION_cargo-machete ?= 0.9.1
 export CARGO_TOOL_VERSION_rustfilt ?= 0.2.1
 export CARGO_TOOL_VERSION_cargo-auditable ?= 0.7.4
 export DDPROF_VERSION ?= 0.20.0
-export LADING_VERSION ?= sha-65770873b5c5880e11ad15dfefec7972bb3540e0
+export LADING_VERSION ?= sha-d65960d4e023c65dde5e950151f761ab5cb575b2
 
 # Windows cross-compilation settings. These targets currently assume a local macOS host.
 export WINDOWS_CROSS_TARGET ?= x86_64-pc-windows-msvc
