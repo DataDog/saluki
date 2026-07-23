@@ -5,4 +5,11 @@ volume: 1000
 corpus:
   size: 10000
   payload:
-    opentelemetry_metrics: {}
+    opentelemetry_metrics:
+      histogram_count_limits:
+        # The downstream sketch format stores counts as signed 64-bit integers.
+        # Keep every generated bucket and zero count well below that boundary.
+        bucket: 10000
+        zero: 10000
+        # Exponential histograms have at most 200 buckets: 200 * bucket + zero.
+        total: 2010000
