@@ -232,7 +232,8 @@ impl DriverConfig {
         HP: AsRef<Path>,
         CP: AsRef<Path>,
     {
-        let bind_mount = format!("{}:{}", host_path.as_ref().display(), container_path.as_ref().display());
+        let host_path = docker_bind_mount_host_path(host_path.as_ref());
+        let bind_mount = format!("{}:{}", host_path, container_path.as_ref().display());
         self.binds.push(bind_mount);
         self
     }
@@ -1262,6 +1263,18 @@ fn strip_ansi_codes(input: &[u8]) -> Vec<u8> {
     out
 }
 
+fn docker_bind_mount_host_path(path: &Path) -> String {
+    // Windows canonicalization uses the verbatim namespace, which the Docker bind-mount API does not accept.
+    let path = path.to_string_lossy();
+    if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", path)
+    } else if let Some(path) = path.strip_prefix(r"\\?\") {
+        path.to_string()
+    } else {
+        path.into_owned()
+    }
+}
+
 fn get_alpine_container_image() -> String {
     // Normally, we would just use `alpine:latest` and let Docker figure out the registry to pull it from (that is, Docker
     // Hub) but in CI, we don't have Docker Hub available to us, so we need to use an internal registry.
@@ -1282,6 +1295,22 @@ fn get_default_airlock_labels(isolation_group_id: &str) -> HashMap<String, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bind_mount_removes_windows_verbatim_prefix_from_host_path() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string())
+            .with_bind_mount(r"\\?\C:\mnt\fixture.ps1", r"C:\adp\fixture.ps1");
+
+        assert_eq!(config.binds, vec![r"C:\mnt\fixture.ps1:C:\adp\fixture.ps1"]);
+    }
+
+    #[test]
+    fn bind_mount_converts_windows_verbatim_unc_host_path() {
+        let config = DriverConfig::from_image("target", "example:latest".to_string())
+            .with_bind_mount(r"\\?\UNC\server\fixtures\fixture.ps1", r"C:\adp\fixture.ps1");
+
+        assert_eq!(config.binds, vec![r"\\server\fixtures\fixture.ps1:C:\adp\fixture.ps1"]);
+    }
 
     #[test]
     fn default_linux_container_binds_include_airlock_and_linux_host_resources() {
