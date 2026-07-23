@@ -113,7 +113,8 @@ fn register_scoped_error(builder: &MetricsBuilder, error_type: &'static str, err
 ///   overall, is sanitized.)
 ///
 /// Successful request counts also include `proto_version`, formatted as the response's HTTP version (for example,
-/// `HTTP/1.1` or `HTTP/2.0`). Successful request bytes remain grouped only by the base tags.
+/// `HTTP/1.1` or `HTTP/2.0`). Versions without dedicated support are grouped under `unknown`. Successful request bytes
+/// remain grouped only by the base tags.
 ///
 /// ### Success bytes calculation
 ///
@@ -185,7 +186,7 @@ struct SuccessCounters {
     http_11: OnceLock<Counter>,
     http_2: OnceLock<Counter>,
     http_3: OnceLock<Counter>,
-    fallback: Mutex<HashMap<Version, Counter>>,
+    fallback: OnceLock<Counter>,
 }
 
 impl SuccessCounters {
@@ -200,17 +201,10 @@ impl SuccessCounters {
         }
     }
 
-    fn fallback_counter(&self, builder: &MetricsBuilder, version: Version) -> Counter {
-        let mut counters = self.fallback.lock().unwrap();
-        counters
-            .entry(version)
-            .or_insert_with(|| {
-                builder.register_counter_with_tags(
-                    "network_http_requests_success_total",
-                    [("proto_version", format!("{version:?}"))],
-                )
-            })
-            .clone()
+    fn fallback_counter(&self, builder: &MetricsBuilder) -> &Counter {
+        self.fallback.get_or_init(|| {
+            builder.register_counter_with_tags("network_http_requests_success_total", [("proto_version", "unknown")])
+        })
     }
 }
 
@@ -263,9 +257,9 @@ impl PerEndpointTelemetry {
             })
             .increment(1);
         } else {
-            // A dependency upgrade may add HTTP versions. The lazy fallback prevents an unfamiliar version from
-            // turning telemetry into a process-level failure without adding overhead to known-version requests.
-            self.success.fallback_counter(&self.builder, version).increment(1);
+            // Unknown versions are intentionally grouped until explicit support is added. The lazy fallback keeps
+            // unfamiliar versions non-panicking without adding overhead to known-version requests.
+            self.success.fallback_counter(&self.builder).increment(1);
         }
     }
 
@@ -495,23 +489,24 @@ mod tests {
     }
 
     #[test]
-    fn fallback_success_counters_are_registered_lazily_and_reused() {
+    fn fallback_success_counter_is_registered_lazily_and_reused() {
         let recorder = DebuggingRecorder::new();
         let snapshotter = recorder.snapshotter();
         let builder = MetricsBuilder::default();
         let counters = SuccessCounters::default();
-        let version = Version::HTTP_11;
-        let expected_label = "HTTP/1.1";
+        let fallback: &OnceLock<Counter> = &counters.fallback;
 
-        assert!(counters.fallback.lock().unwrap().is_empty());
-        assert_eq!(format!("{version:?}"), expected_label);
+        assert!(fallback.get().is_none());
 
         metrics::with_local_recorder(&recorder, || {
-            counters.fallback_counter(&builder, version).increment(2);
-            counters.fallback_counter(&builder, version).increment(3);
+            let first = counters.fallback_counter(&builder);
+            first.increment(2);
+            let second = counters.fallback_counter(&builder);
+            second.increment(3);
+            assert!(std::ptr::eq(first, second));
         });
 
-        assert_eq!(counters.fallback.lock().unwrap().len(), 1);
+        assert!(fallback.get().is_some());
 
         let snapshot = snapshotter.snapshot().into_hashmap();
         let success_keys = snapshot
@@ -523,12 +518,12 @@ mod tests {
             MetricKind::Counter,
             Key::from_parts(
                 "network_http_requests_success_total",
-                vec![Label::new("proto_version", expected_label)],
+                vec![Label::new("proto_version", "unknown")],
             ),
         );
         let (_, _, value) = snapshot
             .get(&key)
-            .expect("fallback success counter should use the version's Debug label");
+            .expect("fallback success counter should use the unknown protocol label");
         assert_eq!(value, &DebugValue::Counter(5));
     }
 
