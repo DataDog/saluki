@@ -1992,6 +1992,36 @@ inventory:
       additional_attributes:
         config_registry_filename: otlp.rs
 
+  otlp_config.metrics.batch.flush_timeout:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "OTLP metrics batch flush timeout"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+  otlp_config.metrics.batch.max_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Maximum OTLP metrics batch size"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+  otlp_config.metrics.batch.min_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Minimum OTLP metrics batch size"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
@@ -3949,9 +3979,6 @@ excluded:
   otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.flush_timeout: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.max_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"

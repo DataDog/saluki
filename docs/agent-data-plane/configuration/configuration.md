@@ -74,6 +74,9 @@ architecture is fundamentally different or the feature is platform-specific.
 | `forwarder_requeue_buffer_size`                                   | In-memory re-queue buffer size                     | See below                                                                                                                                                                                                                                                                 |
 | `heroku_dyno`                                                     | Heroku dyno telemetry mode                         | See below                                                                                                                                                                                                                                                                 |
 | `logging_frequency`                                               | Transaction success log interval                   | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
+| `otlp_config.metrics.batch.flush_timeout`                         | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.metrics.batch.max_size`                              | Maximum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.metrics.batch.min_size`                              | Minimum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`          | Histogram buckets: DSD-to-aggregator channel lag   | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`           | Histogram buckets: listener packet-channel latency | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
 | `telemetry.dogstatsd.listeners_latency_buckets`                   | Histogram buckets: listener processing latency     | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
@@ -213,6 +216,21 @@ core Agent's `datadog.<agentName>.running` series.
 
 Because the affected heartbeat is core-Agent-owned and ADP is not part of the supported Heroku
 deployment path, ADP does not implement `heroku_dyno`. See [#1753].
+
+### `otlp_config.metrics.batch.flush_timeout`
+
+The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+### `otlp_config.metrics.batch.max_size`
+
+The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+### `otlp_config.metrics.batch.min_size`
+
+The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
 
 ## Behavioral Differences
