@@ -146,8 +146,9 @@ pub struct SalukiOnly {
     pub otlp_cached_contexts_limit: Option<usize>,
     /// Maximum cached OTLP tagsets (`otlp_cached_tagsets_limit`).
     pub otlp_cached_tagsets_limit: Option<usize>,
-    /// OTLP context interner entry count (`otlp_string_interner_size`).
-    pub otlp_string_interner_size: Option<u64>,
+    /// OTLP context interner byte budget (`otlp_string_interner_size`). Accepts human-readable sizes
+    /// such as `2MiB` as well as a plain byte count.
+    pub otlp_string_interner_size: Option<ByteSize>,
 
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
@@ -298,8 +299,9 @@ pub struct OtlpConfigReceiverProtocolsHttp {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct OtlpConfigTraces {
-    /// OTLP trace context interner entry count (`otlp_config.traces.string_interner_size`).
-    pub string_interner_size: Option<u64>,
+    /// OTLP trace context interner byte budget (`otlp_config.traces.string_interner_size`). Accepts
+    /// human-readable sizes such as `512KiB` as well as a plain byte count.
+    pub string_interner_size: Option<ByteSize>,
     /// Compute top-level spans by span kind
     /// (`otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`).
     pub enable_otlp_compute_top_level_by_span_kind: Option<bool>,
@@ -450,10 +452,19 @@ impl SalukiOnly {
             otlp.contexts.cached_tagsets_limit = v;
         }
         if let Some(v) = self.otlp_string_interner_size {
-            otlp.contexts.string_interner_size = v;
+            otlp.contexts.string_interner_size = v.as_u64();
         }
         if let Some(v) = self.otlp_config.receiver.protocols.http.transport.clone() {
             otlp.receiver.http.transport = v;
+        }
+        if let Some(v) = self.otlp_config.traces.string_interner_size {
+            otlp.traces.string_interner_size = v.as_u64();
+        }
+        if let Some(v) = self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind {
+            otlp.traces.enable_compute_top_level_by_span_kind = v;
+        }
+        if let Some(v) = self.otlp_config.traces.ignore_missing_datadog_fields {
+            otlp.traces.ignore_missing_datadog_fields = v;
         }
 
         // domains.traces
@@ -487,15 +498,6 @@ impl SalukiOnly {
         }
         if let Some(v) = self.apm_config.obfuscation.sql.table_names {
             traces.obfuscation.sql.table_names = v;
-        }
-        if let Some(v) = self.otlp_config.traces.string_interner_size {
-            traces.otlp.string_interner_size = v;
-        }
-        if let Some(v) = self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind {
-            traces.otlp.enable_compute_top_level_by_span_kind = v;
-        }
-        if let Some(v) = self.otlp_config.traces.ignore_missing_datadog_fields {
-            traces.otlp.ignore_missing_datadog_fields = v;
         }
         if let Some(filter) = &self.ottl_filter_config {
             traces.ottl_filter = OttlFilter {
@@ -641,6 +643,9 @@ mod tests {
         assert_eq!(otlp.contexts.cached_tagsets_limit, 222);
         assert_eq!(otlp.contexts.string_interner_size, 333);
         assert_eq!(otlp.receiver.http.transport, "tcp");
+        assert_eq!(otlp.traces.string_interner_size, 777);
+        assert!(otlp.traces.enable_compute_top_level_by_span_kind);
+        assert!(otlp.traces.ignore_missing_datadog_fields);
 
         // domains.traces
         let traces = &config.domains.traces;
@@ -654,9 +659,6 @@ mod tests {
         assert!(traces.obfuscation.sql.keep_sql_alias);
         assert!(traces.obfuscation.sql.replace_digits);
         assert!(traces.obfuscation.sql.table_names);
-        assert_eq!(traces.otlp.string_interner_size, 777);
-        assert!(traces.otlp.enable_compute_top_level_by_span_kind);
-        assert!(traces.otlp.ignore_missing_datadog_fields);
         assert_eq!(traces.ottl_filter.error_mode, OttlErrorMode::Ignore);
         assert_eq!(
             traces.ottl_filter.span_conditions,

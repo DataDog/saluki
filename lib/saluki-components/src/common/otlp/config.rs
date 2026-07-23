@@ -1,13 +1,10 @@
 //! Shared OTLP receiver configuration.
 
-use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
-};
 use bytesize::ByteSize;
 use facet::Facet;
 use saluki_config::GenericConfiguration;
-use saluki_error::{generic_error, GenericError};
-use serde::{de::Error as _, Deserialize, Deserializer};
+use saluki_error::GenericError;
+use serde::Deserialize;
 
 fn default_grpc_endpoint() -> String {
     "0.0.0.0:4317".to_string()
@@ -112,256 +109,12 @@ impl Default for HttpConfig {
     }
 }
 
-/// OTLP configuration.
-///
-/// This mirrors the Agent's `otlp_config` and contains configuration for
-/// the OTLP receiver as well as signal-specific settings (metrics, logs, traces).
-#[derive(Deserialize, Debug, Default)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct OtlpConfig {
-    /// OTLP receiver configuration.
-    #[serde(default)]
-    pub receiver: Receiver,
-
-    /// Metrics-specific OTLP configuration.
-    #[serde(default)]
-    pub metrics: MetricsConfig,
-
-    /// Logs-specific OTLP configuration.
-    #[serde(default)]
-    pub logs: LogsConfig,
-
-    /// Traces-specific OTLP configuration.
-    #[serde(default)]
-    pub traces: TracesConfig,
-}
-
-/// Configuration for OTLP logs processing.
-#[derive(Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct LogsConfig {
-    /// Whether to enable OTLP logs support.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_logs_enabled")]
-    pub enabled: bool,
-}
-
-fn default_logs_enabled() -> bool {
-    true
-}
-
-impl Default for LogsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_logs_enabled(),
-        }
-    }
-}
-
-// TODO: delete when this component uses typed config
-fn deserialize_histogram_mode<'de, D>(deserializer: D) -> Result<HistogramMode, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
-}
-
-/// Configuration for OTLP histogram processing.
-#[derive(Debug, Default, Deserialize)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct HistogramsConfig {
-    /// Controls how histogram buckets are reported.
-    ///
-    /// Use `distributions` for distribution metrics, `counters` for one metric per bucket, or
-    /// `nobuckets` to omit bucket metrics. The `nobuckets` mode requires histogram aggregation
-    /// metrics to be enabled separately.
-    ///
-    /// Defaults to `distributions`.
-    #[serde(default, deserialize_with = "deserialize_histogram_mode")]
-    pub mode: HistogramMode,
-
-    /// Whether to emit histogram count, sum, minimum, and maximum metrics when available.
-    ///
-    /// When disabled, only configured bucket metrics are emitted. The `nobuckets` mode therefore
-    /// requires this setting.
-    ///
-    /// Defaults to `false`.
-    #[serde(default)]
-    pub send_aggregation_metrics: bool,
-}
-
-// TODO: delete when this component uses typed config
-fn deserialize_cumulative_monotonic_mode<'de, D>(deserializer: D) -> Result<CumulativeMonotonicMode, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
-}
-
-// TODO: delete when this component uses typed config
-fn deserialize_initial_cumulative_monotonic_value<'de, D>(
-    deserializer: D,
-) -> Result<InitialCumulativeMonotonicValue, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
-}
-
-// TODO: delete when this component uses typed config
-fn deserialize_summary_mode<'de, D>(deserializer: D) -> Result<SummaryMode, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    String::deserialize(deserializer)?.parse().map_err(D::Error::custom)
-}
-
-/// Configuration for OTLP metrics processing.
-#[derive(Deserialize, Debug)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct MetricsConfig {
-    /// Whether to enable OTLP metrics support.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_metrics_enabled")]
-    pub enabled: bool,
-
-    /// Histogram processing configuration.
-    #[serde(default)]
-    pub histograms: HistogramsConfig,
-
-    /// Whether to add scalar resource attributes as raw tags on emitted metrics.
-    ///
-    /// Recognized mappings are always applied. When enabled, supported scalar resource attributes
-    /// (string, bool, integer, float) are also emitted as raw `key:value` tags under their original
-    /// keys. Corresponds to `otlp_config.metrics.resource_attributes_as_tags`.
-    ///
-    /// Defaults to `false`.
-    #[serde(default)]
-    pub resource_attributes_as_tags: bool,
-
-    /// Comma-separated tags added to every emitted metric.
-    ///
-    /// Corresponds to `otlp_config.metrics.tags`.
-    ///
-    /// Defaults to empty.
-    #[serde(default)]
-    pub tags: String,
-
-    /// Configuration for OTLP sums.
-    #[serde(default)]
-    pub sums: SumsConfig,
-
-    /// Summary processing configuration.
-    #[serde(default)]
-    pub summaries: SummariesConfig,
-}
-
-/// Configuration for OTLP sums.
-#[derive(Deserialize, Debug, Default)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct SumsConfig {
-    /// Controls how cumulative monotonic sums are emitted.
-    ///
-    /// The default `to_delta` converts each cumulative value to a delta and emits it as a count. Set this to
-    /// `raw_value` to emit the cumulative value as a gauge instead. This affects only cumulative monotonic sums;
-    /// delta sums and non-monotonic sums retain their existing behavior. Use `raw_value` when the receiver of the
-    /// translated metrics needs the original cumulative value.
-    ///
-    /// Corresponds to `otlp_config.metrics.sums.cumulative_monotonic_mode`.
-    #[serde(default, deserialize_with = "deserialize_cumulative_monotonic_mode")]
-    pub cumulative_monotonic_mode: CumulativeMonotonicMode,
-
-    /// Controls how the first value of a cumulative monotonic sum is emitted.
-    ///
-    /// The default `auto` reports the first value only when its series started after the translator process. Set this
-    /// to `drop` to always discard the first value or `keep` to always report it. This affects only cumulative
-    /// monotonic sums in `to_delta` mode; `raw_value` emits every value as a gauge.
-    ///
-    /// Corresponds to `otlp_config.metrics.sums.initial_cumulative_monotonic_value`.
-    #[serde(default, deserialize_with = "deserialize_initial_cumulative_monotonic_value")]
-    pub initial_cumulative_monotonic_value: InitialCumulativeMonotonicValue,
-}
-
-/// Configuration for OTLP summaries.
-#[derive(Deserialize, Debug, Default)]
-#[cfg_attr(test, derive(PartialEq, serde::Serialize))]
-pub struct SummariesConfig {
-    /// Controls how summary quantiles are emitted.
-    ///
-    /// The default `gauges` emits one gauge metric per quantile. Set this to `noquantiles` to omit quantile metrics.
-    ///
-    /// Corresponds to `otlp_config.metrics.summaries.mode`.
-    #[serde(default, deserialize_with = "deserialize_summary_mode")]
-    pub mode: SummaryMode,
-}
-
-fn default_metrics_enabled() -> bool {
-    true
-}
-
-impl Default for MetricsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_metrics_enabled(),
-            histograms: HistogramsConfig::default(),
-            resource_attributes_as_tags: false,
-            tags: String::new(),
-            sums: SumsConfig::default(),
-            summaries: SummariesConfig::default(),
-        }
-    }
-}
-
-//TODO: remove env handling with typed config, unblocked by #2094
-impl MetricsConfig {
-    /// Applies flat environment-variable overrides to nested settings.
-    ///
-    /// Figment exposes single-underscore names as flat keys, which nested deserialization cannot read.
-    pub(crate) fn apply_env_overrides(&mut self, config: &GenericConfiguration) -> Result<(), GenericError> {
-        if let Some(send_aggregation_metrics) =
-            config.try_get_typed::<bool>("otlp_config_metrics_histograms_send_aggregation_metrics")?
-        {
-            self.histograms.send_aggregation_metrics = send_aggregation_metrics;
-        }
-        if let Some(raw_mode) = config.try_get_typed::<String>("otlp_config_metrics_sums_cumulative_monotonic_mode")? {
-            self.sums.cumulative_monotonic_mode = raw_mode.parse().map_err(|error| {
-                generic_error!(
-                    "invalid `otlp_config.metrics.sums.cumulative_monotonic_mode` environment override: {error}"
-                )
-            })?;
-        }
-        if let Some(raw_value) =
-            config.try_get_typed::<String>("otlp_config_metrics_sums_initial_cumulative_monotonic_value")?
-        {
-            self.sums.initial_cumulative_monotonic_value = raw_value.parse().map_err(|error| {
-                generic_error!(
-                    "invalid `otlp_config.metrics.sums.initial_cumulative_monotonic_value` environment override: {error}"
-                )
-            })?;
-        }
-        if let Some(raw_mode) = config.try_get_typed::<String>("otlp_config_metrics_summaries_mode")? {
-            self.summaries.mode = raw_mode.parse().map_err(|error| {
-                generic_error!("invalid `otlp_config.metrics.summaries.mode` environment override: {error}")
-            })?;
-        }
-        Ok(())
-    }
-}
-
 /// Configuration for OTLP traces processing.
 ///
 /// Mirrors the Agent's `otlp_config.traces` configuration.
 #[derive(Clone, Deserialize, Debug)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct TracesConfig {
-    /// Whether to enable OTLP traces support.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_traces_enabled")]
-    pub enabled: bool,
-
     /// Whether to skip deriving Datadog fields from standard OTLP attributes.
     ///
     /// When true, only uses explicit `datadog.*` prefixed attributes and skips
@@ -437,10 +190,6 @@ const fn default_enable_otlp_compute_top_level_by_span_kind() -> bool {
     true
 }
 
-fn default_traces_enabled() -> bool {
-    true
-}
-
 impl TracesConfig {
     /// Applies env var overrides for keys whose `DD_`-stripped flat form can't reach the nested
     /// struct through normal serde deserialization.
@@ -462,7 +211,6 @@ impl TracesConfig {
 impl Default for TracesConfig {
     fn default() -> Self {
         Self {
-            enabled: default_traces_enabled(),
             ignore_missing_datadog_fields: false,
             enable_otlp_compute_top_level_by_span_kind: default_enable_otlp_compute_top_level_by_span_kind(),
             probabilistic_sampler: ProbabilisticSampler::default(),

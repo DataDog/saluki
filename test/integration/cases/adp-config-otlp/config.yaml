@@ -1,0 +1,179 @@
+type: integration
+name: "adp-config-otlp"
+description: "Verifies OTLP config env vars reach ADP's /config/internal endpoint in connected mode."
+timeout: 180s
+runtimes: [linux, mac, windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-otlp-config-connected"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_LOG_LEVEL: "info"
+
+  # OTLP -- Datadog schema keys
+  DD_OTLP_CONFIG_LOGS_ENABLED: "true"
+  DD_OTLP_CONFIG_METRICS_ENABLED: "false"
+  DD_OTLP_CONFIG_METRICS_HISTOGRAMS_MODE: "counters"
+  DD_OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS: "true"
+  DD_OTLP_CONFIG_METRICS_RESOURCE_ATTRIBUTES_AS_TAGS: "true"
+  DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE: "raw_value"
+  DD_OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE: "drop"
+  DD_OTLP_CONFIG_METRICS_TAGS: "env:integration-otlp,team:agent-dataplane"
+  DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT: "0.0.0.0:14317"
+  DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB: "7"
+  DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT: "unix"
+  DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT: "0.0.0.0:14318"
+  DD_OTLP_CONFIG_TRACES_ENABLED: "false"
+  DD_OTLP_CONFIG_TRACES_INTERNAL_PORT: "5017"
+  DD_OTLP_CONFIG_TRACES_PROBABILISTIC_SAMPLER_SAMPLING_PERCENTAGE: "42.5"
+
+  # OTLP -- Saluki-only keys
+  DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE: "1MiB"
+  DD_OTLP_CONFIG_TRACES_ENABLE_OTLP_COMPUTE_TOP_LEVEL_BY_SPAN_KIND: "false"
+  DD_OTLP_CONFIG_TRACES_IGNORE_MISSING_DATADOG_FIELDS: "true"
+  DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TRANSPORT: "unix"
+  DD_OTLP_STRING_INTERNER_SIZE: "3MiB"
+  DD_OTLP_CACHED_CONTEXTS_LIMIT: "123456"
+  DD_OTLP_CACHED_TAGSETS_LIMIT: "234567"
+  DD_OTLP_ALLOW_CONTEXT_HEAP_ALLOCS: "false"
+
+container:
+  exposed_ports:
+    - "55101/tcp"
+
+procedure:
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: control.logging.level
+    value: info
+    timeout: 60s
+
+  # OTLP -- Datadog schema keys
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.receiver.logs_enabled
+    value: true
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.receiver.metrics_enabled
+    value: false
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.metrics.histogram_mode
+    value: "Counters"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.metrics.send_histogram_aggregations
+    value: true
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.metrics.resource_attributes_as_tags
+    value: true
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.metrics.sums.cumulative_monotonic_mode
+    value: "RawValue"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.metrics.sums.initial_cumulative_monotonic_value
+    value: "Drop"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.metrics.tags
+    value: "env:integration-otlp,team:agent-dataplane"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.receiver.grpc.endpoint
+    value: "0.0.0.0:14317"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.receiver.grpc.max_recv_msg_size_mib
+    value: 7
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.receiver.grpc.transport
+    value: "unix"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.receiver.http.endpoint
+    value: "0.0.0.0:14318"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.traces.enabled
+    value: false
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.traces.internal_port
+    value: 5017
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.traces.probabilistic_sampler_sampling_percentage
+    value: 42.5
+    timeout: 60s
+
+  # OTLP -- Saluki-only keys
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.traces.string_interner_size
+    value: 1048576
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.traces.enable_compute_top_level_by_span_kind
+    value: false
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.traces.ignore_missing_datadog_fields
+    value: true
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.receiver.http.transport
+    value: "unix"
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.contexts.string_interner_size
+    value: 3145728
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.contexts.cached_contexts_limit
+    value: 123456
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.contexts.cached_tagsets_limit
+    value: 234567
+    timeout: 60s
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/internal"
+    key: domains.otlp.contexts.allow_context_heap_allocs
+    value: false
+    timeout: 60s
+
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

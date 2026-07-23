@@ -140,7 +140,7 @@ pub struct TestSupport {
     /// Override the type inferred from the schema.
     #[serde(default)]
     pub value_type_override: Option<ValueType>,
-    /// Config structs that consume this key (non-empty) for configuration smoke tests.
+    /// Configuration consumers that incorporate this key (non-empty).
     pub used_by: IndexSet<ConfigurationStruct>,
     /// Literal JSON value for smoke test injection.
     #[serde(default)]

@@ -1,4 +1,4 @@
-//! Traces domain: APM trace processing (env, sampling, obfuscation) plus OTLP trace ingestion.
+//! Traces domain: APM trace processing, including environment, sampling, and obfuscation.
 
 use serde::Serialize;
 
@@ -46,9 +46,6 @@ pub struct Domain {
     /// Per-subsystem trace obfuscation settings.
     pub obfuscation: Obfuscation,
 
-    /// OTLP trace ingestion settings.
-    pub otlp: OtlpTraces,
-
     /// OTTL span-drop filter settings.
     pub ottl_filter: OttlFilter,
 
@@ -78,31 +75,6 @@ pub struct ProbabilisticSampler {
 
     /// Percentage of traces the probabilistic sampler keeps.
     pub sampling_percentage: f64,
-}
-
-/// OTLP trace ingestion specifics.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct OtlpTraces {
-    /// Whether OTLP trace ingestion is enabled.
-    pub enabled: bool,
-
-    /// Internal port the OTLP trace receiver forwards to.
-    pub internal_port: u16,
-
-    /// Percentage of OTLP traces the probabilistic sampler keeps.
-    pub probabilistic_sampler_sampling_percentage: f64,
-
-    /// Number of entries the OTLP trace context interner holds. (not in Datadog Agent config
-    /// schema)
-    pub string_interner_size: u64,
-
-    /// Whether top-level spans are computed from span kind on OTLP traces. (not in Datadog Agent
-    /// config schema)
-    pub enable_compute_top_level_by_span_kind: bool,
-
-    /// Whether spans missing intake-required fields are ingested rather than rejected. (not in
-    /// Datadog Agent config schema)
-    pub ignore_missing_datadog_fields: bool,
 }
 
 /// Trace obfuscation, one group per supported subsystem.
