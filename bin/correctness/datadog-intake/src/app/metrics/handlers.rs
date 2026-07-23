@@ -78,12 +78,24 @@ pub async fn handle_sketch_beta(State(state): State<MetricsState>, body: Bytes) 
         }
     };
 
-    match state.merge_sketch_payload(payload) {
+    match state.merge_sketch_payload(payload.clone()) {
         Ok(()) => {
             info!("Processed sketch payload.");
             StatusCode::ACCEPTED
         }
         Err(e) => {
+            for sketch in &payload.sketches {
+                for dogsketch in &sketch.dogsketches {
+                    if dogsketch.cnt < 0 {
+                        error!(
+                            metric = sketch.metric(),
+                            count = dogsketch.cnt,
+                            bin_count = dogsketch.n.len(),
+                            "Rejected sketch has a negative count."
+                        );
+                    }
+                }
+            }
             error!(error = %e, "Failed to merge sketch payload.");
             StatusCode::BAD_REQUEST
         }
