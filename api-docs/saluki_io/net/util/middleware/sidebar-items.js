@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["RetryCircuitBreakerError"],"struct":["RetryCircuitBreaker","RetryCircuitBreakerLayer"]};
+window.SIDEBAR_ITEMS = {"enum":["RetryCircuitBreakerError"],"struct":["HttpInspection","HttpInspectionLayer","RetryCircuitBreaker","RetryCircuitBreakerLayer"]};
