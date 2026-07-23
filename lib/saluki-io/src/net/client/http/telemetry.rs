@@ -190,21 +190,15 @@ struct SuccessCounters {
 }
 
 impl SuccessCounters {
-    fn slot_for_version(&self, version: Version) -> Option<(&OnceLock<Counter>, &'static str)> {
+    fn slot_for_version(&self, version: Version) -> (&OnceLock<Counter>, &'static str) {
         match version {
-            Version::HTTP_09 => Some((&self.http_09, "HTTP/0.9")),
-            Version::HTTP_10 => Some((&self.http_10, "HTTP/1.0")),
-            Version::HTTP_11 => Some((&self.http_11, "HTTP/1.1")),
-            Version::HTTP_2 => Some((&self.http_2, "HTTP/2.0")),
-            Version::HTTP_3 => Some((&self.http_3, "HTTP/3.0")),
-            _ => None,
+            Version::HTTP_09 => (&self.http_09, "HTTP/0.9"),
+            Version::HTTP_10 => (&self.http_10, "HTTP/1.0"),
+            Version::HTTP_11 => (&self.http_11, "HTTP/1.1"),
+            Version::HTTP_2 => (&self.http_2, "HTTP/2.0"),
+            Version::HTTP_3 => (&self.http_3, "HTTP/3.0"),
+            _ => (&self.fallback, "unknown"),
         }
-    }
-
-    fn fallback_counter(&self, builder: &MetricsBuilder) -> &Counter {
-        self.fallback.get_or_init(|| {
-            builder.register_counter_with_tags("network_http_requests_success_total", [("proto_version", "unknown")])
-        })
     }
 }
 
@@ -248,19 +242,14 @@ impl PerEndpointTelemetry {
     }
 
     fn increment_success(&self, version: Version) {
-        if let Some((slot, proto_version)) = self.success.slot_for_version(version) {
-            slot.get_or_init(|| {
-                self.builder.register_counter_with_tags(
-                    "network_http_requests_success_total",
-                    [("proto_version", proto_version)],
-                )
-            })
-            .increment(1);
-        } else {
-            // Unknown versions are intentionally grouped until explicit support is added. The lazy fallback keeps
-            // unfamiliar versions non-panicking without adding overhead to known-version requests.
-            self.success.fallback_counter(&self.builder).increment(1);
-        }
+        let (slot, proto_version) = self.success.slot_for_version(version);
+        slot.get_or_init(|| {
+            self.builder.register_counter_with_tags(
+                "network_http_requests_success_total",
+                [("proto_version", proto_version)],
+            )
+        })
+        .increment(1);
     }
 
     fn increment_success_bytes(&self, len: u64) {
@@ -480,51 +469,10 @@ mod tests {
         ];
 
         for (version, expected_slot, expected_label) in cases {
-            let (slot, label) = counters
-                .slot_for_version(version)
-                .expect("known HTTP version should have a dedicated counter slot");
+            let (slot, label) = counters.slot_for_version(version);
             assert!(std::ptr::eq(slot, expected_slot));
             assert_eq!(label, expected_label);
         }
-    }
-
-    #[test]
-    fn fallback_success_counter_is_registered_lazily_and_reused() {
-        let recorder = DebuggingRecorder::new();
-        let snapshotter = recorder.snapshotter();
-        let builder = MetricsBuilder::default();
-        let counters = SuccessCounters::default();
-        let fallback: &OnceLock<Counter> = &counters.fallback;
-
-        assert!(fallback.get().is_none());
-
-        metrics::with_local_recorder(&recorder, || {
-            let first = counters.fallback_counter(&builder);
-            first.increment(2);
-            let second = counters.fallback_counter(&builder);
-            second.increment(3);
-            assert!(std::ptr::eq(first, second));
-        });
-
-        assert!(fallback.get().is_some());
-
-        let snapshot = snapshotter.snapshot().into_hashmap();
-        let success_keys = snapshot
-            .keys()
-            .filter(|key| key.key().name() == "network_http_requests_success_total")
-            .count();
-        assert_eq!(success_keys, 1);
-        let key = CompositeKey::new(
-            MetricKind::Counter,
-            Key::from_parts(
-                "network_http_requests_success_total",
-                vec![Label::new("proto_version", "unknown")],
-            ),
-        );
-        let (_, _, value) = snapshot
-            .get(&key)
-            .expect("fallback success counter should use the unknown protocol label");
-        assert_eq!(value, &DebugValue::Counter(5));
     }
 
     #[test]
