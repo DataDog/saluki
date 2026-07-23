@@ -12,6 +12,22 @@ static DATA_PLANE_METRICS_V3_SERIES_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
     default: Some("false"),
 };
 
+static DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: Some("localhost:6317"),
+};
+
+static DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.otlp.receiver_http_endpoint_temporary",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: Some("localhost:6318"),
+};
+
 static DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "data_plane.serializer_zstd_compressor_level",
@@ -91,6 +107,28 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.otlp.receiver_grpc_endpoint_temporary`
+    DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY = SalukiAnnotation {
+        schema: &DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.otlp.receiver_http_endpoint_temporary`
+    DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY = SalukiAnnotation {
+        schema: &DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
