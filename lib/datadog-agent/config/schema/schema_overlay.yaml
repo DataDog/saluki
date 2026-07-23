@@ -1987,17 +1987,47 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.logs.enabled"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "false"
       additional_attributes:
         config_registry_filename: otlp.rs
+
+  otlp_config.metrics.batch.flush_timeout:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "OTLP metrics batch flush timeout"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+  otlp_config.metrics.batch.max_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Maximum OTLP metrics batch size"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+  otlp_config.metrics.batch.min_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Minimum OTLP metrics batch size"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
     description: "otlp_config.metrics.enabled"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2006,7 +2036,7 @@ inventory:
     pipelines: [otlp]
     description: "OTLP histogram bucket reporting mode"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"counters"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2016,7 +2046,7 @@ inventory:
     pipelines: [otlp]
     description: "Emit OTLP histogram aggregation metrics."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2026,7 +2056,7 @@ inventory:
     pipelines: [otlp]
     description: "Add scalar resource attributes as raw tags."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2038,7 +2068,7 @@ inventory:
       Controls how summary quantiles are reported. The default `gauges` emits one gauge metric per quantile. Set this
       to `noquantiles` to omit quantile metrics.
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"noquantiles"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2051,7 +2081,7 @@ inventory:
       Controls how cumulative monotonic sums are reported. The default `to_delta` converts cumulative values to
       deltas and reports them as counts. Set this to `raw_value` to report cumulative values as gauges.
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"raw_value"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2065,7 +2095,7 @@ inventory:
       when the series started after the Agent Data Plane process. Set this to `drop` to always discard the first value
       or `keep` to always report it.
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"drop"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2075,7 +2105,7 @@ inventory:
     pipelines: [otlp]
     description: "Comma-separated tags for all OTLP metrics."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2084,7 +2114,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.endpoint"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2093,7 +2123,7 @@ inventory:
     pipelines: [otlp]
     description: "Max OTLP inbound gRPC message size (MiB)"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2103,7 +2133,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.transport"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2112,7 +2142,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.http.endpoint"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2121,7 +2151,7 @@ inventory:
     pipelines: [traces]
     description: "otlp_config.traces.enabled"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2130,7 +2160,7 @@ inventory:
     pipelines: [traces]
     description: "otlp_config.traces.internal_port"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2140,7 +2170,7 @@ inventory:
     pipelines: [traces]
     description: "OTLP trace sampling percentage"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -3949,9 +3979,6 @@ excluded:
   otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.flush_timeout: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.max_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"

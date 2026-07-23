@@ -251,9 +251,10 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
         V: Visitor<'de>,
     {
         // `DurationString` and `ByteSize` land here; both accept a raw string, so the environment
-        // value is carried through verbatim for the leaf's own `deserialize_any` to interpret.
+        // value is carried through verbatim for the leaf's own `deserialize_any` to interpret. Use
+        // a non-zero throwaway so constrained byte-size fields can complete discovery.
         self.record_leaf(EnvDecode::RawString);
-        visitor.visit_u64(0)
+        visitor.visit_u64(1)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>

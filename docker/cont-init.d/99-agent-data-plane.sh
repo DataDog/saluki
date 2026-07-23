@@ -19,8 +19,10 @@ env | grep '^ADP_DD_' | while IFS='=' read -r key value; do
     printf "%s" "$value" > "/run/adp/env/$new_key"
 done
 
-# When ADP is handling OTLP, redirect Agent's OTLP receivers to unused localhost ports
-# so ADP can bind to the actual ports (4317, 4318)
+# Keep the Core Agent's OTLP listeners from contending with ADP.
+#
+# TODO(#2177): Remove this redirect when ADP returns to the canonical schema-provided endpoints and
+# OTLP listener ownership prevents port contention.
 if [[ "${DD_DATA_PLANE_OTLP_ENABLED}" == "true" ]]; then
     # Agent listens on unused local ports
     printf "127.0.0.1:14317" > /run/agent/env/DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT

@@ -17,6 +17,7 @@ use std::fmt;
 use serde::Serialize;
 
 pub mod control;
+pub mod defaults;
 pub mod domains;
 pub mod live;
 pub mod shared;

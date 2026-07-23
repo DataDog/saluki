@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use axum::body::Bytes;
-use bytesize::ByteSize;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
@@ -15,7 +15,6 @@ use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceS
 use prost::Message;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_common::task::HandleExt as _;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -32,7 +31,6 @@ use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -40,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
-use crate::common::otlp::config::OtlpConfig;
+use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
 
 mod logs;
@@ -66,118 +64,41 @@ fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
     tags.into_shared()
 }
 
-const fn default_context_string_interner_size() -> ByteSize {
-    ByteSize::mib(2)
-}
-
-const fn default_cached_contexts_limit() -> usize {
-    500_000
-}
-
-const fn default_cached_tagsets_limit() -> usize {
-    500_000
-}
-
-const fn default_allow_context_heap_allocations() -> bool {
-    true
-}
-
 /// Configuration for the OTLP source.
-#[derive(Deserialize, Default)]
-#[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
-#[cfg_attr(test, derive_where(PartialEq))]
+#[derive(Default)]
 pub struct OtlpConfiguration {
-    #[serde(skip)]
     default_hostname: MetaString,
 
-    otlp_config: OtlpConfig,
-
-    /// Total size of the string interner used for contexts.
-    ///
-    /// This controls the amount of memory that can be used to intern metric names and tags. If the interner is full,
-    /// metrics with contexts that haven't already been resolved may or may not be dropped, depending on the value of
-    /// `allow_context_heap_allocations`.
-    #[serde(
-        rename = "otlp_string_interner_size",
-        default = "default_context_string_interner_size"
-    )]
-    context_string_interner_bytes: ByteSize,
-
-    /// The maximum number of cached contexts to allow.
-    ///
-    /// This is the maximum number of resolved contexts that can be cached at any given time. This limit doesn't affect
-    /// the total number of contexts that can be _alive_ at any given time, which is dependent on the interner capacity
-    /// and whether or not heap allocations are allowed.
-    ///
-    /// Defaults to 500,000.
-    #[serde(rename = "otlp_cached_contexts_limit", default = "default_cached_contexts_limit")]
-    cached_contexts_limit: usize,
-
-    /// The maximum number of cached tagsets to allow.
-    ///
-    /// This is the maximum number of resolved tagsets that can be cached at any given time. This limit doesn't affect
-    /// the total number of tagsets that can be _alive_ at any given time, which is dependent on the interner capacity
-    /// and whether or not heap allocations are allowed.
-    ///
-    /// Defaults to 500,000.
-    #[serde(rename = "otlp_cached_tagsets_limit", default = "default_cached_tagsets_limit")]
-    cached_tagsets_limit: usize,
-
-    /// Whether or not to allow heap allocations when resolving contexts.
-    ///
-    /// When resolving contexts during parsing, the metric name and tags are interned to reduce memory usage. The
-    /// interner has a fixed size, however, which means some strings can fail to be interned if the interner is full.
-    /// When set to `true`, we allow these strings to be allocated on the heap like normal, but this can lead to
-    /// increased (unbounded) memory usage. When set to `false`, if the metric name and all of its tags can't be
-    /// interned, the metric is skipped.
-    ///
-    /// Defaults to `true`.
-    #[serde(
-        rename = "otlp_allow_context_heap_allocs",
-        default = "default_allow_context_heap_allocations"
-    )]
-    allow_context_heap_allocations: bool,
+    /// Resolved OTLP domain slice.
+    otlp: domains::otlp::Domain,
 
     /// Workload provider to utilize for origin detection/enrichment.
-    #[serde(skip)]
-    #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl OtlpConfiguration {
-    /// Creates a new `OTLPConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut cfg: Self = config.as_typed()?;
-        cfg.otlp_config.metrics.apply_env_overrides(config)?;
-        cfg.otlp_config.traces.apply_env_overrides(config)?;
-        Ok(cfg)
+    /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration.
+    pub fn from_configuration(otlp: &domains::otlp::Domain) -> Self {
+        Self {
+            default_hostname: MetaString::default(),
+            otlp: otlp.clone(),
+            workload_provider: None,
+        }
     }
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
         metrics::config::OtlpMetricsTranslatorConfig::default()
-            .with_summary_mode(self.otlp_config.metrics.summaries.mode)
-            .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
-            .with_send_histogram_aggregations(self.otlp_config.metrics.histograms.send_aggregation_metrics)
-            .with_cumulative_monotonic_mode(self.otlp_config.metrics.sums.cumulative_monotonic_mode)
-            .with_initial_cumulative_monotonic_value(self.otlp_config.metrics.sums.initial_cumulative_monotonic_value)
-            .with_resource_attributes_as_tags(self.otlp_config.metrics.resource_attributes_as_tags)
+            .with_summary_mode(self.otlp.metrics.summaries.mode)
+            .with_histogram_mode(self.otlp.metrics.histogram_mode)
+            .with_send_histogram_aggregations(self.otlp.metrics.send_histogram_aggregations)
+            .with_cumulative_monotonic_mode(self.otlp.metrics.sums.cumulative_monotonic_mode)
+            .with_initial_cumulative_monotonic_value(self.otlp.metrics.sums.initial_cumulative_monotonic_value)
+            .with_resource_attributes_as_tags(self.otlp.metrics.resource_attributes_as_tags)
     }
 
     /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
     pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
         self.default_hostname = hostname.into();
-        self
-    }
-
-    /// Overrides the OTLP gRPC listener endpoint.
-    pub fn with_grpc_endpoint(mut self, endpoint: String) -> Self {
-        self.otlp_config.receiver.protocols.grpc.endpoint = endpoint;
-        self
-    }
-
-    /// Overrides the OTLP HTTP listener endpoint.
-    pub fn with_http_endpoint(mut self, endpoint: String) -> Self {
-        self.otlp_config.receiver.protocols.http.endpoint = endpoint;
         self
     }
 
@@ -210,7 +131,7 @@ impl SourceBuilder for OtlpConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        if !self.otlp_config.metrics.enabled && !self.otlp_config.logs.enabled && !self.otlp_config.traces.enabled {
+        if !self.otlp.receiver.metrics_enabled && !self.otlp.receiver.logs_enabled && !self.otlp.traces.enabled {
             return Err(generic_error!(
                 "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
             ));
@@ -218,7 +139,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         let grpc_listen_str = format!(
             "{}://{}",
-            self.otlp_config.receiver.protocols.grpc.transport, self.otlp_config.receiver.protocols.grpc.endpoint
+            self.otlp.receiver.grpc.transport, self.otlp.receiver.grpc.endpoint
         );
         let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
             .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
@@ -228,7 +149,7 @@ impl SourceBuilder for OtlpConfiguration {
             return Err(generic_error!("Only 'tcp' transport is supported for OTLP gRPC"));
         }
 
-        let http_endpoint_str = &self.otlp_config.receiver.protocols.http.endpoint;
+        let http_endpoint_str = &self.otlp.receiver.http.endpoint;
         let http_socket_addr = http_endpoint_str
             .to_socket_addrs()
             .map_err(|e| generic_error!("Invalid HTTP endpoint address '{}': {}", http_endpoint_str, e))?
@@ -237,16 +158,18 @@ impl SourceBuilder for OtlpConfiguration {
 
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 
-        let context_resolver = build_context_resolver(self, &context, maybe_origin_tags_resolver.clone())?;
+        let context_resolver =
+            build_context_resolver(&self.otlp.contexts, &context, maybe_origin_tags_resolver.clone())?;
         let metrics_translator_config = self.metrics_translator_config();
 
-        let metric_tags = parse_configured_metric_tags(&self.otlp_config.metrics.tags);
-        let traces_interner_size =
-            std::num::NonZeroUsize::new(self.otlp_config.traces.string_interner_bytes.as_u64() as usize)
-                .ok_or_else(|| generic_error!("otlp_config.traces.string_interner_size must be greater than 0"))?;
-        let traces_translator = OtlpTracesTranslator::new(self.otlp_config.traces.clone(), traces_interner_size);
-        let grpc_max_recv_msg_size_bytes =
-            self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
+        let traces_config = TracesConfig {
+            enable_otlp_compute_top_level_by_span_kind: self.otlp.traces.enable_compute_top_level_by_span_kind,
+            ignore_missing_datadog_fields: self.otlp.traces.ignore_missing_datadog_fields,
+            ..Default::default()
+        };
+        let traces_translator = OtlpTracesTranslator::new(traces_config, self.otlp.traces.string_interner_size);
+        let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let metrics = build_metrics(&context);
 
         Ok(Box::new(Otlp {
@@ -549,38 +472,13 @@ async fn run_converter(
 }
 
 #[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::OtlpConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::OTLP_CONFIGURATION,
-            &[],
-            json!({ "otlp_config": {} }),
-            |cfg| OtlpConfiguration::from_configuration(&cfg).expect("OtlpConfiguration should deserialize"),
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
-    }
-}
-
-#[cfg(test)]
 mod tests {
+    use agent_data_plane_config::domains;
     use agent_data_plane_config::domains::otlp::{
-        CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue,
+        CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     };
-    use saluki_config::{config_from, ConfigurationLoader};
-    use serde_json::json;
 
     use super::{parse_configured_metric_tags, OtlpConfiguration};
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -589,168 +487,76 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test]
-    async fn histogram_modes_flow_to_metrics_translator() {
-        let cases = [
-            ("nobuckets", HistogramMode::NoBuckets),
-            ("counters", HistogramMode::Counters),
-            ("distributions", HistogramMode::Distributions),
-        ];
+    fn config_with_metrics(metrics: domains::otlp::Metrics) -> OtlpConfiguration {
+        let otlp = domains::otlp::Domain {
+            metrics,
+            ..Default::default()
+        };
+        OtlpConfiguration::from_configuration(&otlp)
+    }
 
-        for (configured_mode, expected_mode) in cases {
-            let config = config_from(json!({
-                "otlp_config": {
-                    "metrics": {
-                        "histograms": {
-                            "mode": configured_mode
-                        }
-                    }
-                }
-            }))
-            .await;
-            let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
+    #[test]
+    fn histogram_mode_flows_to_metrics_translator() {
+        for mode in [
+            HistogramMode::NoBuckets,
+            HistogramMode::Counters,
+            HistogramMode::Distributions,
+        ] {
+            let config = config_with_metrics(domains::otlp::Metrics {
+                histogram_mode: mode,
+                ..Default::default()
+            });
 
-            assert_eq!(otlp_config.metrics_translator_config().hist_mode, expected_mode);
+            assert_eq!(config.metrics_translator_config().hist_mode, mode);
         }
     }
 
-    #[tokio::test]
-    async fn summary_mode_flows_to_metrics_translator() {
-        let cases = [("gauges", true), ("noquantiles", false)];
+    #[test]
+    fn summary_mode_flows_to_metrics_translator() {
+        // `gauges` emits one gauge per quantile (quantiles on); `noquantiles` omits them.
+        for (mode, expected_quantiles) in [(SummaryMode::Gauges, true), (SummaryMode::NoQuantiles, false)] {
+            let config = config_with_metrics(domains::otlp::Metrics {
+                summaries: domains::otlp::Summaries { mode },
+                ..Default::default()
+            });
 
-        for (configured_mode, expected_quantiles) in cases {
-            let config = config_from(json!({
-                "otlp_config": {
-                    "metrics": {
-                        "summaries": {
-                            "mode": configured_mode
-                        }
-                    }
-                }
-            }))
-            .await;
-            let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
-
-            assert_eq!(otlp_config.metrics_translator_config().quantiles, expected_quantiles);
+            assert_eq!(config.metrics_translator_config().quantiles, expected_quantiles);
         }
     }
 
-    #[tokio::test]
-    async fn summary_mode_is_configurable_via_environment_variable() {
-        let env_vars = [(
-            "OTLP_CONFIG_METRICS_SUMMARIES_MODE".to_string(),
-            "noquantiles".to_string(),
-        )];
-        let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            Some(json!({ "otlp_config": {} })),
-            Some(&env_vars),
-            false,
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await;
-        let config =
-            OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
+    #[test]
+    fn histogram_aggregation_flows_to_metrics_translator() {
+        for send in [false, true] {
+            let config = config_with_metrics(domains::otlp::Metrics {
+                send_histogram_aggregations: send,
+                ..Default::default()
+            });
 
-        assert!(!config.metrics_translator_config().quantiles);
-    }
-
-    #[tokio::test]
-    async fn histogram_aggregation_setting_flows_to_metrics_translator() {
-        let cases = [
-            (json!({ "otlp_config": {} }), false),
-            (
-                json!({
-                    "otlp_config": {
-                        "metrics": {
-                            "histograms": {
-                                "send_aggregation_metrics": false
-                            }
-                        }
-                    }
-                }),
-                false,
-            ),
-            (
-                json!({
-                    "otlp_config": {
-                        "metrics": {
-                            "histograms": {
-                                "send_aggregation_metrics": true
-                            }
-                        }
-                    }
-                }),
-                true,
-            ),
-        ];
-
-        for (raw_config, expected) in cases {
-            let config = config_from(raw_config).await;
-            let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
-
-            assert_eq!(
-                otlp_config.metrics_translator_config().send_histogram_aggregations,
-                expected
-            );
+            assert_eq!(config.metrics_translator_config().send_histogram_aggregations, send);
         }
     }
 
-    #[tokio::test]
-    async fn histogram_aggregation_setting_configurable_via_environment_variable() {
-        // Figment exposes this setting as a flat key, so the explicit override must bridge it into `HistogramsConfig`.
-        let env_vars = [(
-            "OTLP_CONFIG_METRICS_HISTOGRAMS_SEND_AGGREGATION_METRICS".to_string(),
-            "true".to_string(),
-        )];
-        let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            Some(json!({ "otlp_config": {} })),
-            Some(&env_vars),
-            false,
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await;
-        let config =
-            OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
+    #[test]
+    fn nobuckets_with_histogram_aggregations_is_valid() {
+        let config = config_with_metrics(domains::otlp::Metrics {
+            histogram_mode: HistogramMode::NoBuckets,
+            send_histogram_aggregations: true,
+            ..Default::default()
+        });
 
-        assert!(config.metrics_translator_config().send_histogram_aggregations);
+        assert!(config.metrics_translator_config().validate().is_ok());
     }
 
-    #[tokio::test]
-    async fn nobuckets_with_histogram_aggregations_is_valid() {
-        let config = config_from(json!({
-            "otlp_config": {
-                "metrics": {
-                    "histograms": {
-                        "mode": "nobuckets",
-                        "send_aggregation_metrics": true
-                    }
-                }
-            }
-        }))
-        .await;
-        let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
-
-        assert!(otlp_config.metrics_translator_config().validate().is_ok());
-    }
-
-    #[tokio::test]
-    async fn nobuckets_without_histogram_aggregations_is_invalid() {
+    #[test]
+    fn nobuckets_without_histogram_aggregations_is_invalid() {
         // Match the Agent: `nobuckets` without aggregation metrics emits nothing and is invalid.
-        let config = config_from(json!({
-            "otlp_config": {
-                "metrics": {
-                    "histograms": {
-                        "mode": "nobuckets"
-                    }
-                }
-            }
-        }))
-        .await;
-        let otlp_config = OtlpConfiguration::from_configuration(&config).expect("OTLP configuration should parse");
+        let config = config_with_metrics(domains::otlp::Metrics {
+            histogram_mode: HistogramMode::NoBuckets,
+            send_histogram_aggregations: false,
+            ..Default::default()
+        });
 
-        assert!(otlp_config.metrics_translator_config().validate().is_err());
+        assert!(config.metrics_translator_config().validate().is_err());
     }
 
     #[test]
@@ -763,115 +569,39 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn cumulative_monotonic_sum_mode_configures_metrics_translator() {
-        let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            Some(json!({
-                "otlp_config": {
-                    "metrics": {
-                        "sums": {
-                            "cumulative_monotonic_mode": "raw_value"
-                        }
-                    }
-                }
-            })),
-            None,
-            false,
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await;
-        let config =
-            OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
+    #[test]
+    fn cumulative_monotonic_mode_flows_to_metrics_translator() {
+        for mode in [CumulativeMonotonicMode::ToDelta, CumulativeMonotonicMode::RawValue] {
+            let config = config_with_metrics(domains::otlp::Metrics {
+                sums: domains::otlp::Sums {
+                    cumulative_monotonic_mode: mode,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
 
-        assert_eq!(
-            config.metrics_translator_config().cumulative_monotonic_mode,
-            CumulativeMonotonicMode::RawValue
-        );
-    }
-
-    #[tokio::test]
-    async fn cumulative_monotonic_mode_environment_variable_configures_metrics_translator() {
-        let env_vars = [(
-            "OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE".to_string(),
-            "raw_value".to_string(),
-        )];
-        let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            Some(json!({ "otlp_config": {} })),
-            Some(&env_vars),
-            false,
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await;
-        let config =
-            OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
-        let translator_config = config.metrics_translator_config();
-
-        assert_eq!(
-            translator_config.cumulative_monotonic_mode,
-            CumulativeMonotonicMode::RawValue
-        );
-    }
-
-    #[tokio::test]
-    async fn initial_cumulative_monotonic_value_configures_metrics_translator() {
-        for (configured_value, expected_mode) in [
-            ("auto", InitialCumulativeMonotonicValue::Auto),
-            ("drop", InitialCumulativeMonotonicValue::Drop),
-            ("keep", InitialCumulativeMonotonicValue::Keep),
-        ] {
-            let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
-                Some(json!({
-                    "otlp_config": {
-                        "metrics": {
-                            "sums": {
-                                "initial_cumulative_monotonic_value": configured_value
-                            }
-                        }
-                    }
-                })),
-                None,
-                false,
-                KEY_ALIASES,
-                DatadogRemapper::new,
-            )
-            .await;
-            let config =
-                OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
-
-            assert_eq!(
-                config.metrics_translator_config().initial_cumulative_monotonic_value,
-                expected_mode
-            );
+            assert_eq!(config.metrics_translator_config().cumulative_monotonic_mode, mode);
         }
     }
 
-    #[tokio::test]
-    async fn initial_cumulative_monotonic_value_environment_variable_configures_metrics_translator() {
-        for (configured_value, expected_mode) in [
-            ("auto", InitialCumulativeMonotonicValue::Auto),
-            ("drop", InitialCumulativeMonotonicValue::Drop),
-            ("keep", InitialCumulativeMonotonicValue::Keep),
+    #[test]
+    fn initial_cumulative_monotonic_value_flows_to_metrics_translator() {
+        for value in [
+            InitialCumulativeMonotonicValue::Auto,
+            InitialCumulativeMonotonicValue::Drop,
+            InitialCumulativeMonotonicValue::Keep,
         ] {
-            let env_vars = [(
-                "OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE".to_string(),
-                configured_value.to_string(),
-            )];
-            let (generic_config, _) = ConfigurationLoader::for_tests_with_provider_factory(
-                Some(json!({ "otlp_config": {} })),
-                Some(&env_vars),
-                false,
-                KEY_ALIASES,
-                DatadogRemapper::new,
-            )
-            .await;
-            let config =
-                OtlpConfiguration::from_configuration(&generic_config).expect("OTLP configuration should deserialize");
+            let config = config_with_metrics(domains::otlp::Metrics {
+                sums: domains::otlp::Sums {
+                    initial_cumulative_monotonic_value: value,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
 
             assert_eq!(
                 config.metrics_translator_config().initial_cumulative_monotonic_value,
-                expected_mode
+                value
             );
         }
     }

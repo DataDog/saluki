@@ -2,11 +2,11 @@ use std::{
     collections::HashMap,
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     task::{ready, Context, Poll},
 };
 
-use http::{uri::Authority, Request, Response, StatusCode, Uri};
+use http::{uri::Authority, Request, Response, StatusCode, Uri, Version};
 use http_body::Body;
 use metrics::Counter;
 use pin_project_lite::pin_project;
@@ -96,7 +96,7 @@ fn register_scoped_error(builder: &MetricsBuilder, error_type: &'static str, err
 /// - `network_http_requests_failed_total`: The total number of HTTP requests that failed with a status code of 400,
 ///   403, or 413.
 /// - `network_http_requests_success_total`: The total number of successful HTTP requests. (any response with a
-///   non-4xx/5xx status code)
+///   non-4xx/5xx status code) This metric is additionally tagged with the response protocol as `proto_version`.
 /// - `network_http_requests_success_sent_bytes_total`: The total number of body bytes sent in successful HTTP requests.
 ///   (see note below on how this is calculated)
 /// - `network_http_requests_errors_total`: The total number of HTTP requests that had an error, either during the
@@ -111,6 +111,10 @@ fn register_scoped_error(builder: &MetricsBuilder, error_type: &'static str, err
 /// - `endpoint`: The endpoint name, which is derived from the URI path by default but can be customized. (See
 ///   [`EndpointTelemetryLayer::with_endpoint_name_fn`] for information on customization and how the endpoint name,
 ///   overall, is sanitized.)
+///
+/// Successful request counts also include `proto_version`, formatted as the response's HTTP version (for example,
+/// `HTTP/1.1` or `HTTP/2.0`). Versions without dedicated support are grouped under `unknown`. Successful request bytes
+/// remain grouped only by the base tags.
 ///
 /// ### Success bytes calculation
 ///
@@ -175,10 +179,33 @@ impl<S> Layer<S> for EndpointTelemetryLayer {
     }
 }
 
+#[derive(Default)]
+struct SuccessCounters {
+    http_09: OnceLock<Counter>,
+    http_10: OnceLock<Counter>,
+    http_11: OnceLock<Counter>,
+    http_2: OnceLock<Counter>,
+    http_3: OnceLock<Counter>,
+    fallback: OnceLock<Counter>,
+}
+
+impl SuccessCounters {
+    fn slot_for_version(&self, version: Version) -> (&OnceLock<Counter>, &'static str) {
+        match version {
+            Version::HTTP_09 => (&self.http_09, "HTTP/0.9"),
+            Version::HTTP_10 => (&self.http_10, "HTTP/1.0"),
+            Version::HTTP_11 => (&self.http_11, "HTTP/1.1"),
+            Version::HTTP_2 => (&self.http_2, "HTTP/2.0"),
+            Version::HTTP_3 => (&self.http_3, "HTTP/3.0"),
+            _ => (&self.fallback, "unknown"),
+        }
+    }
+}
+
 struct PerEndpointTelemetry {
     builder: MetricsBuilder,
     dropped: Counter,
-    success: Counter,
+    success: SuccessCounters,
     success_bytes: Counter,
     http_errors_map: Mutex<HashMap<StatusCode, Counter>>,
 }
@@ -197,7 +224,7 @@ impl PerEndpointTelemetry {
             .add_default_tag(("endpoint", endpoint_name.to_string()));
 
         let dropped = builder.register_counter("network_http_requests_failed_total");
-        let success = builder.register_counter("network_http_requests_success_total");
+        let success = SuccessCounters::default();
         let success_bytes = builder.register_counter("network_http_requests_success_sent_bytes_total");
         let http_errors_map = Mutex::new(HashMap::new());
 
@@ -214,8 +241,15 @@ impl PerEndpointTelemetry {
         self.dropped.increment(1);
     }
 
-    fn increment_success(&self) {
-        self.success.increment(1);
+    fn increment_success(&self, version: Version) {
+        let (slot, proto_version) = self.success.slot_for_version(version);
+        slot.get_or_init(|| {
+            self.builder.register_counter_with_tags(
+                "network_http_requests_success_total",
+                [("proto_version", proto_version)],
+            )
+        })
+        .increment(1);
     }
 
     fn increment_success_bytes(&self, len: u64) {
@@ -363,7 +397,7 @@ where
                             error_telemetry.increment_http_error();
                         }
                     } else {
-                        per_endpoint.increment_success();
+                        per_endpoint.increment_success(response.version());
                         if let Some(body_len) = this.maybe_body_len {
                             per_endpoint.increment_success_bytes(*body_len);
                         }
@@ -410,9 +444,117 @@ fn sanitize_endpoint_name(endpoint_name: MetaString) -> MetaString {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
+    use bytes::Bytes;
+    use http_body_util::{Empty, Full};
+    use metrics::{Key, Label};
+    use metrics_util::{
+        debugging::{DebugValue, DebuggingRecorder},
+        CompositeKey, MetricKind,
+    };
     use proptest::prelude::*;
 
     use super::*;
+
+    #[test]
+    fn success_counter_slots_cover_supported_http_versions() {
+        let counters = SuccessCounters::default();
+        let cases = [
+            (Version::HTTP_09, &counters.http_09, "HTTP/0.9"),
+            (Version::HTTP_10, &counters.http_10, "HTTP/1.0"),
+            (Version::HTTP_11, &counters.http_11, "HTTP/1.1"),
+            (Version::HTTP_2, &counters.http_2, "HTTP/2.0"),
+            (Version::HTTP_3, &counters.http_3, "HTTP/3.0"),
+        ];
+
+        for (version, expected_slot, expected_label) in cases {
+            let (slot, label) = counters.slot_for_version(version);
+            assert!(std::ptr::eq(slot, expected_slot));
+            assert_eq!(label, expected_label);
+        }
+    }
+
+    #[test]
+    fn successful_requests_are_counted_by_response_protocol_without_splitting_bytes() {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let mut response_versions = [http::Version::HTTP_11, http::Version::HTTP_2].into_iter();
+        let inner = tower::service_fn(move |_request: Request<Full<Bytes>>| {
+            let version = response_versions.next().expect("response version should be available");
+            async move {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .version(version)
+                        .body(Empty::<Bytes>::new())
+                        .expect("response should be valid"),
+                )
+            }
+        });
+        let mut service = EndpointTelemetryLayer::default().layer(inner);
+
+        let first_request = Request::builder()
+            .uri("https://example.com/api/v1/series")
+            .version(http::Version::HTTP_10)
+            .body(Full::new(Bytes::from_static(b"hello")))
+            .expect("request should be valid");
+        metrics::with_local_recorder(&recorder, || {
+            tokio_test::block_on(service.call(first_request)).expect("request should succeed")
+        });
+
+        let second_request = Request::builder()
+            .uri("https://example.com/api/v1/series")
+            .version(http::Version::HTTP_10)
+            .body(Full::new(Bytes::from_static(b"goodbye")))
+            .expect("request should be valid");
+        metrics::with_local_recorder(&recorder, || {
+            tokio_test::block_on(service.call(second_request)).expect("request should succeed")
+        });
+
+        let snapshot = snapshotter.snapshot().into_hashmap();
+        let success_keys = snapshot
+            .keys()
+            .filter(|key| key.key().name() == "network_http_requests_success_total")
+            .count();
+        assert_eq!(success_keys, 2);
+        for proto_version in ["HTTP/1.1", "HTTP/2.0"] {
+            let key = CompositeKey::new(
+                MetricKind::Counter,
+                Key::from_parts(
+                    "network_http_requests_success_total",
+                    vec![
+                        Label::new("domain", "https://example.com"),
+                        Label::new("endpoint", "/api/v1/series"),
+                        Label::new("proto_version", proto_version),
+                    ],
+                ),
+            );
+            let (_, _, value) = snapshot
+                .get(&key)
+                .expect("protocol-specific success counter should exist");
+            assert_eq!(value, &DebugValue::Counter(1));
+        }
+
+        let success_bytes_keys = snapshot
+            .keys()
+            .filter(|key| key.key().name() == "network_http_requests_success_sent_bytes_total")
+            .count();
+        assert_eq!(success_bytes_keys, 1);
+        let success_bytes_key = CompositeKey::new(
+            MetricKind::Counter,
+            Key::from_parts(
+                "network_http_requests_success_sent_bytes_total",
+                vec![
+                    Label::new("domain", "https://example.com"),
+                    Label::new("endpoint", "/api/v1/series"),
+                ],
+            ),
+        );
+        let (_, _, value) = snapshot
+            .get(&success_bytes_key)
+            .expect("protocol-agnostic success bytes counter should exist");
+        assert_eq!(value, &DebugValue::Counter(12));
+    }
 
     proptest! {
         #[test]
