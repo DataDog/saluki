@@ -467,16 +467,49 @@
 <a href=#467 id=467 data-nosnippet>467</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#468 id=468 data-nosnippet>468</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#469 id=469 data-nosnippet>469</a>    };
-<a href=#470 id=470 data-nosnippet>470</a>    <span class="doccomment">/// `use_dogstatsd`-Master DogStatsD enable toggle
-<a href=#471 id=471 data-nosnippet>471</a>    </span>USE_DOGSTATSD = SalukiAnnotation {
-<a href=#472 id=472 data-nosnippet>472</a>        schema: <span class="kw-2">&amp;</span>schema::USE_DOGSTATSD,
+<a href=#470 id=470 data-nosnippet>470</a>    <span class="doccomment">/// `otlp_config.metrics.batch.flush_timeout`-OTLP metrics batch flush timeout
+<a href=#471 id=471 data-nosnippet>471</a>    </span>OTLP_CONFIG_METRICS_BATCH_FLUSH_TIMEOUT = SalukiAnnotation {
+<a href=#472 id=472 data-nosnippet>472</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_BATCH_FLUSH_TIMEOUT,
 <a href=#473 id=473 data-nosnippet>473</a>        support_level: SupportLevel::Incompatible(Severity::Low),
 <a href=#474 id=474 data-nosnippet>474</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#475 id=475 data-nosnippet>475</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#476 id=476 data-nosnippet>476</a>        used_by: <span class="kw-2">&amp;</span>[],
 <a href=#477 id=477 data-nosnippet>477</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#478 id=478 data-nosnippet>478</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#479 id=479 data-nosnippet>479</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#479 id=479 data-nosnippet>479</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
 <a href=#480 id=480 data-nosnippet>480</a>    };
-<a href=#481 id=481 data-nosnippet>481</a>}
+<a href=#481 id=481 data-nosnippet>481</a>    <span class="doccomment">/// `otlp_config.metrics.batch.max_size`-Maximum OTLP metrics batch size
+<a href=#482 id=482 data-nosnippet>482</a>    </span>OTLP_CONFIG_METRICS_BATCH_MAX_SIZE = SalukiAnnotation {
+<a href=#483 id=483 data-nosnippet>483</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_BATCH_MAX_SIZE,
+<a href=#484 id=484 data-nosnippet>484</a>        support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#485 id=485 data-nosnippet>485</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#486 id=486 data-nosnippet>486</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#487 id=487 data-nosnippet>487</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#488 id=488 data-nosnippet>488</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#489 id=489 data-nosnippet>489</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#490 id=490 data-nosnippet>490</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
+<a href=#491 id=491 data-nosnippet>491</a>    };
+<a href=#492 id=492 data-nosnippet>492</a>    <span class="doccomment">/// `otlp_config.metrics.batch.min_size`-Minimum OTLP metrics batch size
+<a href=#493 id=493 data-nosnippet>493</a>    </span>OTLP_CONFIG_METRICS_BATCH_MIN_SIZE = SalukiAnnotation {
+<a href=#494 id=494 data-nosnippet>494</a>        schema: <span class="kw-2">&amp;</span>schema::OTLP_CONFIG_METRICS_BATCH_MIN_SIZE,
+<a href=#495 id=495 data-nosnippet>495</a>        support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#496 id=496 data-nosnippet>496</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#497 id=497 data-nosnippet>497</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#498 id=498 data-nosnippet>498</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#499 id=499 data-nosnippet>499</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#500 id=500 data-nosnippet>500</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#501 id=501 data-nosnippet>501</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Otlp]),
+<a href=#502 id=502 data-nosnippet>502</a>    };
+<a href=#503 id=503 data-nosnippet>503</a>    <span class="doccomment">/// `use_dogstatsd`-Master DogStatsD enable toggle
+<a href=#504 id=504 data-nosnippet>504</a>    </span>USE_DOGSTATSD = SalukiAnnotation {
+<a href=#505 id=505 data-nosnippet>505</a>        schema: <span class="kw-2">&amp;</span>schema::USE_DOGSTATSD,
+<a href=#506 id=506 data-nosnippet>506</a>        support_level: SupportLevel::Incompatible(Severity::Low),
+<a href=#507 id=507 data-nosnippet>507</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#508 id=508 data-nosnippet>508</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#509 id=509 data-nosnippet>509</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#510 id=510 data-nosnippet>510</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#511 id=511 data-nosnippet>511</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#512 id=512 data-nosnippet>512</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#513 id=513 data-nosnippet>513</a>    };
+<a href=#514 id=514 data-nosnippet>514</a>}
 </code></pre></div></section></main></body></html>
