@@ -287,6 +287,9 @@ impl HttpClientBuilder {
 
     /// Sets a complete client TLS configuration.
     ///
+    /// Use this for configurations with a custom server-certificate verifier or client identity, which cannot be
+    /// represented by the option-based TLS builder.
+    ///
     /// The supplied configuration takes precedence over all options applied through [`Self::with_tls_config`] and
     /// [`Self::with_min_tls_version`], regardless of call order. All supplied settings are preserved except ALPN:
     /// [`ClientConfig::alpn_protocols`] is cleared before connector construction so [`Self::with_http_protocol`]

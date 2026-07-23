@@ -34,7 +34,7 @@ procedure:
         timeout: 60s
       # The route is POST-only. A GET returns 405 when registration is complete and 404 when absent.
       - assertion: http_check
-        endpoint: "https://localhost:55101/dogstatsd/contexts/dump"
+        endpoint: "https://localhost:55101/agent/dogstatsd-contexts-dump"
         status:
           not_equal: 404
         insecure_skip_verify: true

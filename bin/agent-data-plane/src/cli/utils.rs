@@ -26,7 +26,7 @@ use saluki_io::net::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::config::DataPlaneConfiguration;
+use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROUTE};
 
 /// Typed API client for interacting with the APIs exposed by ADP.
 pub struct DataPlaneAPIClient {
@@ -69,6 +69,10 @@ impl DataPlaneAPIClient {
     }
 
     /// Creates an authenticated `DataPlaneAPIClient` for commands that use the Agent IPC credentials.
+    ///
+    /// This mirrors the Agent IPC HTTP client contract: verify the configured IPC certificate and attach the Agent
+    /// authentication token. The complete Rustls configuration is required because it carries a custom certificate
+    /// verifier and client identity that the generic HTTP TLS option builder cannot express.
     ///
     /// This client pins the privileged API server certificate to the configured IPC certificate and authenticates
     /// requests with the raw contents of the configured Agent authentication token file. Unlike the general-purpose
@@ -261,7 +265,7 @@ impl DataPlaneAPIClient {
                 "DogStatsD context dumps require an authenticated API client; construct it with `from_config_with_ipc_auth`."
             )
         })?;
-        let uri = self.build_uri("/dogstatsd/contexts/dump", None);
+        let uri = self.build_uri(CONTEXT_DUMP_ROUTE, None);
         let request = build_dogstatsd_contexts_dump_request(uri, authorization);
         let response = self
             .client
@@ -557,6 +561,7 @@ mod tests {
     };
     #[cfg(target_os = "linux")]
     use super::{body_when_replay_session_success, empty_when_replay_session_success};
+    use crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
     #[test]
     fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
@@ -643,12 +648,12 @@ mod tests {
     fn dogstatsd_contexts_request_is_authenticated_empty_post() {
         let mut auth = HeaderValue::from_static("Bearer exact-token");
         auth.set_sensitive(true);
-        let uri = Uri::from_static("https://127.0.0.1:5101/dogstatsd/contexts/dump");
+        let uri = Uri::from_static("https://127.0.0.1:5101/agent/dogstatsd-contexts-dump");
 
         let request = build_dogstatsd_contexts_dump_request(uri, &auth);
 
         assert_eq!(request.method(), Method::POST);
-        assert_eq!(request.uri().path(), "/dogstatsd/contexts/dump");
+        assert_eq!(request.uri().path(), CONTEXT_DUMP_ROUTE);
         assert!(request.body().is_empty());
         let request_auth = request.headers().get(AUTHORIZATION).expect("authorization header");
         assert_eq!(request_auth, "Bearer exact-token");
@@ -779,7 +784,7 @@ mod tests {
                 }
             }
             let request = String::from_utf8(request)?;
-            assert!(request.starts_with("POST /dogstatsd/contexts/dump HTTP/1.1\r\n"));
+            assert!(request.starts_with("POST /agent/dogstatsd-contexts-dump HTTP/1.1\r\n"));
             assert!(
                 request
                     .lines()

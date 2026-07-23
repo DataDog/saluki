@@ -967,7 +967,7 @@ mod tests {
 
     const AUTH_TOKEN: &[u8] = b"configured-agent-token";
     const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
-    const CONTEXT_DUMP_ROUTE: &str = "/dogstatsd/contexts/dump";
+    const CONTEXT_DUMP_ROUTE: &str = crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
     #[tokio::test]
     async fn retained_context_identity_follows_dogstatsd_post_processing() {

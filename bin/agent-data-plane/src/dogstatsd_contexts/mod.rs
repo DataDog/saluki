@@ -10,6 +10,9 @@ mod api;
 mod artifact;
 mod report;
 
+/// Agent-compatible command API route for requesting a DogStatsD context dump.
+pub(crate) const CONTEXT_DUMP_ROUTE: &str = "/agent/dogstatsd-contexts-dump";
+
 pub(crate) fn read_report(path: &Path) -> Result<ContextReport, GenericError> {
     let mut report = ContextReport::new();
     for_each_record(path, |record| report.ingest(record))?;

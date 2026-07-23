@@ -36,7 +36,7 @@ pub struct DogStatsDControlSurface {
     pub(crate) capture_api_handler: DogStatsDCaptureAPIHandler,
     /// API handler for the `/dogstatsd/replay/session` endpoints.
     pub(crate) replay_api_handler: DogStatsDReplayAPIHandler,
-    /// API handler for the `/dogstatsd/contexts/dump` endpoint.
+    /// API handler for the Agent-compatible `/agent/dogstatsd-contexts-dump` endpoint.
     pub(crate) context_dump_api_handler: DogStatsDContextDumpAPIHandler,
 }
 
@@ -150,7 +150,7 @@ mod tests {
         tokio::time::timeout(remaining, async {
             stream
                 .write_all(
-                    b"POST /dogstatsd/contexts/dump HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \
+                    b"POST /agent/dogstatsd-contexts-dump HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer \
                       configured-agent-token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 )
                 .await?;
