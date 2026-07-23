@@ -66,108 +66,106 @@
 <a href=#66 id=66 data-nosnippet>66</a>    </span><span class="kw">pub const </span>DATADOG_APM_STATS_ENCODER_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"DatadogApmStatsEncoderConfiguration"</span>;
 <a href=#67 id=67 data-nosnippet>67</a>    <span class="doccomment">/// Identifier for `MrfConfiguration`.
 <a href=#68 id=68 data-nosnippet>68</a>    </span><span class="kw">pub const </span>MRF_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"MrfConfiguration"</span>;
-<a href=#69 id=69 data-nosnippet>69</a>    <span class="doccomment">/// Identifier for `OtlpDecoderConfiguration`.
-<a href=#70 id=70 data-nosnippet>70</a>    </span><span class="kw">pub const </span>OTLP_DECODER_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"OtlpDecoderConfiguration"</span>;
-<a href=#71 id=71 data-nosnippet>71</a>    <span class="doccomment">/// Identifier for `TraceObfuscationConfiguration`.
-<a href=#72 id=72 data-nosnippet>72</a>    </span><span class="kw">pub const </span>TRACE_OBFUSCATION_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"TraceObfuscationConfiguration"</span>;
-<a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Identifier for `RemoteAgentClientConfiguration`.
-<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">pub const </span>REMOTE_AGENT_CLIENT_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"RemoteAgentClientConfiguration"</span>;
-<a href=#75 id=75 data-nosnippet>75</a>    <span class="doccomment">/// Identifier for `TagFilterlistConfiguration`.
-<a href=#76 id=76 data-nosnippet>76</a>    </span><span class="kw">pub const </span>TAG_FILTERLIST_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"TagFilterlistConfiguration"</span>;
-<a href=#77 id=77 data-nosnippet>77</a>    <span class="doccomment">/// Keys consumed through the typed configuration translation system.
-<a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">pub const </span>TYPED_CONFIG_SYSTEM: <span class="kw-2">&amp;</span>str = <span class="string">"TypedConfigSystem"</span>;
-<a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
-<a href=#80 id=80 data-nosnippet>80</a>    </span><span class="kw">pub const </span>GET_TYPED: <span class="kw-2">&amp;</span>str = <span class="string">"get_typed"</span>;
-<a href=#81 id=81 data-nosnippet>81</a>}
-<a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a><span class="doccomment">/// The ADP pipeline a config key affects.
-<a href=#84 id=84 data-nosnippet>84</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-<a href=#85 id=85 data-nosnippet>85</a></span><span class="kw">pub enum </span>Pipeline {
-<a href=#86 id=86 data-nosnippet>86</a>    <span class="doccomment">/// DogStatsD metrics pipeline.
-<a href=#87 id=87 data-nosnippet>87</a>    </span>DogStatsD,
-<a href=#88 id=88 data-nosnippet>88</a>    <span class="doccomment">/// Agent checks pipeline.
-<a href=#89 id=89 data-nosnippet>89</a>    </span>Checks,
-<a href=#90 id=90 data-nosnippet>90</a>    <span class="doccomment">/// OTLP ingestion frontend.
-<a href=#91 id=91 data-nosnippet>91</a>    </span>Otlp,
-<a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// Internal trace processing. Active when OTLP is enabled and proxy/relay mode (which uses the
-<a href=#93 id=93 data-nosnippet>93</a>    /// core Agent for transport) is off.
-<a href=#94 id=94 data-nosnippet>94</a>    </span>Traces,
-<a href=#95 id=95 data-nosnippet>95</a>}
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a><span class="doccomment">/// Which pipelines a config key affects.
-<a href=#98 id=98 data-nosnippet>98</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-<a href=#99 id=99 data-nosnippet>99</a></span><span class="kw">pub enum </span>PipelineAffinity {
-<a href=#100 id=100 data-nosnippet>100</a>    <span class="doccomment">/// The list of pipelines affected by the key.
-<a href=#101 id=101 data-nosnippet>101</a>    ///
-<a href=#102 id=102 data-nosnippet>102</a>    /// This list must be non-empty, enforced by test.
-<a href=#103 id=103 data-nosnippet>103</a>    </span>Pipelines(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>[Pipeline]),
-<a href=#104 id=104 data-nosnippet>104</a>    <span class="doccomment">/// The key affects all pipelines or ADP behavior as a whole.
-<a href=#105 id=105 data-nosnippet>105</a>    </span>CrossCutting,
-<a href=#106 id=106 data-nosnippet>106</a>}
-<a href=#107 id=107 data-nosnippet>107</a>
-<a href=#108 id=108 data-nosnippet>108</a><span class="doccomment">/// The `Severity` level of a config key that Saluki doesn't support.
-<a href=#109 id=109 data-nosnippet>109</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-<a href=#110 id=110 data-nosnippet>110</a></span><span class="kw">pub enum </span>Severity {
-<a href=#111 id=111 data-nosnippet>111</a>    <span class="doccomment">/// Saluki's incompatibility with the key is considered minor.
-<a href=#112 id=112 data-nosnippet>112</a>    </span>Low,
-<a href=#113 id=113 data-nosnippet>113</a>
-<a href=#114 id=114 data-nosnippet>114</a>    <span class="doccomment">/// Saluki's incompatibility with the key is considered potentially impactful.
-<a href=#115 id=115 data-nosnippet>115</a>    </span>Medium,
-<a href=#116 id=116 data-nosnippet>116</a>
-<a href=#117 id=117 data-nosnippet>117</a>    <span class="doccomment">/// Saluki's incompatibility with the key is considered problematic.
-<a href=#118 id=118 data-nosnippet>118</a>    </span>High,
-<a href=#119 id=119 data-nosnippet>119</a>}
-<a href=#120 id=120 data-nosnippet>120</a>
-<a href=#121 id=121 data-nosnippet>121</a><span class="doccomment">/// The support level for a given configuration key.
-<a href=#122 id=122 data-nosnippet>122</a>///
-<a href=#123 id=123 data-nosnippet>123</a>/// Full support is omitted from the enum and those keys are not classified since there is nothing
-<a href=#124 id=124 data-nosnippet>124</a>/// to be done about them downstream.
-<a href=#125 id=125 data-nosnippet>125</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-<a href=#126 id=126 data-nosnippet>126</a></span><span class="kw">pub enum </span>SupportLevel {
-<a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// Partially supported.
-<a href=#128 id=128 data-nosnippet>128</a>    </span>Partial,
-<a href=#129 id=129 data-nosnippet>129</a>    <span class="doccomment">/// Explicitly incompatible.
-<a href=#130 id=130 data-nosnippet>130</a>    </span>Incompatible(Severity),
-<a href=#131 id=131 data-nosnippet>131</a>    <span class="doccomment">/// Intentionally ignored.
-<a href=#132 id=132 data-nosnippet>132</a>    </span><span class="attr">#[allow(unused)]
-<a href=#133 id=133 data-nosnippet>133</a>    </span>Ignored,
-<a href=#134 id=134 data-nosnippet>134</a>    <span class="doccomment">/// Unrecognized.
-<a href=#135 id=135 data-nosnippet>135</a>    </span><span class="attr">#[allow(unused)]
-<a href=#136 id=136 data-nosnippet>136</a>    </span>Unrecognized,
-<a href=#137 id=137 data-nosnippet>137</a>}
-<a href=#138 id=138 data-nosnippet>138</a>
-<a href=#139 id=139 data-nosnippet>139</a><span class="doccomment">/// The default value for a config key, as resolved at build time from the Agent schema.
-<a href=#140 id=140 data-nosnippet>140</a>///
-<a href=#141 id=141 data-nosnippet>141</a>/// Durations are normalized to nanoseconds during codegen (the build fails if a `format:
-<a href=#142 id=142 data-nosnippet>142</a>/// duration` default isn't a valid Go duration), so the runtime default check never has to parse a
-<a href=#143 id=143 data-nosnippet>143</a>/// schema default. Other keys keep their JSON-literal default and are compared structurally.
-<a href=#144 id=144 data-nosnippet>144</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-<a href=#145 id=145 data-nosnippet>145</a></span><span class="kw">pub enum </span>DefaultValue {
-<a href=#146 id=146 data-nosnippet>146</a>    <span class="doccomment">/// The schema declares no default for this key.
-<a href=#147 id=147 data-nosnippet>147</a>    </span>Missing,
-<a href=#148 id=148 data-nosnippet>148</a>    <span class="doccomment">/// A JSON-encoded default value (for example, `"\"tlsv1.2\""` or `"1"`).
-<a href=#149 id=149 data-nosnippet>149</a>    </span>Json(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str),
-<a href=#150 id=150 data-nosnippet>150</a>    <span class="doccomment">/// A `format: duration` default, already parsed to nanoseconds. The Agent transmits durations
-<a href=#151 id=151 data-nosnippet>151</a>    /// as integer nanoseconds, so the incoming value is normalized the same way before comparing.
-<a href=#152 id=152 data-nosnippet>152</a>    </span>DurationNanos(u64),
-<a href=#153 id=153 data-nosnippet>153</a>}
-<a href=#154 id=154 data-nosnippet>154</a>
-<a href=#155 id=155 data-nosnippet>155</a><span class="doccomment">/// Slim per-key data generated at build time for the classifier.
-<a href=#156 id=156 data-nosnippet>156</a>///
-<a href=#157 id=157 data-nosnippet>157</a>/// Carries only what the classifier needs: enough to look up a key, determine its support level,
-<a href=#158 id=158 data-nosnippet>158</a>/// check whether a value is the default, and report which pipelines are affected.
-<a href=#159 id=159 data-nosnippet>159</a></span><span class="kw">pub struct </span>ClassifierEntry {
-<a href=#160 id=160 data-nosnippet>160</a>    <span class="doccomment">/// Canonical dot-separated YAML path.
-<a href=#161 id=161 data-nosnippet>161</a>    </span><span class="kw">pub </span>yaml_path: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#162 id=162 data-nosnippet>162</a>    <span class="doccomment">/// Additional YAML paths (aliases) that resolve to this key.
-<a href=#163 id=163 data-nosnippet>163</a>    </span><span class="kw">pub </span>aliases: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str],
-<a href=#164 id=164 data-nosnippet>164</a>    <span class="doccomment">/// How well saluki supports this key.
-<a href=#165 id=165 data-nosnippet>165</a>    </span><span class="kw">pub </span>support_level: SupportLevel,
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// Which pipelines this key affects.
-<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">pub </span>pipeline_affinity: PipelineAffinity,
-<a href=#168 id=168 data-nosnippet>168</a>    <span class="doccomment">/// Default value from the Agent schema (normalized at build time).
-<a href=#169 id=169 data-nosnippet>169</a>    </span><span class="kw">pub </span>default: DefaultValue,
-<a href=#170 id=170 data-nosnippet>170</a>}
-<a href=#171 id=171 data-nosnippet>171</a>
-<a href=#172 id=172 data-nosnippet>172</a><span class="kw">use </span><span class="kw">crate</span>::generated::classifier_data::CLASSIFIER_ENTRIES;
+<a href=#69 id=69 data-nosnippet>69</a>    <span class="doccomment">/// Identifier for `TraceObfuscationConfiguration`.
+<a href=#70 id=70 data-nosnippet>70</a>    </span><span class="kw">pub const </span>TRACE_OBFUSCATION_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"TraceObfuscationConfiguration"</span>;
+<a href=#71 id=71 data-nosnippet>71</a>    <span class="doccomment">/// Identifier for `RemoteAgentClientConfiguration`.
+<a href=#72 id=72 data-nosnippet>72</a>    </span><span class="kw">pub const </span>REMOTE_AGENT_CLIENT_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"RemoteAgentClientConfiguration"</span>;
+<a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Identifier for `TagFilterlistConfiguration`.
+<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">pub const </span>TAG_FILTERLIST_CONFIGURATION: <span class="kw-2">&amp;</span>str = <span class="string">"TagFilterlistConfiguration"</span>;
+<a href=#75 id=75 data-nosnippet>75</a>    <span class="doccomment">/// Keys consumed through the typed configuration translation system.
+<a href=#76 id=76 data-nosnippet>76</a>    </span><span class="kw">pub const </span>TYPED_CONFIG_SYSTEM: <span class="kw-2">&amp;</span>str = <span class="string">"TypedConfigSystem"</span>;
+<a href=#77 id=77 data-nosnippet>77</a>    <span class="doccomment">/// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
+<a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">pub const </span>GET_TYPED: <span class="kw-2">&amp;</span>str = <span class="string">"get_typed"</span>;
+<a href=#79 id=79 data-nosnippet>79</a>}
+<a href=#80 id=80 data-nosnippet>80</a>
+<a href=#81 id=81 data-nosnippet>81</a><span class="doccomment">/// The ADP pipeline a config key affects.
+<a href=#82 id=82 data-nosnippet>82</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+<a href=#83 id=83 data-nosnippet>83</a></span><span class="kw">pub enum </span>Pipeline {
+<a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// DogStatsD metrics pipeline.
+<a href=#85 id=85 data-nosnippet>85</a>    </span>DogStatsD,
+<a href=#86 id=86 data-nosnippet>86</a>    <span class="doccomment">/// Agent checks pipeline.
+<a href=#87 id=87 data-nosnippet>87</a>    </span>Checks,
+<a href=#88 id=88 data-nosnippet>88</a>    <span class="doccomment">/// OTLP ingestion frontend.
+<a href=#89 id=89 data-nosnippet>89</a>    </span>Otlp,
+<a href=#90 id=90 data-nosnippet>90</a>    <span class="doccomment">/// Internal trace processing. Active when OTLP is enabled and proxy/relay mode (which uses the
+<a href=#91 id=91 data-nosnippet>91</a>    /// core Agent for transport) is off.
+<a href=#92 id=92 data-nosnippet>92</a>    </span>Traces,
+<a href=#93 id=93 data-nosnippet>93</a>}
+<a href=#94 id=94 data-nosnippet>94</a>
+<a href=#95 id=95 data-nosnippet>95</a><span class="doccomment">/// Which pipelines a config key affects.
+<a href=#96 id=96 data-nosnippet>96</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+<a href=#97 id=97 data-nosnippet>97</a></span><span class="kw">pub enum </span>PipelineAffinity {
+<a href=#98 id=98 data-nosnippet>98</a>    <span class="doccomment">/// The list of pipelines affected by the key.
+<a href=#99 id=99 data-nosnippet>99</a>    ///
+<a href=#100 id=100 data-nosnippet>100</a>    /// This list must be non-empty, enforced by test.
+<a href=#101 id=101 data-nosnippet>101</a>    </span>Pipelines(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>[Pipeline]),
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="doccomment">/// The key affects all pipelines or ADP behavior as a whole.
+<a href=#103 id=103 data-nosnippet>103</a>    </span>CrossCutting,
+<a href=#104 id=104 data-nosnippet>104</a>}
+<a href=#105 id=105 data-nosnippet>105</a>
+<a href=#106 id=106 data-nosnippet>106</a><span class="doccomment">/// The `Severity` level of a config key that Saluki doesn't support.
+<a href=#107 id=107 data-nosnippet>107</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+<a href=#108 id=108 data-nosnippet>108</a></span><span class="kw">pub enum </span>Severity {
+<a href=#109 id=109 data-nosnippet>109</a>    <span class="doccomment">/// Saluki's incompatibility with the key is considered minor.
+<a href=#110 id=110 data-nosnippet>110</a>    </span>Low,
+<a href=#111 id=111 data-nosnippet>111</a>
+<a href=#112 id=112 data-nosnippet>112</a>    <span class="doccomment">/// Saluki's incompatibility with the key is considered potentially impactful.
+<a href=#113 id=113 data-nosnippet>113</a>    </span>Medium,
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="doccomment">/// Saluki's incompatibility with the key is considered problematic.
+<a href=#116 id=116 data-nosnippet>116</a>    </span>High,
+<a href=#117 id=117 data-nosnippet>117</a>}
+<a href=#118 id=118 data-nosnippet>118</a>
+<a href=#119 id=119 data-nosnippet>119</a><span class="doccomment">/// The support level for a given configuration key.
+<a href=#120 id=120 data-nosnippet>120</a>///
+<a href=#121 id=121 data-nosnippet>121</a>/// Full support is omitted from the enum and those keys are not classified since there is nothing
+<a href=#122 id=122 data-nosnippet>122</a>/// to be done about them downstream.
+<a href=#123 id=123 data-nosnippet>123</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+<a href=#124 id=124 data-nosnippet>124</a></span><span class="kw">pub enum </span>SupportLevel {
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="doccomment">/// Partially supported.
+<a href=#126 id=126 data-nosnippet>126</a>    </span>Partial,
+<a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// Explicitly incompatible.
+<a href=#128 id=128 data-nosnippet>128</a>    </span>Incompatible(Severity),
+<a href=#129 id=129 data-nosnippet>129</a>    <span class="doccomment">/// Intentionally ignored.
+<a href=#130 id=130 data-nosnippet>130</a>    </span><span class="attr">#[allow(unused)]
+<a href=#131 id=131 data-nosnippet>131</a>    </span>Ignored,
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="doccomment">/// Unrecognized.
+<a href=#133 id=133 data-nosnippet>133</a>    </span><span class="attr">#[allow(unused)]
+<a href=#134 id=134 data-nosnippet>134</a>    </span>Unrecognized,
+<a href=#135 id=135 data-nosnippet>135</a>}
+<a href=#136 id=136 data-nosnippet>136</a>
+<a href=#137 id=137 data-nosnippet>137</a><span class="doccomment">/// The default value for a config key, as resolved at build time from the Agent schema.
+<a href=#138 id=138 data-nosnippet>138</a>///
+<a href=#139 id=139 data-nosnippet>139</a>/// Durations are normalized to nanoseconds during codegen (the build fails if a `format:
+<a href=#140 id=140 data-nosnippet>140</a>/// duration` default isn't a valid Go duration), so the runtime default check never has to parse a
+<a href=#141 id=141 data-nosnippet>141</a>/// schema default. Other keys keep their JSON-literal default and are compared structurally.
+<a href=#142 id=142 data-nosnippet>142</a></span><span class="attr">#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+<a href=#143 id=143 data-nosnippet>143</a></span><span class="kw">pub enum </span>DefaultValue {
+<a href=#144 id=144 data-nosnippet>144</a>    <span class="doccomment">/// The schema declares no default for this key.
+<a href=#145 id=145 data-nosnippet>145</a>    </span>Missing,
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="doccomment">/// A JSON-encoded default value (for example, `"\"tlsv1.2\""` or `"1"`).
+<a href=#147 id=147 data-nosnippet>147</a>    </span>Json(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str),
+<a href=#148 id=148 data-nosnippet>148</a>    <span class="doccomment">/// A `format: duration` default, already parsed to nanoseconds. The Agent transmits durations
+<a href=#149 id=149 data-nosnippet>149</a>    /// as integer nanoseconds, so the incoming value is normalized the same way before comparing.
+<a href=#150 id=150 data-nosnippet>150</a>    </span>DurationNanos(u64),
+<a href=#151 id=151 data-nosnippet>151</a>}
+<a href=#152 id=152 data-nosnippet>152</a>
+<a href=#153 id=153 data-nosnippet>153</a><span class="doccomment">/// Slim per-key data generated at build time for the classifier.
+<a href=#154 id=154 data-nosnippet>154</a>///
+<a href=#155 id=155 data-nosnippet>155</a>/// Carries only what the classifier needs: enough to look up a key, determine its support level,
+<a href=#156 id=156 data-nosnippet>156</a>/// check whether a value is the default, and report which pipelines are affected.
+<a href=#157 id=157 data-nosnippet>157</a></span><span class="kw">pub struct </span>ClassifierEntry {
+<a href=#158 id=158 data-nosnippet>158</a>    <span class="doccomment">/// Canonical dot-separated YAML path.
+<a href=#159 id=159 data-nosnippet>159</a>    </span><span class="kw">pub </span>yaml_path: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="doccomment">/// Additional YAML paths (aliases) that resolve to this key.
+<a href=#161 id=161 data-nosnippet>161</a>    </span><span class="kw">pub </span>aliases: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str],
+<a href=#162 id=162 data-nosnippet>162</a>    <span class="doccomment">/// How well saluki supports this key.
+<a href=#163 id=163 data-nosnippet>163</a>    </span><span class="kw">pub </span>support_level: SupportLevel,
+<a href=#164 id=164 data-nosnippet>164</a>    <span class="doccomment">/// Which pipelines this key affects.
+<a href=#165 id=165 data-nosnippet>165</a>    </span><span class="kw">pub </span>pipeline_affinity: PipelineAffinity,
+<a href=#166 id=166 data-nosnippet>166</a>    <span class="doccomment">/// Default value from the Agent schema (normalized at build time).
+<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">pub </span>default: DefaultValue,
+<a href=#168 id=168 data-nosnippet>168</a>}
+<a href=#169 id=169 data-nosnippet>169</a>
+<a href=#170 id=170 data-nosnippet>170</a><span class="kw">use </span><span class="kw">crate</span>::generated::classifier_data::CLASSIFIER_ENTRIES;
 </code></pre></div></section></main></body></html>
