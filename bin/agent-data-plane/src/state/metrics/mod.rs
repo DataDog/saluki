@@ -50,6 +50,20 @@ mod tests {
                 ),
                 3.0,
             )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_retries_total",
+                    &["domain:https://api.datadoghq.com", "endpoint:series_v2"],
+                ),
+                5.0,
+            )),
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    "adp.network_http_requests_requeued_total",
+                    &["domain:https://api.datadoghq.com", "endpoint:series_v2"],
+                ),
+                2.0,
+            )),
             // This metric should NOT appear in output (no matching rule).
             Event::Metric(Metric::counter(
                 Context::from_static_parts("adp.some_unrelated_metric", &[]),
@@ -64,6 +78,10 @@ mod tests {
         assert!(output.contains("dogstatsd__packet_pool "));
         assert!(output.contains("point__sent{domain=\"https://api.datadoghq.com\"} 12"));
         assert!(output.contains("point__dropped{domain=\"https://api.datadoghq.com\"} 3"));
+        assert!(output.contains("transactions__retries{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 5"));
+        assert!(
+            output.contains("transactions__requeued{domain=\"https://api.datadoghq.com\",endpoint=\"series_v2\"} 2")
+        );
 
         // Unmatched metrics should NOT appear.
         assert!(!output.contains("some_unrelated_metric"));
@@ -73,6 +91,8 @@ mod tests {
         assert!(output.contains("# TYPE dogstatsd__packet_pool gauge"));
         assert!(output.contains("# TYPE point__sent gauge"));
         assert!(output.contains("# TYPE point__dropped gauge"));
+        assert!(output.contains("# TYPE transactions__retries counter"));
+        assert!(output.contains("# TYPE transactions__requeued counter"));
     }
 
     #[test]
@@ -545,5 +565,7 @@ mod tests {
             find("aggregator.filtered_tags_cache_evict"),
             Some("How many times an entry was evicted from the tag filter cache")
         );
+        assert_eq!(find("transactions.retries"), Some("Transaction retry count"));
+        assert_eq!(find("transactions.requeued"), Some("Transaction requeue count"));
     }
 }

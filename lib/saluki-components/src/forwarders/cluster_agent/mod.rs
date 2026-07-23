@@ -191,11 +191,8 @@ fn cluster_agent_request_mapper<B>(
     })
 }
 
-fn get_cluster_agent_endpoint_name(uri: &Uri) -> Option<MetaString> {
-    match uri.path() {
-        CLUSTER_AGENT_SERIES_PATH => Some(MetaString::from_static("cluster_agent_series")),
-        _ => None,
-    }
+fn get_cluster_agent_endpoint_name(_uri: &Uri) -> Option<MetaString> {
+    Some(MetaString::from_static("cluster_agent_series"))
 }
 
 #[cfg(test)]
@@ -208,7 +205,7 @@ mod tests {
     use crate::common::datadog::endpoints::EndpointRoute;
 
     #[test]
-    fn request_mapper_targets_cluster_agent_series_endpoint_with_bearer_auth() {
+    fn request_mapper_preserves_cluster_agent_series_identity_and_sets_bearer_auth() {
         let auth_header_value = bearer_auth_header_value("secret-token").expect("auth header should be valid");
         let endpoint = ResolvedEndpoint::from_raw_endpoint("https://cluster-agent.example.com:5005", "secret-token")
             .expect("endpoint should resolve");
@@ -220,8 +217,12 @@ mod tests {
             .body(TransactionBody::<()>::Rehydrated(None))
             .expect("request should build");
 
+        let input_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
         let request = mapper(request);
+        let mapped_endpoint_name = get_cluster_agent_endpoint_name(request.uri());
 
+        assert_eq!(input_endpoint_name.as_deref(), Some("cluster_agent_series"));
+        assert_eq!(mapped_endpoint_name.as_deref(), Some("cluster_agent_series"));
         assert_eq!(
             request.uri().to_string(),
             "https://cluster-agent.example.com:5005/series"
