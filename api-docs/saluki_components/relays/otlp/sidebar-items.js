@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["OtlpRelay","OtlpRelayConfig","OtlpRelayConfiguration"]};
+window.SIDEBAR_ITEMS = {"struct":["OtlpRelay","OtlpRelayConfiguration"]};
