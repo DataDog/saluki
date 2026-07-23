@@ -1,0 +1,16 @@
+# OTLP correctness configuration for the Core Agent baseline.
+hostname: "correctness-testing"
+api_key: dummy-api-key-correctness-testing
+health_port: 5555
+dd_url: "http://datadog-intake:2049"
+otlp_config:
+  metrics:
+    batch:
+      # Hold metrics until shutdown so cumulative translation order remains deterministic.
+      min_size: 1000000000
+      max_size: 0
+      flush_timeout: 5s
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:54317"

@@ -1,0 +1,11 @@
+# OTLP correctness test configuration for Agent Data Plane.
+hostname: "correctness-testing"
+api_key: dummy-api-key-correctness-testing
+health_port: 5555
+dd_url: "http://datadog-intake:2049"
+otlp_config:
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:54317"
+        max_recv_msg_size_mib: 4

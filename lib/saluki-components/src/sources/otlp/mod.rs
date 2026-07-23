@@ -155,7 +155,6 @@ impl OtlpConfiguration {
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
         metrics::config::OtlpMetricsTranslatorConfig::default()
-            .with_remapping(true)
             .with_summary_mode(self.otlp_config.metrics.summaries.mode)
             .with_histogram_mode(self.otlp_config.metrics.histograms.mode)
             .with_send_histogram_aggregations(self.otlp_config.metrics.histograms.send_aggregation_metrics)
