@@ -508,13 +508,10 @@ impl TraceEndpointEncoder {
         } else {
             None
         };
-        // Clone to avoid a lifetime conflict: hostname_str borrows from this copy, and
-        // self.string_table is mutably borrowed inside the encoding closure below.
-        let default_hostname_copy = self.default_hostname.as_ref().to_string();
         let hostname_str: Option<&str> = resolve_hostname_from_payload(
             &trace.payload.hostname,
             source.as_ref(),
-            Some(default_hostname_copy.as_str()),
+            Some(self.default_hostname.as_ref()),
             self.otlp_traces.ignore_missing_datadog_fields,
         );
         let decision_maker = trace.decision_maker.as_deref();
@@ -730,12 +727,7 @@ impl TraceEndpointEncoder {
             // Write the string table after all refs so the table is complete.
             // Protobuf allows fields in any order; decoders that do a full parse before
             // resolving refs handle strings-after-refs correctly.
-            tp.strings(|sb| {
-                for s in self.string_table.indices.iter() {
-                    sb.add(s.as_ref())?;
-                }
-                Ok(())
-            })?;
+            tp.strings(|sb| sb.add_many_mapped(&self.string_table.indices, |s| &**s))?;
 
             Ok(())
         })?;
@@ -900,7 +892,8 @@ fn append_tags(target: &mut String, tags: &str) {
 mod tests {
     use std::collections::{BTreeSet, HashMap};
 
-    use protobuf::CodedInputStream;
+    use datadog_protos::traces::{idx, AgentPayload};
+    use protobuf::Message as _;
     use saluki_config::ConfigurationLoader;
     use saluki_context::tags::Tag;
     use saluki_core::data_model::event::trace::{Span as DdSpan, Trace};
@@ -912,159 +905,63 @@ mod tests {
     use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     // ---------------------------------------------------------------------------
-    // Decode helper: reads the ETP AgentPayload wire format and returns the
-    // resolved string-valued chunk attributes from all ETP tracer payloads.
+    // Decode helpers for assertions on the encoded ETP `AgentPayload`.
     //
-    // Wire format notes (all tags = field_number << 3 | wire_type):
-    //   AgentPayload.idxTracerPayloads  field 11, LEN  → tag 90
-    //   ETP TracerPayload.strings       field  1, LEN  → tag 10 (repeated)
-    //   ETP TracerPayload.chunks        field 11, LEN  → tag 90 (repeated)
-    //   ETP TraceChunk.attributes       field  3, LEN  → tag 26 (map)
-    //   map-entry key   (Varint<u32>)   field  1, VARINT → tag 8
-    //   map-entry value (AnyValue LEN)  field  2, LEN    → tag 18
-    //   AnyValue.string_value_ref       field  1, VARINT → tag 8
+    // The encoder emits the wire format via `piecemeal` builders; here we decode it back
+    // with the independently code-generated `rust-protobuf` types (`idx::TracerPayload`
+    // and friends). A full-message parse resolves protobuf field ordering for us, so the
+    // fact that the encoder writes string refs before the string table is a non-issue.
     //
-    // Note: the encoder writes string refs before the string table (strings appear
-    // after chunks in the wire format). The helpers below collect all raw chunk bytes
-    // first, then resolve string refs once the string table is fully read.
+    // The only ETP-specific work left is resolving `u32` string-table refs and unwrapping
+    // the `AnyValue` oneof, which the two helpers below handle.
     // ---------------------------------------------------------------------------
 
-    /// Decodes the chunk-level string attributes from an encoded AgentPayload.
-    ///
-    /// Returns one `HashMap<String, String>` per chunk, containing only string-valued
-    /// attributes (resolved through the string table). Handles the case where the
-    /// string table (field 1) appears after chunks (field 11) in the wire format.
-    fn decode_etp_chunk_attributes(buf: &[u8]) -> Vec<HashMap<String, String>> {
-        let mut result = Vec::new();
-        let mut is = CodedInputStream::from_bytes(buf);
-        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
-            if tag == 90 {
-                // AgentPayload.idxTracerPayloads (field 11, LEN)
-                let len = is.read_raw_varint32().unwrap();
-                let old = is.push_limit(len as u64).unwrap();
-                result.extend(decode_etp_tracer_payload_chunks(&mut is));
-                is.pop_limit(old);
-            } else {
-                protobuf::rt::skip_field_for_tag(tag, &mut is).unwrap();
-            }
-        }
-        result
+    /// Resolves a string-table ref against a tracer payload's string table.
+    fn resolve_ref(strings: &[String], string_ref: u32) -> &str {
+        strings.get(string_ref as usize).map(String::as_str).unwrap_or_default()
     }
 
-    fn decode_etp_tracer_payload_chunks(is: &mut CodedInputStream<'_>) -> Vec<HashMap<String, String>> {
-        let mut strings: Vec<String> = Vec::new();
-        // Buffer raw chunk bytes; string table may appear after chunks in the wire format.
-        let mut raw_chunks: Vec<Vec<u8>> = Vec::new();
-        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
-            match tag {
-                10 => {
-                    // ETP TracerPayload.strings (field 1, LEN) - repeated string
-                    strings.push(is.read_string().unwrap());
-                }
-                90 => {
-                    // ETP TracerPayload.chunks (field 11, LEN) - buffer raw bytes
-                    let len = is.read_raw_varint32().unwrap();
-                    raw_chunks.push(is.read_raw_bytes(len).unwrap());
-                }
-                _ => {
-                    protobuf::rt::skip_field_for_tag(tag, is).unwrap();
+    /// Resolves the string-valued entries of an ETP attribute map into a readable
+    /// `key -> value` map, keeping only entries whose `AnyValue` is a string ref and
+    /// whose key resolves to a non-empty string. Keys and values are resolved through
+    /// the payload string table.
+    fn string_attrs(attrs: &HashMap<u32, idx::AnyValue>, strings: &[String]) -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        for (k_ref, value) in attrs {
+            if let Some(idx::any_value::Value::StringValueRef(v_ref)) = &value.value {
+                let key = resolve_ref(strings, *k_ref);
+                if !key.is_empty() {
+                    out.insert(key.to_string(), resolve_ref(strings, *v_ref).to_string());
                 }
             }
         }
-        // Resolve chunk string refs now that the string table is complete.
-        raw_chunks
+        out
+    }
+
+    /// Collects the resolved string-valued attributes of every chunk across all ETP
+    /// tracer payloads in an encoded `AgentPayload`, one map per chunk.
+    fn decode_etp_chunk_attributes(buf: &[u8]) -> Vec<HashMap<String, String>> {
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
             .iter()
-            .map(|bytes| {
-                let mut chunk_is = CodedInputStream::from_bytes(bytes);
-                decode_etp_chunk_string_attrs(&mut chunk_is, &strings)
+            .flat_map(|tp| {
+                let strings = tp.strings();
+                tp.chunks()
+                    .iter()
+                    .map(move |chunk| string_attrs(chunk.attributes(), strings))
             })
             .collect()
     }
 
-    fn decode_etp_chunk_string_attrs(is: &mut CodedInputStream<'_>, strings: &[String]) -> HashMap<String, String> {
-        let mut attrs = HashMap::new();
-        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
-            if tag == 26 {
-                // ETP TraceChunk.attributes map entry (field 3, LEN)
-                let len = is.read_raw_varint32().unwrap();
-                let old = is.push_limit(len as u64).unwrap();
-                let (k_ref, v_str_ref) = decode_string_map_entry(is);
-                is.pop_limit(old);
-                if let Some(v_ref) = v_str_ref {
-                    let k = strings.get(k_ref as usize).cloned().unwrap_or_default();
-                    let v = strings.get(v_ref as usize).cloned().unwrap_or_default();
-                    if !k.is_empty() {
-                        attrs.insert(k, v);
-                    }
-                }
-            } else {
-                protobuf::rt::skip_field_for_tag(tag, is).unwrap();
-            }
-        }
-        attrs
-    }
-
-    /// Decodes the tracer-version string for each ETP tracer payload in an encoded AgentPayload.
-    ///
-    /// Resolves `TracerPayload.tracerVersionRef` (field 5) through the payload string table,
-    /// handling the case where the string table appears after the ref in the wire format.
+    /// Resolves the `tracerVersionRef` of every ETP tracer payload in an encoded `AgentPayload`.
     fn decode_etp_tracer_versions(buf: &[u8]) -> Vec<String> {
-        let mut versions = Vec::new();
-        let mut is = CodedInputStream::from_bytes(buf);
-        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
-            if tag == 90 {
-                // AgentPayload.idxTracerPayloads (field 11, LEN)
-                let len = is.read_raw_varint32().unwrap();
-                let old = is.push_limit(len as u64).unwrap();
-                let mut strings: Vec<String> = Vec::new();
-                let mut tracer_version_ref: u32 = 0;
-                while let Some(inner_tag) = is.read_raw_tag_or_eof().unwrap() {
-                    match inner_tag {
-                        10 => strings.push(is.read_string().unwrap()), // strings (field 1, repeated)
-                        40 => tracer_version_ref = is.read_raw_varint32().unwrap(), // tracerVersionRef (field 5)
-                        _ => protobuf::rt::skip_field_for_tag(inner_tag, &mut is).unwrap(),
-                    }
-                }
-                is.pop_limit(old);
-                versions.push(strings.get(tracer_version_ref as usize).cloned().unwrap_or_default());
-            } else {
-                protobuf::rt::skip_field_for_tag(tag, &mut is).unwrap();
-            }
-        }
-        versions
-    }
-
-    /// Reads a single map entry (`key: u32 varint`, `value: AnyValue`).
-    /// Returns `(key_ref, Some(string_value_ref))` when the `AnyValue` is a string ref.
-    fn decode_string_map_entry(is: &mut CodedInputStream<'_>) -> (u32, Option<u32>) {
-        let mut k_ref: u32 = 0;
-        let mut v_str_ref: Option<u32> = None;
-        while let Some(tag) = is.read_raw_tag_or_eof().unwrap() {
-            match tag {
-                8 => {
-                    // map-entry key, field 1, VARINT
-                    k_ref = is.read_raw_varint32().unwrap();
-                }
-                18 => {
-                    // map-entry value AnyValue, field 2, LEN
-                    let len = is.read_raw_varint32().unwrap();
-                    let old = is.push_limit(len as u64).unwrap();
-                    while let Some(av_tag) = is.read_raw_tag_or_eof().unwrap() {
-                        if av_tag == 8 {
-                            // AnyValue.string_value_ref, field 1, VARINT
-                            v_str_ref = Some(is.read_raw_varint32().unwrap());
-                        } else {
-                            protobuf::rt::skip_field_for_tag(av_tag, is).unwrap();
-                        }
-                    }
-                    is.pop_limit(old);
-                }
-                _ => {
-                    protobuf::rt::skip_field_for_tag(tag, is).unwrap();
-                }
-            }
-        }
-        (k_ref, v_str_ref)
+        let payload = AgentPayload::parse_from_bytes(buf).expect("AgentPayload should decode");
+        payload
+            .idxTracerPayloads
+            .iter()
+            .map(|tp| resolve_ref(tp.strings(), tp.tracerVersionRef()).to_string())
+            .collect()
     }
 
     async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
