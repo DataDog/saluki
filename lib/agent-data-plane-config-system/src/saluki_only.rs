@@ -69,21 +69,21 @@
 
 use std::{num::NonZeroUsize, time::Duration};
 
-use agent_data_plane_config::control::ListenAddress;
-use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
+use agent_data_plane_config::defaults::{
+    DEFAULT_CHECKS_IPC_ENDPOINT, DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES,
+};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
+use saluki_io::net::ListenAddress;
 use serde::{Deserialize, Deserializer};
 
 /// The parsed Saluki-schema-only configuration, shaped to mirror the source key hierarchy.
 ///
-/// Flat keys are top-level fields; nested keys live on matching nested sub-structs. Every field is
-/// `#[serde(default)]` and `Option`-typed (or an empty collection), so a deployment may set no
-/// Saluki-only keys at all and each falls back to its model default. Deserialized from the same
-/// merged map as the Datadog source model, so unknown (Datadog) keys are ignored.
-#[derive(Clone, Debug, Default, Deserialize)]
+/// Flat keys are top-level fields; nested keys live on matching nested sub-structs. Missing fields
+/// preserve absence or use their Saluki-only defaults. Unknown Datadog fields are ignored.
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct SalukiOnly {
     // ── top-level scalar keys ────────────────────────────────────────────────
@@ -92,7 +92,10 @@ pub struct SalukiOnly {
     /// Remote-agent IPC string interner byte budget (`remote_agent_string_interner_size_bytes`).
     pub remote_agent_string_interner_size_bytes: Option<usize>,
     /// Checks IPC endpoint (`checks_ipc_endpoint`).
-    pub checks_ipc_endpoint: Option<String>,
+    ///
+    /// Defaults to `tcp://0.0.0.0:5105`. Bare `host:port` values are treated as TCP addresses.
+    #[serde(deserialize_with = "deserialize_checks_ipc_endpoint")]
+    pub checks_ipc_endpoint: ListenAddress,
     /// Process memory limit (`memory_limit`), given as a bare integer number of bytes or a
     /// byte-size string such as `512MB`. `ByteSize` accepts both forms, so a numeric value does not
     /// fail the load.
@@ -164,12 +167,66 @@ pub struct SalukiOnly {
     pub ottl_transform_config: Option<OttlTransformConfig>,
 }
 
+impl Default for SalukiOnly {
+    // Keep the checks endpoint parsed and validated in the source model while supplying its
+    // Saluki-only default when the key is absent. Optional fields continue to preserve absence.
+    fn default() -> Self {
+        Self {
+            metrics_level: None,
+            remote_agent_string_interner_size_bytes: None,
+            checks_ipc_endpoint: DEFAULT_CHECKS_IPC_ENDPOINT,
+            memory_limit: None,
+            memory_slop_factor: None,
+            flush_timeout_secs: None,
+            serializer_max_metrics_per_payload: None,
+            dogstatsd_tcp_port: None,
+            dogstatsd_buffer_count: None,
+            dogstatsd_buffer_count_max: None,
+            dogstatsd_autoscale_udp_listeners: None,
+            dogstatsd_permissive_decoding: None,
+            dogstatsd_cached_contexts_limit: None,
+            dogstatsd_cached_tagsets_limit: None,
+            dogstatsd_string_interner_size_bytes: None,
+            dogstatsd_allow_context_heap_allocs: None,
+            dogstatsd_minimum_sample_rate: None,
+            dogstatsd_mapper_string_interner_size: None,
+            aggregate_window_duration_seconds: None,
+            aggregate_context_limit: None,
+            aggregate_flush_interval: None,
+            aggregate_flush_open_windows: None,
+            aggregate_passthrough_idle_flush_timeout: None,
+            otlp_allow_context_heap_allocs: None,
+            otlp_cached_contexts_limit: None,
+            otlp_cached_tagsets_limit: None,
+            otlp_string_interner_size: None,
+            data_plane: Default::default(),
+            apm_config: Default::default(),
+            otlp_config: Default::default(),
+            ottl_filter_config: None,
+            ottl_transform_config: None,
+        }
+    }
+}
+
+fn deserialize_checks_ipc_endpoint<'de, D>(deserializer: D) -> Result<ListenAddress, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    ListenAddress::try_from(value.as_str())
+        .or_else(|_| ListenAddress::try_from(format!("tcp://{value}")))
+        .map_err(serde::de::Error::custom)
+}
+
 /// `data_plane.*` Saluki-only knobs.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct DataPlane {
-    /// ADP graceful shutdown timeout, in seconds (`data_plane.stop_timeout`).
-    pub stop_timeout: Option<u64>,
+    /// ADP graceful shutdown timeout, in seconds (`data_plane.stop_timeout_seconds`).
+    ///
+    /// If present, this will override the Datadog schema's `aggregator_stop_timeout` and
+    /// `forwarder_stop_timeout` values.
+    pub stop_timeout_seconds: Option<u64>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
     /// Checks pipeline gate (`data_plane.checks.*`).
@@ -412,9 +469,7 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         // control
-        if let Some(v) = self.data_plane.stop_timeout {
-            config.control.stop_timeout = v;
-        }
+        config.control.stop_timeout_seconds = self.data_plane.stop_timeout_seconds;
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
         }
@@ -582,9 +637,7 @@ impl SalukiOnly {
         }
 
         // domains.checks
-        if let Some(v) = self.checks_ipc_endpoint.clone() {
-            config.domains.checks.ipc_endpoint = ListenAddress(v);
-        }
+        config.domains.checks.ipc_endpoint = self.checks_ipc_endpoint.clone();
     }
 }
 
@@ -604,7 +657,7 @@ mod tests {
             // top-level scalars
             "metrics_level": "debug",
             "remote_agent_string_interner_size_bytes": 4096,
-            "checks_ipc_endpoint": "localhost:5006",
+            "checks_ipc_endpoint": "tcp://127.0.0.1:5006",
             "memory_limit": "512MB",
             "memory_slop_factor": 0.3,
             "flush_timeout_secs": 7,
@@ -634,7 +687,7 @@ mod tests {
             "otlp_string_interner_size": 333,
             // nested: data_plane
             "data_plane": {
-                "stop_timeout": 45,
+                "stop_timeout_seconds": 45,
                 "standalone_mode": true,
                 "checks": { "enabled": true },
                 "metrics": { "v3": { "series": { "enabled": true } } },
@@ -679,7 +732,7 @@ mod tests {
         saluki_only.seed(&mut config);
 
         // control
-        assert_eq!(config.control.stop_timeout, 45);
+        assert_eq!(config.control.stop_timeout_seconds, Some(45));
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
         assert_eq!(config.control.memory_limit, ByteSize::mb(512).as_u64());
@@ -748,7 +801,17 @@ mod tests {
         );
 
         // domains.checks
-        assert_eq!(config.domains.checks.ipc_endpoint.0, "localhost:5006");
+        assert_eq!(config.domains.checks.ipc_endpoint.to_string(), "tcp://127.0.0.1:5006");
+    }
+
+    #[test]
+    fn checks_ipc_endpoint_accepts_a_bare_tcp_address() {
+        let saluki_only: SalukiOnly = serde_json::from_value(json!({
+            "checks_ipc_endpoint": "127.0.0.1:5006",
+        }))
+        .expect("bare checks IPC endpoint deserializes");
+
+        assert_eq!(saluki_only.checks_ipc_endpoint.to_string(), "tcp://127.0.0.1:5006");
     }
 
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed
@@ -767,14 +830,14 @@ mod tests {
         }
     }
 
-    /// An absent key leaves the model default in place (the common case). `seed` writes only present
-    /// options, so this exercises the `Option`-in-source / default-in-model split. A wrong value
-    /// here means the model `Default` is wrong, not this struct.
+    /// Missing keys preserve optional model defaults and apply required Saluki-only defaults.
     #[test]
-    fn absent_keys_leave_model_defaults() {
+    fn absent_keys_apply_source_and_model_defaults() {
         let saluki_only: SalukiOnly = serde_json::from_value(json!({})).expect("empty source deserializes");
         let mut config = SalukiConfiguration::default();
         saluki_only.seed(&mut config);
+
+        assert_eq!(config.domains.checks.ipc_endpoint, DEFAULT_CHECKS_IPC_ENDPOINT);
 
         let agg = &config.domains.dogstatsd.aggregation;
         assert_eq!(agg.window_duration_seconds, 10);

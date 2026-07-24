@@ -11,6 +11,7 @@ arc-swap = { workspace = true }
 bytesize = { workspace = true }
 datadog-agent-config = { workspace = true }
 saluki-config = { workspace = true }
+saluki-io = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

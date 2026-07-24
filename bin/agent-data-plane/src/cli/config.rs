@@ -1,9 +1,10 @@
+use agent_data_plane_config_system::LoadedConfiguration;
 use argh::FromArgs;
 use saluki_common::scrubber;
-use saluki_config::GenericConfiguration;
 use tracing::{error, info};
 
-use crate::cli::utils::DataPlaneAPIClient;
+use crate::cli::utils::api_or_exit;
+use crate::config::DataPlaneConfiguration;
 
 /// Prints the current configuration.
 #[derive(FromArgs, Debug)]
@@ -11,14 +12,10 @@ use crate::cli::utils::DataPlaneAPIClient;
 pub struct ConfigCommand {}
 
 /// Entrypoint for the `config` command.
-pub async fn handle_config_command(bootstrap_config: &GenericConfiguration) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create data plane API client: {:#}", e);
-            std::process::exit(1);
-        }
-    };
+pub async fn handle_config_command(local_config: LoadedConfiguration) {
+    let config = local_config.local();
+    let dp = DataPlaneConfiguration::from_configuration(config);
+    let mut api_client = api_or_exit(&dp);
 
     let response_body = match api_client.config().await {
         Ok(body) => body,

@@ -1,8 +1,9 @@
+use agent_data_plane_config_system::LoadedConfiguration;
 use argh::FromArgs;
-use saluki_config::GenericConfiguration;
 use tracing::{error, info};
 
-use crate::cli::utils::DataPlaneAPIClient;
+use crate::cli::utils::{api_or_exit, DataPlaneAPIClient};
+use crate::config::DataPlaneConfiguration;
 
 mod workload;
 use self::workload::{handle_workload_command, WorkloadCommand};
@@ -62,14 +63,10 @@ pub struct SetMetricLevelCommand {
 }
 
 /// Entrypoint for the `debug` commands.
-pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, cmd: DebugCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create data plane API client: {:#}", e);
-            std::process::exit(1);
-        }
-    };
+pub async fn handle_debug_command(local_config: LoadedConfiguration, cmd: DebugCommand) {
+    let config = local_config.local();
+    let dp = DataPlaneConfiguration::from_configuration(config);
+    let mut api_client = api_or_exit(&dp);
 
     match cmd.subcommand {
         DebugSubcommand::ResetLogLevel(_) => reset_log_level(&mut api_client).await,

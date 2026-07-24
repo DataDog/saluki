@@ -260,7 +260,7 @@ fn normalize_endpoint(endpoint: &str) -> String {
     if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
         endpoint.to_string()
     } else {
-        format!("https://{}", endpoint)
+        format!("http://{}", endpoint)
     }
 }
 
@@ -269,14 +269,14 @@ mod tests {
     use super::normalize_endpoint;
 
     #[test]
-    fn normalize_endpoint_prepends_https_only_when_scheme_missing() {
-        // Endpoints that already carry an `http://`/`https://` scheme are passed through untouched; anything else
-        // (a bare host:port, as the Core Agent gRPC endpoint is typically configured) gets an `https://` prefix.
+    fn normalize_endpoint_defaults_to_plaintext_when_scheme_is_missing() {
+        // Preserve explicit transport security. Bare endpoints use plaintext; TLS callers must
+        // provide an `https://` scheme.
         let cases = [
             ("http://localhost:4317", "http://localhost:4317"),
             ("https://api.datadoghq.com:443", "https://api.datadoghq.com:443"),
-            ("localhost:4317", "https://localhost:4317"),
-            ("127.0.0.1:5003", "https://127.0.0.1:5003"),
+            ("localhost:4317", "http://localhost:4317"),
+            ("127.0.0.1:4319", "http://127.0.0.1:4319"),
         ];
 
         for (input, expected) in cases {

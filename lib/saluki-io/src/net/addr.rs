@@ -5,7 +5,7 @@ use std::{
 };
 
 use axum::extract::connect_info::Connected;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer};
 use url::Url;
 
 use super::Connection;
@@ -161,6 +161,15 @@ impl fmt::Display for ListenAddress {
             Self::Unix(path) => write!(f, "unix://{}", path.display()),
             Self::NamedPipe { name, .. } => write!(f, "npipe://{}", name),
         }
+    }
+}
+
+impl Serialize for ListenAddress {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.collect_str(self)
     }
 }
 
@@ -449,6 +458,23 @@ impl fmt::Display for GrpcTargetAddress {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listen_address_serialization_round_trips_through_deserialization() {
+        for value in [
+            "tcp://127.0.0.1:5100",
+            "udp://127.0.0.1:8125",
+            "unixgram:///tmp/dogstatsd.socket",
+            "unix:///tmp/checks.socket",
+            "npipe://datadog-dogstatsd",
+        ] {
+            let address = ListenAddress::try_from(value).unwrap();
+            let serialized = serde_json::to_string(&address).unwrap();
+            let deserialized = serde_json::from_str(&serialized).unwrap();
+
+            assert_eq!(address, deserialized);
+        }
+    }
 
     #[test]
     fn named_pipe_listen_address_formats_with_windows_pipe_prefix() {

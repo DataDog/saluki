@@ -7,6 +7,7 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::time::Instant;
 
+use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
 #[cfg(any(target_os = "linux", test))]
@@ -16,7 +17,9 @@ use saluki_components::sources::TrafficCaptureReader;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
-use saluki_config::{DurationString, GenericConfiguration};
+use saluki_config::DurationString;
+#[cfg(any(target_os = "linux", test))]
+use saluki_config::GenericConfiguration;
 #[cfg(any(target_os = "linux", test))]
 use saluki_error::generic_error;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -32,7 +35,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::{error, info};
 
-use crate::cli::utils::DataPlaneAPIClient;
+use crate::cli::utils::{api_or_exit, DataPlaneAPIClient};
+use crate::config::DataPlaneConfiguration;
 
 /// DogStatsD-specific debugging commands.
 #[derive(FromArgs, Debug)]
@@ -167,14 +171,10 @@ struct StatsResponse<'a> {
 }
 
 /// Entrypoint for the `dogstatsd` commands.
-pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create data plane API client: {:#}", e);
-            std::process::exit(1);
-        }
-    };
+pub async fn handle_dogstatsd_command(local_config: LoadedConfiguration, cmd: DogstatsdCommand) {
+    let config = local_config.local();
+    let dp = DataPlaneConfiguration::from_configuration(config);
+    let mut api_client = api_or_exit(&dp);
 
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(config) => {
@@ -192,7 +192,8 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
         DogstatsdSubcommand::Replay(config) => {
             #[cfg(target_os = "linux")]
             {
-                if let Err(e) = handle_dogstatsd_replay(&mut api_client, bootstrap_config, config).await {
+                let raw_config = local_config.raw_config();
+                if let Err(e) = handle_dogstatsd_replay(&mut api_client, &raw_config, config).await {
                     error!("Failed to replay DogStatsD traffic: {:#}", e);
                     std::process::exit(1);
                 }

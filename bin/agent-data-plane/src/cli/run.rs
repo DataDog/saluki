@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent_data_plane_config_system::{ConfigurationSystem, EnvPrecedence, LoadedConfiguration};
+use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
@@ -66,7 +66,8 @@ pub struct RunCommand {
 
 /// Entrypoint for the `run` commands.
 pub async fn handle_run_command(
-    started: Instant, config_path: PathBuf, bootstrap_guard: &mut BootstrapGuard, bootstrap_supervisor: Supervisor,
+    started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
+    bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
     let app_details = saluki_metadata::get_app_details();
     info!(
@@ -78,17 +79,8 @@ pub async fn handle_run_command(
         "Agent Data Plane starting..."
     );
 
-    // Load the local configuration sources (file + environment) once. The configuration system owns
-    // the loader wiring; we supply the file path and the environment precedence. Environment
-    // variables sit above the file so ADP-specific overrides (log level, etc.) win.
-    let loaded = LoadedConfiguration::load(&config_path, EnvPrecedence::AfterFile)
-        .await
-        .error_context("Failed to load configuration.")?;
-
-    // A static snapshot of the local sources, used only for decisions the Agent stream can never
-    // change: whether we run standalone, and the remote-agent registration parameters.
-    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(&loaded.raw_config())
-        .error_context("Failed to load data plane configuration.")?;
+    // Use local sources for decisions required before the Agent configuration stream is available.
+    let bootstrap_dp_config = DataPlaneConfiguration::from_configuration(local_config.local());
     let standalone = bootstrap_dp_config.standalone_mode();
 
     // Resolve the authoritative configuration. Connected mode registers as a remote agent and takes
@@ -96,14 +88,14 @@ pub async fn handle_run_command(
     // authoritative. Both terminals block until the first configuration is received, deserialized,
     // and translated, failing the boot if it cannot be -- the strict startup gate.
     let (config_sys, ra_bootstrap) = if standalone {
-        let config_sys = loaded
+        let config_sys = local_config
             .standalone()
             .await
             .error_context("Failed to load configuration.")?;
         (config_sys, None)
     } else {
         // Blocks until the Core Agent acknowledges registration.
-        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&loaded.raw_config(), &bootstrap_dp_config)
+        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&local_config.raw_config(), &bootstrap_dp_config)
             .await
             .error_context("Failed to bootstrap remote agent state.")?;
 
@@ -113,7 +105,7 @@ pub async fn handle_run_command(
         let config_stream = ra_bootstrap.create_config_stream();
 
         info!("Waiting for initial configuration from Datadog Agent...");
-        let config_sys = loaded
+        let config_sys = local_config
             .run(config_stream)
             .await
             .error_context("Failed to load initial configuration from the Datadog Agent.")?;
@@ -121,11 +113,6 @@ pub async fn handle_run_command(
 
         (config_sys, Some(ra_bootstrap))
     };
-
-    // Hand un-migrated components the resolved configuration as the legacy `GenericConfiguration`
-    // they still read from. Raw reads go through `config`; typed/live reads go through `config_sys`.
-    let dp_config = DataPlaneConfiguration::from_configuration(&config_sys.raw_map())
-        .error_context("Failed to load data plane configuration.")?;
 
     // Connected mode may have replaced the bootstrap-phase settings with the Agent's authoritative
     // config, so reload logging to match. Standalone resolves the same local sources seen at
@@ -147,29 +134,36 @@ pub async fn handle_run_command(
         }
     }
 
-    if !standalone && !dp_config.enabled() {
+    let (enabled, active_pipelines) = {
+        let config = config_sys.config();
+        let dp = DataPlaneConfiguration::from_configuration(&config);
+        (dp.enabled(), dp.active_pipelines())
+    };
+
+    if !standalone && !enabled {
         info!("Agent Data Plane is not enabled. Exiting.");
         return Ok(());
     }
 
-    let active_pipelines = active_pipelines(&dp_config);
     check_and_warn_config(&config_sys, &active_pipelines).error_context("Incompatible configuration detected.")?;
 
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
-    let (env_provider, maybe_env_supervisor) =
-        ADPEnvironmentProvider::from_configuration(&config_sys, &dp_config, &component_registry, &health_registry)
-            .await?;
+    let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_configuration(
+        standalone,
+        &config_sys.raw_map(),
+        &component_registry,
+        &health_registry,
+    )
+    .await?;
 
     // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) =
-        create_topology(&config_sys, &dp_config, &env_provider, &component_registry).await?;
+    let (mut blueprint, control_surfaces) = create_topology(&config_sys, &env_provider, &component_registry).await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
         &config_sys,
-        &dp_config,
         &component_registry,
         health_registry.clone(),
         control_surfaces,
@@ -259,24 +253,6 @@ async fn wait_for_sigint() {
     let _ = tokio::signal::ctrl_c().await;
 
     info!("Received SIGINT, shutting down...");
-}
-
-/// Returns the set of [`Pipeline`] variants that are active based on our configuration.
-fn active_pipelines(dp_config: &DataPlaneConfiguration) -> HashSet<Pipeline> {
-    let mut s = HashSet::new();
-    if dp_config.dogstatsd().enabled() {
-        s.insert(Pipeline::DogStatsD);
-    }
-    if dp_config.checks().enabled() {
-        s.insert(Pipeline::Checks);
-    }
-    if dp_config.otlp().enabled() {
-        s.insert(Pipeline::Otlp);
-    }
-    if dp_config.traces_pipeline_required() {
-        s.insert(Pipeline::Traces);
-    }
-    s
 }
 
 /// Check the resolved configuration against the config registry for incompatibilities.
@@ -372,16 +348,17 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
 }
 
 async fn create_topology(
-    config_system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration, env_provider: &ADPEnvironmentProvider,
-    component_registry: &ComponentRegistry,
+    config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
+    let config = config_system.config();
+    let dp = DataPlaneConfiguration::from_configuration(&config);
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
-    blueprint.with_shutdown_timeout(dp_config.stop_timeout());
+    blueprint.with_shutdown_timeout(dp.stop_timeout());
 
     let mut control_surfaces = TopologyControlSurfaces::default();
 
     // If no data pipelines are enabled, then there's nothing for us to do.
-    if !dp_config.data_pipelines_enabled() {
+    if !dp.data_pipelines_enabled() {
         return Err(generic_error!("No data pipelines are enabled. Exiting."));
     }
 
@@ -394,52 +371,51 @@ async fn create_topology(
     //
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
     // is the only reason we're differentiating here.
-    if dp_config.metrics_pipeline_required()
-        || dp_config.logs_pipeline_required()
-        || dp_config.events_pipeline_required()
-        || dp_config.service_checks_pipeline_required()
-        || dp_config.traces_pipeline_required()
+    if dp.metrics_pipeline_required()
+        || dp.logs_pipeline_required()
+        || dp.events_pipeline_required()
+        || dp.service_checks_pipeline_required()
+        || dp.traces_pipeline_required()
     {
         let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(&config_system.raw_map())
             .error_context("Failed to configure Datadog forwarder.")?;
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
-    if dp_config.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), dp_config, env_provider)
-            .await?;
+    if dp.metrics_pipeline_required() {
+        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
     }
 
-    if dp_config.logs_pipeline_required() {
+    if dp.logs_pipeline_required() {
         add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
-    if dp_config.events_pipeline_required() {
+    if dp.events_pipeline_required() {
         add_baseline_events_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
-    if dp_config.service_checks_pipeline_required() {
+    if dp.service_checks_pipeline_required() {
         add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
     }
 
-    if dp_config.traces_pipeline_required() {
+    if dp.traces_pipeline_required() {
         add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
     // Now we move on to our actual data pipelines.
-    if dp_config.checks().enabled() {
+    if dp.checks_enabled() {
         add_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
-    if dp_config.dogstatsd().enabled() {
+    if dp.dogstatsd_enabled() {
         let dsd_control_surface =
             add_dsd_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), config_system, env_provider)
                 .await?;
         control_surfaces.attach_dogstatsd(dsd_control_surface);
     }
 
-    if dp_config.otlp().enabled() {
-        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, dp_config, env_provider).await?;
+    if dp.otlp_enabled() {
+        add_otlp_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
     }
 
     Ok((blueprint, control_surfaces))
@@ -466,22 +442,23 @@ async fn add_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
-    env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
     let mut metrics_enrich_config =
         ChainedConfiguration::default().with_transform_builder("host_enrichment", host_enrichment_config);
 
-    if !dp_config.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(config)?;
+    let config = config_system.config();
+    let dp = DataPlaneConfiguration::from_configuration(&config);
+    if !dp.standalone_mode() {
+        let host_tags_config = HostTagsConfiguration::from_configuration(&config_system.raw_map())?;
         if host_tags_config.enabled() {
             metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
         }
     }
 
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
+    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(&config_system.raw_map())
         .error_context("Failed to configure Datadog Metrics encoder.")?;
 
     blueprint
@@ -491,8 +468,8 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
-    add_mrf_metrics_pipeline_to_blueprint(blueprint, config)?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, config)?;
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map())?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map())?;
 
     Ok(())
 }
@@ -804,14 +781,15 @@ async fn add_dsd_pipeline_to_blueprint(
 }
 
 async fn add_otlp_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, dp_config: &DataPlaneConfiguration,
-    env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    if dp_config.otlp().proxy().enabled() {
-        let core_agent_otlp_grpc_endpoint = dp_config.otlp().proxy().core_agent_otlp_grpc_endpoint().to_string();
-        let proxy_metrics = dp_config.otlp().proxy().proxy_metrics();
-        let proxy_logs = dp_config.otlp().proxy().proxy_logs();
-        let proxy_traces = dp_config.otlp().proxy().proxy_traces();
+    let config = config_system.config();
+    let dp = DataPlaneConfiguration::from_configuration(&config);
+    if dp.otlp_proxy_enabled() {
+        let core_agent_otlp_grpc_endpoint = config.domains.otlp.proxy.grpc_endpoint.clone();
+        let proxy_metrics = config.domains.otlp.proxy.metrics_enabled;
+        let proxy_logs = config.domains.otlp.proxy.logs_enabled;
+        let proxy_traces = config.domains.otlp.proxy.traces_enabled;
 
         info!(
             proxy_grpc_endpoint = %core_agent_otlp_grpc_endpoint,
@@ -835,7 +813,7 @@ async fn add_otlp_pipeline_to_blueprint(
             // Metrics and logs directly to the forwarders.
             .connect_components(["otlp_relay_in.metrics", "otlp_relay_in.logs"], "local_agent_otlp_out")?;
 
-        if dp_config.otlp().proxy().proxy_traces() {
+        if proxy_traces {
             blueprint.connect_components("otlp_relay_in.traces", "local_agent_otlp_out")?;
         } else {
             blueprint

@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
@@ -31,6 +30,7 @@ use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
+use saluki_io::net::ListenAddress;
 
 /// Translates a [`DatadogConfiguration`] into a [`SalukiConfiguration`].
 ///
@@ -43,6 +43,8 @@ pub(crate) struct DatadogTranslator<'a> {
     config: SalukiConfiguration,
     errors: Vec<TranslateError>,
 }
+
+type Result<T> = std::result::Result<T, TranslateError>;
 
 impl<'a> DatadogTranslator<'a> {
     /// Creates a translator that will read from `datadog`.
@@ -120,7 +122,7 @@ fn to_port(value: i64) -> u16 {
 /// `Vec<serde_json::Value>`. This parser imposes the typed model shape via a local
 /// `#[derive(Deserialize)]` shim, mirroring how the `saluki-components` `dogstatsd_mapper`
 /// deserializes profiles.
-fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfile, TranslateError> {
+fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfile> {
     #[derive(serde::Deserialize)]
     struct RawMapping {
         #[serde(rename = "match")]
@@ -228,7 +230,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_aggregator_stop_timeout(&mut self, value: i64) {
-        self.config.control.aggregator_stop_timeout = value.max(0) as u64;
+        // The schema explicitly says this value is denominated in seconds. We disambiguate here at
+        // the earliest possible opportunity.
+        match parse_seconds("aggregator_stop_timeout", value) {
+            Ok(duration) => self.config.control.aggregator_stop_timeout = duration,
+            Err(e) => self.record_error(e),
+        }
     }
 
     fn consume_allow_arbitrary_tags(&mut self, value: bool) {
@@ -401,7 +408,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_api_listen_address(&mut self, value: String) {
-        self.config.control.api_listen_address = ListenAddress(value);
+        match parse_listen_address("data_plane.api_listen_address", &value) {
+            Ok(addr) => self.config.control.api_listen_address = addr,
+            Err(e) => self.record_error(e),
+        }
     }
 
     fn consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(&mut self, value: i64) {
@@ -453,7 +463,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_secure_api_listen_address(&mut self, value: String) {
-        self.config.control.secure_api_listen_address = ListenAddress(value);
+        match parse_listen_address("data_plane.secure_api_listen_address", &value) {
+            Ok(addr) => self.config.control.secure_api_listen_address = addr,
+            Err(e) => self.record_error(e),
+        }
     }
 
     fn consume_data_plane_use_new_config_stream_endpoint(&mut self, value: bool) {
@@ -718,7 +731,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_stop_timeout(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.stop_timeout = value.max(0) as u64;
+        // The schema explicitly says this value is denominated in seconds. We disambiguate here at
+        // the earliest possible opportunity.
+        match parse_seconds("forwarder_stop_timeout", value) {
+            Ok(duration) => self.config.shared.endpoints.forwarder.stop_timeout = duration,
+            Err(e) => self.record_error(e),
+        }
     }
 
     fn consume_forwarder_storage_max_disk_ratio(&mut self, value: f64) {
@@ -1140,6 +1158,19 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn translate_errors(&mut self) -> Vec<TranslateError> {
         std::mem::take(&mut self.errors)
     }
+}
+
+/// A helper to parse values in the schema that are denominated in seconds (per documentation) but
+/// represented as i64 values.
+fn parse_seconds(key: &str, value: i64) -> Result<Duration> {
+    let seconds =
+        u64::try_from(value).map_err(|e| TranslateError::new_with_context(key, "invalid duration seconds value", e))?;
+    Ok(Duration::from_secs(seconds))
+}
+
+/// A helper to parse listen address values in the schema that are defined as strings.
+fn parse_listen_address(key: &str, value: &str) -> Result<ListenAddress> {
+    ListenAddress::try_from(value).map_err(|e| TranslateError::new_with_context(key, "invalid address", e))
 }
 
 #[cfg(test)]
