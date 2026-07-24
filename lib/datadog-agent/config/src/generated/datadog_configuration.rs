@@ -191,6 +191,9 @@ pub struct DatadogConfiguration {
     pub dogstatsd_windows_pipe_security_descriptor: String,
 
     #[serde(default)]
+    pub dogstatsd_workers_count: i64,
+
+    #[serde(default)]
     pub enable_payloads: EnablePayloads,
 
     #[serde(default)]
@@ -475,6 +478,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_tag_cardinality: defaults::datadog_configuration_dogstatsd_tag_cardinality(),
             dogstatsd_tags: Default::default(),
             dogstatsd_windows_pipe_security_descriptor: defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor(),
+            dogstatsd_workers_count: Default::default(),
             enable_payloads: Default::default(),
             env: Default::default(),
             expected_tags_duration: duration_defaults::expected_tags_duration(),
