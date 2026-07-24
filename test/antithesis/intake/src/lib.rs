@@ -34,6 +34,7 @@
 #![deny(warnings)]
 
 pub mod capture;
+pub mod context_pool;
 pub mod http;
 
 mod lenient_decode;
