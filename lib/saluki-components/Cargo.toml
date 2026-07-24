@@ -11,6 +11,7 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-io/fips"]
+test-util = []
 
 [dependencies]
 agent-data-plane-config = { workspace = true }
@@ -94,6 +95,7 @@ uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 # TODO: remove after migration to typed config. Only the in-crate tests still reference the moved
 # `KEY_ALIASES`/`DatadogRemapper` (re-exported from `config` under `cfg(test)`).
 datadog-agent-config = { workspace = true }
@@ -110,3 +112,8 @@ tempfile = { workspace = true }
 test-strategy = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-rustls = { workspace = true }
+
+[[bench]]
+name = "aggregate_context_snapshot"
+harness = false
+required-features = ["test-util"]

@@ -6,7 +6,7 @@ use std::{
 
 use agent_data_plane_config_system::{ConfigurationSystem, EnvPrecedence, LoadedConfiguration};
 use argh::FromArgs;
-use datadog_agent_commons::platform::PlatformSettings;
+use datadog_agent_commons::{ipc::config::IpcAuthConfiguration, platform::PlatformSettings};
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
@@ -26,9 +26,10 @@ use saluki_components::{
     relays::otlp::OtlpRelayConfiguration,
     sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration,
-        ChainedConfiguration, DogStatsDMapperConfiguration, HostEnrichmentConfiguration,
-        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        AggregateConfiguration, AggregateContextSnapshotHandle, ApmStatsTransformConfiguration,
+        AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
+        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
+        TraceSamplerConfiguration,
     },
 };
 use saluki_config::GenericConfiguration;
@@ -48,6 +49,7 @@ use crate::{
         ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
         tag_filterlist::TagFilterlistConfiguration,
     },
+    dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
         DogStatsDControlSurface, TopologyControlSurfaces,
@@ -676,6 +678,27 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     Ok(())
 }
 
+async fn build_dogstatsd_context_dump_api_handler(
+    config: &GenericConfiguration, snapshot_handle: AggregateContextSnapshotHandle,
+) -> Result<DogStatsDContextDumpAPIHandler, GenericError> {
+    let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
+    let auth_token_path = ipc_config.auth_token_file_path();
+    let auth_token = tokio::fs::read(&auth_token_path).await.map_err(|error| {
+        generic_error!(
+            "Failed to read Agent authentication token from file '{}' ({}).",
+            auth_token_path.display(),
+            error.kind()
+        )
+    })?;
+    let run_path = config
+        .try_get_typed::<PathBuf>("run_path")
+        .error_context("Failed to read configured `run_path` for DogStatsD context dumps.")?
+        .unwrap_or_default();
+
+    DogStatsDContextDumpAPIHandler::new(auth_token, vec![snapshot_handle], run_path)
+        .error_context("Failed to configure DogStatsD context dump API handler.")
+}
+
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint,
     config: &GenericConfiguration,
@@ -737,6 +760,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
+    let dsd_context_snapshot_handle = dsd_agg_config.context_snapshot_handle();
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
@@ -757,6 +781,8 @@ async fn add_dsd_pipeline_to_blueprint(
     let stats_api_handler = dsd_stats_config.api_handler();
     let capture_api_handler = dsd_config.capture_api_handler();
     let replay_api_handler = dsd_config.replay_api_handler();
+    let context_dump_api_handler =
+        build_dogstatsd_context_dump_api_handler(config, dsd_context_snapshot_handle).await?;
 
     blueprint
         // Components.
@@ -800,6 +826,7 @@ async fn add_dsd_pipeline_to_blueprint(
         stats_api_handler,
         capture_api_handler,
         replay_api_handler,
+        context_dump_api_handler,
     })
 }
 
@@ -890,4 +917,402 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
     output.flush()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path, sync::Mutex, time::Duration};
+
+    use async_trait::async_trait;
+    use http::{header::AUTHORIZATION, Request, StatusCode};
+    use http_body_util::{BodyExt as _, Empty};
+    use hyper::body::Bytes;
+    use saluki_api::{response::Response, APIHandler as _};
+    use saluki_components::transforms::{
+        aggregate_context_snapshot_channel_for_test, AggregateConfiguration, AggregateContextSnapshotEntry,
+        AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
+    };
+    use saluki_config::{config_from, GenericConfiguration};
+    use saluki_context::Context;
+    use saluki_core::{
+        accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
+        components::{
+            destinations::{Destination, DestinationBuilder, DestinationContext},
+            sources::{Source, SourceBuilder, SourceContext},
+            ComponentContext,
+        },
+        data_model::event::{metric::Metric, Event, EventType},
+        health::HealthRegistry,
+        runtime::Supervisor,
+        topology::{OutputDefinition, TopologyBlueprint},
+    };
+    use saluki_error::{generic_error, GenericError};
+    use serde_json::json;
+    use stringtheory::MetaString;
+    use tokio::sync::{mpsc, oneshot};
+    use tower::ServiceExt as _;
+
+    use super::build_dogstatsd_context_dump_api_handler;
+    use crate::{
+        components::{
+            dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, tag_filterlist::TagFilterlistConfiguration,
+        },
+        dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
+    };
+
+    const AUTH_TOKEN: &[u8] = b"configured-agent-token";
+    const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
+    const CONTEXT_DUMP_ROUTE: &str = crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
+
+    #[tokio::test]
+    async fn retained_context_identity_follows_dogstatsd_post_processing() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let config = config_from(json!({
+                "dogstatsd_mapper_profiles": [{
+                    "name": "retained-context-test",
+                    "prefix": "raw.requests.",
+                    "mappings": [{
+                        "match": "raw.requests.*",
+                        "name": "mapped.requests",
+                        "tags": { "route": "$1" }
+                    }]
+                }],
+                "statsd_metric_namespace": "tenant",
+                "statsd_metric_namespace_blocklist": [],
+                "metric_filterlist": ["tenant.raw.blocked"],
+                "metric_filterlist_match_prefix": false,
+                "metric_tag_filterlist": [{
+                    "metric_name": "tenant.mapped.requests",
+                    "action": "exclude",
+                    "tags": ["remove"]
+                }],
+                "aggregate_flush_interval": { "secs": 60, "nanos": 0 }
+            }))
+            .await;
+
+            let mapper =
+                DogStatsDMapperConfiguration::from_configuration(&config).expect("mapper configuration should parse");
+            let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
+            let prefix_filter = DogStatsDPrefixFilterConfiguration::from_configuration(&config)
+                .expect("prefix filter configuration should parse");
+            let tag_filter =
+                TagFilterlistConfiguration::from_configuration(&config).expect("tag filter configuration should parse");
+            let aggregate =
+                AggregateConfiguration::from_configuration(&config).expect("aggregate configuration should parse");
+            let snapshot_handle = aggregate.context_snapshot_handle();
+
+            let (events_tx, events_rx) = mpsc::channel(2);
+            let source = ControlledMetricSourceBuilder {
+                events: Mutex::new(Some(events_rx)),
+                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+            };
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("dogstatsd_retained_identity", &component_registry);
+            blueprint
+                .add_source("source", source)
+                .expect("controlled source should be accepted")
+                .add_transform("mapper", mapper_chain)
+                .expect("mapper should be accepted")
+                .add_transform("prefix_filter", prefix_filter)
+                .expect("prefix filter should be accepted")
+                .add_transform("tag_filter", tag_filter)
+                .expect("tag filter should be accepted")
+                .add_transform("aggregate", aggregate)
+                .expect("aggregate should be accepted")
+                .add_destination("destination", DrainingMetricDestinationBuilder)
+                .expect("draining destination should be accepted");
+            blueprint
+                .connect_components_in_order([
+                    "source",
+                    "mapper",
+                    "prefix_filter",
+                    "tag_filter",
+                    "aggregate",
+                    "destination",
+                ])
+                .expect("DogStatsD post-processing topology should connect");
+            blueprint
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_ambient_worker_pool();
+
+            let mut supervisor =
+                Supervisor::new("dogstatsd-retained-identity").expect("test supervisor should be created");
+            supervisor.add_worker(blueprint);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+            events_tx
+                .send(Event::Metric(Metric::counter("raw.blocked", 1.0)))
+                .await
+                .expect("controlled source should accept the blocked metric");
+            let input_context = Context::from_static_parts("raw.requests.checkout", &["keep:client", "remove:secret"]);
+            events_tx
+                .send(Event::Metric(Metric::counter(input_context.clone(), 1.0)))
+                .await
+                .expect("controlled source should accept the retained metric");
+
+            let expected_context =
+                Context::from_static_parts("tenant.mapped.requests", &["keep:client", "route:checkout"]);
+            let snapshot = loop {
+                let snapshot = snapshot_handle
+                    .snapshot()
+                    .await
+                    .expect("running aggregate should fulfill snapshots");
+                if snapshot.iter().any(|entry| entry.context() == &expected_context) {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            };
+
+            assert_eq!(snapshot.len(), 1);
+            assert_eq!(snapshot[0].context(), &expected_context);
+            assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Counter);
+            assert_eq!(snapshot[0].context().tags().len(), 2);
+            assert_eq!(
+                snapshot[0]
+                    .context()
+                    .tags()
+                    .get_single_tag("keep")
+                    .and_then(|tag| tag.value()),
+                Some("client")
+            );
+            assert_eq!(
+                snapshot[0]
+                    .context()
+                    .tags()
+                    .get_single_tag("route")
+                    .and_then(|tag| tag.value()),
+                Some("checkout")
+            );
+            assert!(snapshot[0].context().tags().get_single_tag("remove").is_none());
+            assert!(snapshot.iter().all(|entry| entry.context() != &input_context));
+            assert!(snapshot
+                .iter()
+                .all(|entry| { !matches!(entry.context().name().as_ref(), "raw.blocked" | "tenant.raw.blocked") }));
+
+            drop(events_tx);
+            drop(snapshot_handle);
+            shutdown_tx.send(()).expect("test topology should still be running");
+            let topology_result = topology_task.await.expect("topology task should not panic");
+            assert!(
+                topology_result.is_ok(),
+                "topology should stop cleanly: {topology_result:?}"
+            );
+        })
+        .await
+        .expect("DogStatsD retained identity test should complete without hanging");
+    }
+
+    #[tokio::test]
+    async fn context_dump_handler_reads_configured_credentials_and_run_path_and_uses_supplied_owner() {
+        let run_directory = tempfile::tempdir().expect("run directory should be created");
+        let token_file = run_directory.path().join("auth_token");
+        fs::write(&token_file, AUTH_TOKEN).expect("token should be written");
+        let config = context_dump_config(Some(run_directory.path()), &token_file).await;
+        let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
+
+        let handler = build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
+            .await
+            .expect("configured handler should build");
+        let owner = tokio::spawn(async move {
+            snapshot_responder
+                .respond(vec![snapshot_entry("from.supplied.aggregate")])
+                .await
+        });
+
+        let response = send(&handler, authorized_post()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let artifact_path = run_directory.path().join(CONTEXT_DUMP_FILENAME);
+        assert_eq!(
+            response_body(response).await,
+            serde_json::to_string(&artifact_path).unwrap()
+        );
+        assert!(artifact_path.is_file());
+        owner.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn context_dump_handler_reports_missing_and_unreadable_token_paths_with_io_kind() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let cases = [directory.path().join("missing-token"), directory.path().to_owned()];
+
+        for token_path in cases {
+            let expected_kind = tokio::fs::read(&token_path)
+                .await
+                .expect_err("token fixture should be unreadable")
+                .kind();
+            let config = context_dump_config(Some(directory.path()), &token_path).await;
+            let (snapshot_handle, _snapshot_responder) = aggregate_context_snapshot_channel_for_test();
+
+            let error = match build_dogstatsd_context_dump_api_handler(&config, snapshot_handle).await {
+                Ok(_) => panic!("unreadable token should fail handler construction"),
+                Err(error) => error,
+            };
+            let message = format!("{error:#}");
+            assert!(message.contains(&token_path.display().to_string()), "{message}");
+            assert!(message.contains(&expected_kind.to_string()), "{message}");
+        }
+    }
+
+    #[tokio::test]
+    async fn context_dump_handler_rejects_empty_and_invalid_raw_token_contents() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let token_file = directory.path().join("auth_token");
+
+        for token in [b"".as_slice(), b"token-with-newline\n".as_slice()] {
+            fs::write(&token_file, token).expect("token fixture should be written");
+            let config = context_dump_config(Some(directory.path()), &token_file).await;
+            let (snapshot_handle, _snapshot_responder) = aggregate_context_snapshot_channel_for_test();
+
+            if build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
+                .await
+                .is_ok()
+            {
+                panic!("invalid raw token should fail closed");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn context_dump_handler_keeps_missing_and_empty_run_path_empty_until_authorized_publication() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let token_file = directory.path().join("auth_token");
+        fs::write(&token_file, AUTH_TOKEN).expect("token should be written");
+        let cwd_artifact = std::env::current_dir().unwrap().join(CONTEXT_DUMP_FILENAME);
+        assert!(!cwd_artifact.exists(), "test requires no pre-existing cwd artifact");
+
+        for run_path in [None, Some(Path::new(""))] {
+            let config = context_dump_config(run_path, &token_file).await;
+            let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
+            let handler = build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
+                .await
+                .expect("empty run path should not weaken authentication setup");
+            let owner = tokio::spawn(async move { snapshot_responder.respond(Vec::new()).await });
+
+            let response = send(&handler, authorized_post()).await;
+
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(!cwd_artifact.exists());
+            owner.await.unwrap().unwrap();
+        }
+    }
+
+    struct ControlledMetricSource {
+        events: mpsc::Receiver<Event>,
+    }
+
+    #[async_trait]
+    impl Source for ControlledMetricSource {
+        async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            let shutdown = context.take_shutdown_handle();
+            tokio::pin!(shutdown);
+            let mut events_open = true;
+
+            loop {
+                tokio::select! {
+                    _ = &mut shutdown => break,
+                    maybe_event = self.events.recv(), if events_open => match maybe_event {
+                        Some(event) => context.dispatcher().dispatch_one(event).await?,
+                        None => events_open = false,
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct ControlledMetricSourceBuilder {
+        events: Mutex<Option<mpsc::Receiver<Event>>>,
+        outputs: Vec<OutputDefinition<EventType>>,
+    }
+
+    #[async_trait]
+    impl SourceBuilder for ControlledMetricSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            let events = self
+                .events
+                .lock()
+                .map_err(|_| generic_error!("controlled metric source receiver lock is poisoned"))?
+                .take()
+                .ok_or_else(|| generic_error!("controlled metric source receiver has already been taken"))?;
+            Ok(Box::new(ControlledMetricSource { events }))
+        }
+    }
+
+    impl MemoryBounds for ControlledMetricSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    struct DrainingMetricDestination;
+
+    #[async_trait]
+    impl Destination for DrainingMetricDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while context.events().next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    struct DrainingMetricDestinationBuilder;
+
+    #[async_trait]
+    impl DestinationBuilder for DrainingMetricDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(DrainingMetricDestination))
+        }
+    }
+
+    impl MemoryBounds for DrainingMetricDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    async fn context_dump_config(run_path: Option<&Path>, token_path: &Path) -> GenericConfiguration {
+        let mut values = json!({
+            "auth_token_file_path": token_path,
+        });
+        if let Some(run_path) = run_path {
+            values["run_path"] = json!(run_path);
+        }
+        config_from(values).await
+    }
+
+    fn authorized_post() -> Request<Empty<Bytes>> {
+        Request::builder()
+            .method("POST")
+            .uri(CONTEXT_DUMP_ROUTE)
+            .header(AUTHORIZATION, "Bearer configured-agent-token")
+            .body(Empty::new())
+            .unwrap()
+    }
+
+    async fn send(handler: &DogStatsDContextDumpAPIHandler, request: Request<Empty<Bytes>>) -> Response {
+        handler
+            .generate_routes()
+            .with_state(handler.generate_initial_state())
+            .oneshot(request)
+            .await
+            .unwrap()
+    }
+
+    async fn response_body(response: Response) -> String {
+        String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+    }
+
+    fn snapshot_entry(name: &'static str) -> AggregateContextSnapshotEntry {
+        AggregateContextSnapshotEntry::for_test(
+            Context::from_static_name(name),
+            AggregateMetricType::Gauge,
+            MetaString::empty(),
+        )
+    }
 }

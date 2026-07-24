@@ -1,0 +1,142 @@
+type: integration
+name: "dogstatsd-top-windows"
+description: "Verifies the authenticated DogStatsD top workflow and protected context artifact on Windows"
+timeout: 180s
+runtimes: [windows]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dogstatsd-top-windows"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
+container:
+  exposed_ports:
+    - "58125/udp"
+    - "55101/tcp"
+
+procedure:
+  - parallel:
+      - assertion: port_listening
+        port: 58125
+        protocol: udp
+        timeout: 60s
+      - assertion: port_listening
+        port: 55101
+        protocol: tcp
+        timeout: 60s
+      # The route is POST-only. A GET returns 405 when registration is complete and 404 when absent.
+      - assertion: http_check
+        endpoint: "https://localhost:55101/agent/dogstatsd-contexts-dump"
+        status:
+          not_equal: 404
+        insecure_skip_verify: true
+        timeout: 60s
+  - action: target_exec
+    command:
+      - "pwsh"
+      - "-NoProfile"
+      - "-NonInteractive"
+      - "-Command"
+      - |
+        $ErrorActionPreference = "Stop"
+        Set-StrictMode -Version 3.0
+
+        $Adp = "C:\adp\agent-data-plane.exe"
+        $Config = "C:\ProgramData\Datadog\datadog.yaml"
+        $ApiUrl = "https://127.0.0.1:55101/agent/dogstatsd-contexts-dump"
+        $Result = "C:\dogstatsd-top-result"
+        $CopiedDump = "C:\dogstatsd-top-copied.json.zstd"
+        $RequestRow = "          2`tintegration.windows.top.requests`t(2 instance, 1 env)"
+        $QueueRow = "          1`tintegration.windows.top.queue`t(1 queue)"
+
+        function Invoke-AdpDogStatsD([string[]] $Arguments) {
+            $Output = @(& $Adp --config $Config dogstatsd @Arguments 2>&1)
+            if ($LASTEXITCODE -ne 0) {
+                throw "ADP command failed ($LASTEXITCODE): $($Arguments -join ' ')`n$($Output -join "`n")"
+            }
+            return $Output -join "`n"
+        }
+
+        function Assert-UnauthorizedRequest {
+            try {
+                Invoke-WebRequest -Uri $ApiUrl -Method Post -SkipCertificateCheck -TimeoutSec 10 | Out-Null
+                throw "Context dump API accepted an unauthenticated request."
+            } catch {
+                $Response = $_.Exception.Response
+                if ($null -eq $Response -or [int] $Response.StatusCode -ne 401) {
+                    throw
+                }
+            }
+        }
+
+        function Send-DogStatsDContexts {
+            $Payload = @(
+                "integration.windows.top.requests:1|c|#host:windows-a,env:prod,instance:a",
+                "integration.windows.top.requests:1|c|#host:windows-b,env:prod,instance:b",
+                "integration.windows.top.queue:1|c|#queue:alpha"
+            ) -join "`n"
+            $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)
+            $Client = [System.Net.Sockets.UdpClient]::new()
+            try {
+                1..3 | ForEach-Object { [void] $Client.Send($Bytes, $Bytes.Length, "127.0.0.1", 58125) }
+            } finally {
+                $Client.Dispose()
+            }
+        }
+
+        function Wait-ForOnlineReport {
+            $LastOutput = ""
+            foreach ($Attempt in 1..40) {
+                $LastOutput = Invoke-AdpDogStatsD @("top")
+                if ($LastOutput.Contains($RequestRow) -and $LastOutput.Contains($QueueRow)) {
+                    return $LastOutput
+                }
+                Start-Sleep -Milliseconds 500
+            }
+            throw "Retained contexts did not appear in online output:`n$LastOutput"
+        }
+
+        function Get-DumpPath([string] $Output) {
+            $Lines = @($Output -split "`r?`n" | Where-Object { $_ -ne "" })
+            if ($Lines.Count -ne 1 -or -not $Lines[0].StartsWith("Wrote ")) {
+                throw "Unexpected dump-contexts output: $Output"
+            }
+            $Path = $Lines[0].Substring("Wrote ".Length)
+            if (-not [System.IO.Path]::IsPathRooted($Path) -or [System.IO.Path]::GetFileName($Path) -ne "dogstatsd_contexts.json.zstd") {
+                throw "Unexpected context dump path: $Path"
+            }
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+                throw "Context dump was not created: $Path"
+            }
+            return $Path
+        }
+
+        Assert-UnauthorizedRequest
+        Send-DogStatsDContexts
+        $Online = Wait-ForOnlineReport
+        if (-not $Online.StartsWith("Wrote ")) {
+            throw "Online top did not print the generated artifact path:`n$Online"
+        }
+
+        $DumpPath = Get-DumpPath (Invoke-AdpDogStatsD @("dump-contexts"))
+        Copy-Item -LiteralPath $DumpPath -Destination $CopiedDump -Force
+        $Offline = Invoke-AdpDogStatsD @("top", "--path", $CopiedDump)
+        if (-not $Offline.Contains($RequestRow) -or -not $Offline.Contains($QueueRow)) {
+            throw "Offline report is missing retained contexts:`n$Offline"
+        }
+
+        Set-Content -LiteralPath $Result -Value "passed" -Encoding ASCII
+    timeout: 90s
+  - assertion: file_contains
+    path: "C:\\dogstatsd-top-result"
+    pattern: "passed"
+    timeout: 10s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

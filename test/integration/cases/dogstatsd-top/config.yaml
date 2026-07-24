@@ -1,0 +1,57 @@
+type: integration
+name: "dogstatsd-top"
+description: "Verifies retained DogStatsD contexts through the authenticated API, online CLI, and offline Agent-compatible artifact"
+timeout: 180s
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dogstatsd-top"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
+container:
+  files:
+    - "run_dogstatsd_top_test.py:/dogstatsd-top/run_dogstatsd_top_test.py"
+    # Produced by Datadog Agent 7.80.3 `dogstatsd dump-contexts`; the NDJSON file is the exact
+    # decompressed content of the zstd artifact.
+    - "agent-7.80.3-contexts.json.zstd:/dogstatsd-top/agent-7.80.3-contexts.json.zstd"
+    - "agent-7.80.3-contexts.ndjson:/dogstatsd-top/agent-7.80.3-contexts.ndjson"
+  exposed_ports:
+    - "58125/udp"
+    - "55101/tcp"
+
+procedure:
+  - parallel:
+      - assertion: port_listening
+        port: 58125
+        protocol: udp
+        timeout: 60s
+      - assertion: port_listening
+        port: 55101
+        protocol: tcp
+        timeout: 60s
+      # The route is POST-only. A GET returns 405 when registration is complete and 404 when absent.
+      - assertion: http_check
+        endpoint: "https://localhost:55101/agent/dogstatsd-contexts-dump"
+        status:
+          not_equal: 404
+        insecure_skip_verify: true
+        timeout: 60s
+  - action: target_exec
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/dogstatsd-top/run_dogstatsd_top_test.py"
+    timeout: 90s
+  - assertion: file_contains
+    path: "/tmp/dogstatsd-top-integration-result"
+    pattern: "passed"
+    timeout: 10s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

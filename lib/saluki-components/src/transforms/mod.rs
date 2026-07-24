@@ -4,7 +4,14 @@ mod autoscaling_failover_gateway;
 pub use self::autoscaling_failover_gateway::AutoscalingFailoverGatewayConfiguration;
 
 mod aggregate;
-pub use self::aggregate::AggregateConfiguration;
+#[cfg(feature = "test-util")]
+pub use self::aggregate::{
+    aggregate_context_snapshot_channel_for_test, AggregateContextSnapshotBenchmarkHarness,
+    AggregateContextSnapshotPendingResponse, AggregateContextSnapshotResponder,
+};
+pub use self::aggregate::{
+    AggregateConfiguration, AggregateContextSnapshotEntry, AggregateContextSnapshotHandle, AggregateMetricType,
+};
 
 mod chained;
 pub use self::chained::ChainedConfiguration;

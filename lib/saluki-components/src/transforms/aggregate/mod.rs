@@ -1,5 +1,7 @@
 use std::{
+    future::pending,
     num::NonZeroU64,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
@@ -17,13 +19,14 @@ use saluki_core::{
     topology::{interconnect::BufferedDispatcher, OutputDefinition},
     topology::{EventsBuffer, EventsDispatcher},
 };
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
 use smallvec::SmallVec;
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
+    sync::{mpsc, oneshot},
     time::{interval, interval_at},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -35,6 +38,251 @@ mod config;
 use self::config::{HistogramConfiguration, HistogramStatistic};
 
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+const CONTEXT_SNAPSHOT_REQUEST_CHANNEL_CAPACITY: usize = 1;
+
+/// The shape of metric values retained by the aggregate transform.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AggregateMetricType {
+    /// Counter values.
+    Counter,
+
+    /// Rate values.
+    Rate,
+
+    /// Gauge values.
+    Gauge,
+
+    /// Set values.
+    Set,
+
+    /// Histogram values.
+    Histogram,
+
+    /// Distribution values.
+    Distribution,
+}
+
+impl From<&MetricValues> for AggregateMetricType {
+    fn from(values: &MetricValues) -> Self {
+        match values {
+            MetricValues::Counter(_) => Self::Counter,
+            MetricValues::Rate(_, _) => Self::Rate,
+            MetricValues::Gauge(_) => Self::Gauge,
+            MetricValues::Set(_) => Self::Set,
+            MetricValues::Histogram(_) => Self::Histogram,
+            MetricValues::Distribution(_) => Self::Distribution,
+        }
+    }
+}
+
+/// A retained metric context and its small aggregation metadata.
+///
+/// Cloning an entry shares the underlying context name and tags rather than copying their contents.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AggregateContextSnapshotEntry {
+    context: Context,
+    metric_type: AggregateMetricType,
+    unit: MetaString,
+}
+
+impl AggregateContextSnapshotEntry {
+    /// Returns the retained metric context.
+    pub fn context(&self) -> &Context {
+        &self.context
+    }
+
+    /// Returns the shape of the retained metric values.
+    pub fn metric_type(&self) -> AggregateMetricType {
+        self.metric_type
+    }
+
+    /// Returns the unit attached to the retained metric values, if one is set.
+    pub fn unit(&self) -> Option<&str> {
+        if self.unit.is_empty() {
+            None
+        } else {
+            Some(&self.unit)
+        }
+    }
+
+    /// Creates a snapshot entry for downstream test and benchmark fixtures.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn for_test(context: Context, metric_type: AggregateMetricType, unit: MetaString) -> Self {
+        Self {
+            context,
+            metric_type,
+            unit,
+        }
+    }
+}
+
+type AggregateContextSnapshot = Vec<AggregateContextSnapshotEntry>;
+type AggregateContextSnapshotRequest = oneshot::Sender<AggregateContextSnapshot>;
+type AggregateContextSnapshotRequestReceiver = mpsc::Receiver<AggregateContextSnapshotRequest>;
+
+/// A handle for requesting retained-context snapshots from an aggregate transform.
+///
+/// Snapshot construction runs on the aggregate owner task. The returned entries contain shared context handles and
+/// small metric metadata, allowing callers to perform heavier processing after the owner resumes ingestion.
+#[derive(Clone, Debug)]
+pub struct AggregateContextSnapshotHandle {
+    requests: mpsc::Sender<AggregateContextSnapshotRequest>,
+}
+
+impl AggregateContextSnapshotHandle {
+    /// Requests the aggregate transform's current retained contexts.
+    ///
+    /// The returned snapshot uses O(context count) memory. After delivery, the caller owns this memory, so callers that
+    /// retain snapshots must include their retained size in their own memory accounting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the aggregate owner is unavailable or stops before responding.
+    pub async fn snapshot(&self) -> Result<Vec<AggregateContextSnapshotEntry>, GenericError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.requests
+            .send(response_tx)
+            .await
+            .map_err(|_| generic_error!("aggregate context snapshot owner is unavailable"))?;
+
+        response_rx
+            .await
+            .map_err(|_| generic_error!("aggregate context snapshot owner stopped before responding"))
+    }
+}
+
+fn aggregate_context_snapshot_channel() -> (AggregateContextSnapshotHandle, AggregateContextSnapshotRequestReceiver) {
+    let (requests, receiver) = mpsc::channel(CONTEXT_SNAPSHOT_REQUEST_CHANNEL_CAPACITY);
+    (AggregateContextSnapshotHandle { requests }, receiver)
+}
+
+#[inline]
+fn send_context_snapshot_if_open(
+    response: AggregateContextSnapshotRequest, build_snapshot: impl FnOnce() -> AggregateContextSnapshot,
+) {
+    if response.is_closed() {
+        return;
+    }
+
+    let _ = response.send(build_snapshot());
+}
+
+/// An accepted retained-context snapshot request for test fixtures.
+#[cfg(any(test, feature = "test-util"))]
+pub struct AggregateContextSnapshotPendingResponse {
+    response: AggregateContextSnapshotRequest,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl AggregateContextSnapshotPendingResponse {
+    /// Responds to the accepted snapshot request with the supplied entries.
+    ///
+    /// If the requester was canceled after the request was accepted, the response is discarded.
+    pub fn respond(self, snapshot: Vec<AggregateContextSnapshotEntry>) {
+        let _ = self.response.send(snapshot);
+    }
+}
+
+/// A responder for retained-context snapshot test fixtures.
+#[cfg(any(test, feature = "test-util"))]
+pub struct AggregateContextSnapshotResponder {
+    receiver: AggregateContextSnapshotRequestReceiver,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl AggregateContextSnapshotResponder {
+    /// Waits for one snapshot request and responds with the supplied entries.
+    ///
+    /// A canceled requester is treated as a successful no-op delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request channel closes before a request arrives.
+    pub async fn respond(&mut self, snapshot: Vec<AggregateContextSnapshotEntry>) -> Result<(), GenericError> {
+        self.receive().await?.respond(snapshot);
+        Ok(())
+    }
+
+    /// Waits for one snapshot request and returns its pending response.
+    ///
+    /// The returned response lets tests deterministically control whether the owner responds, stops, or outlives a
+    /// canceled requester after accepting the request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request channel closes before a request arrives.
+    pub async fn receive(&mut self) -> Result<AggregateContextSnapshotPendingResponse, GenericError> {
+        let response = self
+            .receiver
+            .recv()
+            .await
+            .ok_or_else(|| generic_error!("aggregate context snapshot request channel is closed"))?;
+        Ok(AggregateContextSnapshotPendingResponse { response })
+    }
+
+    /// Waits for one snapshot request and stops without responding.
+    ///
+    /// This accepts the request from the owner channel before dropping its one-shot response sender, allowing tests to
+    /// distinguish an owner that stops mid-request from an owner whose request channel is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request channel closes before a request arrives.
+    pub async fn stop_after_receiving(&mut self) -> Result<(), GenericError> {
+        drop(self.receive().await?);
+        Ok(())
+    }
+}
+
+/// Creates a retained-context snapshot handle and owner-side responder for tests.
+#[cfg(any(test, feature = "test-util"))]
+pub fn aggregate_context_snapshot_channel_for_test(
+) -> (AggregateContextSnapshotHandle, AggregateContextSnapshotResponder) {
+    let (handle, receiver) = aggregate_context_snapshot_channel();
+    (handle, AggregateContextSnapshotResponder { receiver })
+}
+
+struct AggregateContextSnapshotChannel {
+    handle: AggregateContextSnapshotHandle,
+    receiver: Mutex<Option<AggregateContextSnapshotRequestReceiver>>,
+}
+
+impl AggregateContextSnapshotChannel {
+    fn take_receiver(&self) -> Result<AggregateContextSnapshotRequestReceiver, GenericError> {
+        let mut receiver = self
+            .receiver
+            .lock()
+            .map_err(|_| generic_error!("aggregate context snapshot receiver lock is poisoned"))?;
+        receiver
+            .take()
+            .ok_or_else(|| generic_error!("aggregate context snapshot receiver has already been taken"))
+    }
+}
+
+impl Default for AggregateContextSnapshotChannel {
+    fn default() -> Self {
+        let (handle, receiver) = aggregate_context_snapshot_channel();
+        Self {
+            handle,
+            receiver: Mutex::new(Some(receiver)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl std::fmt::Debug for AggregateContextSnapshotChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AggregateContextSnapshotChannel")
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+impl PartialEq for AggregateContextSnapshotChannel {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
 
 const fn default_window_duration_seconds() -> NonZeroU64 {
     NonZeroU64::new(10).expect("not zero")
@@ -185,6 +433,12 @@ pub struct AggregateConfiguration {
     /// distribution aggregation).
     #[serde(flatten)]
     hist_config: HistogramConfiguration,
+
+    /// Owner-side channel used to coordinate retained-context snapshots.
+    ///
+    /// This runtime-only channel is never read from or written to configuration data.
+    #[serde(skip, default)]
+    context_snapshot_channel: AggregateContextSnapshotChannel,
 }
 
 impl AggregateConfiguration {
@@ -204,13 +458,20 @@ impl AggregateConfiguration {
             passthrough_timestamped_metrics: default_passthrough_timestamped_metrics(),
             passthrough_idle_flush_timeout: default_passthrough_idle_flush_timeout(),
             hist_config: HistogramConfiguration::default(),
+            context_snapshot_channel: AggregateContextSnapshotChannel::default(),
         }
+    }
+
+    /// Returns a handle for requesting retained-context snapshots from the built aggregate transform.
+    pub fn context_snapshot_handle(&self) -> AggregateContextSnapshotHandle {
+        self.context_snapshot_channel.handle.clone()
     }
 }
 
 #[async_trait]
 impl TransformBuilder for AggregateConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let context_snapshot_requests = self.context_snapshot_channel.take_receiver()?;
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = Telemetry::new(&metrics_builder);
 
@@ -236,6 +497,7 @@ impl TransformBuilder for AggregateConfiguration {
             flush_open_windows: self.flush_open_windows,
             passthrough_batcher,
             passthrough_timestamped_metrics: self.passthrough_timestamped_metrics,
+            context_snapshot_requests: Some(context_snapshot_requests),
         }))
     }
 
@@ -274,6 +536,12 @@ impl MemoryBounds for AggregateConfiguration {
                     UsageExpr::struct_size::<AggregatedMetric>("aggregated metric"),
                 ),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
+            ))
+            // A snapshot is constructed while the aggregation state remains live, so its peak allocation is additive.
+            .with_expr(UsageExpr::product(
+                "retained context snapshot",
+                UsageExpr::struct_size::<AggregateContextSnapshotEntry>("snapshot entry"),
+                UsageExpr::config("aggregate_context_limit", self.context_limit),
             ));
     }
 }
@@ -285,6 +553,7 @@ pub struct Aggregate {
     flush_open_windows: bool,
     passthrough_batcher: PassthroughBatcher,
     passthrough_timestamped_metrics: bool,
+    context_snapshot_requests: Option<AggregateContextSnapshotRequestReceiver>,
 }
 
 #[async_trait]
@@ -345,6 +614,14 @@ impl Transform for Aggregate {
                     }
                 },
                 _ = passthrough_flush.tick() => self.passthrough_batcher.try_flush(context.dispatcher()).await,
+                snapshot_request = receive_context_snapshot_request(&mut self.context_snapshot_requests) => {
+                    match snapshot_request {
+                        Some(response) => {
+                            send_context_snapshot_if_open(response, || self.state.snapshot_contexts());
+                        }
+                        None => self.context_snapshot_requests = None,
+                    }
+                },
                 maybe_events = context.events().next(), if !final_primary_flush => match maybe_events {
                     Some(events) => {
                         trace!(events_len = events.len(), "Received events.");
@@ -412,6 +689,15 @@ impl Transform for Aggregate {
         debug!("Aggregation transform stopped.");
 
         Ok(())
+    }
+}
+
+async fn receive_context_snapshot_request(
+    receiver: &mut Option<AggregateContextSnapshotRequestReceiver>,
+) -> Option<AggregateContextSnapshotRequest> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => pending().await,
     }
 }
 
@@ -566,6 +852,18 @@ impl AggregationState {
 
     fn is_empty(&self) -> bool {
         self.contexts.is_empty()
+    }
+
+    fn snapshot_contexts(&self) -> Vec<AggregateContextSnapshotEntry> {
+        let mut snapshot = Vec::with_capacity(self.contexts.len());
+        for (context, aggregated) in &self.contexts {
+            snapshot.push(AggregateContextSnapshotEntry {
+                context: context.clone(),
+                metric_type: AggregateMetricType::from(&aggregated.values),
+                unit: aggregated.metadata.unit.clone(),
+            });
+        }
+        snapshot
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
@@ -773,6 +1071,49 @@ impl AggregationState {
     }
 }
 
+/// A benchmark fixture backed by a real aggregate state populated before snapshot timing begins.
+#[cfg(any(test, feature = "test-util"))]
+pub struct AggregateContextSnapshotBenchmarkHarness {
+    state: AggregationState,
+}
+
+#[cfg(any(test, feature = "test-util"))]
+impl AggregateContextSnapshotBenchmarkHarness {
+    /// Creates a harness retaining exactly `context_count` distinct gauge contexts.
+    pub fn with_contexts(context_count: usize) -> Self {
+        let mut state = AggregationState::new(
+            default_window_duration_seconds(),
+            context_count,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::new(&MetricsBuilder::default()),
+        );
+
+        for index in 0..context_count {
+            let context = Context::from_parts(
+                format!("aggregate.snapshot.benchmark.{index}"),
+                saluki_context::tags::TagSet::default(),
+            );
+            assert!(
+                state.insert(0, Metric::gauge(context, 0.0)),
+                "benchmark fixture must retain every requested context"
+            );
+        }
+
+        Self { state }
+    }
+
+    /// Takes a retained-context snapshot from the populated aggregate state.
+    pub fn snapshot(&self) -> Vec<AggregateContextSnapshotEntry> {
+        self.state.snapshot_contexts()
+    }
+
+    /// Returns the exact number of contexts retained by the aggregate state.
+    pub fn retained_len(&self) -> usize {
+        self.state.contexts.len()
+    }
+}
+
 async fn transform_and_push_metric(
     context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: NonZeroU64,
     hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
@@ -895,14 +1236,25 @@ const fn is_bucket_closed(
 // then we run it to make sure that we are always generating sequential timestamps for data points, etc.
 #[cfg(test)]
 mod tests {
+    use std::{cell::Cell, mem::size_of};
+
     use float_cmp::ApproxEqRatio as _;
+    use saluki_context::tags::{Tag, TagSet};
     use saluki_core::{
-        components::ComponentContext,
-        topology::{interconnect::Dispatcher, OutputName},
+        accounting::{ComponentRegistry, MemoryLimiter},
+        components::{
+            destinations::{Destination, DestinationBuilder, DestinationContext},
+            sources::{Source, SourceBuilder, SourceContext},
+            ComponentContext,
+        },
+        health::HealthRegistry,
+        runtime::Supervisor,
+        support::SubsystemIdentifier,
+        topology::{interconnect::Dispatcher, OutputDefinition, OutputName, TopologyBlueprint},
     };
     use saluki_metrics::test::TestRecorder;
     use stringtheory::MetaString;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
 
     use super::config::HistogramStatistic;
     use super::*;
@@ -925,6 +1277,83 @@ mod tests {
     /// Gets the flush timestamp for the given step.
     const fn flush_ts(step: u64) -> u64 {
         BUCKET_WIDTH_SECS.get() * (step + 1)
+    }
+
+    struct ControlledMetricSource {
+        events: mpsc::Receiver<Event>,
+    }
+
+    #[async_trait]
+    impl Source for ControlledMetricSource {
+        async fn run(mut self: Box<Self>, mut context: SourceContext) -> Result<(), GenericError> {
+            let shutdown = context.take_shutdown_handle();
+            tokio::pin!(shutdown);
+            let mut events_open = true;
+
+            loop {
+                select! {
+                    _ = &mut shutdown => break,
+                    maybe_event = self.events.recv(), if events_open => match maybe_event {
+                        Some(event) => context.dispatcher().dispatch_one(event).await?,
+                        None => events_open = false,
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct ControlledMetricSourceBuilder {
+        events: Mutex<Option<mpsc::Receiver<Event>>>,
+        outputs: Vec<OutputDefinition<EventType>>,
+    }
+
+    #[async_trait]
+    impl SourceBuilder for ControlledMetricSourceBuilder {
+        fn outputs(&self) -> &[OutputDefinition<EventType>] {
+            &self.outputs
+        }
+
+        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+            let events = self
+                .events
+                .lock()
+                .map_err(|_| generic_error!("controlled metric source receiver lock is poisoned"))?
+                .take()
+                .ok_or_else(|| generic_error!("controlled metric source receiver has already been taken"))?;
+            Ok(Box::new(ControlledMetricSource { events }))
+        }
+    }
+
+    impl MemoryBounds for ControlledMetricSourceBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
+    }
+
+    struct DrainingMetricDestination;
+
+    #[async_trait]
+    impl Destination for DrainingMetricDestination {
+        async fn run(self: Box<Self>, mut context: DestinationContext) -> Result<(), GenericError> {
+            while context.events().next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    struct DrainingMetricDestinationBuilder;
+
+    #[async_trait]
+    impl DestinationBuilder for DrainingMetricDestinationBuilder {
+        fn input_event_type(&self) -> EventType {
+            EventType::Metric
+        }
+
+        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+            Ok(Box::new(DrainingMetricDestination))
+        }
+    }
+
+    impl MemoryBounds for DrainingMetricDestinationBuilder {
+        fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
     struct DispatcherReceiver {
@@ -1061,6 +1490,397 @@ mod tests {
                 _ => panic!("only distributions are supported in assert_flushed_distribution_metric"),
             }
         };
+    }
+
+    #[test]
+    fn aggregate_metric_type_matches_every_metric_shape() {
+        let cases = [
+            (MetricValues::counter(1.0), AggregateMetricType::Counter),
+            (
+                MetricValues::rate(1.0, Duration::from_secs(10)),
+                AggregateMetricType::Rate,
+            ),
+            (MetricValues::gauge(1.0), AggregateMetricType::Gauge),
+            (MetricValues::set("value"), AggregateMetricType::Set),
+            (MetricValues::histogram([1.0]), AggregateMetricType::Histogram),
+            (
+                MetricValues::distribution(&[1.0][..]),
+                AggregateMetricType::Distribution,
+            ),
+        ];
+
+        for (values, expected) in cases {
+            assert_eq!(AggregateMetricType::from(&values), expected);
+        }
+    }
+
+    #[test]
+    fn snapshot_contexts_preserves_full_context_shape_and_unit() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        let histogram_context = Context::from_static_parts("request.duration", &["env:prod"])
+            .with_host(Some(MetaString::from_static("host-a")))
+            .with_origin_tags(TagSet::from(Tag::from_static("container:one")));
+        let gauge_context = Context::from_static_parts("request.duration", &["env:prod"])
+            .with_host(Some(MetaString::from_static("host-b")))
+            .with_origin_tags(TagSet::from(Tag::from_static("container:two")));
+        let histogram = Metric::from_parts(
+            histogram_context.clone(),
+            MetricValues::histogram([12.0]),
+            MetricMetadata::default().with_unit(MetaString::from_static("millisecond")),
+        );
+        let gauge = Metric::gauge(gauge_context.clone(), 2.0);
+
+        assert!(state.insert(insert_ts(1), histogram));
+        assert!(state.insert(insert_ts(1), gauge));
+
+        let mut snapshot = state.snapshot_contexts();
+        assert_eq!(snapshot.len(), 2);
+        assert!(snapshot.capacity() >= state.contexts.len());
+        snapshot.sort_by(|a, b| a.context().host().cmp(&b.context().host()));
+
+        assert_eq!(snapshot[0].context(), &histogram_context);
+        assert_eq!(snapshot[0].context().tags().len(), 1);
+        assert_eq!(snapshot[0].context().origin_tags().len(), 1);
+        assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Histogram);
+        assert_eq!(snapshot[0].unit(), Some("millisecond"));
+
+        assert_eq!(snapshot[1].context(), &gauge_context);
+        assert_eq!(snapshot[1].metric_type(), AggregateMetricType::Gauge);
+        assert_eq!(snapshot[1].unit(), None);
+    }
+
+    #[tokio::test]
+    async fn snapshot_contexts_follows_ordinary_context_lifecycle() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let context = Context::from_static_name("active.gauge");
+
+        assert!(state.insert(insert_ts(1), Metric::gauge(context.clone(), 1.0)));
+        let active_snapshot = state.snapshot_contexts();
+        assert_eq!(active_snapshot.len(), 1);
+        assert_eq!(active_snapshot[0].context(), &context);
+        assert_eq!(active_snapshot[0].metric_type(), AggregateMetricType::Gauge);
+
+        let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
+        assert!(state.snapshot_contexts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn snapshot_contexts_retains_idle_counter_until_expiry() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let context = Context::from_static_name("sparse.counter");
+
+        assert!(state.insert(insert_ts(1), Metric::counter(context.clone(), 1.0)));
+        let _ = get_flushed_metrics(flush_ts(1), &mut state).await;
+        let first_snapshot = state.snapshot_contexts();
+        assert_eq!(first_snapshot.len(), 1);
+        assert_eq!(first_snapshot[0].context(), &context);
+        assert_eq!(first_snapshot[0].metric_type(), AggregateMetricType::Counter);
+
+        let _ = get_flushed_metrics(flush_ts(2), &mut state).await;
+        let second_snapshot = state.snapshot_contexts();
+        assert_eq!(second_snapshot.len(), 1);
+        assert_eq!(second_snapshot[0].context(), &context);
+        assert_eq!(second_snapshot[0].metric_type(), AggregateMetricType::Counter);
+
+        let _ = get_flushed_metrics(flush_ts(3), &mut state).await;
+        assert!(state.snapshot_contexts().is_empty());
+    }
+
+    #[test]
+    fn canceled_snapshot_response_skips_snapshot_construction() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        assert!(state.insert(
+            insert_ts(1),
+            Metric::gauge(Context::from_static_name("canceled.snapshot"), 1.0),
+        ));
+        let (response, receiver) = oneshot::channel();
+        drop(receiver);
+        let snapshot_calls = Cell::new(0);
+
+        send_context_snapshot_if_open(response, || {
+            snapshot_calls.set(snapshot_calls.get() + 1);
+            state.snapshot_contexts()
+        });
+
+        assert_eq!(snapshot_calls.get(), 0);
+    }
+
+    #[test]
+    fn open_snapshot_response_constructs_once_and_returns_exact_entries() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let context = Context::from_static_name("open.snapshot");
+        assert!(state.insert(insert_ts(1), Metric::gauge(context.clone(), 1.0)));
+        let expected = vec![AggregateContextSnapshotEntry {
+            context,
+            metric_type: AggregateMetricType::Gauge,
+            unit: MetaString::empty(),
+        }];
+        let (response, mut receiver) = oneshot::channel();
+        let snapshot_calls = Cell::new(0);
+
+        send_context_snapshot_if_open(response, || {
+            snapshot_calls.set(snapshot_calls.get() + 1);
+            state.snapshot_contexts()
+        });
+
+        assert_eq!(snapshot_calls.get(), 1);
+        assert_eq!(
+            receiver.try_recv().expect("open requester should receive a snapshot"),
+            expected
+        );
+    }
+
+    #[test]
+    fn aggregate_memory_bounds_include_peak_context_snapshot() {
+        let mut config = AggregateConfiguration::with_defaults();
+        config.context_limit = 17;
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let bounds = registry.as_bounds();
+
+        let expected_minimum = size_of::<Aggregate>();
+        let aggregation_state_bytes = config.context_limit * (size_of::<Context>() + size_of::<AggregatedMetric>());
+        let context_snapshot_bytes = config.context_limit * size_of::<AggregateContextSnapshotEntry>();
+
+        assert_eq!(bounds.total_minimum_required_bytes(), expected_minimum);
+        assert_eq!(
+            bounds.total_firm_limit_bytes(),
+            expected_minimum + aggregation_state_bytes + context_snapshot_bytes
+        );
+    }
+
+    #[tokio::test]
+    async fn production_owner_loop_serves_snapshots_and_stops_after_cancellation() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut config = AggregateConfiguration::with_defaults();
+            config.primary_flush_interval = Duration::from_secs(60);
+            let snapshot_handle = config.context_snapshot_handle();
+
+            let available_request_capacity = snapshot_handle.requests.capacity();
+            let canceled_request = tokio::spawn({
+                let snapshot_handle = snapshot_handle.clone();
+                async move { snapshot_handle.snapshot().await }
+            });
+            while snapshot_handle.requests.capacity() == available_request_capacity {
+                tokio::task::yield_now().await;
+            }
+            canceled_request.abort();
+            assert!(canceled_request
+                .await
+                .expect_err("snapshot requester should be canceled")
+                .is_cancelled());
+
+            let (events_tx, events_rx) = mpsc::channel(1);
+            let source = ControlledMetricSourceBuilder {
+                events: Mutex::new(Some(events_rx)),
+                outputs: vec![OutputDefinition::default_output(EventType::Metric)],
+            };
+            let component_registry = ComponentRegistry::default();
+            let mut blueprint = TopologyBlueprint::new("aggregate_snapshot_owner", &component_registry);
+            blueprint
+                .add_source("source", source)
+                .expect("controlled source should be accepted")
+                .add_transform("aggregate", config)
+                .expect("aggregate transform should be accepted")
+                .add_destination("destination", DrainingMetricDestinationBuilder)
+                .expect("draining destination should be accepted");
+            blueprint
+                .connect_components_in_order(["source", "aggregate", "destination"])
+                .expect("test topology should connect");
+            blueprint
+                .with_health_registry(HealthRegistry::new())
+                .with_memory_limiter(MemoryLimiter::noop())
+                .with_ambient_worker_pool();
+
+            let mut supervisor =
+                Supervisor::new("aggregate-snapshot-owner").expect("test supervisor should be created");
+            supervisor.add_worker(blueprint);
+            let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+            let topology_task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+
+            let passthrough_context = Context::from_static_name("owner.loop.timestamped.gauge");
+            events_tx
+                .send(Event::Metric(Metric::gauge(
+                    passthrough_context.clone(),
+                    (insert_ts(1), 1.0),
+                )))
+                .await
+                .expect("controlled source should accept a timestamped event");
+
+            let retained_context = Context::from_static_name("owner.loop.mixed.counter");
+            let mixed_values = ScalarPoints::from_iter([(None, 2.0), (NonZeroU64::new(insert_ts(1)), 3.0)]);
+            events_tx
+                .send(Event::Metric(Metric::counter(retained_context.clone(), mixed_values)))
+                .await
+                .expect("controlled source should accept a mixed event");
+
+            let snapshot = loop {
+                let snapshot = snapshot_handle
+                    .snapshot()
+                    .await
+                    .expect("running aggregate should fulfill snapshots");
+                if snapshot.iter().any(|entry| entry.context() == &retained_context) {
+                    break snapshot;
+                }
+                tokio::task::yield_now().await;
+            };
+            assert_eq!(
+                snapshot.len(),
+                1,
+                "only the mixed metric's retained portion belongs in state"
+            );
+            let entry = &snapshot[0];
+            assert_eq!(entry.context(), &retained_context);
+            assert_eq!(entry.metric_type(), AggregateMetricType::Counter);
+            assert_eq!(entry.unit(), None);
+            assert!(snapshot.iter().all(|entry| entry.context() != &passthrough_context));
+
+            drop(events_tx);
+            drop(snapshot_handle);
+            shutdown_tx.send(()).expect("test topology should still be running");
+            let topology_result = topology_task.await.expect("topology task should not panic");
+            assert!(
+                topology_result.is_ok(),
+                "topology should stop cleanly: {topology_result:?}"
+            );
+        })
+        .await
+        .expect("production aggregate owner loop should complete without spinning or hanging");
+    }
+
+    #[tokio::test]
+    async fn snapshot_handle_round_trips_through_responder() {
+        let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
+        let expected = vec![AggregateContextSnapshotEntry::for_test(
+            Context::from_static_name("round.trip"),
+            AggregateMetricType::Gauge,
+            MetaString::from_static("widget"),
+        )];
+        let snapshot_task = tokio::spawn(async move { handle.snapshot().await });
+
+        responder
+            .respond(expected.clone())
+            .await
+            .expect("responder should receive and fulfill a snapshot request");
+
+        let actual = snapshot_task
+            .await
+            .expect("snapshot task should complete")
+            .expect("snapshot request should succeed");
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn snapshot_handle_reports_dropped_receiver() {
+        let (handle, responder) = aggregate_context_snapshot_channel_for_test();
+        drop(responder);
+
+        let error = handle
+            .snapshot()
+            .await
+            .expect_err("snapshot should fail after its owner is dropped");
+        assert!(error.to_string().contains("unavailable"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_responder_stops_after_accepting_request_and_cancels_response() {
+        let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
+        let snapshot_task = tokio::spawn(async move { handle.snapshot().await });
+
+        responder
+            .stop_after_receiving()
+            .await
+            .expect("responder should accept the snapshot request before stopping");
+
+        let error = snapshot_task
+            .await
+            .expect("snapshot task should complete")
+            .expect_err("snapshot should fail when the accepted response is dropped");
+        assert!(error.to_string().contains("stopped before responding"));
+    }
+
+    #[tokio::test]
+    async fn aggregate_configuration_receiver_can_only_be_taken_once() {
+        let config = AggregateConfiguration::with_defaults();
+        let _handle = config.context_snapshot_handle();
+        let first = config.build(ComponentContext::test_transform("aggregate_one")).await;
+        assert!(first.is_ok());
+
+        let second = config.build(ComponentContext::test_transform("aggregate_two")).await;
+        let error = match second {
+            Ok(_) => panic!("second build should not take the snapshot receiver again"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("already been taken"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_responder_reports_closed_request_channel() {
+        let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
+        drop(handle);
+
+        let error = responder
+            .respond(Vec::new())
+            .await
+            .expect_err("responder should fail when every request handle is dropped");
+        assert!(error.to_string().contains("closed"));
+    }
+
+    #[tokio::test]
+    async fn snapshot_responder_ignores_canceled_requester() {
+        let (handle, mut responder) = aggregate_context_snapshot_channel_for_test();
+        let snapshot_task = tokio::spawn(async move { handle.snapshot().await });
+        let pending_response = responder
+            .receive()
+            .await
+            .expect("responder should accept the snapshot request");
+
+        snapshot_task.abort();
+        let _ = snapshot_task.await;
+
+        pending_response.respond(Vec::new());
+    }
+
+    #[test]
+    fn snapshot_benchmark_harness_populates_exact_context_count() {
+        let empty_harness = AggregateContextSnapshotBenchmarkHarness::with_contexts(0);
+        assert_eq!(empty_harness.retained_len(), 0);
+        assert!(empty_harness.snapshot().is_empty());
+
+        let harness = AggregateContextSnapshotBenchmarkHarness::with_contexts(32);
+        assert_eq!(harness.retained_len(), 32);
+        assert_eq!(harness.snapshot().len(), 32);
     }
 
     #[test]
