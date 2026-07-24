@@ -3,7 +3,7 @@
 //! Run with:
 //! `cargo bench -p agent-data-plane --features context-dump-benchmark --bench dogstatsd_context_dump -- --sample-size 10`
 //!
-//! PR #2185's Apple Silicon baseline was approximately 15.7 ms at 10k contexts, 123 ms at 100k, and 1.13 s at one
+//! PR #2185's Apple Silicon baseline was approximately 16.5 ms at 10k contexts, 123 ms at 100k, and 1.14 s at one
 //! million. These values provide scale context, not regression thresholds; compare runs on equivalent hardware.
 
 use std::fs;
