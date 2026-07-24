@@ -4,13 +4,11 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::{fs::File, path::PathBuf, thread};
+use std::path::PathBuf;
 
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::GenericError;
 use tracing::{error, info};
 use tracing_subscriber::{filter::LevelFilter, EnvFilter};
-
-const COMPLETION_FILE_ARG: &str = "--completion-file";
 
 mod config;
 use self::config::Config;
@@ -52,10 +50,7 @@ fn run() -> Result<(), GenericError> {
     let config_path = match args.get(1) {
         Some(path) => path,
         None => {
-            error!(
-                "Usage: millstone <config-path> [--output-file <path>] [{} <path>]",
-                COMPLETION_FILE_ARG
-            );
+            error!("Usage: millstone <config-path> [--output-file <path>]");
             std::process::exit(1);
         }
     };
@@ -72,39 +67,7 @@ fn run() -> Result<(), GenericError> {
         })
         .map(PathBuf::from);
 
-    // When a completion file is requested, the process stays alive after sending so callers can preserve the sender's
-    // process identity until they finish collecting results.
-    let completion_file = args
-        .iter()
-        .position(|a| a == COMPLETION_FILE_ARG)
-        .map(|i| {
-            args.get(i + 1).unwrap_or_else(|| {
-                error!("{} requires a file path argument.", COMPLETION_FILE_ARG);
-                std::process::exit(1);
-            })
-        })
-        .map(PathBuf::from);
-
     let config = Config::try_from_file(config_path)?;
     let driver = Driver::new(config, output_file)?;
-    driver.run()?;
-
-    if let Some(completion_file) = completion_file {
-        File::create(&completion_file).with_error_context(|| {
-            format!(
-                "Failed to create Millstone completion file '{}'.",
-                completion_file.display()
-            )
-        })?;
-        info!(
-            completion_file = %completion_file.display(),
-            "Millstone finished sending. Waiting for shutdown."
-        );
-
-        loop {
-            thread::park();
-        }
-    }
-
-    Ok(())
+    driver.run()
 }

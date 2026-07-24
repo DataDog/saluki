@@ -25,11 +25,7 @@ use saluki_common::{
     task::spawn_traced_named,
 };
 use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
-use saluki_context::{
-    origin::RawOrigin,
-    tags::{RawTags, RawTagsFilter},
-    TagsResolver,
-};
+use saluki_context::tags::{RawTags, RawTagsFilter};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr};
 use saluki_core::data_model::event::{
     eventd::EventD,
@@ -52,7 +48,7 @@ use saluki_io::{
     },
     net::{
         listener::{Listener, ListenerError},
-        ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, Stream,
+        ConnectionAddress, ListenAddress, ProcessIdentity, Stream,
     },
 };
 use serde::{Deserialize, Deserializer};
@@ -92,8 +88,8 @@ pub use self::replay::{
 
 mod origin;
 use self::origin::{
-    mark_replay_process_id, origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet,
-    DogStatsDOriginTagResolver, OriginEnrichmentConfiguration,
+    origin_from_event_packet, origin_from_metric_packet, origin_from_service_check_packet, DogStatsDOriginTagResolver,
+    OriginEnrichmentConfiguration, ProcessOrigin,
 };
 
 mod resolver;
@@ -619,7 +615,7 @@ pub struct DogStatsDConfiguration {
     #[cfg_attr(test, derive_where(skip))]
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 
-    /// Resolver to use for mapping live sender PIDs to container entities during traffic capture.
+    /// Resolver to use for mapping live sender PIDs to container entities before deferred processing.
     #[serde(skip, default)]
     #[cfg_attr(test, derive_where(skip))]
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
@@ -848,10 +844,11 @@ impl DogStatsDConfiguration {
         self
     }
 
-    /// Sets the resolver to use for mapping live sender PIDs while capturing DogStatsD traffic.
+    /// Sets the resolver to use for mapping live sender PIDs before deferring DogStatsD packet processing.
     ///
-    /// This resolver is intentionally configured separately from the workload provider because capture only needs a
-    /// narrow live-PID lookup, while normal origin enrichment uses the broader workload provider contract.
+    /// This resolver pins the sender entity while socket credentials are current so origin enrichment and traffic
+    /// capture do not resolve a stale or reused PID later. It is configured separately from the workload provider
+    /// because it only needs a narrow live-PID lookup.
     ///
     /// Defaults to unset.
     pub fn with_capture_entity_resolver<R>(mut self, capture_entity_resolver: R) -> Self
@@ -1206,7 +1203,6 @@ struct DatagramDecoderContext {
     origin_detection_enabled: bool,
     disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
-    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     traffic_capture: TrafficCapture,
 }
 
@@ -1245,7 +1241,6 @@ impl Source for DogStatsD {
             origin_detection_enabled: self.origin_detection_enabled,
             disable_verbose_logs: self.disable_verbose_logs,
             additional_tags: self.additional_tags.clone(),
-            capture_entity_resolver: self.capture_entity_resolver.clone(),
             traffic_capture: self.traffic_capture.clone(),
         };
 
@@ -1488,6 +1483,7 @@ struct ReceivedBuffer {
     buffer: BytesBuffer,
     bytes_read: usize,
     peer_addr: ConnectionAddress,
+    process_origin: Option<ProcessOrigin>,
     buffer_return: BufferReturn,
 }
 
@@ -1507,12 +1503,21 @@ struct BufferedStreamReader {
 }
 
 impl BufferedStreamReader {
-    fn new(stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter) -> Self {
+    fn new(
+        stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
+        capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
+    ) -> Self {
         debug_assert!(!stream.is_connectionless());
         let (packets_tx, receiver) = mpsc::channel(1);
         let task = spawn_traced_named(
             "dogstatsd-stream-reader",
-            receive_connected_stream(stream, io_buffer_pool, memory_limiter, packets_tx),
+            receive_connected_stream(
+                stream,
+                io_buffer_pool,
+                memory_limiter,
+                capture_entity_resolver,
+                packets_tx,
+            ),
         );
 
         Self {
@@ -1534,6 +1539,7 @@ impl Drop for BufferedStreamReader {
 
 async fn receive_connected_stream(
     mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     packets_tx: mpsc::Sender<io::Result<ReceivedBuffer>>,
 ) {
     debug!("Stream reader started.");
@@ -1561,12 +1567,14 @@ async fn receive_connected_stream(
                 break;
             }
         };
+        let process_origin = resolve_process_origin(capture_entity_resolver.as_deref(), &peer_addr);
 
         let (buffer_sender, returned_buffer) = oneshot::channel();
         let received = ReceivedBuffer {
             buffer,
             bytes_read,
             peer_addr,
+            process_origin,
             buffer_return: BufferReturn(Some(buffer_sender)),
         };
 
@@ -1586,6 +1594,7 @@ async fn receive_connected_stream(
 
 async fn receive_connectionless_stream(
     mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
+    capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     datagram_sender: mpsc::Sender<QueuedDatagram>, socket_context: Arc<DatagramSocketContext>,
 ) {
     debug!(listen_addr = %socket_context.listen_addr, "Datagram reader started.");
@@ -1605,12 +1614,16 @@ async fn receive_connectionless_stream(
             _ = datagram_sender.closed() => break,
             result = stream.receive(&mut buffer) => result,
         } {
-            Ok((bytes_read, peer_addr)) => Ok(ReceivedBuffer {
-                buffer,
-                bytes_read,
-                peer_addr,
-                buffer_return: BufferReturn(None),
-            }),
+            Ok((bytes_read, peer_addr)) => {
+                let process_origin = resolve_process_origin(capture_entity_resolver.as_deref(), &peer_addr);
+                Ok(ReceivedBuffer {
+                    buffer,
+                    bytes_read,
+                    peer_addr,
+                    process_origin,
+                    buffer_return: BufferReturn(None),
+                })
+            }
             Err(error) => {
                 buffer_manager.return_buffer(buffer);
                 Err(error)
@@ -1656,7 +1669,6 @@ async fn drive_datagram_decoder(
         origin_detection_enabled,
         disable_verbose_logs,
         additional_tags,
-        capture_entity_resolver,
         traffic_capture,
     } = decoder_context;
     let mut stream_capture = StreamCaptureState::new();
@@ -1685,6 +1697,7 @@ async fn drive_datagram_decoder(
                     mut buffer,
                     bytes_read,
                     peer_addr,
+                    process_origin,
                     buffer_return,
                 } = match result {
                     Ok(received) => received,
@@ -1700,8 +1713,8 @@ async fn drive_datagram_decoder(
                 capture_uds_traffic(
                     listen_addr,
                     &traffic_capture,
-                    capture_entity_resolver.as_deref(),
                     &peer_addr,
+                    process_origin.as_ref(),
                     payload,
                     &mut stream_capture,
                 );
@@ -1735,9 +1748,8 @@ async fn drive_datagram_decoder(
                                 &codec,
                                 &mut context_resolvers,
                                 metrics,
-                                capture_entity_resolver.as_deref(),
                                 origin_detection_enabled,
-                                &peer_addr,
+                                process_origin.as_ref(),
                                 enabled_filter,
                                 &additional_tags,
                                 &default_hostname,
@@ -1800,6 +1812,7 @@ async fn drive_stream(
             stream,
             handler_context.io_buffer_pool,
             memory_limiter,
+            handler_context.capture_entity_resolver,
             handler_context.datagram_sender,
             socket_context,
         )
@@ -1817,7 +1830,12 @@ async fn drive_connected_stream(
     let listen_addr = handler_context.listen_addr.clone();
     let metrics = handler_context.metrics.clone();
     let memory_limiter = source_context.topology_context().memory_limiter().clone();
-    let mut stream_reader = BufferedStreamReader::new(stream, handler_context.io_buffer_pool.clone(), memory_limiter);
+    let mut stream_reader = BufferedStreamReader::new(
+        stream,
+        handler_context.io_buffer_pool.clone(),
+        memory_limiter,
+        handler_context.capture_entity_resolver.clone(),
+    );
     let receiver = stream_reader.take_receiver();
 
     debug!(%listen_addr, "Stream handler started.");
@@ -1844,7 +1862,6 @@ async fn drive_decoder(
         stream_log_too_big,
         disable_verbose_logs,
         additional_tags,
-        capture_entity_resolver,
         traffic_capture,
         packet_forwarder,
         ..
@@ -1858,6 +1875,7 @@ async fn drive_decoder(
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer_manager = EventBufferManager::default();
+    let mut last_process_origin = None;
 
     'read: loop {
         let mut eof = false;
@@ -1870,9 +1888,13 @@ async fn drive_decoder(
                         mut buffer,
                         bytes_read,
                         peer_addr,
+                        process_origin,
                         buffer_return,
                     } = received;
                     let io_buffer = &mut buffer;
+                    if process_origin.is_some() {
+                        last_process_origin = process_origin;
+                    }
 
                     if bytes_read == 0 {
                         eof = true;
@@ -1883,8 +1905,8 @@ async fn drive_decoder(
                     capture_uds_traffic(
                         &listen_addr,
                         &traffic_capture,
-                        capture_entity_resolver.as_deref(),
                         &peer_addr,
+                        last_process_origin.as_ref(),
                         payload,
                         &mut stream_capture,
                     );
@@ -1936,9 +1958,8 @@ async fn drive_decoder(
                                     &codec,
                                     &mut context_resolvers,
                                     &metrics,
-                                    capture_entity_resolver.as_deref(),
                                     origin_detection_enabled,
-                                    &peer_addr,
+                                    last_process_origin.as_ref(),
                                     enabled_filter,
                                     &additional_tags,
                                     &default_hostname,
@@ -2039,9 +2060,8 @@ fn log_parse_failure(
 }
 
 fn capture_uds_traffic(
-    listen_addr: &ListenAddress, traffic_capture: &TrafficCapture,
-    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, peer_addr: &ConnectionAddress,
-    payload: &[u8], stream_capture: &mut StreamCaptureState,
+    listen_addr: &ListenAddress, traffic_capture: &TrafficCapture, peer_addr: &ConnectionAddress,
+    process_origin: Option<&ProcessOrigin>, payload: &[u8], stream_capture: &mut StreamCaptureState,
 ) {
     if payload.is_empty() || !traffic_capture.is_ongoing() {
         return;
@@ -2050,8 +2070,8 @@ fn capture_uds_traffic(
     match listen_addr {
         ListenAddress::Unixgram(_) => {
             let _ = traffic_capture.enqueue(build_capture_record(
-                capture_entity_resolver,
                 process_id_from_peer_addr(peer_addr),
+                process_origin,
                 payload,
             ));
         }
@@ -2064,8 +2084,8 @@ fn capture_uds_traffic(
                 .next_frame(&mut stream_capture.pending, false)
             {
                 let _ = traffic_capture.enqueue(build_capture_record(
-                    capture_entity_resolver,
                     stream_capture.last_pid,
+                    process_origin,
                     &outer_payload,
                 ));
             }
@@ -2097,25 +2117,17 @@ impl StreamCaptureState {
 }
 
 fn build_capture_record(
-    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, process_id: Option<i32>,
-    payload: &[u8],
+    process_id: Option<i32>, process_origin: Option<&ProcessOrigin>, payload: &[u8],
 ) -> CaptureRecord {
     CaptureRecord {
         timestamp_ns: capture_timestamp_ns(),
         payload: payload.to_vec(),
         pid: process_id,
         ancillary: Vec::new(),
-        container_id: resolve_capture_container_id(capture_entity_resolver, process_id),
+        container_id: process_origin
+            .and_then(ProcessOrigin::container_entity_id)
+            .map(ToString::to_string),
     }
-}
-
-fn resolve_capture_container_id(
-    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, process_id: Option<i32>,
-) -> Option<String> {
-    let process_id = u32::try_from(process_id?).ok()?;
-    capture_entity_resolver
-        .and_then(|resolver| resolver.resolve_container_entity_for_live_pid(process_id))
-        .map(|entity_id| entity_id.to_string())
 }
 
 fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
@@ -2125,17 +2137,19 @@ fn process_id_from_peer_addr(peer_addr: &ConnectionAddress) -> Option<i32> {
     }
 }
 
-/// Applies SCM_CREDENTIALS to the origin, dispatching on the replay marker GID.
-///
-/// Live packets carry the sender process's real PID/UID/GID; we use `creds.pid` as the origin's process ID. Replay
-/// packets carry `gid == REPLAY_CREDENTIALS_GID` and pack the captured (original) PID into `creds.uid`; we recover
-/// that PID with an internal marker so downstream tag resolution consults the captured tagger store.
-fn apply_credentials_to_origin(origin: &mut RawOrigin<'_>, creds: &ProcessCredentials) {
+fn resolve_process_origin(
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, peer_addr: &ConnectionAddress,
+) -> Option<ProcessOrigin> {
+    let creds = peer_addr.process_credentials()?;
     if creds.gid == REPLAY_CREDENTIALS_GID {
-        origin.set_process_id(mark_replay_process_id(creds.uid));
-    } else {
-        origin.set_process_id(creds.pid as u32);
+        return Some(ProcessOrigin::Replay(creds.uid));
     }
+
+    let process_id = u32::try_from(creds.pid).ok()?;
+    Some(match capture_entity_resolver {
+        Some(resolver) => ProcessOrigin::Pinned(resolver.resolve_container_entity_for_live_pid(process_id)),
+        None => ProcessOrigin::Unpinned(process_id),
+    })
 }
 
 fn received_payload(buffer: &BytesBuffer, bytes_read: usize) -> &[u8] {
@@ -2154,15 +2168,16 @@ fn capture_timestamp_ns() -> i64 {
 #[allow(clippy::too_many_arguments)]
 fn handle_frame(
     frame: &[u8], codec: &DogStatsDCodec, context_resolvers: &mut ContextResolvers, source_metrics: &Metrics,
-    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, origin_detection_enabled: bool,
-    peer_addr: &ConnectionAddress, enabled_filter: EnablePayloadsFilter, additional_tags: &[String],
-    default_hostname: &MetaString,
+    origin_detection_enabled: bool, process_origin: Option<&ProcessOrigin>, enabled_filter: EnablePayloadsFilter,
+    additional_tags: &[String], default_hostname: &MetaString,
 ) -> Result<Option<Event>, ParseError> {
-    // Resolving the origin requires a (potentially uncached) PID-to-container lookup, so only do it for metric frames,
-    // which are the only frames that record per-origin telemetry.
     let resolve_telemetry_origin = || {
         (source_metrics.origin_telemetry_enabled() && origin_detection_enabled)
-            .then(|| resolve_capture_container_id(capture_entity_resolver, process_id_from_peer_addr(peer_addr)))
+            .then(|| {
+                process_origin
+                    .and_then(ProcessOrigin::container_entity_id)
+                    .map(ToString::to_string)
+            })
             .flatten()
     };
 
@@ -2199,7 +2214,7 @@ fn handle_frame(
             match handle_metric_packet(
                 metric_packet,
                 context_resolvers,
-                peer_addr,
+                process_origin,
                 additional_tags,
                 default_hostname,
             ) {
@@ -2219,8 +2234,7 @@ fn handle_frame(
                 trace!("Skipping event {} due to filter configuration.", event.title);
                 return Ok(None);
             }
-            let tags_resolver = context_resolvers.tags();
-            match handle_event_packet(event, tags_resolver, peer_addr, additional_tags) {
+            match handle_event_packet(event, context_resolvers, process_origin, additional_tags) {
                 Some(event) => {
                     source_metrics.events_received().increment(1);
                     Event::EventD(event)
@@ -2239,8 +2253,7 @@ fn handle_frame(
                 );
                 return Ok(None);
             }
-            let tags_resolver = context_resolvers.tags();
-            match handle_service_check_packet(service_check, tags_resolver, peer_addr, additional_tags) {
+            match handle_service_check_packet(service_check, context_resolvers, process_origin, additional_tags) {
                 Some(service_check) => {
                     source_metrics.service_checks_received().increment(1);
                     Event::ServiceCheck(service_check)
@@ -2257,15 +2270,13 @@ fn handle_frame(
 }
 
 fn handle_metric_packet(
-    packet: MetricPacket, context_resolvers: &mut ContextResolvers, peer_addr: &ConnectionAddress,
+    packet: MetricPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String], default_hostname: &MetaString,
 ) -> Option<Metric> {
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
-    let mut origin = origin_from_metric_packet(&packet, &well_known_tags);
-    if let Some(creds) = peer_addr.process_credentials() {
-        apply_credentials_to_origin(&mut origin, creds);
-    }
+    let origin = origin_from_metric_packet(&packet, &well_known_tags);
+    let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
     // Choose the right context resolver based on whether or not this metric is pre-aggregated.
     let context_resolver = if packet.timestamp.is_some() {
@@ -2279,7 +2290,8 @@ fn handle_metric_packet(
     let hostname = well_known_tags.hostname.unwrap_or(default_hostname);
 
     // Try to resolve the context for this metric.
-    let maybe_context = context_resolver.resolve_with_host(packet.metric_name, hostname, tags, Some(origin));
+    let maybe_context =
+        context_resolver.resolve_with_host_and_origin_tags(packet.metric_name, hostname, tags, origin_tags);
 
     match maybe_context {
         Some(context) => {
@@ -2299,17 +2311,16 @@ fn handle_metric_packet(
 }
 
 fn handle_event_packet(
-    packet: EventPacket, tags_resolver: &mut TagsResolver, peer_addr: &ConnectionAddress, additional_tags: &[String],
+    packet: EventPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
+    additional_tags: &[String],
 ) -> Option<EventD> {
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
-    let mut origin = origin_from_event_packet(&packet, &well_known_tags);
-    if let Some(creds) = peer_addr.process_credentials() {
-        apply_credentials_to_origin(&mut origin, creds);
-    }
-    let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
+    let origin = origin_from_event_packet(&packet, &well_known_tags);
+    let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
+    let tags_resolver = context_resolvers.tags();
     let tags = tags_resolver.create_tag_set(tags)?;
 
     // When no d: field is present, backfill the current time—matching the stock Datadog Agent's
@@ -2343,18 +2354,16 @@ fn handle_event_packet(
 }
 
 fn handle_service_check_packet(
-    packet: ServiceCheckPacket, tags_resolver: &mut TagsResolver, peer_addr: &ConnectionAddress,
+    packet: ServiceCheckPacket, context_resolvers: &mut ContextResolvers, process_origin: Option<&ProcessOrigin>,
     additional_tags: &[String],
 ) -> Option<ServiceCheck> {
     let well_known_tags = WellKnownTags::from_raw_tags(packet.tags.clone());
 
-    let mut origin = origin_from_service_check_packet(&packet, &well_known_tags);
-    if let Some(creds) = peer_addr.process_credentials() {
-        apply_credentials_to_origin(&mut origin, creds);
-    }
-    let origin_tags = tags_resolver.resolve_origin_tags(Some(origin));
+    let origin = origin_from_service_check_packet(&packet, &well_known_tags);
+    let origin_tags = context_resolvers.resolve_origin_tags(origin, process_origin);
 
     let tags = get_filtered_tags_iterator(packet.tags, additional_tags);
+    let tags_resolver = context_resolvers.tags();
     let tags = tags_resolver.create_tag_set(tags)?;
 
     // When no d: field is present, backfill the current time—matching the stock Datadog Agent's
@@ -2474,7 +2483,7 @@ mod tests {
         io::ErrorKind,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
-        sync::{Arc, OnceLock},
+        sync::{Arc, Mutex as StdMutex, OnceLock},
         time::Duration,
     };
 
@@ -2484,13 +2493,15 @@ mod tests {
     use bytesize::ByteSize;
     use metrics::{Key, Label};
     use saluki_config::ConfigurationLoader;
-    use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
+    use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     #[cfg(unix)]
     use saluki_core::accounting::MemoryLimiter;
     use saluki_core::{
         components::ComponentContext,
         pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
     };
+    #[cfg(target_os = "linux")]
+    use saluki_env::workload::providers::TestWorkloadProvider;
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
     #[cfg(unix)]
     use saluki_io::net::Stream;
@@ -2523,11 +2534,13 @@ mod tests {
         },
         handle_frame, handle_metric_packet,
         metrics::build_metrics,
-        origin_detection_failed_for_telemetry, resolve_capture_container_id, ContextResolvers, DatagramSocketContext,
-        DogStatsDConfiguration, QueuedDatagram, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        origin_detection_failed_for_telemetry, resolve_process_origin, ContextResolvers, DatagramSocketContext,
+        DogStatsDConfiguration, ProcessOrigin, QueuedDatagram, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload, ReceivedBuffer};
+    #[cfg(target_os = "linux")]
+    use super::{DogStatsDOriginTagResolver, Listener, OriginEnrichmentConfiguration};
 
     const LINUX_EAFNOSUPPORT: i32 = 97;
     const MACOS_EAFNOSUPPORT: i32 = 47;
@@ -2552,20 +2565,34 @@ mod tests {
 
     #[derive(Default)]
     struct CaptureTestEntityResolver {
-        pid_map: HashMap<u32, EntityId>,
+        pid_map: StdMutex<HashMap<u32, EntityId>>,
     }
 
     impl CaptureTestEntityResolver {
         fn with_pid_mapping(process_id: u32, entity_id: EntityId) -> Self {
             let mut pid_map = HashMap::new();
             pid_map.insert(process_id, entity_id);
-            Self { pid_map }
+            Self {
+                pid_map: StdMutex::new(pid_map),
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        fn set_pid_mapping(&self, process_id: u32, entity_id: EntityId) {
+            self.pid_map
+                .lock()
+                .expect("PID map lock should not be poisoned")
+                .insert(process_id, entity_id);
         }
     }
 
     impl CaptureEntityResolver for CaptureTestEntityResolver {
         fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
-            self.pid_map.get(&process_id).cloned()
+            self.pid_map
+                .lock()
+                .expect("PID map lock should not be poisoned")
+                .get(&process_id)
+                .cloned()
         }
     }
 
@@ -2618,15 +2645,15 @@ mod tests {
             uid: 0,
             gid: 0,
         }));
+        let process_origin = resolve_process_origin(Some(&capture_entity_resolver), &peer_addr);
 
         let event = handle_frame(
             b"test_metric:1|c",
             &codec,
             &mut context_resolvers,
             &metrics,
-            Some(&capture_entity_resolver),
             false,
-            &peer_addr,
+            process_origin.as_ref(),
             EnablePayloadsFilter::default(),
             &[],
             &MetaString::from_static("default-host"),
@@ -2659,15 +2686,15 @@ mod tests {
             uid: 0,
             gid: 0,
         }));
+        let process_origin = resolve_process_origin(Some(&capture_entity_resolver), &peer_addr);
 
         let event = handle_frame(
             b"test_metric:1|c",
             &codec,
             &mut context_resolvers,
             &metrics,
-            Some(&capture_entity_resolver),
             true,
-            &peer_addr,
+            process_origin.as_ref(),
             EnablePayloadsFilter::default(),
             &[],
             &MetaString::from_static("default-host"),
@@ -2698,8 +2725,6 @@ mod tests {
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
         let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver);
-        let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
-
         let input = "big_metric_name_that_cant_possibly_be_inlined:1|c|#tag1:value1,tag2:value2,tag3:value3";
 
         let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(input.as_bytes()) else {
@@ -2709,7 +2734,7 @@ mod tests {
         let maybe_metric = handle_metric_packet(
             packet,
             &mut context_resolvers,
-            &peer_addr,
+            None,
             &[],
             &MetaString::from_static("default-host"),
         );
@@ -2720,7 +2745,6 @@ mod tests {
     fn metric_host_tag_disambiguates_contexts_without_remaining_tag() {
         let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
         let mut context_resolvers = test_context_resolvers();
-        let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
         let default_hostname = MetaString::from_static("default-host");
 
         let packets = [
@@ -2743,7 +2767,7 @@ mod tests {
             let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(raw) else {
                 panic!("Failed to parse {case} packet.");
             };
-            let metric = handle_metric_packet(packet, &mut context_resolvers, &peer_addr, &[], &default_hostname)
+            let metric = handle_metric_packet(packet, &mut context_resolvers, None, &[], &default_hostname)
                 .unwrap_or_else(|| panic!("{case} metric should resolve"));
 
             assert_eq!(metric.context().host(), Some(expected_host), "{case} context host");
@@ -2766,8 +2790,6 @@ mod tests {
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
         let mut context_resolvers = ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver);
-        let peer_addr = ConnectionAddress::from("1.1.1.1:1234".parse::<SocketAddr>().unwrap());
-
         let existing_tags = ["tag1:value1", "tag2:value2", "tag3:value3"];
         let existing_tags_str = existing_tags.join(",");
 
@@ -2784,7 +2806,7 @@ mod tests {
         let maybe_metric = handle_metric_packet(
             packet,
             &mut context_resolvers,
-            &peer_addr,
+            None,
             &additional_tags,
             &MetaString::from_static("default-host"),
         );
@@ -3244,6 +3266,7 @@ mod tests {
             Stream::from(receiver),
             pool,
             MemoryLimiter::noop(),
+            None,
             packets_tx,
             socket_context,
         ));
@@ -3300,6 +3323,98 @@ mod tests {
         drop(shrinker);
     }
 
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn uds_datagram_reader_pins_origin_before_decode() {
+        let temp_dir = tempfile::tempdir().expect("temp directory should be created");
+        let socket_path = temp_dir.path().join("dogstatsd.socket");
+        let listen_addr = ListenAddress::Unixgram(socket_path.clone());
+        let mut listener = Listener::from_listen_address(listen_addr.clone(), None)
+            .await
+            .expect("listener should bind");
+        let stream = listener.accept().await.expect("listener should yield its socket");
+        let sender = UnixDatagram::unbound().expect("sender should be created");
+        let process_id = std::process::id();
+        let original_entity = EntityId::from_local_data("ci-original-container").expect("container entity");
+        let reused_entity = EntityId::from_local_data("ci-reused-container").expect("container entity");
+        let capture_entity_resolver = Arc::new(CaptureTestEntityResolver::with_pid_mapping(
+            process_id,
+            original_entity.clone(),
+        ));
+        let (pool, shrinker) = build_io_buffer_pool(1, 1, 1, default_buffer_size());
+        let (packets_tx, mut packets_rx) = mpsc::channel(1);
+        let reader = tokio::spawn(receive_connectionless_stream(
+            stream,
+            pool,
+            MemoryLimiter::noop(),
+            Some(capture_entity_resolver.clone()),
+            packets_tx,
+            test_datagram_socket_context(listen_addr),
+        ));
+
+        sender
+            .send_to(b"test.metric:1|c", &socket_path)
+            .await
+            .expect("payload should send");
+        let received = timeout(Duration::from_secs(1), packets_rx.recv())
+            .await
+            .expect("packet should be received")
+            .expect("reader should remain active")
+            .result
+            .expect("receive should succeed");
+        assert_eq!(
+            received.process_origin,
+            Some(ProcessOrigin::Pinned(Some(original_entity.clone())))
+        );
+
+        // Simulate the sender exiting and its PID being reused before a decoder worker reaches the queued packet.
+        capture_entity_resolver.set_pid_mapping(process_id, reused_entity.clone());
+
+        let mut workload_provider = TestWorkloadProvider::new();
+        workload_provider.add_entity(original_entity, &["container:original"]);
+        workload_provider.add_entity(reused_entity, &["container:reused"]);
+        let origin_config: OriginEnrichmentConfiguration =
+            serde_json::from_value(json!({ "dogstatsd_origin_detection": true }))
+                .expect("origin configuration should deserialize");
+        let origin_resolver = DogStatsDOriginTagResolver::new(
+            origin_config,
+            Arc::new(workload_provider),
+            super::CapturedTaggerHandle::new(),
+        );
+        let tags_resolver = TagsResolverBuilder::for_tests().build();
+        let context_resolver = ContextResolverBuilder::for_tests()
+            .with_tags_resolver(Some(tags_resolver.clone()))
+            .build();
+        let mut context_resolvers = ContextResolvers::manual_with_origin(
+            context_resolver.clone(),
+            context_resolver,
+            tags_resolver,
+            origin_resolver,
+        );
+        let codec = DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default());
+        let Ok(ParsedPacket::Metric(packet)) = codec.decode_packet(b"test.metric:1|c") else {
+            panic!("metric should parse");
+        };
+        let metric = handle_metric_packet(
+            packet,
+            &mut context_resolvers,
+            received.process_origin.as_ref(),
+            &[],
+            &MetaString::from_static("default-host"),
+        )
+        .expect("metric context should resolve");
+
+        assert!(metric.context().origin_tags().has_tag("container:original"));
+        assert!(!metric.context().origin_tags().has_tag("container:reused"));
+
+        drop(packets_rx);
+        timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("reader should stop when the queue closes")
+            .expect("reader task should not panic");
+        drop(shrinker);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn connection_oriented_reader_preserves_partial_frames() {
@@ -3310,6 +3425,7 @@ mod tests {
             Stream::from(receiver),
             pool,
             MemoryLimiter::noop(),
+            None,
             packets_tx,
         ));
 
@@ -3833,15 +3949,22 @@ mod tests {
     }
 
     #[test]
-    fn resolve_capture_container_id_uses_live_pid_mapping() {
+    fn resolve_process_origin_pins_live_entity() {
         let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
             42,
             EntityId::from_local_data("ci-pid-container").expect("container entity"),
         );
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
+            pid: 42,
+            uid: 0,
+            gid: 0,
+        }));
 
         assert_eq!(
-            resolve_capture_container_id(Some(&capture_entity_resolver), Some(42)),
-            Some("container_id://pid-container".to_string())
+            resolve_process_origin(Some(&capture_entity_resolver), &peer_addr),
+            Some(ProcessOrigin::Pinned(Some(
+                EntityId::from_local_data("ci-pid-container").expect("container entity")
+            )))
         );
     }
 
@@ -3870,32 +3993,31 @@ mod tests {
     }
 
     #[test]
-    fn apply_credentials_uses_live_pid_for_normal_packet() {
-        let mut origin = RawOrigin::default();
-        let creds = ProcessCredentials {
+    fn resolve_process_origin_preserves_live_pid_without_entity_resolver() {
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
             pid: 12345,
             uid: 1000,
             gid: 1000,
-        };
-        super::apply_credentials_to_origin(&mut origin, &creds);
+        }));
 
-        assert_eq!(origin.process_id(), Some(12345));
+        assert_eq!(
+            resolve_process_origin(None, &peer_addr),
+            Some(ProcessOrigin::Unpinned(12345))
+        );
     }
 
     #[test]
-    fn apply_credentials_unpacks_captured_pid_when_replay_gid_present() {
-        let mut origin = RawOrigin::default();
+    fn resolve_process_origin_unpacks_captured_pid_when_replay_gid_present() {
         let captured_pid: u32 = 99887766;
-        let creds = ProcessCredentials {
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
             pid: 12345,        // our PID (irrelevant for replay)
             uid: captured_pid, // captured PID packed by the sender
             gid: super::REPLAY_CREDENTIALS_GID,
-        };
-        super::apply_credentials_to_origin(&mut origin, &creds);
+        }));
 
         assert_eq!(
-            origin.process_id(),
-            Some(super::origin::mark_replay_process_id(captured_pid))
+            resolve_process_origin(None, &peer_addr),
+            Some(ProcessOrigin::Replay(captured_pid))
         );
     }
 }
