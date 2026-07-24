@@ -204,10 +204,19 @@ impl<T: Poolable> ElasticStrategy<T> {
         data
     }
 
-    fn record_growth(&self) {
+    fn try_increase_active_for_growth(&self, active: usize) -> bool {
         let mut shrink_state = self.shrink_state.lock().unwrap();
+        if self
+            .active
+            .compare_exchange_weak(active, active + 1, AcqRel, Relaxed)
+            .is_err()
+        {
+            return false;
+        }
+
         shrink_state.last_growth = Instant::now();
         self.drop_excess_reclaimed.store(false, Release);
+        true
     }
 
     fn enable_shrinking_if_grace_elapsed(&self) -> bool {
@@ -226,6 +235,10 @@ impl<T: Poolable> ElasticStrategy<T> {
                 (active > self.min_capacity).then_some(active - 1)
             })
             .is_ok()
+    }
+
+    fn shrinking_is_current(&self, shrink_state: &ShrinkState) -> bool {
+        self.drop_excess_reclaimed.load(Acquire) && shrink_state.last_growth.elapsed() >= SHRINK_GRACE_PERIOD
     }
 
     fn excess_idle_capacity(&self) -> usize {
@@ -262,14 +275,18 @@ impl<T: Poolable> ReclaimStrategy<T> for ElasticStrategy<T> {
         self.metrics.released().increment(1);
         self.metrics.in_use().decrement(1.0);
 
-        if self.drop_excess_reclaimed.load(Acquire)
-            && self.available.available_permits() >= self.retained_idle_capacity
-            && self.try_decrease_active()
-        {
-            drop(data);
-            self.record_deletion();
-            trace!("Dropped returned item above the retained-idle capacity.");
-            return;
+        if self.drop_excess_reclaimed.load(Acquire) {
+            let shrink_state = self.shrink_state.lock().unwrap();
+            if self.shrinking_is_current(&shrink_state)
+                && self.available.available_permits() >= self.retained_idle_capacity
+                && self.try_decrease_active()
+            {
+                drop(shrink_state);
+                drop(data);
+                self.record_deletion();
+                trace!("Dropped returned item above the retained-idle capacity.");
+                return;
+            }
         }
 
         self.items.lock().unwrap().push_back(data);
@@ -341,19 +358,13 @@ where
                     break;
                 }
 
-                // Try to atomically increment `active` which signals that we still have capacity to allocate another
-                // item, and more importantly, that _we_ are authorized to do so.
-                if strategy
-                    .active
-                    .compare_exchange_weak(active, active + 1, AcqRel, Relaxed)
-                    .is_err()
-                {
+                // Claim capacity and record growth under the same lock that guards shrink completion.
+                if !strategy.try_increase_active_for_growth(active) {
                     continue;
                 }
 
                 trace!("Updated active count. Allocating on demand.");
 
-                strategy.record_growth();
                 let new_item = {
                     let _entered = strategy.resource_group.enter();
                     (strategy.builder)()
@@ -451,12 +462,18 @@ fn try_shrink_one_available_item<T: Poolable>(strategy: &ElasticStrategy<T>) -> 
 }
 
 fn try_shrink_available_item<T: Poolable>(strategy: &ElasticStrategy<T>, permit: SemaphorePermit<'_>) -> bool {
+    let shrink_state = strategy.shrink_state.lock().unwrap();
+    if !strategy.shrinking_is_current(&shrink_state) {
+        return false;
+    }
+
     let mut items = strategy.items.lock().unwrap();
     if !strategy.try_decrease_active() {
         return false;
     }
     let item = items.pop_back().unwrap();
     drop(items);
+    drop(shrink_state);
     drop(item);
 
     permit.forget();
@@ -488,6 +505,11 @@ mod tests {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("TestObject").finish_non_exhaustive()
         }
+    }
+
+    fn make_shrink_eligible(pool: &ElasticObjectPool<TestObject>) {
+        pool.strategy.shrink_state.lock().unwrap().last_growth = tokio::time::Instant::now() - SHRINK_GRACE_PERIOD;
+        pool.strategy.drop_excess_reclaimed.store(true, Release);
     }
 
     #[test]
@@ -580,6 +602,7 @@ mod tests {
         drop(second_item);
         assert_eq!(pool.strategy.active.load(Acquire), 2);
         assert_eq!(pool.strategy.available.available_permits(), 1);
+        make_shrink_eligible(&pool);
 
         // Simulate the shrinker winning the race to the idle permit before a new acquire starts waiting:
         // active = 2, permits = 0, shrinker holds the permit.
@@ -626,13 +649,53 @@ mod tests {
             let mut acquire = spawn(pool.acquire());
             items.push(assert_ready!(acquire.poll()));
         }
-        pool.strategy.drop_excess_reclaimed.store(true, Release);
+        make_shrink_eligible(&pool);
 
         drop(items);
 
         assert_eq!(pool.strategy.active.load(Acquire), 2);
         assert_eq!(pool.strategy.available.available_permits(), 2);
         assert_eq!(pool.strategy.items.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn fresh_growth_cancels_an_in_flight_shrink() {
+        let (pool, _) =
+            ElasticObjectPool::<TestObject>::with_builder_and_retained_idle_capacity("test", 1, 4, 1, || {
+                TestObjectInner { value: 0 }
+            });
+
+        let mut first_acquire = spawn(pool.acquire());
+        let first_item = assert_ready!(first_acquire.poll());
+        let mut second_acquire = spawn(pool.acquire());
+        let second_item = assert_ready!(second_acquire.poll());
+        let mut third_acquire = spawn(pool.acquire());
+        let third_item = assert_ready!(third_acquire.poll());
+        drop(second_item);
+        drop(third_item);
+        make_shrink_eligible(&pool);
+
+        let shrink_permit = pool
+            .strategy
+            .available
+            .try_acquire()
+            .expect("an idle item should be available to the shrinker");
+        let mut fourth_acquire = spawn(pool.acquire());
+        let fourth_item = assert_ready!(fourth_acquire.poll());
+        let mut fifth_acquire = spawn(pool.acquire());
+        let fifth_item = assert_ready!(fifth_acquire.poll());
+
+        assert!(!pool.strategy.drop_excess_reclaimed.load(Acquire));
+        assert!(
+            !try_shrink_available_item(&pool.strategy, shrink_permit),
+            "growth must cancel shrink work that sampled an older grace period"
+        );
+        assert_eq!(pool.strategy.active.load(Acquire), 4);
+        assert_eq!(pool.strategy.available.available_permits(), 1);
+
+        drop(first_item);
+        drop(fourth_item);
+        drop(fifth_item);
     }
 
     #[tokio::test(start_paused = true)]
