@@ -68,7 +68,6 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_stats_enable`                                          | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_stats_port`                                            | Internal stats endpoint port                       | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
 | `dogstatsd_telemetry_enabled_listener_id`                         | Per-listener telemetry tagging                     | Not feasible to thread listener identity through ADP's async decode pipeline.                                                                                                                                                                                             |
-| `dogstatsd_workers_count`                                         | Number of DSD processing workers                   | ADP uses async tasks.                                                                                                                                                                                                                                                     |
 | `enable_json_stream_shared_compressor_buffers`                    | Pre-allocate shared compressor buffers             | ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.                                                                                                                                               |
 | `entity_id`                                                       | Agent pod entity ID                                | ADP internal DogStatsD telemetry uses OpenMetrics.                                                                                                                                                                                                                        |
 | `forwarder_requeue_buffer_size`                                   | In-memory re-queue buffer size                     | See below                                                                                                                                                                                                                                                                 |
@@ -245,6 +244,7 @@ default values.
 | `aggregator_stop_timeout`              | Timeout (s) for aggregator flush on stop  |
 | `dogstatsd_mapper_cache_size`          | Mapper result LRU cache size              |
 | `dogstatsd_metrics_stats_enable`       | Enable per-metric debug stats             |
+| `dogstatsd_workers_count`              | Number of DSD processing workers          |
 | `forwarder_apikey_validation_interval` | API key check interval (minutes)          |
 | `forwarder_high_prio_buffer_size`      | High-priority request queue size          |
 | `forwarder_num_workers`                | Concurrent forwarder workers              |
@@ -293,6 +293,17 @@ mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
+
+### `dogstatsd_workers_count`
+
+The core Agent uses `dogstatsd_workers_count` to override the size of one worker pool shared by
+all DogStatsD listeners. When this setting is `0`, it derives the count from available vCPUs
+and the DogStatsD pipeline configuration.
+
+ADP uses the same explicit override for one decoder worker pool shared by all connectionless
+UDP and UDS datagram listeners. When this setting is `0`, ADP matches the core Agent's default
+pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
+workers. Connection-oriented listeners continue to use one decoder per connection.
 
 ### `forwarder_apikey_validation_interval`
 
@@ -792,3 +803,4 @@ compressed wire payload bytes.
 [#1753]: https://github.com/DataDog/saluki/issues/1753
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
+[#2079]: https://github.com/DataDog/saluki/issues/2079

@@ -1304,10 +1304,10 @@ inventory:
       all DogStatsD listeners. When this setting is `0`, it derives the count from available vCPUs
       and the DogStatsD pipeline configuration.
 
-      ADP uses the same explicit override for the decoder worker pool attached to each
-      connectionless UDP or UDS datagram socket. When this setting is `0`, ADP matches the core
-      Agent's default pipeline settings: one listener worker, one aggregation pipeline, and at least
-      two decoder workers. Connection-oriented listeners continue to use one decoder per connection.
+      ADP uses the same explicit override for one decoder worker pool shared by all connectionless
+      UDP and UDS datagram listeners. When this setting is `0`, ADP matches the core Agent's default
+      pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
+      workers. Connection-oriented listeners continue to use one decoder per connection.
     issue: "#2079"
     test_support:
       used_by: [DogStatsDConfiguration]
