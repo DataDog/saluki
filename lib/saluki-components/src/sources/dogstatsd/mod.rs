@@ -9,6 +9,7 @@
 use std::{
     collections::VecDeque,
     future::Future,
+    io,
     num::NonZeroUsize,
     path::PathBuf,
     pin::Pin,
@@ -29,7 +30,7 @@ use saluki_context::{
     tags::{RawTags, RawTagsFilter},
     TagsResolver,
 };
-use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
+use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, MemoryLimiter, UsageExpr};
 use saluki_core::data_model::event::{
     eventd::EventD,
     metric::{Metric, MetricMetadata, MetricOrigin},
@@ -60,6 +61,8 @@ use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
     time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -288,8 +291,8 @@ pub struct DogStatsDConfiguration {
     /// The number of message buffers to allocate up front.
     ///
     /// This is the baseline pool size allocated at startup. The pool then grows on demand up to
-    /// `dogstatsd_buffer_count_max` as active stream connections need additional buffers. The default value should be
-    /// suitable for the majority of workloads.
+    /// `dogstatsd_buffer_count_max` as active stream connections and datagram queues need additional buffers.
+    /// Higher values allocate more memory at startup but reduce on-demand allocations during bursts.
     ///
     /// Defaults to 128.
     #[serde(rename = "dogstatsd_buffer_count", default = "default_buffer_count")]
@@ -297,10 +300,10 @@ pub struct DogStatsDConfiguration {
 
     /// The maximum number of message buffers to allocate overall.
     ///
-    /// The pool starts at `dogstatsd_buffer_count` buffers and grows on demand up to this limit as active stream
-    /// connections need them, which loosely correlates with how many messages can be received per second. This caps
-    /// memory growth. The default value should be suitable for the majority of workloads, but high-throughput or
-    /// high-fan-in workloads may consider increasing this value.
+    /// The pool starts at `dogstatsd_buffer_count` buffers and grows on demand up to this limit. Active stream
+    /// connections use these buffers for reads, while connectionless listeners use them to queue received packets for
+    /// decoding. Increasing this value lets datagram listeners absorb larger bursts at the cost of up to one additional
+    /// `dogstatsd_buffer_size` allocation per buffer. High-throughput workloads with traffic bursts may increase it.
     ///
     /// The pool never holds fewer buffers than `dogstatsd_buffer_count`, so a value below the baseline is treated as
     /// equal to it.
@@ -973,8 +976,7 @@ impl SourceBuilder for DogStatsDConfiguration {
         }
 
         // Every listener requires at least one I/O buffer to ensure that all listeners can be serviced without
-        // deadlocking any of the others. Connectionless listeners retain their buffer for the lifetime of the stream,
-        // so multi-socket UDP listeners require one buffer per yielded socket.
+        // deadlocking any of the others. Multi-socket connectionless listeners require one buffer per yielded socket.
         let min_buffers: usize = listeners.iter().map(Listener::min_buffer_reservation).sum();
         let max_buffers = self.effective_max_buffer_count();
         if max_buffers < min_buffers {
@@ -1029,6 +1031,7 @@ impl SourceBuilder for DogStatsDConfiguration {
         Ok(Box::new(DogStatsD {
             listeners,
             io_buffer_pool,
+            io_buffer_queue_capacity: max_buffers,
             io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
             codec,
             context_resolvers,
@@ -1093,6 +1096,7 @@ impl MemoryBounds for DogStatsDConfiguration {
 pub struct DogStatsD {
     listeners: Vec<Listener>,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
+    io_buffer_queue_capacity: usize,
     io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
@@ -1113,6 +1117,7 @@ struct ListenerContext {
     shutdown_handle: ShutdownHandle,
     listener: Listener,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
+    io_buffer_queue_capacity: usize,
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     default_hostname: MetaString,
@@ -1132,6 +1137,7 @@ struct HandlerContext {
     framer: DsdFramer,
     codec: DogStatsDCodec,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
+    io_buffer_queue_capacity: usize,
     metrics: Metrics,
     context_resolvers: ContextResolvers,
     default_hostname: MetaString,
@@ -1172,6 +1178,7 @@ impl Source for DogStatsD {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
                 io_buffer_pool: self.io_buffer_pool.clone(),
+                io_buffer_queue_capacity: self.io_buffer_queue_capacity,
                 codec: self.codec.clone(),
                 context_resolvers: self.context_resolvers.clone(),
                 default_hostname: self.default_hostname.clone(),
@@ -1256,6 +1263,7 @@ async fn process_listener(
         shutdown_handle,
         mut listener,
         io_buffer_pool,
+        io_buffer_queue_capacity,
         codec,
         context_resolvers,
         default_hostname,
@@ -1304,6 +1312,7 @@ async fn process_listener(
                         framer: get_framer(&listen_addr, eol_required.for_listener(&listen_addr)),
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
+                        io_buffer_queue_capacity,
                         metrics: metrics.clone(),
                         context_resolvers: context_resolvers.clone(),
                         default_hostname: default_hostname.clone(),
@@ -1353,8 +1362,126 @@ fn origin_detection_failed_for_telemetry(
     origin_detection_enabled && bytes_read > 0 && peer_addr.has_process_credential_telemetry_error()
 }
 
+struct ReceivedBuffer {
+    buffer: BytesBuffer,
+    bytes_read: usize,
+    peer_addr: ConnectionAddress,
+    buffer_return: BufferReturn,
+}
+
+struct BufferReturn(Option<oneshot::Sender<BytesBuffer>>);
+
+impl BufferReturn {
+    fn return_buffer(self, buffer: BytesBuffer) {
+        if let Some(sender) = self.0 {
+            let _ = sender.send(buffer);
+        }
+    }
+}
+
+struct BufferedStreamReader {
+    receiver: mpsc::Receiver<io::Result<ReceivedBuffer>>,
+    task: JoinHandle<()>,
+    is_connectionless: bool,
+}
+
+impl BufferedStreamReader {
+    fn new(
+        stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
+        queue_capacity: usize,
+    ) -> Self {
+        let is_connectionless = stream.is_connectionless();
+        let (packets_tx, receiver) = mpsc::channel(queue_capacity);
+        let task = spawn_traced_named(
+            "dogstatsd-stream-reader",
+            receive_stream(stream, io_buffer_pool, memory_limiter, packets_tx),
+        );
+
+        Self {
+            receiver,
+            task,
+            is_connectionless,
+        }
+    }
+
+    fn is_connectionless(&self) -> bool {
+        self.is_connectionless
+    }
+
+    async fn receive(&mut self) -> Option<io::Result<ReceivedBuffer>> {
+        self.receiver.recv().await
+    }
+}
+
+impl Drop for BufferedStreamReader {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+async fn receive_stream(
+    mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
+    packets_tx: mpsc::Sender<io::Result<ReceivedBuffer>>,
+) {
+    debug!("Stream reader started.");
+
+    let is_connectionless = stream.is_connectionless();
+    let mut buffer_manager = IoBufferManager::new(&io_buffer_pool);
+
+    loop {
+        select! {
+            _ = packets_tx.closed() => break,
+            _ = memory_limiter.wait_for_capacity() => {}
+        }
+
+        let mut buffer = select! {
+            _ = packets_tx.closed() => break,
+            buffer = buffer_manager.take_buffer() => buffer,
+        };
+        let (bytes_read, peer_addr) = match select! {
+            _ = packets_tx.closed() => break,
+            result = stream.receive(&mut buffer) => result,
+        } {
+            Ok(received) => received,
+            Err(error) => {
+                buffer_manager.return_buffer(buffer);
+                if packets_tx.send(Err(error)).await.is_err() || !is_connectionless {
+                    break;
+                }
+                continue;
+            }
+        };
+
+        let (buffer_return, returned_buffer) = if is_connectionless {
+            (BufferReturn(None), None)
+        } else {
+            let (sender, receiver) = oneshot::channel();
+            (BufferReturn(Some(sender)), Some(receiver))
+        };
+        let received = ReceivedBuffer {
+            buffer,
+            bytes_read,
+            peer_addr,
+            buffer_return,
+        };
+
+        if packets_tx.send(Ok(received)).await.is_err() {
+            break;
+        }
+
+        if let Some(returned_buffer) = returned_buffer {
+            match returned_buffer.await {
+                Ok(buffer) => buffer_manager.return_buffer(buffer),
+                Err(_) => break,
+            }
+        }
+    }
+
+    debug!("Stream reader stopped.");
+}
+
 async fn drive_stream(
-    mut stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
+    stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
     enabled_filter: EnablePayloadsFilter,
 ) {
     let HandlerContext {
@@ -1362,6 +1489,7 @@ async fn drive_stream(
         mut framer,
         codec,
         io_buffer_pool,
+        io_buffer_queue_capacity,
         metrics,
         mut context_resolvers,
         default_hostname,
@@ -1376,7 +1504,11 @@ async fn drive_stream(
 
     debug!(%listen_addr, "Stream handler started.");
 
-    if !stream.is_connectionless() {
+    let memory_limiter = source_context.topology_context().memory_limiter().clone();
+    let mut stream_reader = BufferedStreamReader::new(stream, io_buffer_pool, memory_limiter, io_buffer_queue_capacity);
+    let is_connectionless = stream_reader.is_connectionless();
+
+    if !is_connectionless {
         metrics.connections_active().increment(1);
     }
 
@@ -1387,25 +1519,26 @@ async fn drive_stream(
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
     let mut event_buffer_manager = EventBufferManager::default();
-    let mut io_buffer_manager = IoBufferManager::new(&io_buffer_pool, &stream);
-    let memory_limiter = source_context.topology_context().memory_limiter();
 
     'read: loop {
         let mut eof = false;
 
-        let mut io_buffer = io_buffer_manager.get_buffer_mut().await;
-
-        memory_limiter.wait_for_capacity().await;
-
         select! {
             // We read from the stream.
-            read_result = stream.receive(&mut io_buffer) => match read_result {
-                Ok((bytes_read, peer_addr)) => {
+            maybe_read_result = stream_reader.receive() => match maybe_read_result {
+                Some(Ok(received)) => {
+                    let ReceivedBuffer {
+                        mut buffer,
+                        bytes_read,
+                        peer_addr,
+                        buffer_return,
+                    } = received;
+                    let io_buffer = &mut buffer;
+
                     if bytes_read == 0 {
                         eof = true;
                     }
 
-                    let is_connectionless = stream.is_connectionless();
                     let payload = received_payload(io_buffer, bytes_read);
 
                     capture_uds_traffic(
@@ -1449,6 +1582,7 @@ async fn drive_stream(
                         metrics.framing_errors().increment(1);
                         debug!(%listen_addr, %peer_addr, "DogStatsD named pipe frame exceeded the configured buffer size. Dropping frame.");
                         io_buffer.clear();
+                        buffer_return.return_buffer(buffer);
                         continue 'read;
                     }
 
@@ -1512,7 +1646,7 @@ async fn drive_stream(
                                     );
                                 }
 
-                                if stream.is_connectionless() {
+                                if is_connectionless {
                                     io_buffer.clear();
                                     // For connectionless streams, we don't want to shutdown the stream since we can just keep
                                     // reading more packets.
@@ -1525,7 +1659,7 @@ async fn drive_stream(
                             }
                             Ok(None) => {
                                 trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
-                                if eof && !stream.is_connectionless() {
+                                if eof && !is_connectionless {
                                     debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
                                     break 'read;
                                 } else {
@@ -1534,11 +1668,13 @@ async fn drive_stream(
                             }
                         }
                     }
+
+                    buffer_return.return_buffer(buffer);
                 },
-                Err(e) => {
+                Some(Err(e)) => {
                     metrics.packet_receive_failure().increment(1);
 
-                    if stream.is_connectionless() {
+                    if is_connectionless {
                         // For connectionless streams, we don't want to shutdown the stream since we can just keep
                         // reading more packets.
                         warn!(%listen_addr, error = %e, "I/O error while decoding. Continuing stream.");
@@ -1547,6 +1683,10 @@ async fn drive_stream(
                         warn!(%listen_addr, error = %e, "I/O error while decoding. Stopping stream.");
                         break 'read;
                     }
+                },
+                None => {
+                    warn!(%listen_addr, "Buffered stream reader stopped unexpectedly. Stopping stream.");
+                    break 'read;
                 }
             },
 
@@ -2032,16 +2172,22 @@ mod tests {
         time::Duration,
     };
 
+    #[cfg(unix)]
+    use bytes::Buf as _;
     use bytes::{BufMut as _, Bytes};
     use bytesize::ByteSize;
     use metrics::{Key, Label};
     use saluki_config::ConfigurationLoader;
     use saluki_context::{origin::RawOrigin, ContextResolverBuilder, TagsResolverBuilder};
+    #[cfg(unix)]
+    use saluki_core::accounting::MemoryLimiter;
     use saluki_core::{
         components::ComponentContext,
         pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
     };
     use saluki_env::workload::{CaptureEntityResolver, EntityId};
+    #[cfg(unix)]
+    use saluki_io::net::Stream;
     use saluki_io::{
         buf::{BytesBuffer, FixedSizeVec},
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
@@ -2050,6 +2196,12 @@ mod tests {
     use saluki_metrics::test::TestRecorder;
     use serde_json::json;
     use stringtheory::MetaString;
+    #[cfg(unix)]
+    use tokio::{
+        io::AsyncWriteExt as _,
+        net::{UnixDatagram, UnixStream},
+        task::yield_now,
+    };
     use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 
     use super::{
@@ -2063,6 +2215,8 @@ mod tests {
         origin_detection_failed_for_telemetry, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
         DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
+    #[cfg(unix)]
+    use super::{receive_stream, received_payload, ReceivedBuffer};
 
     const LINUX_EAFNOSUPPORT: i32 = 97;
     const MACOS_EAFNOSUPPORT: i32 = 47;
@@ -2690,6 +2844,118 @@ mod tests {
             .expect("returned buffer should unblock acquisition");
 
         drop(on_demand_buffer);
+        drop(shrinker);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_datagram_reader_is_bounded_by_io_buffer_pool() {
+        let temp_dir = tempfile::tempdir().expect("temp directory should be created");
+        let socket_path = temp_dir.path().join("dogstatsd.socket");
+        let receiver = UnixDatagram::bind(&socket_path).expect("receiver should bind");
+        let sender = UnixDatagram::unbound().expect("sender should be created");
+        let (pool, shrinker) = build_io_buffer_pool(2, 2, default_buffer_size());
+        let (packets_tx, mut packets_rx) = mpsc::channel(3);
+        let reader = tokio::spawn(receive_stream(
+            Stream::from(receiver),
+            pool,
+            MemoryLimiter::noop(),
+            packets_tx,
+        ));
+        let payloads: [&[u8]; 3] = [b"first", b"second", b"third"];
+
+        for payload in payloads {
+            sender
+                .send_to(payload, &socket_path)
+                .await
+                .expect("payload should send");
+        }
+
+        timeout(Duration::from_secs(1), async {
+            while packets_rx.len() < 2 {
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("reader should fill the two-buffer pool");
+        assert_eq!(packets_rx.len(), 2);
+
+        let first = packets_rx
+            .recv()
+            .await
+            .expect("first packet should be queued")
+            .expect("first receive should succeed");
+        assert_eq!(received_payload(&first.buffer, first.bytes_read), payloads[0]);
+        drop(first);
+
+        timeout(Duration::from_secs(1), async {
+            while packets_rx.len() < 2 {
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("returning a buffer should allow the third packet to be read");
+
+        for expected in &payloads[1..] {
+            let received = packets_rx
+                .recv()
+                .await
+                .expect("packet should be queued")
+                .expect("receive should succeed");
+            assert_eq!(received_payload(&received.buffer, received.bytes_read), *expected);
+        }
+
+        drop(packets_rx);
+        timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("reader should stop when the queue closes")
+            .expect("reader task should not panic");
+        drop(shrinker);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connection_oriented_reader_preserves_partial_frames() {
+        let (mut sender, receiver) = UnixStream::pair().expect("stream pair should be created");
+        let (pool, shrinker) = build_io_buffer_pool(1, 1, default_buffer_size());
+        let (packets_tx, mut packets_rx) = mpsc::channel(1);
+        let reader = tokio::spawn(receive_stream(
+            Stream::from(receiver),
+            pool,
+            MemoryLimiter::noop(),
+            packets_tx,
+        ));
+
+        sender.write_all(b"partial").await.expect("first payload should send");
+        let first = timeout(Duration::from_secs(1), packets_rx.recv())
+            .await
+            .expect("first read should finish")
+            .expect("reader should remain active")
+            .expect("first read should succeed");
+        assert_eq!(first.buffer.chunk(), b"partial");
+        let ReceivedBuffer {
+            buffer, buffer_return, ..
+        } = first;
+        buffer_return.return_buffer(buffer);
+
+        sender.write_all(b"-frame").await.expect("second payload should send");
+        let second = timeout(Duration::from_secs(1), packets_rx.recv())
+            .await
+            .expect("second read should finish")
+            .expect("reader should remain active")
+            .expect("second read should succeed");
+        assert_eq!(second.bytes_read, b"-frame".len());
+        assert_eq!(second.buffer.chunk(), b"partial-frame");
+        let ReceivedBuffer {
+            buffer, buffer_return, ..
+        } = second;
+        buffer_return.return_buffer(buffer);
+
+        drop(packets_rx);
+        timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("reader should stop when the queue closes")
+            .expect("reader task should not panic");
         drop(shrinker);
     }
 

@@ -1104,7 +1104,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Packet buffer flush timeout"
-    documentation: "ADP decodes inline."
+    documentation: "ADP queues individual datagrams without packet batching."
 
   dogstatsd_packet_buffer_size:
     support: none
@@ -1112,7 +1112,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Datagrams per packet buffer"
-    documentation: "ADP decodes inline."
+    documentation: "ADP queues individual datagrams in its bounded I/O buffer pool."
 
   dogstatsd_pipe_name:
     support: full
@@ -1155,7 +1155,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Packet channel buffer size"
-    documentation: "ADP uses async tasks."
+    documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
 
   dogstatsd_so_rcvbuf:
     support: full

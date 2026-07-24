@@ -271,11 +271,10 @@ impl Listener {
         &self.listen_address
     }
 
-    /// Minimum number of I/O buffers needed to safely service every stream this listener will yield.
+    /// Minimum number of I/O buffers needed to service every stream this listener will yield.
     ///
-    /// Connectionless streams permanently retain their buffer for the lifetime of the stream, so the reservation
-    /// matches the total number of yielded streams. Connection-oriented streams return their buffer to the pool
-    /// between connections, so the reservation is a lower bound of `1` per listener.
+    /// Connectionless listeners contribute one buffer per yielded stream. Connection-oriented listeners contribute one
+    /// buffer per configured listener.
     pub fn min_buffer_reservation(&self) -> usize {
         match &self.inner {
             ListenerInner::Tcp(_) => 1,
