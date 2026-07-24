@@ -176,4 +176,76 @@
 <a href=#176 id=176 data-nosnippet>176</a>        <span class="kw-2">&amp;**</span><span class="self">self
 <a href=#177 id=177 data-nosnippet>177</a>    </span>}
 <a href=#178 id=178 data-nosnippet>178</a>}
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a><span class="attr">#[cfg(test)]
+<a href=#181 id=181 data-nosnippet>181</a></span><span class="kw">mod </span>tests {
+<a href=#182 id=182 data-nosnippet>182</a>    <span class="kw">use </span>std::io;
+<a href=#183 id=183 data-nosnippet>183</a>
+<a href=#184 id=184 data-nosnippet>184</a>    <span class="kw">use </span>http::{Response, StatusCode, Uri};
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#187 id=187 data-nosnippet>187</a>
+<a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">type </span>BoxError = Box&lt;<span class="kw">dyn </span>std::error::Error + Send + Sync&gt;;
+<a href=#189 id=189 data-nosnippet>189</a>
+<a href=#190 id=190 data-nosnippet>190</a>    <span class="kw">fn </span>categorize(res: <span class="prelude-ty">Result</span>&lt;Response&lt;()&gt;, BoxError&gt;) -&gt; String {
+<a href=#191 id=191 data-nosnippet>191</a>        CategorizedError::try_categorize(<span class="kw-2">&amp;</span>res).to_string()
+<a href=#192 id=192 data-nosnippet>192</a>    }
+<a href=#193 id=193 data-nosnippet>193</a>
+<a href=#194 id=194 data-nosnippet>194</a>    <span class="attr">#[test]
+<a href=#195 id=195 data-nosnippet>195</a>    </span><span class="kw">fn </span>categorizes_http_status_response() {
+<a href=#196 id=196 data-nosnippet>196</a>        <span class="comment">// A response (any `Ok`) is categorized by its status code, and non-success codes render with the code value.
+<a href=#197 id=197 data-nosnippet>197</a>        </span><span class="kw">let </span>res: <span class="prelude-ty">Result</span>&lt;Response&lt;()&gt;, BoxError&gt; = <span class="prelude-val">Ok</span>(Response::builder()
+<a href=#198 id=198 data-nosnippet>198</a>            .status(StatusCode::INTERNAL_SERVER_ERROR)
+<a href=#199 id=199 data-nosnippet>199</a>            .body(())
+<a href=#200 id=200 data-nosnippet>200</a>            .unwrap());
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="macro">assert_eq!</span>(categorize(res), <span class="string">"Server responded with non-success status code 500."</span>);
+<a href=#202 id=202 data-nosnippet>202</a>    }
+<a href=#203 id=203 data-nosnippet>203</a>
+<a href=#204 id=204 data-nosnippet>204</a>    <span class="attr">#[test]
+<a href=#205 id=205 data-nosnippet>205</a>    </span><span class="kw">fn </span>categorizes_standalone_io_error_as_other() {
+<a href=#206 id=206 data-nosnippet>206</a>        <span class="comment">// A bare transport error that isn't a hyper/rustls/nested error falls through to the generic "Other" bucket.
+<a href=#207 id=207 data-nosnippet>207</a>        </span><span class="kw">let </span>err: BoxError = Box::new(io::Error::from(io::ErrorKind::ConnectionRefused));
+<a href=#208 id=208 data-nosnippet>208</a>        <span class="macro">assert_eq!</span>(categorize(<span class="prelude-val">Err</span>(err)), <span class="string">"Request failed: connection refused"</span>);
+<a href=#209 id=209 data-nosnippet>209</a>    }
+<a href=#210 id=210 data-nosnippet>210</a>
+<a href=#211 id=211 data-nosnippet>211</a>    <span class="attr">#[test]
+<a href=#212 id=212 data-nosnippet>212</a>    </span><span class="kw">fn </span>categorizes_rustls_certificate_error_as_tls() {
+<a href=#213 id=213 data-nosnippet>213</a>        <span class="comment">// A rustls certificate error is specialized into a TLS category with a human-readable reason.
+<a href=#214 id=214 data-nosnippet>214</a>        </span><span class="kw">let </span>err: BoxError = Box::new(rustls::Error::InvalidCertificate(rustls::CertificateError::Expired));
+<a href=#215 id=215 data-nosnippet>215</a>        <span class="macro">assert_eq!</span>(
+<a href=#216 id=216 data-nosnippet>216</a>            categorize(<span class="prelude-val">Err</span>(err)),
+<a href=#217 id=217 data-nosnippet>217</a>            <span class="string">"Request failed due to a TLS error: peer certificate is invalid: certificate expired (current time is after notAfter time)"
+<a href=#218 id=218 data-nosnippet>218</a>        </span>);
+<a href=#219 id=219 data-nosnippet>219</a>    }
+<a href=#220 id=220 data-nosnippet>220</a>
+<a href=#221 id=221 data-nosnippet>221</a>    <span class="attr">#[test]
+<a href=#222 id=222 data-nosnippet>222</a>    </span><span class="kw">fn </span>categorizes_io_wrapped_rustls_error_by_unwrapping_source() {
+<a href=#223 id=223 data-nosnippet>223</a>        <span class="comment">// An io::Error that wraps a rustls error is unwrapped via its source and categorized as TLS, not reported as
+<a href=#224 id=224 data-nosnippet>224</a>        // a generic io failure.
+<a href=#225 id=225 data-nosnippet>225</a>        </span><span class="kw">let </span>inner = rustls::Error::InvalidCertificate(rustls::CertificateError::Revoked);
+<a href=#226 id=226 data-nosnippet>226</a>        <span class="kw">let </span>err: BoxError = Box::new(io::Error::other(inner));
+<a href=#227 id=227 data-nosnippet>227</a>        <span class="macro">assert_eq!</span>(
+<a href=#228 id=228 data-nosnippet>228</a>            categorize(<span class="prelude-val">Err</span>(err)),
+<a href=#229 id=229 data-nosnippet>229</a>            <span class="string">"Request failed due to a TLS error: peer certificate is invalid: certificate has been revoked"
+<a href=#230 id=230 data-nosnippet>230</a>        </span>);
+<a href=#231 id=231 data-nosnippet>231</a>    }
+<a href=#232 id=232 data-nosnippet>232</a>
+<a href=#233 id=233 data-nosnippet>233</a>    <span class="attr">#[test]
+<a href=#234 id=234 data-nosnippet>234</a>    </span><span class="kw">fn </span>sanitized_request_uri_display() {
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="comment">// Scheme, host, explicit port, and path are all rendered.
+<a href=#236 id=236 data-nosnippet>236</a>        </span><span class="kw">let </span>uri: Uri = <span class="string">"http://localhost:8125/foo/bar"</span>.parse().unwrap();
+<a href=#237 id=237 data-nosnippet>237</a>        <span class="macro">assert_eq!</span>(SanitizedRequestUri(<span class="kw-2">&amp;</span>uri).to_string(), <span class="string">"http://localhost:8125/foo/bar"</span>);
+<a href=#238 id=238 data-nosnippet>238</a>
+<a href=#239 id=239 data-nosnippet>239</a>        <span class="comment">// A default (implicit) port is omitted.
+<a href=#240 id=240 data-nosnippet>240</a>        </span><span class="kw">let </span>uri: Uri = <span class="string">"https://api.datadoghq.com/api/v1/series"</span>.parse().unwrap();
+<a href=#241 id=241 data-nosnippet>241</a>        <span class="macro">assert_eq!</span>(
+<a href=#242 id=242 data-nosnippet>242</a>            SanitizedRequestUri(<span class="kw-2">&amp;</span>uri).to_string(),
+<a href=#243 id=243 data-nosnippet>243</a>            <span class="string">"https://api.datadoghq.com/api/v1/series"
+<a href=#244 id=244 data-nosnippet>244</a>        </span>);
+<a href=#245 id=245 data-nosnippet>245</a>
+<a href=#246 id=246 data-nosnippet>246</a>        <span class="comment">// With neither scheme nor host, only the path is rendered.
+<a href=#247 id=247 data-nosnippet>247</a>        </span><span class="kw">let </span>uri: Uri = <span class="string">"/health"</span>.parse().unwrap();
+<a href=#248 id=248 data-nosnippet>248</a>        <span class="macro">assert_eq!</span>(SanitizedRequestUri(<span class="kw-2">&amp;</span>uri).to_string(), <span class="string">"/health"</span>);
+<a href=#249 id=249 data-nosnippet>249</a>    }
+<a href=#250 id=250 data-nosnippet>250</a>}
 </code></pre></div></section></main></body></html>

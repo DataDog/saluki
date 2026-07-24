@@ -149,4 +149,48 @@
 <a href=#149 id=149 data-nosnippet>149</a>        <span class="prelude-val">None
 <a href=#150 id=150 data-nosnippet>150</a>    </span>}
 <a href=#151 id=151 data-nosnippet>151</a>}
+<a href=#152 id=152 data-nosnippet>152</a>
+<a href=#153 id=153 data-nosnippet>153</a><span class="attr">#[cfg(test)]
+<a href=#154 id=154 data-nosnippet>154</a></span><span class="kw">mod </span>tests {
+<a href=#155 id=155 data-nosnippet>155</a>    <span class="kw">use </span>std::time::Duration;
+<a href=#156 id=156 data-nosnippet>156</a>
+<a href=#157 id=157 data-nosnippet>157</a>    <span class="kw">use </span><span class="kw">super</span>::calculate_backoff;
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a>    <span class="comment">// These cases reproduce the worked example from `calculate_backoff`'s own doc comment: minimum/maximum backoff
+<a href=#160 id=160 data-nosnippet>160</a>    // durations of 100ms/1000ms, a 100MB limit, and a 95% threshold. The doc promises specific values at specific
+<a href=#161 id=161 data-nosnippet>161</a>    // fractions of the limit, so we assert those exact durations rather than merely that a backoff was produced.
+<a href=#162 id=162 data-nosnippet>162</a>    </span><span class="kw">const </span>LIMIT: usize = <span class="number">100_000_000</span>;
+<a href=#163 id=163 data-nosnippet>163</a>    <span class="kw">const </span>THRESHOLD: f64 = <span class="number">0.95</span>;
+<a href=#164 id=164 data-nosnippet>164</a>    <span class="kw">const </span>MIN: Duration = Duration::from_millis(<span class="number">100</span>);
+<a href=#165 id=165 data-nosnippet>165</a>    <span class="kw">const </span>MAX: Duration = Duration::from_millis(<span class="number">1000</span>);
+<a href=#166 id=166 data-nosnippet>166</a>
+<a href=#167 id=167 data-nosnippet>167</a>    <span class="kw">fn </span>backoff_at(actual_rss: usize) -&gt; <span class="prelude-ty">Option</span>&lt;Duration&gt; {
+<a href=#168 id=168 data-nosnippet>168</a>        calculate_backoff(LIMIT, actual_rss, THRESHOLD, MIN, MAX)
+<a href=#169 id=169 data-nosnippet>169</a>    }
+<a href=#170 id=170 data-nosnippet>170</a>
+<a href=#171 id=171 data-nosnippet>171</a>    <span class="attr">#[test]
+<a href=#172 id=172 data-nosnippet>172</a>    </span><span class="kw">fn </span>no_backoff_below_or_at_threshold() {
+<a href=#173 id=173 data-nosnippet>173</a>        <span class="comment">// Well below the threshold: no backpressure at all.
+<a href=#174 id=174 data-nosnippet>174</a>        </span><span class="macro">assert_eq!</span>(backoff_at(<span class="number">90_000_000</span>), <span class="prelude-val">None</span>);
+<a href=#175 id=175 data-nosnippet>175</a>
+<a href=#176 id=176 data-nosnippet>176</a>        <span class="comment">// Exactly at the 95% threshold: the comparison is strictly greater-than, so still no backoff.
+<a href=#177 id=177 data-nosnippet>177</a>        </span><span class="macro">assert_eq!</span>(backoff_at(<span class="number">95_000_000</span>), <span class="prelude-val">None</span>);
+<a href=#178 id=178 data-nosnippet>178</a>    }
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="attr">#[test]
+<a href=#181 id=181 data-nosnippet>181</a>    </span><span class="kw">fn </span>backoff_scales_linearly_across_the_threshold_band() {
+<a href=#182 id=182 data-nosnippet>182</a>        <span class="comment">// The doc's worked example: at 97.5% of the limit we are halfway through the 95%..100% band, so the backoff is
+<a href=#183 id=183 data-nosnippet>183</a>        // the minimum (100ms) plus half of the 900ms range (450ms) =&gt; 550ms.
+<a href=#184 id=184 data-nosnippet>184</a>        </span><span class="macro">assert_eq!</span>(backoff_at(<span class="number">97_500_000</span>), <span class="prelude-val">Some</span>(Duration::from_millis(<span class="number">550</span>)));
+<a href=#185 id=185 data-nosnippet>185</a>    }
+<a href=#186 id=186 data-nosnippet>186</a>
+<a href=#187 id=187 data-nosnippet>187</a>    <span class="attr">#[test]
+<a href=#188 id=188 data-nosnippet>188</a>    </span><span class="kw">fn </span>backoff_saturates_at_the_maximum() {
+<a href=#189 id=189 data-nosnippet>189</a>        <span class="comment">// At exactly 100% of the limit we reach the far end of the band, which is the maximum backoff (1000ms).
+<a href=#190 id=190 data-nosnippet>190</a>        </span><span class="macro">assert_eq!</span>(backoff_at(<span class="number">100_000_000</span>), <span class="prelude-val">Some</span>(MAX));
+<a href=#191 id=191 data-nosnippet>191</a>
+<a href=#192 id=192 data-nosnippet>192</a>        <span class="comment">// Beyond the limit the computed backoff would exceed the maximum, so it is clamped to the maximum.
+<a href=#193 id=193 data-nosnippet>193</a>        </span><span class="macro">assert_eq!</span>(backoff_at(<span class="number">120_000_000</span>), <span class="prelude-val">Some</span>(MAX));
+<a href=#194 id=194 data-nosnippet>194</a>    }
+<a href=#195 id=195 data-nosnippet>195</a>}
 </code></pre></div></section></main></body></html>

@@ -190,4 +190,60 @@
 <a href=#190 id=190 data-nosnippet>190</a>        <span class="self">self</span>.raw.hash(state);
 <a href=#191 id=191 data-nosnippet>191</a>    }
 <a href=#192 id=192 data-nosnippet>192</a>}
+<a href=#193 id=193 data-nosnippet>193</a>
+<a href=#194 id=194 data-nosnippet>194</a><span class="attr">#[cfg(test)]
+<a href=#195 id=195 data-nosnippet>195</a></span><span class="kw">mod </span>tests {
+<a href=#196 id=196 data-nosnippet>196</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#197 id=197 data-nosnippet>197</a>
+<a href=#198 id=198 data-nosnippet>198</a>    <span class="attr">#[test]
+<a href=#199 id=199 data-nosnippet>199</a>    </span><span class="kw">fn </span>borrowed_tag_splits_name_and_value() {
+<a href=#200 id=200 data-nosnippet>200</a>        <span class="comment">// (raw, expected name, expected value)
+<a href=#201 id=201 data-nosnippet>201</a>        </span><span class="kw">let </span>cases: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str, <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;)] = <span class="kw-2">&amp;</span>[
+<a href=#202 id=202 data-nosnippet>202</a>            <span class="comment">// Key/value tag: split on the first colon.
+<a href=#203 id=203 data-nosnippet>203</a>            </span>(<span class="string">"service:web"</span>, <span class="string">"service"</span>, <span class="prelude-val">Some</span>(<span class="string">"web"</span>)),
+<a href=#204 id=204 data-nosnippet>204</a>            <span class="comment">// Bare tag: the whole string is the name, and there is no value.
+<a href=#205 id=205 data-nosnippet>205</a>            </span>(<span class="string">"production"</span>, <span class="string">"production"</span>, <span class="prelude-val">None</span>),
+<a href=#206 id=206 data-nosnippet>206</a>            <span class="comment">// Empty value: the value is present but empty.
+<a href=#207 id=207 data-nosnippet>207</a>            </span>(<span class="string">"key:"</span>, <span class="string">"key"</span>, <span class="prelude-val">Some</span>(<span class="string">""</span>)),
+<a href=#208 id=208 data-nosnippet>208</a>            <span class="comment">// Multiple colons: only the first colon splits; the rest stays in the value.
+<a href=#209 id=209 data-nosnippet>209</a>            </span>(<span class="string">"a:b:c"</span>, <span class="string">"a"</span>, <span class="prelude-val">Some</span>(<span class="string">"b:c"</span>)),
+<a href=#210 id=210 data-nosnippet>210</a>            <span class="comment">// Leading colon: empty name, value is the remainder.
+<a href=#211 id=211 data-nosnippet>211</a>            </span>(<span class="string">":foo"</span>, <span class="string">""</span>, <span class="prelude-val">Some</span>(<span class="string">"foo"</span>)),
+<a href=#212 id=212 data-nosnippet>212</a>            <span class="comment">// Just a colon: empty name and empty value.
+<a href=#213 id=213 data-nosnippet>213</a>            </span>(<span class="string">":"</span>, <span class="string">""</span>, <span class="prelude-val">Some</span>(<span class="string">""</span>)),
+<a href=#214 id=214 data-nosnippet>214</a>            <span class="comment">// Empty string: empty name, no value.
+<a href=#215 id=215 data-nosnippet>215</a>            </span>(<span class="string">""</span>, <span class="string">""</span>, <span class="prelude-val">None</span>),
+<a href=#216 id=216 data-nosnippet>216</a>        ];
+<a href=#217 id=217 data-nosnippet>217</a>
+<a href=#218 id=218 data-nosnippet>218</a>        <span class="kw">for </span>(raw, name, value) <span class="kw">in </span>cases {
+<a href=#219 id=219 data-nosnippet>219</a>            <span class="kw">let </span>borrowed = BorrowedTag::from(<span class="kw-2">*</span>raw);
+<a href=#220 id=220 data-nosnippet>220</a>            <span class="macro">assert_eq!</span>(borrowed.name(), <span class="kw-2">*</span>name, <span class="string">"name for {raw:?}"</span>);
+<a href=#221 id=221 data-nosnippet>221</a>            <span class="macro">assert_eq!</span>(borrowed.value(), <span class="kw-2">*</span>value, <span class="string">"value for {raw:?}"</span>);
+<a href=#222 id=222 data-nosnippet>222</a>            <span class="macro">assert_eq!</span>(borrowed.name_and_value(), (<span class="kw-2">*</span>name, <span class="kw-2">*</span>value), <span class="string">"name_and_value for {raw:?}"</span>);
+<a href=#223 id=223 data-nosnippet>223</a>
+<a href=#224 id=224 data-nosnippet>224</a>            <span class="comment">// `Tag` re-implements the same split independently (via `split_once`), so the two must
+<a href=#225 id=225 data-nosnippet>225</a>            // agree on every input.
+<a href=#226 id=226 data-nosnippet>226</a>            </span><span class="kw">let </span>owned = Tag::from(<span class="kw-2">*</span>raw);
+<a href=#227 id=227 data-nosnippet>227</a>            <span class="macro">assert_eq!</span>(owned.name(), <span class="kw-2">*</span>name, <span class="string">"Tag::name for {raw:?}"</span>);
+<a href=#228 id=228 data-nosnippet>228</a>            <span class="macro">assert_eq!</span>(owned.value(), <span class="kw-2">*</span>value, <span class="string">"Tag::value for {raw:?}"</span>);
+<a href=#229 id=229 data-nosnippet>229</a>        }
+<a href=#230 id=230 data-nosnippet>230</a>    }
+<a href=#231 id=231 data-nosnippet>231</a>
+<a href=#232 id=232 data-nosnippet>232</a>    <span class="attr">#[test]
+<a href=#233 id=233 data-nosnippet>233</a>    </span><span class="kw">fn </span>borrowed_tag_is_empty_and_len() {
+<a href=#234 id=234 data-nosnippet>234</a>        <span class="kw">let </span>empty = BorrowedTag::from(<span class="string">""</span>);
+<a href=#235 id=235 data-nosnippet>235</a>        <span class="macro">assert!</span>(empty.is_empty());
+<a href=#236 id=236 data-nosnippet>236</a>        <span class="macro">assert_eq!</span>(empty.len(), <span class="number">0</span>);
+<a href=#237 id=237 data-nosnippet>237</a>
+<a href=#238 id=238 data-nosnippet>238</a>        <span class="kw">let </span>tag = BorrowedTag::from(<span class="string">"service:web"</span>);
+<a href=#239 id=239 data-nosnippet>239</a>        <span class="macro">assert!</span>(!tag.is_empty());
+<a href=#240 id=240 data-nosnippet>240</a>        <span class="macro">assert_eq!</span>(tag.len(), <span class="string">"service:web"</span>.len());
+<a href=#241 id=241 data-nosnippet>241</a>    }
+<a href=#242 id=242 data-nosnippet>242</a>
+<a href=#243 id=243 data-nosnippet>243</a>    <span class="attr">#[test]
+<a href=#244 id=244 data-nosnippet>244</a>    </span><span class="kw">fn </span>tag_display_renders_full_tag_string() {
+<a href=#245 id=245 data-nosnippet>245</a>        <span class="macro">assert_eq!</span>(Tag::from(<span class="string">"service:web"</span>).to_string(), <span class="string">"service:web"</span>);
+<a href=#246 id=246 data-nosnippet>246</a>        <span class="macro">assert_eq!</span>(Tag::from(<span class="string">"bare"</span>).to_string(), <span class="string">"bare"</span>);
+<a href=#247 id=247 data-nosnippet>247</a>    }
+<a href=#248 id=248 data-nosnippet>248</a>}
 </code></pre></div></section></main></body></html>

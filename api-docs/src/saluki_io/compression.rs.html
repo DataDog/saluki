@@ -315,128 +315,269 @@
 <a href=#315 id=315 data-nosnippet>315</a>
 <a href=#316 id=316 data-nosnippet>316</a><span class="attr">#[cfg(test)]
 <a href=#317 id=317 data-nosnippet>317</a></span><span class="kw">mod </span>tests {
-<a href=#318 id=318 data-nosnippet>318</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#319 id=319 data-nosnippet>319</a>
-<a href=#320 id=320 data-nosnippet>320</a>    <span class="kw">struct </span>MockCompressor {
-<a href=#321 id=321 data-nosnippet>321</a>        current_uncompressed_len: u64,
-<a href=#322 id=322 data-nosnippet>322</a>        total_uncompressed_len: usize,
-<a href=#323 id=323 data-nosnippet>323</a>        compressed_len: u64,
-<a href=#324 id=324 data-nosnippet>324</a>    }
-<a href=#325 id=325 data-nosnippet>325</a>
-<a href=#326 id=326 data-nosnippet>326</a>    <span class="kw">impl </span>MockCompressor {
-<a href=#327 id=327 data-nosnippet>327</a>        <span class="kw">fn </span>new() -&gt; <span class="self">Self </span>{
-<a href=#328 id=328 data-nosnippet>328</a>            MockCompressor {
-<a href=#329 id=329 data-nosnippet>329</a>                current_uncompressed_len: <span class="number">0</span>,
-<a href=#330 id=330 data-nosnippet>330</a>                total_uncompressed_len: <span class="number">0</span>,
-<a href=#331 id=331 data-nosnippet>331</a>                compressed_len: <span class="number">0</span>,
-<a href=#332 id=332 data-nosnippet>332</a>            }
-<a href=#333 id=333 data-nosnippet>333</a>        }
-<a href=#334 id=334 data-nosnippet>334</a>
-<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">fn </span>write(<span class="kw-2">&amp;mut </span><span class="self">self</span>, n: usize) {
-<a href=#336 id=336 data-nosnippet>336</a>            <span class="self">self</span>.current_uncompressed_len += n <span class="kw">as </span>u64;
-<a href=#337 id=337 data-nosnippet>337</a>            <span class="self">self</span>.total_uncompressed_len += n;
-<a href=#338 id=338 data-nosnippet>338</a>        }
-<a href=#339 id=339 data-nosnippet>339</a>
-<a href=#340 id=340 data-nosnippet>340</a>        <span class="kw">fn </span>flush(<span class="kw-2">&amp;mut </span><span class="self">self</span>, compression_ratio: f64) {
-<a href=#341 id=341 data-nosnippet>341</a>            <span class="self">self</span>.compressed_len += (<span class="self">self</span>.current_uncompressed_len <span class="kw">as </span>f64 * compression_ratio) <span class="kw">as </span>u64;
-<a href=#342 id=342 data-nosnippet>342</a>            <span class="self">self</span>.current_uncompressed_len = <span class="number">0</span>;
-<a href=#343 id=343 data-nosnippet>343</a>        }
-<a href=#344 id=344 data-nosnippet>344</a>
-<a href=#345 id=345 data-nosnippet>345</a>        <span class="kw">fn </span>total_uncompressed_len(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
-<a href=#346 id=346 data-nosnippet>346</a>            <span class="self">self</span>.total_uncompressed_len
-<a href=#347 id=347 data-nosnippet>347</a>        }
-<a href=#348 id=348 data-nosnippet>348</a>    }
-<a href=#349 id=349 data-nosnippet>349</a>
-<a href=#350 id=350 data-nosnippet>350</a>    <span class="kw">impl </span>WriteStatistics <span class="kw">for </span>MockCompressor {
-<a href=#351 id=351 data-nosnippet>351</a>        <span class="kw">fn </span>total_written(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; u64 {
-<a href=#352 id=352 data-nosnippet>352</a>            <span class="self">self</span>.compressed_len
-<a href=#353 id=353 data-nosnippet>353</a>        }
-<a href=#354 id=354 data-nosnippet>354</a>    }
-<a href=#355 id=355 data-nosnippet>355</a>
-<a href=#356 id=356 data-nosnippet>356</a>    <span class="attr">#[test]
-<a href=#357 id=357 data-nosnippet>357</a>    </span><span class="kw">fn </span>compression_estimator_no_output() {
-<a href=#358 id=358 data-nosnippet>358</a>        <span class="kw">let </span>estimator = CompressionEstimator::default();
-<a href=#359 id=359 data-nosnippet>359</a>
-<a href=#360 id=360 data-nosnippet>360</a>        <span class="comment">// Without any compressed data, we cannot estimate whether a write would exceed the threshold,
-<a href=#361 id=361 data-nosnippet>361</a>        // so we always return false to allow the write. This includes the case where the uncompressed
-<a href=#362 id=362 data-nosnippet>362</a>        // size exceeds the threshold, because many inputs compress significantly (e.g. sketches with
-<a href=#363 id=363 data-nosnippet>363</a>        // many near-identical bins).
-<a href=#364 id=364 data-nosnippet>364</a>        </span><span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(<span class="number">10</span>, <span class="number">100</span>));
-<a href=#365 id=365 data-nosnippet>365</a>        <span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(<span class="number">100</span>, <span class="number">90</span>));
-<a href=#366 id=366 data-nosnippet>366</a>    }
-<a href=#367 id=367 data-nosnippet>367</a>
-<a href=#368 id=368 data-nosnippet>368</a>    <span class="attr">#[test]
-<a href=#369 id=369 data-nosnippet>369</a>    </span><span class="kw">fn </span>compression_estimator_single_flush() {
-<a href=#370 id=370 data-nosnippet>370</a>        <span class="kw">const </span>MAX_COMPRESSED_LEN: usize = <span class="number">100</span>;
-<a href=#371 id=371 data-nosnippet>371</a>        <span class="kw">const </span>COMPRESSION_RATIO: f64 = <span class="number">0.7</span>;
-<a href=#372 id=372 data-nosnippet>372</a>        <span class="kw">const </span>WRITE_LEN: usize = <span class="number">50</span>;
-<a href=#373 id=373 data-nosnippet>373</a>
-<a href=#374 id=374 data-nosnippet>374</a>        <span class="kw">let </span><span class="kw-2">mut </span>estimator = CompressionEstimator::default();
-<a href=#375 id=375 data-nosnippet>375</a>
-<a href=#376 id=376 data-nosnippet>376</a>        <span class="comment">// Create our mock compressor and do a basic write, and then flush, so that our estimator can get some data.
-<a href=#377 id=377 data-nosnippet>377</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>compressor = MockCompressor::new();
-<a href=#378 id=378 data-nosnippet>378</a>        <span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(WRITE_LEN, MAX_COMPRESSED_LEN));
-<a href=#379 id=379 data-nosnippet>379</a>
-<a href=#380 id=380 data-nosnippet>380</a>        <span class="comment">// Write 50 bytes with a compression ratio of 0.7, giving us 35 bytes compressed.
-<a href=#381 id=381 data-nosnippet>381</a>        </span>compressor.write(WRITE_LEN);
-<a href=#382 id=382 data-nosnippet>382</a>        compressor.flush(COMPRESSION_RATIO);
-<a href=#383 id=383 data-nosnippet>383</a>        <span class="macro">assert_eq!</span>(compressor.total_written(), <span class="number">35</span>);
-<a href=#384 id=384 data-nosnippet>384</a>
-<a href=#385 id=385 data-nosnippet>385</a>        estimator.track_write(<span class="kw-2">&amp;</span>compressor, WRITE_LEN);
-<a href=#386 id=386 data-nosnippet>386</a>
-<a href=#387 id=387 data-nosnippet>387</a>        <span class="comment">// We should be able to write 65 more bytes compressed, so 100 bytes uncompressed, given the compression ratio we have (0.7),
-<a href=#388 id=388 data-nosnippet>388</a>        // would give us 70 bytes estimated.. which is over the threshold.
-<a href=#389 id=389 data-nosnippet>389</a>        </span><span class="macro">assert!</span>(estimator.would_write_exceed_threshold(<span class="number">100</span>, MAX_COMPRESSED_LEN));
-<a href=#390 id=390 data-nosnippet>390</a>
-<a href=#391 id=391 data-nosnippet>391</a>        <span class="comment">// However, another 50 byte write would theoretically just be another 35 bytes compressed, so 85 bytes compressed total,
-<a href=#392 id=392 data-nosnippet>392</a>        // which is under our threshold and should be allowed.
-<a href=#393 id=393 data-nosnippet>393</a>        </span><span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(WRITE_LEN, MAX_COMPRESSED_LEN));
-<a href=#394 id=394 data-nosnippet>394</a>    }
-<a href=#395 id=395 data-nosnippet>395</a>
-<a href=#396 id=396 data-nosnippet>396</a>    <span class="attr">#[test]
-<a href=#397 id=397 data-nosnippet>397</a>    </span><span class="kw">fn </span>compression_estimator_multiple_flush_partial() {
-<a href=#398 id=398 data-nosnippet>398</a>        <span class="kw">const </span>MAX_COMPRESSED_LEN: usize = <span class="number">5000</span>;
-<a href=#399 id=399 data-nosnippet>399</a>        <span class="kw">const </span>FIRST_COMPRESSION_RATIO: f64 = <span class="number">0.7</span>;
-<a href=#400 id=400 data-nosnippet>400</a>        <span class="kw">const </span>FIRST_WRITE_LEN: usize = <span class="number">5000</span>;
-<a href=#401 id=401 data-nosnippet>401</a>        <span class="kw">const </span>SECOND_COMPRESSION_RATIO: f64 = <span class="number">2.1</span>;
-<a href=#402 id=402 data-nosnippet>402</a>        <span class="kw">const </span>SECOND_WRITE_LEN: usize = <span class="number">300</span>;
-<a href=#403 id=403 data-nosnippet>403</a>        <span class="kw">const </span>THIRD_WRITE_LEN: usize = <span class="number">820</span>;
-<a href=#404 id=404 data-nosnippet>404</a>
-<a href=#405 id=405 data-nosnippet>405</a>        <span class="kw">let </span><span class="kw-2">mut </span>estimator = CompressionEstimator::default();
-<a href=#406 id=406 data-nosnippet>406</a>
-<a href=#407 id=407 data-nosnippet>407</a>        <span class="comment">// Create our mock compressor and assert we can do our first write.
-<a href=#408 id=408 data-nosnippet>408</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>compressor = MockCompressor::new();
-<a href=#409 id=409 data-nosnippet>409</a>        <span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(FIRST_WRITE_LEN, MAX_COMPRESSED_LEN));
-<a href=#410 id=410 data-nosnippet>410</a>
-<a href=#411 id=411 data-nosnippet>411</a>        <span class="comment">// Write 5,000 bytes with a compression ratio of 0.7, giving us 3,500 bytes compressed.
-<a href=#412 id=412 data-nosnippet>412</a>        </span>compressor.write(FIRST_WRITE_LEN);
-<a href=#413 id=413 data-nosnippet>413</a>        compressor.flush(FIRST_COMPRESSION_RATIO);
-<a href=#414 id=414 data-nosnippet>414</a>        <span class="macro">assert_eq!</span>(compressor.total_uncompressed_len(), FIRST_WRITE_LEN);
-<a href=#415 id=415 data-nosnippet>415</a>        <span class="macro">assert_eq!</span>(compressor.total_written(), <span class="number">3500</span>);
-<a href=#416 id=416 data-nosnippet>416</a>
-<a href=#417 id=417 data-nosnippet>417</a>        estimator.track_write(<span class="kw-2">&amp;</span>compressor, FIRST_WRITE_LEN);
-<a href=#418 id=418 data-nosnippet>418</a>
-<a href=#419 id=419 data-nosnippet>419</a>        <span class="comment">// We now do second write that simulates a "short" flush on the compressor: this might just be the compressor writing a partial block.
-<a href=#420 id=420 data-nosnippet>420</a>        //
-<a href=#421 id=421 data-nosnippet>421</a>        // What we want to test here is the estimator's ability to focus on the overall compression ratio rather than getting "lost" due to
-<a href=#422 id=422 data-nosnippet>422</a>        // a single block being flushed which, when viewed naively, appears to be vastly bigger than the actual in-flight uncompressed data
-<a href=#423 id=423 data-nosnippet>423</a>        // that it represents.
-<a href=#424 id=424 data-nosnippet>424</a>        //
-<a href=#425 id=425 data-nosnippet>425</a>        // We end up writing 300 bytes uncompressed with a compression ratio of 2.1, giving us 630 bytes compressed. We now have a total of
-<a href=#426 id=426 data-nosnippet>426</a>        // 5,300 bytes uncompressed and 4,130 bytes compressed. Our overall compression ratio is now 0.77.
-<a href=#427 id=427 data-nosnippet>427</a>        </span>compressor.write(SECOND_WRITE_LEN);
-<a href=#428 id=428 data-nosnippet>428</a>        compressor.flush(SECOND_COMPRESSION_RATIO);
-<a href=#429 id=429 data-nosnippet>429</a>        <span class="macro">assert_eq!</span>(compressor.total_uncompressed_len(), FIRST_WRITE_LEN + SECOND_WRITE_LEN);
-<a href=#430 id=430 data-nosnippet>430</a>        <span class="macro">assert_eq!</span>(compressor.total_written(), <span class="number">4130</span>);
-<a href=#431 id=431 data-nosnippet>431</a>
-<a href=#432 id=432 data-nosnippet>432</a>        estimator.track_write(<span class="kw-2">&amp;</span>compressor, SECOND_WRITE_LEN);
-<a href=#433 id=433 data-nosnippet>433</a>
-<a href=#434 id=434 data-nosnippet>434</a>        <span class="comment">// At this point, with our compressed limit of 5,000 bytes, we should be able to fit in another 870 bytes compressed. We do have to
-<a href=#435 id=435 data-nosnippet>435</a>        // compensate for the "red zone" threshold, though, which should put us at a threshold of 4,950 bytes so 820 bytes compressed.
-<a href=#436 id=436 data-nosnippet>436</a>        //
-<a href=#437 id=437 data-nosnippet>437</a>        // We use the compressed length when calling `would_write_exceed_threshold` because it uses the uncompressed length as the worst-case
-<a href=#438 id=438 data-nosnippet>438</a>        // scenario, which is that the write would not be compressed at all.
-<a href=#439 id=439 data-nosnippet>439</a>        </span><span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(THIRD_WRITE_LEN, MAX_COMPRESSED_LEN));
-<a href=#440 id=440 data-nosnippet>440</a>    }
-<a href=#441 id=441 data-nosnippet>441</a>}
+<a href=#318 id=318 data-nosnippet>318</a>    <span class="kw">use </span>async_compression::tokio::bufread::{GzipDecoder, ZlibDecoder, ZstdDecoder};
+<a href=#319 id=319 data-nosnippet>319</a>    <span class="kw">use </span>tokio::io::{AsyncReadExt <span class="kw">as _</span>, AsyncWriteExt <span class="kw">as _</span>};
+<a href=#320 id=320 data-nosnippet>320</a>
+<a href=#321 id=321 data-nosnippet>321</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#322 id=322 data-nosnippet>322</a>
+<a href=#323 id=323 data-nosnippet>323</a>    <span class="kw">struct </span>MockCompressor {
+<a href=#324 id=324 data-nosnippet>324</a>        current_uncompressed_len: u64,
+<a href=#325 id=325 data-nosnippet>325</a>        total_uncompressed_len: usize,
+<a href=#326 id=326 data-nosnippet>326</a>        compressed_len: u64,
+<a href=#327 id=327 data-nosnippet>327</a>    }
+<a href=#328 id=328 data-nosnippet>328</a>
+<a href=#329 id=329 data-nosnippet>329</a>    <span class="kw">impl </span>MockCompressor {
+<a href=#330 id=330 data-nosnippet>330</a>        <span class="kw">fn </span>new() -&gt; <span class="self">Self </span>{
+<a href=#331 id=331 data-nosnippet>331</a>            MockCompressor {
+<a href=#332 id=332 data-nosnippet>332</a>                current_uncompressed_len: <span class="number">0</span>,
+<a href=#333 id=333 data-nosnippet>333</a>                total_uncompressed_len: <span class="number">0</span>,
+<a href=#334 id=334 data-nosnippet>334</a>                compressed_len: <span class="number">0</span>,
+<a href=#335 id=335 data-nosnippet>335</a>            }
+<a href=#336 id=336 data-nosnippet>336</a>        }
+<a href=#337 id=337 data-nosnippet>337</a>
+<a href=#338 id=338 data-nosnippet>338</a>        <span class="kw">fn </span>write(<span class="kw-2">&amp;mut </span><span class="self">self</span>, n: usize) {
+<a href=#339 id=339 data-nosnippet>339</a>            <span class="self">self</span>.current_uncompressed_len += n <span class="kw">as </span>u64;
+<a href=#340 id=340 data-nosnippet>340</a>            <span class="self">self</span>.total_uncompressed_len += n;
+<a href=#341 id=341 data-nosnippet>341</a>        }
+<a href=#342 id=342 data-nosnippet>342</a>
+<a href=#343 id=343 data-nosnippet>343</a>        <span class="kw">fn </span>flush(<span class="kw-2">&amp;mut </span><span class="self">self</span>, compression_ratio: f64) {
+<a href=#344 id=344 data-nosnippet>344</a>            <span class="self">self</span>.compressed_len += (<span class="self">self</span>.current_uncompressed_len <span class="kw">as </span>f64 * compression_ratio) <span class="kw">as </span>u64;
+<a href=#345 id=345 data-nosnippet>345</a>            <span class="self">self</span>.current_uncompressed_len = <span class="number">0</span>;
+<a href=#346 id=346 data-nosnippet>346</a>        }
+<a href=#347 id=347 data-nosnippet>347</a>
+<a href=#348 id=348 data-nosnippet>348</a>        <span class="kw">fn </span>total_uncompressed_len(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; usize {
+<a href=#349 id=349 data-nosnippet>349</a>            <span class="self">self</span>.total_uncompressed_len
+<a href=#350 id=350 data-nosnippet>350</a>        }
+<a href=#351 id=351 data-nosnippet>351</a>    }
+<a href=#352 id=352 data-nosnippet>352</a>
+<a href=#353 id=353 data-nosnippet>353</a>    <span class="kw">impl </span>WriteStatistics <span class="kw">for </span>MockCompressor {
+<a href=#354 id=354 data-nosnippet>354</a>        <span class="kw">fn </span>total_written(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; u64 {
+<a href=#355 id=355 data-nosnippet>355</a>            <span class="self">self</span>.compressed_len
+<a href=#356 id=356 data-nosnippet>356</a>        }
+<a href=#357 id=357 data-nosnippet>357</a>    }
+<a href=#358 id=358 data-nosnippet>358</a>
+<a href=#359 id=359 data-nosnippet>359</a>    <span class="attr">#[test]
+<a href=#360 id=360 data-nosnippet>360</a>    </span><span class="kw">fn </span>compression_estimator_no_output() {
+<a href=#361 id=361 data-nosnippet>361</a>        <span class="kw">let </span>estimator = CompressionEstimator::default();
+<a href=#362 id=362 data-nosnippet>362</a>
+<a href=#363 id=363 data-nosnippet>363</a>        <span class="comment">// Without any compressed data, we cannot estimate whether a write would exceed the threshold,
+<a href=#364 id=364 data-nosnippet>364</a>        // so we always return false to allow the write. This includes the case where the uncompressed
+<a href=#365 id=365 data-nosnippet>365</a>        // size exceeds the threshold, because many inputs compress significantly (e.g. sketches with
+<a href=#366 id=366 data-nosnippet>366</a>        // many near-identical bins).
+<a href=#367 id=367 data-nosnippet>367</a>        </span><span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(<span class="number">10</span>, <span class="number">100</span>));
+<a href=#368 id=368 data-nosnippet>368</a>        <span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(<span class="number">100</span>, <span class="number">90</span>));
+<a href=#369 id=369 data-nosnippet>369</a>    }
+<a href=#370 id=370 data-nosnippet>370</a>
+<a href=#371 id=371 data-nosnippet>371</a>    <span class="attr">#[test]
+<a href=#372 id=372 data-nosnippet>372</a>    </span><span class="kw">fn </span>compression_estimator_single_flush() {
+<a href=#373 id=373 data-nosnippet>373</a>        <span class="kw">const </span>MAX_COMPRESSED_LEN: usize = <span class="number">100</span>;
+<a href=#374 id=374 data-nosnippet>374</a>        <span class="kw">const </span>COMPRESSION_RATIO: f64 = <span class="number">0.7</span>;
+<a href=#375 id=375 data-nosnippet>375</a>        <span class="kw">const </span>WRITE_LEN: usize = <span class="number">50</span>;
+<a href=#376 id=376 data-nosnippet>376</a>
+<a href=#377 id=377 data-nosnippet>377</a>        <span class="kw">let </span><span class="kw-2">mut </span>estimator = CompressionEstimator::default();
+<a href=#378 id=378 data-nosnippet>378</a>
+<a href=#379 id=379 data-nosnippet>379</a>        <span class="comment">// Create our mock compressor and do a basic write, and then flush, so that our estimator can get some data.
+<a href=#380 id=380 data-nosnippet>380</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>compressor = MockCompressor::new();
+<a href=#381 id=381 data-nosnippet>381</a>        <span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(WRITE_LEN, MAX_COMPRESSED_LEN));
+<a href=#382 id=382 data-nosnippet>382</a>
+<a href=#383 id=383 data-nosnippet>383</a>        <span class="comment">// Write 50 bytes with a compression ratio of 0.7, giving us 35 bytes compressed.
+<a href=#384 id=384 data-nosnippet>384</a>        </span>compressor.write(WRITE_LEN);
+<a href=#385 id=385 data-nosnippet>385</a>        compressor.flush(COMPRESSION_RATIO);
+<a href=#386 id=386 data-nosnippet>386</a>        <span class="macro">assert_eq!</span>(compressor.total_written(), <span class="number">35</span>);
+<a href=#387 id=387 data-nosnippet>387</a>
+<a href=#388 id=388 data-nosnippet>388</a>        estimator.track_write(<span class="kw-2">&amp;</span>compressor, WRITE_LEN);
+<a href=#389 id=389 data-nosnippet>389</a>
+<a href=#390 id=390 data-nosnippet>390</a>        <span class="comment">// We should be able to write 65 more bytes compressed, so 100 bytes uncompressed, given the compression ratio we have (0.7),
+<a href=#391 id=391 data-nosnippet>391</a>        // would give us 70 bytes estimated.. which is over the threshold.
+<a href=#392 id=392 data-nosnippet>392</a>        </span><span class="macro">assert!</span>(estimator.would_write_exceed_threshold(<span class="number">100</span>, MAX_COMPRESSED_LEN));
+<a href=#393 id=393 data-nosnippet>393</a>
+<a href=#394 id=394 data-nosnippet>394</a>        <span class="comment">// However, another 50 byte write would theoretically just be another 35 bytes compressed, so 85 bytes compressed total,
+<a href=#395 id=395 data-nosnippet>395</a>        // which is under our threshold and should be allowed.
+<a href=#396 id=396 data-nosnippet>396</a>        </span><span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(WRITE_LEN, MAX_COMPRESSED_LEN));
+<a href=#397 id=397 data-nosnippet>397</a>    }
+<a href=#398 id=398 data-nosnippet>398</a>
+<a href=#399 id=399 data-nosnippet>399</a>    <span class="attr">#[test]
+<a href=#400 id=400 data-nosnippet>400</a>    </span><span class="kw">fn </span>compression_estimator_multiple_flush_partial() {
+<a href=#401 id=401 data-nosnippet>401</a>        <span class="kw">const </span>MAX_COMPRESSED_LEN: usize = <span class="number">5000</span>;
+<a href=#402 id=402 data-nosnippet>402</a>        <span class="kw">const </span>FIRST_COMPRESSION_RATIO: f64 = <span class="number">0.7</span>;
+<a href=#403 id=403 data-nosnippet>403</a>        <span class="kw">const </span>FIRST_WRITE_LEN: usize = <span class="number">5000</span>;
+<a href=#404 id=404 data-nosnippet>404</a>        <span class="kw">const </span>SECOND_COMPRESSION_RATIO: f64 = <span class="number">2.1</span>;
+<a href=#405 id=405 data-nosnippet>405</a>        <span class="kw">const </span>SECOND_WRITE_LEN: usize = <span class="number">300</span>;
+<a href=#406 id=406 data-nosnippet>406</a>        <span class="kw">const </span>THIRD_WRITE_LEN: usize = <span class="number">820</span>;
+<a href=#407 id=407 data-nosnippet>407</a>
+<a href=#408 id=408 data-nosnippet>408</a>        <span class="kw">let </span><span class="kw-2">mut </span>estimator = CompressionEstimator::default();
+<a href=#409 id=409 data-nosnippet>409</a>
+<a href=#410 id=410 data-nosnippet>410</a>        <span class="comment">// Create our mock compressor and assert we can do our first write.
+<a href=#411 id=411 data-nosnippet>411</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>compressor = MockCompressor::new();
+<a href=#412 id=412 data-nosnippet>412</a>        <span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(FIRST_WRITE_LEN, MAX_COMPRESSED_LEN));
+<a href=#413 id=413 data-nosnippet>413</a>
+<a href=#414 id=414 data-nosnippet>414</a>        <span class="comment">// Write 5,000 bytes with a compression ratio of 0.7, giving us 3,500 bytes compressed.
+<a href=#415 id=415 data-nosnippet>415</a>        </span>compressor.write(FIRST_WRITE_LEN);
+<a href=#416 id=416 data-nosnippet>416</a>        compressor.flush(FIRST_COMPRESSION_RATIO);
+<a href=#417 id=417 data-nosnippet>417</a>        <span class="macro">assert_eq!</span>(compressor.total_uncompressed_len(), FIRST_WRITE_LEN);
+<a href=#418 id=418 data-nosnippet>418</a>        <span class="macro">assert_eq!</span>(compressor.total_written(), <span class="number">3500</span>);
+<a href=#419 id=419 data-nosnippet>419</a>
+<a href=#420 id=420 data-nosnippet>420</a>        estimator.track_write(<span class="kw-2">&amp;</span>compressor, FIRST_WRITE_LEN);
+<a href=#421 id=421 data-nosnippet>421</a>
+<a href=#422 id=422 data-nosnippet>422</a>        <span class="comment">// We now do second write that simulates a "short" flush on the compressor: this might just be the compressor writing a partial block.
+<a href=#423 id=423 data-nosnippet>423</a>        //
+<a href=#424 id=424 data-nosnippet>424</a>        // What we want to test here is the estimator's ability to focus on the overall compression ratio rather than getting "lost" due to
+<a href=#425 id=425 data-nosnippet>425</a>        // a single block being flushed which, when viewed naively, appears to be vastly bigger than the actual in-flight uncompressed data
+<a href=#426 id=426 data-nosnippet>426</a>        // that it represents.
+<a href=#427 id=427 data-nosnippet>427</a>        //
+<a href=#428 id=428 data-nosnippet>428</a>        // We end up writing 300 bytes uncompressed with a compression ratio of 2.1, giving us 630 bytes compressed. We now have a total of
+<a href=#429 id=429 data-nosnippet>429</a>        // 5,300 bytes uncompressed and 4,130 bytes compressed. Our overall compression ratio is now 0.77.
+<a href=#430 id=430 data-nosnippet>430</a>        </span>compressor.write(SECOND_WRITE_LEN);
+<a href=#431 id=431 data-nosnippet>431</a>        compressor.flush(SECOND_COMPRESSION_RATIO);
+<a href=#432 id=432 data-nosnippet>432</a>        <span class="macro">assert_eq!</span>(compressor.total_uncompressed_len(), FIRST_WRITE_LEN + SECOND_WRITE_LEN);
+<a href=#433 id=433 data-nosnippet>433</a>        <span class="macro">assert_eq!</span>(compressor.total_written(), <span class="number">4130</span>);
+<a href=#434 id=434 data-nosnippet>434</a>
+<a href=#435 id=435 data-nosnippet>435</a>        estimator.track_write(<span class="kw-2">&amp;</span>compressor, SECOND_WRITE_LEN);
+<a href=#436 id=436 data-nosnippet>436</a>
+<a href=#437 id=437 data-nosnippet>437</a>        <span class="comment">// At this point, with our compressed limit of 5,000 bytes, we should be able to fit in another 870 bytes compressed. We do have to
+<a href=#438 id=438 data-nosnippet>438</a>        // compensate for the "red zone" threshold, though, which should put us at a threshold of 4,950 bytes so 820 bytes compressed.
+<a href=#439 id=439 data-nosnippet>439</a>        //
+<a href=#440 id=440 data-nosnippet>440</a>        // We use the compressed length when calling `would_write_exceed_threshold` because it uses the uncompressed length as the worst-case
+<a href=#441 id=441 data-nosnippet>441</a>        // scenario, which is that the write would not be compressed at all.
+<a href=#442 id=442 data-nosnippet>442</a>        </span><span class="macro">assert!</span>(!estimator.would_write_exceed_threshold(THIRD_WRITE_LEN, MAX_COMPRESSED_LEN));
+<a href=#443 id=443 data-nosnippet>443</a>    }
+<a href=#444 id=444 data-nosnippet>444</a>
+<a href=#445 id=445 data-nosnippet>445</a>    <span class="comment">// A payload that's long and repetitive enough that every real compression scheme actually shrinks it.
+<a href=#446 id=446 data-nosnippet>446</a>    </span><span class="kw">const </span>COMPRESSIBLE_PAYLOAD: <span class="kw-2">&amp;</span>[u8] =
+<a href=#447 id=447 data-nosnippet>447</a>        <span class="string">b"the quick brown fox jumps over the lazy dog. the quick brown fox jumps over the lazy dog. \
+<a href=#448 id=448 data-nosnippet>448</a>          the quick brown fox jumps over the lazy dog. the quick brown fox jumps over the lazy dog."</span>;
+<a href=#449 id=449 data-nosnippet>449</a>
+<a href=#450 id=450 data-nosnippet>450</a>    <span class="kw">async fn </span>compress_all(scheme: CompressionScheme, data: <span class="kw-2">&amp;</span>[u8]) -&gt; (Vec&lt;u8&gt;, <span class="prelude-ty">Option</span>&lt;HeaderValue&gt;) {
+<a href=#451 id=451 data-nosnippet>451</a>        <span class="comment">// Drive the compressor exactly like the request-builder does: write, flush, shutdown, then recover the writer.
+<a href=#452 id=452 data-nosnippet>452</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>compressor = Compressor::from_scheme(scheme, Vec::new());
+<a href=#453 id=453 data-nosnippet>453</a>        compressor.write_all(data).<span class="kw">await</span>.expect(<span class="string">"write should succeed"</span>);
+<a href=#454 id=454 data-nosnippet>454</a>        compressor.flush().<span class="kw">await</span>.expect(<span class="string">"flush should succeed"</span>);
+<a href=#455 id=455 data-nosnippet>455</a>        compressor.shutdown().<span class="kw">await</span>.expect(<span class="string">"shutdown should succeed"</span>);
+<a href=#456 id=456 data-nosnippet>456</a>
+<a href=#457 id=457 data-nosnippet>457</a>        <span class="kw">let </span>encoding = compressor.content_encoding();
+<a href=#458 id=458 data-nosnippet>458</a>        (compressor.into_inner(), encoding)
+<a href=#459 id=459 data-nosnippet>459</a>    }
+<a href=#460 id=460 data-nosnippet>460</a>
+<a href=#461 id=461 data-nosnippet>461</a>    <span class="kw">async fn </span>decompress(scheme: CompressionScheme, compressed: <span class="kw-2">&amp;</span>[u8]) -&gt; Vec&lt;u8&gt; {
+<a href=#462 id=462 data-nosnippet>462</a>        <span class="kw">let </span><span class="kw-2">mut </span>out = Vec::new();
+<a href=#463 id=463 data-nosnippet>463</a>        <span class="kw">match </span>scheme {
+<a href=#464 id=464 data-nosnippet>464</a>            CompressionScheme::Noop =&gt; <span class="kw">return </span>compressed.to_vec(),
+<a href=#465 id=465 data-nosnippet>465</a>            CompressionScheme::Gzip(<span class="kw">_</span>) =&gt; GzipDecoder::new(compressed)
+<a href=#466 id=466 data-nosnippet>466</a>                .read_to_end(<span class="kw-2">&amp;mut </span>out)
+<a href=#467 id=467 data-nosnippet>467</a>                .<span class="kw">await
+<a href=#468 id=468 data-nosnippet>468</a>                </span>.expect(<span class="string">"gzip decode should succeed"</span>),
+<a href=#469 id=469 data-nosnippet>469</a>            CompressionScheme::Zlib(<span class="kw">_</span>) =&gt; ZlibDecoder::new(compressed)
+<a href=#470 id=470 data-nosnippet>470</a>                .read_to_end(<span class="kw-2">&amp;mut </span>out)
+<a href=#471 id=471 data-nosnippet>471</a>                .<span class="kw">await
+<a href=#472 id=472 data-nosnippet>472</a>                </span>.expect(<span class="string">"zlib decode should succeed"</span>),
+<a href=#473 id=473 data-nosnippet>473</a>            CompressionScheme::Zstd(<span class="kw">_</span>) =&gt; ZstdDecoder::new(compressed)
+<a href=#474 id=474 data-nosnippet>474</a>                .read_to_end(<span class="kw-2">&amp;mut </span>out)
+<a href=#475 id=475 data-nosnippet>475</a>                .<span class="kw">await
+<a href=#476 id=476 data-nosnippet>476</a>                </span>.expect(<span class="string">"zstd decode should succeed"</span>),
+<a href=#477 id=477 data-nosnippet>477</a>        };
+<a href=#478 id=478 data-nosnippet>478</a>        out
+<a href=#479 id=479 data-nosnippet>479</a>    }
+<a href=#480 id=480 data-nosnippet>480</a>
+<a href=#481 id=481 data-nosnippet>481</a>    <span class="attr">#[test]
+<a href=#482 id=482 data-nosnippet>482</a>    </span><span class="kw">fn </span>compression_scheme_constructors_select_expected_variant() {
+<a href=#483 id=483 data-nosnippet>483</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(CompressionScheme::noop(), CompressionScheme::Noop));
+<a href=#484 id=484 data-nosnippet>484</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#485 id=485 data-nosnippet>485</a>            CompressionScheme::gzip_default(),
+<a href=#486 id=486 data-nosnippet>486</a>            CompressionScheme::Gzip(Level::Default)
+<a href=#487 id=487 data-nosnippet>487</a>        ));
+<a href=#488 id=488 data-nosnippet>488</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#489 id=489 data-nosnippet>489</a>            CompressionScheme::zlib_default(),
+<a href=#490 id=490 data-nosnippet>490</a>            CompressionScheme::Zlib(Level::Default)
+<a href=#491 id=491 data-nosnippet>491</a>        ));
+<a href=#492 id=492 data-nosnippet>492</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#493 id=493 data-nosnippet>493</a>            CompressionScheme::zstd_default(),
+<a href=#494 id=494 data-nosnippet>494</a>            CompressionScheme::Zstd(Level::Default)
+<a href=#495 id=495 data-nosnippet>495</a>        ));
+<a href=#496 id=496 data-nosnippet>496</a>    }
+<a href=#497 id=497 data-nosnippet>497</a>
+<a href=#498 id=498 data-nosnippet>498</a>    <span class="attr">#[test]
+<a href=#499 id=499 data-nosnippet>499</a>    </span><span class="kw">fn </span>compression_scheme_new_maps_string_and_level() {
+<a href=#500 id=500 data-nosnippet>500</a>        <span class="comment">// gzip and zstd carry the caller-provided precise level...
+<a href=#501 id=501 data-nosnippet>501</a>        </span><span class="kw">match </span>CompressionScheme::new(<span class="string">"gzip"</span>, <span class="number">5</span>) {
+<a href=#502 id=502 data-nosnippet>502</a>            CompressionScheme::Gzip(Level::Precise(level)) =&gt; <span class="macro">assert_eq!</span>(level, <span class="number">5</span>),
+<a href=#503 id=503 data-nosnippet>503</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected gzip with precise level, got {other:?}"</span>),
+<a href=#504 id=504 data-nosnippet>504</a>        }
+<a href=#505 id=505 data-nosnippet>505</a>        <span class="kw">match </span>CompressionScheme::new(<span class="string">"zstd"</span>, <span class="number">7</span>) {
+<a href=#506 id=506 data-nosnippet>506</a>            CompressionScheme::Zstd(Level::Precise(level)) =&gt; <span class="macro">assert_eq!</span>(level, <span class="number">7</span>),
+<a href=#507 id=507 data-nosnippet>507</a>            other =&gt; <span class="macro">panic!</span>(<span class="string">"expected zstd with precise level, got {other:?}"</span>),
+<a href=#508 id=508 data-nosnippet>508</a>        }
+<a href=#509 id=509 data-nosnippet>509</a>
+<a href=#510 id=510 data-nosnippet>510</a>        <span class="comment">// ...zlib ignores the level and uses its default...
+<a href=#511 id=511 data-nosnippet>511</a>        </span><span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#512 id=512 data-nosnippet>512</a>            CompressionScheme::new(<span class="string">"zlib"</span>, <span class="number">9</span>),
+<a href=#513 id=513 data-nosnippet>513</a>            CompressionScheme::Zlib(Level::Default)
+<a href=#514 id=514 data-nosnippet>514</a>        ));
+<a href=#515 id=515 data-nosnippet>515</a>
+<a href=#516 id=516 data-nosnippet>516</a>        <span class="comment">// ...and any unrecognized scheme falls back to zstd at the default level.
+<a href=#517 id=517 data-nosnippet>517</a>        </span><span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#518 id=518 data-nosnippet>518</a>            CompressionScheme::new(<span class="string">"brotli"</span>, <span class="number">9</span>),
+<a href=#519 id=519 data-nosnippet>519</a>            CompressionScheme::Zstd(Level::Default)
+<a href=#520 id=520 data-nosnippet>520</a>        ));
+<a href=#521 id=521 data-nosnippet>521</a>    }
+<a href=#522 id=522 data-nosnippet>522</a>
+<a href=#523 id=523 data-nosnippet>523</a>    <span class="attr">#[tokio::test]
+<a href=#524 id=524 data-nosnippet>524</a>    </span><span class="kw">async fn </span>compressor_round_trips_and_reports_encoding_for_each_scheme() {
+<a href=#525 id=525 data-nosnippet>525</a>        <span class="comment">// Each scheme must round-trip byte-for-byte and advertise its documented `Content-Encoding`.
+<a href=#526 id=526 data-nosnippet>526</a>        </span><span class="kw">let </span>cases: [(CompressionScheme, <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;); <span class="number">4</span>] = [
+<a href=#527 id=527 data-nosnippet>527</a>            (CompressionScheme::noop(), <span class="prelude-val">None</span>),
+<a href=#528 id=528 data-nosnippet>528</a>            (CompressionScheme::gzip_default(), <span class="prelude-val">Some</span>(<span class="string">"gzip"</span>)),
+<a href=#529 id=529 data-nosnippet>529</a>            (CompressionScheme::zlib_default(), <span class="prelude-val">Some</span>(<span class="string">"deflate"</span>)),
+<a href=#530 id=530 data-nosnippet>530</a>            (CompressionScheme::zstd_default(), <span class="prelude-val">Some</span>(<span class="string">"zstd"</span>)),
+<a href=#531 id=531 data-nosnippet>531</a>        ];
+<a href=#532 id=532 data-nosnippet>532</a>
+<a href=#533 id=533 data-nosnippet>533</a>        <span class="kw">for </span>(scheme, expected_encoding) <span class="kw">in </span>cases {
+<a href=#534 id=534 data-nosnippet>534</a>            <span class="kw">let </span>(compressed, encoding) = compress_all(scheme, COMPRESSIBLE_PAYLOAD).<span class="kw">await</span>;
+<a href=#535 id=535 data-nosnippet>535</a>            <span class="macro">assert_eq!</span>(
+<a href=#536 id=536 data-nosnippet>536</a>                encoding.as_ref().map(|value| value.to_str().unwrap()),
+<a href=#537 id=537 data-nosnippet>537</a>                expected_encoding,
+<a href=#538 id=538 data-nosnippet>538</a>                <span class="string">"unexpected content-encoding for {scheme:?}"
+<a href=#539 id=539 data-nosnippet>539</a>            </span>);
+<a href=#540 id=540 data-nosnippet>540</a>
+<a href=#541 id=541 data-nosnippet>541</a>            <span class="kw">if </span><span class="macro">matches!</span>(scheme, CompressionScheme::Noop) {
+<a href=#542 id=542 data-nosnippet>542</a>                <span class="comment">// No-op compression emits the input verbatim.
+<a href=#543 id=543 data-nosnippet>543</a>                </span><span class="macro">assert_eq!</span>(compressed, COMPRESSIBLE_PAYLOAD);
+<a href=#544 id=544 data-nosnippet>544</a>            } <span class="kw">else </span>{
+<a href=#545 id=545 data-nosnippet>545</a>                <span class="comment">// A real scheme against a compressible payload must actually shrink it.
+<a href=#546 id=546 data-nosnippet>546</a>                </span><span class="macro">assert!</span>(
+<a href=#547 id=547 data-nosnippet>547</a>                    compressed.len() &lt; COMPRESSIBLE_PAYLOAD.len(),
+<a href=#548 id=548 data-nosnippet>548</a>                    <span class="string">"{scheme:?} did not shrink the payload ({} &gt;= {})"</span>,
+<a href=#549 id=549 data-nosnippet>549</a>                    compressed.len(),
+<a href=#550 id=550 data-nosnippet>550</a>                    COMPRESSIBLE_PAYLOAD.len()
+<a href=#551 id=551 data-nosnippet>551</a>                );
+<a href=#552 id=552 data-nosnippet>552</a>            }
+<a href=#553 id=553 data-nosnippet>553</a>
+<a href=#554 id=554 data-nosnippet>554</a>            <span class="kw">let </span>decompressed = decompress(scheme, <span class="kw-2">&amp;</span>compressed).<span class="kw">await</span>;
+<a href=#555 id=555 data-nosnippet>555</a>            <span class="macro">assert_eq!</span>(decompressed, COMPRESSIBLE_PAYLOAD, <span class="string">"round-trip mismatch for {scheme:?}"</span>);
+<a href=#556 id=556 data-nosnippet>556</a>        }
+<a href=#557 id=557 data-nosnippet>557</a>    }
+<a href=#558 id=558 data-nosnippet>558</a>
+<a href=#559 id=559 data-nosnippet>559</a>    <span class="attr">#[tokio::test]
+<a href=#560 id=560 data-nosnippet>560</a>    </span><span class="kw">async fn </span>counting_writer_tracks_total_bytes_written() {
+<a href=#561 id=561 data-nosnippet>561</a>        <span class="kw">let </span><span class="kw-2">mut </span>writer = CountingWriter::new(Vec::new());
+<a href=#562 id=562 data-nosnippet>562</a>        <span class="macro">assert_eq!</span>(writer.total_written(), <span class="number">0</span>);
+<a href=#563 id=563 data-nosnippet>563</a>
+<a href=#564 id=564 data-nosnippet>564</a>        writer.write_all(<span class="string">b"hello"</span>).<span class="kw">await</span>.expect(<span class="string">"write should succeed"</span>);
+<a href=#565 id=565 data-nosnippet>565</a>        <span class="macro">assert_eq!</span>(writer.total_written(), <span class="number">5</span>);
+<a href=#566 id=566 data-nosnippet>566</a>
+<a href=#567 id=567 data-nosnippet>567</a>        writer.write_all(<span class="string">b"!!!"</span>).<span class="kw">await</span>.expect(<span class="string">"write should succeed"</span>);
+<a href=#568 id=568 data-nosnippet>568</a>        <span class="macro">assert_eq!</span>(writer.total_written(), <span class="number">8</span>);
+<a href=#569 id=569 data-nosnippet>569</a>
+<a href=#570 id=570 data-nosnippet>570</a>        <span class="comment">// The counter is pure bookkeeping: the wrapped writer still holds the actual bytes.
+<a href=#571 id=571 data-nosnippet>571</a>        </span><span class="macro">assert_eq!</span>(writer.into_inner(), <span class="string">b"hello!!!"</span>);
+<a href=#572 id=572 data-nosnippet>572</a>    }
+<a href=#573 id=573 data-nosnippet>573</a>
+<a href=#574 id=574 data-nosnippet>574</a>    <span class="attr">#[tokio::test]
+<a href=#575 id=575 data-nosnippet>575</a>    </span><span class="kw">async fn </span>noop_compressor_write_statistics_count_all_bytes() {
+<a href=#576 id=576 data-nosnippet>576</a>        <span class="comment">// The no-op compressor writes bytes through unchanged, so its `WriteStatistics` total is the input length.
+<a href=#577 id=577 data-nosnippet>577</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>compressor = Compressor::from_scheme(CompressionScheme::noop(), Vec::new());
+<a href=#578 id=578 data-nosnippet>578</a>        compressor.write_all(<span class="string">b"1234567890"</span>).<span class="kw">await</span>.expect(<span class="string">"write should succeed"</span>);
+<a href=#579 id=579 data-nosnippet>579</a>
+<a href=#580 id=580 data-nosnippet>580</a>        <span class="macro">assert_eq!</span>(WriteStatistics::total_written(<span class="kw-2">&amp;</span>compressor), <span class="number">10</span>);
+<a href=#581 id=581 data-nosnippet>581</a>    }
+<a href=#582 id=582 data-nosnippet>582</a>}
 </code></pre></div></section></main></body></html>

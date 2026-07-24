@@ -280,11 +280,11 @@
 <a href=#280 id=280 data-nosnippet>280</a></span><span class="kw">mod </span>tests {
 <a href=#281 id=281 data-nosnippet>281</a>    <span class="kw">use </span>std::collections::VecDeque;
 <a href=#282 id=282 data-nosnippet>282</a>
-<a href=#283 id=283 data-nosnippet>283</a>    <span class="kw">use </span>bytes::Buf <span class="kw">as _</span>;
+<a href=#283 id=283 data-nosnippet>283</a>    <span class="kw">use </span>bytes::{Buf <span class="kw">as _</span>, Bytes};
 <a href=#284 id=284 data-nosnippet>284</a>    <span class="kw">use </span>http::Request;
-<a href=#285 id=285 data-nosnippet>285</a>    <span class="kw">use </span>saluki_io::net::util::retry::EventContainer <span class="kw">as _</span>;
+<a href=#285 id=285 data-nosnippet>285</a>    <span class="kw">use </span>saluki_io::net::util::retry::{EventContainer <span class="kw">as _</span>, Retryable <span class="kw">as _</span>};
 <a href=#286 id=286 data-nosnippet>286</a>
-<a href=#287 id=287 data-nosnippet>287</a>    <span class="kw">use </span>super::{Metadata, Transaction};
+<a href=#287 id=287 data-nosnippet>287</a>    <span class="kw">use </span>super::{Metadata, Transaction, TransactionBody};
 <a href=#288 id=288 data-nosnippet>288</a>
 <a href=#289 id=289 data-nosnippet>289</a>    <span class="attr">#[test]
 <a href=#290 id=290 data-nosnippet>290</a>    </span><span class="kw">fn </span>basic_transaction_ser_deser_roundtrip() {
@@ -310,5 +310,43 @@
 <a href=#310 id=310 data-nosnippet>310</a>        <span class="kw">let </span>req_body = VecDeque::from(req_body_raw.chunk().to_vec());
 <a href=#311 id=311 data-nosnippet>311</a>        <span class="macro">assert_eq!</span>(req_body, body);
 <a href=#312 id=312 data-nosnippet>312</a>    }
-<a href=#313 id=313 data-nosnippet>313</a>}
+<a href=#313 id=313 data-nosnippet>313</a>
+<a href=#314 id=314 data-nosnippet>314</a>    <span class="attr">#[test]
+<a href=#315 id=315 data-nosnippet>315</a>    </span><span class="kw">fn </span>size_bytes_reflects_remaining_body_bytes() {
+<a href=#316 id=316 data-nosnippet>316</a>        <span class="comment">// `size_bytes` (via `Retryable`) reports the number of remaining bytes in the request body, which
+<a href=#317 id=317 data-nosnippet>317</a>        // is what the retry queue uses for capacity accounting.
+<a href=#318 id=318 data-nosnippet>318</a>        </span><span class="kw">let </span>metadata = Metadata::from_event_and_data_point_count(<span class="number">1</span>, <span class="number">1</span>);
+<a href=#319 id=319 data-nosnippet>319</a>        <span class="kw">let </span>body = VecDeque::from(<span class="string">b"hello, world!"</span>.to_vec());
+<a href=#320 id=320 data-nosnippet>320</a>        <span class="kw">let </span>request = Request::builder().uri(<span class="string">"http://example.com"</span>).body(body).unwrap();
+<a href=#321 id=321 data-nosnippet>321</a>
+<a href=#322 id=322 data-nosnippet>322</a>        <span class="kw">let </span><span class="kw-2">mut </span>transaction = Transaction::from_original(metadata, request);
+<a href=#323 id=323 data-nosnippet>323</a>        transaction.request.body_mut().advance(<span class="number">7</span>);
+<a href=#324 id=324 data-nosnippet>324</a>
+<a href=#325 id=325 data-nosnippet>325</a>        <span class="macro">assert_eq!</span>(transaction.size_bytes(), <span class="number">6</span>);
+<a href=#326 id=326 data-nosnippet>326</a>    }
+<a href=#327 id=327 data-nosnippet>327</a>
+<a href=#328 id=328 data-nosnippet>328</a>    <span class="attr">#[test]
+<a href=#329 id=329 data-nosnippet>329</a>    #[should_panic(expected = <span class="string">"attempted to advance a rehydrated body that was consumed"</span>)]
+<a href=#330 id=330 data-nosnippet>330</a>    </span><span class="kw">fn </span>advancing_a_consumed_rehydrated_body_panics() {
+<a href=#331 id=331 data-nosnippet>331</a>        <span class="comment">// A rehydrated body is consumed once its bytes are taken; advancing it afterwards is a documented
+<a href=#332 id=332 data-nosnippet>332</a>        // programming error and panics.
+<a href=#333 id=333 data-nosnippet>333</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>body: TransactionBody&lt;Bytes&gt; = TransactionBody::Rehydrated(<span class="prelude-val">None</span>);
+<a href=#334 id=334 data-nosnippet>334</a>        body.advance(<span class="number">1</span>);
+<a href=#335 id=335 data-nosnippet>335</a>    }
+<a href=#336 id=336 data-nosnippet>336</a>
+<a href=#337 id=337 data-nosnippet>337</a>    <span class="attr">#[test]
+<a href=#338 id=338 data-nosnippet>338</a>    </span><span class="kw">fn </span>serializing_a_consumed_rehydrated_body_errors() {
+<a href=#339 id=339 data-nosnippet>339</a>        <span class="comment">// Serializing a rehydrated body whose bytes were already taken returns an error rather than
+<a href=#340 id=340 data-nosnippet>340</a>        // silently writing an empty payload.
+<a href=#341 id=341 data-nosnippet>341</a>        </span><span class="kw">let </span>body: TransactionBody&lt;Bytes&gt; = TransactionBody::Rehydrated(<span class="prelude-val">None</span>);
+<a href=#342 id=342 data-nosnippet>342</a>
+<a href=#343 id=343 data-nosnippet>343</a>        <span class="kw">let </span>error = serde_json::to_string(<span class="kw-2">&amp;</span>body).expect_err(<span class="string">"serializing a consumed rehydrated body should fail"</span>);
+<a href=#344 id=344 data-nosnippet>344</a>        <span class="macro">assert!</span>(
+<a href=#345 id=345 data-nosnippet>345</a>            error
+<a href=#346 id=346 data-nosnippet>346</a>                .to_string()
+<a href=#347 id=347 data-nosnippet>347</a>                .contains(<span class="string">"attempted to serialize a rehydrated body that was consumed"</span>),
+<a href=#348 id=348 data-nosnippet>348</a>            <span class="string">"unexpected error: {error}"
+<a href=#349 id=349 data-nosnippet>349</a>        </span>);
+<a href=#350 id=350 data-nosnippet>350</a>    }
+<a href=#351 id=351 data-nosnippet>351</a>}
 </code></pre></div></section></main></body></html>

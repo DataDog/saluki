@@ -517,15 +517,44 @@
 <a href=#517 id=517 data-nosnippet>517</a>        <span class="macro">assert_eq!</span>(entry.path, controller_path);
 <a href=#518 id=518 data-nosnippet>518</a>    }
 <a href=#519 id=519 data-nosnippet>519</a>
-<a href=#520 id=520 data-nosnippet>520</a>    <span class="attr">#[test]
-<a href=#521 id=521 data-nosnippet>521</a>    </span><span class="kw">fn </span>extract_container_id_cri_containerd() {
-<a href=#522 id=522 data-nosnippet>522</a>        <span class="kw">let </span>expected_container_id =
-<a href=#523 id=523 data-nosnippet>523</a>            MetaString::from(<span class="string">"06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe"</span>);
-<a href=#524 id=524 data-nosnippet>524</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"cri-containerd-{}.scope"</span>, expected_container_id);
-<a href=#525 id=525 data-nosnippet>525</a>        <span class="kw">let </span>interner = GenericMapInterner::new(NonZeroUsize::new(<span class="number">1024</span>).unwrap());
-<a href=#526 id=526 data-nosnippet>526</a>
-<a href=#527 id=527 data-nosnippet>527</a>        <span class="kw">let </span>actual_container_id = extract_container_id(<span class="kw-2">&amp;</span>raw, <span class="kw-2">&amp;</span>interner);
-<a href=#528 id=528 data-nosnippet>528</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(expected_container_id), actual_container_id);
-<a href=#529 id=529 data-nosnippet>529</a>    }
-<a href=#530 id=530 data-nosnippet>530</a>}
+<a href=#520 id=520 data-nosnippet>520</a>    <span class="kw">fn </span>extract(raw: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Option</span>&lt;MetaString&gt; {
+<a href=#521 id=521 data-nosnippet>521</a>        <span class="kw">let </span>interner = GenericMapInterner::new(NonZeroUsize::new(<span class="number">1024</span>).unwrap());
+<a href=#522 id=522 data-nosnippet>522</a>        extract_container_id(raw, <span class="kw-2">&amp;</span>interner)
+<a href=#523 id=523 data-nosnippet>523</a>    }
+<a href=#524 id=524 data-nosnippet>524</a>
+<a href=#525 id=525 data-nosnippet>525</a>    <span class="attr">#[test]
+<a href=#526 id=526 data-nosnippet>526</a>    </span><span class="kw">fn </span>extract_container_id_cri_containerd() {
+<a href=#527 id=527 data-nosnippet>527</a>        <span class="kw">let </span>expected_container_id =
+<a href=#528 id=528 data-nosnippet>528</a>            MetaString::from(<span class="string">"06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe"</span>);
+<a href=#529 id=529 data-nosnippet>529</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"cri-containerd-{}.scope"</span>, expected_container_id);
+<a href=#530 id=530 data-nosnippet>530</a>
+<a href=#531 id=531 data-nosnippet>531</a>        <span class="macro">assert_eq!</span>(extract(<span class="kw-2">&amp;</span>raw), <span class="prelude-val">Some</span>(expected_container_id));
+<a href=#532 id=532 data-nosnippet>532</a>    }
+<a href=#533 id=533 data-nosnippet>533</a>
+<a href=#534 id=534 data-nosnippet>534</a>    <span class="comment">// NOTE: `extract_container_id`'s documented intent is to exclude systemd `.mount` cgroups and CRI-O
+<a href=#535 id=535 data-nosnippet>535</a>    // `crio-conmon-` cgroups, since neither represents an actual container. As currently written, though, the
+<a href=#536 id=536 data-nosnippet>536</a>    // `.ends_with(".mount")`/`.starts_with("crio-conmon-")` checks are applied to the regex *match* -- which is a
+<a href=#537 id=537 data-nosnippet>537</a>    // bare hexadecimal container ID -- rather than to the full cgroup name. A hex string can never end with
+<a href=#538 id=538 data-nosnippet>538</a>    // `.mount` or start with `crio-conmon-`, so these two exclusion filters never actually fire. The two tests
+<a href=#539 id=539 data-nosnippet>539</a>    // below pin that real, current behavior (the container ID is still extracted) rather than the documented
+<a href=#540 id=540 data-nosnippet>540</a>    // intent, so a future fix that makes the filters effective will visibly flip these assertions.
+<a href=#541 id=541 data-nosnippet>541</a>
+<a href=#542 id=542 data-nosnippet>542</a>    </span><span class="attr">#[test]
+<a href=#543 id=543 data-nosnippet>543</a>    </span><span class="kw">fn </span>extract_container_id_does_not_exclude_dot_mount_cgroups() {
+<a href=#544 id=544 data-nosnippet>544</a>        <span class="kw">let </span>container_id = <span class="string">"06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe"</span>;
+<a href=#545 id=545 data-nosnippet>545</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"{}.mount"</span>, container_id);
+<a href=#546 id=546 data-nosnippet>546</a>
+<a href=#547 id=547 data-nosnippet>547</a>        <span class="comment">// Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
+<a href=#548 id=548 data-nosnippet>548</a>        </span><span class="macro">assert_eq!</span>(extract(<span class="kw-2">&amp;</span>raw), <span class="prelude-val">Some</span>(MetaString::from(container_id)));
+<a href=#549 id=549 data-nosnippet>549</a>    }
+<a href=#550 id=550 data-nosnippet>550</a>
+<a href=#551 id=551 data-nosnippet>551</a>    <span class="attr">#[test]
+<a href=#552 id=552 data-nosnippet>552</a>    </span><span class="kw">fn </span>extract_container_id_does_not_exclude_crio_conmon_cgroups() {
+<a href=#553 id=553 data-nosnippet>553</a>        <span class="kw">let </span>container_id = <span class="string">"06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe"</span>;
+<a href=#554 id=554 data-nosnippet>554</a>        <span class="kw">let </span>raw = <span class="macro">format!</span>(<span class="string">"crio-conmon-{}.scope"</span>, container_id);
+<a href=#555 id=555 data-nosnippet>555</a>
+<a href=#556 id=556 data-nosnippet>556</a>        <span class="comment">// Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
+<a href=#557 id=557 data-nosnippet>557</a>        </span><span class="macro">assert_eq!</span>(extract(<span class="kw-2">&amp;</span>raw), <span class="prelude-val">Some</span>(MetaString::from(container_id)));
+<a href=#558 id=558 data-nosnippet>558</a>    }
+<a href=#559 id=559 data-nosnippet>559</a>}
 </code></pre></div></section></main></body></html>

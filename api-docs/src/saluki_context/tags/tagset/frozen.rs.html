@@ -83,4 +83,17 @@
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="macro">write!</span>(f, <span class="string">"]"</span>)
 <a href=#84 id=84 data-nosnippet>84</a>    }
 <a href=#85 id=85 data-nosnippet>85</a>}
+<a href=#86 id=86 data-nosnippet>86</a>
+<a href=#87 id=87 data-nosnippet>87</a><span class="attr">#[cfg(test)]
+<a href=#88 id=88 data-nosnippet>88</a></span><span class="kw">mod </span>tests {
+<a href=#89 id=89 data-nosnippet>89</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a>    <span class="attr">#[test]
+<a href=#92 id=92 data-nosnippet>92</a>    </span><span class="kw">fn </span>display_renders_comma_separated_tags() {
+<a href=#93 id=93 data-nosnippet>93</a>        <span class="kw">let </span>frozen = FrozenTagSet::from_iter([Tag::from(<span class="string">"a:1"</span>), Tag::from(<span class="string">"b:2"</span>)]);
+<a href=#94 id=94 data-nosnippet>94</a>        <span class="macro">assert_eq!</span>(frozen.to_string(), <span class="string">"[a:1,b:2]"</span>);
+<a href=#95 id=95 data-nosnippet>95</a>
+<a href=#96 id=96 data-nosnippet>96</a>        <span class="macro">assert_eq!</span>(FrozenTagSet::default().to_string(), <span class="string">"[]"</span>);
+<a href=#97 id=97 data-nosnippet>97</a>    }
+<a href=#98 id=98 data-nosnippet>98</a>}
 </code></pre></div></section></main></body></html>

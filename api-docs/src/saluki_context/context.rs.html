@@ -1117,5 +1117,45 @@
 <a href=#1117 id=1117 data-nosnippet>1117</a>        <span class="macro">assert_eq!</span>(via_two, via_one);
 <a href=#1118 id=1118 data-nosnippet>1118</a>        <span class="macro">assert_eq!</span>(via_two, via_direct);
 <a href=#1119 id=1119 data-nosnippet>1119</a>    }
-<a href=#1120 id=1120 data-nosnippet>1120</a>}
+<a href=#1120 id=1120 data-nosnippet>1120</a>
+<a href=#1121 id=1121 data-nosnippet>1121</a>    <span class="attr">#[test]
+<a href=#1122 id=1122 data-nosnippet>1122</a>    </span><span class="kw">fn </span>with_tag_sets_mut_mutates_both_and_recomputes_key() {
+<a href=#1123 id=1123 data-nosnippet>1123</a>        <span class="comment">// `with_tag_sets_mut` mutates both tag sets and recomputes the context key a single time
+<a href=#1124 id=1124 data-nosnippet>1124</a>        // for the combined change. The observable guarantee is that the result matches a context
+<a href=#1125 id=1125 data-nosnippet>1125</a>        // built from scratch with the combined tags, and matches applying the same two mutations
+<a href=#1126 id=1126 data-nosnippet>1126</a>        // via separate `with_tags`/`with_origin_tags` calls (which would each rehash).
+<a href=#1127 id=1127 data-nosnippet>1127</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>combined = context_with_origin(<span class="string">"metric"</span>, <span class="kw-2">&amp;</span>[<span class="string">"env:prod"</span>], <span class="kw-2">&amp;</span>[<span class="string">"origin:a"</span>]);
+<a href=#1128 id=1128 data-nosnippet>1128</a>        combined.with_tag_sets_mut(|tags, origin_tags| {
+<a href=#1129 id=1129 data-nosnippet>1129</a>            tags.insert_tag(Tag::from(<span class="string">"service:web"</span>));
+<a href=#1130 id=1130 data-nosnippet>1130</a>            origin_tags.insert_tag(Tag::from(<span class="string">"origin:b"</span>));
+<a href=#1131 id=1131 data-nosnippet>1131</a>        });
+<a href=#1132 id=1132 data-nosnippet>1132</a>
+<a href=#1133 id=1133 data-nosnippet>1133</a>        <span class="comment">// Both tag sets were updated in the single call.
+<a href=#1134 id=1134 data-nosnippet>1134</a>        </span><span class="macro">assert!</span>(combined.tags().has_tag(<span class="string">"env:prod"</span>));
+<a href=#1135 id=1135 data-nosnippet>1135</a>        <span class="macro">assert!</span>(combined.tags().has_tag(<span class="string">"service:web"</span>));
+<a href=#1136 id=1136 data-nosnippet>1136</a>        <span class="macro">assert!</span>(combined.origin_tags().has_tag(<span class="string">"origin:a"</span>));
+<a href=#1137 id=1137 data-nosnippet>1137</a>        <span class="macro">assert!</span>(combined.origin_tags().has_tag(<span class="string">"origin:b"</span>));
+<a href=#1138 id=1138 data-nosnippet>1138</a>
+<a href=#1139 id=1139 data-nosnippet>1139</a>        <span class="comment">// The recomputed key matches a freshly-built context with the same final state.
+<a href=#1140 id=1140 data-nosnippet>1140</a>        </span><span class="kw">let </span>expected = context_with_origin(<span class="string">"metric"</span>, <span class="kw-2">&amp;</span>[<span class="string">"env:prod"</span>, <span class="string">"service:web"</span>], <span class="kw-2">&amp;</span>[<span class="string">"origin:a"</span>, <span class="string">"origin:b"</span>]);
+<a href=#1141 id=1141 data-nosnippet>1141</a>        <span class="macro">assert_eq!</span>(combined, expected);
+<a href=#1142 id=1142 data-nosnippet>1142</a>
+<a href=#1143 id=1143 data-nosnippet>1143</a>        <span class="comment">// ...and matches applying the two mutations separately (i.e. via two rehashes).
+<a href=#1144 id=1144 data-nosnippet>1144</a>        </span><span class="kw">let </span>separate = context_with_origin(<span class="string">"metric"</span>, <span class="kw-2">&amp;</span>[<span class="string">"env:prod"</span>], <span class="kw-2">&amp;</span>[<span class="string">"origin:a"</span>])
+<a href=#1145 id=1145 data-nosnippet>1145</a>            .with_tags(tag_set(<span class="kw-2">&amp;</span>[<span class="string">"env:prod"</span>, <span class="string">"service:web"</span>]))
+<a href=#1146 id=1146 data-nosnippet>1146</a>            .with_origin_tags(tag_set(<span class="kw-2">&amp;</span>[<span class="string">"origin:a"</span>, <span class="string">"origin:b"</span>]));
+<a href=#1147 id=1147 data-nosnippet>1147</a>        <span class="macro">assert_eq!</span>(combined, separate);
+<a href=#1148 id=1148 data-nosnippet>1148</a>    }
+<a href=#1149 id=1149 data-nosnippet>1149</a>
+<a href=#1150 id=1150 data-nosnippet>1150</a>    <span class="attr">#[test]
+<a href=#1151 id=1151 data-nosnippet>1151</a>    </span><span class="kw">fn </span>display_renders_name_and_instrumented_tags() {
+<a href=#1152 id=1152 data-nosnippet>1152</a>        <span class="comment">// With no tags, only the metric name is rendered.
+<a href=#1153 id=1153 data-nosnippet>1153</a>        </span><span class="macro">assert_eq!</span>(Context::from_static_name(<span class="string">"metric"</span>).to_string(), <span class="string">"metric"</span>);
+<a href=#1154 id=1154 data-nosnippet>1154</a>
+<a href=#1155 id=1155 data-nosnippet>1155</a>        <span class="comment">// With tags, they are rendered in a brace-delimited, comma-space-separated list in
+<a href=#1156 id=1156 data-nosnippet>1156</a>        // insertion order. Origin tags are intentionally not part of the `Display` output.
+<a href=#1157 id=1157 data-nosnippet>1157</a>        </span><span class="kw">let </span>context = Context::from_static_parts(<span class="string">"metric"</span>, <span class="kw-2">&amp;</span>[<span class="string">"env:prod"</span>, <span class="string">"service:web"</span>]);
+<a href=#1158 id=1158 data-nosnippet>1158</a>        <span class="macro">assert_eq!</span>(context.to_string(), <span class="string">"metric{env:prod, service:web}"</span>);
+<a href=#1159 id=1159 data-nosnippet>1159</a>    }
+<a href=#1160 id=1160 data-nosnippet>1160</a>}
 </code></pre></div></section></main></body></html>

@@ -564,5 +564,46 @@
 <a href=#564 id=564 data-nosnippet>564</a>
 <a href=#565 id=565 data-nosnippet>565</a>        <span class="macro">assert_eq!</span>(registry.root().as_bounds().total_minimum_required_bytes(), <span class="number">64</span>);
 <a href=#566 id=566 data-nosnippet>566</a>    }
-<a href=#567 id=567 data-nosnippet>567</a>}
+<a href=#567 id=567 data-nosnippet>567</a>
+<a href=#568 id=568 data-nosnippet>568</a>    <span class="attr">#[test]
+<a href=#569 id=569 data-nosnippet>569</a>    </span><span class="kw">fn </span>with_array_accounts_for_element_size_times_length() {
+<a href=#570 id=570 data-nosnippet>570</a>        <span class="comment">// `with_array` builds a `product(struct_size::&lt;T&gt;, len)` expression, so a 10-element array of `u64` should
+<a href=#571 id=571 data-nosnippet>571</a>        // account for exactly `size_of::&lt;u64&gt;() * 10` bytes.
+<a href=#572 id=572 data-nosnippet>572</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>builder = MemoryBoundsBuilder::for_test();
+<a href=#573 id=573 data-nosnippet>573</a>        builder.firm().with_array::&lt;u64&gt;(<span class="string">"array"</span>, <span class="number">10</span>);
+<a href=#574 id=574 data-nosnippet>574</a>
+<a href=#575 id=575 data-nosnippet>575</a>        <span class="kw">let </span>bounds = builder.as_bounds();
+<a href=#576 id=576 data-nosnippet>576</a>        <span class="macro">assert_eq!</span>(bounds.total_firm_limit_bytes(), std::mem::size_of::&lt;u64&gt;() * <span class="number">10</span>);
+<a href=#577 id=577 data-nosnippet>577</a>        <span class="macro">assert_eq!</span>(bounds.total_minimum_required_bytes(), <span class="number">0</span>);
+<a href=#578 id=578 data-nosnippet>578</a>    }
+<a href=#579 id=579 data-nosnippet>579</a>
+<a href=#580 id=580 data-nosnippet>580</a>    <span class="attr">#[test]
+<a href=#581 id=581 data-nosnippet>581</a>    </span><span class="kw">fn </span>with_map_accounts_for_entry_size_times_length() {
+<a href=#582 id=582 data-nosnippet>582</a>        <span class="comment">// `with_map` builds a `product(sum(struct_size::&lt;K&gt;, struct_size::&lt;V&gt;), len)` expression, so a 5-entry map
+<a href=#583 id=583 data-nosnippet>583</a>        // of `u32 -&gt; u64` should account for exactly `(size_of::&lt;u32&gt;() + size_of::&lt;u64&gt;()) * 5` bytes.
+<a href=#584 id=584 data-nosnippet>584</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>builder = MemoryBoundsBuilder::for_test();
+<a href=#585 id=585 data-nosnippet>585</a>        builder.firm().with_map::&lt;u32, u64&gt;(<span class="string">"map"</span>, <span class="number">5</span>);
+<a href=#586 id=586 data-nosnippet>586</a>
+<a href=#587 id=587 data-nosnippet>587</a>        <span class="kw">let </span>bounds = builder.as_bounds();
+<a href=#588 id=588 data-nosnippet>588</a>        <span class="kw">let </span>expected = (std::mem::size_of::&lt;u32&gt;() + std::mem::size_of::&lt;u64&gt;()) * <span class="number">5</span>;
+<a href=#589 id=589 data-nosnippet>589</a>        <span class="macro">assert_eq!</span>(bounds.total_firm_limit_bytes(), expected);
+<a href=#590 id=590 data-nosnippet>590</a>        <span class="macro">assert_eq!</span>(bounds.total_minimum_required_bytes(), <span class="number">0</span>);
+<a href=#591 id=591 data-nosnippet>591</a>    }
+<a href=#592 id=592 data-nosnippet>592</a>
+<a href=#593 id=593 data-nosnippet>593</a>    <span class="attr">#[test]
+<a href=#594 id=594 data-nosnippet>594</a>    </span><span class="kw">fn </span>minimum_bounds_are_included_in_the_firm_total() {
+<a href=#595 id=595 data-nosnippet>595</a>        <span class="comment">// The firm limit is documented as additive with the minimum required bytes, so an array added to `minimum`
+<a href=#596 id=596 data-nosnippet>596</a>        // and a map added to `firm` should both roll up into `total_firm_limit_bytes`.
+<a href=#597 id=597 data-nosnippet>597</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>builder = MemoryBoundsBuilder::for_test();
+<a href=#598 id=598 data-nosnippet>598</a>        builder.minimum().with_array::&lt;u64&gt;(<span class="string">"array"</span>, <span class="number">10</span>);
+<a href=#599 id=599 data-nosnippet>599</a>        builder.firm().with_map::&lt;u32, u64&gt;(<span class="string">"map"</span>, <span class="number">5</span>);
+<a href=#600 id=600 data-nosnippet>600</a>
+<a href=#601 id=601 data-nosnippet>601</a>        <span class="kw">let </span>bounds = builder.as_bounds();
+<a href=#602 id=602 data-nosnippet>602</a>        <span class="kw">let </span>array_bytes = std::mem::size_of::&lt;u64&gt;() * <span class="number">10</span>;
+<a href=#603 id=603 data-nosnippet>603</a>        <span class="kw">let </span>map_bytes = (std::mem::size_of::&lt;u32&gt;() + std::mem::size_of::&lt;u64&gt;()) * <span class="number">5</span>;
+<a href=#604 id=604 data-nosnippet>604</a>
+<a href=#605 id=605 data-nosnippet>605</a>        <span class="macro">assert_eq!</span>(bounds.total_minimum_required_bytes(), array_bytes);
+<a href=#606 id=606 data-nosnippet>606</a>        <span class="macro">assert_eq!</span>(bounds.total_firm_limit_bytes(), array_bytes + map_bytes);
+<a href=#607 id=607 data-nosnippet>607</a>    }
+<a href=#608 id=608 data-nosnippet>608</a>}
 </code></pre></div></section></main></body></html>

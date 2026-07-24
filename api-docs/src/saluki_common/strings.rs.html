@@ -333,5 +333,54 @@
 <a href=#333 id=333 data-nosnippet>333</a>            <span class="string">"hello, world! it's me, steve from blues clues. i've got 5 apples."
 <a href=#334 id=334 data-nosnippet>334</a>        </span>);
 <a href=#335 id=335 data-nosnippet>335</a>    }
-<a href=#336 id=336 data-nosnippet>336</a>}
+<a href=#336 id=336 data-nosnippet>336</a>
+<a href=#337 id=337 data-nosnippet>337</a>    <span class="attr">#[test]
+<a href=#338 id=338 data-nosnippet>338</a>    </span><span class="kw">fn </span>unsigned_integer_to_string_formats_decimal_value() {
+<a href=#339 id=339 data-nosnippet>339</a>        <span class="kw">let </span>cases = [
+<a href=#340 id=340 data-nosnippet>340</a>            (<span class="number">0u64</span>, <span class="string">"0"</span>),
+<a href=#341 id=341 data-nosnippet>341</a>            (<span class="number">7</span>, <span class="string">"7"</span>),
+<a href=#342 id=342 data-nosnippet>342</a>            (<span class="number">42</span>, <span class="string">"42"</span>),
+<a href=#343 id=343 data-nosnippet>343</a>            (<span class="number">1_000_000</span>, <span class="string">"1000000"</span>),
+<a href=#344 id=344 data-nosnippet>344</a>            (u64::MAX, <span class="string">"18446744073709551615"</span>),
+<a href=#345 id=345 data-nosnippet>345</a>        ];
+<a href=#346 id=346 data-nosnippet>346</a>
+<a href=#347 id=347 data-nosnippet>347</a>        <span class="kw">for </span>(value, expected) <span class="kw">in </span>cases {
+<a href=#348 id=348 data-nosnippet>348</a>            <span class="macro">assert_eq!</span>(unsigned_integer_to_string(value), expected, <span class="string">"value: {value}"</span>);
+<a href=#349 id=349 data-nosnippet>349</a>        }
+<a href=#350 id=350 data-nosnippet>350</a>    }
+<a href=#351 id=351 data-nosnippet>351</a>
+<a href=#352 id=352 data-nosnippet>352</a>    <span class="attr">#[test]
+<a href=#353 id=353 data-nosnippet>353</a>    </span><span class="kw">fn </span>to_meta_string_inlines_short_strings() {
+<a href=#354 id=354 data-nosnippet>354</a>        <span class="comment">// Short strings are inlined by `MetaString::from_interner` before the interner is even
+<a href=#355 id=355 data-nosnippet>355</a>        // consulted, so the result matches the buffer contents regardless of interner capacity.
+<a href=#356 id=356 data-nosnippet>356</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>builder = build_interned_string_builder(<span class="number">128</span>);
+<a href=#357 id=357 data-nosnippet>357</a>        <span class="macro">assert_eq!</span>(builder.push_str(<span class="string">"short"</span>), <span class="prelude-val">Some</span>(()));
+<a href=#358 id=358 data-nosnippet>358</a>
+<a href=#359 id=359 data-nosnippet>359</a>        <span class="macro">assert_eq!</span>(builder.to_meta_string(), <span class="string">"short"</span>);
+<a href=#360 id=360 data-nosnippet>360</a>    }
+<a href=#361 id=361 data-nosnippet>361</a>
+<a href=#362 id=362 data-nosnippet>362</a>    <span class="attr">#[test]
+<a href=#363 id=363 data-nosnippet>363</a>    </span><span class="kw">fn </span>to_meta_string_interns_long_strings_when_capacity_allows() {
+<a href=#364 id=364 data-nosnippet>364</a>        <span class="comment">// A string too long to inline is interned when the interner has room for it.
+<a href=#365 id=365 data-nosnippet>365</a>        </span><span class="kw">let </span>long = <span class="string">"this string is far too long to ever be inlined into a MetaString"</span>;
+<a href=#366 id=366 data-nosnippet>366</a>        <span class="kw">let </span><span class="kw-2">mut </span>builder = build_interned_string_builder(<span class="number">256</span>);
+<a href=#367 id=367 data-nosnippet>367</a>        <span class="macro">assert_eq!</span>(builder.push_str(long), <span class="prelude-val">Some</span>(()));
+<a href=#368 id=368 data-nosnippet>368</a>
+<a href=#369 id=369 data-nosnippet>369</a>        <span class="macro">assert_eq!</span>(builder.to_meta_string(), long);
+<a href=#370 id=370 data-nosnippet>370</a>    }
+<a href=#371 id=371 data-nosnippet>371</a>
+<a href=#372 id=372 data-nosnippet>372</a>    <span class="attr">#[test]
+<a href=#373 id=373 data-nosnippet>373</a>    </span><span class="kw">fn </span>to_meta_string_falls_back_to_owned_when_interner_full() {
+<a href=#374 id=374 data-nosnippet>374</a>        <span class="comment">// A string too long to inline and too large for the interner falls back to an owned
+<a href=#375 id=375 data-nosnippet>375</a>        // allocation, which still yields the same string contents.
+<a href=#376 id=376 data-nosnippet>376</a>        </span><span class="kw">let </span>long = <span class="string">"this string is far too long to ever be inlined into a MetaString"</span>;
+<a href=#377 id=377 data-nosnippet>377</a>        <span class="kw">let </span><span class="kw-2">mut </span>builder = build_interned_string_builder_with_limit(<span class="number">8</span>, long.len() + <span class="number">1</span>);
+<a href=#378 id=378 data-nosnippet>378</a>        <span class="macro">assert_eq!</span>(builder.push_str(long), <span class="prelude-val">Some</span>(()));
+<a href=#379 id=379 data-nosnippet>379</a>
+<a href=#380 id=380 data-nosnippet>380</a>        <span class="comment">// The interner cannot hold the string, but `to_meta_string` still returns it (unlike
+<a href=#381 id=381 data-nosnippet>381</a>        // `try_intern`, which would return `None`).
+<a href=#382 id=382 data-nosnippet>382</a>        </span><span class="macro">assert_eq!</span>(builder.try_intern(), <span class="prelude-val">None</span>);
+<a href=#383 id=383 data-nosnippet>383</a>        <span class="macro">assert_eq!</span>(builder.to_meta_string(), long);
+<a href=#384 id=384 data-nosnippet>384</a>    }
+<a href=#385 id=385 data-nosnippet>385</a>}
 </code></pre></div></section></main></body></html>

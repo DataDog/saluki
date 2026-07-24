@@ -164,17 +164,46 @@
 <a href=#164 id=164 data-nosnippet>164</a>    }
 <a href=#165 id=165 data-nosnippet>165</a>
 <a href=#166 id=166 data-nosnippet>166</a>    <span class="attr">#[test]
-<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">fn </span>no_newline_eof_required_on_eof() {
-<a href=#168 id=168 data-nosnippet>168</a>        <span class="kw">let </span>payload = <span class="string">b"hello, world!"</span>;
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="kw">let </span><span class="kw-2">mut </span>buf = get_delimited_payload(payload, <span class="bool-val">false</span>);
-<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">let </span>buf_len = buf.len();
-<a href=#171 id=171 data-nosnippet>171</a>
-<a href=#172 id=172 data-nosnippet>172</a>        <span class="kw">let </span><span class="kw-2">mut </span>framer = NewlineFramer::default().required_on_eof(<span class="bool-val">true</span>);
+<a href=#167 id=167 data-nosnippet>167</a>    </span><span class="kw">fn </span>newline_framing_retains_carriage_returns() {
+<a href=#168 id=168 data-nosnippet>168</a>        <span class="comment">// Documented behavior: only the line-feed (0x0A) delimits frames. Any carriage-return (0x0D) bytes are part
+<a href=#169 id=169 data-nosnippet>169</a>        // of the frame contents and must be preserved, not stripped, so a CRLF-delimited stream yields frames that
+<a href=#170 id=170 data-nosnippet>170</a>        // still carry the trailing `\r`.
+<a href=#171 id=171 data-nosnippet>171</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>buf: VecDeque&lt;u8&gt; = <span class="string">b"foo\r\nbar\r\n"</span>.iter().copied().collect();
+<a href=#172 id=172 data-nosnippet>172</a>        <span class="kw">let </span><span class="kw-2">mut </span>framer = NewlineFramer::default();
 <a href=#173 id=173 data-nosnippet>173</a>
-<a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">let </span>maybe_frame = framer.next_frame(<span class="kw-2">&amp;mut </span>buf, <span class="bool-val">true</span>);
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="macro">assert_eq!</span>(maybe_frame, <span class="prelude-val">Err</span>(missing_delimiter_err(buf_len)));
-<a href=#177 id=177 data-nosnippet>177</a>        <span class="macro">assert_eq!</span>(buf.len(), buf_len);
-<a href=#178 id=178 data-nosnippet>178</a>    }
-<a href=#179 id=179 data-nosnippet>179</a>}
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">let </span>first = framer
+<a href=#175 id=175 data-nosnippet>175</a>            .next_frame(<span class="kw-2">&amp;mut </span>buf, <span class="bool-val">false</span>)
+<a href=#176 id=176 data-nosnippet>176</a>            .expect(<span class="string">"should not fail to read from payload"</span>)
+<a href=#177 id=177 data-nosnippet>177</a>            .expect(<span class="string">"should extract first frame"</span>);
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>first[..], <span class="string">b"foo\r"</span>);
+<a href=#179 id=179 data-nosnippet>179</a>
+<a href=#180 id=180 data-nosnippet>180</a>        <span class="kw">let </span>second = framer
+<a href=#181 id=181 data-nosnippet>181</a>            .next_frame(<span class="kw-2">&amp;mut </span>buf, <span class="bool-val">false</span>)
+<a href=#182 id=182 data-nosnippet>182</a>            .expect(<span class="string">"should not fail to read from payload"</span>)
+<a href=#183 id=183 data-nosnippet>183</a>            .expect(<span class="string">"should extract second frame"</span>);
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;</span>second[..], <span class="string">b"bar\r"</span>);
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a>        <span class="macro">assert!</span>(buf.is_empty());
+<a href=#187 id=187 data-nosnippet>187</a>        <span class="macro">assert_eq!</span>(
+<a href=#188 id=188 data-nosnippet>188</a>            framer
+<a href=#189 id=189 data-nosnippet>189</a>                .next_frame(<span class="kw-2">&amp;mut </span>buf, <span class="bool-val">false</span>)
+<a href=#190 id=190 data-nosnippet>190</a>                .expect(<span class="string">"should not fail to read from empty payload"</span>),
+<a href=#191 id=191 data-nosnippet>191</a>            <span class="prelude-val">None
+<a href=#192 id=192 data-nosnippet>192</a>        </span>);
+<a href=#193 id=193 data-nosnippet>193</a>    }
+<a href=#194 id=194 data-nosnippet>194</a>
+<a href=#195 id=195 data-nosnippet>195</a>    <span class="attr">#[test]
+<a href=#196 id=196 data-nosnippet>196</a>    </span><span class="kw">fn </span>no_newline_eof_required_on_eof() {
+<a href=#197 id=197 data-nosnippet>197</a>        <span class="kw">let </span>payload = <span class="string">b"hello, world!"</span>;
+<a href=#198 id=198 data-nosnippet>198</a>        <span class="kw">let </span><span class="kw-2">mut </span>buf = get_delimited_payload(payload, <span class="bool-val">false</span>);
+<a href=#199 id=199 data-nosnippet>199</a>        <span class="kw">let </span>buf_len = buf.len();
+<a href=#200 id=200 data-nosnippet>200</a>
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span><span class="kw-2">mut </span>framer = NewlineFramer::default().required_on_eof(<span class="bool-val">true</span>);
+<a href=#202 id=202 data-nosnippet>202</a>
+<a href=#203 id=203 data-nosnippet>203</a>        <span class="kw">let </span>maybe_frame = framer.next_frame(<span class="kw-2">&amp;mut </span>buf, <span class="bool-val">true</span>);
+<a href=#204 id=204 data-nosnippet>204</a>
+<a href=#205 id=205 data-nosnippet>205</a>        <span class="macro">assert_eq!</span>(maybe_frame, <span class="prelude-val">Err</span>(missing_delimiter_err(buf_len)));
+<a href=#206 id=206 data-nosnippet>206</a>        <span class="macro">assert_eq!</span>(buf.len(), buf_len);
+<a href=#207 id=207 data-nosnippet>207</a>    }
+<a href=#208 id=208 data-nosnippet>208</a>}
 </code></pre></div></section></main></body></html>

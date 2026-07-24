@@ -126,4 +126,28 @@
 <a href=#126 id=126 data-nosnippet>126</a>        <span class="number">1
 <a href=#127 id=127 data-nosnippet>127</a>    </span>}
 <a href=#128 id=128 data-nosnippet>128</a>}
+<a href=#129 id=129 data-nosnippet>129</a>
+<a href=#130 id=130 data-nosnippet>130</a><span class="attr">#[cfg(test)]
+<a href=#131 id=131 data-nosnippet>131</a></span><span class="kw">mod </span>tests {
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="kw">use </span><span class="kw">super</span>::PayloadType;
+<a href=#133 id=133 data-nosnippet>133</a>
+<a href=#134 id=134 data-nosnippet>134</a>    <span class="attr">#[test]
+<a href=#135 id=135 data-nosnippet>135</a>    </span><span class="kw">fn </span>payload_type_display_renders_each_single_flag() {
+<a href=#136 id=136 data-nosnippet>136</a>        <span class="comment">// Note that the rendered names deliberately differ from the variant identifiers for HTTP and gRPC.
+<a href=#137 id=137 data-nosnippet>137</a>        </span><span class="macro">assert_eq!</span>(PayloadType::Raw.to_string(), <span class="string">"Raw"</span>);
+<a href=#138 id=138 data-nosnippet>138</a>        <span class="macro">assert_eq!</span>(PayloadType::Http.to_string(), <span class="string">"HTTP"</span>);
+<a href=#139 id=139 data-nosnippet>139</a>        <span class="macro">assert_eq!</span>(PayloadType::Grpc.to_string(), <span class="string">"gRPC"</span>);
+<a href=#140 id=140 data-nosnippet>140</a>    }
+<a href=#141 id=141 data-nosnippet>141</a>
+<a href=#142 id=142 data-nosnippet>142</a>    <span class="attr">#[test]
+<a href=#143 id=143 data-nosnippet>143</a>    </span><span class="kw">fn </span>payload_type_display_joins_combined_flags_in_declaration_order() {
+<a href=#144 id=144 data-nosnippet>144</a>        <span class="comment">// Combined flags render in the fixed declaration order joined by `|`, regardless of how they were OR'd together.
+<a href=#145 id=145 data-nosnippet>145</a>        </span><span class="macro">assert_eq!</span>((PayloadType::Grpc | PayloadType::Raw).to_string(), <span class="string">"Raw|gRPC"</span>);
+<a href=#146 id=146 data-nosnippet>146</a>        <span class="macro">assert_eq!</span>(PayloadType::all_bits().to_string(), <span class="string">"Raw|HTTP|gRPC"</span>);
+<a href=#147 id=147 data-nosnippet>147</a>
+<a href=#148 id=148 data-nosnippet>148</a>        <span class="comment">// The empty bitmask (also the `Default`) renders as an empty string.
+<a href=#149 id=149 data-nosnippet>149</a>        </span><span class="macro">assert_eq!</span>(PayloadType::none().to_string(), <span class="string">""</span>);
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="macro">assert_eq!</span>(PayloadType::default().to_string(), <span class="string">""</span>);
+<a href=#151 id=151 data-nosnippet>151</a>    }
+<a href=#152 id=152 data-nosnippet>152</a>}
 </code></pre></div></section></main></body></html>

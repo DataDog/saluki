@@ -926,136 +926,159 @@
 <a href=#926 id=926 data-nosnippet>926</a>        <span class="macro">assert_eq!</span>(collect_sorted(<span class="kw-2">&amp;</span>ts), <span class="macro">vec!</span>[<span class="string">"a:1"</span>, <span class="string">"b:2"</span>]);
 <a href=#927 id=927 data-nosnippet>927</a>    }
 <a href=#928 id=928 data-nosnippet>928</a>
-<a href=#929 id=929 data-nosnippet>929</a>    <span class="comment">// --- to_mutable convenience ---
-<a href=#930 id=930 data-nosnippet>930</a>
-<a href=#931 id=931 data-nosnippet>931</a>    </span><span class="attr">#[test]
-<a href=#932 id=932 data-nosnippet>932</a>    </span><span class="kw">fn </span>shared_to_mutable() {
-<a href=#933 id=933 data-nosnippet>933</a>        <span class="kw">let </span>shared = shared_from(<span class="kw-2">&amp;</span>[<span class="string">"a:1"</span>, <span class="string">"b:2"</span>]);
-<a href=#934 id=934 data-nosnippet>934</a>        <span class="kw">let </span><span class="kw-2">mut </span>ts = shared.to_mutable();
-<a href=#935 id=935 data-nosnippet>935</a>        ts.insert_tag(Tag::from(<span class="string">"c:3"</span>));
-<a href=#936 id=936 data-nosnippet>936</a>        <span class="macro">assert_eq!</span>(ts.len(), <span class="number">3</span>);
-<a href=#937 id=937 data-nosnippet>937</a>    }
+<a href=#929 id=929 data-nosnippet>929</a>    <span class="attr">#[test]
+<a href=#930 id=930 data-nosnippet>930</a>    </span><span class="kw">fn </span>merge_shared_does_not_deduplicate_tags() {
+<a href=#931 id=931 data-nosnippet>931</a>        <span class="comment">// Unlike `merge_missing_shared`, `merge_shared` documents that it does NOT avoid adding
+<a href=#932 id=932 data-nosnippet>932</a>        // duplicate tags: the shared set is chained onto the base wholesale.
+<a href=#933 id=933 data-nosnippet>933</a>        </span><span class="kw">let </span>base = shared_from(<span class="kw-2">&amp;</span>[<span class="string">"a:1"</span>, <span class="string">"b:2"</span>]);
+<a href=#934 id=934 data-nosnippet>934</a>        <span class="kw">let </span><span class="kw-2">mut </span>ts = TagSet::from(base);
+<a href=#935 id=935 data-nosnippet>935</a>
+<a href=#936 id=936 data-nosnippet>936</a>        <span class="kw">let </span>other = shared_from(<span class="kw-2">&amp;</span>[<span class="string">"b:2"</span>, <span class="string">"c:3"</span>]);
+<a href=#937 id=937 data-nosnippet>937</a>        ts.merge_shared(<span class="kw-2">&amp;</span>other);
 <a href=#938 id=938 data-nosnippet>938</a>
-<a href=#939 id=939 data-nosnippet>939</a>    <span class="doccomment">/// Operations we can apply to a TagSet.
-<a href=#940 id=940 data-nosnippet>940</a>    </span><span class="attr">#[derive(Clone, Debug)]
-<a href=#941 id=941 data-nosnippet>941</a>    </span><span class="kw">enum </span>Op {
-<a href=#942 id=942 data-nosnippet>942</a>        Insert(String),
-<a href=#943 id=943 data-nosnippet>943</a>        RemoveByName(String),
-<a href=#944 id=944 data-nosnippet>944</a>    }
-<a href=#945 id=945 data-nosnippet>945</a>
-<a href=#946 id=946 data-nosnippet>946</a>    <span class="doccomment">/// Strategy for generating a tag string like `"key:value"`.
-<a href=#947 id=947 data-nosnippet>947</a>    </span><span class="kw">fn </span>arb_tag() -&gt; <span class="kw">impl </span>Strategy&lt;Value = String&gt; {
-<a href=#948 id=948 data-nosnippet>948</a>        (<span class="string">"[a-z]{1,4}"</span>, <span class="string">"[a-z0-9]{1,4}"</span>).prop_map(|(k, v)| <span class="macro">format!</span>(<span class="string">"{k}:{v}"</span>))
-<a href=#949 id=949 data-nosnippet>949</a>    }
-<a href=#950 id=950 data-nosnippet>950</a>
-<a href=#951 id=951 data-nosnippet>951</a>    <span class="doccomment">/// Strategy for generating a tag key name.
-<a href=#952 id=952 data-nosnippet>952</a>    </span><span class="kw">fn </span>arb_key() -&gt; <span class="kw">impl </span>Strategy&lt;Value = String&gt; {
-<a href=#953 id=953 data-nosnippet>953</a>        <span class="string">"[a-z]{1,4}"</span>.prop_map(|s| s)
-<a href=#954 id=954 data-nosnippet>954</a>    }
-<a href=#955 id=955 data-nosnippet>955</a>
-<a href=#956 id=956 data-nosnippet>956</a>    <span class="doccomment">/// Strategy for generating a random operation.
-<a href=#957 id=957 data-nosnippet>957</a>    </span><span class="kw">fn </span>arb_op() -&gt; <span class="kw">impl </span>Strategy&lt;Value = Op&gt; {
-<a href=#958 id=958 data-nosnippet>958</a>        <span class="macro">prop_oneof!</span>[arb_tag().prop_map(Op::Insert), arb_key().prop_map(Op::RemoveByName)]
-<a href=#959 id=959 data-nosnippet>959</a>    }
-<a href=#960 id=960 data-nosnippet>960</a>
-<a href=#961 id=961 data-nosnippet>961</a>    <span class="doccomment">/// Strategy for generating a group of tags (for one FrozenTagSet in the chain).
-<a href=#962 id=962 data-nosnippet>962</a>    </span><span class="kw">fn </span>arb_tag_group() -&gt; <span class="kw">impl </span>Strategy&lt;Value = Vec&lt;String&gt;&gt; {
-<a href=#963 id=963 data-nosnippet>963</a>        arb_vec(arb_tag(), <span class="number">0</span>..<span class="number">10</span>)
-<a href=#964 id=964 data-nosnippet>964</a>    }
-<a href=#965 id=965 data-nosnippet>965</a>
-<a href=#966 id=966 data-nosnippet>966</a>    <span class="doccomment">/// Strategy for generating a base with 1-3 chained tag groups.
-<a href=#967 id=967 data-nosnippet>967</a>    </span><span class="kw">fn </span>arb_base_groups() -&gt; <span class="kw">impl </span>Strategy&lt;Value = Vec&lt;Vec&lt;String&gt;&gt;&gt; {
-<a href=#968 id=968 data-nosnippet>968</a>        arb_vec(arb_tag_group(), <span class="number">1</span>..<span class="number">4</span>)
-<a href=#969 id=969 data-nosnippet>969</a>    }
-<a href=#970 id=970 data-nosnippet>970</a>
-<a href=#971 id=971 data-nosnippet>971</a>    <span class="doccomment">/// Build a SharedTagSet from multiple groups (each becomes a chained FrozenTagSet).
-<a href=#972 id=972 data-nosnippet>972</a>    /// Deduplicates exact tags across groups to avoid cross-chain duplicates.
-<a href=#973 id=973 data-nosnippet>973</a>    </span><span class="kw">fn </span>build_chained_base(groups: <span class="kw-2">&amp;</span>[Vec&lt;String&gt;]) -&gt; SharedTagSet {
-<a href=#974 id=974 data-nosnippet>974</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen_tags = HashSet::new();
-<a href=#975 id=975 data-nosnippet>975</a>
-<a href=#976 id=976 data-nosnippet>976</a>        <span class="kw">let </span><span class="kw-2">mut </span>shared = {
-<a href=#977 id=977 data-nosnippet>977</a>            <span class="kw">let </span>ts: TagSet = groups[<span class="number">0</span>]
-<a href=#978 id=978 data-nosnippet>978</a>                .iter()
-<a href=#979 id=979 data-nosnippet>979</a>                .filter(|s| seen_tags.insert(s.to_string()))
-<a href=#980 id=980 data-nosnippet>980</a>                .map(|s| Tag::from(s.as_str()))
-<a href=#981 id=981 data-nosnippet>981</a>                .collect();
-<a href=#982 id=982 data-nosnippet>982</a>            ts.into_shared()
-<a href=#983 id=983 data-nosnippet>983</a>        };
-<a href=#984 id=984 data-nosnippet>984</a>        <span class="kw">for </span>group <span class="kw">in </span><span class="kw-2">&amp;</span>groups[<span class="number">1</span>..] {
-<a href=#985 id=985 data-nosnippet>985</a>            <span class="kw">let </span>ts: TagSet = group
-<a href=#986 id=986 data-nosnippet>986</a>                .iter()
-<a href=#987 id=987 data-nosnippet>987</a>                .filter(|s| seen_tags.insert(s.to_string()))
-<a href=#988 id=988 data-nosnippet>988</a>                .map(|s| Tag::from(s.as_str()))
-<a href=#989 id=989 data-nosnippet>989</a>                .collect();
-<a href=#990 id=990 data-nosnippet>990</a>            shared.extend_from_shared(<span class="kw-2">&amp;</span>ts.into_shared());
-<a href=#991 id=991 data-nosnippet>991</a>        }
-<a href=#992 id=992 data-nosnippet>992</a>        shared
-<a href=#993 id=993 data-nosnippet>993</a>    }
-<a href=#994 id=994 data-nosnippet>994</a>
-<a href=#995 id=995 data-nosnippet>995</a>    <span class="doccomment">/// Reference model: a Vec&lt;String&gt; of full tag strings.
-<a href=#996 id=996 data-nosnippet>996</a>    /// Insert adds if exact tag not present. Remove-by-name removes all with matching name.
-<a href=#997 id=997 data-nosnippet>997</a>    </span><span class="kw">fn </span>apply_to_reference(reference: <span class="kw-2">&amp;mut </span>Vec&lt;String&gt;, op: <span class="kw-2">&amp;</span>Op) {
-<a href=#998 id=998 data-nosnippet>998</a>        <span class="kw">match </span>op {
-<a href=#999 id=999 data-nosnippet>999</a>            Op::Insert(tag) =&gt; {
-<a href=#1000 id=1000 data-nosnippet>1000</a>                <span class="kw">if </span>!reference.contains(tag) {
-<a href=#1001 id=1001 data-nosnippet>1001</a>                    reference.push(tag.clone());
-<a href=#1002 id=1002 data-nosnippet>1002</a>                }
-<a href=#1003 id=1003 data-nosnippet>1003</a>            }
-<a href=#1004 id=1004 data-nosnippet>1004</a>            Op::RemoveByName(name) =&gt; {
-<a href=#1005 id=1005 data-nosnippet>1005</a>                reference.retain(|t| {
-<a href=#1006 id=1006 data-nosnippet>1006</a>                    <span class="kw">let </span>tag_name = t.split_once(<span class="string">':'</span>).map_or(t.as_str(), |(n, <span class="kw">_</span>)| n);
-<a href=#1007 id=1007 data-nosnippet>1007</a>                    <span class="macro">tag_name !</span>= name.as_str()
-<a href=#1008 id=1008 data-nosnippet>1008</a>                });
-<a href=#1009 id=1009 data-nosnippet>1009</a>            }
-<a href=#1010 id=1010 data-nosnippet>1010</a>        }
-<a href=#1011 id=1011 data-nosnippet>1011</a>    }
-<a href=#1012 id=1012 data-nosnippet>1012</a>
-<a href=#1013 id=1013 data-nosnippet>1013</a>    <span class="doccomment">/// Apply operations to a TagSet.
-<a href=#1014 id=1014 data-nosnippet>1014</a>    </span><span class="kw">fn </span>apply_to_tagset(ts: <span class="kw-2">&amp;mut </span>TagSet, op: <span class="kw-2">&amp;</span>Op) {
-<a href=#1015 id=1015 data-nosnippet>1015</a>        <span class="kw">match </span>op {
-<a href=#1016 id=1016 data-nosnippet>1016</a>            Op::Insert(tag) =&gt; {
-<a href=#1017 id=1017 data-nosnippet>1017</a>                ts.insert_tag(Tag::from(tag.as_str()));
-<a href=#1018 id=1018 data-nosnippet>1018</a>            }
-<a href=#1019 id=1019 data-nosnippet>1019</a>            Op::RemoveByName(name) =&gt; {
-<a href=#1020 id=1020 data-nosnippet>1020</a>                ts.remove_tags(name.as_str());
-<a href=#1021 id=1021 data-nosnippet>1021</a>            }
-<a href=#1022 id=1022 data-nosnippet>1022</a>        }
-<a href=#1023 id=1023 data-nosnippet>1023</a>    }
-<a href=#1024 id=1024 data-nosnippet>1024</a>
-<a href=#1025 id=1025 data-nosnippet>1025</a>    <span class="macro">proptest!</span> {
-<a href=#1026 id=1026 data-nosnippet>1026</a>        <span class="attr">#![proptest_config(ProptestConfig::with_cases(<span class="number">10000</span>))]
-<a href=#1027 id=1027 data-nosnippet>1027</a>
-<a href=#1028 id=1028 data-nosnippet>1028</a>        #[test]
-<a href=#1029 id=1029 data-nosnippet>1029</a>        #[cfg_attr(miri, ignore)]
-<a href=#1030 id=1030 data-nosnippet>1030</a>        </span><span class="kw">fn </span>property_test_overlay_matches_reference(
-<a href=#1031 id=1031 data-nosnippet>1031</a>            base_groups <span class="kw">in </span>arb_base_groups(),
-<a href=#1032 id=1032 data-nosnippet>1032</a>            ops <span class="kw">in </span>arb_vec(arb_op(), <span class="number">0</span>..<span class="number">20</span>),
-<a href=#1033 id=1033 data-nosnippet>1033</a>        ) {
-<a href=#1034 id=1034 data-nosnippet>1034</a>            <span class="kw">let </span>base = build_chained_base(<span class="kw-2">&amp;</span>base_groups);
+<a href=#939 id=939 data-nosnippet>939</a>        <span class="comment">// b:2 is present in both the base and the merged set, and both copies are retained.
+<a href=#940 id=940 data-nosnippet>940</a>        </span><span class="macro">assert_eq!</span>(ts.len(), <span class="number">4</span>);
+<a href=#941 id=941 data-nosnippet>941</a>        <span class="macro">assert_eq!</span>(collect_sorted(<span class="kw-2">&amp;</span>ts), <span class="macro">vec!</span>[<span class="string">"a:1"</span>, <span class="string">"b:2"</span>, <span class="string">"b:2"</span>, <span class="string">"c:3"</span>]);
+<a href=#942 id=942 data-nosnippet>942</a>    }
+<a href=#943 id=943 data-nosnippet>943</a>
+<a href=#944 id=944 data-nosnippet>944</a>    <span class="attr">#[test]
+<a href=#945 id=945 data-nosnippet>945</a>    </span><span class="kw">fn </span>display_renders_comma_separated_tags() {
+<a href=#946 id=946 data-nosnippet>946</a>        <span class="kw">let </span>ts: TagSet = <span class="macro">vec!</span>[Tag::from(<span class="string">"a:1"</span>), Tag::from(<span class="string">"b:2"</span>)].into_iter().collect();
+<a href=#947 id=947 data-nosnippet>947</a>        <span class="macro">assert_eq!</span>(ts.to_string(), <span class="string">"[a:1,b:2]"</span>);
+<a href=#948 id=948 data-nosnippet>948</a>
+<a href=#949 id=949 data-nosnippet>949</a>        <span class="macro">assert_eq!</span>(TagSet::default().to_string(), <span class="string">"[]"</span>);
+<a href=#950 id=950 data-nosnippet>950</a>    }
+<a href=#951 id=951 data-nosnippet>951</a>
+<a href=#952 id=952 data-nosnippet>952</a>    <span class="comment">// --- to_mutable convenience ---
+<a href=#953 id=953 data-nosnippet>953</a>
+<a href=#954 id=954 data-nosnippet>954</a>    </span><span class="attr">#[test]
+<a href=#955 id=955 data-nosnippet>955</a>    </span><span class="kw">fn </span>shared_to_mutable() {
+<a href=#956 id=956 data-nosnippet>956</a>        <span class="kw">let </span>shared = shared_from(<span class="kw-2">&amp;</span>[<span class="string">"a:1"</span>, <span class="string">"b:2"</span>]);
+<a href=#957 id=957 data-nosnippet>957</a>        <span class="kw">let </span><span class="kw-2">mut </span>ts = shared.to_mutable();
+<a href=#958 id=958 data-nosnippet>958</a>        ts.insert_tag(Tag::from(<span class="string">"c:3"</span>));
+<a href=#959 id=959 data-nosnippet>959</a>        <span class="macro">assert_eq!</span>(ts.len(), <span class="number">3</span>);
+<a href=#960 id=960 data-nosnippet>960</a>    }
+<a href=#961 id=961 data-nosnippet>961</a>
+<a href=#962 id=962 data-nosnippet>962</a>    <span class="doccomment">/// Operations we can apply to a TagSet.
+<a href=#963 id=963 data-nosnippet>963</a>    </span><span class="attr">#[derive(Clone, Debug)]
+<a href=#964 id=964 data-nosnippet>964</a>    </span><span class="kw">enum </span>Op {
+<a href=#965 id=965 data-nosnippet>965</a>        Insert(String),
+<a href=#966 id=966 data-nosnippet>966</a>        RemoveByName(String),
+<a href=#967 id=967 data-nosnippet>967</a>    }
+<a href=#968 id=968 data-nosnippet>968</a>
+<a href=#969 id=969 data-nosnippet>969</a>    <span class="doccomment">/// Strategy for generating a tag string like `"key:value"`.
+<a href=#970 id=970 data-nosnippet>970</a>    </span><span class="kw">fn </span>arb_tag() -&gt; <span class="kw">impl </span>Strategy&lt;Value = String&gt; {
+<a href=#971 id=971 data-nosnippet>971</a>        (<span class="string">"[a-z]{1,4}"</span>, <span class="string">"[a-z0-9]{1,4}"</span>).prop_map(|(k, v)| <span class="macro">format!</span>(<span class="string">"{k}:{v}"</span>))
+<a href=#972 id=972 data-nosnippet>972</a>    }
+<a href=#973 id=973 data-nosnippet>973</a>
+<a href=#974 id=974 data-nosnippet>974</a>    <span class="doccomment">/// Strategy for generating a tag key name.
+<a href=#975 id=975 data-nosnippet>975</a>    </span><span class="kw">fn </span>arb_key() -&gt; <span class="kw">impl </span>Strategy&lt;Value = String&gt; {
+<a href=#976 id=976 data-nosnippet>976</a>        <span class="string">"[a-z]{1,4}"</span>.prop_map(|s| s)
+<a href=#977 id=977 data-nosnippet>977</a>    }
+<a href=#978 id=978 data-nosnippet>978</a>
+<a href=#979 id=979 data-nosnippet>979</a>    <span class="doccomment">/// Strategy for generating a random operation.
+<a href=#980 id=980 data-nosnippet>980</a>    </span><span class="kw">fn </span>arb_op() -&gt; <span class="kw">impl </span>Strategy&lt;Value = Op&gt; {
+<a href=#981 id=981 data-nosnippet>981</a>        <span class="macro">prop_oneof!</span>[arb_tag().prop_map(Op::Insert), arb_key().prop_map(Op::RemoveByName)]
+<a href=#982 id=982 data-nosnippet>982</a>    }
+<a href=#983 id=983 data-nosnippet>983</a>
+<a href=#984 id=984 data-nosnippet>984</a>    <span class="doccomment">/// Strategy for generating a group of tags (for one FrozenTagSet in the chain).
+<a href=#985 id=985 data-nosnippet>985</a>    </span><span class="kw">fn </span>arb_tag_group() -&gt; <span class="kw">impl </span>Strategy&lt;Value = Vec&lt;String&gt;&gt; {
+<a href=#986 id=986 data-nosnippet>986</a>        arb_vec(arb_tag(), <span class="number">0</span>..<span class="number">10</span>)
+<a href=#987 id=987 data-nosnippet>987</a>    }
+<a href=#988 id=988 data-nosnippet>988</a>
+<a href=#989 id=989 data-nosnippet>989</a>    <span class="doccomment">/// Strategy for generating a base with 1-3 chained tag groups.
+<a href=#990 id=990 data-nosnippet>990</a>    </span><span class="kw">fn </span>arb_base_groups() -&gt; <span class="kw">impl </span>Strategy&lt;Value = Vec&lt;Vec&lt;String&gt;&gt;&gt; {
+<a href=#991 id=991 data-nosnippet>991</a>        arb_vec(arb_tag_group(), <span class="number">1</span>..<span class="number">4</span>)
+<a href=#992 id=992 data-nosnippet>992</a>    }
+<a href=#993 id=993 data-nosnippet>993</a>
+<a href=#994 id=994 data-nosnippet>994</a>    <span class="doccomment">/// Build a SharedTagSet from multiple groups (each becomes a chained FrozenTagSet).
+<a href=#995 id=995 data-nosnippet>995</a>    /// Deduplicates exact tags across groups to avoid cross-chain duplicates.
+<a href=#996 id=996 data-nosnippet>996</a>    </span><span class="kw">fn </span>build_chained_base(groups: <span class="kw-2">&amp;</span>[Vec&lt;String&gt;]) -&gt; SharedTagSet {
+<a href=#997 id=997 data-nosnippet>997</a>        <span class="kw">let </span><span class="kw-2">mut </span>seen_tags = HashSet::new();
+<a href=#998 id=998 data-nosnippet>998</a>
+<a href=#999 id=999 data-nosnippet>999</a>        <span class="kw">let </span><span class="kw-2">mut </span>shared = {
+<a href=#1000 id=1000 data-nosnippet>1000</a>            <span class="kw">let </span>ts: TagSet = groups[<span class="number">0</span>]
+<a href=#1001 id=1001 data-nosnippet>1001</a>                .iter()
+<a href=#1002 id=1002 data-nosnippet>1002</a>                .filter(|s| seen_tags.insert(s.to_string()))
+<a href=#1003 id=1003 data-nosnippet>1003</a>                .map(|s| Tag::from(s.as_str()))
+<a href=#1004 id=1004 data-nosnippet>1004</a>                .collect();
+<a href=#1005 id=1005 data-nosnippet>1005</a>            ts.into_shared()
+<a href=#1006 id=1006 data-nosnippet>1006</a>        };
+<a href=#1007 id=1007 data-nosnippet>1007</a>        <span class="kw">for </span>group <span class="kw">in </span><span class="kw-2">&amp;</span>groups[<span class="number">1</span>..] {
+<a href=#1008 id=1008 data-nosnippet>1008</a>            <span class="kw">let </span>ts: TagSet = group
+<a href=#1009 id=1009 data-nosnippet>1009</a>                .iter()
+<a href=#1010 id=1010 data-nosnippet>1010</a>                .filter(|s| seen_tags.insert(s.to_string()))
+<a href=#1011 id=1011 data-nosnippet>1011</a>                .map(|s| Tag::from(s.as_str()))
+<a href=#1012 id=1012 data-nosnippet>1012</a>                .collect();
+<a href=#1013 id=1013 data-nosnippet>1013</a>            shared.extend_from_shared(<span class="kw-2">&amp;</span>ts.into_shared());
+<a href=#1014 id=1014 data-nosnippet>1014</a>        }
+<a href=#1015 id=1015 data-nosnippet>1015</a>        shared
+<a href=#1016 id=1016 data-nosnippet>1016</a>    }
+<a href=#1017 id=1017 data-nosnippet>1017</a>
+<a href=#1018 id=1018 data-nosnippet>1018</a>    <span class="doccomment">/// Reference model: a Vec&lt;String&gt; of full tag strings.
+<a href=#1019 id=1019 data-nosnippet>1019</a>    /// Insert adds if exact tag not present. Remove-by-name removes all with matching name.
+<a href=#1020 id=1020 data-nosnippet>1020</a>    </span><span class="kw">fn </span>apply_to_reference(reference: <span class="kw-2">&amp;mut </span>Vec&lt;String&gt;, op: <span class="kw-2">&amp;</span>Op) {
+<a href=#1021 id=1021 data-nosnippet>1021</a>        <span class="kw">match </span>op {
+<a href=#1022 id=1022 data-nosnippet>1022</a>            Op::Insert(tag) =&gt; {
+<a href=#1023 id=1023 data-nosnippet>1023</a>                <span class="kw">if </span>!reference.contains(tag) {
+<a href=#1024 id=1024 data-nosnippet>1024</a>                    reference.push(tag.clone());
+<a href=#1025 id=1025 data-nosnippet>1025</a>                }
+<a href=#1026 id=1026 data-nosnippet>1026</a>            }
+<a href=#1027 id=1027 data-nosnippet>1027</a>            Op::RemoveByName(name) =&gt; {
+<a href=#1028 id=1028 data-nosnippet>1028</a>                reference.retain(|t| {
+<a href=#1029 id=1029 data-nosnippet>1029</a>                    <span class="kw">let </span>tag_name = t.split_once(<span class="string">':'</span>).map_or(t.as_str(), |(n, <span class="kw">_</span>)| n);
+<a href=#1030 id=1030 data-nosnippet>1030</a>                    <span class="macro">tag_name !</span>= name.as_str()
+<a href=#1031 id=1031 data-nosnippet>1031</a>                });
+<a href=#1032 id=1032 data-nosnippet>1032</a>            }
+<a href=#1033 id=1033 data-nosnippet>1033</a>        }
+<a href=#1034 id=1034 data-nosnippet>1034</a>    }
 <a href=#1035 id=1035 data-nosnippet>1035</a>
-<a href=#1036 id=1036 data-nosnippet>1036</a>            <span class="comment">// Build the reference model from the base.
-<a href=#1037 id=1037 data-nosnippet>1037</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>reference: Vec&lt;String&gt; = base.into_iter().map(|t| t.as_str().to_string()).collect();
-<a href=#1038 id=1038 data-nosnippet>1038</a>
-<a href=#1039 id=1039 data-nosnippet>1039</a>            <span class="comment">// Build the TagSet from the base.
-<a href=#1040 id=1040 data-nosnippet>1040</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>ts = TagSet::from(base);
-<a href=#1041 id=1041 data-nosnippet>1041</a>
-<a href=#1042 id=1042 data-nosnippet>1042</a>            <span class="comment">// Apply operations to both.
-<a href=#1043 id=1043 data-nosnippet>1043</a>            </span><span class="kw">for </span>op <span class="kw">in </span><span class="kw-2">&amp;</span>ops {
-<a href=#1044 id=1044 data-nosnippet>1044</a>                apply_to_reference(<span class="kw-2">&amp;mut </span>reference, op);
-<a href=#1045 id=1045 data-nosnippet>1045</a>                apply_to_tagset(<span class="kw-2">&amp;mut </span>ts, op);
-<a href=#1046 id=1046 data-nosnippet>1046</a>            }
+<a href=#1036 id=1036 data-nosnippet>1036</a>    <span class="doccomment">/// Apply operations to a TagSet.
+<a href=#1037 id=1037 data-nosnippet>1037</a>    </span><span class="kw">fn </span>apply_to_tagset(ts: <span class="kw-2">&amp;mut </span>TagSet, op: <span class="kw-2">&amp;</span>Op) {
+<a href=#1038 id=1038 data-nosnippet>1038</a>        <span class="kw">match </span>op {
+<a href=#1039 id=1039 data-nosnippet>1039</a>            Op::Insert(tag) =&gt; {
+<a href=#1040 id=1040 data-nosnippet>1040</a>                ts.insert_tag(Tag::from(tag.as_str()));
+<a href=#1041 id=1041 data-nosnippet>1041</a>            }
+<a href=#1042 id=1042 data-nosnippet>1042</a>            Op::RemoveByName(name) =&gt; {
+<a href=#1043 id=1043 data-nosnippet>1043</a>                ts.remove_tags(name.as_str());
+<a href=#1044 id=1044 data-nosnippet>1044</a>            }
+<a href=#1045 id=1045 data-nosnippet>1045</a>        }
+<a href=#1046 id=1046 data-nosnippet>1046</a>    }
 <a href=#1047 id=1047 data-nosnippet>1047</a>
-<a href=#1048 id=1048 data-nosnippet>1048</a>            <span class="comment">// Verify len matches before consuming.
-<a href=#1049 id=1049 data-nosnippet>1049</a>            </span><span class="macro">prop_assert_eq!</span>(ts.len(), reference.len(),
-<a href=#1050 id=1050 data-nosnippet>1050</a>                <span class="string">"len mismatch: TagSet={}, reference={}"</span>, ts.len(), reference.len());
-<a href=#1051 id=1051 data-nosnippet>1051</a>
-<a href=#1052 id=1052 data-nosnippet>1052</a>            <span class="comment">// Compare as sorted sets of tag strings.
-<a href=#1053 id=1053 data-nosnippet>1053</a>            </span><span class="kw">let </span>ref_set: BTreeSet&lt;String&gt; = reference.iter().cloned().collect();
-<a href=#1054 id=1054 data-nosnippet>1054</a>            <span class="kw">let </span>ts_set: BTreeSet&lt;String&gt; = ts.into_iter().map(|t| t.as_str().to_string()).collect();
-<a href=#1055 id=1055 data-nosnippet>1055</a>
-<a href=#1056 id=1056 data-nosnippet>1056</a>            <span class="macro">prop_assert_eq!</span>(<span class="kw-2">&amp;</span>ref_set, <span class="kw-2">&amp;</span>ts_set,
-<a href=#1057 id=1057 data-nosnippet>1057</a>                <span class="string">"TagSet and reference diverged after ops: {:?}"</span>, ops);
-<a href=#1058 id=1058 data-nosnippet>1058</a>        }
-<a href=#1059 id=1059 data-nosnippet>1059</a>    }
-<a href=#1060 id=1060 data-nosnippet>1060</a>}
+<a href=#1048 id=1048 data-nosnippet>1048</a>    <span class="macro">proptest!</span> {
+<a href=#1049 id=1049 data-nosnippet>1049</a>        <span class="attr">#![proptest_config(ProptestConfig::with_cases(<span class="number">10000</span>))]
+<a href=#1050 id=1050 data-nosnippet>1050</a>
+<a href=#1051 id=1051 data-nosnippet>1051</a>        #[test]
+<a href=#1052 id=1052 data-nosnippet>1052</a>        #[cfg_attr(miri, ignore)]
+<a href=#1053 id=1053 data-nosnippet>1053</a>        </span><span class="kw">fn </span>property_test_overlay_matches_reference(
+<a href=#1054 id=1054 data-nosnippet>1054</a>            base_groups <span class="kw">in </span>arb_base_groups(),
+<a href=#1055 id=1055 data-nosnippet>1055</a>            ops <span class="kw">in </span>arb_vec(arb_op(), <span class="number">0</span>..<span class="number">20</span>),
+<a href=#1056 id=1056 data-nosnippet>1056</a>        ) {
+<a href=#1057 id=1057 data-nosnippet>1057</a>            <span class="kw">let </span>base = build_chained_base(<span class="kw-2">&amp;</span>base_groups);
+<a href=#1058 id=1058 data-nosnippet>1058</a>
+<a href=#1059 id=1059 data-nosnippet>1059</a>            <span class="comment">// Build the reference model from the base.
+<a href=#1060 id=1060 data-nosnippet>1060</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>reference: Vec&lt;String&gt; = base.into_iter().map(|t| t.as_str().to_string()).collect();
+<a href=#1061 id=1061 data-nosnippet>1061</a>
+<a href=#1062 id=1062 data-nosnippet>1062</a>            <span class="comment">// Build the TagSet from the base.
+<a href=#1063 id=1063 data-nosnippet>1063</a>            </span><span class="kw">let </span><span class="kw-2">mut </span>ts = TagSet::from(base);
+<a href=#1064 id=1064 data-nosnippet>1064</a>
+<a href=#1065 id=1065 data-nosnippet>1065</a>            <span class="comment">// Apply operations to both.
+<a href=#1066 id=1066 data-nosnippet>1066</a>            </span><span class="kw">for </span>op <span class="kw">in </span><span class="kw-2">&amp;</span>ops {
+<a href=#1067 id=1067 data-nosnippet>1067</a>                apply_to_reference(<span class="kw-2">&amp;mut </span>reference, op);
+<a href=#1068 id=1068 data-nosnippet>1068</a>                apply_to_tagset(<span class="kw-2">&amp;mut </span>ts, op);
+<a href=#1069 id=1069 data-nosnippet>1069</a>            }
+<a href=#1070 id=1070 data-nosnippet>1070</a>
+<a href=#1071 id=1071 data-nosnippet>1071</a>            <span class="comment">// Verify len matches before consuming.
+<a href=#1072 id=1072 data-nosnippet>1072</a>            </span><span class="macro">prop_assert_eq!</span>(ts.len(), reference.len(),
+<a href=#1073 id=1073 data-nosnippet>1073</a>                <span class="string">"len mismatch: TagSet={}, reference={}"</span>, ts.len(), reference.len());
+<a href=#1074 id=1074 data-nosnippet>1074</a>
+<a href=#1075 id=1075 data-nosnippet>1075</a>            <span class="comment">// Compare as sorted sets of tag strings.
+<a href=#1076 id=1076 data-nosnippet>1076</a>            </span><span class="kw">let </span>ref_set: BTreeSet&lt;String&gt; = reference.iter().cloned().collect();
+<a href=#1077 id=1077 data-nosnippet>1077</a>            <span class="kw">let </span>ts_set: BTreeSet&lt;String&gt; = ts.into_iter().map(|t| t.as_str().to_string()).collect();
+<a href=#1078 id=1078 data-nosnippet>1078</a>
+<a href=#1079 id=1079 data-nosnippet>1079</a>            <span class="macro">prop_assert_eq!</span>(<span class="kw-2">&amp;</span>ref_set, <span class="kw-2">&amp;</span>ts_set,
+<a href=#1080 id=1080 data-nosnippet>1080</a>                <span class="string">"TagSet and reference diverged after ops: {:?}"</span>, ops);
+<a href=#1081 id=1081 data-nosnippet>1081</a>        }
+<a href=#1082 id=1082 data-nosnippet>1082</a>    }
+<a href=#1083 id=1083 data-nosnippet>1083</a>}
 </code></pre></div></section></main></body></html>

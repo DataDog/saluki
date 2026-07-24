@@ -138,78 +138,63 @@
 <a href=#138 id=138 data-nosnippet>138</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#139 id=139 data-nosnippet>139</a>    <span class="kw">use </span><span class="kw">crate</span>::canonical::mapping::LogarithmicMapping;
 <a href=#140 id=140 data-nosnippet>140</a>
-<a href=#141 id=141 data-nosnippet>141</a>    <span class="attr">#[test]
-<a href=#142 id=142 data-nosnippet>142</a>    </span><span class="kw">fn </span>test_zero_sized() {
-<a href=#143 id=143 data-nosnippet>143</a>        <span class="macro">assert_eq!</span>(std::mem::size_of::&lt;FixedLogarithmicMapping&gt;(), <span class="number">0</span>);
-<a href=#144 id=144 data-nosnippet>144</a>    }
-<a href=#145 id=145 data-nosnippet>145</a>
-<a href=#146 id=146 data-nosnippet>146</a>    <span class="attr">#[test]
-<a href=#147 id=147 data-nosnippet>147</a>    </span><span class="kw">fn </span>test_matches_logarithmic_mapping() {
-<a href=#148 id=148 data-nosnippet>148</a>        <span class="kw">let </span>fixed = FixedLogarithmicMapping::new();
-<a href=#149 id=149 data-nosnippet>149</a>        <span class="kw">let </span>dynamic = LogarithmicMapping::new(<span class="number">0.01</span>).unwrap();
-<a href=#150 id=150 data-nosnippet>150</a>
-<a href=#151 id=151 data-nosnippet>151</a>        <span class="comment">// Verify constants match
-<a href=#152 id=152 data-nosnippet>152</a>        </span><span class="macro">assert!</span>(
-<a href=#153 id=153 data-nosnippet>153</a>            (fixed.gamma() - dynamic.gamma()).abs() &lt; <span class="number">1e-10</span>,
-<a href=#154 id=154 data-nosnippet>154</a>            <span class="string">"gamma mismatch: {} vs {}"</span>,
-<a href=#155 id=155 data-nosnippet>155</a>            fixed.gamma(),
-<a href=#156 id=156 data-nosnippet>156</a>            dynamic.gamma()
-<a href=#157 id=157 data-nosnippet>157</a>        );
-<a href=#158 id=158 data-nosnippet>158</a>        <span class="macro">assert!</span>(
-<a href=#159 id=159 data-nosnippet>159</a>            (fixed.relative_accuracy() - dynamic.relative_accuracy()).abs() &lt; <span class="number">1e-10</span>,
-<a href=#160 id=160 data-nosnippet>160</a>            <span class="string">"relative_accuracy mismatch: {} vs {}"</span>,
-<a href=#161 id=161 data-nosnippet>161</a>            fixed.relative_accuracy(),
-<a href=#162 id=162 data-nosnippet>162</a>            dynamic.relative_accuracy()
-<a href=#163 id=163 data-nosnippet>163</a>        );
-<a href=#164 id=164 data-nosnippet>164</a>
-<a href=#165 id=165 data-nosnippet>165</a>        <span class="comment">// Verify index calculations match for various values
-<a href=#166 id=166 data-nosnippet>166</a>        </span><span class="kw">for </span><span class="kw-2">&amp;</span>value <span class="kw">in </span><span class="kw-2">&amp;</span>[<span class="number">0.001</span>, <span class="number">0.1</span>, <span class="number">1.0</span>, <span class="number">10.0</span>, <span class="number">100.0</span>, <span class="number">1000.0</span>, <span class="number">1_000_000.0</span>] {
-<a href=#167 id=167 data-nosnippet>167</a>            <span class="kw">let </span>fixed_idx = fixed.index(value);
-<a href=#168 id=168 data-nosnippet>168</a>            <span class="kw">let </span>dynamic_idx = dynamic.index(value);
-<a href=#169 id=169 data-nosnippet>169</a>            <span class="macro">assert_eq!</span>(
-<a href=#170 id=170 data-nosnippet>170</a>                fixed_idx, dynamic_idx,
-<a href=#171 id=171 data-nosnippet>171</a>                <span class="string">"index mismatch for value {}: {} vs {}"</span>,
-<a href=#172 id=172 data-nosnippet>172</a>                value, fixed_idx, dynamic_idx
-<a href=#173 id=173 data-nosnippet>173</a>            );
-<a href=#174 id=174 data-nosnippet>174</a>        }
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="comment">// Verify value calculations match for various indices
-<a href=#177 id=177 data-nosnippet>177</a>        </span><span class="kw">for </span>idx <span class="kw">in </span>-<span class="number">100</span>..<span class="number">100 </span>{
-<a href=#178 id=178 data-nosnippet>178</a>            <span class="kw">let </span>fixed_val = fixed.value(idx);
-<a href=#179 id=179 data-nosnippet>179</a>            <span class="kw">let </span>dynamic_val = dynamic.value(idx);
-<a href=#180 id=180 data-nosnippet>180</a>            <span class="macro">assert!</span>(
-<a href=#181 id=181 data-nosnippet>181</a>                (fixed_val - dynamic_val).abs() &lt; <span class="number">1e-10 </span>|| (fixed_val / dynamic_val - <span class="number">1.0</span>).abs() &lt; <span class="number">1e-10</span>,
-<a href=#182 id=182 data-nosnippet>182</a>                <span class="string">"value mismatch for index {}: {} vs {}"</span>,
-<a href=#183 id=183 data-nosnippet>183</a>                idx,
-<a href=#184 id=184 data-nosnippet>184</a>                fixed_val,
-<a href=#185 id=185 data-nosnippet>185</a>                dynamic_val
-<a href=#186 id=186 data-nosnippet>186</a>            );
-<a href=#187 id=187 data-nosnippet>187</a>        }
-<a href=#188 id=188 data-nosnippet>188</a>    }
-<a href=#189 id=189 data-nosnippet>189</a>
-<a href=#190 id=190 data-nosnippet>190</a>    <span class="attr">#[test]
-<a href=#191 id=191 data-nosnippet>191</a>    </span><span class="kw">fn </span>test_index_value_roundtrip() {
-<a href=#192 id=192 data-nosnippet>192</a>        <span class="kw">let </span>mapping = FixedLogarithmicMapping::new();
-<a href=#193 id=193 data-nosnippet>193</a>
-<a href=#194 id=194 data-nosnippet>194</a>        <span class="kw">for </span>i <span class="kw">in </span>-<span class="number">100</span>..<span class="number">100 </span>{
-<a href=#195 id=195 data-nosnippet>195</a>            <span class="kw">let </span>value = mapping.value(i);
-<a href=#196 id=196 data-nosnippet>196</a>            <span class="kw">let </span>recovered_index = mapping.index(value);
-<a href=#197 id=197 data-nosnippet>197</a>            <span class="macro">assert!</span>(
-<a href=#198 id=198 data-nosnippet>198</a>                (recovered_index - i).abs() &lt;= <span class="number">1</span>,
-<a href=#199 id=199 data-nosnippet>199</a>                <span class="string">"index {} -&gt; value {} -&gt; index {}"</span>,
-<a href=#200 id=200 data-nosnippet>200</a>                i,
-<a href=#201 id=201 data-nosnippet>201</a>                value,
-<a href=#202 id=202 data-nosnippet>202</a>                recovered_index
-<a href=#203 id=203 data-nosnippet>203</a>            );
-<a href=#204 id=204 data-nosnippet>204</a>        }
-<a href=#205 id=205 data-nosnippet>205</a>    }
-<a href=#206 id=206 data-nosnippet>206</a>
-<a href=#207 id=207 data-nosnippet>207</a>    <span class="attr">#[test]
-<a href=#208 id=208 data-nosnippet>208</a>    </span><span class="kw">fn </span>test_proto_roundtrip() {
-<a href=#209 id=209 data-nosnippet>209</a>        <span class="kw">let </span>mapping = FixedLogarithmicMapping::new();
-<a href=#210 id=210 data-nosnippet>210</a>        <span class="kw">let </span>proto = mapping.to_proto();
-<a href=#211 id=211 data-nosnippet>211</a>
-<a href=#212 id=212 data-nosnippet>212</a>        <span class="macro">assert!</span>(mapping.validate_proto_mapping(<span class="kw-2">&amp;</span>proto).is_ok());
-<a href=#213 id=213 data-nosnippet>213</a>    }
-<a href=#214 id=214 data-nosnippet>214</a>}
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="comment">// Shared `IndexMapping` conformance suite (round-trip, bound ordering, gamma/accuracy consistency, proto
+<a href=#142 id=142 data-nosnippet>142</a>    // self-validation). This subsumes the former per-impl index/value round-trip and proto round-trip tests.
+<a href=#143 id=143 data-nosnippet>143</a>    </span><span class="attr">#[test]
+<a href=#144 id=144 data-nosnippet>144</a>    </span><span class="kw">fn </span>conforms_to_index_mapping_contract() {
+<a href=#145 id=145 data-nosnippet>145</a>        <span class="kw">let </span>mapping = FixedLogarithmicMapping::new();
+<a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">crate</span>::canonical::mapping::conformance::assert_index_mapping_conformance(<span class="kw-2">&amp;</span>mapping, <span class="number">0.01</span>);
+<a href=#147 id=147 data-nosnippet>147</a>    }
+<a href=#148 id=148 data-nosnippet>148</a>
+<a href=#149 id=149 data-nosnippet>149</a>    <span class="comment">// Being zero-sized is the entire reason this mapping exists, so it's asserted directly rather than via the
+<a href=#150 id=150 data-nosnippet>150</a>    // shared conformance suite.
+<a href=#151 id=151 data-nosnippet>151</a>    </span><span class="attr">#[test]
+<a href=#152 id=152 data-nosnippet>152</a>    </span><span class="kw">fn </span>is_zero_sized() {
+<a href=#153 id=153 data-nosnippet>153</a>        <span class="macro">assert_eq!</span>(std::mem::size_of::&lt;FixedLogarithmicMapping&gt;(), <span class="number">0</span>);
+<a href=#154 id=154 data-nosnippet>154</a>    }
+<a href=#155 id=155 data-nosnippet>155</a>
+<a href=#156 id=156 data-nosnippet>156</a>    <span class="attr">#[test]
+<a href=#157 id=157 data-nosnippet>157</a>    </span><span class="kw">fn </span>matches_logarithmic_mapping() {
+<a href=#158 id=158 data-nosnippet>158</a>        <span class="kw">let </span>fixed = FixedLogarithmicMapping::new();
+<a href=#159 id=159 data-nosnippet>159</a>        <span class="kw">let </span>dynamic = LogarithmicMapping::new(<span class="number">0.01</span>).unwrap();
+<a href=#160 id=160 data-nosnippet>160</a>
+<a href=#161 id=161 data-nosnippet>161</a>        <span class="comment">// Verify constants match
+<a href=#162 id=162 data-nosnippet>162</a>        </span><span class="macro">assert!</span>(
+<a href=#163 id=163 data-nosnippet>163</a>            (fixed.gamma() - dynamic.gamma()).abs() &lt; <span class="number">1e-10</span>,
+<a href=#164 id=164 data-nosnippet>164</a>            <span class="string">"gamma mismatch: {} vs {}"</span>,
+<a href=#165 id=165 data-nosnippet>165</a>            fixed.gamma(),
+<a href=#166 id=166 data-nosnippet>166</a>            dynamic.gamma()
+<a href=#167 id=167 data-nosnippet>167</a>        );
+<a href=#168 id=168 data-nosnippet>168</a>        <span class="macro">assert!</span>(
+<a href=#169 id=169 data-nosnippet>169</a>            (fixed.relative_accuracy() - dynamic.relative_accuracy()).abs() &lt; <span class="number">1e-10</span>,
+<a href=#170 id=170 data-nosnippet>170</a>            <span class="string">"relative_accuracy mismatch: {} vs {}"</span>,
+<a href=#171 id=171 data-nosnippet>171</a>            fixed.relative_accuracy(),
+<a href=#172 id=172 data-nosnippet>172</a>            dynamic.relative_accuracy()
+<a href=#173 id=173 data-nosnippet>173</a>        );
+<a href=#174 id=174 data-nosnippet>174</a>
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="comment">// Verify index calculations match for various values
+<a href=#176 id=176 data-nosnippet>176</a>        </span><span class="kw">for </span><span class="kw-2">&amp;</span>value <span class="kw">in </span><span class="kw-2">&amp;</span>[<span class="number">0.001</span>, <span class="number">0.1</span>, <span class="number">1.0</span>, <span class="number">10.0</span>, <span class="number">100.0</span>, <span class="number">1000.0</span>, <span class="number">1_000_000.0</span>] {
+<a href=#177 id=177 data-nosnippet>177</a>            <span class="kw">let </span>fixed_idx = fixed.index(value);
+<a href=#178 id=178 data-nosnippet>178</a>            <span class="kw">let </span>dynamic_idx = dynamic.index(value);
+<a href=#179 id=179 data-nosnippet>179</a>            <span class="macro">assert_eq!</span>(
+<a href=#180 id=180 data-nosnippet>180</a>                fixed_idx, dynamic_idx,
+<a href=#181 id=181 data-nosnippet>181</a>                <span class="string">"index mismatch for value {}: {} vs {}"</span>,
+<a href=#182 id=182 data-nosnippet>182</a>                value, fixed_idx, dynamic_idx
+<a href=#183 id=183 data-nosnippet>183</a>            );
+<a href=#184 id=184 data-nosnippet>184</a>        }
+<a href=#185 id=185 data-nosnippet>185</a>
+<a href=#186 id=186 data-nosnippet>186</a>        <span class="comment">// Verify value calculations match for various indices
+<a href=#187 id=187 data-nosnippet>187</a>        </span><span class="kw">for </span>idx <span class="kw">in </span>-<span class="number">100</span>..<span class="number">100 </span>{
+<a href=#188 id=188 data-nosnippet>188</a>            <span class="kw">let </span>fixed_val = fixed.value(idx);
+<a href=#189 id=189 data-nosnippet>189</a>            <span class="kw">let </span>dynamic_val = dynamic.value(idx);
+<a href=#190 id=190 data-nosnippet>190</a>            <span class="macro">assert!</span>(
+<a href=#191 id=191 data-nosnippet>191</a>                (fixed_val - dynamic_val).abs() &lt; <span class="number">1e-10 </span>|| (fixed_val / dynamic_val - <span class="number">1.0</span>).abs() &lt; <span class="number">1e-10</span>,
+<a href=#192 id=192 data-nosnippet>192</a>                <span class="string">"value mismatch for index {}: {} vs {}"</span>,
+<a href=#193 id=193 data-nosnippet>193</a>                idx,
+<a href=#194 id=194 data-nosnippet>194</a>                fixed_val,
+<a href=#195 id=195 data-nosnippet>195</a>                dynamic_val
+<a href=#196 id=196 data-nosnippet>196</a>            );
+<a href=#197 id=197 data-nosnippet>197</a>        }
+<a href=#198 id=198 data-nosnippet>198</a>    }
+<a href=#199 id=199 data-nosnippet>199</a>}
 </code></pre></div></section></main></body></html>

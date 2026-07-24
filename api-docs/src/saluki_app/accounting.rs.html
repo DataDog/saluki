@@ -424,4 +424,73 @@
 <a href=#424 id=424 data-nosnippet>424</a><span class="kw">fn </span>bytes_to_si_string(bytes: usize) -&gt; bytesize::Display {
 <a href=#425 id=425 data-nosnippet>425</a>    ByteSize::b(bytes <span class="kw">as </span>u64).display().si()
 <a href=#426 id=426 data-nosnippet>426</a>}
+<a href=#427 id=427 data-nosnippet>427</a>
+<a href=#428 id=428 data-nosnippet>428</a><span class="attr">#[cfg(test)]
+<a href=#429 id=429 data-nosnippet>429</a></span><span class="kw">mod </span>tests {
+<a href=#430 id=430 data-nosnippet>430</a>    <span class="kw">use </span>saluki_config::{config_from, test_env_lock};
+<a href=#431 id=431 data-nosnippet>431</a>
+<a href=#432 id=432 data-nosnippet>432</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#433 id=433 data-nosnippet>433</a>
+<a href=#434 id=434 data-nosnippet>434</a>    <span class="attr">#[test]
+<a href=#435 id=435 data-nosnippet>435</a>    </span><span class="kw">fn </span>cgroup_memory_parser_converts_raw_limits_to_bytes() {
+<a href=#436 id=436 data-nosnippet>436</a>        <span class="comment">// The cgroup memory files hold a bare byte count, or the literal `max` when no limit is set. `max` and any
+<a href=#437 id=437 data-nosnippet>437</a>        // unparseable value yield `None`; a numeric value parses to that many bytes (after trimming whitespace).
+<a href=#438 id=438 data-nosnippet>438</a>        </span><span class="kw">let </span>cases: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="prelude-ty">Option</span>&lt;u64&gt;)] = <span class="kw-2">&amp;</span>[
+<a href=#439 id=439 data-nosnippet>439</a>            (<span class="string">"max"</span>, <span class="prelude-val">None</span>),
+<a href=#440 id=440 data-nosnippet>440</a>            (<span class="string">"1073741824"</span>, <span class="prelude-val">Some</span>(<span class="number">1_073_741_824</span>)),
+<a href=#441 id=441 data-nosnippet>441</a>            (<span class="string">"  1048576\n"</span>, <span class="prelude-val">Some</span>(<span class="number">1_048_576</span>)),
+<a href=#442 id=442 data-nosnippet>442</a>            (<span class="string">"not-a-number"</span>, <span class="prelude-val">None</span>),
+<a href=#443 id=443 data-nosnippet>443</a>        ];
+<a href=#444 id=444 data-nosnippet>444</a>
+<a href=#445 id=445 data-nosnippet>445</a>        <span class="kw">for </span>(raw, expected) <span class="kw">in </span>cases {
+<a href=#446 id=446 data-nosnippet>446</a>            <span class="kw">let </span>actual = CgroupMemoryParser.convert_to_bytesize(raw).map(|bytes| bytes.as_u64());
+<a href=#447 id=447 data-nosnippet>447</a>            <span class="macro">assert_eq!</span>(actual, <span class="kw-2">*</span>expected, <span class="string">"raw input: {raw:?}"</span>);
+<a href=#448 id=448 data-nosnippet>448</a>        }
+<a href=#449 id=449 data-nosnippet>449</a>    }
+<a href=#450 id=450 data-nosnippet>450</a>
+<a href=#451 id=451 data-nosnippet>451</a>    <span class="attr">#[tokio::test]
+<a href=#452 id=452 data-nosnippet>452</a>    </span><span class="kw">async fn </span>memory_bounds_configuration_parses_limit_and_slop_factor() {
+<a href=#453 id=453 data-nosnippet>453</a>        <span class="kw">let </span>cfg = config_from(<span class="macro">serde_json::json!</span>({
+<a href=#454 id=454 data-nosnippet>454</a>            <span class="string">"memory_limit"</span>: <span class="number">1_048_576</span>,
+<a href=#455 id=455 data-nosnippet>455</a>            <span class="string">"memory_slop_factor"</span>: <span class="number">0.25</span>,
+<a href=#456 id=456 data-nosnippet>456</a>        }))
+<a href=#457 id=457 data-nosnippet>457</a>        .<span class="kw">await</span>;
+<a href=#458 id=458 data-nosnippet>458</a>
+<a href=#459 id=459 data-nosnippet>459</a>        <span class="kw">let </span>bounds = MemoryBoundsConfiguration::try_from_config(<span class="kw-2">&amp;</span>cfg).expect(<span class="string">"valid config should parse"</span>);
+<a href=#460 id=460 data-nosnippet>460</a>        <span class="kw">let </span>grant = bounds
+<a href=#461 id=461 data-nosnippet>461</a>            .get_initial_grant()
+<a href=#462 id=462 data-nosnippet>462</a>            .expect(<span class="string">"a configured memory limit should yield an initial grant"</span>);
+<a href=#463 id=463 data-nosnippet>463</a>
+<a href=#464 id=464 data-nosnippet>464</a>        <span class="macro">assert_eq!</span>(grant.initial_limit_bytes(), <span class="number">1_048_576</span>);
+<a href=#465 id=465 data-nosnippet>465</a>        <span class="macro">assert_eq!</span>(grant.slop_factor(), <span class="number">0.25</span>);
+<a href=#466 id=466 data-nosnippet>466</a>    }
+<a href=#467 id=467 data-nosnippet>467</a>
+<a href=#468 id=468 data-nosnippet>468</a>    <span class="attr">#[tokio::test]
+<a href=#469 id=469 data-nosnippet>469</a>    </span><span class="kw">async fn </span>memory_bounds_configuration_rejects_out_of_range_slop_factor() {
+<a href=#470 id=470 data-nosnippet>470</a>        <span class="comment">// `try_from_config` builds a grant as a smoke test, and a slop factor outside `[0.0, 1.0)` makes that fail.
+<a href=#471 id=471 data-nosnippet>471</a>        </span><span class="kw">let </span>cfg = config_from(<span class="macro">serde_json::json!</span>({
+<a href=#472 id=472 data-nosnippet>472</a>            <span class="string">"memory_limit"</span>: <span class="number">1_048_576</span>,
+<a href=#473 id=473 data-nosnippet>473</a>            <span class="string">"memory_slop_factor"</span>: <span class="number">1.5</span>,
+<a href=#474 id=474 data-nosnippet>474</a>        }))
+<a href=#475 id=475 data-nosnippet>475</a>        .<span class="kw">await</span>;
+<a href=#476 id=476 data-nosnippet>476</a>
+<a href=#477 id=477 data-nosnippet>477</a>        <span class="macro">assert!</span>(
+<a href=#478 id=478 data-nosnippet>478</a>            MemoryBoundsConfiguration::try_from_config(<span class="kw-2">&amp;</span>cfg).is_err(),
+<a href=#479 id=479 data-nosnippet>479</a>            <span class="string">"a slop factor of 1.5 should be rejected"
+<a href=#480 id=480 data-nosnippet>480</a>        </span>);
+<a href=#481 id=481 data-nosnippet>481</a>    }
+<a href=#482 id=482 data-nosnippet>482</a>
+<a href=#483 id=483 data-nosnippet>483</a>    <span class="attr">#[tokio::test]
+<a href=#484 id=484 data-nosnippet>484</a>    </span><span class="kw">async fn </span>memory_bounds_configuration_without_limit_has_no_grant() {
+<a href=#485 id=485 data-nosnippet>485</a>        <span class="kw">let </span>cfg = config_from(<span class="macro">serde_json::json!</span>({})).<span class="kw">await</span>;
+<a href=#486 id=486 data-nosnippet>486</a>
+<a href=#487 id=487 data-nosnippet>487</a>        <span class="comment">// With no explicit limit, `try_from_config` consults the `DOCKER_DD_AGENT` environment variable, so serialize
+<a href=#488 id=488 data-nosnippet>488</a>        // against the shared env lock and ensure it's unset for a deterministic "no limit" result.
+<a href=#489 id=489 data-nosnippet>489</a>        </span><span class="kw">let </span>_env_guard = test_env_lock();
+<a href=#490 id=490 data-nosnippet>490</a>        std::env::remove_var(<span class="string">"DOCKER_DD_AGENT"</span>);
+<a href=#491 id=491 data-nosnippet>491</a>
+<a href=#492 id=492 data-nosnippet>492</a>        <span class="kw">let </span>bounds = MemoryBoundsConfiguration::try_from_config(<span class="kw-2">&amp;</span>cfg).expect(<span class="string">"empty config should parse"</span>);
+<a href=#493 id=493 data-nosnippet>493</a>        <span class="macro">assert!</span>(bounds.get_initial_grant().is_none());
+<a href=#494 id=494 data-nosnippet>494</a>    }
+<a href=#495 id=495 data-nosnippet>495</a>}
 </code></pre></div></section></main></body></html>

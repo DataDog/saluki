@@ -982,656 +982,748 @@
 <a href=#982 id=982 data-nosnippet>982</a>    }
 <a href=#983 id=983 data-nosnippet>983</a>
 <a href=#984 id=984 data-nosnippet>984</a>    <span class="attr">#[test]
-<a href=#985 id=985 data-nosnippet>985</a>    </span><span class="kw">fn </span>deser_additional_endpoints_json_direct_mapping() {
-<a href=#986 id=986 data-nosnippet>986</a>        <span class="kw">let </span>raw_input = <span class="string">r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#</span>;
-<a href=#987 id=987 data-nosnippet>987</a>
-<a href=#988 id=988 data-nosnippet>988</a>        <span class="kw">let </span>result = serde_yaml::from_str::&lt;AdditionalEndpoints&gt;(raw_input)
-<a href=#989 id=989 data-nosnippet>989</a>            .expect(<span class="string">"should not fail to deserialize AdditionalEndpoints from JSON string"</span>);
-<a href=#990 id=990 data-nosnippet>990</a>
-<a href=#991 id=991 data-nosnippet>991</a>        <span class="kw">let </span>expected = <span class="macro">vec!</span>[<span class="string">"app.datadoghq.com:fake-api-key-1"</span>, <span class="string">"app.datadoghq.eu:fake-api-key-2"</span>];
-<a href=#992 id=992 data-nosnippet>992</a>        <span class="kw">let </span>actual = additional_endpoints_to_sorted_strings(<span class="kw-2">&amp;</span>result);
-<a href=#993 id=993 data-nosnippet>993</a>        <span class="macro">assert_eq!</span>(expected, actual);
-<a href=#994 id=994 data-nosnippet>994</a>    }
-<a href=#995 id=995 data-nosnippet>995</a>
-<a href=#996 id=996 data-nosnippet>996</a>    <span class="attr">#[test]
-<a href=#997 id=997 data-nosnippet>997</a>    </span><span class="kw">fn </span>deser_additional_endpoints_json_multiple_api_keys() {
-<a href=#998 id=998 data-nosnippet>998</a>        <span class="kw">let </span>raw_input = <span class="string">r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#</span>;
-<a href=#999 id=999 data-nosnippet>999</a>
-<a href=#1000 id=1000 data-nosnippet>1000</a>        <span class="kw">let </span>result = serde_yaml::from_str::&lt;AdditionalEndpoints&gt;(raw_input)
-<a href=#1001 id=1001 data-nosnippet>1001</a>            .expect(<span class="string">"should not fail to deserialize AdditionalEndpoints from JSON string"</span>);
-<a href=#1002 id=1002 data-nosnippet>1002</a>
-<a href=#1003 id=1003 data-nosnippet>1003</a>        <span class="kw">let </span>expected = <span class="macro">vec!</span>[
-<a href=#1004 id=1004 data-nosnippet>1004</a>            <span class="string">"app.datadoghq.com:fake-api-key-1a"</span>,
-<a href=#1005 id=1005 data-nosnippet>1005</a>            <span class="string">"app.datadoghq.com:fake-api-key-1b"</span>,
-<a href=#1006 id=1006 data-nosnippet>1006</a>            <span class="string">"app.datadoghq.eu:fake-api-key-2a"</span>,
-<a href=#1007 id=1007 data-nosnippet>1007</a>            <span class="string">"app.datadoghq.eu:fake-api-key-2b"</span>,
-<a href=#1008 id=1008 data-nosnippet>1008</a>        ];
-<a href=#1009 id=1009 data-nosnippet>1009</a>        <span class="kw">let </span>actual = additional_endpoints_to_sorted_strings(<span class="kw-2">&amp;</span>result);
-<a href=#1010 id=1010 data-nosnippet>1010</a>        <span class="macro">assert_eq!</span>(expected, actual);
-<a href=#1011 id=1011 data-nosnippet>1011</a>    }
-<a href=#1012 id=1012 data-nosnippet>1012</a>
-<a href=#1013 id=1013 data-nosnippet>1013</a>    <span class="attr">#[test]
-<a href=#1014 id=1014 data-nosnippet>1014</a>    </span><span class="kw">fn </span>deser_additional_endpoints_direct_mapping() {
-<a href=#1015 id=1015 data-nosnippet>1015</a>        <span class="kw">let </span>raw_input = <span class="string">"app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2"</span>;
-<a href=#1016 id=1016 data-nosnippet>1016</a>
-<a href=#1017 id=1017 data-nosnippet>1017</a>        <span class="kw">let </span>result = serde_yaml::from_str::&lt;AdditionalEndpoints&gt;(raw_input)
-<a href=#1018 id=1018 data-nosnippet>1018</a>            .expect(<span class="string">"should not fail to deserialize AdditionalEndpoints from YAML string"</span>);
-<a href=#1019 id=1019 data-nosnippet>1019</a>
-<a href=#1020 id=1020 data-nosnippet>1020</a>        <span class="kw">let </span>expected = <span class="macro">vec!</span>[<span class="string">"app.datadoghq.com:fake-api-key-1"</span>, <span class="string">"app.datadoghq.eu:fake-api-key-2"</span>];
-<a href=#1021 id=1021 data-nosnippet>1021</a>        <span class="kw">let </span>actual = additional_endpoints_to_sorted_strings(<span class="kw-2">&amp;</span>result);
-<a href=#1022 id=1022 data-nosnippet>1022</a>        <span class="macro">assert_eq!</span>(expected, actual);
-<a href=#1023 id=1023 data-nosnippet>1023</a>    }
-<a href=#1024 id=1024 data-nosnippet>1024</a>
-<a href=#1025 id=1025 data-nosnippet>1025</a>    <span class="attr">#[test]
-<a href=#1026 id=1026 data-nosnippet>1026</a>    </span><span class="kw">fn </span>deser_additional_endpoints_multiple_api_keys() {
-<a href=#1027 id=1027 data-nosnippet>1027</a>        <span class="kw">let </span>raw_input = <span class="string">"app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b"</span>;
+<a href=#985 id=985 data-nosnippet>985</a>    </span><span class="kw">fn </span>deser_additional_endpoints_accepts_json_string_and_native_yaml_forms() {
+<a href=#986 id=986 data-nosnippet>986</a>        <span class="comment">// `AdditionalEndpoints` accepts either a JSON-encoded string (what the Core Agent emits) or a
+<a href=#987 id=987 data-nosnippet>987</a>        // native YAML mapping, and each endpoint may map to a single API key or a list of keys.
+<a href=#988 id=988 data-nosnippet>988</a>        </span><span class="kw">let </span>single = <span class="macro">vec!</span>[<span class="string">"app.datadoghq.com:fake-api-key-1"</span>, <span class="string">"app.datadoghq.eu:fake-api-key-2"</span>];
+<a href=#989 id=989 data-nosnippet>989</a>        <span class="kw">let </span>multiple = <span class="macro">vec!</span>[
+<a href=#990 id=990 data-nosnippet>990</a>            <span class="string">"app.datadoghq.com:fake-api-key-1a"</span>,
+<a href=#991 id=991 data-nosnippet>991</a>            <span class="string">"app.datadoghq.com:fake-api-key-1b"</span>,
+<a href=#992 id=992 data-nosnippet>992</a>            <span class="string">"app.datadoghq.eu:fake-api-key-2a"</span>,
+<a href=#993 id=993 data-nosnippet>993</a>            <span class="string">"app.datadoghq.eu:fake-api-key-2b"</span>,
+<a href=#994 id=994 data-nosnippet>994</a>        ];
+<a href=#995 id=995 data-nosnippet>995</a>        <span class="kw">let </span>cases: [(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str]); <span class="number">4</span>] = [
+<a href=#996 id=996 data-nosnippet>996</a>            (
+<a href=#997 id=997 data-nosnippet>997</a>                <span class="string">"JSON string, single key per endpoint"</span>,
+<a href=#998 id=998 data-nosnippet>998</a>                <span class="string">r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#</span>,
+<a href=#999 id=999 data-nosnippet>999</a>                <span class="kw-2">&amp;</span>single,
+<a href=#1000 id=1000 data-nosnippet>1000</a>            ),
+<a href=#1001 id=1001 data-nosnippet>1001</a>            (
+<a href=#1002 id=1002 data-nosnippet>1002</a>                <span class="string">"JSON string, multiple keys per endpoint"</span>,
+<a href=#1003 id=1003 data-nosnippet>1003</a>                <span class="string">r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#</span>,
+<a href=#1004 id=1004 data-nosnippet>1004</a>                <span class="kw-2">&amp;</span>multiple,
+<a href=#1005 id=1005 data-nosnippet>1005</a>            ),
+<a href=#1006 id=1006 data-nosnippet>1006</a>            (
+<a href=#1007 id=1007 data-nosnippet>1007</a>                <span class="string">"native YAML mapping, single key per endpoint"</span>,
+<a href=#1008 id=1008 data-nosnippet>1008</a>                <span class="string">"app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2"</span>,
+<a href=#1009 id=1009 data-nosnippet>1009</a>                <span class="kw-2">&amp;</span>single,
+<a href=#1010 id=1010 data-nosnippet>1010</a>            ),
+<a href=#1011 id=1011 data-nosnippet>1011</a>            (
+<a href=#1012 id=1012 data-nosnippet>1012</a>                <span class="string">"native YAML mapping, multiple keys per endpoint"</span>,
+<a href=#1013 id=1013 data-nosnippet>1013</a>                <span class="string">"app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b"</span>,
+<a href=#1014 id=1014 data-nosnippet>1014</a>                <span class="kw-2">&amp;</span>multiple,
+<a href=#1015 id=1015 data-nosnippet>1015</a>            ),
+<a href=#1016 id=1016 data-nosnippet>1016</a>        ];
+<a href=#1017 id=1017 data-nosnippet>1017</a>
+<a href=#1018 id=1018 data-nosnippet>1018</a>        <span class="kw">for </span>(name, raw_input, expected) <span class="kw">in </span>cases {
+<a href=#1019 id=1019 data-nosnippet>1019</a>            <span class="kw">let </span>result =
+<a href=#1020 id=1020 data-nosnippet>1020</a>                serde_yaml::from_str::&lt;AdditionalEndpoints&gt;(raw_input).unwrap_or_else(|e| <span class="macro">panic!</span>(<span class="string">"{name}: {e}"</span>));
+<a href=#1021 id=1021 data-nosnippet>1021</a>            <span class="macro">assert_eq!</span>(
+<a href=#1022 id=1022 data-nosnippet>1022</a>                expected,
+<a href=#1023 id=1023 data-nosnippet>1023</a>                additional_endpoints_to_sorted_strings(<span class="kw-2">&amp;</span>result).as_slice(),
+<a href=#1024 id=1024 data-nosnippet>1024</a>                <span class="string">"{name}"
+<a href=#1025 id=1025 data-nosnippet>1025</a>            </span>);
+<a href=#1026 id=1026 data-nosnippet>1026</a>        }
+<a href=#1027 id=1027 data-nosnippet>1027</a>    }
 <a href=#1028 id=1028 data-nosnippet>1028</a>
-<a href=#1029 id=1029 data-nosnippet>1029</a>        <span class="kw">let </span>result = serde_yaml::from_str::&lt;AdditionalEndpoints&gt;(raw_input)
-<a href=#1030 id=1030 data-nosnippet>1030</a>            .expect(<span class="string">"should not fail to deserialize AdditionalEndpoints from YAML string"</span>);
-<a href=#1031 id=1031 data-nosnippet>1031</a>
-<a href=#1032 id=1032 data-nosnippet>1032</a>        <span class="kw">let </span>expected = <span class="macro">vec!</span>[
-<a href=#1033 id=1033 data-nosnippet>1033</a>            <span class="string">"app.datadoghq.com:fake-api-key-1a"</span>,
-<a href=#1034 id=1034 data-nosnippet>1034</a>            <span class="string">"app.datadoghq.com:fake-api-key-1b"</span>,
-<a href=#1035 id=1035 data-nosnippet>1035</a>            <span class="string">"app.datadoghq.eu:fake-api-key-2a"</span>,
-<a href=#1036 id=1036 data-nosnippet>1036</a>            <span class="string">"app.datadoghq.eu:fake-api-key-2b"</span>,
-<a href=#1037 id=1037 data-nosnippet>1037</a>        ];
-<a href=#1038 id=1038 data-nosnippet>1038</a>        <span class="kw">let </span>actual = additional_endpoints_to_sorted_strings(<span class="kw-2">&amp;</span>result);
-<a href=#1039 id=1039 data-nosnippet>1039</a>        <span class="macro">assert_eq!</span>(expected, actual);
-<a href=#1040 id=1040 data-nosnippet>1040</a>    }
-<a href=#1041 id=1041 data-nosnippet>1041</a>
-<a href=#1042 id=1042 data-nosnippet>1042</a>    <span class="attr">#[test]
-<a href=#1043 id=1043 data-nosnippet>1043</a>    </span><span class="kw">fn </span>additional_endpoints_api_key_index_uses_raw_config_position() {
-<a href=#1044 id=1044 data-nosnippet>1044</a>        <span class="comment">// Keys at positions 0, 1 are valid; position 2 is empty (skipped); position 3 is a
-<a href=#1045 id=1045 data-nosnippet>1045</a>        // duplicate of position 0 (skipped); position 4 is valid. Only positions 0, 1, 4 produce
-<a href=#1046 id=1046 data-nosnippet>1046</a>        // ResolvedEndpoints, and their api_key_index should be 0, 1, 4 respectively.
-<a href=#1047 id=1047 data-nosnippet>1047</a>        </span><span class="kw">let </span>raw_input = <span class="string">r#""app.datadoghq.com": ["key-a", "key-b", "", "key-a", "key-c"]"#</span>;
-<a href=#1048 id=1048 data-nosnippet>1048</a>        <span class="kw">let </span>raw_yaml = <span class="macro">format!</span>(<span class="string">"{{{}}}"</span>, raw_input);
-<a href=#1049 id=1049 data-nosnippet>1049</a>        <span class="kw">let </span>endpoints: AdditionalEndpoints = serde_yaml::from_str(<span class="kw-2">&amp;</span>raw_yaml).expect(<span class="string">"should deserialize"</span>);
-<a href=#1050 id=1050 data-nosnippet>1050</a>
-<a href=#1051 id=1051 data-nosnippet>1051</a>        <span class="kw">let </span>resolved = endpoints.resolved_endpoints(<span class="prelude-val">None</span>).expect(<span class="string">"should resolve"</span>);
-<a href=#1052 id=1052 data-nosnippet>1052</a>
-<a href=#1053 id=1053 data-nosnippet>1053</a>        <span class="macro">assert_eq!</span>(
-<a href=#1054 id=1054 data-nosnippet>1054</a>            resolved.len(),
-<a href=#1055 id=1055 data-nosnippet>1055</a>            <span class="number">3</span>,
-<a href=#1056 id=1056 data-nosnippet>1056</a>            <span class="string">"should have 3 endpoints (skipping empty and duplicate)"
-<a href=#1057 id=1057 data-nosnippet>1057</a>        </span>);
-<a href=#1058 id=1058 data-nosnippet>1058</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">0</span>].cached_api_key(), <span class="string">"key-a"</span>);
-<a href=#1059 id=1059 data-nosnippet>1059</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">0</span>].api_key_index(), <span class="prelude-val">Some</span>(<span class="number">0</span>));
-<a href=#1060 id=1060 data-nosnippet>1060</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">1</span>].cached_api_key(), <span class="string">"key-b"</span>);
-<a href=#1061 id=1061 data-nosnippet>1061</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">1</span>].api_key_index(), <span class="prelude-val">Some</span>(<span class="number">1</span>));
-<a href=#1062 id=1062 data-nosnippet>1062</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">2</span>].cached_api_key(), <span class="string">"key-c"</span>);
-<a href=#1063 id=1063 data-nosnippet>1063</a>        <span class="macro">assert_eq!</span>(
-<a href=#1064 id=1064 data-nosnippet>1064</a>            resolved[<span class="number">2</span>].api_key_index(),
-<a href=#1065 id=1065 data-nosnippet>1065</a>            <span class="prelude-val">Some</span>(<span class="number">4</span>),
-<a href=#1066 id=1066 data-nosnippet>1066</a>            <span class="string">"index 4 — not 2 — because original positions are used"
-<a href=#1067 id=1067 data-nosnippet>1067</a>        </span>);
-<a href=#1068 id=1068 data-nosnippet>1068</a>
-<a href=#1069 id=1069 data-nosnippet>1069</a>        <span class="comment">// Two URLs have independent index spaces (both start from 0).
-<a href=#1070 id=1070 data-nosnippet>1070</a>        </span><span class="kw">let </span>raw_yaml2 = <span class="string">r#"app.datadoghq.eu: [eu-key-a, eu-key-b]"#</span>;
-<a href=#1071 id=1071 data-nosnippet>1071</a>        <span class="kw">let </span>endpoints2: AdditionalEndpoints = serde_yaml::from_str(raw_yaml2).expect(<span class="string">"should deserialize"</span>);
-<a href=#1072 id=1072 data-nosnippet>1072</a>        <span class="kw">let </span>resolved2 = endpoints2.resolved_endpoints(<span class="prelude-val">None</span>).expect(<span class="string">"should resolve"</span>);
-<a href=#1073 id=1073 data-nosnippet>1073</a>        <span class="macro">assert_eq!</span>(resolved2[<span class="number">0</span>].api_key_index(), <span class="prelude-val">Some</span>(<span class="number">0</span>));
-<a href=#1074 id=1074 data-nosnippet>1074</a>        <span class="macro">assert_eq!</span>(resolved2[<span class="number">1</span>].api_key_index(), <span class="prelude-val">Some</span>(<span class="number">1</span>));
-<a href=#1075 id=1075 data-nosnippet>1075</a>    }
-<a href=#1076 id=1076 data-nosnippet>1076</a>
-<a href=#1077 id=1077 data-nosnippet>1077</a>    <span class="attr">#[tokio::test]
-<a href=#1078 id=1078 data-nosnippet>1078</a>    </span><span class="kw">async fn </span>api_key_dynamically_refreshes_from_additional_endpoints_config() {
-<a href=#1079 id=1079 data-nosnippet>1079</a>        <span class="kw">use </span>std::time::{Duration, Instant};
-<a href=#1080 id=1080 data-nosnippet>1080</a>
-<a href=#1081 id=1081 data-nosnippet>1081</a>        <span class="comment">// No static initial values for additional_endpoints — all from dynamic config only.
-<a href=#1082 id=1082 data-nosnippet>1082</a>        // This avoids figment's admerge concatenating the static array with the dynamic array,
-<a href=#1083 id=1083 data-nosnippet>1083</a>        // which would leave the old key-1 in position 0.
-<a href=#1084 id=1084 data-nosnippet>1084</a>        </span><span class="kw">let </span>(config, sender) = ConfigurationLoader::for_tests(<span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="bool-val">true</span>).<span class="kw">await</span>;
-<a href=#1085 id=1085 data-nosnippet>1085</a>        <span class="kw">let </span>sender = sender.expect(<span class="string">"dynamic configuration sender should be present"</span>);
-<a href=#1086 id=1086 data-nosnippet>1086</a>
-<a href=#1087 id=1087 data-nosnippet>1087</a>        <span class="comment">// Apply an initial snapshot with key-1 and wait for readiness.
-<a href=#1088 id=1088 data-nosnippet>1088</a>        </span>sender
-<a href=#1089 id=1089 data-nosnippet>1089</a>            .send(ConfigUpdate::Snapshot(<span class="macro">serde_json::json!</span>({
-<a href=#1090 id=1090 data-nosnippet>1090</a>                <span class="string">"additional_endpoints"</span>: { <span class="string">"http://extra.example.com"</span>: [<span class="string">"key-1"</span>] }
-<a href=#1091 id=1091 data-nosnippet>1091</a>            })))
-<a href=#1092 id=1092 data-nosnippet>1092</a>            .<span class="kw">await
-<a href=#1093 id=1093 data-nosnippet>1093</a>            </span>.expect(<span class="string">"should send initial snapshot"</span>);
-<a href=#1094 id=1094 data-nosnippet>1094</a>        config.ready().<span class="kw">await</span>;
-<a href=#1095 id=1095 data-nosnippet>1095</a>
-<a href=#1096 id=1096 data-nosnippet>1096</a>        <span class="comment">// Build the additional endpoint with a live config reference.
-<a href=#1097 id=1097 data-nosnippet>1097</a>        </span><span class="kw">let </span>raw = <span class="string">r#"http://extra.example.com: [key-1]"#</span>;
-<a href=#1098 id=1098 data-nosnippet>1098</a>        <span class="kw">let </span>additional: AdditionalEndpoints = serde_yaml::from_str(raw).expect(<span class="string">"should deserialize"</span>);
-<a href=#1099 id=1099 data-nosnippet>1099</a>        <span class="kw">let </span><span class="kw-2">mut </span>endpoints = additional
-<a href=#1100 id=1100 data-nosnippet>1100</a>            .resolved_endpoints(<span class="prelude-val">Some</span>(config.clone()))
-<a href=#1101 id=1101 data-nosnippet>1101</a>            .expect(<span class="string">"should resolve"</span>);
-<a href=#1102 id=1102 data-nosnippet>1102</a>        <span class="kw">let </span>endpoint = <span class="kw-2">&amp;mut </span>endpoints[<span class="number">0</span>];
-<a href=#1103 id=1103 data-nosnippet>1103</a>
-<a href=#1104 id=1104 data-nosnippet>1104</a>        <span class="comment">// Before the update, api_key() returns the original key.
-<a href=#1105 id=1105 data-nosnippet>1105</a>        </span><span class="macro">assert_eq!</span>(endpoint.api_key(), <span class="string">"key-1"</span>);
-<a href=#1106 id=1106 data-nosnippet>1106</a>
-<a href=#1107 id=1107 data-nosnippet>1107</a>        <span class="comment">// Push a snapshot that rotates the key.
-<a href=#1108 id=1108 data-nosnippet>1108</a>        </span>sender
-<a href=#1109 id=1109 data-nosnippet>1109</a>            .send(ConfigUpdate::Snapshot(<span class="macro">serde_json::json!</span>({
-<a href=#1110 id=1110 data-nosnippet>1110</a>                <span class="string">"additional_endpoints"</span>: { <span class="string">"http://extra.example.com"</span>: [<span class="string">"key-2"</span>] }
-<a href=#1111 id=1111 data-nosnippet>1111</a>            })))
-<a href=#1112 id=1112 data-nosnippet>1112</a>            .<span class="kw">await
-<a href=#1113 id=1113 data-nosnippet>1113</a>            </span>.expect(<span class="string">"should send rotation snapshot"</span>);
-<a href=#1114 id=1114 data-nosnippet>1114</a>
-<a href=#1115 id=1115 data-nosnippet>1115</a>        <span class="comment">// Poll api_key() until it reflects the new value; api_key() re-reads from live config on
-<a href=#1116 id=1116 data-nosnippet>1116</a>        // every call so no watcher or rebuild is needed.
-<a href=#1117 id=1117 data-nosnippet>1117</a>        </span><span class="kw">let </span>deadline = Instant::now() + Duration::from_secs(<span class="number">2</span>);
-<a href=#1118 id=1118 data-nosnippet>1118</a>        <span class="kw">loop </span>{
-<a href=#1119 id=1119 data-nosnippet>1119</a>            <span class="kw">if </span>endpoint.api_key() == <span class="string">"key-2" </span>{
-<a href=#1120 id=1120 data-nosnippet>1120</a>                <span class="kw">break</span>;
-<a href=#1121 id=1121 data-nosnippet>1121</a>            }
-<a href=#1122 id=1122 data-nosnippet>1122</a>            <span class="macro">assert!</span>(
-<a href=#1123 id=1123 data-nosnippet>1123</a>                Instant::now() &lt; deadline,
-<a href=#1124 id=1124 data-nosnippet>1124</a>                <span class="string">"timed out — api_key() did not refresh after additional_endpoints rotation"
-<a href=#1125 id=1125 data-nosnippet>1125</a>            </span>);
-<a href=#1126 id=1126 data-nosnippet>1126</a>            tokio::time::sleep(Duration::from_millis(<span class="number">10</span>)).<span class="kw">await</span>;
-<a href=#1127 id=1127 data-nosnippet>1127</a>        }
-<a href=#1128 id=1128 data-nosnippet>1128</a>    }
-<a href=#1129 id=1129 data-nosnippet>1129</a>
-<a href=#1130 id=1130 data-nosnippet>1130</a>    <span class="attr">#[test]
-<a href=#1131 id=1131 data-nosnippet>1131</a>    </span><span class="kw">fn </span>add_version_prefix() {
-<a href=#1132 id=1132 data-nosnippet>1132</a>        <span class="kw">let </span>input_urls = [
-<a href=#1133 id=1133 data-nosnippet>1133</a>            <span class="string">"https://app.datadoghq.com"</span>,     <span class="comment">// US
-<a href=#1134 id=1134 data-nosnippet>1134</a>            </span><span class="string">"https://app.datadoghq.eu"</span>,      <span class="comment">// EU
-<a href=#1135 id=1135 data-nosnippet>1135</a>            </span><span class="string">"app.ddog-gov.com"</span>,              <span class="comment">// Gov
-<a href=#1136 id=1136 data-nosnippet>1136</a>            </span><span class="string">"app.us2.datadoghq.com"</span>,         <span class="comment">// Additional Site
-<a href=#1137 id=1137 data-nosnippet>1137</a>            </span><span class="string">"https://app.xx9.datadoghq.com"</span>, <span class="comment">// Arbitrary site
-<a href=#1138 id=1138 data-nosnippet>1138</a>        </span>];
-<a href=#1139 id=1139 data-nosnippet>1139</a>        <span class="kw">let </span>expected_hosts = [
-<a href=#1140 id=1140 data-nosnippet>1140</a>            <span class="string">"datadoghq.com"</span>,
-<a href=#1141 id=1141 data-nosnippet>1141</a>            <span class="string">"datadoghq.eu"</span>,
-<a href=#1142 id=1142 data-nosnippet>1142</a>            <span class="string">"ddog-gov.com"</span>,
-<a href=#1143 id=1143 data-nosnippet>1143</a>            <span class="string">"us2.datadoghq.com"</span>,
-<a href=#1144 id=1144 data-nosnippet>1144</a>            <span class="string">"xx9.datadoghq.com"</span>,
-<a href=#1145 id=1145 data-nosnippet>1145</a>        ]
-<a href=#1146 id=1146 data-nosnippet>1146</a>        .iter()
-<a href=#1147 id=1147 data-nosnippet>1147</a>        .map(|s| <span class="macro">format!</span>(<span class="string">"{}.{}"</span>, get_data_plane_version_prefix(), s))
-<a href=#1148 id=1148 data-nosnippet>1148</a>        .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
-<a href=#1149 id=1149 data-nosnippet>1149</a>
-<a href=#1150 id=1150 data-nosnippet>1150</a>        <span class="kw">for </span>(input_url, expected_host) <span class="kw">in </span>input_urls.iter().zip(expected_hosts) {
-<a href=#1151 id=1151 data-nosnippet>1151</a>            <span class="kw">let </span>resolved =
-<a href=#1152 id=1152 data-nosnippet>1152</a>                ResolvedEndpoint::from_raw_endpoint(input_url, <span class="string">"fake_api_key"</span>).expect(<span class="string">"error resolving endpoint"</span>);
-<a href=#1153 id=1153 data-nosnippet>1153</a>            <span class="macro">assert_eq!</span>(
-<a href=#1154 id=1154 data-nosnippet>1154</a>                expected_host,
-<a href=#1155 id=1155 data-nosnippet>1155</a>                resolved.endpoint().host_str().expect(<span class="string">"error getting host"</span>)
-<a href=#1156 id=1156 data-nosnippet>1156</a>            );
-<a href=#1157 id=1157 data-nosnippet>1157</a>        }
-<a href=#1158 id=1158 data-nosnippet>1158</a>    }
-<a href=#1159 id=1159 data-nosnippet>1159</a>
-<a href=#1160 id=1160 data-nosnippet>1160</a>    <span class="attr">#[test]
-<a href=#1161 id=1161 data-nosnippet>1161</a>    </span><span class="kw">fn </span>skip_version_prefix() {
-<a href=#1162 id=1162 data-nosnippet>1162</a>        <span class="kw">let </span>input_urls = [
-<a href=#1163 id=1163 data-nosnippet>1163</a>            <span class="string">"https://custom.datadoghq.com"</span>,       <span class="comment">// Custom
-<a href=#1164 id=1164 data-nosnippet>1164</a>            </span><span class="string">"https://custom.agent.datadoghq.com"</span>, <span class="comment">// Custom with 'agent' subdomain
-<a href=#1165 id=1165 data-nosnippet>1165</a>            </span><span class="string">"https://app.custom.datadoghq.com"</span>,   <span class="comment">// Custom
-<a href=#1166 id=1166 data-nosnippet>1166</a>            </span><span class="string">"https://app.datadoghq.internal"</span>,     <span class="comment">// Custom top-level domain
-<a href=#1167 id=1167 data-nosnippet>1167</a>            </span><span class="string">"https://app.myproxy.com"</span>,            <span class="comment">// Proxy
-<a href=#1168 id=1168 data-nosnippet>1168</a>        </span>];
-<a href=#1169 id=1169 data-nosnippet>1169</a>        <span class="kw">let </span>expected_hosts = [
-<a href=#1170 id=1170 data-nosnippet>1170</a>            <span class="string">"custom.datadoghq.com"</span>,
-<a href=#1171 id=1171 data-nosnippet>1171</a>            <span class="string">"custom.agent.datadoghq.com"</span>,
-<a href=#1172 id=1172 data-nosnippet>1172</a>            <span class="string">"app.custom.datadoghq.com"</span>,
-<a href=#1173 id=1173 data-nosnippet>1173</a>            <span class="string">"app.datadoghq.internal"</span>,
-<a href=#1174 id=1174 data-nosnippet>1174</a>            <span class="string">"app.myproxy.com"</span>,
-<a href=#1175 id=1175 data-nosnippet>1175</a>        ];
-<a href=#1176 id=1176 data-nosnippet>1176</a>
-<a href=#1177 id=1177 data-nosnippet>1177</a>        <span class="kw">for </span>(input_url, expected_host) <span class="kw">in </span>input_urls.iter().zip(expected_hosts) {
-<a href=#1178 id=1178 data-nosnippet>1178</a>            <span class="kw">let </span>resolved =
-<a href=#1179 id=1179 data-nosnippet>1179</a>                ResolvedEndpoint::from_raw_endpoint(input_url, <span class="string">"fake_api_key"</span>).expect(<span class="string">"error resolving endpoint"</span>);
-<a href=#1180 id=1180 data-nosnippet>1180</a>            <span class="macro">assert_eq!</span>(
-<a href=#1181 id=1181 data-nosnippet>1181</a>                expected_host,
-<a href=#1182 id=1182 data-nosnippet>1182</a>                resolved.endpoint().host_str().expect(<span class="string">"error getting host"</span>)
-<a href=#1183 id=1183 data-nosnippet>1183</a>            );
-<a href=#1184 id=1184 data-nosnippet>1184</a>        }
-<a href=#1185 id=1185 data-nosnippet>1185</a>    }
-<a href=#1186 id=1186 data-nosnippet>1186</a>
-<a href=#1187 id=1187 data-nosnippet>1187</a>    <span class="attr">#[test]
-<a href=#1188 id=1188 data-nosnippet>1188</a>    </span><span class="kw">fn </span>calculate_api_endpoint_no_override_no_site() {
-<a href=#1189 id=1189 data-nosnippet>1189</a>        <span class="kw">let </span>prefix = get_data_plane_version_prefix();
-<a href=#1190 id=1190 data-nosnippet>1190</a>        <span class="kw">let </span>expected_endpoint = <span class="macro">format!</span>(<span class="string">"https://{}.{}/"</span>, prefix, DEFAULT_SITE);
-<a href=#1191 id=1191 data-nosnippet>1191</a>
-<a href=#1192 id=1192 data-nosnippet>1192</a>        <span class="kw">let </span>resolved = calculate_resolved_endpoint(<span class="prelude-val">None</span>, <span class="string">""</span>, <span class="string">""</span>).expect(<span class="string">"error calculating default API endpoint"</span>);
-<a href=#1193 id=1193 data-nosnippet>1193</a>        <span class="macro">assert_eq!</span>(expected_endpoint, resolved.endpoint().to_string());
-<a href=#1194 id=1194 data-nosnippet>1194</a>    }
-<a href=#1195 id=1195 data-nosnippet>1195</a>
-<a href=#1196 id=1196 data-nosnippet>1196</a>    <span class="attr">#[test]
-<a href=#1197 id=1197 data-nosnippet>1197</a>    </span><span class="kw">fn </span>calculate_api_endpoint_no_override() {
-<a href=#1198 id=1198 data-nosnippet>1198</a>        <span class="kw">let </span>site = <span class="string">"us3.datadoghq.com"</span>;
-<a href=#1199 id=1199 data-nosnippet>1199</a>        <span class="kw">let </span>prefix = get_data_plane_version_prefix();
-<a href=#1200 id=1200 data-nosnippet>1200</a>        <span class="kw">let </span>expected_endpoint = <span class="macro">format!</span>(<span class="string">"https://{}.{}/"</span>, prefix, site);
-<a href=#1201 id=1201 data-nosnippet>1201</a>
-<a href=#1202 id=1202 data-nosnippet>1202</a>        <span class="kw">let </span>resolved =
-<a href=#1203 id=1203 data-nosnippet>1203</a>            calculate_resolved_endpoint(<span class="prelude-val">None</span>, <span class="string">"us3.datadoghq.com"</span>, <span class="string">""</span>).expect(<span class="string">"error calculating custom API endpoint"</span>);
-<a href=#1204 id=1204 data-nosnippet>1204</a>        <span class="macro">assert_eq!</span>(expected_endpoint, resolved.endpoint().to_string());
-<a href=#1205 id=1205 data-nosnippet>1205</a>    }
+<a href=#1029 id=1029 data-nosnippet>1029</a>    <span class="attr">#[test]
+<a href=#1030 id=1030 data-nosnippet>1030</a>    </span><span class="kw">fn </span>additional_endpoints_api_key_index_uses_raw_config_position() {
+<a href=#1031 id=1031 data-nosnippet>1031</a>        <span class="comment">// Keys at positions 0, 1 are valid; position 2 is empty (skipped); position 3 is a
+<a href=#1032 id=1032 data-nosnippet>1032</a>        // duplicate of position 0 (skipped); position 4 is valid. Only positions 0, 1, 4 produce
+<a href=#1033 id=1033 data-nosnippet>1033</a>        // ResolvedEndpoints, and their api_key_index should be 0, 1, 4 respectively.
+<a href=#1034 id=1034 data-nosnippet>1034</a>        </span><span class="kw">let </span>raw_input = <span class="string">r#""app.datadoghq.com": ["key-a", "key-b", "", "key-a", "key-c"]"#</span>;
+<a href=#1035 id=1035 data-nosnippet>1035</a>        <span class="kw">let </span>raw_yaml = <span class="macro">format!</span>(<span class="string">"{{{}}}"</span>, raw_input);
+<a href=#1036 id=1036 data-nosnippet>1036</a>        <span class="kw">let </span>endpoints: AdditionalEndpoints = serde_yaml::from_str(<span class="kw-2">&amp;</span>raw_yaml).expect(<span class="string">"should deserialize"</span>);
+<a href=#1037 id=1037 data-nosnippet>1037</a>
+<a href=#1038 id=1038 data-nosnippet>1038</a>        <span class="kw">let </span>resolved = endpoints.resolved_endpoints(<span class="prelude-val">None</span>).expect(<span class="string">"should resolve"</span>);
+<a href=#1039 id=1039 data-nosnippet>1039</a>
+<a href=#1040 id=1040 data-nosnippet>1040</a>        <span class="macro">assert_eq!</span>(
+<a href=#1041 id=1041 data-nosnippet>1041</a>            resolved.len(),
+<a href=#1042 id=1042 data-nosnippet>1042</a>            <span class="number">3</span>,
+<a href=#1043 id=1043 data-nosnippet>1043</a>            <span class="string">"should have 3 endpoints (skipping empty and duplicate)"
+<a href=#1044 id=1044 data-nosnippet>1044</a>        </span>);
+<a href=#1045 id=1045 data-nosnippet>1045</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">0</span>].cached_api_key(), <span class="string">"key-a"</span>);
+<a href=#1046 id=1046 data-nosnippet>1046</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">0</span>].api_key_index(), <span class="prelude-val">Some</span>(<span class="number">0</span>));
+<a href=#1047 id=1047 data-nosnippet>1047</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">1</span>].cached_api_key(), <span class="string">"key-b"</span>);
+<a href=#1048 id=1048 data-nosnippet>1048</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">1</span>].api_key_index(), <span class="prelude-val">Some</span>(<span class="number">1</span>));
+<a href=#1049 id=1049 data-nosnippet>1049</a>        <span class="macro">assert_eq!</span>(resolved[<span class="number">2</span>].cached_api_key(), <span class="string">"key-c"</span>);
+<a href=#1050 id=1050 data-nosnippet>1050</a>        <span class="macro">assert_eq!</span>(
+<a href=#1051 id=1051 data-nosnippet>1051</a>            resolved[<span class="number">2</span>].api_key_index(),
+<a href=#1052 id=1052 data-nosnippet>1052</a>            <span class="prelude-val">Some</span>(<span class="number">4</span>),
+<a href=#1053 id=1053 data-nosnippet>1053</a>            <span class="string">"index 4 — not 2 — because original positions are used"
+<a href=#1054 id=1054 data-nosnippet>1054</a>        </span>);
+<a href=#1055 id=1055 data-nosnippet>1055</a>
+<a href=#1056 id=1056 data-nosnippet>1056</a>        <span class="comment">// Two URLs have independent index spaces (both start from 0).
+<a href=#1057 id=1057 data-nosnippet>1057</a>        </span><span class="kw">let </span>raw_yaml2 = <span class="string">r#"app.datadoghq.eu: [eu-key-a, eu-key-b]"#</span>;
+<a href=#1058 id=1058 data-nosnippet>1058</a>        <span class="kw">let </span>endpoints2: AdditionalEndpoints = serde_yaml::from_str(raw_yaml2).expect(<span class="string">"should deserialize"</span>);
+<a href=#1059 id=1059 data-nosnippet>1059</a>        <span class="kw">let </span>resolved2 = endpoints2.resolved_endpoints(<span class="prelude-val">None</span>).expect(<span class="string">"should resolve"</span>);
+<a href=#1060 id=1060 data-nosnippet>1060</a>        <span class="macro">assert_eq!</span>(resolved2[<span class="number">0</span>].api_key_index(), <span class="prelude-val">Some</span>(<span class="number">0</span>));
+<a href=#1061 id=1061 data-nosnippet>1061</a>        <span class="macro">assert_eq!</span>(resolved2[<span class="number">1</span>].api_key_index(), <span class="prelude-val">Some</span>(<span class="number">1</span>));
+<a href=#1062 id=1062 data-nosnippet>1062</a>    }
+<a href=#1063 id=1063 data-nosnippet>1063</a>
+<a href=#1064 id=1064 data-nosnippet>1064</a>    <span class="attr">#[tokio::test]
+<a href=#1065 id=1065 data-nosnippet>1065</a>    </span><span class="kw">async fn </span>api_key_dynamically_refreshes_from_additional_endpoints_config() {
+<a href=#1066 id=1066 data-nosnippet>1066</a>        <span class="kw">use </span>std::time::{Duration, Instant};
+<a href=#1067 id=1067 data-nosnippet>1067</a>
+<a href=#1068 id=1068 data-nosnippet>1068</a>        <span class="comment">// No static initial values for additional_endpoints — all from dynamic config only.
+<a href=#1069 id=1069 data-nosnippet>1069</a>        // This avoids figment's admerge concatenating the static array with the dynamic array,
+<a href=#1070 id=1070 data-nosnippet>1070</a>        // which would leave the old key-1 in position 0.
+<a href=#1071 id=1071 data-nosnippet>1071</a>        </span><span class="kw">let </span>(config, sender) = ConfigurationLoader::for_tests(<span class="prelude-val">None</span>, <span class="prelude-val">None</span>, <span class="bool-val">true</span>).<span class="kw">await</span>;
+<a href=#1072 id=1072 data-nosnippet>1072</a>        <span class="kw">let </span>sender = sender.expect(<span class="string">"dynamic configuration sender should be present"</span>);
+<a href=#1073 id=1073 data-nosnippet>1073</a>
+<a href=#1074 id=1074 data-nosnippet>1074</a>        <span class="comment">// Apply an initial snapshot with key-1 and wait for readiness.
+<a href=#1075 id=1075 data-nosnippet>1075</a>        </span>sender
+<a href=#1076 id=1076 data-nosnippet>1076</a>            .send(ConfigUpdate::Snapshot(<span class="macro">serde_json::json!</span>({
+<a href=#1077 id=1077 data-nosnippet>1077</a>                <span class="string">"additional_endpoints"</span>: { <span class="string">"http://extra.example.com"</span>: [<span class="string">"key-1"</span>] }
+<a href=#1078 id=1078 data-nosnippet>1078</a>            })))
+<a href=#1079 id=1079 data-nosnippet>1079</a>            .<span class="kw">await
+<a href=#1080 id=1080 data-nosnippet>1080</a>            </span>.expect(<span class="string">"should send initial snapshot"</span>);
+<a href=#1081 id=1081 data-nosnippet>1081</a>        config.ready().<span class="kw">await</span>;
+<a href=#1082 id=1082 data-nosnippet>1082</a>
+<a href=#1083 id=1083 data-nosnippet>1083</a>        <span class="comment">// Build the additional endpoint with a live config reference.
+<a href=#1084 id=1084 data-nosnippet>1084</a>        </span><span class="kw">let </span>raw = <span class="string">r#"http://extra.example.com: [key-1]"#</span>;
+<a href=#1085 id=1085 data-nosnippet>1085</a>        <span class="kw">let </span>additional: AdditionalEndpoints = serde_yaml::from_str(raw).expect(<span class="string">"should deserialize"</span>);
+<a href=#1086 id=1086 data-nosnippet>1086</a>        <span class="kw">let </span><span class="kw-2">mut </span>endpoints = additional
+<a href=#1087 id=1087 data-nosnippet>1087</a>            .resolved_endpoints(<span class="prelude-val">Some</span>(config.clone()))
+<a href=#1088 id=1088 data-nosnippet>1088</a>            .expect(<span class="string">"should resolve"</span>);
+<a href=#1089 id=1089 data-nosnippet>1089</a>        <span class="kw">let </span>endpoint = <span class="kw-2">&amp;mut </span>endpoints[<span class="number">0</span>];
+<a href=#1090 id=1090 data-nosnippet>1090</a>
+<a href=#1091 id=1091 data-nosnippet>1091</a>        <span class="comment">// Before the update, api_key() returns the original key.
+<a href=#1092 id=1092 data-nosnippet>1092</a>        </span><span class="macro">assert_eq!</span>(endpoint.api_key(), <span class="string">"key-1"</span>);
+<a href=#1093 id=1093 data-nosnippet>1093</a>
+<a href=#1094 id=1094 data-nosnippet>1094</a>        <span class="comment">// Push a snapshot that rotates the key.
+<a href=#1095 id=1095 data-nosnippet>1095</a>        </span>sender
+<a href=#1096 id=1096 data-nosnippet>1096</a>            .send(ConfigUpdate::Snapshot(<span class="macro">serde_json::json!</span>({
+<a href=#1097 id=1097 data-nosnippet>1097</a>                <span class="string">"additional_endpoints"</span>: { <span class="string">"http://extra.example.com"</span>: [<span class="string">"key-2"</span>] }
+<a href=#1098 id=1098 data-nosnippet>1098</a>            })))
+<a href=#1099 id=1099 data-nosnippet>1099</a>            .<span class="kw">await
+<a href=#1100 id=1100 data-nosnippet>1100</a>            </span>.expect(<span class="string">"should send rotation snapshot"</span>);
+<a href=#1101 id=1101 data-nosnippet>1101</a>
+<a href=#1102 id=1102 data-nosnippet>1102</a>        <span class="comment">// Poll api_key() until it reflects the new value; api_key() re-reads from live config on
+<a href=#1103 id=1103 data-nosnippet>1103</a>        // every call so no watcher or rebuild is needed.
+<a href=#1104 id=1104 data-nosnippet>1104</a>        </span><span class="kw">let </span>deadline = Instant::now() + Duration::from_secs(<span class="number">2</span>);
+<a href=#1105 id=1105 data-nosnippet>1105</a>        <span class="kw">loop </span>{
+<a href=#1106 id=1106 data-nosnippet>1106</a>            <span class="kw">if </span>endpoint.api_key() == <span class="string">"key-2" </span>{
+<a href=#1107 id=1107 data-nosnippet>1107</a>                <span class="kw">break</span>;
+<a href=#1108 id=1108 data-nosnippet>1108</a>            }
+<a href=#1109 id=1109 data-nosnippet>1109</a>            <span class="macro">assert!</span>(
+<a href=#1110 id=1110 data-nosnippet>1110</a>                Instant::now() &lt; deadline,
+<a href=#1111 id=1111 data-nosnippet>1111</a>                <span class="string">"timed out — api_key() did not refresh after additional_endpoints rotation"
+<a href=#1112 id=1112 data-nosnippet>1112</a>            </span>);
+<a href=#1113 id=1113 data-nosnippet>1113</a>            tokio::time::sleep(Duration::from_millis(<span class="number">10</span>)).<span class="kw">await</span>;
+<a href=#1114 id=1114 data-nosnippet>1114</a>        }
+<a href=#1115 id=1115 data-nosnippet>1115</a>    }
+<a href=#1116 id=1116 data-nosnippet>1116</a>
+<a href=#1117 id=1117 data-nosnippet>1117</a>    <span class="attr">#[test]
+<a href=#1118 id=1118 data-nosnippet>1118</a>    </span><span class="kw">fn </span>add_version_prefix() {
+<a href=#1119 id=1119 data-nosnippet>1119</a>        <span class="kw">let </span>input_urls = [
+<a href=#1120 id=1120 data-nosnippet>1120</a>            <span class="string">"https://app.datadoghq.com"</span>,     <span class="comment">// US
+<a href=#1121 id=1121 data-nosnippet>1121</a>            </span><span class="string">"https://app.datadoghq.eu"</span>,      <span class="comment">// EU
+<a href=#1122 id=1122 data-nosnippet>1122</a>            </span><span class="string">"app.ddog-gov.com"</span>,              <span class="comment">// Gov
+<a href=#1123 id=1123 data-nosnippet>1123</a>            </span><span class="string">"app.us2.datadoghq.com"</span>,         <span class="comment">// Additional Site
+<a href=#1124 id=1124 data-nosnippet>1124</a>            </span><span class="string">"https://app.xx9.datadoghq.com"</span>, <span class="comment">// Arbitrary site
+<a href=#1125 id=1125 data-nosnippet>1125</a>        </span>];
+<a href=#1126 id=1126 data-nosnippet>1126</a>        <span class="kw">let </span>expected_hosts = [
+<a href=#1127 id=1127 data-nosnippet>1127</a>            <span class="string">"datadoghq.com"</span>,
+<a href=#1128 id=1128 data-nosnippet>1128</a>            <span class="string">"datadoghq.eu"</span>,
+<a href=#1129 id=1129 data-nosnippet>1129</a>            <span class="string">"ddog-gov.com"</span>,
+<a href=#1130 id=1130 data-nosnippet>1130</a>            <span class="string">"us2.datadoghq.com"</span>,
+<a href=#1131 id=1131 data-nosnippet>1131</a>            <span class="string">"xx9.datadoghq.com"</span>,
+<a href=#1132 id=1132 data-nosnippet>1132</a>        ]
+<a href=#1133 id=1133 data-nosnippet>1133</a>        .iter()
+<a href=#1134 id=1134 data-nosnippet>1134</a>        .map(|s| <span class="macro">format!</span>(<span class="string">"{}.{}"</span>, get_data_plane_version_prefix(), s))
+<a href=#1135 id=1135 data-nosnippet>1135</a>        .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
+<a href=#1136 id=1136 data-nosnippet>1136</a>
+<a href=#1137 id=1137 data-nosnippet>1137</a>        <span class="kw">for </span>(input_url, expected_host) <span class="kw">in </span>input_urls.iter().zip(expected_hosts) {
+<a href=#1138 id=1138 data-nosnippet>1138</a>            <span class="kw">let </span>resolved =
+<a href=#1139 id=1139 data-nosnippet>1139</a>                ResolvedEndpoint::from_raw_endpoint(input_url, <span class="string">"fake_api_key"</span>).expect(<span class="string">"error resolving endpoint"</span>);
+<a href=#1140 id=1140 data-nosnippet>1140</a>            <span class="macro">assert_eq!</span>(
+<a href=#1141 id=1141 data-nosnippet>1141</a>                expected_host,
+<a href=#1142 id=1142 data-nosnippet>1142</a>                resolved.endpoint().host_str().expect(<span class="string">"error getting host"</span>)
+<a href=#1143 id=1143 data-nosnippet>1143</a>            );
+<a href=#1144 id=1144 data-nosnippet>1144</a>        }
+<a href=#1145 id=1145 data-nosnippet>1145</a>    }
+<a href=#1146 id=1146 data-nosnippet>1146</a>
+<a href=#1147 id=1147 data-nosnippet>1147</a>    <span class="attr">#[test]
+<a href=#1148 id=1148 data-nosnippet>1148</a>    </span><span class="kw">fn </span>skip_version_prefix() {
+<a href=#1149 id=1149 data-nosnippet>1149</a>        <span class="kw">let </span>input_urls = [
+<a href=#1150 id=1150 data-nosnippet>1150</a>            <span class="string">"https://custom.datadoghq.com"</span>,       <span class="comment">// Custom
+<a href=#1151 id=1151 data-nosnippet>1151</a>            </span><span class="string">"https://custom.agent.datadoghq.com"</span>, <span class="comment">// Custom with 'agent' subdomain
+<a href=#1152 id=1152 data-nosnippet>1152</a>            </span><span class="string">"https://app.custom.datadoghq.com"</span>,   <span class="comment">// Custom
+<a href=#1153 id=1153 data-nosnippet>1153</a>            </span><span class="string">"https://app.datadoghq.internal"</span>,     <span class="comment">// Custom top-level domain
+<a href=#1154 id=1154 data-nosnippet>1154</a>            </span><span class="string">"https://app.myproxy.com"</span>,            <span class="comment">// Proxy
+<a href=#1155 id=1155 data-nosnippet>1155</a>        </span>];
+<a href=#1156 id=1156 data-nosnippet>1156</a>        <span class="kw">let </span>expected_hosts = [
+<a href=#1157 id=1157 data-nosnippet>1157</a>            <span class="string">"custom.datadoghq.com"</span>,
+<a href=#1158 id=1158 data-nosnippet>1158</a>            <span class="string">"custom.agent.datadoghq.com"</span>,
+<a href=#1159 id=1159 data-nosnippet>1159</a>            <span class="string">"app.custom.datadoghq.com"</span>,
+<a href=#1160 id=1160 data-nosnippet>1160</a>            <span class="string">"app.datadoghq.internal"</span>,
+<a href=#1161 id=1161 data-nosnippet>1161</a>            <span class="string">"app.myproxy.com"</span>,
+<a href=#1162 id=1162 data-nosnippet>1162</a>        ];
+<a href=#1163 id=1163 data-nosnippet>1163</a>
+<a href=#1164 id=1164 data-nosnippet>1164</a>        <span class="kw">for </span>(input_url, expected_host) <span class="kw">in </span>input_urls.iter().zip(expected_hosts) {
+<a href=#1165 id=1165 data-nosnippet>1165</a>            <span class="kw">let </span>resolved =
+<a href=#1166 id=1166 data-nosnippet>1166</a>                ResolvedEndpoint::from_raw_endpoint(input_url, <span class="string">"fake_api_key"</span>).expect(<span class="string">"error resolving endpoint"</span>);
+<a href=#1167 id=1167 data-nosnippet>1167</a>            <span class="macro">assert_eq!</span>(
+<a href=#1168 id=1168 data-nosnippet>1168</a>                expected_host,
+<a href=#1169 id=1169 data-nosnippet>1169</a>                resolved.endpoint().host_str().expect(<span class="string">"error getting host"</span>)
+<a href=#1170 id=1170 data-nosnippet>1170</a>            );
+<a href=#1171 id=1171 data-nosnippet>1171</a>        }
+<a href=#1172 id=1172 data-nosnippet>1172</a>    }
+<a href=#1173 id=1173 data-nosnippet>1173</a>
+<a href=#1174 id=1174 data-nosnippet>1174</a>    <span class="attr">#[test]
+<a href=#1175 id=1175 data-nosnippet>1175</a>    </span><span class="kw">fn </span>calculate_resolved_endpoint_resolves_override_and_site() {
+<a href=#1176 id=1176 data-nosnippet>1176</a>        <span class="comment">// A `dd_url` override is used verbatim (dogpound.io is not a Datadog domain, so it is not
+<a href=#1177 id=1177 data-nosnippet>1177</a>        // version-prefixed) and always wins over `site`; with no override, the endpoint is derived from
+<a href=#1178 id=1178 data-nosnippet>1178</a>        // `site` (falling back to the default US site when empty) and gains the data plane version prefix.
+<a href=#1179 id=1179 data-nosnippet>1179</a>        </span><span class="kw">let </span>prefix = get_data_plane_version_prefix();
+<a href=#1180 id=1180 data-nosnippet>1180</a>        <span class="kw">let </span>cases = [
+<a href=#1181 id=1181 data-nosnippet>1181</a>            (
+<a href=#1182 id=1182 data-nosnippet>1182</a>                <span class="string">"no override, no site falls back to default site"</span>,
+<a href=#1183 id=1183 data-nosnippet>1183</a>                <span class="prelude-val">None</span>,
+<a href=#1184 id=1184 data-nosnippet>1184</a>                <span class="string">""</span>,
+<a href=#1185 id=1185 data-nosnippet>1185</a>                <span class="macro">format!</span>(<span class="string">"https://{prefix}.{DEFAULT_SITE}/"</span>),
+<a href=#1186 id=1186 data-nosnippet>1186</a>            ),
+<a href=#1187 id=1187 data-nosnippet>1187</a>            (
+<a href=#1188 id=1188 data-nosnippet>1188</a>                <span class="string">"no override, custom site"</span>,
+<a href=#1189 id=1189 data-nosnippet>1189</a>                <span class="prelude-val">None</span>,
+<a href=#1190 id=1190 data-nosnippet>1190</a>                <span class="string">"us3.datadoghq.com"</span>,
+<a href=#1191 id=1191 data-nosnippet>1191</a>                <span class="macro">format!</span>(<span class="string">"https://{prefix}.us3.datadoghq.com/"</span>),
+<a href=#1192 id=1192 data-nosnippet>1192</a>            ),
+<a href=#1193 id=1193 data-nosnippet>1193</a>            (
+<a href=#1194 id=1194 data-nosnippet>1194</a>                <span class="string">"override, no site uses override verbatim"</span>,
+<a href=#1195 id=1195 data-nosnippet>1195</a>                <span class="prelude-val">Some</span>(<span class="string">"https://dogpound.io/"</span>),
+<a href=#1196 id=1196 data-nosnippet>1196</a>                <span class="string">""</span>,
+<a href=#1197 id=1197 data-nosnippet>1197</a>                <span class="string">"https://dogpound.io/"</span>.to_string(),
+<a href=#1198 id=1198 data-nosnippet>1198</a>            ),
+<a href=#1199 id=1199 data-nosnippet>1199</a>            (
+<a href=#1200 id=1200 data-nosnippet>1200</a>                <span class="string">"override wins over site"</span>,
+<a href=#1201 id=1201 data-nosnippet>1201</a>                <span class="prelude-val">Some</span>(<span class="string">"https://dogpound.io/"</span>),
+<a href=#1202 id=1202 data-nosnippet>1202</a>                <span class="string">"us3.datadoghq.com"</span>,
+<a href=#1203 id=1203 data-nosnippet>1203</a>                <span class="string">"https://dogpound.io/"</span>.to_string(),
+<a href=#1204 id=1204 data-nosnippet>1204</a>            ),
+<a href=#1205 id=1205 data-nosnippet>1205</a>        ];
 <a href=#1206 id=1206 data-nosnippet>1206</a>
-<a href=#1207 id=1207 data-nosnippet>1207</a>    <span class="attr">#[test]
-<a href=#1208 id=1208 data-nosnippet>1208</a>    </span><span class="kw">fn </span>calculate_api_endpoint_no_site() {
-<a href=#1209 id=1209 data-nosnippet>1209</a>        <span class="kw">let </span>override_url = <span class="string">"https://dogpound.io/"</span>;
-<a href=#1210 id=1210 data-nosnippet>1210</a>        <span class="kw">let </span>expected_endpoint = override_url;
-<a href=#1211 id=1211 data-nosnippet>1211</a>
-<a href=#1212 id=1212 data-nosnippet>1212</a>        <span class="kw">let </span>resolved =
-<a href=#1213 id=1213 data-nosnippet>1213</a>            calculate_resolved_endpoint(<span class="prelude-val">Some</span>(override_url), <span class="string">""</span>, <span class="string">""</span>).expect(<span class="string">"error calculating override API endpoint"</span>);
-<a href=#1214 id=1214 data-nosnippet>1214</a>        <span class="macro">assert_eq!</span>(expected_endpoint, resolved.endpoint().to_string());
-<a href=#1215 id=1215 data-nosnippet>1215</a>    }
-<a href=#1216 id=1216 data-nosnippet>1216</a>
-<a href=#1217 id=1217 data-nosnippet>1217</a>    <span class="attr">#[test]
-<a href=#1218 id=1218 data-nosnippet>1218</a>    </span><span class="kw">fn </span>calculate_api_endpoint_override_and_site() {
-<a href=#1219 id=1219 data-nosnippet>1219</a>        <span class="kw">let </span>override_url = <span class="string">"https://dogpound.io/"</span>;
-<a href=#1220 id=1220 data-nosnippet>1220</a>        <span class="kw">let </span>expected_endpoint = override_url;
-<a href=#1221 id=1221 data-nosnippet>1221</a>
-<a href=#1222 id=1222 data-nosnippet>1222</a>        <span class="kw">let </span>resolved = calculate_resolved_endpoint(<span class="prelude-val">Some</span>(override_url), <span class="string">"us3.datadoghq.com"</span>, <span class="string">""</span>)
-<a href=#1223 id=1223 data-nosnippet>1223</a>            .expect(<span class="string">"error calculating override API endpoint"</span>);
-<a href=#1224 id=1224 data-nosnippet>1224</a>        <span class="macro">assert_eq!</span>(expected_endpoint, resolved.endpoint().to_string());
-<a href=#1225 id=1225 data-nosnippet>1225</a>    }
-<a href=#1226 id=1226 data-nosnippet>1226</a>
-<a href=#1227 id=1227 data-nosnippet>1227</a>    <span class="attr">#[test]
-<a href=#1228 id=1228 data-nosnippet>1228</a>    </span><span class="kw">fn </span>validation_headers_are_scoped_to_payload_family() {
-<a href=#1229 id=1229 data-nosnippet>1229</a>        <span class="kw">let </span>settings = EndpointV3Settings {
-<a href=#1230 id=1230 data-nosnippet>1230</a>            use_v3_series: <span class="bool-val">true</span>,
-<a href=#1231 id=1231 data-nosnippet>1231</a>            use_v3_sketches: <span class="bool-val">false</span>,
-<a href=#1232 id=1232 data-nosnippet>1232</a>            series_validation_mode: <span class="bool-val">true</span>,
-<a href=#1233 id=1233 data-nosnippet>1233</a>            sketches_validation_mode: <span class="bool-val">false</span>,
-<a href=#1234 id=1234 data-nosnippet>1234</a>            series_shadow_mode: <span class="bool-val">false</span>,
-<a href=#1235 id=1235 data-nosnippet>1235</a>        };
-<a href=#1236 id=1236 data-nosnippet>1236</a>
-<a href=#1237 id=1237 data-nosnippet>1237</a>        <span class="macro">assert!</span>(settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_series())));
-<a href=#1238 id=1238 data-nosnippet>1238</a>        <span class="macro">assert!</span>(settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_series())));
-<a href=#1239 id=1239 data-nosnippet>1239</a>        <span class="macro">assert!</span>(!settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_sketches())));
-<a href=#1240 id=1240 data-nosnippet>1240</a>        <span class="macro">assert!</span>(!settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_sketches())));
-<a href=#1241 id=1241 data-nosnippet>1241</a>        <span class="macro">assert!</span>(!settings.should_receive_validation_headers(<span class="prelude-val">None</span>));
-<a href=#1242 id=1242 data-nosnippet>1242</a>    }
-<a href=#1243 id=1243 data-nosnippet>1243</a>
-<a href=#1244 id=1244 data-nosnippet>1244</a>    <span class="attr">#[test]
-<a href=#1245 id=1245 data-nosnippet>1245</a>    </span><span class="kw">fn </span>extract_site_from_url_matches_datadog_domains() {
-<a href=#1246 id=1246 data-nosnippet>1246</a>        <span class="macro">assert_eq!</span>(
-<a href=#1247 id=1247 data-nosnippet>1247</a>            <span class="prelude-val">Some</span>(<span class="string">"datadoghq.com"</span>.to_string()),
-<a href=#1248 id=1248 data-nosnippet>1248</a>            extract_site_from_url(<span class="string">"https://1-2-3-agent.datadoghq.com/api/v2/series"</span>)
-<a href=#1249 id=1249 data-nosnippet>1249</a>        );
-<a href=#1250 id=1250 data-nosnippet>1250</a>        <span class="macro">assert_eq!</span>(
-<a href=#1251 id=1251 data-nosnippet>1251</a>            <span class="prelude-val">Some</span>(<span class="string">"us3.datadoghq.com"</span>.to_string()),
-<a href=#1252 id=1252 data-nosnippet>1252</a>            extract_site_from_url(<span class="string">"https://intake.profile.us3.datadoghq.com/v1/input"</span>)
-<a href=#1253 id=1253 data-nosnippet>1253</a>        );
-<a href=#1254 id=1254 data-nosnippet>1254</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, extract_site_from_url(<span class="string">"https://vector.example.test/api/v2/series"</span>));
-<a href=#1255 id=1255 data-nosnippet>1255</a>    }
-<a href=#1256 id=1256 data-nosnippet>1256</a>
-<a href=#1257 id=1257 data-nosnippet>1257</a>    <span class="attr">#[test]
-<a href=#1258 id=1258 data-nosnippet>1258</a>    </span><span class="kw">fn </span>shadow_payloads_are_endpoint_scoped() {
-<a href=#1259 id=1259 data-nosnippet>1259</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1260 id=1260 data-nosnippet>1260</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1261 id=1261 data-nosnippet>1261</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
-<a href=#1262 id=1262 data-nosnippet>1262</a>            resolved.configured_endpoint(),
-<a href=#1263 id=1263 data-nosnippet>1263</a>            resolved.endpoint(),
-<a href=#1264 id=1264 data-nosnippet>1264</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1265 id=1265 data-nosnippet>1265</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1266 id=1266 data-nosnippet>1266</a>            <span class="bool-val">false</span>,
-<a href=#1267 id=1267 data-nosnippet>1267</a>            <span class="bool-val">false</span>,
-<a href=#1268 id=1268 data-nosnippet>1268</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1269 id=1269 data-nosnippet>1269</a>        );
-<a href=#1270 id=1270 data-nosnippet>1270</a>
-<a href=#1271 id=1271 data-nosnippet>1271</a>        <span class="macro">assert!</span>(settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_shadow_series())));
-<a href=#1272 id=1272 data-nosnippet>1272</a>        <span class="macro">assert!</span>(settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
-<a href=#1273 id=1273 data-nosnippet>1273</a>        <span class="macro">assert!</span>(!settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_series())));
-<a href=#1274 id=1274 data-nosnippet>1274</a>        <span class="macro">assert!</span>(settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_shadow_series())));
-<a href=#1275 id=1275 data-nosnippet>1275</a>        <span class="macro">assert!</span>(settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
-<a href=#1276 id=1276 data-nosnippet>1276</a>    }
-<a href=#1277 id=1277 data-nosnippet>1277</a>
-<a href=#1278 id=1278 data-nosnippet>1278</a>    <span class="attr">#[test]
-<a href=#1279 id=1279 data-nosnippet>1279</a>    </span><span class="kw">fn </span>shadow_payloads_require_allowed_site_and_v2_authoritative_endpoint() {
-<a href=#1280 id=1280 data-nosnippet>1280</a>        <span class="kw">let </span>us3 = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.us3.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1281 id=1281 data-nosnippet>1281</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1282 id=1282 data-nosnippet>1282</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
-<a href=#1283 id=1283 data-nosnippet>1283</a>            us3.configured_endpoint(),
-<a href=#1284 id=1284 data-nosnippet>1284</a>            us3.endpoint(),
-<a href=#1285 id=1285 data-nosnippet>1285</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1286 id=1286 data-nosnippet>1286</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1287 id=1287 data-nosnippet>1287</a>            <span class="bool-val">false</span>,
-<a href=#1288 id=1288 data-nosnippet>1288</a>            <span class="bool-val">false</span>,
-<a href=#1289 id=1289 data-nosnippet>1289</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1290 id=1290 data-nosnippet>1290</a>        );
-<a href=#1291 id=1291 data-nosnippet>1291</a>        <span class="macro">assert!</span>(!settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
-<a href=#1292 id=1292 data-nosnippet>1292</a>
-<a href=#1293 id=1293 data-nosnippet>1293</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
-<a href=#1294 id=1294 data-nosnippet>1294</a>            us3.configured_endpoint(),
-<a href=#1295 id=1295 data-nosnippet>1295</a>            us3.endpoint(),
-<a href=#1296 id=1296 data-nosnippet>1296</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1297 id=1297 data-nosnippet>1297</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1298 id=1298 data-nosnippet>1298</a>            <span class="bool-val">false</span>,
-<a href=#1299 id=1299 data-nosnippet>1299</a>            <span class="bool-val">false</span>,
-<a href=#1300 id=1300 data-nosnippet>1300</a>            <span class="kw-2">&amp;</span>[<span class="string">"us3.datadoghq.com"</span>.to_string()],
-<a href=#1301 id=1301 data-nosnippet>1301</a>        );
-<a href=#1302 id=1302 data-nosnippet>1302</a>        <span class="macro">assert!</span>(settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
-<a href=#1303 id=1303 data-nosnippet>1303</a>
-<a href=#1304 id=1304 data-nosnippet>1304</a>        <span class="kw">let </span>v3_series_endpoints = <span class="macro">vec!</span>[us3.configured_endpoint().to_string()];
-<a href=#1305 id=1305 data-nosnippet>1305</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
-<a href=#1306 id=1306 data-nosnippet>1306</a>            us3.configured_endpoint(),
-<a href=#1307 id=1307 data-nosnippet>1307</a>            us3.endpoint(),
-<a href=#1308 id=1308 data-nosnippet>1308</a>            <span class="kw-2">&amp;</span>v3_series_endpoints,
-<a href=#1309 id=1309 data-nosnippet>1309</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1310 id=1310 data-nosnippet>1310</a>            <span class="bool-val">false</span>,
-<a href=#1311 id=1311 data-nosnippet>1311</a>            <span class="bool-val">false</span>,
-<a href=#1312 id=1312 data-nosnippet>1312</a>            <span class="kw-2">&amp;</span>[<span class="string">"us3.datadoghq.com"</span>.to_string()],
-<a href=#1313 id=1313 data-nosnippet>1313</a>        );
-<a href=#1314 id=1314 data-nosnippet>1314</a>        <span class="macro">assert!</span>(!settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
-<a href=#1315 id=1315 data-nosnippet>1315</a>    }
-<a href=#1316 id=1316 data-nosnippet>1316</a>
-<a href=#1317 id=1317 data-nosnippet>1317</a>    <span class="attr">#[test]
-<a href=#1318 id=1318 data-nosnippet>1318</a>    </span><span class="kw">fn </span>v3_endpoint_matching_uses_configured_endpoint_before_version_prefix() {
-<a href=#1319 id=1319 data-nosnippet>1319</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1320 id=1320 data-nosnippet>1320</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1321 id=1321 data-nosnippet>1321</a>
-<a href=#1322 id=1322 data-nosnippet>1322</a>        <span class="macro">assert_eq!</span>(<span class="string">"https://app.datadoghq.com"</span>, resolved.configured_endpoint());
-<a href=#1323 id=1323 data-nosnippet>1323</a>        <span class="macro">assert_ne!</span>(<span class="string">"app.datadoghq.com"</span>, resolved.endpoint().host_str().unwrap());
-<a href=#1324 id=1324 data-nosnippet>1324</a>
-<a href=#1325 id=1325 data-nosnippet>1325</a>        <span class="kw">let </span>v3_series_endpoints = <span class="macro">vec!</span>[<span class="string">"https://app.datadoghq.com"</span>.to_string()];
-<a href=#1326 id=1326 data-nosnippet>1326</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
-<a href=#1327 id=1327 data-nosnippet>1327</a>            resolved.configured_endpoint(),
-<a href=#1328 id=1328 data-nosnippet>1328</a>            resolved.endpoint(),
-<a href=#1329 id=1329 data-nosnippet>1329</a>            <span class="kw-2">&amp;</span>v3_series_endpoints,
-<a href=#1330 id=1330 data-nosnippet>1330</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1331 id=1331 data-nosnippet>1331</a>            <span class="bool-val">false</span>,
-<a href=#1332 id=1332 data-nosnippet>1332</a>            <span class="bool-val">false</span>,
-<a href=#1333 id=1333 data-nosnippet>1333</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1334 id=1334 data-nosnippet>1334</a>        );
+<a href=#1207 id=1207 data-nosnippet>1207</a>        <span class="kw">for </span>(name, override_url, site, expected_endpoint) <span class="kw">in </span>cases {
+<a href=#1208 id=1208 data-nosnippet>1208</a>            <span class="kw">let </span>resolved = calculate_resolved_endpoint(override_url, site, <span class="string">""</span>).expect(name);
+<a href=#1209 id=1209 data-nosnippet>1209</a>            <span class="macro">assert_eq!</span>(expected_endpoint, resolved.endpoint().to_string(), <span class="string">"{name}"</span>);
+<a href=#1210 id=1210 data-nosnippet>1210</a>        }
+<a href=#1211 id=1211 data-nosnippet>1211</a>    }
+<a href=#1212 id=1212 data-nosnippet>1212</a>
+<a href=#1213 id=1213 data-nosnippet>1213</a>    <span class="attr">#[test]
+<a href=#1214 id=1214 data-nosnippet>1214</a>    </span><span class="kw">fn </span>validation_headers_are_scoped_to_payload_family() {
+<a href=#1215 id=1215 data-nosnippet>1215</a>        <span class="kw">let </span>settings = EndpointV3Settings {
+<a href=#1216 id=1216 data-nosnippet>1216</a>            use_v3_series: <span class="bool-val">true</span>,
+<a href=#1217 id=1217 data-nosnippet>1217</a>            use_v3_sketches: <span class="bool-val">false</span>,
+<a href=#1218 id=1218 data-nosnippet>1218</a>            series_validation_mode: <span class="bool-val">true</span>,
+<a href=#1219 id=1219 data-nosnippet>1219</a>            sketches_validation_mode: <span class="bool-val">false</span>,
+<a href=#1220 id=1220 data-nosnippet>1220</a>            series_shadow_mode: <span class="bool-val">false</span>,
+<a href=#1221 id=1221 data-nosnippet>1221</a>        };
+<a href=#1222 id=1222 data-nosnippet>1222</a>
+<a href=#1223 id=1223 data-nosnippet>1223</a>        <span class="macro">assert!</span>(settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_series())));
+<a href=#1224 id=1224 data-nosnippet>1224</a>        <span class="macro">assert!</span>(settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_series())));
+<a href=#1225 id=1225 data-nosnippet>1225</a>        <span class="macro">assert!</span>(!settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_sketches())));
+<a href=#1226 id=1226 data-nosnippet>1226</a>        <span class="macro">assert!</span>(!settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_sketches())));
+<a href=#1227 id=1227 data-nosnippet>1227</a>        <span class="macro">assert!</span>(!settings.should_receive_validation_headers(<span class="prelude-val">None</span>));
+<a href=#1228 id=1228 data-nosnippet>1228</a>    }
+<a href=#1229 id=1229 data-nosnippet>1229</a>
+<a href=#1230 id=1230 data-nosnippet>1230</a>    <span class="attr">#[test]
+<a href=#1231 id=1231 data-nosnippet>1231</a>    </span><span class="kw">fn </span>should_receive_payload_covers_all_documented_branches() {
+<a href=#1232 id=1232 data-nosnippet>1232</a>        <span class="comment">// Walks every branch enumerated in `should_receive_payload`'s doc comment:
+<a href=#1233 id=1233 data-nosnippet>1233</a>        // - V2 series: accept if series V3 is disabled OR series validation mode is enabled
+<a href=#1234 id=1234 data-nosnippet>1234</a>        // - V2 sketches: accept if sketches V3 is disabled OR sketches validation mode is enabled
+<a href=#1235 id=1235 data-nosnippet>1235</a>        // - V3 series: accept if series V3 is enabled
+<a href=#1236 id=1236 data-nosnippet>1236</a>        // - V3 sketches: accept if sketches V3 is enabled
+<a href=#1237 id=1237 data-nosnippet>1237</a>        // - Non-metrics payloads (None): always accept
+<a href=#1238 id=1238 data-nosnippet>1238</a>        </span><span class="kw">let </span>cases: [(<span class="kw-2">&amp;</span>str, EndpointV3Settings, <span class="prelude-ty">Option</span>&lt;MetricsPayloadInfo&gt;, bool); <span class="number">11</span>] = [
+<a href=#1239 id=1239 data-nosnippet>1239</a>            (
+<a href=#1240 id=1240 data-nosnippet>1240</a>                <span class="string">"v2 series accepted when series v3 disabled"</span>,
+<a href=#1241 id=1241 data-nosnippet>1241</a>                EndpointV3Settings::disabled(),
+<a href=#1242 id=1242 data-nosnippet>1242</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_series()),
+<a href=#1243 id=1243 data-nosnippet>1243</a>                <span class="bool-val">true</span>,
+<a href=#1244 id=1244 data-nosnippet>1244</a>            ),
+<a href=#1245 id=1245 data-nosnippet>1245</a>            (
+<a href=#1246 id=1246 data-nosnippet>1246</a>                <span class="string">"v2 series rejected when series v3 enabled without validation"</span>,
+<a href=#1247 id=1247 data-nosnippet>1247</a>                EndpointV3Settings {
+<a href=#1248 id=1248 data-nosnippet>1248</a>                    use_v3_series: <span class="bool-val">true</span>,
+<a href=#1249 id=1249 data-nosnippet>1249</a>                    ..EndpointV3Settings::disabled()
+<a href=#1250 id=1250 data-nosnippet>1250</a>                },
+<a href=#1251 id=1251 data-nosnippet>1251</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_series()),
+<a href=#1252 id=1252 data-nosnippet>1252</a>                <span class="bool-val">false</span>,
+<a href=#1253 id=1253 data-nosnippet>1253</a>            ),
+<a href=#1254 id=1254 data-nosnippet>1254</a>            (
+<a href=#1255 id=1255 data-nosnippet>1255</a>                <span class="string">"v2 series accepted when series validation mode duplicates to v2"</span>,
+<a href=#1256 id=1256 data-nosnippet>1256</a>                EndpointV3Settings {
+<a href=#1257 id=1257 data-nosnippet>1257</a>                    use_v3_series: <span class="bool-val">true</span>,
+<a href=#1258 id=1258 data-nosnippet>1258</a>                    series_validation_mode: <span class="bool-val">true</span>,
+<a href=#1259 id=1259 data-nosnippet>1259</a>                    ..EndpointV3Settings::disabled()
+<a href=#1260 id=1260 data-nosnippet>1260</a>                },
+<a href=#1261 id=1261 data-nosnippet>1261</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_series()),
+<a href=#1262 id=1262 data-nosnippet>1262</a>                <span class="bool-val">true</span>,
+<a href=#1263 id=1263 data-nosnippet>1263</a>            ),
+<a href=#1264 id=1264 data-nosnippet>1264</a>            (
+<a href=#1265 id=1265 data-nosnippet>1265</a>                <span class="string">"v2 sketches accepted when sketches v3 disabled"</span>,
+<a href=#1266 id=1266 data-nosnippet>1266</a>                EndpointV3Settings::disabled(),
+<a href=#1267 id=1267 data-nosnippet>1267</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_sketches()),
+<a href=#1268 id=1268 data-nosnippet>1268</a>                <span class="bool-val">true</span>,
+<a href=#1269 id=1269 data-nosnippet>1269</a>            ),
+<a href=#1270 id=1270 data-nosnippet>1270</a>            (
+<a href=#1271 id=1271 data-nosnippet>1271</a>                <span class="string">"v2 sketches rejected when sketches v3 enabled without validation"</span>,
+<a href=#1272 id=1272 data-nosnippet>1272</a>                EndpointV3Settings {
+<a href=#1273 id=1273 data-nosnippet>1273</a>                    use_v3_sketches: <span class="bool-val">true</span>,
+<a href=#1274 id=1274 data-nosnippet>1274</a>                    ..EndpointV3Settings::disabled()
+<a href=#1275 id=1275 data-nosnippet>1275</a>                },
+<a href=#1276 id=1276 data-nosnippet>1276</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_sketches()),
+<a href=#1277 id=1277 data-nosnippet>1277</a>                <span class="bool-val">false</span>,
+<a href=#1278 id=1278 data-nosnippet>1278</a>            ),
+<a href=#1279 id=1279 data-nosnippet>1279</a>            (
+<a href=#1280 id=1280 data-nosnippet>1280</a>                <span class="string">"v2 sketches accepted when sketches validation mode duplicates to v2"</span>,
+<a href=#1281 id=1281 data-nosnippet>1281</a>                EndpointV3Settings {
+<a href=#1282 id=1282 data-nosnippet>1282</a>                    use_v3_sketches: <span class="bool-val">true</span>,
+<a href=#1283 id=1283 data-nosnippet>1283</a>                    sketches_validation_mode: <span class="bool-val">true</span>,
+<a href=#1284 id=1284 data-nosnippet>1284</a>                    ..EndpointV3Settings::disabled()
+<a href=#1285 id=1285 data-nosnippet>1285</a>                },
+<a href=#1286 id=1286 data-nosnippet>1286</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_sketches()),
+<a href=#1287 id=1287 data-nosnippet>1287</a>                <span class="bool-val">true</span>,
+<a href=#1288 id=1288 data-nosnippet>1288</a>            ),
+<a href=#1289 id=1289 data-nosnippet>1289</a>            (
+<a href=#1290 id=1290 data-nosnippet>1290</a>                <span class="string">"v3 series accepted when series v3 enabled"</span>,
+<a href=#1291 id=1291 data-nosnippet>1291</a>                EndpointV3Settings {
+<a href=#1292 id=1292 data-nosnippet>1292</a>                    use_v3_series: <span class="bool-val">true</span>,
+<a href=#1293 id=1293 data-nosnippet>1293</a>                    ..EndpointV3Settings::disabled()
+<a href=#1294 id=1294 data-nosnippet>1294</a>                },
+<a href=#1295 id=1295 data-nosnippet>1295</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_series()),
+<a href=#1296 id=1296 data-nosnippet>1296</a>                <span class="bool-val">true</span>,
+<a href=#1297 id=1297 data-nosnippet>1297</a>            ),
+<a href=#1298 id=1298 data-nosnippet>1298</a>            (
+<a href=#1299 id=1299 data-nosnippet>1299</a>                <span class="string">"v3 series rejected when series v3 disabled"</span>,
+<a href=#1300 id=1300 data-nosnippet>1300</a>                EndpointV3Settings::disabled(),
+<a href=#1301 id=1301 data-nosnippet>1301</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_series()),
+<a href=#1302 id=1302 data-nosnippet>1302</a>                <span class="bool-val">false</span>,
+<a href=#1303 id=1303 data-nosnippet>1303</a>            ),
+<a href=#1304 id=1304 data-nosnippet>1304</a>            (
+<a href=#1305 id=1305 data-nosnippet>1305</a>                <span class="string">"v3 sketches accepted when sketches v3 enabled"</span>,
+<a href=#1306 id=1306 data-nosnippet>1306</a>                EndpointV3Settings {
+<a href=#1307 id=1307 data-nosnippet>1307</a>                    use_v3_sketches: <span class="bool-val">true</span>,
+<a href=#1308 id=1308 data-nosnippet>1308</a>                    ..EndpointV3Settings::disabled()
+<a href=#1309 id=1309 data-nosnippet>1309</a>                },
+<a href=#1310 id=1310 data-nosnippet>1310</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_sketches()),
+<a href=#1311 id=1311 data-nosnippet>1311</a>                <span class="bool-val">true</span>,
+<a href=#1312 id=1312 data-nosnippet>1312</a>            ),
+<a href=#1313 id=1313 data-nosnippet>1313</a>            (
+<a href=#1314 id=1314 data-nosnippet>1314</a>                <span class="string">"v3 sketches rejected when sketches v3 disabled"</span>,
+<a href=#1315 id=1315 data-nosnippet>1315</a>                EndpointV3Settings::disabled(),
+<a href=#1316 id=1316 data-nosnippet>1316</a>                <span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_sketches()),
+<a href=#1317 id=1317 data-nosnippet>1317</a>                <span class="bool-val">false</span>,
+<a href=#1318 id=1318 data-nosnippet>1318</a>            ),
+<a href=#1319 id=1319 data-nosnippet>1319</a>            (
+<a href=#1320 id=1320 data-nosnippet>1320</a>                <span class="string">"non-metrics payload always accepted"</span>,
+<a href=#1321 id=1321 data-nosnippet>1321</a>                EndpointV3Settings {
+<a href=#1322 id=1322 data-nosnippet>1322</a>                    use_v3_series: <span class="bool-val">true</span>,
+<a href=#1323 id=1323 data-nosnippet>1323</a>                    use_v3_sketches: <span class="bool-val">true</span>,
+<a href=#1324 id=1324 data-nosnippet>1324</a>                    ..EndpointV3Settings::disabled()
+<a href=#1325 id=1325 data-nosnippet>1325</a>                },
+<a href=#1326 id=1326 data-nosnippet>1326</a>                <span class="prelude-val">None</span>,
+<a href=#1327 id=1327 data-nosnippet>1327</a>                <span class="bool-val">true</span>,
+<a href=#1328 id=1328 data-nosnippet>1328</a>            ),
+<a href=#1329 id=1329 data-nosnippet>1329</a>        ];
+<a href=#1330 id=1330 data-nosnippet>1330</a>
+<a href=#1331 id=1331 data-nosnippet>1331</a>        <span class="kw">for </span>(name, settings, payload_info, expected) <span class="kw">in </span>cases {
+<a href=#1332 id=1332 data-nosnippet>1332</a>            <span class="macro">assert_eq!</span>(settings.should_receive_payload(payload_info), expected, <span class="string">"{name}"</span>);
+<a href=#1333 id=1333 data-nosnippet>1333</a>        }
+<a href=#1334 id=1334 data-nosnippet>1334</a>    }
 <a href=#1335 id=1335 data-nosnippet>1335</a>
-<a href=#1336 id=1336 data-nosnippet>1336</a>        <span class="macro">assert!</span>(settings.use_v3_series);
-<a href=#1337 id=1337 data-nosnippet>1337</a>    }
-<a href=#1338 id=1338 data-nosnippet>1338</a>
-<a href=#1339 id=1339 data-nosnippet>1339</a>    <span class="kw">fn </span>v3_endpoint_config&lt;<span class="lifetime">'a</span>&gt;(
-<a href=#1340 id=1340 data-nosnippet>1340</a>        endpoint: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>ResolvedEndpoint, series_config: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>UseV3ApiSeriesConfig,
-<a href=#1341 id=1341 data-nosnippet>1341</a>    ) -&gt; V3EndpointConfig&lt;<span class="lifetime">'a</span>&gt; {
-<a href=#1342 id=1342 data-nosnippet>1342</a>        V3EndpointConfig {
-<a href=#1343 id=1343 data-nosnippet>1343</a>            configured_endpoint: endpoint.configured_endpoint(),
-<a href=#1344 id=1344 data-nosnippet>1344</a>            resolved_endpoint: endpoint.endpoint(),
-<a href=#1345 id=1345 data-nosnippet>1345</a>            serializer_v3_configured_endpoint: <span class="prelude-val">None</span>,
-<a href=#1346 id=1346 data-nosnippet>1346</a>            data_plane_v3_series_enabled: <span class="bool-val">true</span>,
-<a href=#1347 id=1347 data-nosnippet>1347</a>            series_config,
-<a href=#1348 id=1348 data-nosnippet>1348</a>            metrics_primary_v3_override: <span class="prelude-val">None</span>,
-<a href=#1349 id=1349 data-nosnippet>1349</a>            serializer_v3_series_endpoints: <span class="kw-2">&amp;</span>[],
-<a href=#1350 id=1350 data-nosnippet>1350</a>            serializer_v3_sketches_endpoints: <span class="kw-2">&amp;</span>[],
-<a href=#1351 id=1351 data-nosnippet>1351</a>            series_validate: <span class="bool-val">false</span>,
-<a href=#1352 id=1352 data-nosnippet>1352</a>            sketches_validate: <span class="bool-val">false</span>,
-<a href=#1353 id=1353 data-nosnippet>1353</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[],
-<a href=#1354 id=1354 data-nosnippet>1354</a>        }
-<a href=#1355 id=1355 data-nosnippet>1355</a>    }
-<a href=#1356 id=1356 data-nosnippet>1356</a>
-<a href=#1357 id=1357 data-nosnippet>1357</a>    <span class="attr">#[test]
-<a href=#1358 id=1358 data-nosnippet>1358</a>    </span><span class="kw">fn </span>agent_v3_default_requires_data_plane_gate() {
-<a href=#1359 id=1359 data-nosnippet>1359</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1360 id=1360 data-nosnippet>1360</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1361 id=1361 data-nosnippet>1361</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig::default();
+<a href=#1336 id=1336 data-nosnippet>1336</a>    <span class="attr">#[test]
+<a href=#1337 id=1337 data-nosnippet>1337</a>    </span><span class="kw">fn </span>extract_site_from_url_matches_datadog_domains() {
+<a href=#1338 id=1338 data-nosnippet>1338</a>        <span class="macro">assert_eq!</span>(
+<a href=#1339 id=1339 data-nosnippet>1339</a>            <span class="prelude-val">Some</span>(<span class="string">"datadoghq.com"</span>.to_string()),
+<a href=#1340 id=1340 data-nosnippet>1340</a>            extract_site_from_url(<span class="string">"https://1-2-3-agent.datadoghq.com/api/v2/series"</span>)
+<a href=#1341 id=1341 data-nosnippet>1341</a>        );
+<a href=#1342 id=1342 data-nosnippet>1342</a>        <span class="macro">assert_eq!</span>(
+<a href=#1343 id=1343 data-nosnippet>1343</a>            <span class="prelude-val">Some</span>(<span class="string">"us3.datadoghq.com"</span>.to_string()),
+<a href=#1344 id=1344 data-nosnippet>1344</a>            extract_site_from_url(<span class="string">"https://intake.profile.us3.datadoghq.com/v1/input"</span>)
+<a href=#1345 id=1345 data-nosnippet>1345</a>        );
+<a href=#1346 id=1346 data-nosnippet>1346</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, extract_site_from_url(<span class="string">"https://vector.example.test/api/v2/series"</span>));
+<a href=#1347 id=1347 data-nosnippet>1347</a>    }
+<a href=#1348 id=1348 data-nosnippet>1348</a>
+<a href=#1349 id=1349 data-nosnippet>1349</a>    <span class="attr">#[test]
+<a href=#1350 id=1350 data-nosnippet>1350</a>    </span><span class="kw">fn </span>shadow_payloads_are_endpoint_scoped() {
+<a href=#1351 id=1351 data-nosnippet>1351</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1352 id=1352 data-nosnippet>1352</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1353 id=1353 data-nosnippet>1353</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
+<a href=#1354 id=1354 data-nosnippet>1354</a>            resolved.configured_endpoint(),
+<a href=#1355 id=1355 data-nosnippet>1355</a>            resolved.endpoint(),
+<a href=#1356 id=1356 data-nosnippet>1356</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1357 id=1357 data-nosnippet>1357</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1358 id=1358 data-nosnippet>1358</a>            <span class="bool-val">false</span>,
+<a href=#1359 id=1359 data-nosnippet>1359</a>            <span class="bool-val">false</span>,
+<a href=#1360 id=1360 data-nosnippet>1360</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1361 id=1361 data-nosnippet>1361</a>        );
 <a href=#1362 id=1362 data-nosnippet>1362</a>
-<a href=#1363 id=1363 data-nosnippet>1363</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-<a href=#1364 id=1364 data-nosnippet>1364</a>            data_plane_v3_series_enabled: <span class="bool-val">false</span>,
-<a href=#1365 id=1365 data-nosnippet>1365</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1366 id=1366 data-nosnippet>1366</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
-<a href=#1367 id=1367 data-nosnippet>1367</a>        });
-<a href=#1368 id=1368 data-nosnippet>1368</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
-<a href=#1369 id=1369 data-nosnippet>1369</a>        <span class="macro">assert!</span>(settings.series_shadow_mode);
-<a href=#1370 id=1370 data-nosnippet>1370</a>        <span class="macro">assert!</span>(settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
-<a href=#1371 id=1371 data-nosnippet>1371</a>        <span class="macro">assert!</span>(!settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_series())));
-<a href=#1372 id=1372 data-nosnippet>1372</a>
-<a href=#1373 id=1373 data-nosnippet>1373</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-<a href=#1374 id=1374 data-nosnippet>1374</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1375 id=1375 data-nosnippet>1375</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
-<a href=#1376 id=1376 data-nosnippet>1376</a>        });
-<a href=#1377 id=1377 data-nosnippet>1377</a>        <span class="macro">assert!</span>(settings.use_v3_series);
-<a href=#1378 id=1378 data-nosnippet>1378</a>        <span class="macro">assert!</span>(!settings.series_shadow_mode);
-<a href=#1379 id=1379 data-nosnippet>1379</a>    }
-<a href=#1380 id=1380 data-nosnippet>1380</a>
-<a href=#1381 id=1381 data-nosnippet>1381</a>    <span class="attr">#[test]
-<a href=#1382 id=1382 data-nosnippet>1382</a>    </span><span class="kw">fn </span>agent_v3_endpoint_overrides_win_over_global_default() {
-<a href=#1383 id=1383 data-nosnippet>1383</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1384 id=1384 data-nosnippet>1384</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1385 id=1385 data-nosnippet>1385</a>        <span class="kw">let </span><span class="kw-2">mut </span>series_config = UseV3ApiSeriesConfig::default();
-<a href=#1386 id=1386 data-nosnippet>1386</a>        series_config
-<a href=#1387 id=1387 data-nosnippet>1387</a>            .endpoints
-<a href=#1388 id=1388 data-nosnippet>1388</a>            .insert(resolved.configured_endpoint().to_string(), <span class="string">"false"</span>.to_string());
-<a href=#1389 id=1389 data-nosnippet>1389</a>
-<a href=#1390 id=1390 data-nosnippet>1390</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-<a href=#1391 id=1391 data-nosnippet>1391</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1392 id=1392 data-nosnippet>1392</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
-<a href=#1393 id=1393 data-nosnippet>1393</a>        });
-<a href=#1394 id=1394 data-nosnippet>1394</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
+<a href=#1363 id=1363 data-nosnippet>1363</a>        <span class="macro">assert!</span>(settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_shadow_series())));
+<a href=#1364 id=1364 data-nosnippet>1364</a>        <span class="macro">assert!</span>(settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
+<a href=#1365 id=1365 data-nosnippet>1365</a>        <span class="macro">assert!</span>(!settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_series())));
+<a href=#1366 id=1366 data-nosnippet>1366</a>        <span class="macro">assert!</span>(settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v2_shadow_series())));
+<a href=#1367 id=1367 data-nosnippet>1367</a>        <span class="macro">assert!</span>(settings.should_receive_validation_headers(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
+<a href=#1368 id=1368 data-nosnippet>1368</a>    }
+<a href=#1369 id=1369 data-nosnippet>1369</a>
+<a href=#1370 id=1370 data-nosnippet>1370</a>    <span class="attr">#[test]
+<a href=#1371 id=1371 data-nosnippet>1371</a>    </span><span class="kw">fn </span>shadow_payloads_require_allowed_site_and_v2_authoritative_endpoint() {
+<a href=#1372 id=1372 data-nosnippet>1372</a>        <span class="kw">let </span>us3 = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.us3.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1373 id=1373 data-nosnippet>1373</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1374 id=1374 data-nosnippet>1374</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
+<a href=#1375 id=1375 data-nosnippet>1375</a>            us3.configured_endpoint(),
+<a href=#1376 id=1376 data-nosnippet>1376</a>            us3.endpoint(),
+<a href=#1377 id=1377 data-nosnippet>1377</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1378 id=1378 data-nosnippet>1378</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1379 id=1379 data-nosnippet>1379</a>            <span class="bool-val">false</span>,
+<a href=#1380 id=1380 data-nosnippet>1380</a>            <span class="bool-val">false</span>,
+<a href=#1381 id=1381 data-nosnippet>1381</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1382 id=1382 data-nosnippet>1382</a>        );
+<a href=#1383 id=1383 data-nosnippet>1383</a>        <span class="macro">assert!</span>(!settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
+<a href=#1384 id=1384 data-nosnippet>1384</a>
+<a href=#1385 id=1385 data-nosnippet>1385</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
+<a href=#1386 id=1386 data-nosnippet>1386</a>            us3.configured_endpoint(),
+<a href=#1387 id=1387 data-nosnippet>1387</a>            us3.endpoint(),
+<a href=#1388 id=1388 data-nosnippet>1388</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1389 id=1389 data-nosnippet>1389</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1390 id=1390 data-nosnippet>1390</a>            <span class="bool-val">false</span>,
+<a href=#1391 id=1391 data-nosnippet>1391</a>            <span class="bool-val">false</span>,
+<a href=#1392 id=1392 data-nosnippet>1392</a>            <span class="kw-2">&amp;</span>[<span class="string">"us3.datadoghq.com"</span>.to_string()],
+<a href=#1393 id=1393 data-nosnippet>1393</a>        );
+<a href=#1394 id=1394 data-nosnippet>1394</a>        <span class="macro">assert!</span>(settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
 <a href=#1395 id=1395 data-nosnippet>1395</a>
-<a href=#1396 id=1396 data-nosnippet>1396</a>        series_config = UseV3ApiSeriesConfig {
-<a href=#1397 id=1397 data-nosnippet>1397</a>            enabled: <span class="string">"false"</span>.to_string(),
-<a href=#1398 id=1398 data-nosnippet>1398</a>            ..Default::default()
-<a href=#1399 id=1399 data-nosnippet>1399</a>        };
-<a href=#1400 id=1400 data-nosnippet>1400</a>        series_config
-<a href=#1401 id=1401 data-nosnippet>1401</a>            .endpoints
-<a href=#1402 id=1402 data-nosnippet>1402</a>            .insert(resolved.configured_endpoint().to_string(), <span class="string">"true"</span>.to_string());
-<a href=#1403 id=1403 data-nosnippet>1403</a>
-<a href=#1404 id=1404 data-nosnippet>1404</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-<a href=#1405 id=1405 data-nosnippet>1405</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1406 id=1406 data-nosnippet>1406</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
-<a href=#1407 id=1407 data-nosnippet>1407</a>        });
-<a href=#1408 id=1408 data-nosnippet>1408</a>        <span class="macro">assert!</span>(settings.use_v3_series);
-<a href=#1409 id=1409 data-nosnippet>1409</a>    }
-<a href=#1410 id=1410 data-nosnippet>1410</a>
-<a href=#1411 id=1411 data-nosnippet>1411</a>    <span class="attr">#[test]
-<a href=#1412 id=1412 data-nosnippet>1412</a>    </span><span class="kw">fn </span>agent_v3_datadog_only_matches_datadog_intake_urls() {
-<a href=#1413 id=1413 data-nosnippet>1413</a>        <span class="kw">let </span>datadog = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1414 id=1414 data-nosnippet>1414</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1415 id=1415 data-nosnippet>1415</a>        <span class="kw">let </span>custom = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://example.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1416 id=1416 data-nosnippet>1416</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1417 id=1417 data-nosnippet>1417</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig {
-<a href=#1418 id=1418 data-nosnippet>1418</a>            enabled: <span class="string">"datadog_only"</span>.to_string(),
-<a href=#1419 id=1419 data-nosnippet>1419</a>            endpoints: HashMap::new(),
-<a href=#1420 id=1420 data-nosnippet>1420</a>        };
-<a href=#1421 id=1421 data-nosnippet>1421</a>
-<a href=#1422 id=1422 data-nosnippet>1422</a>        <span class="kw">let </span>datadog_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(<span class="kw-2">&amp;</span>datadog, <span class="kw-2">&amp;</span>series_config));
-<a href=#1423 id=1423 data-nosnippet>1423</a>        <span class="kw">let </span>custom_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(<span class="kw-2">&amp;</span>custom, <span class="kw-2">&amp;</span>series_config));
-<a href=#1424 id=1424 data-nosnippet>1424</a>
-<a href=#1425 id=1425 data-nosnippet>1425</a>        <span class="macro">assert!</span>(datadog_settings.use_v3_series);
-<a href=#1426 id=1426 data-nosnippet>1426</a>        <span class="macro">assert!</span>(!custom_settings.use_v3_series);
-<a href=#1427 id=1427 data-nosnippet>1427</a>    }
-<a href=#1428 id=1428 data-nosnippet>1428</a>
-<a href=#1429 id=1429 data-nosnippet>1429</a>    <span class="attr">#[test]
-<a href=#1430 id=1430 data-nosnippet>1430</a>    </span><span class="kw">fn </span>agent_v3_datadog_only_config_viability_accepts_schemeless_datadog_endpoints() {
-<a href=#1431 id=1431 data-nosnippet>1431</a>        <span class="kw">let </span><span class="kw-2">mut </span>series_config = UseV3ApiSeriesConfig {
-<a href=#1432 id=1432 data-nosnippet>1432</a>            enabled: <span class="string">"false"</span>.to_string(),
-<a href=#1433 id=1433 data-nosnippet>1433</a>            endpoints: HashMap::new(),
-<a href=#1434 id=1434 data-nosnippet>1434</a>        };
-<a href=#1435 id=1435 data-nosnippet>1435</a>        series_config
-<a href=#1436 id=1436 data-nosnippet>1436</a>            .endpoints
-<a href=#1437 id=1437 data-nosnippet>1437</a>            .insert(<span class="string">"app.datadoghq.com"</span>.to_string(), <span class="string">"datadog_only"</span>.to_string());
-<a href=#1438 id=1438 data-nosnippet>1438</a>
-<a href=#1439 id=1439 data-nosnippet>1439</a>        <span class="macro">assert!</span>(series_v3_config_can_enable_v3(<span class="kw-2">&amp;</span>series_config));
-<a href=#1440 id=1440 data-nosnippet>1440</a>
-<a href=#1441 id=1441 data-nosnippet>1441</a>        series_config.endpoints.clear();
-<a href=#1442 id=1442 data-nosnippet>1442</a>        series_config
-<a href=#1443 id=1443 data-nosnippet>1443</a>            .endpoints
-<a href=#1444 id=1444 data-nosnippet>1444</a>            .insert(<span class="string">"app.datadoghq.com:443"</span>.to_string(), <span class="string">"datadog_only"</span>.to_string());
-<a href=#1445 id=1445 data-nosnippet>1445</a>
-<a href=#1446 id=1446 data-nosnippet>1446</a>        <span class="macro">assert!</span>(series_v3_config_can_enable_v3(<span class="kw-2">&amp;</span>series_config));
-<a href=#1447 id=1447 data-nosnippet>1447</a>
-<a href=#1448 id=1448 data-nosnippet>1448</a>        series_config.endpoints.clear();
-<a href=#1449 id=1449 data-nosnippet>1449</a>        series_config
-<a href=#1450 id=1450 data-nosnippet>1450</a>            .endpoints
-<a href=#1451 id=1451 data-nosnippet>1451</a>            .insert(<span class="string">"APP.DATADOGHQ.COM"</span>.to_string(), <span class="string">"datadog_only"</span>.to_string());
-<a href=#1452 id=1452 data-nosnippet>1452</a>
-<a href=#1453 id=1453 data-nosnippet>1453</a>        <span class="macro">assert!</span>(series_v3_config_can_enable_v3(<span class="kw-2">&amp;</span>series_config));
+<a href=#1396 id=1396 data-nosnippet>1396</a>        <span class="kw">let </span>v3_series_endpoints = <span class="macro">vec!</span>[us3.configured_endpoint().to_string()];
+<a href=#1397 id=1397 data-nosnippet>1397</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
+<a href=#1398 id=1398 data-nosnippet>1398</a>            us3.configured_endpoint(),
+<a href=#1399 id=1399 data-nosnippet>1399</a>            us3.endpoint(),
+<a href=#1400 id=1400 data-nosnippet>1400</a>            <span class="kw-2">&amp;</span>v3_series_endpoints,
+<a href=#1401 id=1401 data-nosnippet>1401</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1402 id=1402 data-nosnippet>1402</a>            <span class="bool-val">false</span>,
+<a href=#1403 id=1403 data-nosnippet>1403</a>            <span class="bool-val">false</span>,
+<a href=#1404 id=1404 data-nosnippet>1404</a>            <span class="kw-2">&amp;</span>[<span class="string">"us3.datadoghq.com"</span>.to_string()],
+<a href=#1405 id=1405 data-nosnippet>1405</a>        );
+<a href=#1406 id=1406 data-nosnippet>1406</a>        <span class="macro">assert!</span>(!settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
+<a href=#1407 id=1407 data-nosnippet>1407</a>    }
+<a href=#1408 id=1408 data-nosnippet>1408</a>
+<a href=#1409 id=1409 data-nosnippet>1409</a>    <span class="attr">#[test]
+<a href=#1410 id=1410 data-nosnippet>1410</a>    </span><span class="kw">fn </span>v3_endpoint_matching_uses_configured_endpoint_before_version_prefix() {
+<a href=#1411 id=1411 data-nosnippet>1411</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1412 id=1412 data-nosnippet>1412</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1413 id=1413 data-nosnippet>1413</a>
+<a href=#1414 id=1414 data-nosnippet>1414</a>        <span class="macro">assert_eq!</span>(<span class="string">"https://app.datadoghq.com"</span>, resolved.configured_endpoint());
+<a href=#1415 id=1415 data-nosnippet>1415</a>        <span class="macro">assert_ne!</span>(<span class="string">"app.datadoghq.com"</span>, resolved.endpoint().host_str().unwrap());
+<a href=#1416 id=1416 data-nosnippet>1416</a>
+<a href=#1417 id=1417 data-nosnippet>1417</a>        <span class="kw">let </span>v3_series_endpoints = <span class="macro">vec!</span>[<span class="string">"https://app.datadoghq.com"</span>.to_string()];
+<a href=#1418 id=1418 data-nosnippet>1418</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
+<a href=#1419 id=1419 data-nosnippet>1419</a>            resolved.configured_endpoint(),
+<a href=#1420 id=1420 data-nosnippet>1420</a>            resolved.endpoint(),
+<a href=#1421 id=1421 data-nosnippet>1421</a>            <span class="kw-2">&amp;</span>v3_series_endpoints,
+<a href=#1422 id=1422 data-nosnippet>1422</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1423 id=1423 data-nosnippet>1423</a>            <span class="bool-val">false</span>,
+<a href=#1424 id=1424 data-nosnippet>1424</a>            <span class="bool-val">false</span>,
+<a href=#1425 id=1425 data-nosnippet>1425</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1426 id=1426 data-nosnippet>1426</a>        );
+<a href=#1427 id=1427 data-nosnippet>1427</a>
+<a href=#1428 id=1428 data-nosnippet>1428</a>        <span class="macro">assert!</span>(settings.use_v3_series);
+<a href=#1429 id=1429 data-nosnippet>1429</a>    }
+<a href=#1430 id=1430 data-nosnippet>1430</a>
+<a href=#1431 id=1431 data-nosnippet>1431</a>    <span class="kw">fn </span>v3_endpoint_config&lt;<span class="lifetime">'a</span>&gt;(
+<a href=#1432 id=1432 data-nosnippet>1432</a>        endpoint: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>ResolvedEndpoint, series_config: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>UseV3ApiSeriesConfig,
+<a href=#1433 id=1433 data-nosnippet>1433</a>    ) -&gt; V3EndpointConfig&lt;<span class="lifetime">'a</span>&gt; {
+<a href=#1434 id=1434 data-nosnippet>1434</a>        V3EndpointConfig {
+<a href=#1435 id=1435 data-nosnippet>1435</a>            configured_endpoint: endpoint.configured_endpoint(),
+<a href=#1436 id=1436 data-nosnippet>1436</a>            resolved_endpoint: endpoint.endpoint(),
+<a href=#1437 id=1437 data-nosnippet>1437</a>            serializer_v3_configured_endpoint: <span class="prelude-val">None</span>,
+<a href=#1438 id=1438 data-nosnippet>1438</a>            data_plane_v3_series_enabled: <span class="bool-val">true</span>,
+<a href=#1439 id=1439 data-nosnippet>1439</a>            series_config,
+<a href=#1440 id=1440 data-nosnippet>1440</a>            metrics_primary_v3_override: <span class="prelude-val">None</span>,
+<a href=#1441 id=1441 data-nosnippet>1441</a>            serializer_v3_series_endpoints: <span class="kw-2">&amp;</span>[],
+<a href=#1442 id=1442 data-nosnippet>1442</a>            serializer_v3_sketches_endpoints: <span class="kw-2">&amp;</span>[],
+<a href=#1443 id=1443 data-nosnippet>1443</a>            series_validate: <span class="bool-val">false</span>,
+<a href=#1444 id=1444 data-nosnippet>1444</a>            sketches_validate: <span class="bool-val">false</span>,
+<a href=#1445 id=1445 data-nosnippet>1445</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[],
+<a href=#1446 id=1446 data-nosnippet>1446</a>        }
+<a href=#1447 id=1447 data-nosnippet>1447</a>    }
+<a href=#1448 id=1448 data-nosnippet>1448</a>
+<a href=#1449 id=1449 data-nosnippet>1449</a>    <span class="attr">#[test]
+<a href=#1450 id=1450 data-nosnippet>1450</a>    </span><span class="kw">fn </span>agent_v3_default_requires_data_plane_gate() {
+<a href=#1451 id=1451 data-nosnippet>1451</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1452 id=1452 data-nosnippet>1452</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1453 id=1453 data-nosnippet>1453</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig::default();
 <a href=#1454 id=1454 data-nosnippet>1454</a>
-<a href=#1455 id=1455 data-nosnippet>1455</a>        series_config.endpoints.clear();
-<a href=#1456 id=1456 data-nosnippet>1456</a>        series_config
-<a href=#1457 id=1457 data-nosnippet>1457</a>            .endpoints
-<a href=#1458 id=1458 data-nosnippet>1458</a>            .insert(<span class="string">"example.com"</span>.to_string(), <span class="string">"datadog_only"</span>.to_string());
-<a href=#1459 id=1459 data-nosnippet>1459</a>
-<a href=#1460 id=1460 data-nosnippet>1460</a>        <span class="macro">assert!</span>(!series_v3_config_can_enable_v3(<span class="kw-2">&amp;</span>series_config));
-<a href=#1461 id=1461 data-nosnippet>1461</a>    }
-<a href=#1462 id=1462 data-nosnippet>1462</a>
-<a href=#1463 id=1463 data-nosnippet>1463</a>    <span class="attr">#[test]
-<a href=#1464 id=1464 data-nosnippet>1464</a>    </span><span class="kw">fn </span>agent_v3_datadog_only_endpoint_override_matches_schemeless_host_port() {
-<a href=#1465 id=1465 data-nosnippet>1465</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"app.datadoghq.com:443"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1466 id=1466 data-nosnippet>1466</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1467 id=1467 data-nosnippet>1467</a>        <span class="kw">let </span><span class="kw-2">mut </span>series_config = UseV3ApiSeriesConfig {
-<a href=#1468 id=1468 data-nosnippet>1468</a>            enabled: <span class="string">"false"</span>.to_string(),
-<a href=#1469 id=1469 data-nosnippet>1469</a>            endpoints: HashMap::new(),
-<a href=#1470 id=1470 data-nosnippet>1470</a>        };
-<a href=#1471 id=1471 data-nosnippet>1471</a>        series_config
-<a href=#1472 id=1472 data-nosnippet>1472</a>            .endpoints
-<a href=#1473 id=1473 data-nosnippet>1473</a>            .insert(resolved.configured_endpoint().to_string(), <span class="string">"datadog_only"</span>.to_string());
-<a href=#1474 id=1474 data-nosnippet>1474</a>
-<a href=#1475 id=1475 data-nosnippet>1475</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config));
-<a href=#1476 id=1476 data-nosnippet>1476</a>
-<a href=#1477 id=1477 data-nosnippet>1477</a>        <span class="macro">assert!</span>(settings.use_v3_series);
-<a href=#1478 id=1478 data-nosnippet>1478</a>    }
-<a href=#1479 id=1479 data-nosnippet>1479</a>
-<a href=#1480 id=1480 data-nosnippet>1480</a>    <span class="attr">#[test]
-<a href=#1481 id=1481 data-nosnippet>1481</a>    </span><span class="kw">fn </span>metrics_primary_v3_uses_route_specific_override() {
-<a href=#1482 id=1482 data-nosnippet>1482</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://vector.example.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1483 id=1483 data-nosnippet>1483</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1484 id=1484 data-nosnippet>1484</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig::default();
-<a href=#1485 id=1485 data-nosnippet>1485</a>
-<a href=#1486 id=1486 data-nosnippet>1486</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-<a href=#1487 id=1487 data-nosnippet>1487</a>            metrics_primary_v3_override: <span class="prelude-val">Some</span>(<span class="bool-val">false</span>),
-<a href=#1488 id=1488 data-nosnippet>1488</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
-<a href=#1489 id=1489 data-nosnippet>1489</a>        });
-<a href=#1490 id=1490 data-nosnippet>1490</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
-<a href=#1491 id=1491 data-nosnippet>1491</a>
-<a href=#1492 id=1492 data-nosnippet>1492</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-<a href=#1493 id=1493 data-nosnippet>1493</a>            metrics_primary_v3_override: <span class="prelude-val">Some</span>(<span class="bool-val">true</span>),
-<a href=#1494 id=1494 data-nosnippet>1494</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
-<a href=#1495 id=1495 data-nosnippet>1495</a>        });
-<a href=#1496 id=1496 data-nosnippet>1496</a>        <span class="macro">assert!</span>(settings.use_v3_series);
-<a href=#1497 id=1497 data-nosnippet>1497</a>    }
-<a href=#1498 id=1498 data-nosnippet>1498</a>
-<a href=#1499 id=1499 data-nosnippet>1499</a>    <span class="attr">#[test]
-<a href=#1500 id=1500 data-nosnippet>1500</a>    </span><span class="kw">fn </span>metrics_primary_serializer_v3_can_match_primary_endpoint_name() {
-<a href=#1501 id=1501 data-nosnippet>1501</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://vector.example.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1502 id=1502 data-nosnippet>1502</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1503 id=1503 data-nosnippet>1503</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig::default();
-<a href=#1504 id=1504 data-nosnippet>1504</a>        <span class="kw">let </span>serializer_v3_endpoints = <span class="macro">vec!</span>[<span class="string">"https://app.datadoghq.com"</span>.to_string()];
-<a href=#1505 id=1505 data-nosnippet>1505</a>
-<a href=#1506 id=1506 data-nosnippet>1506</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-<a href=#1507 id=1507 data-nosnippet>1507</a>            serializer_v3_configured_endpoint: <span class="prelude-val">Some</span>(<span class="string">"https://app.datadoghq.com"</span>),
-<a href=#1508 id=1508 data-nosnippet>1508</a>            metrics_primary_v3_override: <span class="prelude-val">Some</span>(<span class="bool-val">false</span>),
-<a href=#1509 id=1509 data-nosnippet>1509</a>            serializer_v3_series_endpoints: <span class="kw-2">&amp;</span>serializer_v3_endpoints,
-<a href=#1510 id=1510 data-nosnippet>1510</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
-<a href=#1511 id=1511 data-nosnippet>1511</a>        });
-<a href=#1512 id=1512 data-nosnippet>1512</a>
-<a href=#1513 id=1513 data-nosnippet>1513</a>        <span class="macro">assert!</span>(settings.use_v3_series);
-<a href=#1514 id=1514 data-nosnippet>1514</a>    }
-<a href=#1515 id=1515 data-nosnippet>1515</a>
-<a href=#1516 id=1516 data-nosnippet>1516</a>    <span class="attr">#[test]
-<a href=#1517 id=1517 data-nosnippet>1517</a>    </span><span class="kw">fn </span>serializer_v3_endpoint_list_wins_when_data_plane_gate_enabled() {
-<a href=#1518 id=1518 data-nosnippet>1518</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://vector.example.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1519 id=1519 data-nosnippet>1519</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1520 id=1520 data-nosnippet>1520</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig {
-<a href=#1521 id=1521 data-nosnippet>1521</a>            enabled: <span class="string">"false"</span>.to_string(),
-<a href=#1522 id=1522 data-nosnippet>1522</a>            ..Default::default()
-<a href=#1523 id=1523 data-nosnippet>1523</a>        };
-<a href=#1524 id=1524 data-nosnippet>1524</a>        <span class="kw">let </span>serializer_v3_endpoints = <span class="macro">vec!</span>[resolved.configured_endpoint().to_string()];
-<a href=#1525 id=1525 data-nosnippet>1525</a>
-<a href=#1526 id=1526 data-nosnippet>1526</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-<a href=#1527 id=1527 data-nosnippet>1527</a>            metrics_primary_v3_override: <span class="prelude-val">Some</span>(<span class="bool-val">false</span>),
-<a href=#1528 id=1528 data-nosnippet>1528</a>            serializer_v3_series_endpoints: <span class="kw-2">&amp;</span>serializer_v3_endpoints,
-<a href=#1529 id=1529 data-nosnippet>1529</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
-<a href=#1530 id=1530 data-nosnippet>1530</a>        });
-<a href=#1531 id=1531 data-nosnippet>1531</a>
-<a href=#1532 id=1532 data-nosnippet>1532</a>        <span class="macro">assert!</span>(settings.use_v3_series);
-<a href=#1533 id=1533 data-nosnippet>1533</a>    }
-<a href=#1534 id=1534 data-nosnippet>1534</a>
-<a href=#1535 id=1535 data-nosnippet>1535</a>    <span class="attr">#[test]
-<a href=#1536 id=1536 data-nosnippet>1536</a>    </span><span class="kw">fn </span>v3_endpoint_matching_is_endpoint_based() {
-<a href=#1537 id=1537 data-nosnippet>1537</a>        <span class="kw">let </span>v3_series_endpoints = <span class="macro">vec!</span>[<span class="string">"https://app.us"</span>.to_string()];
-<a href=#1538 id=1538 data-nosnippet>1538</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.us5.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1539 id=1539 data-nosnippet>1539</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1540 id=1540 data-nosnippet>1540</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
-<a href=#1541 id=1541 data-nosnippet>1541</a>            resolved.configured_endpoint(),
-<a href=#1542 id=1542 data-nosnippet>1542</a>            resolved.endpoint(),
-<a href=#1543 id=1543 data-nosnippet>1543</a>            <span class="kw-2">&amp;</span>v3_series_endpoints,
-<a href=#1544 id=1544 data-nosnippet>1544</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1545 id=1545 data-nosnippet>1545</a>            <span class="bool-val">false</span>,
-<a href=#1546 id=1546 data-nosnippet>1546</a>            <span class="bool-val">false</span>,
-<a href=#1547 id=1547 data-nosnippet>1547</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1548 id=1548 data-nosnippet>1548</a>        );
-<a href=#1549 id=1549 data-nosnippet>1549</a>
-<a href=#1550 id=1550 data-nosnippet>1550</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
-<a href=#1551 id=1551 data-nosnippet>1551</a>    }
-<a href=#1552 id=1552 data-nosnippet>1552</a>
-<a href=#1553 id=1553 data-nosnippet>1553</a>    <span class="attr">#[test]
-<a href=#1554 id=1554 data-nosnippet>1554</a>    </span><span class="kw">fn </span>v3_endpoint_matching_requires_exact_configured_endpoint() {
-<a href=#1555 id=1555 data-nosnippet>1555</a>        <span class="kw">let </span>v3_series_endpoints = <span class="macro">vec!</span>[<span class="string">"app.datadoghq.com/"</span>.to_string()];
-<a href=#1556 id=1556 data-nosnippet>1556</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
-<a href=#1557 id=1557 data-nosnippet>1557</a>            .expect(<span class="string">"endpoint should resolve"</span>);
-<a href=#1558 id=1558 data-nosnippet>1558</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
-<a href=#1559 id=1559 data-nosnippet>1559</a>            resolved.configured_endpoint(),
-<a href=#1560 id=1560 data-nosnippet>1560</a>            resolved.endpoint(),
-<a href=#1561 id=1561 data-nosnippet>1561</a>            <span class="kw-2">&amp;</span>v3_series_endpoints,
-<a href=#1562 id=1562 data-nosnippet>1562</a>            <span class="kw-2">&amp;</span>[],
-<a href=#1563 id=1563 data-nosnippet>1563</a>            <span class="bool-val">false</span>,
-<a href=#1564 id=1564 data-nosnippet>1564</a>            <span class="bool-val">false</span>,
-<a href=#1565 id=1565 data-nosnippet>1565</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
-<a href=#1566 id=1566 data-nosnippet>1566</a>        );
-<a href=#1567 id=1567 data-nosnippet>1567</a>
-<a href=#1568 id=1568 data-nosnippet>1568</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
-<a href=#1569 id=1569 data-nosnippet>1569</a>    }
-<a href=#1570 id=1570 data-nosnippet>1570</a>
-<a href=#1571 id=1571 data-nosnippet>1571</a>    <span class="attr">#[test]
-<a href=#1572 id=1572 data-nosnippet>1572</a>    </span><span class="kw">fn </span>calculated_site_endpoint_uses_agent_configured_endpoint_shape() {
-<a href=#1573 id=1573 data-nosnippet>1573</a>        <span class="kw">let </span>resolved =
-<a href=#1574 id=1574 data-nosnippet>1574</a>            calculate_resolved_endpoint(<span class="prelude-val">None</span>, <span class="string">"datadoghq.com"</span>, <span class="string">""</span>).expect(<span class="string">"error calculating default API endpoint"</span>);
-<a href=#1575 id=1575 data-nosnippet>1575</a>
-<a href=#1576 id=1576 data-nosnippet>1576</a>        <span class="macro">assert_eq!</span>(<span class="string">"https://app.datadoghq.com"</span>, resolved.configured_endpoint());
-<a href=#1577 id=1577 data-nosnippet>1577</a>    }
-<a href=#1578 id=1578 data-nosnippet>1578</a>
-<a href=#1579 id=1579 data-nosnippet>1579</a>    <span class="attr">#[test]
-<a href=#1580 id=1580 data-nosnippet>1580</a>    </span><span class="kw">fn </span>deserialize_dd_url_filters_default_value() {
-<a href=#1581 id=1581 data-nosnippet>1581</a>        <span class="comment">// The default dd_url (what the Agent sends when operator only configured site) should
-<a href=#1582 id=1582 data-nosnippet>1582</a>        // deserialize to None so that site takes precedence.
-<a href=#1583 id=1583 data-nosnippet>1583</a>        </span><span class="kw">let </span>config_str = <span class="string">r#"{"api_key": "test-key", "dd_url": "https://app.datadoghq.com"}"#</span>;
-<a href=#1584 id=1584 data-nosnippet>1584</a>        <span class="kw">let </span>config: EndpointConfiguration = serde_json::from_str(config_str).expect(<span class="string">"deserialization should succeed"</span>);
-<a href=#1585 id=1585 data-nosnippet>1585</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, config.dd_url);
-<a href=#1586 id=1586 data-nosnippet>1586</a>    }
-<a href=#1587 id=1587 data-nosnippet>1587</a>
-<a href=#1588 id=1588 data-nosnippet>1588</a>    <span class="attr">#[test]
-<a href=#1589 id=1589 data-nosnippet>1589</a>    </span><span class="kw">fn </span>deserialize_dd_url_preserves_explicit_override() {
-<a href=#1590 id=1590 data-nosnippet>1590</a>        <span class="comment">// A dd_url that differs from the default should deserialize as-is.
-<a href=#1591 id=1591 data-nosnippet>1591</a>        </span><span class="kw">let </span>config_str = <span class="string">r#"{"api_key": "test-key", "dd_url": "https://proxy.internal.example.com:3128"}"#</span>;
-<a href=#1592 id=1592 data-nosnippet>1592</a>        <span class="kw">let </span>config: EndpointConfiguration = serde_json::from_str(config_str).expect(<span class="string">"deserialization should succeed"</span>);
-<a href=#1593 id=1593 data-nosnippet>1593</a>        <span class="macro">assert_eq!</span>(
-<a href=#1594 id=1594 data-nosnippet>1594</a>            <span class="prelude-val">Some</span>(<span class="string">"https://proxy.internal.example.com:3128"</span>.to_string()),
-<a href=#1595 id=1595 data-nosnippet>1595</a>            config.dd_url
-<a href=#1596 id=1596 data-nosnippet>1596</a>        );
-<a href=#1597 id=1597 data-nosnippet>1597</a>    }
-<a href=#1598 id=1598 data-nosnippet>1598</a>
-<a href=#1599 id=1599 data-nosnippet>1599</a>    <span class="attr">#[test]
-<a href=#1600 id=1600 data-nosnippet>1600</a>    </span><span class="kw">fn </span>set_dd_url_is_not_filtered() {
-<a href=#1601 id=1601 data-nosnippet>1601</a>        <span class="comment">// Programmatic calls to set_dd_url bypass serde and are never filtered, even if set to the default value.
-<a href=#1602 id=1602 data-nosnippet>1602</a>        // This is important for MRF and other override paths that may explicitly set the default URL.
-<a href=#1603 id=1603 data-nosnippet>1603</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>config = EndpointConfiguration {
-<a href=#1604 id=1604 data-nosnippet>1604</a>            api_key: <span class="string">"test-key"</span>.to_string(),
-<a href=#1605 id=1605 data-nosnippet>1605</a>            api_key_refresh_config_path: <span class="prelude-val">None</span>,
-<a href=#1606 id=1606 data-nosnippet>1606</a>            site: <span class="string">"datadoghq.eu"</span>.to_string(),
-<a href=#1607 id=1607 data-nosnippet>1607</a>            dd_url: <span class="prelude-val">None</span>,
-<a href=#1608 id=1608 data-nosnippet>1608</a>            additional_endpoints: AdditionalEndpoints::default(),
-<a href=#1609 id=1609 data-nosnippet>1609</a>        };
-<a href=#1610 id=1610 data-nosnippet>1610</a>        config.set_dd_url(<span class="string">"https://app.datadoghq.com"</span>.to_string());
-<a href=#1611 id=1611 data-nosnippet>1611</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(<span class="string">"https://app.datadoghq.com"</span>.to_string()), config.dd_url);
-<a href=#1612 id=1612 data-nosnippet>1612</a>    }
-<a href=#1613 id=1613 data-nosnippet>1613</a>
-<a href=#1614 id=1614 data-nosnippet>1614</a>    <span class="attr">#[test]
-<a href=#1615 id=1615 data-nosnippet>1615</a>    </span><span class="kw">fn </span>site_takes_precedence_when_dd_url_is_default() {
-<a href=#1616 id=1616 data-nosnippet>1616</a>        <span class="comment">// When dd_url is at its default (sent by Agent with source="default"), site should determine the endpoint.
-<a href=#1617 id=1617 data-nosnippet>1617</a>        // This is tested through deserialization so the default-filtering occurs.
-<a href=#1618 id=1618 data-nosnippet>1618</a>        </span><span class="kw">let </span>config_str = <span class="string">r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://app.datadoghq.com"}"#</span>;
-<a href=#1619 id=1619 data-nosnippet>1619</a>        <span class="kw">let </span>config: EndpointConfiguration = serde_json::from_str(config_str).expect(<span class="string">"deserialization should succeed"</span>);
-<a href=#1620 id=1620 data-nosnippet>1620</a>
-<a href=#1621 id=1621 data-nosnippet>1621</a>        <span class="macro">assert_eq!</span>(<span class="string">"https://app.datadoghq.eu"</span>, config.configured_primary_endpoint());
-<a href=#1622 id=1622 data-nosnippet>1622</a>    }
+<a href=#1455 id=1455 data-nosnippet>1455</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+<a href=#1456 id=1456 data-nosnippet>1456</a>            data_plane_v3_series_enabled: <span class="bool-val">false</span>,
+<a href=#1457 id=1457 data-nosnippet>1457</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1458 id=1458 data-nosnippet>1458</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
+<a href=#1459 id=1459 data-nosnippet>1459</a>        });
+<a href=#1460 id=1460 data-nosnippet>1460</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
+<a href=#1461 id=1461 data-nosnippet>1461</a>        <span class="macro">assert!</span>(settings.series_shadow_mode);
+<a href=#1462 id=1462 data-nosnippet>1462</a>        <span class="macro">assert!</span>(settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_shadow_series())));
+<a href=#1463 id=1463 data-nosnippet>1463</a>        <span class="macro">assert!</span>(!settings.should_receive_payload(<span class="prelude-val">Some</span>(MetricsPayloadInfo::v3_series())));
+<a href=#1464 id=1464 data-nosnippet>1464</a>
+<a href=#1465 id=1465 data-nosnippet>1465</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+<a href=#1466 id=1466 data-nosnippet>1466</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1467 id=1467 data-nosnippet>1467</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
+<a href=#1468 id=1468 data-nosnippet>1468</a>        });
+<a href=#1469 id=1469 data-nosnippet>1469</a>        <span class="macro">assert!</span>(settings.use_v3_series);
+<a href=#1470 id=1470 data-nosnippet>1470</a>        <span class="macro">assert!</span>(!settings.series_shadow_mode);
+<a href=#1471 id=1471 data-nosnippet>1471</a>    }
+<a href=#1472 id=1472 data-nosnippet>1472</a>
+<a href=#1473 id=1473 data-nosnippet>1473</a>    <span class="attr">#[test]
+<a href=#1474 id=1474 data-nosnippet>1474</a>    </span><span class="kw">fn </span>agent_v3_endpoint_overrides_win_over_global_default() {
+<a href=#1475 id=1475 data-nosnippet>1475</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1476 id=1476 data-nosnippet>1476</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1477 id=1477 data-nosnippet>1477</a>        <span class="kw">let </span><span class="kw-2">mut </span>series_config = UseV3ApiSeriesConfig::default();
+<a href=#1478 id=1478 data-nosnippet>1478</a>        series_config
+<a href=#1479 id=1479 data-nosnippet>1479</a>            .endpoints
+<a href=#1480 id=1480 data-nosnippet>1480</a>            .insert(resolved.configured_endpoint().to_string(), <span class="string">"false"</span>.to_string());
+<a href=#1481 id=1481 data-nosnippet>1481</a>
+<a href=#1482 id=1482 data-nosnippet>1482</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+<a href=#1483 id=1483 data-nosnippet>1483</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1484 id=1484 data-nosnippet>1484</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
+<a href=#1485 id=1485 data-nosnippet>1485</a>        });
+<a href=#1486 id=1486 data-nosnippet>1486</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
+<a href=#1487 id=1487 data-nosnippet>1487</a>
+<a href=#1488 id=1488 data-nosnippet>1488</a>        series_config = UseV3ApiSeriesConfig {
+<a href=#1489 id=1489 data-nosnippet>1489</a>            enabled: <span class="string">"false"</span>.to_string(),
+<a href=#1490 id=1490 data-nosnippet>1490</a>            ..Default::default()
+<a href=#1491 id=1491 data-nosnippet>1491</a>        };
+<a href=#1492 id=1492 data-nosnippet>1492</a>        series_config
+<a href=#1493 id=1493 data-nosnippet>1493</a>            .endpoints
+<a href=#1494 id=1494 data-nosnippet>1494</a>            .insert(resolved.configured_endpoint().to_string(), <span class="string">"true"</span>.to_string());
+<a href=#1495 id=1495 data-nosnippet>1495</a>
+<a href=#1496 id=1496 data-nosnippet>1496</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+<a href=#1497 id=1497 data-nosnippet>1497</a>            series_shadow_sites: <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1498 id=1498 data-nosnippet>1498</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
+<a href=#1499 id=1499 data-nosnippet>1499</a>        });
+<a href=#1500 id=1500 data-nosnippet>1500</a>        <span class="macro">assert!</span>(settings.use_v3_series);
+<a href=#1501 id=1501 data-nosnippet>1501</a>    }
+<a href=#1502 id=1502 data-nosnippet>1502</a>
+<a href=#1503 id=1503 data-nosnippet>1503</a>    <span class="attr">#[test]
+<a href=#1504 id=1504 data-nosnippet>1504</a>    </span><span class="kw">fn </span>agent_v3_datadog_only_matches_datadog_intake_urls() {
+<a href=#1505 id=1505 data-nosnippet>1505</a>        <span class="kw">let </span>datadog = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1506 id=1506 data-nosnippet>1506</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1507 id=1507 data-nosnippet>1507</a>        <span class="kw">let </span>custom = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://example.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1508 id=1508 data-nosnippet>1508</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1509 id=1509 data-nosnippet>1509</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig {
+<a href=#1510 id=1510 data-nosnippet>1510</a>            enabled: <span class="string">"datadog_only"</span>.to_string(),
+<a href=#1511 id=1511 data-nosnippet>1511</a>            endpoints: HashMap::new(),
+<a href=#1512 id=1512 data-nosnippet>1512</a>        };
+<a href=#1513 id=1513 data-nosnippet>1513</a>
+<a href=#1514 id=1514 data-nosnippet>1514</a>        <span class="kw">let </span>datadog_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(<span class="kw-2">&amp;</span>datadog, <span class="kw-2">&amp;</span>series_config));
+<a href=#1515 id=1515 data-nosnippet>1515</a>        <span class="kw">let </span>custom_settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(<span class="kw-2">&amp;</span>custom, <span class="kw-2">&amp;</span>series_config));
+<a href=#1516 id=1516 data-nosnippet>1516</a>
+<a href=#1517 id=1517 data-nosnippet>1517</a>        <span class="macro">assert!</span>(datadog_settings.use_v3_series);
+<a href=#1518 id=1518 data-nosnippet>1518</a>        <span class="macro">assert!</span>(!custom_settings.use_v3_series);
+<a href=#1519 id=1519 data-nosnippet>1519</a>    }
+<a href=#1520 id=1520 data-nosnippet>1520</a>
+<a href=#1521 id=1521 data-nosnippet>1521</a>    <span class="attr">#[test]
+<a href=#1522 id=1522 data-nosnippet>1522</a>    </span><span class="kw">fn </span>agent_v3_datadog_only_config_viability_accepts_schemeless_datadog_endpoints() {
+<a href=#1523 id=1523 data-nosnippet>1523</a>        <span class="kw">let </span><span class="kw-2">mut </span>series_config = UseV3ApiSeriesConfig {
+<a href=#1524 id=1524 data-nosnippet>1524</a>            enabled: <span class="string">"false"</span>.to_string(),
+<a href=#1525 id=1525 data-nosnippet>1525</a>            endpoints: HashMap::new(),
+<a href=#1526 id=1526 data-nosnippet>1526</a>        };
+<a href=#1527 id=1527 data-nosnippet>1527</a>        series_config
+<a href=#1528 id=1528 data-nosnippet>1528</a>            .endpoints
+<a href=#1529 id=1529 data-nosnippet>1529</a>            .insert(<span class="string">"app.datadoghq.com"</span>.to_string(), <span class="string">"datadog_only"</span>.to_string());
+<a href=#1530 id=1530 data-nosnippet>1530</a>
+<a href=#1531 id=1531 data-nosnippet>1531</a>        <span class="macro">assert!</span>(series_v3_config_can_enable_v3(<span class="kw-2">&amp;</span>series_config));
+<a href=#1532 id=1532 data-nosnippet>1532</a>
+<a href=#1533 id=1533 data-nosnippet>1533</a>        series_config.endpoints.clear();
+<a href=#1534 id=1534 data-nosnippet>1534</a>        series_config
+<a href=#1535 id=1535 data-nosnippet>1535</a>            .endpoints
+<a href=#1536 id=1536 data-nosnippet>1536</a>            .insert(<span class="string">"app.datadoghq.com:443"</span>.to_string(), <span class="string">"datadog_only"</span>.to_string());
+<a href=#1537 id=1537 data-nosnippet>1537</a>
+<a href=#1538 id=1538 data-nosnippet>1538</a>        <span class="macro">assert!</span>(series_v3_config_can_enable_v3(<span class="kw-2">&amp;</span>series_config));
+<a href=#1539 id=1539 data-nosnippet>1539</a>
+<a href=#1540 id=1540 data-nosnippet>1540</a>        series_config.endpoints.clear();
+<a href=#1541 id=1541 data-nosnippet>1541</a>        series_config
+<a href=#1542 id=1542 data-nosnippet>1542</a>            .endpoints
+<a href=#1543 id=1543 data-nosnippet>1543</a>            .insert(<span class="string">"APP.DATADOGHQ.COM"</span>.to_string(), <span class="string">"datadog_only"</span>.to_string());
+<a href=#1544 id=1544 data-nosnippet>1544</a>
+<a href=#1545 id=1545 data-nosnippet>1545</a>        <span class="macro">assert!</span>(series_v3_config_can_enable_v3(<span class="kw-2">&amp;</span>series_config));
+<a href=#1546 id=1546 data-nosnippet>1546</a>
+<a href=#1547 id=1547 data-nosnippet>1547</a>        series_config.endpoints.clear();
+<a href=#1548 id=1548 data-nosnippet>1548</a>        series_config
+<a href=#1549 id=1549 data-nosnippet>1549</a>            .endpoints
+<a href=#1550 id=1550 data-nosnippet>1550</a>            .insert(<span class="string">"example.com"</span>.to_string(), <span class="string">"datadog_only"</span>.to_string());
+<a href=#1551 id=1551 data-nosnippet>1551</a>
+<a href=#1552 id=1552 data-nosnippet>1552</a>        <span class="macro">assert!</span>(!series_v3_config_can_enable_v3(<span class="kw-2">&amp;</span>series_config));
+<a href=#1553 id=1553 data-nosnippet>1553</a>    }
+<a href=#1554 id=1554 data-nosnippet>1554</a>
+<a href=#1555 id=1555 data-nosnippet>1555</a>    <span class="attr">#[test]
+<a href=#1556 id=1556 data-nosnippet>1556</a>    </span><span class="kw">fn </span>agent_v3_datadog_only_endpoint_override_matches_schemeless_host_port() {
+<a href=#1557 id=1557 data-nosnippet>1557</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"app.datadoghq.com:443"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1558 id=1558 data-nosnippet>1558</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1559 id=1559 data-nosnippet>1559</a>        <span class="kw">let </span><span class="kw-2">mut </span>series_config = UseV3ApiSeriesConfig {
+<a href=#1560 id=1560 data-nosnippet>1560</a>            enabled: <span class="string">"false"</span>.to_string(),
+<a href=#1561 id=1561 data-nosnippet>1561</a>            endpoints: HashMap::new(),
+<a href=#1562 id=1562 data-nosnippet>1562</a>        };
+<a href=#1563 id=1563 data-nosnippet>1563</a>        series_config
+<a href=#1564 id=1564 data-nosnippet>1564</a>            .endpoints
+<a href=#1565 id=1565 data-nosnippet>1565</a>            .insert(resolved.configured_endpoint().to_string(), <span class="string">"datadog_only"</span>.to_string());
+<a href=#1566 id=1566 data-nosnippet>1566</a>
+<a href=#1567 id=1567 data-nosnippet>1567</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config));
+<a href=#1568 id=1568 data-nosnippet>1568</a>
+<a href=#1569 id=1569 data-nosnippet>1569</a>        <span class="macro">assert!</span>(settings.use_v3_series);
+<a href=#1570 id=1570 data-nosnippet>1570</a>    }
+<a href=#1571 id=1571 data-nosnippet>1571</a>
+<a href=#1572 id=1572 data-nosnippet>1572</a>    <span class="attr">#[test]
+<a href=#1573 id=1573 data-nosnippet>1573</a>    </span><span class="kw">fn </span>metrics_primary_v3_uses_route_specific_override() {
+<a href=#1574 id=1574 data-nosnippet>1574</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://vector.example.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1575 id=1575 data-nosnippet>1575</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1576 id=1576 data-nosnippet>1576</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig::default();
+<a href=#1577 id=1577 data-nosnippet>1577</a>
+<a href=#1578 id=1578 data-nosnippet>1578</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+<a href=#1579 id=1579 data-nosnippet>1579</a>            metrics_primary_v3_override: <span class="prelude-val">Some</span>(<span class="bool-val">false</span>),
+<a href=#1580 id=1580 data-nosnippet>1580</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
+<a href=#1581 id=1581 data-nosnippet>1581</a>        });
+<a href=#1582 id=1582 data-nosnippet>1582</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
+<a href=#1583 id=1583 data-nosnippet>1583</a>
+<a href=#1584 id=1584 data-nosnippet>1584</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+<a href=#1585 id=1585 data-nosnippet>1585</a>            metrics_primary_v3_override: <span class="prelude-val">Some</span>(<span class="bool-val">true</span>),
+<a href=#1586 id=1586 data-nosnippet>1586</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
+<a href=#1587 id=1587 data-nosnippet>1587</a>        });
+<a href=#1588 id=1588 data-nosnippet>1588</a>        <span class="macro">assert!</span>(settings.use_v3_series);
+<a href=#1589 id=1589 data-nosnippet>1589</a>    }
+<a href=#1590 id=1590 data-nosnippet>1590</a>
+<a href=#1591 id=1591 data-nosnippet>1591</a>    <span class="attr">#[test]
+<a href=#1592 id=1592 data-nosnippet>1592</a>    </span><span class="kw">fn </span>metrics_primary_serializer_v3_can_match_primary_endpoint_name() {
+<a href=#1593 id=1593 data-nosnippet>1593</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://vector.example.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1594 id=1594 data-nosnippet>1594</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1595 id=1595 data-nosnippet>1595</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig::default();
+<a href=#1596 id=1596 data-nosnippet>1596</a>        <span class="kw">let </span>serializer_v3_endpoints = <span class="macro">vec!</span>[<span class="string">"https://app.datadoghq.com"</span>.to_string()];
+<a href=#1597 id=1597 data-nosnippet>1597</a>
+<a href=#1598 id=1598 data-nosnippet>1598</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+<a href=#1599 id=1599 data-nosnippet>1599</a>            serializer_v3_configured_endpoint: <span class="prelude-val">Some</span>(<span class="string">"https://app.datadoghq.com"</span>),
+<a href=#1600 id=1600 data-nosnippet>1600</a>            metrics_primary_v3_override: <span class="prelude-val">Some</span>(<span class="bool-val">false</span>),
+<a href=#1601 id=1601 data-nosnippet>1601</a>            serializer_v3_series_endpoints: <span class="kw-2">&amp;</span>serializer_v3_endpoints,
+<a href=#1602 id=1602 data-nosnippet>1602</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
+<a href=#1603 id=1603 data-nosnippet>1603</a>        });
+<a href=#1604 id=1604 data-nosnippet>1604</a>
+<a href=#1605 id=1605 data-nosnippet>1605</a>        <span class="macro">assert!</span>(settings.use_v3_series);
+<a href=#1606 id=1606 data-nosnippet>1606</a>    }
+<a href=#1607 id=1607 data-nosnippet>1607</a>
+<a href=#1608 id=1608 data-nosnippet>1608</a>    <span class="attr">#[test]
+<a href=#1609 id=1609 data-nosnippet>1609</a>    </span><span class="kw">fn </span>serializer_v3_endpoint_list_wins_when_data_plane_gate_enabled() {
+<a href=#1610 id=1610 data-nosnippet>1610</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://vector.example.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1611 id=1611 data-nosnippet>1611</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1612 id=1612 data-nosnippet>1612</a>        <span class="kw">let </span>series_config = UseV3ApiSeriesConfig {
+<a href=#1613 id=1613 data-nosnippet>1613</a>            enabled: <span class="string">"false"</span>.to_string(),
+<a href=#1614 id=1614 data-nosnippet>1614</a>            ..Default::default()
+<a href=#1615 id=1615 data-nosnippet>1615</a>        };
+<a href=#1616 id=1616 data-nosnippet>1616</a>        <span class="kw">let </span>serializer_v3_endpoints = <span class="macro">vec!</span>[resolved.configured_endpoint().to_string()];
+<a href=#1617 id=1617 data-nosnippet>1617</a>
+<a href=#1618 id=1618 data-nosnippet>1618</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+<a href=#1619 id=1619 data-nosnippet>1619</a>            metrics_primary_v3_override: <span class="prelude-val">Some</span>(<span class="bool-val">false</span>),
+<a href=#1620 id=1620 data-nosnippet>1620</a>            serializer_v3_series_endpoints: <span class="kw-2">&amp;</span>serializer_v3_endpoints,
+<a href=#1621 id=1621 data-nosnippet>1621</a>            ..v3_endpoint_config(<span class="kw-2">&amp;</span>resolved, <span class="kw-2">&amp;</span>series_config)
+<a href=#1622 id=1622 data-nosnippet>1622</a>        });
 <a href=#1623 id=1623 data-nosnippet>1623</a>
-<a href=#1624 id=1624 data-nosnippet>1624</a>    <span class="attr">#[test]
-<a href=#1625 id=1625 data-nosnippet>1625</a>    </span><span class="kw">fn </span>explicit_dd_url_overrides_site() {
-<a href=#1626 id=1626 data-nosnippet>1626</a>        <span class="comment">// A dd_url that diverges from the default should take precedence over site.
-<a href=#1627 id=1627 data-nosnippet>1627</a>        </span><span class="kw">let </span>config_str =
-<a href=#1628 id=1628 data-nosnippet>1628</a>            <span class="string">r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://proxy.internal.example.com:3128"}"#</span>;
-<a href=#1629 id=1629 data-nosnippet>1629</a>        <span class="kw">let </span>config: EndpointConfiguration = serde_json::from_str(config_str).expect(<span class="string">"deserialization should succeed"</span>);
-<a href=#1630 id=1630 data-nosnippet>1630</a>
-<a href=#1631 id=1631 data-nosnippet>1631</a>        <span class="macro">assert_eq!</span>(
-<a href=#1632 id=1632 data-nosnippet>1632</a>            <span class="string">"https://proxy.internal.example.com:3128"</span>,
-<a href=#1633 id=1633 data-nosnippet>1633</a>            config.configured_primary_endpoint()
-<a href=#1634 id=1634 data-nosnippet>1634</a>        );
-<a href=#1635 id=1635 data-nosnippet>1635</a>    }
-<a href=#1636 id=1636 data-nosnippet>1636</a>}
+<a href=#1624 id=1624 data-nosnippet>1624</a>        <span class="macro">assert!</span>(settings.use_v3_series);
+<a href=#1625 id=1625 data-nosnippet>1625</a>    }
+<a href=#1626 id=1626 data-nosnippet>1626</a>
+<a href=#1627 id=1627 data-nosnippet>1627</a>    <span class="attr">#[test]
+<a href=#1628 id=1628 data-nosnippet>1628</a>    </span><span class="kw">fn </span>v3_endpoint_matching_is_endpoint_based() {
+<a href=#1629 id=1629 data-nosnippet>1629</a>        <span class="kw">let </span>v3_series_endpoints = <span class="macro">vec!</span>[<span class="string">"https://app.us"</span>.to_string()];
+<a href=#1630 id=1630 data-nosnippet>1630</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.us5.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1631 id=1631 data-nosnippet>1631</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1632 id=1632 data-nosnippet>1632</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
+<a href=#1633 id=1633 data-nosnippet>1633</a>            resolved.configured_endpoint(),
+<a href=#1634 id=1634 data-nosnippet>1634</a>            resolved.endpoint(),
+<a href=#1635 id=1635 data-nosnippet>1635</a>            <span class="kw-2">&amp;</span>v3_series_endpoints,
+<a href=#1636 id=1636 data-nosnippet>1636</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1637 id=1637 data-nosnippet>1637</a>            <span class="bool-val">false</span>,
+<a href=#1638 id=1638 data-nosnippet>1638</a>            <span class="bool-val">false</span>,
+<a href=#1639 id=1639 data-nosnippet>1639</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1640 id=1640 data-nosnippet>1640</a>        );
+<a href=#1641 id=1641 data-nosnippet>1641</a>
+<a href=#1642 id=1642 data-nosnippet>1642</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
+<a href=#1643 id=1643 data-nosnippet>1643</a>    }
+<a href=#1644 id=1644 data-nosnippet>1644</a>
+<a href=#1645 id=1645 data-nosnippet>1645</a>    <span class="attr">#[test]
+<a href=#1646 id=1646 data-nosnippet>1646</a>    </span><span class="kw">fn </span>v3_endpoint_matching_requires_exact_configured_endpoint() {
+<a href=#1647 id=1647 data-nosnippet>1647</a>        <span class="kw">let </span>v3_series_endpoints = <span class="macro">vec!</span>[<span class="string">"app.datadoghq.com/"</span>.to_string()];
+<a href=#1648 id=1648 data-nosnippet>1648</a>        <span class="kw">let </span>resolved = ResolvedEndpoint::from_raw_endpoint(<span class="string">"https://app.datadoghq.com"</span>, <span class="string">"fake-api-key"</span>)
+<a href=#1649 id=1649 data-nosnippet>1649</a>            .expect(<span class="string">"endpoint should resolve"</span>);
+<a href=#1650 id=1650 data-nosnippet>1650</a>        <span class="kw">let </span>settings = EndpointV3Settings::from_endpoint_url(
+<a href=#1651 id=1651 data-nosnippet>1651</a>            resolved.configured_endpoint(),
+<a href=#1652 id=1652 data-nosnippet>1652</a>            resolved.endpoint(),
+<a href=#1653 id=1653 data-nosnippet>1653</a>            <span class="kw-2">&amp;</span>v3_series_endpoints,
+<a href=#1654 id=1654 data-nosnippet>1654</a>            <span class="kw-2">&amp;</span>[],
+<a href=#1655 id=1655 data-nosnippet>1655</a>            <span class="bool-val">false</span>,
+<a href=#1656 id=1656 data-nosnippet>1656</a>            <span class="bool-val">false</span>,
+<a href=#1657 id=1657 data-nosnippet>1657</a>            <span class="kw-2">&amp;</span>[<span class="string">"datadoghq.com"</span>.to_string()],
+<a href=#1658 id=1658 data-nosnippet>1658</a>        );
+<a href=#1659 id=1659 data-nosnippet>1659</a>
+<a href=#1660 id=1660 data-nosnippet>1660</a>        <span class="macro">assert!</span>(!settings.use_v3_series);
+<a href=#1661 id=1661 data-nosnippet>1661</a>    }
+<a href=#1662 id=1662 data-nosnippet>1662</a>
+<a href=#1663 id=1663 data-nosnippet>1663</a>    <span class="attr">#[test]
+<a href=#1664 id=1664 data-nosnippet>1664</a>    </span><span class="kw">fn </span>calculated_site_endpoint_uses_agent_configured_endpoint_shape() {
+<a href=#1665 id=1665 data-nosnippet>1665</a>        <span class="kw">let </span>resolved =
+<a href=#1666 id=1666 data-nosnippet>1666</a>            calculate_resolved_endpoint(<span class="prelude-val">None</span>, <span class="string">"datadoghq.com"</span>, <span class="string">""</span>).expect(<span class="string">"error calculating default API endpoint"</span>);
+<a href=#1667 id=1667 data-nosnippet>1667</a>
+<a href=#1668 id=1668 data-nosnippet>1668</a>        <span class="macro">assert_eq!</span>(<span class="string">"https://app.datadoghq.com"</span>, resolved.configured_endpoint());
+<a href=#1669 id=1669 data-nosnippet>1669</a>    }
+<a href=#1670 id=1670 data-nosnippet>1670</a>
+<a href=#1671 id=1671 data-nosnippet>1671</a>    <span class="attr">#[test]
+<a href=#1672 id=1672 data-nosnippet>1672</a>    </span><span class="kw">fn </span>deserialize_dd_url_filters_default_value() {
+<a href=#1673 id=1673 data-nosnippet>1673</a>        <span class="comment">// The default dd_url (what the Agent sends when operator only configured site) should
+<a href=#1674 id=1674 data-nosnippet>1674</a>        // deserialize to None so that site takes precedence.
+<a href=#1675 id=1675 data-nosnippet>1675</a>        </span><span class="kw">let </span>config_str = <span class="string">r#"{"api_key": "test-key", "dd_url": "https://app.datadoghq.com"}"#</span>;
+<a href=#1676 id=1676 data-nosnippet>1676</a>        <span class="kw">let </span>config: EndpointConfiguration = serde_json::from_str(config_str).expect(<span class="string">"deserialization should succeed"</span>);
+<a href=#1677 id=1677 data-nosnippet>1677</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">None</span>, config.dd_url);
+<a href=#1678 id=1678 data-nosnippet>1678</a>    }
+<a href=#1679 id=1679 data-nosnippet>1679</a>
+<a href=#1680 id=1680 data-nosnippet>1680</a>    <span class="attr">#[test]
+<a href=#1681 id=1681 data-nosnippet>1681</a>    </span><span class="kw">fn </span>deserialize_dd_url_preserves_explicit_override() {
+<a href=#1682 id=1682 data-nosnippet>1682</a>        <span class="comment">// A dd_url that differs from the default should deserialize as-is.
+<a href=#1683 id=1683 data-nosnippet>1683</a>        </span><span class="kw">let </span>config_str = <span class="string">r#"{"api_key": "test-key", "dd_url": "https://proxy.internal.example.com:3128"}"#</span>;
+<a href=#1684 id=1684 data-nosnippet>1684</a>        <span class="kw">let </span>config: EndpointConfiguration = serde_json::from_str(config_str).expect(<span class="string">"deserialization should succeed"</span>);
+<a href=#1685 id=1685 data-nosnippet>1685</a>        <span class="macro">assert_eq!</span>(
+<a href=#1686 id=1686 data-nosnippet>1686</a>            <span class="prelude-val">Some</span>(<span class="string">"https://proxy.internal.example.com:3128"</span>.to_string()),
+<a href=#1687 id=1687 data-nosnippet>1687</a>            config.dd_url
+<a href=#1688 id=1688 data-nosnippet>1688</a>        );
+<a href=#1689 id=1689 data-nosnippet>1689</a>    }
+<a href=#1690 id=1690 data-nosnippet>1690</a>
+<a href=#1691 id=1691 data-nosnippet>1691</a>    <span class="attr">#[test]
+<a href=#1692 id=1692 data-nosnippet>1692</a>    </span><span class="kw">fn </span>set_dd_url_is_not_filtered() {
+<a href=#1693 id=1693 data-nosnippet>1693</a>        <span class="comment">// Programmatic calls to set_dd_url bypass serde and are never filtered, even if set to the default value.
+<a href=#1694 id=1694 data-nosnippet>1694</a>        // This is important for MRF and other override paths that may explicitly set the default URL.
+<a href=#1695 id=1695 data-nosnippet>1695</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>config = EndpointConfiguration {
+<a href=#1696 id=1696 data-nosnippet>1696</a>            api_key: <span class="string">"test-key"</span>.to_string(),
+<a href=#1697 id=1697 data-nosnippet>1697</a>            api_key_refresh_config_path: <span class="prelude-val">None</span>,
+<a href=#1698 id=1698 data-nosnippet>1698</a>            site: <span class="string">"datadoghq.eu"</span>.to_string(),
+<a href=#1699 id=1699 data-nosnippet>1699</a>            dd_url: <span class="prelude-val">None</span>,
+<a href=#1700 id=1700 data-nosnippet>1700</a>            additional_endpoints: AdditionalEndpoints::default(),
+<a href=#1701 id=1701 data-nosnippet>1701</a>        };
+<a href=#1702 id=1702 data-nosnippet>1702</a>        config.set_dd_url(<span class="string">"https://app.datadoghq.com"</span>.to_string());
+<a href=#1703 id=1703 data-nosnippet>1703</a>        <span class="macro">assert_eq!</span>(<span class="prelude-val">Some</span>(<span class="string">"https://app.datadoghq.com"</span>.to_string()), config.dd_url);
+<a href=#1704 id=1704 data-nosnippet>1704</a>    }
+<a href=#1705 id=1705 data-nosnippet>1705</a>
+<a href=#1706 id=1706 data-nosnippet>1706</a>    <span class="attr">#[test]
+<a href=#1707 id=1707 data-nosnippet>1707</a>    </span><span class="kw">fn </span>site_takes_precedence_when_dd_url_is_default() {
+<a href=#1708 id=1708 data-nosnippet>1708</a>        <span class="comment">// When dd_url is at its default (sent by Agent with source="default"), site should determine the endpoint.
+<a href=#1709 id=1709 data-nosnippet>1709</a>        // This is tested through deserialization so the default-filtering occurs.
+<a href=#1710 id=1710 data-nosnippet>1710</a>        </span><span class="kw">let </span>config_str = <span class="string">r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://app.datadoghq.com"}"#</span>;
+<a href=#1711 id=1711 data-nosnippet>1711</a>        <span class="kw">let </span>config: EndpointConfiguration = serde_json::from_str(config_str).expect(<span class="string">"deserialization should succeed"</span>);
+<a href=#1712 id=1712 data-nosnippet>1712</a>
+<a href=#1713 id=1713 data-nosnippet>1713</a>        <span class="macro">assert_eq!</span>(<span class="string">"https://app.datadoghq.eu"</span>, config.configured_primary_endpoint());
+<a href=#1714 id=1714 data-nosnippet>1714</a>    }
+<a href=#1715 id=1715 data-nosnippet>1715</a>
+<a href=#1716 id=1716 data-nosnippet>1716</a>    <span class="attr">#[test]
+<a href=#1717 id=1717 data-nosnippet>1717</a>    </span><span class="kw">fn </span>explicit_dd_url_overrides_site() {
+<a href=#1718 id=1718 data-nosnippet>1718</a>        <span class="comment">// A dd_url that diverges from the default should take precedence over site.
+<a href=#1719 id=1719 data-nosnippet>1719</a>        </span><span class="kw">let </span>config_str =
+<a href=#1720 id=1720 data-nosnippet>1720</a>            <span class="string">r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://proxy.internal.example.com:3128"}"#</span>;
+<a href=#1721 id=1721 data-nosnippet>1721</a>        <span class="kw">let </span>config: EndpointConfiguration = serde_json::from_str(config_str).expect(<span class="string">"deserialization should succeed"</span>);
+<a href=#1722 id=1722 data-nosnippet>1722</a>
+<a href=#1723 id=1723 data-nosnippet>1723</a>        <span class="macro">assert_eq!</span>(
+<a href=#1724 id=1724 data-nosnippet>1724</a>            <span class="string">"https://proxy.internal.example.com:3128"</span>,
+<a href=#1725 id=1725 data-nosnippet>1725</a>            config.configured_primary_endpoint()
+<a href=#1726 id=1726 data-nosnippet>1726</a>        );
+<a href=#1727 id=1727 data-nosnippet>1727</a>    }
+<a href=#1728 id=1728 data-nosnippet>1728</a>}
 </code></pre></div></section></main></body></html>

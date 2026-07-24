@@ -1338,5 +1338,53 @@
 <a href=#1338 id=1338 data-nosnippet>1338</a>        <span class="comment">// Figment drops null values during deserialization, so they are absent from the output.
 <a href=#1339 id=1339 data-nosnippet>1339</a>        </span><span class="macro">assert!</span>(!map.contains_key(<span class="string">"absent"</span>));
 <a href=#1340 id=1340 data-nosnippet>1340</a>    }
-<a href=#1341 id=1341 data-nosnippet>1341</a>}
+<a href=#1341 id=1341 data-nosnippet>1341</a>
+<a href=#1342 id=1342 data-nosnippet>1342</a>    <span class="attr">#[tokio::test]
+<a href=#1343 id=1343 data-nosnippet>1343</a>    </span><span class="kw">async fn </span>from_yaml_loads_configuration_file() {
+<a href=#1344 id=1344 data-nosnippet>1344</a>        <span class="kw">use </span>std::io::Write <span class="kw">as _</span>;
+<a href=#1345 id=1345 data-nosnippet>1345</a>
+<a href=#1346 id=1346 data-nosnippet>1346</a>        <span class="kw">let </span><span class="kw-2">mut </span>file = tempfile::NamedTempFile::new().expect(<span class="string">"should create temp file"</span>);
+<a href=#1347 id=1347 data-nosnippet>1347</a>        file.write_all(<span class="string">b"top: value\nnested:\n  inner: 7\n"</span>)
+<a href=#1348 id=1348 data-nosnippet>1348</a>            .expect(<span class="string">"should write temp file"</span>);
+<a href=#1349 id=1349 data-nosnippet>1349</a>        file.flush().expect(<span class="string">"should flush temp file"</span>);
+<a href=#1350 id=1350 data-nosnippet>1350</a>
+<a href=#1351 id=1351 data-nosnippet>1351</a>        <span class="kw">let </span>cfg = ConfigurationLoader::default()
+<a href=#1352 id=1352 data-nosnippet>1352</a>            .from_yaml(file.path())
+<a href=#1353 id=1353 data-nosnippet>1353</a>            .expect(<span class="string">"YAML file should load"</span>)
+<a href=#1354 id=1354 data-nosnippet>1354</a>            .into_generic()
+<a href=#1355 id=1355 data-nosnippet>1355</a>            .<span class="kw">await
+<a href=#1356 id=1356 data-nosnippet>1356</a>            </span>.expect(<span class="string">"should build generic configuration"</span>);
+<a href=#1357 id=1357 data-nosnippet>1357</a>
+<a href=#1358 id=1358 data-nosnippet>1358</a>        <span class="macro">assert_eq!</span>(cfg.get_typed::&lt;String&gt;(<span class="string">"top"</span>).unwrap(), <span class="string">"value"</span>);
+<a href=#1359 id=1359 data-nosnippet>1359</a>        <span class="macro">assert_eq!</span>(cfg.get_typed::&lt;i64&gt;(<span class="string">"nested.inner"</span>).unwrap(), <span class="number">7</span>);
+<a href=#1360 id=1360 data-nosnippet>1360</a>    }
+<a href=#1361 id=1361 data-nosnippet>1361</a>
+<a href=#1362 id=1362 data-nosnippet>1362</a>    <span class="attr">#[tokio::test]
+<a href=#1363 id=1363 data-nosnippet>1363</a>    </span><span class="kw">async fn </span>try_from_yaml_ignores_unreadable_file() {
+<a href=#1364 id=1364 data-nosnippet>1364</a>        <span class="comment">// `try_from_yaml` swallows load errors (here, a nonexistent path), yielding a config with no values rather
+<a href=#1365 id=1365 data-nosnippet>1365</a>        // than failing to build.
+<a href=#1366 id=1366 data-nosnippet>1366</a>        </span><span class="kw">let </span>cfg = ConfigurationLoader::default()
+<a href=#1367 id=1367 data-nosnippet>1367</a>            .try_from_yaml(<span class="string">"/nonexistent/definitely/not/here.yaml"</span>)
+<a href=#1368 id=1368 data-nosnippet>1368</a>            .into_generic()
+<a href=#1369 id=1369 data-nosnippet>1369</a>            .<span class="kw">await
+<a href=#1370 id=1370 data-nosnippet>1370</a>            </span>.expect(<span class="string">"should build generic configuration even when the file is missing"</span>);
+<a href=#1371 id=1371 data-nosnippet>1371</a>
+<a href=#1372 id=1372 data-nosnippet>1372</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(
+<a href=#1373 id=1373 data-nosnippet>1373</a>            cfg.get::&lt;String&gt;(<span class="string">"anything"</span>),
+<a href=#1374 id=1374 data-nosnippet>1374</a>            <span class="prelude-val">Err</span>(ConfigurationError::MissingField { .. })
+<a href=#1375 id=1375 data-nosnippet>1375</a>        ));
+<a href=#1376 id=1376 data-nosnippet>1376</a>    }
+<a href=#1377 id=1377 data-nosnippet>1377</a>
+<a href=#1378 id=1378 data-nosnippet>1378</a>    <span class="attr">#[tokio::test]
+<a href=#1379 id=1379 data-nosnippet>1379</a>    </span><span class="kw">async fn </span>from_json_returns_error_for_invalid_file() {
+<a href=#1380 id=1380 data-nosnippet>1380</a>        <span class="kw">use </span>std::io::Write <span class="kw">as _</span>;
+<a href=#1381 id=1381 data-nosnippet>1381</a>
+<a href=#1382 id=1382 data-nosnippet>1382</a>        <span class="kw">let </span><span class="kw-2">mut </span>file = tempfile::NamedTempFile::new().expect(<span class="string">"should create temp file"</span>);
+<a href=#1383 id=1383 data-nosnippet>1383</a>        file.write_all(<span class="string">b"{ not valid json "</span>).expect(<span class="string">"should write temp file"</span>);
+<a href=#1384 id=1384 data-nosnippet>1384</a>        file.flush().expect(<span class="string">"should flush temp file"</span>);
+<a href=#1385 id=1385 data-nosnippet>1385</a>
+<a href=#1386 id=1386 data-nosnippet>1386</a>        <span class="kw">let </span>result = ConfigurationLoader::default().from_json(file.path());
+<a href=#1387 id=1387 data-nosnippet>1387</a>        <span class="macro">assert!</span>(result.is_err(), <span class="string">"invalid JSON should fail to load at the loader level"</span>);
+<a href=#1388 id=1388 data-nosnippet>1388</a>    }
+<a href=#1389 id=1389 data-nosnippet>1389</a>}
 </code></pre></div></section></main></body></html>

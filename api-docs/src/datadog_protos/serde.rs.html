@@ -98,4 +98,87 @@
 <a href=#98 id=98 data-nosnippet>98</a><span class="kw">pub fn </span>deserialize_proto_bytes&lt;<span class="lifetime">'de</span>, D: Deserializer&lt;<span class="lifetime">'de</span>&gt;&gt;(d: D) -&gt; <span class="prelude-ty">Result</span>&lt;Vec&lt;u8&gt;, D::Error&gt; {
 <a href=#99 id=99 data-nosnippet>99</a>    serde_bytes::ByteBuf::deserialize(d).map(|bb| bb.into_vec())
 <a href=#100 id=100 data-nosnippet>100</a>}
+<a href=#101 id=101 data-nosnippet>101</a>
+<a href=#102 id=102 data-nosnippet>102</a><span class="attr">#[cfg(test)]
+<a href=#103 id=103 data-nosnippet>103</a></span><span class="kw">mod </span>tests {
+<a href=#104 id=104 data-nosnippet>104</a>    <span class="kw">use </span>serde::de::IntoDeserializer <span class="kw">as _</span>;
+<a href=#105 id=105 data-nosnippet>105</a>
+<a href=#106 id=106 data-nosnippet>106</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#107 id=107 data-nosnippet>107</a>    <span class="kw">use </span><span class="kw">crate</span>::metrics::MetricType;
+<a href=#108 id=108 data-nosnippet>108</a>
+<a href=#109 id=109 data-nosnippet>109</a>    <span class="attr">#[derive(Serialize)]
+<a href=#110 id=110 data-nosnippet>110</a>    </span><span class="kw">struct </span>EnumHolder {
+<a href=#111 id=111 data-nosnippet>111</a>        <span class="attr">#[serde(serialize_with = <span class="string">"serialize_proto_enum"</span>)]
+<a href=#112 id=112 data-nosnippet>112</a>        </span>value: EnumOrUnknown&lt;MetricType&gt;,
+<a href=#113 id=113 data-nosnippet>113</a>    }
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="attr">#[derive(Serialize, Deserialize)]
+<a href=#116 id=116 data-nosnippet>116</a>    </span><span class="kw">struct </span>BytesHolder {
+<a href=#117 id=117 data-nosnippet>117</a>        <span class="attr">#[serde(
+<a href=#118 id=118 data-nosnippet>118</a>            serialize_with = <span class="string">"serialize_proto_bytes"</span>,
+<a href=#119 id=119 data-nosnippet>119</a>            deserialize_with = <span class="string">"deserialize_proto_bytes"</span>,
+<a href=#120 id=120 data-nosnippet>120</a>            default
+<a href=#121 id=121 data-nosnippet>121</a>        )]
+<a href=#122 id=122 data-nosnippet>122</a>        </span>data: Vec&lt;u8&gt;,
+<a href=#123 id=123 data-nosnippet>123</a>    }
+<a href=#124 id=124 data-nosnippet>124</a>
+<a href=#125 id=125 data-nosnippet>125</a>    <span class="attr">#[test]
+<a href=#126 id=126 data-nosnippet>126</a>    </span><span class="kw">fn </span>serialize_proto_enum_emits_the_wire_integer_for_known_and_unknown_values() {
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="comment">// `MetricType::RATE` has wire value 2; an unknown discriminant is emitted verbatim.
+<a href=#128 id=128 data-nosnippet>128</a>        </span><span class="kw">let </span>known = serde_json::to_value(EnumHolder {
+<a href=#129 id=129 data-nosnippet>129</a>            value: EnumOrUnknown::from(MetricType::RATE),
+<a href=#130 id=130 data-nosnippet>130</a>        })
+<a href=#131 id=131 data-nosnippet>131</a>        .unwrap();
+<a href=#132 id=132 data-nosnippet>132</a>        <span class="macro">assert_eq!</span>(known[<span class="string">"value"</span>], <span class="macro">serde_json::json!</span>(<span class="number">2</span>));
+<a href=#133 id=133 data-nosnippet>133</a>
+<a href=#134 id=134 data-nosnippet>134</a>        <span class="kw">let </span>unknown = serde_json::to_value(EnumHolder {
+<a href=#135 id=135 data-nosnippet>135</a>            value: EnumOrUnknown::from_i32(<span class="number">99</span>),
+<a href=#136 id=136 data-nosnippet>136</a>        })
+<a href=#137 id=137 data-nosnippet>137</a>        .unwrap();
+<a href=#138 id=138 data-nosnippet>138</a>        <span class="macro">assert_eq!</span>(unknown[<span class="string">"value"</span>], <span class="macro">serde_json::json!</span>(<span class="number">99</span>));
+<a href=#139 id=139 data-nosnippet>139</a>    }
+<a href=#140 id=140 data-nosnippet>140</a>
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="attr">#[test]
+<a href=#142 id=142 data-nosnippet>142</a>    </span><span class="kw">fn </span>deserialize_proto_enum_maps_each_integer_width_through_from_i32() {
+<a href=#143 id=143 data-nosnippet>143</a>        <span class="kw">use </span>serde::de::value::{Error <span class="kw">as </span>ValueError, I16Deserializer, I32Deserializer, U8Deserializer};
+<a href=#144 id=144 data-nosnippet>144</a>
+<a href=#145 id=145 data-nosnippet>145</a>        <span class="comment">// The hand-written visitor accepts several integer widths and routes them all through
+<a href=#146 id=146 data-nosnippet>146</a>        // `EnumOrUnknown::from_i32`, resolving known discriminants and preserving unknown ones. Each
+<a href=#147 id=147 data-nosnippet>147</a>        // case below is fed through the matching narrow-integer serde deserializer so the corresponding
+<a href=#148 id=148 data-nosnippet>148</a>        // `visit_*` arm is exercised directly.
+<a href=#149 id=149 data-nosnippet>149</a>        </span><span class="kw">let </span>u8_de: U8Deserializer&lt;ValueError&gt; = <span class="number">1u8</span>.into_deserializer();
+<a href=#150 id=150 data-nosnippet>150</a>        <span class="kw">let </span>from_u8: EnumOrUnknown&lt;MetricType&gt; =
+<a href=#151 id=151 data-nosnippet>151</a>            deserialize_proto_enum(u8_de).expect(<span class="string">"u8 discriminant should deserialize"</span>);
+<a href=#152 id=152 data-nosnippet>152</a>        <span class="macro">assert_eq!</span>(from_u8.enum_value(), <span class="prelude-val">Ok</span>(MetricType::COUNT));
+<a href=#153 id=153 data-nosnippet>153</a>
+<a href=#154 id=154 data-nosnippet>154</a>        <span class="kw">let </span>i16_de: I16Deserializer&lt;ValueError&gt; = <span class="number">3i16</span>.into_deserializer();
+<a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>from_i16: EnumOrUnknown&lt;MetricType&gt; =
+<a href=#156 id=156 data-nosnippet>156</a>            deserialize_proto_enum(i16_de).expect(<span class="string">"i16 discriminant should deserialize"</span>);
+<a href=#157 id=157 data-nosnippet>157</a>        <span class="macro">assert_eq!</span>(from_i16.enum_value(), <span class="prelude-val">Ok</span>(MetricType::GAUGE));
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a>        <span class="kw">let </span>i32_de: I32Deserializer&lt;ValueError&gt; = <span class="number">2i32</span>.into_deserializer();
+<a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">let </span>from_i32: EnumOrUnknown&lt;MetricType&gt; =
+<a href=#161 id=161 data-nosnippet>161</a>            deserialize_proto_enum(i32_de).expect(<span class="string">"i32 discriminant should deserialize"</span>);
+<a href=#162 id=162 data-nosnippet>162</a>        <span class="macro">assert_eq!</span>(from_i32.enum_value(), <span class="prelude-val">Ok</span>(MetricType::RATE));
+<a href=#163 id=163 data-nosnippet>163</a>
+<a href=#164 id=164 data-nosnippet>164</a>        <span class="comment">// An unrecognized discriminant is retained as `Unknown`, not rejected or clamped.
+<a href=#165 id=165 data-nosnippet>165</a>        </span><span class="kw">let </span>unknown_de: I32Deserializer&lt;ValueError&gt; = <span class="number">99i32</span>.into_deserializer();
+<a href=#166 id=166 data-nosnippet>166</a>        <span class="kw">let </span>unknown: EnumOrUnknown&lt;MetricType&gt; =
+<a href=#167 id=167 data-nosnippet>167</a>            deserialize_proto_enum(unknown_de).expect(<span class="string">"unknown discriminant should still deserialize"</span>);
+<a href=#168 id=168 data-nosnippet>168</a>        <span class="macro">assert_eq!</span>(unknown.value(), <span class="number">99</span>);
+<a href=#169 id=169 data-nosnippet>169</a>        <span class="macro">assert_eq!</span>(unknown.enum_value(), <span class="prelude-val">Err</span>(<span class="number">99</span>));
+<a href=#170 id=170 data-nosnippet>170</a>    }
+<a href=#171 id=171 data-nosnippet>171</a>
+<a href=#172 id=172 data-nosnippet>172</a>    <span class="attr">#[test]
+<a href=#173 id=173 data-nosnippet>173</a>    </span><span class="kw">fn </span>proto_bytes_round_trip_preserves_the_exact_byte_sequence() {
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="comment">// The bytes helpers bridge protobuf's `Vec&lt;u8&gt;` fields to `serde_bytes`; a full round-trip must
+<a href=#175 id=175 data-nosnippet>175</a>        // reproduce every byte, including a zero and a high byte.
+<a href=#176 id=176 data-nosnippet>176</a>        </span><span class="kw">let </span>original = BytesHolder {
+<a href=#177 id=177 data-nosnippet>177</a>            data: <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">254</span>, <span class="number">255</span>],
+<a href=#178 id=178 data-nosnippet>178</a>        };
+<a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">let </span>encoded = serde_json::to_value(<span class="kw-2">&amp;</span>original).unwrap();
+<a href=#180 id=180 data-nosnippet>180</a>        <span class="kw">let </span>decoded: BytesHolder = serde_json::from_value(encoded).unwrap();
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="macro">assert_eq!</span>(decoded.data, <span class="macro">vec!</span>[<span class="number">0</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">254</span>, <span class="number">255</span>]);
+<a href=#182 id=182 data-nosnippet>182</a>    }
+<a href=#183 id=183 data-nosnippet>183</a>}
 </code></pre></div></section></main></body></html>

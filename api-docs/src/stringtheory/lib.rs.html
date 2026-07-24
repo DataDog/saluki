@@ -1260,43 +1260,164 @@
 <a href=#1260 id=1260 data-nosnippet>1260</a>        <span class="macro">assert!</span>(ms.is_cheaply_cloneable());
 <a href=#1261 id=1261 data-nosnippet>1261</a>    }
 <a href=#1262 id=1262 data-nosnippet>1262</a>
-<a href=#1263 id=1263 data-nosnippet>1263</a>    <span class="kw">fn </span>arb_unicode_str_max_len(max_len: usize) -&gt; <span class="kw">impl </span>Strategy&lt;Value = String&gt; {
-<a href=#1264 id=1264 data-nosnippet>1264</a>        <span class="string">".{0,23}"</span>.prop_filter(<span class="string">"resulting string is too long"</span>, <span class="kw">move </span>|s| s.len() &lt;= max_len)
-<a href=#1265 id=1265 data-nosnippet>1265</a>    }
+<a href=#1263 id=1263 data-nosnippet>1263</a>    <span class="doccomment">/// A string long enough that it can neither be inlined (&gt;23 bytes) nor mistaken for an inlined string, used to
+<a href=#1264 id=1264 data-nosnippet>1264</a>    /// force the non-inlined `MetaString` variants (owned/static/interned/shared).
+<a href=#1265 id=1265 data-nosnippet>1265</a>    </span><span class="kw">const </span>LONG: <span class="kw-2">&amp;</span>str = <span class="string">"this string is definitely longer than twenty-three bytes"</span>;
 <a href=#1266 id=1266 data-nosnippet>1266</a>
-<a href=#1267 id=1267 data-nosnippet>1267</a>    <span class="macro">proptest!</span> {
-<a href=#1268 id=1268 data-nosnippet>1268</a>        <span class="attr">#![proptest_config(ProptestConfig::with_cases(<span class="number">10000</span>))]
+<a href=#1267 id=1267 data-nosnippet>1267</a>    <span class="kw">fn </span>hash_of(ms: <span class="kw-2">&amp;</span>MetaString) -&gt; u64 {
+<a href=#1268 id=1268 data-nosnippet>1268</a>        <span class="kw">use </span>std::hash::{Hash <span class="kw">as _</span>, Hasher <span class="kw">as _</span>};
 <a href=#1269 id=1269 data-nosnippet>1269</a>
-<a href=#1270 id=1270 data-nosnippet>1270</a>        #[test]
-<a href=#1271 id=1271 data-nosnippet>1271</a>        #[cfg_attr(miri, ignore)]
-<a href=#1272 id=1272 data-nosnippet>1272</a>        </span><span class="kw">fn </span>property_test_inlined_string(
-<a href=#1273 id=1273 data-nosnippet>1273</a>            input <span class="kw">in </span>arb_unicode_str_max_len(INLINED_STR_MAX_LEN),
-<a href=#1274 id=1274 data-nosnippet>1274</a>        ) {
-<a href=#1275 id=1275 data-nosnippet>1275</a>            <span class="macro">assert!</span>(input.len() &lt;= INLINED_STR_MAX_LEN, <span class="string">"input should fit in the inline buffer"</span>);
-<a href=#1276 id=1276 data-nosnippet>1276</a>            <span class="kw">let </span>meta = MetaString::try_inline(<span class="kw-2">&amp;</span>input).expect(<span class="string">"input should fit"</span>);
-<a href=#1277 id=1277 data-nosnippet>1277</a>
-<a href=#1278 id=1278 data-nosnippet>1278</a>            <span class="kw">if </span>input.is_empty() {
-<a href=#1279 id=1279 data-nosnippet>1279</a>                <span class="macro">assert_eq!</span>(meta.inner.get_union_type(), UnionType::Empty);
-<a href=#1280 id=1280 data-nosnippet>1280</a>            } <span class="kw">else </span>{
-<a href=#1281 id=1281 data-nosnippet>1281</a>                <span class="macro">assert_eq!</span>(input, <span class="kw-2">&amp;*</span>meta);
-<a href=#1282 id=1282 data-nosnippet>1282</a>                <span class="macro">assert_eq!</span>(meta.inner.get_union_type(), UnionType::Inlined);
-<a href=#1283 id=1283 data-nosnippet>1283</a>            }
-<a href=#1284 id=1284 data-nosnippet>1284</a>        }
-<a href=#1285 id=1285 data-nosnippet>1285</a>
-<a href=#1286 id=1286 data-nosnippet>1286</a>        <span class="attr">#[test]
-<a href=#1287 id=1287 data-nosnippet>1287</a>        #[cfg_attr(miri, ignore)]
-<a href=#1288 id=1288 data-nosnippet>1288</a>        </span><span class="kw">fn </span>property_test_owned_string(
-<a href=#1289 id=1289 data-nosnippet>1289</a>            input <span class="kw">in </span><span class="string">".*"</span>,
-<a href=#1290 id=1290 data-nosnippet>1290</a>        ) {
-<a href=#1291 id=1291 data-nosnippet>1291</a>            <span class="kw">let </span>is_empty = input.is_empty();
-<a href=#1292 id=1292 data-nosnippet>1292</a>            <span class="kw">let </span>meta = MetaString::from(input);
-<a href=#1293 id=1293 data-nosnippet>1293</a>
-<a href=#1294 id=1294 data-nosnippet>1294</a>            <span class="kw">if </span>is_empty {
-<a href=#1295 id=1295 data-nosnippet>1295</a>                <span class="macro">assert_eq!</span>(meta.inner.get_union_type(), UnionType::Empty);
-<a href=#1296 id=1296 data-nosnippet>1296</a>            } <span class="kw">else </span>{
-<a href=#1297 id=1297 data-nosnippet>1297</a>                <span class="macro">assert_eq!</span>(meta.inner.get_union_type(), UnionType::Owned);
-<a href=#1298 id=1298 data-nosnippet>1298</a>            }
-<a href=#1299 id=1299 data-nosnippet>1299</a>        }
-<a href=#1300 id=1300 data-nosnippet>1300</a>    }
-<a href=#1301 id=1301 data-nosnippet>1301</a>}
+<a href=#1270 id=1270 data-nosnippet>1270</a>        <span class="kw">let </span><span class="kw-2">mut </span>hasher = std::collections::hash_map::DefaultHasher::new();
+<a href=#1271 id=1271 data-nosnippet>1271</a>        ms.hash(<span class="kw-2">&amp;mut </span>hasher);
+<a href=#1272 id=1272 data-nosnippet>1272</a>        hasher.finish()
+<a href=#1273 id=1273 data-nosnippet>1273</a>    }
+<a href=#1274 id=1274 data-nosnippet>1274</a>
+<a href=#1275 id=1275 data-nosnippet>1275</a>    <span class="attr">#[test]
+<a href=#1276 id=1276 data-nosnippet>1276</a>    </span><span class="kw">fn </span>serde_round_trips_every_variant() {
+<a href=#1277 id=1277 data-nosnippet>1277</a>        <span class="comment">// The custom `Serialize`/`Deserialize` (a hand-written `Visitor`) must survive a real format round-trip for
+<a href=#1278 id=1278 data-nosnippet>1278</a>        // every backing variant. Deserialization always reconstructs an inlined/owned string, so the invariant is
+<a href=#1279 id=1279 data-nosnippet>1279</a>        // content equality, not variant identity.
+<a href=#1280 id=1280 data-nosnippet>1280</a>        </span><span class="kw">let </span>interner = GenericMapInterner::new(NonZeroUsize::new(<span class="number">1024</span>).unwrap());
+<a href=#1281 id=1281 data-nosnippet>1281</a>        <span class="kw">let </span>cases: Vec&lt;(MetaString, <span class="kw-2">&amp;</span>str)&gt; = <span class="macro">vec!</span>[
+<a href=#1282 id=1282 data-nosnippet>1282</a>            (MetaString::empty(), <span class="string">""</span>),
+<a href=#1283 id=1283 data-nosnippet>1283</a>            (MetaString::try_inline(<span class="string">"hi"</span>).expect(<span class="string">"fits inline"</span>), <span class="string">"hi"</span>),
+<a href=#1284 id=1284 data-nosnippet>1284</a>            (MetaString::from_static(LONG), LONG),
+<a href=#1285 id=1285 data-nosnippet>1285</a>            (MetaString::from(String::from(LONG)), LONG),
+<a href=#1286 id=1286 data-nosnippet>1286</a>            (MetaString::from(interner.try_intern(LONG).expect(<span class="string">"interns"</span>)), LONG),
+<a href=#1287 id=1287 data-nosnippet>1287</a>            (MetaString::from(Arc::&lt;str&gt;::from(LONG)), LONG),
+<a href=#1288 id=1288 data-nosnippet>1288</a>        ];
+<a href=#1289 id=1289 data-nosnippet>1289</a>
+<a href=#1290 id=1290 data-nosnippet>1290</a>        <span class="kw">for </span>(ms, expected) <span class="kw">in </span>cases {
+<a href=#1291 id=1291 data-nosnippet>1291</a>            <span class="kw">let </span>json = serde_json::to_string(<span class="kw-2">&amp;</span>ms).expect(<span class="string">"serialization should succeed"</span>);
+<a href=#1292 id=1292 data-nosnippet>1292</a>
+<a href=#1293 id=1293 data-nosnippet>1293</a>            <span class="comment">// Decoding the JSON as a plain `String` confirms the serialized form carries the raw string content.
+<a href=#1294 id=1294 data-nosnippet>1294</a>            </span><span class="kw">let </span>as_plain: String = serde_json::from_str(<span class="kw-2">&amp;</span>json).expect(<span class="string">"serialized form should be a JSON string"</span>);
+<a href=#1295 id=1295 data-nosnippet>1295</a>            <span class="macro">assert_eq!</span>(as_plain, expected, <span class="string">"serialized form should carry the string content"</span>);
+<a href=#1296 id=1296 data-nosnippet>1296</a>
+<a href=#1297 id=1297 data-nosnippet>1297</a>            <span class="kw">let </span>back: MetaString = serde_json::from_str(<span class="kw-2">&amp;</span>json).expect(<span class="string">"deserialization should succeed"</span>);
+<a href=#1298 id=1298 data-nosnippet>1298</a>            <span class="macro">assert_eq!</span>(back, expected, <span class="string">"deserialized value should match the original content"</span>);
+<a href=#1299 id=1299 data-nosnippet>1299</a>            <span class="macro">assert_eq!</span>(ms, back, <span class="string">"round-trip should preserve equality"</span>);
+<a href=#1300 id=1300 data-nosnippet>1300</a>        }
+<a href=#1301 id=1301 data-nosnippet>1301</a>    }
+<a href=#1302 id=1302 data-nosnippet>1302</a>
+<a href=#1303 id=1303 data-nosnippet>1303</a>    <span class="attr">#[test]
+<a href=#1304 id=1304 data-nosnippet>1304</a>    </span><span class="kw">fn </span>equal_content_hashes_equally_across_variants() {
+<a href=#1305 id=1305 data-nosnippet>1305</a>        <span class="comment">// `Hash` delegates to the string content, so two `MetaString`s holding identical bytes must hash equally even
+<a href=#1306 id=1306 data-nosnippet>1306</a>        // when they use entirely different backing variants (otherwise they'd behave inconsistently as map keys).
+<a href=#1307 id=1307 data-nosnippet>1307</a>        </span><span class="kw">let </span>interner = GenericMapInterner::new(NonZeroUsize::new(<span class="number">1024</span>).unwrap());
+<a href=#1308 id=1308 data-nosnippet>1308</a>        <span class="kw">let </span>variants = [
+<a href=#1309 id=1309 data-nosnippet>1309</a>            MetaString::from_static(LONG),
+<a href=#1310 id=1310 data-nosnippet>1310</a>            MetaString::from(String::from(LONG)),
+<a href=#1311 id=1311 data-nosnippet>1311</a>            MetaString::from(interner.try_intern(LONG).expect(<span class="string">"interns"</span>)),
+<a href=#1312 id=1312 data-nosnippet>1312</a>            MetaString::from(Arc::&lt;str&gt;::from(LONG)),
+<a href=#1313 id=1313 data-nosnippet>1313</a>        ];
+<a href=#1314 id=1314 data-nosnippet>1314</a>
+<a href=#1315 id=1315 data-nosnippet>1315</a>        <span class="comment">// Confirm the fixtures really do exercise distinct backing variants.
+<a href=#1316 id=1316 data-nosnippet>1316</a>        </span><span class="macro">assert_eq!</span>(variants[<span class="number">0</span>].inner.get_union_type(), UnionType::Static);
+<a href=#1317 id=1317 data-nosnippet>1317</a>        <span class="macro">assert_eq!</span>(variants[<span class="number">1</span>].inner.get_union_type(), UnionType::Owned);
+<a href=#1318 id=1318 data-nosnippet>1318</a>        <span class="macro">assert_eq!</span>(variants[<span class="number">2</span>].inner.get_union_type(), UnionType::InternedGenericMap);
+<a href=#1319 id=1319 data-nosnippet>1319</a>        <span class="macro">assert_eq!</span>(variants[<span class="number">3</span>].inner.get_union_type(), UnionType::Shared);
+<a href=#1320 id=1320 data-nosnippet>1320</a>
+<a href=#1321 id=1321 data-nosnippet>1321</a>        <span class="kw">let </span>expected_hash = hash_of(<span class="kw-2">&amp;</span>variants[<span class="number">0</span>]);
+<a href=#1322 id=1322 data-nosnippet>1322</a>        <span class="kw">for </span>variant <span class="kw">in </span><span class="kw-2">&amp;</span>variants {
+<a href=#1323 id=1323 data-nosnippet>1323</a>            <span class="macro">assert_eq!</span>(
+<a href=#1324 id=1324 data-nosnippet>1324</a>                hash_of(variant),
+<a href=#1325 id=1325 data-nosnippet>1325</a>                expected_hash,
+<a href=#1326 id=1326 data-nosnippet>1326</a>                <span class="string">"hash must depend only on content, not the backing variant"
+<a href=#1327 id=1327 data-nosnippet>1327</a>            </span>);
+<a href=#1328 id=1328 data-nosnippet>1328</a>            <span class="macro">assert_eq!</span>(
+<a href=#1329 id=1329 data-nosnippet>1329</a>                <span class="kw-2">*</span>variant, variants[<span class="number">0</span>],
+<a href=#1330 id=1330 data-nosnippet>1330</a>                <span class="string">"equal content must compare equal across variants"
+<a href=#1331 id=1331 data-nosnippet>1331</a>            </span>);
+<a href=#1332 id=1332 data-nosnippet>1332</a>        }
+<a href=#1333 id=1333 data-nosnippet>1333</a>
+<a href=#1334 id=1334 data-nosnippet>1334</a>        <span class="comment">// An inlined short string and a static short string with the same content must also agree.
+<a href=#1335 id=1335 data-nosnippet>1335</a>        </span><span class="kw">let </span>inlined = MetaString::from(<span class="string">"short"</span>);
+<a href=#1336 id=1336 data-nosnippet>1336</a>        <span class="kw">let </span>static_ = MetaString::from_static(<span class="string">"short"</span>);
+<a href=#1337 id=1337 data-nosnippet>1337</a>        <span class="macro">assert_eq!</span>(inlined.inner.get_union_type(), UnionType::Inlined);
+<a href=#1338 id=1338 data-nosnippet>1338</a>        <span class="macro">assert_eq!</span>(static_.inner.get_union_type(), UnionType::Static);
+<a href=#1339 id=1339 data-nosnippet>1339</a>        <span class="macro">assert_eq!</span>(hash_of(<span class="kw-2">&amp;</span>inlined), hash_of(<span class="kw-2">&amp;</span>static_));
+<a href=#1340 id=1340 data-nosnippet>1340</a>    }
+<a href=#1341 id=1341 data-nosnippet>1341</a>
+<a href=#1342 id=1342 data-nosnippet>1342</a>    <span class="attr">#[test]
+<a href=#1343 id=1343 data-nosnippet>1343</a>    </span><span class="kw">fn </span>from_interner_inlines_short_strings() {
+<a href=#1344 id=1344 data-nosnippet>1344</a>        <span class="comment">// Step 1 of the documented fallback: an inlineable string is inlined and the interner is never consulted.
+<a href=#1345 id=1345 data-nosnippet>1345</a>        </span><span class="kw">let </span>interner = GenericMapInterner::new(NonZeroUsize::new(<span class="number">1024</span>).unwrap());
+<a href=#1346 id=1346 data-nosnippet>1346</a>        <span class="kw">let </span>ms = MetaString::from_interner(<span class="string">"short"</span>, <span class="kw-2">&amp;</span>interner);
+<a href=#1347 id=1347 data-nosnippet>1347</a>
+<a href=#1348 id=1348 data-nosnippet>1348</a>        <span class="macro">assert_eq!</span>(ms.inner.get_union_type(), UnionType::Inlined);
+<a href=#1349 id=1349 data-nosnippet>1349</a>        <span class="macro">assert_eq!</span>(ms, <span class="string">"short"</span>);
+<a href=#1350 id=1350 data-nosnippet>1350</a>        <span class="macro">assert_eq!</span>(interner.len(), <span class="number">0</span>, <span class="string">"inlining must not add an interner entry"</span>);
+<a href=#1351 id=1351 data-nosnippet>1351</a>    }
+<a href=#1352 id=1352 data-nosnippet>1352</a>
+<a href=#1353 id=1353 data-nosnippet>1353</a>    <span class="attr">#[test]
+<a href=#1354 id=1354 data-nosnippet>1354</a>    </span><span class="kw">fn </span>from_interner_interns_non_inlineable_strings() {
+<a href=#1355 id=1355 data-nosnippet>1355</a>        <span class="comment">// Step 2 of the documented fallback: a non-inlineable string is interned when the interner has capacity.
+<a href=#1356 id=1356 data-nosnippet>1356</a>        </span><span class="kw">let </span>interner = GenericMapInterner::new(NonZeroUsize::new(<span class="number">1024</span>).unwrap());
+<a href=#1357 id=1357 data-nosnippet>1357</a>        <span class="macro">assert!</span>(LONG.len() &gt; INLINED_STR_MAX_LEN);
+<a href=#1358 id=1358 data-nosnippet>1358</a>
+<a href=#1359 id=1359 data-nosnippet>1359</a>        <span class="kw">let </span>ms = MetaString::from_interner(LONG, <span class="kw-2">&amp;</span>interner);
+<a href=#1360 id=1360 data-nosnippet>1360</a>
+<a href=#1361 id=1361 data-nosnippet>1361</a>        <span class="macro">assert_eq!</span>(ms.inner.get_union_type(), UnionType::InternedGenericMap);
+<a href=#1362 id=1362 data-nosnippet>1362</a>        <span class="macro">assert_eq!</span>(ms, LONG);
+<a href=#1363 id=1363 data-nosnippet>1363</a>        <span class="macro">assert_eq!</span>(interner.len(), <span class="number">1</span>, <span class="string">"the string should have been interned"</span>);
+<a href=#1364 id=1364 data-nosnippet>1364</a>    }
+<a href=#1365 id=1365 data-nosnippet>1365</a>
+<a href=#1366 id=1366 data-nosnippet>1366</a>    <span class="attr">#[test]
+<a href=#1367 id=1367 data-nosnippet>1367</a>    </span><span class="kw">fn </span>from_interner_falls_back_to_owned_when_interner_is_full() {
+<a href=#1368 id=1368 data-nosnippet>1368</a>        <span class="comment">// Step 3 of the documented fallback: a non-inlineable string is allocated as an owned string when interning
+<a href=#1369 id=1369 data-nosnippet>1369</a>        // fails (here, because the interner is far too small to hold it).
+<a href=#1370 id=1370 data-nosnippet>1370</a>        </span><span class="kw">let </span>interner = GenericMapInterner::new(NonZeroUsize::new(<span class="number">16</span>).unwrap());
+<a href=#1371 id=1371 data-nosnippet>1371</a>        <span class="macro">assert!</span>(LONG.len() &gt; INLINED_STR_MAX_LEN);
+<a href=#1372 id=1372 data-nosnippet>1372</a>
+<a href=#1373 id=1373 data-nosnippet>1373</a>        <span class="kw">let </span>ms = MetaString::from_interner(LONG, <span class="kw-2">&amp;</span>interner);
+<a href=#1374 id=1374 data-nosnippet>1374</a>
+<a href=#1375 id=1375 data-nosnippet>1375</a>        <span class="macro">assert_eq!</span>(ms.inner.get_union_type(), UnionType::Owned);
+<a href=#1376 id=1376 data-nosnippet>1376</a>        <span class="macro">assert_eq!</span>(ms, LONG);
+<a href=#1377 id=1377 data-nosnippet>1377</a>        <span class="macro">assert_eq!</span>(
+<a href=#1378 id=1378 data-nosnippet>1378</a>            interner.len(),
+<a href=#1379 id=1379 data-nosnippet>1379</a>            <span class="number">0</span>,
+<a href=#1380 id=1380 data-nosnippet>1380</a>            <span class="string">"the interner had no room, so nothing should be interned"
+<a href=#1381 id=1381 data-nosnippet>1381</a>        </span>);
+<a href=#1382 id=1382 data-nosnippet>1382</a>    }
+<a href=#1383 id=1383 data-nosnippet>1383</a>
+<a href=#1384 id=1384 data-nosnippet>1384</a>    <span class="kw">fn </span>arb_unicode_str_max_len(max_len: usize) -&gt; <span class="kw">impl </span>Strategy&lt;Value = String&gt; {
+<a href=#1385 id=1385 data-nosnippet>1385</a>        <span class="string">".{0,23}"</span>.prop_filter(<span class="string">"resulting string is too long"</span>, <span class="kw">move </span>|s| s.len() &lt;= max_len)
+<a href=#1386 id=1386 data-nosnippet>1386</a>    }
+<a href=#1387 id=1387 data-nosnippet>1387</a>
+<a href=#1388 id=1388 data-nosnippet>1388</a>    <span class="macro">proptest!</span> {
+<a href=#1389 id=1389 data-nosnippet>1389</a>        <span class="attr">#![proptest_config(ProptestConfig::with_cases(<span class="number">10000</span>))]
+<a href=#1390 id=1390 data-nosnippet>1390</a>
+<a href=#1391 id=1391 data-nosnippet>1391</a>        #[test]
+<a href=#1392 id=1392 data-nosnippet>1392</a>        #[cfg_attr(miri, ignore)]
+<a href=#1393 id=1393 data-nosnippet>1393</a>        </span><span class="kw">fn </span>property_test_inlined_string(
+<a href=#1394 id=1394 data-nosnippet>1394</a>            input <span class="kw">in </span>arb_unicode_str_max_len(INLINED_STR_MAX_LEN),
+<a href=#1395 id=1395 data-nosnippet>1395</a>        ) {
+<a href=#1396 id=1396 data-nosnippet>1396</a>            <span class="macro">assert!</span>(input.len() &lt;= INLINED_STR_MAX_LEN, <span class="string">"input should fit in the inline buffer"</span>);
+<a href=#1397 id=1397 data-nosnippet>1397</a>            <span class="kw">let </span>meta = MetaString::try_inline(<span class="kw-2">&amp;</span>input).expect(<span class="string">"input should fit"</span>);
+<a href=#1398 id=1398 data-nosnippet>1398</a>
+<a href=#1399 id=1399 data-nosnippet>1399</a>            <span class="kw">if </span>input.is_empty() {
+<a href=#1400 id=1400 data-nosnippet>1400</a>                <span class="macro">assert_eq!</span>(meta.inner.get_union_type(), UnionType::Empty);
+<a href=#1401 id=1401 data-nosnippet>1401</a>            } <span class="kw">else </span>{
+<a href=#1402 id=1402 data-nosnippet>1402</a>                <span class="macro">assert_eq!</span>(input, <span class="kw-2">&amp;*</span>meta);
+<a href=#1403 id=1403 data-nosnippet>1403</a>                <span class="macro">assert_eq!</span>(meta.inner.get_union_type(), UnionType::Inlined);
+<a href=#1404 id=1404 data-nosnippet>1404</a>            }
+<a href=#1405 id=1405 data-nosnippet>1405</a>        }
+<a href=#1406 id=1406 data-nosnippet>1406</a>
+<a href=#1407 id=1407 data-nosnippet>1407</a>        <span class="attr">#[test]
+<a href=#1408 id=1408 data-nosnippet>1408</a>        #[cfg_attr(miri, ignore)]
+<a href=#1409 id=1409 data-nosnippet>1409</a>        </span><span class="kw">fn </span>property_test_owned_string(
+<a href=#1410 id=1410 data-nosnippet>1410</a>            input <span class="kw">in </span><span class="string">".*"</span>,
+<a href=#1411 id=1411 data-nosnippet>1411</a>        ) {
+<a href=#1412 id=1412 data-nosnippet>1412</a>            <span class="kw">let </span>is_empty = input.is_empty();
+<a href=#1413 id=1413 data-nosnippet>1413</a>            <span class="kw">let </span>meta = MetaString::from(input);
+<a href=#1414 id=1414 data-nosnippet>1414</a>
+<a href=#1415 id=1415 data-nosnippet>1415</a>            <span class="kw">if </span>is_empty {
+<a href=#1416 id=1416 data-nosnippet>1416</a>                <span class="macro">assert_eq!</span>(meta.inner.get_union_type(), UnionType::Empty);
+<a href=#1417 id=1417 data-nosnippet>1417</a>            } <span class="kw">else </span>{
+<a href=#1418 id=1418 data-nosnippet>1418</a>                <span class="macro">assert_eq!</span>(meta.inner.get_union_type(), UnionType::Owned);
+<a href=#1419 id=1419 data-nosnippet>1419</a>            }
+<a href=#1420 id=1420 data-nosnippet>1420</a>        }
+<a href=#1421 id=1421 data-nosnippet>1421</a>    }
+<a href=#1422 id=1422 data-nosnippet>1422</a>}
 </code></pre></div></section></main></body></html>
