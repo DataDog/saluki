@@ -33,19 +33,11 @@ use crate::{
 ///
 /// This mirrors the path used by the single-millstone setup so the same bind-mount machinery works.
 const MILLSTONE_CONFIG_INTERNAL: &str = "/etc/millstone/config.toml";
-const MILLSTONE_BASELINE_COMPLETION_FILE: &str = "/tmp/millstone-baseline-complete";
-const MILLSTONE_COMPARISON_COMPLETION_FILE: &str = "/tmp/millstone-comparison-complete";
-const MILLSTONE_COMPLETION_FILE: &str = "/tmp/millstone-complete";
-const MILLSTONE_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(1);
-const MILLSTONE_HEALTHCHECK_TIMEOUT: Duration = Duration::from_secs(1);
-const MILLSTONE_HEALTHCHECK_RETRIES: i64 = 3;
-const MILLSTONE_HEALTHCHECK_START_PERIOD: Duration = Duration::from_secs(900);
-const MILLSTONE_HEALTHCHECK_START_INTERVAL: Duration = Duration::from_millis(250);
 
-/// How long to wait after Millstone finishes sending before querying datadog-intake for data.
+/// How long to wait after millstone exits before querying datadog-intake for data.
 ///
-/// Millstone remains alive during this interval so the agents can resolve the sender's process identity while flushing
-/// any remaining aggregated metrics. The value is slightly longer than a full aggregation bucket width.
+/// This gives the agents time to flush any remaining aggregated metrics after millstone stops
+/// sending. The value is slightly longer than a full aggregation bucket width.
 const FLUSH_WAIT: Duration = Duration::from_secs(32);
 
 /// Run a single correctness test and return a panoramic `TestResult`.
@@ -279,47 +271,22 @@ impl CorrectnessRunner {
             .clone()
             .unwrap_or_else(|| "/usr/local/bin/millstone".to_string());
 
-        // Substitute $GROUP in the bind-mounted config to produce two per-target configs, then run both Millstone
-        // processes in parallel. Each process reports when it finishes sending and remains alive until the runner shuts
-        // down the container.
+        // Substitute $GROUP in the bind-mounted config to produce two per-target configs, then
+        // run both millstone processes in parallel. `exec sh -c '...'` ensures both seds complete
+        // before either millstone process starts.
         let cmd = format!(
-            "sed 's/\\$GROUP/baseline/g' {cfg} > /tmp/millstone-baseline.toml || exit 1; \
-             sed 's/\\$GROUP/comparison/g' {cfg} > /tmp/millstone-comparison.toml || exit 1; \
-             {bin} /tmp/millstone-baseline.toml --completion-file {baseline_complete} & P1=$!; \
-             {bin} /tmp/millstone-comparison.toml --completion-file {comparison_complete} & P2=$!; \
-             trap 'trap - TERM INT; kill \"$P1\" \"$P2\" 2>/dev/null; \
-                   wait \"$P1\" 2>/dev/null; wait \"$P2\" 2>/dev/null; exit 0' TERM INT; \
-             while kill -0 \"$P1\" 2>/dev/null && kill -0 \"$P2\" 2>/dev/null; do \
-                 if [ -f {baseline_complete} ] && [ -f {comparison_complete} ]; then \
-                     touch {complete}; break; \
-                 fi; \
-                 sleep 0.1; \
-             done; \
-             while kill -0 \"$P1\" 2>/dev/null && kill -0 \"$P2\" 2>/dev/null; do sleep 1; done; \
-             kill \"$P1\" \"$P2\" 2>/dev/null; \
-             wait \"$P1\"; R1=$?; wait \"$P2\"; R2=$?; exit $((R1 | R2))",
+            "sed 's/\\$GROUP/baseline/g' {cfg} > /tmp/millstone-baseline.toml && \
+             sed 's/\\$GROUP/comparison/g' {cfg} > /tmp/millstone-comparison.toml && \
+             exec sh -c '{bin} /tmp/millstone-baseline.toml & P1=$!; \
+                          {bin} /tmp/millstone-comparison.toml & P2=$!; \
+                          wait $P1; R1=$?; wait $P2; R2=$?; exit $((R1 | R2))'",
             cfg = MILLSTONE_CONFIG_INTERNAL,
             bin = millstone_binary,
-            baseline_complete = MILLSTONE_BASELINE_COMPLETION_FILE,
-            comparison_complete = MILLSTONE_COMPARISON_COMPLETION_FILE,
-            complete = MILLSTONE_COMPLETION_FILE,
         );
 
         let driver_config = DriverConfig::from_image("millstone", self.millstone_config.image.clone())
             .with_entrypoint(vec!["/bin/sh".to_string(), "-c".to_string()])
             .with_command(vec![cmd])
-            .with_healthcheck(
-                vec![
-                    "/bin/sh".to_string(),
-                    "-c".to_string(),
-                    format!("test -f {}", MILLSTONE_COMPLETION_FILE),
-                ],
-                MILLSTONE_HEALTHCHECK_INTERVAL,
-                MILLSTONE_HEALTHCHECK_TIMEOUT,
-                MILLSTONE_HEALTHCHECK_RETRIES,
-                MILLSTONE_HEALTHCHECK_START_PERIOD,
-                MILLSTONE_HEALTHCHECK_START_INTERVAL,
-            )
             // Bind-mount the original millstone.yaml—same as the single-millstone setup.
             .with_bind_mount(&self.millstone_config.config_path, MILLSTONE_CONFIG_INTERNAL)
             // Mount both agent isolation-group volumes so millstone can reach their DSD sockets.
@@ -446,13 +413,12 @@ impl CorrectnessRunner {
                 return Err(e);
             }
         };
-        info!("Agent containers spawned successfully. Starting shared Millstone...");
+        info!("Agent containers spawned successfully. Starting shared millstone...");
 
-        // Phase 4: Spawn the shared Millstone container and wait until both senders finish sending. The container
-        // healthcheck reports completion while both sender processes remain alive.
-        let millstone_guard =
+        // Phase 4: Spawn the shared millstone container now that both agent volumes exist.
+        let millstone_waiter =
             match run_in_background(&millstone_runner_span, millstone_group_runner.spawn_millstone()).await {
-                Ok(guard) => guard,
+                Ok(w) => w,
                 Err(e) => {
                     self.tctx.test_cancel_token().cancel();
                     self.baseline_coordinator.wait().await;
@@ -467,47 +433,40 @@ impl CorrectnessRunner {
                     return Err(generic_error!("Failed to spawn shared millstone container: {}", e));
                 }
             };
-        let mut millstone_exit = Box::pin(millstone_guard.millstone_handle.wait());
-        info!("Both Millstone senders completed. Keeping them alive while agents flush...");
+        info!("Shared millstone started. Waiting for it to complete...");
+
+        // Phase 5: Wait for millstone to finish both parallel runs.
+        if let ExitStatus::Failed { code, error } = millstone_waiter.millstone_handle.wait().await {
+            self.tctx.test_cancel_token().cancel();
+            self.baseline_coordinator.wait().await;
+            self.comparison_coordinator.wait().await;
+            self.millstone_coordinator.wait().await;
+            cleanup_groups(
+                &baseline_isolation_group_id,
+                &comparison_isolation_group_id,
+                &millstone_isolation_group_id,
+            )
+            .await;
+            return Err(generic_error!(
+                "Shared millstone exited with non-zero exit code ({}). Error: {}",
+                code,
+                error
+            ));
+        }
         debug!(
-            "Millstone finished sending. Waiting {:?} for agents to flush...",
+            "Shared millstone completed. Waiting {:?} for agents to flush...",
             FLUSH_WAIT
         );
 
-        // Phase 5: Give agents time to flush all remaining aggregated metrics while Millstone remains alive.
+        // Phase 6: Give agents time to flush all remaining aggregated metrics.
         //
         // TODO: This should maybe be configurable, or perhaps we can figure out a better way to
         // determine when the next flush has happened... and further, we might not need to care
         // about this for particular analysis modes if the functionality we're testing doesn't rely
         // on flushing like metrics does.
-        select! {
-            _ = sleep(FLUSH_WAIT) => {}
-            status = &mut millstone_exit => {
-                self.tctx.test_cancel_token().cancel();
-                self.baseline_coordinator.wait().await;
-                self.comparison_coordinator.wait().await;
-                self.millstone_coordinator.wait().await;
-                cleanup_groups(
-                    &baseline_isolation_group_id,
-                    &comparison_isolation_group_id,
-                    &millstone_isolation_group_id,
-                )
-                .await;
+        sleep(FLUSH_WAIT).await;
 
-                return match status {
-                    ExitStatus::Success => {
-                        Err(generic_error!("Shared Millstone exited before telemetry collection completed."))
-                    }
-                    ExitStatus::Failed { code, error } => Err(generic_error!(
-                        "Shared Millstone exited before telemetry collection completed with code {}: {}",
-                        code,
-                        error
-                    )),
-                };
-            }
-        }
-
-        // Phase 6: Collect data from both datadog-intake containers, then shut everything down.
+        // Phase 7: Collect data from both datadog-intake containers, then shut everything down.
         info!("Collecting data from baseline and comparison intake containers...");
         let maybe_baseline_data = run_in_background(
             &baseline_runner_span,
@@ -541,7 +500,6 @@ impl CorrectnessRunner {
         self.baseline_coordinator.wait().await;
         self.comparison_coordinator.wait().await;
         self.millstone_coordinator.wait().await;
-        let _ = millstone_exit.await;
 
         cleanup_groups(
             &baseline_isolation_group_id,
@@ -721,15 +679,15 @@ impl AgentGroupCollector {
     }
 }
 
-/// Keeps the shared Millstone container alive after both senders finish.
+/// Holds the millstone driver handle for the shared millstone group.
 ///
-/// The container healthcheck reports healthy only after both senders finish. The caller retains the driver handle to
-/// detect an unexpected exit before telemetry collection completes.
-struct MillstoneGuard {
+/// The caller must wait on `millstone_handle` to detect when millstone has finished sending
+/// traffic to both agents.
+struct MillstoneWaiter {
     millstone_handle: DriverHandle,
 }
 
-impl MillstoneGuard {
+impl MillstoneWaiter {
     fn new(mut spawned_drivers: SpawnedDrivers) -> Result<Self, GenericError> {
         let millstone_handle = spawned_drivers
             .take_driver_handle("millstone")
@@ -740,8 +698,8 @@ impl MillstoneGuard {
 }
 
 impl GroupRunner {
-    async fn spawn_millstone(self) -> Result<MillstoneGuard, GenericError> {
-        MillstoneGuard::new(self.spawn_into().await?)
+    async fn spawn_millstone(self) -> Result<MillstoneWaiter, GenericError> {
+        MillstoneWaiter::new(self.spawn_into().await?)
     }
 }
 
