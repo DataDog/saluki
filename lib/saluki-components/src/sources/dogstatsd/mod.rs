@@ -1474,13 +1474,13 @@ struct ReceivedBuffer {
     bytes_read: usize,
     peer_addr: ConnectionAddress,
     process_origin: Option<ProcessOrigin>,
-    buffer_return: BufferReturn,
+    buffer_handoff: ReadBufferHandoff,
 }
 
-struct BufferReturn(Option<oneshot::Sender<BytesBuffer>>);
+struct ReadBufferHandoff(Option<oneshot::Sender<BytesBuffer>>);
 
-impl BufferReturn {
-    fn return_buffer(self, buffer: BytesBuffer) {
+impl ReadBufferHandoff {
+    fn return_to_reader(self, buffer: BytesBuffer) {
         if let Some(sender) = self.0 {
             let _ = sender.send(buffer);
         }
@@ -1565,7 +1565,7 @@ async fn receive_connected_stream(
             bytes_read,
             peer_addr,
             process_origin,
-            buffer_return: BufferReturn(Some(buffer_sender)),
+            buffer_handoff: ReadBufferHandoff(Some(buffer_sender)),
         };
 
         if packets_tx.send(Ok(received)).await.is_err() {
@@ -1611,7 +1611,7 @@ async fn receive_connectionless_stream(
                     bytes_read,
                     peer_addr,
                     process_origin,
-                    buffer_return: BufferReturn(None),
+                    buffer_handoff: ReadBufferHandoff(None),
                 })
             }
             Err(error) => {
@@ -1698,7 +1698,7 @@ async fn drive_datagram_decoder(
                     bytes_read,
                     peer_addr,
                     process_origin,
-                    buffer_return,
+                    buffer_handoff,
                 } = match result {
                     Ok(received) => received,
                     Err(error) => {
@@ -1781,7 +1781,7 @@ async fn drive_datagram_decoder(
                     }
                 }
 
-                buffer_return.return_buffer(buffer);
+                buffer_handoff.return_to_reader(buffer);
             }
             _ = buffer_flush.tick() => {
                 if let (Some(event_buffer), Some(listen_addr)) =
@@ -1889,7 +1889,7 @@ async fn drive_decoder(
                         bytes_read,
                         peer_addr,
                         process_origin,
-                        buffer_return,
+                        buffer_handoff,
                     } = received;
                     let io_buffer = &mut buffer;
                     if process_origin.is_some() {
@@ -1930,7 +1930,7 @@ async fn drive_decoder(
                         metrics.framing_errors().increment(1);
                         debug!(%listen_addr, %peer_addr, "DogStatsD named pipe frame exceeded the configured buffer size. Dropping frame.");
                         io_buffer.clear();
-                        buffer_return.return_buffer(buffer);
+                        buffer_handoff.return_to_reader(buffer);
                         continue 'read;
                     }
 
@@ -2008,7 +2008,7 @@ async fn drive_decoder(
                         }
                     }
 
-                    buffer_return.return_buffer(buffer);
+                    buffer_handoff.return_to_reader(buffer);
                 },
                 Some(Err(e)) => {
                     metrics.packet_receive_failure().increment(1);
@@ -3458,9 +3458,9 @@ mod tests {
             .expect("first read should succeed");
         assert_eq!(first.buffer.chunk(), b"partial");
         let ReceivedBuffer {
-            buffer, buffer_return, ..
+            buffer, buffer_handoff, ..
         } = first;
-        buffer_return.return_buffer(buffer);
+        buffer_handoff.return_to_reader(buffer);
 
         sender.write_all(b"-frame").await.expect("second payload should send");
         let second = timeout(Duration::from_secs(1), packets_rx.recv())
@@ -3471,9 +3471,9 @@ mod tests {
         assert_eq!(second.bytes_read, b"-frame".len());
         assert_eq!(second.buffer.chunk(), b"partial-frame");
         let ReceivedBuffer {
-            buffer, buffer_return, ..
+            buffer, buffer_handoff, ..
         } = second;
-        buffer_return.return_buffer(buffer);
+        buffer_handoff.return_to_reader(buffer);
 
         drop(packets_rx);
         timeout(Duration::from_secs(1), reader)
