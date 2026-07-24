@@ -14,7 +14,7 @@ use std::{
 
 use futures::StreamExt as _;
 use saluki_error::{generic_error, GenericError};
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Gauge, Histogram};
 use tokio::{pin, time::Instant};
 use tokio::{
     select,
@@ -87,20 +87,18 @@ enum HealthState {
     Dead,
 }
 
-static_metrics!(
-    name => Telemetry,
-    prefix => health,
-    labels => [component_id: Arc<str>],
-    metrics => [
-        gauge(component_ready),
-        gauge(component_live),
-        trace_histogram(component_liveness_latency_seconds),
-    ]
-);
+#[static_metrics(prefix = "health", labels(component_id))]
+#[derive(Clone)]
+struct Telemetry {
+    component_ready: Gauge,
+    component_live: Gauge,
+    #[metric(level = trace)]
+    component_liveness_latency_seconds: Histogram,
+}
 
 impl Telemetry {
-    fn from_name(name: String) -> Self {
-        Self::new(Arc::from(name))
+    fn from_name(name: &SubsystemIdentifier) -> Self {
+        Self::new(name)
     }
 
     fn update_readiness(&self, ready: bool) {
@@ -140,7 +138,7 @@ impl ComponentState {
     ) -> (Self, Health) {
         let shared = Arc::new(SharedComponentState {
             ready: AtomicBool::new(false),
-            telemetry: Telemetry::from_name(name.to_string()),
+            telemetry: Telemetry::from_name(&name),
         });
         let (request_tx, request_rx) = mpsc::channel(1);
 

@@ -1,0 +1,5 @@
+error: expected `struct`
+ --> tests/macros/07_not_a_struct.rs:4:1
+  |
+4 | enum Metrics {
+  | ^^^^

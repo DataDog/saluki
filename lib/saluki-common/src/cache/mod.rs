@@ -1,8 +1,7 @@
 use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use saluki_error::GenericError;
-use saluki_metrics::reexport::metrics::Counter;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Gauge, Histogram};
 use tokio::time::sleep;
 use tokio_util::sync::{CancellationToken, DropGuard};
 use tracing::debug;
@@ -17,22 +16,23 @@ use self::weight::{ItemCountWeighter, Weighter, WrappedWeighter};
 
 type RawCache<K, V, W, H> = quick_cache::sync::Cache<K, V, WrappedWeighter<W>, H, ExpiryCapableLifecycle<K>>;
 
-static_metrics! {
-    name => Telemetry,
-    prefix => cache,
-    labels => [cache_id: String],
-    metrics => [
-        gauge(current_items),
-        gauge(current_weight),
-        gauge(weight_limit),
-        counter(hits_total),
-        counter(misses_total),
-        counter(items_evicted_total),
-        debug_counter(items_inserted_total),
-        debug_counter(items_removed_total),
-        debug_counter(items_expired_total),
-        trace_histogram(items_expired_batch_size),
-    ],
+#[static_metrics(prefix = "cache", labels(cache_id))]
+#[derive(Clone)]
+struct Telemetry {
+    current_items: Gauge,
+    current_weight: Gauge,
+    weight_limit: Gauge,
+    hits_total: Counter,
+    misses_total: Counter,
+    items_evicted_total: Counter,
+    #[metric(level = debug)]
+    items_inserted_total: Counter,
+    #[metric(level = debug)]
+    items_removed_total: Counter,
+    #[metric(level = debug)]
+    items_expired_total: Counter,
+    #[metric(level = trace)]
+    items_expired_batch_size: Histogram,
 }
 
 struct InnerCache<K, V, W, H> {

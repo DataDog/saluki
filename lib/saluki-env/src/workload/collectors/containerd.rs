@@ -8,7 +8,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use saluki_error::GenericError;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter};
 use stringtheory::interning::{GenericMapInterner, Interner as _};
 use tokio::{select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
@@ -25,17 +25,14 @@ use crate::workload::{
 
 static CONTAINERD_WATCH_EVENTS: &[ContainerdTopic] = &[ContainerdTopic::TaskStarted, ContainerdTopic::TaskDeleted];
 
-static_metrics!(
-   name => Telemetry,
-   prefix => containerd_metadata_collector,
-   labels => [namespace: String],
-   metrics => [
-       counter(rpc_errors_total),
-       counter(intern_failed_total),
-       counter(events_task_started_total),
-       counter(events_task_deleted_total),
-   ],
-);
+#[static_metrics(prefix = "containerd_metadata_collector", labels(namespace))]
+#[derive(Clone)]
+struct Telemetry {
+    rpc_errors_total: Counter,
+    intern_failed_total: Counter,
+    events_task_started_total: Counter,
+    events_task_deleted_total: Counter,
+}
 
 /// A metadata collector that watches for updates from containerd.
 pub struct ContainerdMetadataCollector {
@@ -122,7 +119,7 @@ struct NamespaceWatcher {
 
 impl NamespaceWatcher {
     fn new(client: ContainerdClient, namespace: Namespace, tag_interner: GenericMapInterner) -> Self {
-        let telemetry = Telemetry::new(namespace.name.clone());
+        let telemetry = Telemetry::new(&namespace.name);
         Self {
             client,
             namespace,

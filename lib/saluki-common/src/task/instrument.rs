@@ -5,17 +5,16 @@ use std::{
 };
 
 use pin_project::pin_project;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Histogram};
 
-static_metrics!(
-   name => Telemetry,
-   prefix => runtime_task,
-   labels => [task_name: String],
-   metrics => [
-       debug_counter(poll_count),
-       trace_histogram(poll_duration_seconds),
-   ],
-);
+#[static_metrics(prefix = "runtime_task", labels(task_name))]
+#[derive(Clone)]
+struct Telemetry {
+    #[metric(level = debug)]
+    poll_count: Counter,
+    #[metric(level = trace)]
+    poll_duration_seconds: Histogram,
+}
 
 /// Helper trait for instrumenting futures that are run as asynchronous tasks.
 pub trait TaskInstrument {
@@ -69,6 +68,7 @@ where
         let result = this.inner.poll(cx);
         let poll_duration = poll_start.elapsed();
 
+        this.telemetry.poll_count.increment(1);
         this.telemetry.poll_duration_seconds.record(poll_duration.as_secs_f64());
 
         result

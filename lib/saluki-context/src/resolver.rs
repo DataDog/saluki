@@ -6,7 +6,7 @@ use saluki_common::{
     hash::NoopU64BuildHasher,
 };
 use saluki_error::{generic_error, GenericError};
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Gauge};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     CheapMetaString, MetaString,
@@ -32,23 +32,23 @@ const SEEN_HASHSET_INITIAL_CAPACITY: usize = 128;
 type ContextCache = Cache<ContextKey, Context, ItemCountWeighter, NoopU64BuildHasher>;
 type TagSetCache = Cache<TagSetKey, SharedTagSet, ItemCountWeighter, NoopU64BuildHasher>;
 
-static_metrics! {
-    name => Telemetry,
-    prefix => context_resolver,
-    labels => [resolver_id: String],
-    metrics => [
-        gauge(interner_capacity_bytes),
-        gauge(interner_len_bytes),
-        gauge(interner_entries),
-        debug_counter(intern_fallback_total),
-
-        debug_counter(resolved_existing_context_total),
-        debug_counter(resolved_new_context_total),
-        gauge(active_contexts),
-
-        debug_counter(resolved_existing_tagset_total),
-        debug_counter(resolved_new_tagset_total),
-    ],
+#[static_metrics(prefix = "context_resolver", labels(resolver_id))]
+#[derive(Clone)]
+struct Telemetry {
+    interner_capacity_bytes: Gauge,
+    interner_len_bytes: Gauge,
+    interner_entries: Gauge,
+    #[metric(level = debug)]
+    intern_fallback_total: Counter,
+    #[metric(level = debug)]
+    resolved_existing_context_total: Counter,
+    #[metric(level = debug)]
+    resolved_new_context_total: Counter,
+    active_contexts: Gauge,
+    #[metric(level = debug)]
+    resolved_existing_tagset_total: Counter,
+    #[metric(level = debug)]
+    resolved_new_tagset_total: Counter,
 }
 
 /// Builder for creating a [`ContextResolver`].
@@ -257,7 +257,7 @@ impl ContextResolverBuilder {
 
         let allow_heap_allocations = self.allow_heap_allocations.unwrap_or(true);
 
-        let telemetry = Telemetry::new(self.name.clone());
+        let telemetry = Telemetry::new(&self.name);
         telemetry
             .interner_capacity_bytes()
             .set(interner.capacity_bytes() as f64);

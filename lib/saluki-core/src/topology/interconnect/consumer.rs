@@ -1,22 +1,20 @@
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Histogram};
 use tokio::sync::mpsc;
 
 use super::Dispatchable;
 use crate::components::ComponentContext;
 
-static_metrics!(
-    name => ConsumerMetrics,
-    prefix => component,
-    labels => [component_id: String, component_type: &'static str],
-    metrics => [
-        counter(events_received_total),
-        trace_histogram(events_received_size),
-    ],
-);
+#[static_metrics(prefix = "component", labels(component_id, component_type))]
+#[derive(Clone)]
+struct ConsumerMetrics {
+    events_received_total: Counter,
+    #[metric(level = trace)]
+    events_received_size: Histogram,
+}
 
 impl ConsumerMetrics {
     fn from_component_context(context: ComponentContext) -> Self {
-        Self::new(context.component_id().to_string(), context.component_type().as_str())
+        Self::new(context.component_id(), context.component_type().as_str())
     }
 }
 

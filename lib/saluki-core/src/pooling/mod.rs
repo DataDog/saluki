@@ -2,7 +2,7 @@
 use std::{future::Future, sync::Arc};
 
 mod elastic;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Gauge};
 
 pub use self::elastic::ElasticObjectPool;
 
@@ -61,16 +61,13 @@ pub trait ObjectPool: Send + Sync {
     fn acquire(&self) -> Self::AcquireFuture;
 }
 
-static_metrics! {
-    name => PoolMetrics,
-    prefix => object_pool,
-    labels => [pool_name: String],
-    metrics => [
-        counter(created),
-        counter(acquired),
-        counter(released),
-        counter(deleted),
-        gauge(capacity),
-        gauge(in_use),
-    ],
+#[static_metrics(prefix = "object_pool", labels(pool_name))]
+#[derive(Clone)]
+struct PoolMetrics {
+    created: Counter,
+    acquired: Counter,
+    released: Counter,
+    deleted: Counter,
+    capacity: Gauge,
+    in_use: Gauge,
 }

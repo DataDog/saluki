@@ -8,7 +8,7 @@ use std::time::Duration;
 use saluki_common::cache::{Cache, CacheBuilder};
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Gauge};
 use stringtheory::interning::GenericMapInterner;
 #[cfg(target_os = "linux")]
 use tokio::time::sleep;
@@ -19,14 +19,12 @@ use tracing::{debug, trace};
 use crate::workload::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
 use crate::{features::FeatureDetector, workload::EntityId};
 
-static_metrics! {
-    name => Telemetry,
-    prefix => pid_resolver,
-    metrics => [
-        gauge(interner_capacity_bytes),
-        gauge(interner_len_bytes),
-        gauge(interner_entries),
-    ],
+#[static_metrics(prefix = "pid_resolver")]
+#[derive(Clone)]
+struct Telemetry {
+    interner_capacity_bytes: Gauge,
+    interner_len_bytes: Gauge,
+    interner_entries: Gauge,
 }
 
 #[cfg(target_os = "linux")]
