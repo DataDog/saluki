@@ -81,7 +81,7 @@ static DOGSTATSD_BUFFER_COUNT_MAX_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_buffer_count_max",
     env_vars: &[],
     value_type: ValueType::Integer,
-    default: Some("256"),
+    default: Some("32768"),
 };
 
 crate::declare_annotations! {

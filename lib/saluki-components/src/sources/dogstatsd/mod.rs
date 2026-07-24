@@ -135,7 +135,8 @@ const fn default_buffer_count() -> usize {
 }
 
 const fn default_buffer_count_max() -> usize {
-    256
+    // Temporary ceiling for testing with the Core Agent's default 256 MiB receive backlog.
+    32768
 }
 
 const fn default_port() -> u16 {
@@ -308,7 +309,7 @@ pub struct DogStatsDConfiguration {
     /// The pool never holds fewer buffers than `dogstatsd_buffer_count`, so a value below the baseline is treated as
     /// equal to it.
     ///
-    /// Defaults to 256, or `dogstatsd_buffer_count` if that is larger.
+    /// Defaults to 32768 for burst testing, or `dogstatsd_buffer_count` if that is larger.
     #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
     buffer_count_max: usize,
 
@@ -2805,8 +2806,8 @@ mod tests {
     fn effective_max_buffer_count_never_below_baseline() {
         // A legacy config that only raised `dogstatsd_buffer_count` keeps its full capacity rather than being capped
         // to the `dogstatsd_buffer_count_max` default.
-        let legacy = deser_config(r#"{"dogstatsd_buffer_count": 1024}"#);
-        assert_eq!(legacy.effective_max_buffer_count(), 1024);
+        let legacy = deser_config(r#"{"dogstatsd_buffer_count": 65536}"#);
+        assert_eq!(legacy.effective_max_buffer_count(), 65536);
 
         // An explicit maximum above the baseline is honored as-is.
         let explicit = deser_config(r#"{"dogstatsd_buffer_count": 128, "dogstatsd_buffer_count_max": 512}"#);
