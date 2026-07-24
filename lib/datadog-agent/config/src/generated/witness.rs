@@ -235,64 +235,32 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_api_key(config.api_key.clone());
     consumer.consume_apm_config_compute_stats_by_span_kind(config.apm_config.compute_stats_by_span_kind.clone());
     consumer.consume_apm_config_enable_rare_sampler(config.apm_config.enable_rare_sampler.clone());
-    consumer.consume_apm_config_error_tracking_standalone_enabled(
-        config.apm_config.error_tracking_standalone.enabled.clone(),
-    );
+    consumer.consume_apm_config_error_tracking_standalone_enabled(config.apm_config.error_tracking_standalone.enabled.clone());
     consumer.consume_apm_config_errors_per_second(config.apm_config.errors_per_second.clone());
-    consumer.consume_apm_config_obfuscation_credit_cards_enabled(
-        config.apm_config.obfuscation.credit_cards.enabled.clone(),
-    );
-    consumer.consume_apm_config_obfuscation_credit_cards_keep_values(
-        config.apm_config.obfuscation.credit_cards.keep_values.clone(),
-    );
+    consumer.consume_apm_config_obfuscation_credit_cards_enabled(config.apm_config.obfuscation.credit_cards.enabled.clone());
+    consumer.consume_apm_config_obfuscation_credit_cards_keep_values(config.apm_config.obfuscation.credit_cards.keep_values.clone());
     consumer.consume_apm_config_obfuscation_credit_cards_luhn(config.apm_config.obfuscation.credit_cards.luhn.clone());
-    consumer.consume_apm_config_obfuscation_elasticsearch_enabled(
-        config.apm_config.obfuscation.elasticsearch.enabled.clone(),
-    );
-    consumer.consume_apm_config_obfuscation_elasticsearch_keep_values(
-        config.apm_config.obfuscation.elasticsearch.keep_values.clone(),
-    );
-    consumer.consume_apm_config_obfuscation_elasticsearch_obfuscate_sql_values(
-        config.apm_config.obfuscation.elasticsearch.obfuscate_sql_values.clone(),
-    );
-    consumer.consume_apm_config_obfuscation_http_remove_paths_with_digits(
-        config.apm_config.obfuscation.http.remove_paths_with_digits.clone(),
-    );
-    consumer.consume_apm_config_obfuscation_http_remove_query_string(
-        config.apm_config.obfuscation.http.remove_query_string.clone(),
-    );
+    consumer.consume_apm_config_obfuscation_elasticsearch_enabled(config.apm_config.obfuscation.elasticsearch.enabled.clone());
+    consumer.consume_apm_config_obfuscation_elasticsearch_keep_values(config.apm_config.obfuscation.elasticsearch.keep_values.clone());
+    consumer.consume_apm_config_obfuscation_elasticsearch_obfuscate_sql_values(config.apm_config.obfuscation.elasticsearch.obfuscate_sql_values.clone());
+    consumer.consume_apm_config_obfuscation_http_remove_paths_with_digits(config.apm_config.obfuscation.http.remove_paths_with_digits.clone());
+    consumer.consume_apm_config_obfuscation_http_remove_query_string(config.apm_config.obfuscation.http.remove_query_string.clone());
     consumer.consume_apm_config_obfuscation_memcached_enabled(config.apm_config.obfuscation.memcached.enabled.clone());
-    consumer.consume_apm_config_obfuscation_memcached_keep_command(
-        config.apm_config.obfuscation.memcached.keep_command.clone(),
-    );
+    consumer.consume_apm_config_obfuscation_memcached_keep_command(config.apm_config.obfuscation.memcached.keep_command.clone());
     consumer.consume_apm_config_obfuscation_mongodb_enabled(config.apm_config.obfuscation.mongodb.enabled.clone());
-    consumer
-        .consume_apm_config_obfuscation_mongodb_keep_values(config.apm_config.obfuscation.mongodb.keep_values.clone());
-    consumer.consume_apm_config_obfuscation_mongodb_obfuscate_sql_values(
-        config.apm_config.obfuscation.mongodb.obfuscate_sql_values.clone(),
-    );
-    consumer
-        .consume_apm_config_obfuscation_opensearch_enabled(config.apm_config.obfuscation.opensearch.enabled.clone());
-    consumer.consume_apm_config_obfuscation_opensearch_keep_values(
-        config.apm_config.obfuscation.opensearch.keep_values.clone(),
-    );
-    consumer.consume_apm_config_obfuscation_opensearch_obfuscate_sql_values(
-        config.apm_config.obfuscation.opensearch.obfuscate_sql_values.clone(),
-    );
+    consumer.consume_apm_config_obfuscation_mongodb_keep_values(config.apm_config.obfuscation.mongodb.keep_values.clone());
+    consumer.consume_apm_config_obfuscation_mongodb_obfuscate_sql_values(config.apm_config.obfuscation.mongodb.obfuscate_sql_values.clone());
+    consumer.consume_apm_config_obfuscation_opensearch_enabled(config.apm_config.obfuscation.opensearch.enabled.clone());
+    consumer.consume_apm_config_obfuscation_opensearch_keep_values(config.apm_config.obfuscation.opensearch.keep_values.clone());
+    consumer.consume_apm_config_obfuscation_opensearch_obfuscate_sql_values(config.apm_config.obfuscation.opensearch.obfuscate_sql_values.clone());
     consumer.consume_apm_config_obfuscation_redis_enabled(config.apm_config.obfuscation.redis.enabled.clone());
-    consumer.consume_apm_config_obfuscation_redis_remove_all_args(
-        config.apm_config.obfuscation.redis.remove_all_args.clone(),
-    );
+    consumer.consume_apm_config_obfuscation_redis_remove_all_args(config.apm_config.obfuscation.redis.remove_all_args.clone());
     consumer.consume_apm_config_obfuscation_valkey_enabled(config.apm_config.obfuscation.valkey.enabled.clone());
-    consumer.consume_apm_config_obfuscation_valkey_remove_all_args(
-        config.apm_config.obfuscation.valkey.remove_all_args.clone(),
-    );
+    consumer.consume_apm_config_obfuscation_valkey_remove_all_args(config.apm_config.obfuscation.valkey.remove_all_args.clone());
     consumer.consume_apm_config_peer_tags(config.apm_config.peer_tags.clone());
     consumer.consume_apm_config_peer_tags_aggregation(config.apm_config.peer_tags_aggregation.clone());
     consumer.consume_apm_config_probabilistic_sampler_enabled(config.apm_config.probabilistic_sampler.enabled.clone());
-    consumer.consume_apm_config_probabilistic_sampler_sampling_percentage(
-        config.apm_config.probabilistic_sampler.sampling_percentage.clone(),
-    );
+    consumer.consume_apm_config_probabilistic_sampler_sampling_percentage(config.apm_config.probabilistic_sampler.sampling_percentage.clone());
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
     consumer.consume_autoscaling_failover_enabled(config.autoscaling.failover.enabled.clone());
     consumer.consume_autoscaling_failover_metrics(config.autoscaling.failover.metrics.clone());
@@ -305,9 +273,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_cri_connection_timeout(config.cri_connection_timeout.clone());
     consumer.consume_cri_query_timeout(config.cri_query_timeout.clone());
     consumer.consume_data_plane_api_listen_address(config.data_plane.api_listen_address.clone());
-    consumer.consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(
-        config.data_plane.dogstatsd.aggregator_tag_filter_cache_capacity.clone(),
-    );
+    consumer.consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(config.data_plane.dogstatsd.aggregator_tag_filter_cache_capacity.clone());
     consumer.consume_data_plane_dogstatsd_enabled(config.data_plane.dogstatsd.enabled.clone());
     consumer.consume_data_plane_enabled(config.data_plane.enabled.clone());
     consumer.consume_data_plane_log_file(config.data_plane.log_file.clone());
@@ -315,14 +281,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_data_plane_otlp_proxy_enabled(config.data_plane.otlp.proxy.enabled.clone());
     consumer.consume_data_plane_otlp_proxy_logs_enabled(config.data_plane.otlp.proxy.logs.enabled.clone());
     consumer.consume_data_plane_otlp_proxy_metrics_enabled(config.data_plane.otlp.proxy.metrics.enabled.clone());
-    consumer.consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(
-        config.data_plane.otlp.proxy.receiver.protocols.grpc.endpoint.clone(),
-    );
+    consumer.consume_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint(config.data_plane.otlp.proxy.receiver.protocols.grpc.endpoint.clone());
     consumer.consume_data_plane_otlp_proxy_traces_enabled(config.data_plane.otlp.proxy.traces.enabled.clone());
     consumer.consume_data_plane_remote_agent_enabled(config.data_plane.remote_agent_enabled.clone());
     consumer.consume_data_plane_secure_api_listen_address(config.data_plane.secure_api_listen_address.clone());
-    consumer
-        .consume_data_plane_use_new_config_stream_endpoint(config.data_plane.use_new_config_stream_endpoint.clone());
+    consumer.consume_data_plane_use_new_config_stream_endpoint(config.data_plane.use_new_config_stream_endpoint.clone());
     consumer.consume_dd_url(config.dd_url.clone());
     consumer.consume_disable_file_logging(config.disable_file_logging.clone());
     consumer.consume_dogstatsd_buffer_size(config.dogstatsd_buffer_size.clone());
@@ -355,8 +318,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_dogstatsd_string_interner_size(config.dogstatsd_string_interner_size.clone());
     consumer.consume_dogstatsd_tag_cardinality(config.dogstatsd_tag_cardinality.clone());
     consumer.consume_dogstatsd_tags(config.dogstatsd_tags.clone());
-    consumer
-        .consume_dogstatsd_windows_pipe_security_descriptor(config.dogstatsd_windows_pipe_security_descriptor.clone());
+    consumer.consume_dogstatsd_windows_pipe_security_descriptor(config.dogstatsd_windows_pipe_security_descriptor.clone());
     consumer.consume_enable_payloads_events(config.enable_payloads.events.clone());
     consumer.consume_enable_payloads_series(config.enable_payloads.series.clone());
     consumer.consume_enable_payloads_service_checks(config.enable_payloads.service_checks.clone());
@@ -376,9 +338,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_forwarder_outdated_file_in_days(config.forwarder_outdated_file_in_days.clone());
     consumer.consume_forwarder_recovery_interval(config.forwarder_recovery_interval.clone());
     consumer.consume_forwarder_recovery_reset(config.forwarder_recovery_reset.clone());
-    consumer.consume_forwarder_retry_queue_capacity_time_interval_sec(
-        config.forwarder_retry_queue_capacity_time_interval_sec.clone(),
-    );
+    consumer.consume_forwarder_retry_queue_capacity_time_interval_sec(config.forwarder_retry_queue_capacity_time_interval_sec.clone());
     consumer.consume_forwarder_retry_queue_max_size(config.forwarder_retry_queue_max_size.clone());
     consumer.consume_forwarder_retry_queue_payloads_max_size(config.forwarder_retry_queue_payloads_max_size.clone());
     consumer.consume_forwarder_stop_timeout(config.forwarder_stop_timeout.clone());
@@ -409,101 +369,44 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_multi_region_failover_metric_allowlist(config.multi_region_failover.metric_allowlist.clone());
     consumer.consume_multi_region_failover_site(config.multi_region_failover.site.clone());
     consumer.consume_no_proxy_nonexact_match(config.no_proxy_nonexact_match.clone());
-    consumer.consume_observability_pipelines_worker_metrics_enabled(
-        config.observability_pipelines_worker.metrics.enabled.clone(),
-    );
-    consumer
-        .consume_observability_pipelines_worker_metrics_url(config.observability_pipelines_worker.metrics.url.clone());
-    consumer.consume_observability_pipelines_worker_metrics_use_v3_api_series(
-        config.observability_pipelines_worker.metrics.use_v3_api.series.clone(),
-    );
+    consumer.consume_observability_pipelines_worker_metrics_enabled(config.observability_pipelines_worker.metrics.enabled.clone());
+    consumer.consume_observability_pipelines_worker_metrics_url(config.observability_pipelines_worker.metrics.url.clone());
+    consumer.consume_observability_pipelines_worker_metrics_use_v3_api_series(config.observability_pipelines_worker.metrics.use_v3_api.series.clone());
     consumer.consume_origin_detection_unified(config.origin_detection_unified.clone());
     consumer.consume_otlp_config_logs_enabled(config.otlp_config.logs.enabled.clone());
     consumer.consume_otlp_config_metrics_enabled(config.otlp_config.metrics.enabled.clone());
     consumer.consume_otlp_config_metrics_histograms_mode(config.otlp_config.metrics.histograms.mode.clone());
-    consumer.consume_otlp_config_metrics_histograms_send_aggregation_metrics(
-        config.otlp_config.metrics.histograms.send_aggregation_metrics.clone(),
-    );
-    consumer.consume_otlp_config_metrics_resource_attributes_as_tags(
-        config.otlp_config.metrics.resource_attributes_as_tags.clone(),
-    );
+    consumer.consume_otlp_config_metrics_histograms_send_aggregation_metrics(config.otlp_config.metrics.histograms.send_aggregation_metrics.clone());
+    consumer.consume_otlp_config_metrics_resource_attributes_as_tags(config.otlp_config.metrics.resource_attributes_as_tags.clone());
     consumer.consume_otlp_config_metrics_summaries_mode(config.otlp_config.metrics.summaries.mode.clone());
-    consumer.consume_otlp_config_metrics_sums_cumulative_monotonic_mode(
-        config.otlp_config.metrics.sums.cumulative_monotonic_mode.clone(),
-    );
-    consumer.consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(
-        config
-            .otlp_config
-            .metrics
-            .sums
-            .initial_cumulative_monotonic_value
-            .clone(),
-    );
+    consumer.consume_otlp_config_metrics_sums_cumulative_monotonic_mode(config.otlp_config.metrics.sums.cumulative_monotonic_mode.clone());
+    consumer.consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(config.otlp_config.metrics.sums.initial_cumulative_monotonic_value.clone());
     consumer.consume_otlp_config_metrics_tags(config.otlp_config.metrics.tags.clone());
-    consumer.consume_otlp_config_receiver_protocols_grpc_endpoint(
-        config.otlp_config.receiver.protocols.grpc.endpoint.clone(),
-    );
-    consumer.consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(
-        config.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib.clone(),
-    );
-    consumer.consume_otlp_config_receiver_protocols_grpc_transport(
-        config.otlp_config.receiver.protocols.grpc.transport.clone(),
-    );
-    consumer.consume_otlp_config_receiver_protocols_http_endpoint(
-        config.otlp_config.receiver.protocols.http.endpoint.clone(),
-    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_endpoint(config.otlp_config.receiver.protocols.grpc.endpoint.clone());
+    consumer.consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(config.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib.clone());
+    consumer.consume_otlp_config_receiver_protocols_grpc_transport(config.otlp_config.receiver.protocols.grpc.transport.clone());
+    consumer.consume_otlp_config_receiver_protocols_http_endpoint(config.otlp_config.receiver.protocols.http.endpoint.clone());
     consumer.consume_otlp_config_traces_enabled(config.otlp_config.traces.enabled.clone());
     consumer.consume_otlp_config_traces_internal_port(config.otlp_config.traces.internal_port.clone());
-    consumer.consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(
-        config
-            .otlp_config
-            .traces
-            .probabilistic_sampler
-            .sampling_percentage
-            .clone(),
-    );
+    consumer.consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(config.otlp_config.traces.probabilistic_sampler.sampling_percentage.clone());
     consumer.consume_provider_kind(config.provider_kind.clone());
     consumer.consume_proxy_http(config.proxy.http.clone());
     consumer.consume_proxy_https(config.proxy.https.clone());
     consumer.consume_proxy_no_proxy(config.proxy.no_proxy.clone());
     consumer.consume_serializer_compressor_kind(config.serializer_compressor_kind.clone());
-    consumer.consume_serializer_experimental_use_v3_api_compression_level(
-        config.serializer_experimental_use_v3_api.compression_level.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_beta_route(
-        config.serializer_experimental_use_v3_api.series.beta_route.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_endpoints(
-        config.serializer_experimental_use_v3_api.series.endpoints.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_shadow_sample_rate(
-        config
-            .serializer_experimental_use_v3_api
-            .series
-            .shadow_sample_rate
-            .clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_shadow_sites(
-        config.serializer_experimental_use_v3_api.series.shadow_sites.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_use_beta(
-        config.serializer_experimental_use_v3_api.series.use_beta.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_validate(
-        config.serializer_experimental_use_v3_api.series.validate.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(
-        config.serializer_experimental_use_v3_api.sketches.endpoints.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_sketches_validate(
-        config.serializer_experimental_use_v3_api.sketches.validate.clone(),
-    );
+    consumer.consume_serializer_experimental_use_v3_api_compression_level(config.serializer_experimental_use_v3_api.compression_level.clone());
+    consumer.consume_serializer_experimental_use_v3_api_series_beta_route(config.serializer_experimental_use_v3_api.series.beta_route.clone());
+    consumer.consume_serializer_experimental_use_v3_api_series_endpoints(config.serializer_experimental_use_v3_api.series.endpoints.clone());
+    consumer.consume_serializer_experimental_use_v3_api_series_shadow_sample_rate(config.serializer_experimental_use_v3_api.series.shadow_sample_rate.clone());
+    consumer.consume_serializer_experimental_use_v3_api_series_shadow_sites(config.serializer_experimental_use_v3_api.series.shadow_sites.clone());
+    consumer.consume_serializer_experimental_use_v3_api_series_use_beta(config.serializer_experimental_use_v3_api.series.use_beta.clone());
+    consumer.consume_serializer_experimental_use_v3_api_series_validate(config.serializer_experimental_use_v3_api.series.validate.clone());
+    consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(config.serializer_experimental_use_v3_api.sketches.endpoints.clone());
+    consumer.consume_serializer_experimental_use_v3_api_sketches_validate(config.serializer_experimental_use_v3_api.sketches.validate.clone());
     consumer.consume_serializer_max_payload_size(config.serializer_max_payload_size.clone());
     consumer.consume_serializer_max_series_payload_size(config.serializer_max_series_payload_size.clone());
     consumer.consume_serializer_max_series_points_per_payload(config.serializer_max_series_points_per_payload.clone());
-    consumer.consume_serializer_max_series_uncompressed_payload_size(
-        config.serializer_max_series_uncompressed_payload_size.clone(),
-    );
+    consumer.consume_serializer_max_series_uncompressed_payload_size(config.serializer_max_series_uncompressed_payload_size.clone());
     consumer.consume_serializer_max_uncompressed_payload_size(config.serializer_max_uncompressed_payload_size.clone());
     consumer.consume_serializer_zstd_compressor_level(config.serializer_zstd_compressor_level.clone());
     consumer.consume_site(config.site.clone());

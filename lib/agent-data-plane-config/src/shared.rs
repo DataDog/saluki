@@ -186,8 +186,8 @@ pub struct Forwarder {
     /// Maximum total size, in bytes, of payloads held in the retry queue.
     pub retry_queue_payloads_max_size: Option<u64>,
 
-    /// Grace period, in seconds, the forwarder is given to drain before shutdown.
-    pub stop_timeout: u64,
+    /// Grace period, configured in seconds, the forwarder is given to drain before shutdown.
+    pub stop_timeout: Duration,
 
     /// Fraction of available disk the on-disk retry store may use.
     pub storage_max_disk_ratio: f64,

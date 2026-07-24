@@ -9,8 +9,6 @@ use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::Supervisor;
 use saluki_error::GenericError;
 
-use crate::config::DataPlaneConfiguration;
-
 mod config_internal;
 
 mod control_plane;
@@ -41,10 +39,9 @@ mod telemetry;
 ///
 /// If the supervisor can't be created, an error is returned.
 pub async fn create_internal_supervisor(
-    config: &ConfigurationSystem, dp_config: &DataPlaneConfiguration, component_registry: &ComponentRegistry,
-    health_registry: HealthRegistry, control_surfaces: TopologyControlSurfaces,
-    ra_bootstrap: Option<RemoteAgentBootstrap>, logging_controller: LoggingOverrideController,
-    current_config: Arc<ArcSwap<SalukiConfiguration>>,
+    config: &ConfigurationSystem, component_registry: &ComponentRegistry, health_registry: HealthRegistry,
+    control_surfaces: TopologyControlSurfaces, ra_bootstrap: Option<RemoteAgentBootstrap>,
+    logging_controller: LoggingOverrideController, current_config: Arc<ArcSwap<SalukiConfiguration>>,
 ) -> Result<Supervisor, GenericError> {
     // The root supervisor runs in ambient mode (caller's runtime) since its children each have their own
     // dedicated runtimes. The default restart strategy (one-for-one, 1 restart per 5s) applies to the child
@@ -55,7 +52,6 @@ pub async fn create_internal_supervisor(
     root.add_worker(
         create_control_plane_supervisor(
             config,
-            dp_config,
             component_registry,
             health_registry.clone(),
             control_surfaces,

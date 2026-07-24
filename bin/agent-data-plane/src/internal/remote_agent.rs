@@ -85,8 +85,8 @@ impl RemoteAgentBootstrap {
     /// # Errors
     ///
     /// If the configuration is invalid, an error is returned.
-    pub async fn from_configuration(
-        config: &GenericConfiguration, dp_config: &DataPlaneConfiguration,
+    pub async fn from_configuration<'a>(
+        config: &GenericConfiguration, dp_config: &DataPlaneConfiguration<'a>,
     ) -> Result<Self, GenericError> {
         let api_listen_addr = GrpcTargetAddress::try_from_listen_addr(dp_config.secure_api_listen_address())
             .ok_or_else(|| generic_error!("Failed to get valid gRPC target address from secure API listen address."))?;

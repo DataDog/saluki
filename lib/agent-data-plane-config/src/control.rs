@@ -4,17 +4,15 @@
 //! components. It carries pipeline activation gates, topology-shaping decisions, listen addresses,
 //! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 
+use std::time::Duration;
+
+use saluki_io::net::ListenAddress;
 use serde::Serialize;
 
-/// A network listen address (for example, `tcp://127.0.0.1:5000`, `unix:///var/run/dsd.sock`).
-///
-/// Held as the source string; the orchestration layer parses it when binding. Source-agnostic and
-/// `Default`-able (unlike `std::net::SocketAddr`), so the model can derive `Default`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct ListenAddress(pub String);
+use crate::defaults::FAKE_LISTEN_ADDRESS;
 
 /// Topology gates and orchestration decisions. Static for the process lifetime.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ControlConfiguration {
     /// Master switch for the whole data plane; when false, no pipelines are built.
     pub enabled: bool,
@@ -51,12 +49,14 @@ pub struct ControlConfiguration {
     /// Bootstrap IPC and remote-agent connection parameters.
     pub ipc: ControlIpc,
 
-    /// Grace period, in seconds, the aggregator is given to flush before shutdown.
-    pub aggregator_stop_timeout: u64,
+    /// Grace period, configured in seconds, the aggregator is given to flush before shutdown.
+    pub aggregator_stop_timeout: Duration,
 
-    /// Grace period, in seconds, for the whole topology to shut down. (not in Datadog Agent config
-    /// schema)
-    pub stop_timeout: u64,
+    /// Optional Saluki-only override for the topology shutdown grace period, in seconds.
+    ///
+    /// Defaults to `None`. When absent, the topology timeout is the sum of
+    /// `aggregator_stop_timeout` and `forwarder_stop_timeout`.
+    pub stop_timeout_seconds: Option<u64>,
 
     /// Process memory ceiling, in bytes. (not in Datadog Agent config schema)
     pub memory_limit: u64,
@@ -64,6 +64,30 @@ pub struct ControlConfiguration {
     /// Fraction of the memory limit held back as headroom during memory accounting. (not in Datadog
     /// Agent config schema)
     pub memory_slop_factor: f64,
+}
+
+impl Default for ControlConfiguration {
+    // Translation overwrites the listen addresses before publishing the configuration. Use the
+    // shared placeholder here rather than duplicating Datadog schema defaults.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dogstatsd: false,
+            checks: false,
+            otlp: false,
+            standalone_mode: false,
+            remote_agent_enabled: false,
+            use_new_config_stream_endpoint: false,
+            api_listen_address: FAKE_LISTEN_ADDRESS,
+            secure_api_listen_address: FAKE_LISTEN_ADDRESS,
+            logging: Default::default(),
+            ipc: Default::default(),
+            aggregator_stop_timeout: Default::default(),
+            stop_timeout_seconds: None,
+            memory_limit: 0,
+            memory_slop_factor: 0.0,
+        }
+    }
 }
 
 impl ControlConfiguration {

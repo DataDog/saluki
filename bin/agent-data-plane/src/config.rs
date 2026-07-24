@@ -1,99 +1,95 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
-use saluki_config::GenericConfiguration;
-use saluki_error::{generic_error, GenericError};
+use agent_data_plane_config::SalukiConfiguration;
+use datadog_agent_config::classifier::Pipeline;
 use saluki_io::net::ListenAddress;
 
 /// General data plane configuration.
+///
+/// This wrapper provides orchestration-level accessors and pipeline decisions over the typed configuration. It lives
+/// during bootstrap and topology construction and is then discarded.
 #[derive(Clone, Debug)]
-pub struct DataPlaneConfiguration {
-    enabled: bool,
-    standalone_mode: bool,
-    stop_timeout: Duration,
-    api_listen_address: ListenAddress,
-    secure_api_listen_address: ListenAddress,
-    checks: DataPlaneChecksConfiguration,
-    dogstatsd: DataPlaneDogStatsDConfiguration,
-    otlp: DataPlaneOtlpConfiguration,
+pub struct DataPlaneConfiguration<'a> {
+    config: &'a SalukiConfiguration,
 }
 
-impl DataPlaneConfiguration {
+impl<'a> DataPlaneConfiguration<'a> {
     /// Creates a new `DataPlaneConfiguration` instance from the given configuration.
-    ///
-    /// # Errors
-    ///
-    /// If the configuration can't be deserialized, an error is returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        // TODO: We're explicitly querying each individual field from the configuration because if we don't, then our
-        // environment variable overrides end up requiring double underscores to indicate nesting (i.e. we have to do
-        // `DD_DATA_PLANE__OTLP__ENABLED` instead of just `DD_DATA_PLANE_OTLP_ENABLED`). I find this personally ugly,
-        // and it would also fly in the face of environment variable naming conventions for existing Agent settings.
-        //
-        // In the future, we plan on updating `saluki-config` to allow us to support both deserializing from "native"
-        // nested data like JSON/YAML as well as with the idiomatically-named environment variables.
-        Ok(Self {
-            enabled: config.try_get_typed("data_plane.enabled")?.unwrap_or(false),
-            standalone_mode: config.try_get_typed("data_plane.standalone_mode")?.unwrap_or(false),
-            stop_timeout: topology_stop_timeout_from_configuration(config)?,
-            api_listen_address: config
-                .try_get_typed("data_plane.api_listen_address")?
-                .unwrap_or_else(|| ListenAddress::any_tcp(5100)),
-            secure_api_listen_address: config
-                .try_get_typed("data_plane.secure_api_listen_address")?
-                .unwrap_or_else(|| ListenAddress::any_tcp(5101)),
-            checks: DataPlaneChecksConfiguration::from_configuration(config)?,
-            dogstatsd: DataPlaneDogStatsDConfiguration::from_configuration(config)?,
-            otlp: DataPlaneOtlpConfiguration::from_configuration(config)?,
-        })
+    pub fn from_configuration(config: &'a SalukiConfiguration) -> Self {
+        Self { config }
     }
 
     /// Returns `true` if the data plane is enabled.
     pub const fn enabled(&self) -> bool {
-        self.enabled
+        self.config.control.enabled
     }
 
     /// Returns `true` if the data plane is running in standalone mode.
     pub const fn standalone_mode(&self) -> bool {
-        self.standalone_mode
+        self.config.control.standalone_mode
     }
 
     /// Returns the topology shutdown timeout.
-    pub const fn stop_timeout(&self) -> Duration {
-        self.stop_timeout
+    ///
+    /// Uses `data_plane.stop_timeout_seconds` when configured. Otherwise, it sums
+    /// `aggregator_stop_timeout` and `forwarder_stop_timeout`, returning 30 seconds if the sum
+    /// overflows.
+    pub fn stop_timeout(&self) -> Duration {
+        match self.config.control.stop_timeout_seconds {
+            Some(seconds) => Duration::from_secs(seconds),
+            None => self
+                .config
+                .control
+                .aggregator_stop_timeout
+                .checked_add(self.config.shared.endpoints.forwarder.stop_timeout)
+                // HACK: arbitrary fallback to make the function infallible
+                .unwrap_or(Duration::from_secs(30)),
+        }
     }
 
     /// Returns a reference to the API listen address
     ///
     /// This is also referred to as the "unprivileged" API.
     pub const fn api_listen_address(&self) -> &ListenAddress {
-        &self.api_listen_address
+        &self.config.control.api_listen_address
     }
 
     /// Returns a reference to the secure API listen address.
     ///
     /// This is also referred to as the "privileged" API.
     pub const fn secure_api_listen_address(&self) -> &ListenAddress {
-        &self.secure_api_listen_address
+        &self.config.control.secure_api_listen_address
     }
 
-    /// Returns a reference to the Checks-specific data plane configuration.
-    pub const fn checks(&self) -> &DataPlaneChecksConfiguration {
-        &self.checks
+    /// Returns `true` if Checks is enabled.
+    pub const fn checks_enabled(&self) -> bool {
+        self.config.control.checks
     }
 
-    /// Returns a reference to the DogStatsD-specific data plane configuration.
-    pub const fn dogstatsd(&self) -> &DataPlaneDogStatsDConfiguration {
-        &self.dogstatsd
+    /// Returns `true` if DogStatsD is enabled.
+    pub const fn dogstatsd_enabled(&self) -> bool {
+        self.config.control.dogstatsd
     }
 
-    /// Returns a reference to the OTLP-specific data plane configuration.
-    pub const fn otlp(&self) -> &DataPlaneOtlpConfiguration {
-        &self.otlp
+    /// Returns `true` if the OTLP pipeline is enabled.
+    pub const fn otlp_enabled(&self) -> bool {
+        self.config.control.otlp
+    }
+
+    /// Returns `true` if the OTLP proxy is enabled.
+    pub const fn otlp_proxy_enabled(&self) -> bool {
+        self.config.domains.otlp.proxy.enabled
+    }
+
+    /// Returns `true` if OTLP traces should be proxied to the Core Agent.
+    pub const fn otlp_proxy_traces_enabled(&self) -> bool {
+        self.config.domains.otlp.proxy.traces_enabled
     }
 
     /// Returns `true` if any data pipelines are enabled.
     pub const fn data_pipelines_enabled(&self) -> bool {
-        self.checks().enabled() || self.dogstatsd().enabled() || self.otlp().enabled()
+        self.checks_enabled() || self.dogstatsd_enabled() || self.otlp_enabled()
     }
 
     /// Returns `true` if the metrics pipeline is required.
@@ -105,9 +101,7 @@ impl DataPlaneConfiguration {
         // - Checks is enabled
         // - DogStatsD is enabled
         // - OTLP is enabled and not in proxy mode
-        self.checks().enabled()
-            || self.dogstatsd().enabled()
-            || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+        self.checks_enabled() || self.dogstatsd_enabled() || (self.otlp_enabled() && !self.otlp_proxy_enabled())
     }
 
     /// Returns `true` if the logs pipeline is required.
@@ -118,7 +112,7 @@ impl DataPlaneConfiguration {
         // We consider the logs pipeline to be enabled if:
         // - Checks is enabled
         // - OTLP is enabled and not in proxy mode
-        self.checks().enabled() || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+        self.checks_enabled() || (self.otlp_enabled() && !self.otlp_proxy_enabled())
     }
 
     /// Returns `true` if the events pipeline is required.
@@ -126,7 +120,7 @@ impl DataPlaneConfiguration {
     /// This indicates that the "baseline" events pipeline (encoding, forwarding) is required by higher-level data
     /// pipelines, such as Checks or DogStatsD.
     pub const fn events_pipeline_required(&self) -> bool {
-        self.checks().enabled() || self.dogstatsd().enabled()
+        self.checks_enabled() || self.dogstatsd_enabled()
     }
 
     /// Returns `true` if the service checks pipeline is required.
@@ -134,7 +128,7 @@ impl DataPlaneConfiguration {
     /// This indicates that the "baseline" service checks pipeline (encoding, forwarding) is required by higher-level
     /// data pipelines, such as Checks or DogStatsD.
     pub const fn service_checks_pipeline_required(&self) -> bool {
-        self.checks().enabled() || self.dogstatsd().enabled()
+        self.checks_enabled() || self.dogstatsd_enabled()
     }
 
     /// Returns `true` if the traces pipeline is required.
@@ -144,259 +138,53 @@ impl DataPlaneConfiguration {
     pub const fn traces_pipeline_required(&self) -> bool {
         // We consider the traces pipeline to be enabled if:
         // - OTLP is enabled and not in proxy mode or proxy mode is enabled and proxy traces are disabled
-        self.otlp().enabled() && (!self.otlp().proxy().enabled() || !self.otlp().proxy().proxy_traces())
-    }
-}
-
-fn topology_stop_timeout_from_configuration(config: &GenericConfiguration) -> Result<Duration, GenericError> {
-    if let Some(stop_timeout_secs) = config.try_get_typed::<u64>("data_plane.stop_timeout")? {
-        return Ok(Duration::from_secs(stop_timeout_secs));
+        self.otlp_enabled() && (!self.otlp_proxy_enabled() || !self.otlp_proxy_traces_enabled())
     }
 
-    let aggregator_stop_timeout_secs = config.try_get_typed::<u64>("aggregator_stop_timeout")?.unwrap_or(2);
-    let forwarder_stop_timeout_secs = config.try_get_typed::<u64>("forwarder_stop_timeout")?.unwrap_or(2);
-
-    Duration::from_secs(aggregator_stop_timeout_secs)
-        .checked_add(Duration::from_secs(forwarder_stop_timeout_secs))
-        .ok_or_else(|| generic_error!("Topology stop timeout overflowed."))
-}
-
-/// Checks-specific data plane configuration.
-#[derive(Clone, Debug)]
-pub struct DataPlaneChecksConfiguration {
-    /// Whether Checks is enabled.
-    ///
-    /// When disabled, Checks won't be started.
-    ///
-    /// Defaults to `false`.
-    enabled: bool,
-}
-
-impl DataPlaneChecksConfiguration {
-    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(Self {
-            enabled: config.try_get_typed("data_plane.checks.enabled")?.unwrap_or(false),
-        })
-    }
-
-    /// Returns `true` if Checks is enabled.
-    pub const fn enabled(&self) -> bool {
-        self.enabled
-    }
-}
-
-/// DogStatsD-specific data plane configuration.
-#[derive(Clone, Debug)]
-pub struct DataPlaneDogStatsDConfiguration {
-    /// Whether DogStatsD is enabled.
-    ///
-    /// When disabled, DogStatsD won't be started.
-    ///
-    /// Defaults to `true`.
-    enabled: bool,
-}
-
-impl DataPlaneDogStatsDConfiguration {
-    // We intentionally do NOT read the Core Agent's `use_dogstatsd` key here. The Core Agent is the
-    // sole authority on whether ADP should run DogStatsD: it evaluates `use_dogstatsd` (along with
-    // other signals) and sets `data_plane.dogstatsd.enabled` on our behalf. Reading both would risk
-    // ADP and the Core Agent disagreeing. See `docs/agent-data-plane/configuration/configuration.md`.
-    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(Self {
-            enabled: config.try_get_typed("data_plane.dogstatsd.enabled")?.unwrap_or(true),
-        })
-    }
-
-    /// Returns `true` if DogStatsD is enabled.
-    pub const fn enabled(&self) -> bool {
-        self.enabled
-    }
-}
-
-/// OTLP-specific data plane configuration.
-#[derive(Clone, Debug)]
-pub struct DataPlaneOtlpConfiguration {
-    enabled: bool,
-    proxy: DataPlaneOtlpProxyConfiguration,
-}
-
-impl DataPlaneOtlpConfiguration {
-    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(Self {
-            enabled: config.try_get_typed("data_plane.otlp.enabled")?.unwrap_or(false),
-            proxy: DataPlaneOtlpProxyConfiguration::from_configuration(config)?,
-        })
-    }
-
-    /// Returns `true` if the OTLP pipeline is enabled.
-    pub const fn enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Returns a reference to the OTLP proxying configuration.
-    pub const fn proxy(&self) -> &DataPlaneOtlpProxyConfiguration {
-        &self.proxy
-    }
-}
-
-/// OTLP proxying configuration.
-///
-/// In proxy mode, ADP takes over the normal "OTLP Ingest" endpoints that the Core Agent would typically listen on,
-/// so the Core Agent must be configured to listen on a different, separate port than it usually would so that ADP
-/// can proxy to it.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct DataPlaneOtlpProxyConfiguration {
-    /// Whether or not to proxy all signals to the Agent.
-    ///
-    /// When enabled, OTLP signals which aren't supported by ADP will be proxied to the Agent. Depending on the signal
-    /// type, they may be proxied to either the Core Agent or Trace Agent.
-    ///
-    /// Defaults to `true`.
-    enabled: bool,
-
-    /// OTLP gRPC endpoint on the Core Agent to proxy signals to.
-    ///
-    /// Defaults to `http://localhost:4319`.
-    core_agent_otlp_grpc_endpoint: String,
-
-    /// Whether or not to proxy traces to the Core Agent.
-    ///
-    /// Defaults to `true`.
-    proxy_traces: bool,
-
-    /// Whether or not to proxy metrics to the Core Agent.
-    ///
-    /// Defaults to `true`.
-    proxy_metrics: bool,
-
-    /// Whether or not to proxy logs to the Core Agent.
-    ///
-    /// Defaults to `true`.
-    proxy_logs: bool,
-}
-
-impl DataPlaneOtlpProxyConfiguration {
-    fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let enabled = config.try_get_typed("data_plane.otlp.proxy.enabled")?.unwrap_or(false);
-        let core_agent_otlp_grpc_endpoint = config
-            .try_get_typed("data_plane.otlp.proxy.receiver.protocols.grpc.endpoint")?
-            .unwrap_or("http://localhost:4319".to_string());
-        let proxy_traces = config
-            .try_get_typed("data_plane.otlp.proxy.traces.enabled")?
-            .unwrap_or(true);
-        let proxy_metrics = config
-            .try_get_typed("data_plane.otlp.proxy.metrics.enabled")?
-            .unwrap_or(true);
-        let proxy_logs = config
-            .try_get_typed("data_plane.otlp.proxy.logs.enabled")?
-            .unwrap_or(true);
-
-        Ok(Self {
-            enabled,
-            core_agent_otlp_grpc_endpoint,
-            proxy_traces,
-            proxy_metrics,
-            proxy_logs,
-        })
-    }
-
-    /// Returns `true` if the OTLP proxy is enabled.
-    pub const fn enabled(&self) -> bool {
-        self.enabled
-    }
-
-    /// Returns the OTLP gRPC endpoint on the Core Agent to proxy signals to.
-    pub fn core_agent_otlp_grpc_endpoint(&self) -> &str {
-        &self.core_agent_otlp_grpc_endpoint
-    }
-
-    /// Returns `true` if the OTLP traces should be proxied to the Core Agent.
-    pub const fn proxy_traces(&self) -> bool {
-        self.proxy_traces
-    }
-
-    /// Returns `true` if the OTLP metrics should be proxied to the Core Agent.
-    pub const fn proxy_metrics(&self) -> bool {
-        self.proxy_metrics
-    }
-
-    /// Returns `true` if the OTLP logs should be proxied to the Core Agent.
-    pub const fn proxy_logs(&self) -> bool {
-        self.proxy_logs
+    /// Returns the set of [`Pipeline`] variants that are active based on our configuration.
+    pub fn active_pipelines(&self) -> HashSet<Pipeline> {
+        let mut s = HashSet::new();
+        if self.dogstatsd_enabled() {
+            s.insert(Pipeline::DogStatsD);
+        }
+        if self.checks_enabled() {
+            s.insert(Pipeline::Checks);
+        }
+        if self.otlp_enabled() {
+            s.insert(Pipeline::Otlp);
+        }
+        if self.traces_pipeline_required() {
+            s.insert(Pipeline::Traces);
+        }
+        s
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::config_from;
-    use serde_json::json;
-
     use super::*;
 
-    async fn dp_config_from(value: serde_json::Value) -> DataPlaneConfiguration {
-        DataPlaneConfiguration::from_configuration(&config_from(value).await)
-            .expect("data plane configuration should parse")
-    }
-
-    // ADP ignores `use_dogstatsd`. The Core Agent evaluates that key and delivers the resolved
-    // decision to ADP by setting `data_plane.dogstatsd.enabled` via the config stream.
-
-    #[tokio::test]
-    async fn default_enables_dogstatsd() {
-        let dp = dp_config_from(json!({ "data_plane": { "enabled": true } })).await;
-        assert!(dp.enabled());
-        assert!(dp.dogstatsd().enabled());
-    }
-
-    #[tokio::test]
-    async fn use_dogstatsd_false_does_not_disable_dogstatsd_by_default() {
-        let dp = dp_config_from(json!({ "use_dogstatsd": false, "data_plane": { "enabled": true } })).await;
-        assert!(dp.enabled());
-        assert!(dp.dogstatsd().enabled());
-    }
-
-    #[tokio::test]
-    async fn explicit_false_disables_dogstatsd() {
-        let dp = dp_config_from(json!({ "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } } })).await;
-        assert!(dp.enabled());
-        assert!(!dp.dogstatsd().enabled());
-    }
-
-    #[tokio::test]
-    async fn use_dogstatsd_true_does_not_override_explicit_false() {
-        // `use_dogstatsd=true` must not enable DSD when `data_plane.dogstatsd.enabled=false` is
-        // set explicitly. ADP reads only its own key.
-        let dp = dp_config_from(json!({
-            "use_dogstatsd": true,
-            "data_plane": { "enabled": true, "dogstatsd": { "enabled": false } },
-        }))
-        .await;
-        assert!(dp.enabled());
-        assert!(!dp.dogstatsd().enabled());
-    }
-
-    #[tokio::test]
-    async fn use_dogstatsd_false_does_not_disable_dogstatsd_when_explicitly_enabled() {
-        // `use_dogstatsd=false` must not disable DSD when `data_plane.dogstatsd.enabled=true` is
-        // set explicitly. The Core Agent communicates its resolved decision via that key.
-        let dp = dp_config_from(json!({
-            "use_dogstatsd": false,
-            "data_plane": { "enabled": true, "dogstatsd": { "enabled": true } },
-        }))
-        .await;
-        assert!(dp.enabled());
-        assert!(dp.dogstatsd().enabled());
+    fn pipeline_configuration(
+        checks_enabled: bool, dogstatsd_enabled: bool, otlp_enabled: bool, otlp_proxy_enabled: bool,
+        otlp_proxy_traces_enabled: bool,
+    ) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.control.checks = checks_enabled;
+        config.control.dogstatsd = dogstatsd_enabled;
+        config.control.otlp = otlp_enabled;
+        config.domains.otlp.proxy.enabled = otlp_proxy_enabled;
+        config.domains.otlp.proxy.traces_enabled = otlp_proxy_traces_enabled;
+        config
     }
 
     // Pipeline-requirement predicates. Each scenario is chosen to walk one documented branch of the
     // `*_pipeline_required` predicates on `DataPlaneConfiguration`, asserting the full predicate set so that a
     // regression in any single predicate surfaces.
 
-    #[tokio::test]
-    async fn default_dogstatsd_only_requires_metrics_events_and_service_checks_pipelines() {
-        // Only DogStatsD is enabled (it defaults to on); Checks and OTLP are off.
-        let dp = dp_config_from(json!({ "data_plane": { "enabled": true } })).await;
+    #[test]
+    fn dogstatsd_only_requires_metrics_events_and_service_checks_pipelines() {
+        let config = pipeline_configuration(false, true, false, false, false);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
         assert!(dp.metrics_pipeline_required());
@@ -406,17 +194,10 @@ mod tests {
         assert!(!dp.traces_pipeline_required());
     }
 
-    #[tokio::test]
-    async fn checks_enabled_requires_every_pipeline_except_traces() {
-        let dp = dp_config_from(json!({
-            "data_plane": {
-                "enabled": true,
-                "checks": { "enabled": true },
-                "dogstatsd": { "enabled": false },
-                "otlp": { "enabled": false },
-            },
-        }))
-        .await;
+    #[test]
+    fn checks_enabled_requires_every_pipeline_except_traces() {
+        let config = pipeline_configuration(true, false, false, false, false);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
         assert!(dp.metrics_pipeline_required());
@@ -426,16 +207,10 @@ mod tests {
         assert!(!dp.traces_pipeline_required());
     }
 
-    #[tokio::test]
-    async fn otlp_without_proxy_requires_metrics_logs_and_traces_pipelines() {
-        let dp = dp_config_from(json!({
-            "data_plane": {
-                "enabled": true,
-                "dogstatsd": { "enabled": false },
-                "otlp": { "enabled": true, "proxy": { "enabled": false } },
-            },
-        }))
-        .await;
+    #[test]
+    fn otlp_without_proxy_requires_metrics_logs_and_traces_pipelines() {
+        let config = pipeline_configuration(false, false, true, false, false);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
         assert!(dp.metrics_pipeline_required());
@@ -445,18 +220,12 @@ mod tests {
         assert!(dp.traces_pipeline_required());
     }
 
-    #[tokio::test]
-    async fn otlp_proxy_mode_proxying_all_signals_requires_no_baseline_pipelines() {
+    #[test]
+    fn otlp_proxy_mode_proxying_all_signals_requires_no_baseline_pipelines() {
         // With proxy mode enabled and traces still proxied to the Core Agent (the default), ADP handles no signals
         // itself, so no baseline pipeline is required even though a data pipeline (OTLP) is enabled.
-        let dp = dp_config_from(json!({
-            "data_plane": {
-                "enabled": true,
-                "dogstatsd": { "enabled": false },
-                "otlp": { "enabled": true, "proxy": { "enabled": true } },
-            },
-        }))
-        .await;
+        let config = pipeline_configuration(false, false, true, true, true);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
         assert!(!dp.metrics_pipeline_required());
@@ -466,21 +235,12 @@ mod tests {
         assert!(!dp.traces_pipeline_required());
     }
 
-    #[tokio::test]
-    async fn otlp_proxy_mode_with_local_traces_requires_traces_pipeline() {
+    #[test]
+    fn otlp_proxy_mode_with_local_traces_requires_traces_pipeline() {
         // Proxy mode is enabled but trace proxying is turned off, so ADP must handle traces locally and the traces
         // pipeline becomes required again while the other baseline pipelines stay off.
-        let dp = dp_config_from(json!({
-            "data_plane": {
-                "enabled": true,
-                "dogstatsd": { "enabled": false },
-                "otlp": {
-                    "enabled": true,
-                    "proxy": { "enabled": true, "traces": { "enabled": false } },
-                },
-            },
-        }))
-        .await;
+        let config = pipeline_configuration(false, false, true, true, false);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(dp.data_pipelines_enabled());
         assert!(!dp.metrics_pipeline_required());
@@ -490,17 +250,10 @@ mod tests {
         assert!(dp.traces_pipeline_required());
     }
 
-    #[tokio::test]
-    async fn no_pipelines_enabled_requires_no_baseline_pipelines() {
-        let dp = dp_config_from(json!({
-            "data_plane": {
-                "enabled": true,
-                "checks": { "enabled": false },
-                "dogstatsd": { "enabled": false },
-                "otlp": { "enabled": false },
-            },
-        }))
-        .await;
+    #[test]
+    fn no_pipelines_enabled_requires_no_baseline_pipelines() {
+        let config = pipeline_configuration(false, false, false, false, false);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert!(!dp.data_pipelines_enabled());
         assert!(!dp.metrics_pipeline_required());
@@ -510,57 +263,34 @@ mod tests {
         assert!(!dp.traces_pipeline_required());
     }
 
-    // Stop-timeout resolution: explicit override, default, sum of Core Agent component timeouts, and overflow.
-
-    #[tokio::test]
-    async fn data_plane_stop_timeout_overrides_core_agent_shutdown_timeout_sum() {
-        let dp = dp_config_from(json!({
-            "aggregator_stop_timeout": 3,
-            "forwarder_stop_timeout": 7,
-            "data_plane": { "stop_timeout": 11 },
-        }))
-        .await;
+    #[test]
+    fn stop_timeout_uses_saluki_override() {
+        let mut config = SalukiConfiguration::default();
+        config.control.stop_timeout_seconds = Some(11);
+        config.control.aggregator_stop_timeout = Duration::from_secs(3);
+        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(7);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert_eq!(dp.stop_timeout(), Duration::from_secs(11));
     }
 
-    #[tokio::test]
-    async fn stop_timeout_defaults_to_sum_of_core_agent_component_defaults() {
-        // With neither `data_plane.stop_timeout` nor the Core Agent component timeouts set, the timeout falls back
-        // to the sum of the documented per-component defaults (2s aggregator + 2s forwarder).
-        let dp = dp_config_from(json!({ "data_plane": { "enabled": true } })).await;
-
-        assert_eq!(dp.stop_timeout(), Duration::from_secs(4));
-    }
-
-    #[tokio::test]
-    async fn stop_timeout_sums_core_agent_component_timeouts() {
-        // Without a `data_plane.stop_timeout` override, the timeout is the sum of the aggregator and forwarder
-        // stop timeouts.
-        let dp = dp_config_from(json!({
-            "aggregator_stop_timeout": 3,
-            "forwarder_stop_timeout": 7,
-        }))
-        .await;
+    #[test]
+    fn stop_timeout_sums_component_timeouts() {
+        let mut config = SalukiConfiguration::default();
+        config.control.aggregator_stop_timeout = Duration::from_secs(3);
+        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(7);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
         assert_eq!(dp.stop_timeout(), Duration::from_secs(10));
     }
 
-    #[tokio::test]
-    async fn stop_timeout_overflow_is_rejected() {
-        // When the summed Core Agent component timeouts overflow a `Duration`, `from_configuration` surfaces an
-        // error rather than silently wrapping.
-        let config = config_from(json!({
-            "aggregator_stop_timeout": 9_223_372_036_854_775_808_u64,
-            "forwarder_stop_timeout": 9_223_372_036_854_775_808_u64,
-        }))
-        .await;
+    #[test]
+    fn stop_timeout_uses_fallback_when_sum_overflows() {
+        let mut config = SalukiConfiguration::default();
+        config.control.aggregator_stop_timeout = Duration::MAX;
+        config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(1);
+        let dp = DataPlaneConfiguration::from_configuration(&config);
 
-        let error = DataPlaneConfiguration::from_configuration(&config)
-            .expect_err("summed stop timeout should overflow and be rejected");
-        assert!(
-            error.to_string().contains("stop timeout overflowed"),
-            "unexpected error message: {error}"
-        );
+        assert_eq!(dp.stop_timeout(), Duration::from_secs(30));
     }
 }

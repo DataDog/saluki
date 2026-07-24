@@ -8,10 +8,10 @@ use hyper::body::Bytes;
 use hyper::body::Incoming;
 #[cfg(target_os = "linux")]
 use prost::Message as _;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{client::http::HttpClient, ListenAddress};
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 use crate::config::DataPlaneConfiguration;
 
@@ -19,6 +19,17 @@ use crate::config::DataPlaneConfiguration;
 pub struct DataPlaneAPIClient {
     client: HttpClient,
     authority: String,
+}
+
+/// Builds a data plane API client or exits after logging the error.
+pub(super) fn api_or_exit(dp: &DataPlaneConfiguration) -> DataPlaneAPIClient {
+    match DataPlaneAPIClient::from_configuration(dp) {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to create data plane API client: {:#}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -41,16 +52,14 @@ struct DogStatsDReplaySessionResponseBody {
 }
 
 impl DataPlaneAPIClient {
-    /// Creates a new `DataPlaneAPIClient` from the given generic configuration.
+    /// Creates a new `DataPlaneAPIClient` from the typed data plane configuration.
     ///
     /// # Errors
     ///
-    /// If the data plane configuration can't be deserialized, or the data plane API endpoints can't be
-    /// determined, an error will be returned.
-    pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
-
-        let listen_address = dp_config.secure_api_listen_address();
+    /// Returns an error if the privileged API does not use a connection-oriented address or the
+    /// HTTP client cannot be constructed.
+    pub fn from_configuration(dp: &DataPlaneConfiguration) -> Result<Self, GenericError> {
+        let listen_address = dp.secure_api_listen_address();
 
         let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
 

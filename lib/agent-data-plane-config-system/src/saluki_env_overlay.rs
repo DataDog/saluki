@@ -233,8 +233,12 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
     record_scalar!(deserialize_f32, visit_f32, 0.0, EnvDecode::Float);
     record_scalar!(deserialize_f64, visit_f64, 0.0, EnvDecode::Float);
     record_scalar!(deserialize_char, visit_char, '\0', EnvDecode::RawString);
-    record_scalar!(deserialize_str, visit_str, "", EnvDecode::RawString);
-    record_scalar!(deserialize_string, visit_str, "", EnvDecode::RawString);
+    // The dummy string must satisfy every string-typed leaf's own validation so discovery can
+    // finish. `checks_ipc_endpoint` deserializes through `ListenAddress`'s `try_from = "String"`,
+    // which rejects an empty or unparseable value, so feed a well-formed listen address. The value
+    // is discarded; only the recorded leaf path matters.
+    record_scalar!(deserialize_str, visit_str, "tcp://127.0.0.1:1", EnvDecode::RawString);
+    record_scalar!(deserialize_string, visit_str, "tcp://127.0.0.1:1", EnvDecode::RawString);
     record_scalar!(deserialize_bytes, visit_bytes, b"", EnvDecode::RawString);
     record_scalar!(deserialize_byte_buf, visit_bytes, b"", EnvDecode::RawString);
 

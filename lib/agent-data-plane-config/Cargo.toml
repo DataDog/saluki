@@ -10,6 +10,15 @@ repository = { workspace = true }
 # a consumer gets it without depending on the raw map or the Datadog source.
 [dependencies]
 arc-swap = { workspace = true }
+
+# This is unfortunate; we need this for ListenAddress
+# The choices are
+# a) move ListenAddress to here: that doesn't make sense
+# b) present unsanitized strings to the binary
+# c) depend on saluki-io and parse the ListenAddress at the config boundary
+#
+# We have chosen c which means this cannot be a leaf, model-only crate as we intended.
+saluki-io = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["sync"] }
 
