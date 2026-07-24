@@ -1787,19 +1787,14 @@ mod tests {
         ignore_missing_datadog_fields: bool,
     }
 
+    /// The shared signature of the `get_otel_*` string attribute extractors driven by
+    /// [`run_attribute_extraction_cases`].
+    type AttributeExtractor =
+        fn(&[KeyValue], &[KeyValue], bool, &GenericMapInterner, &mut StringBuilder<GenericMapInterner>) -> MetaString;
+
     /// Drives `extractor` over every case with a shared interner/string builder and asserts the extracted string
     /// equals the case's `expected` value, reporting the failing case name.
-    #[allow(clippy::type_complexity)]
-    fn run_attribute_extraction_cases(
-        extractor: fn(
-            &[KeyValue],
-            &[KeyValue],
-            bool,
-            &GenericMapInterner,
-            &mut StringBuilder<GenericMapInterner>,
-        ) -> MetaString,
-        cases: Vec<AttributeExtractionCase>,
-    ) {
+    fn run_attribute_extraction_cases(extractor: AttributeExtractor, cases: Vec<AttributeExtractionCase>) {
         let interner = test_interner();
         let mut string_builder = StringBuilder::new().with_interner(interner.clone());
         for tc in cases {

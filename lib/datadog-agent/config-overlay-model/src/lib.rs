@@ -816,4 +816,221 @@ excluded: {}
             "unexpected error: {err}"
         );
     }
+
+    // The per-entry validation rules (`validate_entries`) are documented in `VALIDATION_RULES` and
+    // enforced independently of the schema cross-check, so these tests deserialize an overlay in
+    // isolation (via `from_yaml`) and run only that pass — no matching core schema is needed.
+    fn validate_entries_of(overlay: &str) -> Result<(), Error> {
+        SchemaOverlay::from_yaml(overlay)
+            .expect("overlay should deserialize")
+            .validate_entries()
+    }
+
+    #[test]
+    fn per_entry_validation_accepts_a_well_formed_entry_of_every_kind() {
+        // Keys are alphabetically ordered (full < partial < unknown < unsupported) so the YAML lint
+        // pass is satisfied and only per-entry validation is under test.
+        let overlay = "\
+inventory:
+  full_key:
+    support: full
+    pipelines: [dogstatsd]
+    description: \"Fully supported key\"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_yaml_paths: [full_alias]
+  partial_key:
+    support: partial
+    pipelines: [traces]
+    description: \"Partially supported key\"
+    documentation: \"Behaves differently from the core agent.\"
+    test_support:
+      used_by: [ForwarderConfiguration]
+  unknown_key:
+    support: unknown
+    description: \"Not yet classified\"
+  unsupported_key:
+    support: none
+    pipelines: [checks]
+    description: \"Unsupported key\"
+    severity: high
+    planned: true
+    issue: \"1234\"
+excluded: {}
+";
+        validate_entries_of(overlay).expect("a well-formed overlay should pass per-entry validation");
+    }
+
+    #[test]
+    fn per_entry_validation_rejects_over_long_description_for_every_entry_kind() {
+        // A 60-character description exceeds the documented 50-char cap. Each entry kind that carries a
+        // description enforces the same limit, so this walks all four.
+        let long = "x".repeat(60);
+        let cases: &[(&str, String)] = &[
+            (
+                "full",
+                format!(
+                    "inventory:\n  key_a:\n    support: full\n    pipelines: [dogstatsd]\n    \
+                     description: \"{long}\"\n    test_support:\n      used_by: [ForwarderConfiguration]\nexcluded: {{}}\n"
+                ),
+            ),
+            (
+                "partial",
+                format!(
+                    "inventory:\n  key_a:\n    support: partial\n    pipelines: [dogstatsd]\n    \
+                     description: \"{long}\"\n    documentation: \"diverges\"\n    test_support:\n      \
+                     used_by: [ForwarderConfiguration]\nexcluded: {{}}\n"
+                ),
+            ),
+            (
+                "unsupported",
+                format!(
+                    "inventory:\n  key_a:\n    support: none\n    pipelines: [dogstatsd]\n    \
+                     description: \"{long}\"\n    severity: low\n    planned: false\nexcluded: {{}}\n"
+                ),
+            ),
+            (
+                "unknown",
+                format!("inventory:\n  key_a:\n    support: unknown\n    description: \"{long}\"\nexcluded: {{}}\n"),
+            ),
+        ];
+
+        for (kind, overlay) in cases {
+            let err = validate_entries_of(overlay).expect_err(&format!("{kind} entry should be rejected"));
+            assert!(
+                err.to_string().contains("description exceeds 50 chars"),
+                "{kind}: unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn per_entry_validation_rejects_empty_used_by_for_full_and_partial_entries() {
+        let full = "\
+inventory:
+  key_a:
+    support: full
+    pipelines: [dogstatsd]
+    description: \"Key A\"
+    test_support:
+      used_by: []
+excluded: {}
+";
+        let err = validate_entries_of(full).expect_err("full entry with empty used_by should be rejected");
+        assert!(
+            err.to_string().contains("full key 'key_a': used_by must be non-empty"),
+            "unexpected error: {err}"
+        );
+
+        let partial = "\
+inventory:
+  key_a:
+    support: partial
+    pipelines: [dogstatsd]
+    description: \"Key A\"
+    documentation: \"diverges\"
+    test_support:
+      used_by: []
+excluded: {}
+";
+        let err = validate_entries_of(partial).expect_err("partial entry with empty used_by should be rejected");
+        assert!(
+            err.to_string()
+                .contains("partial key 'key_a': used_by must be non-empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn per_entry_validation_rejects_planned_unsupported_entry_without_issue() {
+        let overlay = "\
+inventory:
+  key_a:
+    support: none
+    pipelines: [dogstatsd]
+    description: \"Key A\"
+    severity: medium
+    planned: true
+excluded: {}
+";
+        let err = validate_entries_of(overlay).expect_err("planned unsupported entry without issue should be rejected");
+        assert!(
+            err.to_string()
+                .contains("unsupported key 'key_a': planned requires an issue"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn per_entry_validation_rejects_duplicate_additional_yaml_path() {
+        let overlay = "\
+inventory:
+  key_a:
+    support: full
+    pipelines: [dogstatsd]
+    description: \"Key A\"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_yaml_paths: [dup_alias, dup_alias]
+excluded: {}
+";
+        let err = validate_entries_of(overlay).expect_err("duplicate additional_yaml_path should be rejected");
+        assert!(
+            err.to_string()
+                .contains("key 'key_a': duplicate additional_yaml_path 'dup_alias'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn per_entry_validation_rejects_dotted_additional_yaml_path() {
+        // Dotted aliases can't be represented as a serde field alias on the generated struct, so they're
+        // rejected outright.
+        let overlay = "\
+inventory:
+  key_a:
+    support: full
+    pipelines: [dogstatsd]
+    description: \"Key A\"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_yaml_paths: [\"nested.alias\"]
+excluded: {}
+";
+        let err = validate_entries_of(overlay).expect_err("dotted additional_yaml_path should be rejected");
+        assert!(
+            err.to_string()
+                .contains("additional_yaml_path 'nested.alias' contains a dot"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn per_entry_validation_rejects_additional_yaml_path_colliding_with_canonical_key() {
+        // `alpha`'s alias `beta` collides with the canonical key `beta`; two fields would deserialize
+        // from the same YAML key. Keys are alphabetically ordered so the YAML lint pass is satisfied.
+        let overlay = "\
+inventory:
+  alpha:
+    support: full
+    pipelines: [dogstatsd]
+    description: \"Alpha\"
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_yaml_paths: [beta]
+  beta:
+    support: full
+    pipelines: [dogstatsd]
+    description: \"Beta\"
+    test_support:
+      used_by: [ForwarderConfiguration]
+excluded: {}
+";
+        let err = validate_entries_of(overlay).expect_err("aliasing a canonical key should be rejected");
+        assert!(
+            err.to_string()
+                .contains("additional_yaml_path 'beta' collides with a canonical"),
+            "unexpected error: {err}"
+        );
+    }
 }
