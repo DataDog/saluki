@@ -18,7 +18,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bytes::{Buf, BufMut};
+use bytes::{Buf, BufMut, Bytes};
 use bytesize::ByteSize;
 use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
@@ -36,7 +36,7 @@ use saluki_core::data_model::event::{
 use saluki_core::{
     components::{sources::*, ComponentContext},
     pooling::ElasticObjectPool,
-    topology::{interconnect::EventBufferManager, EventsBuffer, OutputDefinition},
+    topology::{EventsBuffer, EventsBufferManager, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -67,7 +67,7 @@ mod forwarder;
 use self::forwarder::{PacketForwarder, PacketForwarderTarget};
 
 mod framer;
-use self::framer::get_framer;
+use self::framer::{get_framer, DsdFramer};
 use crate::sources::dogstatsd::tags::{WellKnownTags, WellKnownTagsFilterPredicate};
 
 mod filters;
@@ -1150,17 +1150,10 @@ struct ListenerContext {
     listener: Listener,
     datagram_sender: mpsc::Sender<QueuedDatagram>,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
-    codec: DogStatsDCodec,
-    context_resolvers: ContextResolvers,
-    default_hostname: MetaString,
-    origin_detection_enabled: bool,
     origin_telemetry_enabled: bool,
-    stream_log_too_big: bool,
-    disable_verbose_logs: bool,
     eol_required: EolRequired,
-    additional_tags: Arc<[String]>,
+    decoder_context: DecoderContext,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    traffic_capture: TrafficCapture,
     packet_forwarder_target: Option<PacketForwarderTarget>,
 }
 
@@ -1168,28 +1161,23 @@ struct ListenerContext {
 struct HandlerContext {
     listen_addr: ListenAddress,
     eol_required: bool,
-    codec: DogStatsDCodec,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     datagram_sender: mpsc::Sender<QueuedDatagram>,
     datagram_context: Option<Arc<DatagramSocketContext>>,
     metrics: Metrics,
-    context_resolvers: ContextResolvers,
-    default_hostname: MetaString,
-    origin_detection_enabled: bool,
-    stream_log_too_big: bool,
-    disable_verbose_logs: bool,
-    additional_tags: Arc<[String]>,
+    decoder_context: DecoderContext,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
-    traffic_capture: TrafficCapture,
     packet_forwarder: Option<PacketForwarder>,
 }
 
 #[derive(Clone)]
-struct DatagramDecoderContext {
+struct DecoderContext {
     codec: DogStatsDCodec,
     context_resolvers: ContextResolvers,
     default_hostname: MetaString,
+    enabled_filter: EnablePayloadsFilter,
     origin_detection_enabled: bool,
+    stream_log_too_big: bool,
     disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
     traffic_capture: TrafficCapture,
@@ -1205,6 +1193,59 @@ struct DatagramSocketContext {
 struct QueuedDatagram {
     result: io::Result<ReceivedBuffer>,
     socket_context: Arc<DatagramSocketContext>,
+}
+
+struct DogStatsDDecoder {
+    source_context: SourceContext,
+    codec: DogStatsDCodec,
+    context_resolvers: ContextResolvers,
+    default_hostname: MetaString,
+    enabled_filter: EnablePayloadsFilter,
+    origin_detection_enabled: bool,
+    stream_log_too_big: bool,
+    disable_verbose_logs: bool,
+    additional_tags: Arc<[String]>,
+    traffic_capture: TrafficCapture,
+    event_buffer_manager: EventsBufferManager,
+    last_listen_addr: Option<ListenAddress>,
+}
+
+#[derive(Clone, Copy)]
+enum BufferDecodeMode {
+    Connectionless,
+    Connected { eof: bool },
+}
+
+impl BufferDecodeMode {
+    fn is_eof(self) -> bool {
+        match self {
+            Self::Connectionless => true,
+            Self::Connected { eof } => eof,
+        }
+    }
+
+    fn should_stop_on_eof(self) -> bool {
+        matches!(self, Self::Connected { eof: true })
+    }
+
+    fn should_stop_on_framing_error(self) -> bool {
+        matches!(self, Self::Connected { .. })
+    }
+}
+
+struct BufferDecodeContext<'a> {
+    listen_addr: &'a ListenAddress,
+    peer_addr: &'a ConnectionAddress,
+    process_origin: Option<&'a ProcessOrigin>,
+    metrics: &'a Metrics,
+    packet_forwarder: Option<&'a PacketForwarder>,
+    mode: BufferDecodeMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DecodeOutcome {
+    Continue,
+    Stop,
 }
 
 #[async_trait]
@@ -1226,11 +1267,13 @@ impl Source for DogStatsD {
 
         let (datagram_sender, datagram_receiver) = mpsc::channel(self.io_buffer_queue_capacity);
         let datagram_receiver = Arc::new(Mutex::new(datagram_receiver));
-        let datagram_decoder_context = DatagramDecoderContext {
+        let decoder_context = DecoderContext {
             codec: self.codec.clone(),
             context_resolvers: self.context_resolvers.clone(),
             default_hostname: self.default_hostname.clone(),
+            enabled_filter: self.enabled_filter,
             origin_detection_enabled: self.origin_detection_enabled,
+            stream_log_too_big: self.stream_log_too_big,
             disable_verbose_logs: self.disable_verbose_logs,
             additional_tags: self.additional_tags.clone(),
             traffic_capture: self.traffic_capture.clone(),
@@ -1240,12 +1283,7 @@ impl Source for DogStatsD {
         for worker_id in 0..self.decoder_worker_count.get() {
             datagram_decoder_tasks.push(spawn_traced_named(
                 format!("dogstatsd-datagram-decoder-{worker_id}"),
-                process_datagram_decoder(
-                    datagram_receiver.clone(),
-                    context.clone(),
-                    datagram_decoder_context.clone(),
-                    self.enabled_filter,
-                ),
+                process_datagram_decoder(datagram_receiver.clone(), context.clone(), decoder_context.clone()),
             ));
         }
         drop(datagram_receiver);
@@ -1266,24 +1304,14 @@ impl Source for DogStatsD {
                 listener,
                 datagram_sender: datagram_sender.clone(),
                 io_buffer_pool: self.io_buffer_pool.clone(),
-                codec: self.codec.clone(),
-                context_resolvers: self.context_resolvers.clone(),
-                default_hostname: self.default_hostname.clone(),
-                origin_detection_enabled: self.origin_detection_enabled,
                 origin_telemetry_enabled: self.origin_telemetry_enabled,
-                stream_log_too_big: self.stream_log_too_big,
-                disable_verbose_logs: self.disable_verbose_logs,
                 eol_required: self.eol_required,
-                additional_tags: self.additional_tags.clone(),
+                decoder_context: decoder_context.clone(),
                 capture_entity_resolver: self.capture_entity_resolver.clone(),
-                traffic_capture: self.traffic_capture.clone(),
                 packet_forwarder_target: self.packet_forwarder_target.clone(),
             };
 
-            spawn_traced_named(
-                task_name,
-                process_listener(context.clone(), listener_context, self.enabled_filter),
-            );
+            spawn_traced_named(task_name, process_listener(context.clone(), listener_context));
         }
         drop(datagram_sender);
 
@@ -1354,25 +1382,16 @@ fn is_connectionless_listen_address(listen_addr: &ListenAddress) -> bool {
     }
 }
 
-async fn process_listener(
-    source_context: SourceContext, listener_context: ListenerContext, enabled_filter: EnablePayloadsFilter,
-) {
+async fn process_listener(source_context: SourceContext, listener_context: ListenerContext) {
     let ListenerContext {
         shutdown_handle,
         mut listener,
         datagram_sender,
         io_buffer_pool,
-        codec,
-        context_resolvers,
-        default_hostname,
-        origin_detection_enabled,
         origin_telemetry_enabled,
-        stream_log_too_big,
-        disable_verbose_logs,
         eol_required,
-        additional_tags,
+        decoder_context,
         capture_entity_resolver,
-        traffic_capture,
         packet_forwarder_target,
     } = listener_context;
 
@@ -1416,19 +1435,12 @@ async fn process_listener(
                     let handler_context = HandlerContext {
                         listen_addr: listen_addr.clone(),
                         eol_required: eol_required.for_listener(&listen_addr),
-                        codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         datagram_sender: datagram_sender.clone(),
                         datagram_context: datagram_context.clone(),
                         metrics: metrics.clone(),
-                        context_resolvers: context_resolvers.clone(),
-                        default_hostname: default_hostname.clone(),
-                        origin_detection_enabled,
-                        stream_log_too_big,
-                        disable_verbose_logs,
-                        additional_tags: additional_tags.clone(),
+                        decoder_context: decoder_context.clone(),
                         capture_entity_resolver: capture_entity_resolver.clone(),
-                        traffic_capture: traffic_capture.clone(),
                         packet_forwarder: packet_forwarder.clone(),
                     };
 
@@ -1436,7 +1448,7 @@ async fn process_listener(
                         "dogstatsd-stream-handler-{}",
                         listen_addr.listener_type(),
                     );
-                    spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register(), enabled_filter));
+                    spawn_traced_named(task_name, process_stream(stream, source_context.clone(), handler_context, stream_shutdown_coordinator.register()));
                 }
                 Err(e) => {
                     error!(%listen_addr, error = %e, "Failed to accept connection. Stopping listener.");
@@ -1453,13 +1465,12 @@ async fn process_listener(
 
 async fn process_stream(
     stream: Stream, source_context: SourceContext, handler_context: HandlerContext, shutdown_handle: ShutdownHandle,
-    enabled_filter: EnablePayloadsFilter,
 ) {
     select! {
         _ = shutdown_handle => {
             debug!("Stream handler received shutdown signal.");
         },
-        _ = drive_stream(stream, source_context, handler_context, enabled_filter) => {},
+        _ = drive_stream(stream, source_context, handler_context) => {},
     }
 }
 
@@ -1625,9 +1636,9 @@ async fn receive_connectionless_stream(
 
 async fn process_datagram_decoder(
     datagram_receiver: Arc<Mutex<mpsc::Receiver<QueuedDatagram>>>, source_context: SourceContext,
-    decoder_context: DatagramDecoderContext, enabled_filter: EnablePayloadsFilter,
+    decoder_context: DecoderContext,
 ) {
-    drive_datagram_decoder(datagram_receiver, source_context, decoder_context, enabled_filter).await;
+    drive_datagram_decoder(datagram_receiver, source_context, decoder_context).await;
     debug!("Datagram decoder drained its queue.");
 }
 
@@ -1645,22 +1656,193 @@ async fn shutdown_listeners_and_drain_datagram_decoders(
     Ok(())
 }
 
+impl DogStatsDDecoder {
+    fn new(source_context: SourceContext, decoder_context: DecoderContext) -> Self {
+        let DecoderContext {
+            codec,
+            context_resolvers,
+            default_hostname,
+            enabled_filter,
+            origin_detection_enabled,
+            stream_log_too_big,
+            disable_verbose_logs,
+            additional_tags,
+            traffic_capture,
+        } = decoder_context;
+
+        Self {
+            source_context,
+            codec,
+            context_resolvers,
+            default_hostname,
+            enabled_filter,
+            origin_detection_enabled,
+            stream_log_too_big,
+            disable_verbose_logs,
+            additional_tags,
+            traffic_capture,
+            event_buffer_manager: EventsBufferManager::default(),
+            last_listen_addr: None,
+        }
+    }
+
+    async fn decode_buffer(
+        &mut self, framer: &mut DsdFramer, stream_capture: &mut StreamCaptureState, io_buffer: &mut BytesBuffer,
+        bytes_read: usize, context: BufferDecodeContext<'_>,
+    ) -> DecodeOutcome {
+        let BufferDecodeContext {
+            listen_addr,
+            peer_addr,
+            process_origin,
+            metrics,
+            packet_forwarder,
+            mode,
+        } = context;
+        if self.last_listen_addr.as_ref() != Some(listen_addr) {
+            self.last_listen_addr = Some(listen_addr.clone());
+        }
+
+        let payload = received_payload(io_buffer, bytes_read);
+        capture_uds_traffic(
+            listen_addr,
+            &self.traffic_capture,
+            peer_addr,
+            process_origin,
+            payload,
+            stream_capture,
+        );
+
+        metrics.bytes_received().increment(bytes_read as u64);
+        metrics.bytes_received_size().record(bytes_read as f64);
+        let origin_detection_failed =
+            origin_detection_failed_for_telemetry(self.origin_detection_enabled, bytes_read, peer_addr);
+
+        if matches!(mode, BufferDecodeMode::Connectionless) {
+            metrics.packet_receive_success().increment(1);
+            if origin_detection_failed {
+                metrics.origin_detection_errors().increment(1);
+            }
+        }
+
+        let eof = mode.is_eof();
+        trace!(
+            buffer_len = io_buffer.remaining(),
+            buffer_cap = io_buffer.remaining_mut(),
+            %listen_addr,
+            %peer_addr,
+            eof,
+            "Received {} bytes from socket.",
+            bytes_read
+        );
+
+        if should_drop_oversized_named_pipe_frame(listen_addr, io_buffer) {
+            metrics.framing_errors().increment(1);
+            debug!(%listen_addr, %peer_addr, "DogStatsD named pipe frame exceeded the configured buffer size. Dropping frame.");
+            io_buffer.clear();
+            return DecodeOutcome::Continue;
+        }
+
+        loop {
+            let frame_result = framer.next_frame(io_buffer, eof);
+            let completed_outer_frames = framer.take_completed_outer_frames();
+            if completed_outer_frames > 0 {
+                metrics
+                    .packet_receive_success()
+                    .increment(completed_outer_frames as u64);
+            }
+            if origin_detection_failed && completed_outer_frames > 0 {
+                metrics
+                    .origin_detection_errors()
+                    .increment(completed_outer_frames as u64);
+            }
+
+            match frame_result {
+                Ok(Some(frame)) => {
+                    if matches!(listen_addr, ListenAddress::NamedPipe { .. }) {
+                        metrics.packet_receive_success().increment(1);
+                    }
+                    self.decode_frame(frame, listen_addr, peer_addr, process_origin, metrics, packet_forwarder)
+                        .await;
+                }
+                Ok(None) => {
+                    if mode.should_stop_on_eof() {
+                        debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
+                        return DecodeOutcome::Stop;
+                    }
+                    return DecodeOutcome::Continue;
+                }
+                Err(error) => {
+                    metrics.framing_errors().increment(1);
+                    if should_warn_stream_log_too_big(listen_addr, &error, self.stream_log_too_big) {
+                        warn!(
+                            %listen_addr,
+                            %peer_addr,
+                            error = %error,
+                            "DogStatsD stream frame exceeded the configured buffer size."
+                        );
+                    }
+
+                    if mode.should_stop_on_framing_error() {
+                        debug!(%listen_addr, %peer_addr, %error, "Error decoding frame. Stopping stream.");
+                        return DecodeOutcome::Stop;
+                    }
+
+                    debug!(%listen_addr, %peer_addr, %error, "Error decoding datagram frame. Continuing listener.");
+                    return DecodeOutcome::Continue;
+                }
+            }
+        }
+    }
+
+    async fn decode_frame(
+        &mut self, frame: Bytes, listen_addr: &ListenAddress, peer_addr: &ConnectionAddress,
+        process_origin: Option<&ProcessOrigin>, metrics: &Metrics, packet_forwarder: Option<&PacketForwarder>,
+    ) {
+        trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
+        if let Some(forwarder) = packet_forwarder {
+            forwarder.forward(frame.clone()).await;
+        }
+
+        match handle_frame(
+            &frame[..],
+            &self.codec,
+            &mut self.context_resolvers,
+            metrics,
+            self.origin_detection_enabled,
+            process_origin,
+            self.enabled_filter,
+            &self.additional_tags,
+            &self.default_hostname,
+        ) {
+            Ok(Some(event)) => {
+                if let Some(event_buffer) = self.event_buffer_manager.try_push(event) {
+                    debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
+                    dispatch_events(event_buffer, &self.source_context, listen_addr).await;
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                log_parse_failure(self.disable_verbose_logs, listen_addr, peer_addr, &frame, &error);
+            }
+        }
+    }
+
+    async fn flush_events(&mut self) {
+        let Some(listen_addr) = self.last_listen_addr.clone() else {
+            return;
+        };
+        if let Some(event_buffer) = self.event_buffer_manager.consume() {
+            dispatch_events(event_buffer, &self.source_context, &listen_addr).await;
+        }
+    }
+}
+
 async fn drive_datagram_decoder(
     datagram_receiver: Arc<Mutex<mpsc::Receiver<QueuedDatagram>>>, source_context: SourceContext,
-    decoder_context: DatagramDecoderContext, enabled_filter: EnablePayloadsFilter,
+    decoder_context: DecoderContext,
 ) {
-    let DatagramDecoderContext {
-        codec,
-        mut context_resolvers,
-        default_hostname,
-        origin_detection_enabled,
-        disable_verbose_logs,
-        additional_tags,
-        traffic_capture,
-    } = decoder_context;
+    let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
     let mut stream_capture = StreamCaptureState::new();
-    let mut event_buffer_manager = EventBufferManager::default();
-    let mut last_listen_addr = None;
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -1678,7 +1860,6 @@ async fn drive_datagram_decoder(
                     metrics,
                     packet_forwarder,
                 } = socket_context.as_ref();
-                last_listen_addr = Some(listen_addr.clone());
 
                 let ReceivedBuffer {
                     mut buffer,
@@ -1694,101 +1875,38 @@ async fn drive_datagram_decoder(
                         continue;
                     }
                 };
-                let io_buffer = &mut buffer;
-                let payload = received_payload(io_buffer, bytes_read);
-
-                capture_uds_traffic(
-                    listen_addr,
-                    &traffic_capture,
-                    &peer_addr,
-                    process_origin.as_ref(),
-                    payload,
-                    &mut stream_capture,
-                );
-
-                metrics.packet_receive_success().increment(1);
-                metrics.bytes_received().increment(bytes_read as u64);
-                metrics.bytes_received_size().record(bytes_read as f64);
-                if origin_detection_failed_for_telemetry(origin_detection_enabled, bytes_read, &peer_addr) {
-                    metrics.origin_detection_errors().increment(1);
-                }
-
-                trace!(
-                    buffer_len = io_buffer.remaining(),
-                    buffer_cap = io_buffer.remaining_mut(),
-                    %listen_addr,
-                    %peer_addr,
-                    "Received {} bytes from datagram socket.",
-                    bytes_read
-                );
 
                 let mut framer = get_framer(listen_addr, *eol_required);
-                loop {
-                    match framer.next_frame(io_buffer, true) {
-                        Ok(Some(frame)) => {
-                            trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                            if let Some(forwarder) = packet_forwarder {
-                                forwarder.forward(frame.clone()).await;
-                            }
-                            match handle_frame(
-                                &frame[..],
-                                &codec,
-                                &mut context_resolvers,
-                                metrics,
-                                origin_detection_enabled,
-                                process_origin.as_ref(),
-                                enabled_filter,
-                                &additional_tags,
-                                &default_hostname,
-                            ) {
-                                Ok(Some(event)) => {
-                                    if let Some(event_buffer) = event_buffer_manager.try_push(event) {
-                                        debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                                        dispatch_events(event_buffer, &source_context, listen_addr).await;
-                                    }
-                                }
-                                Ok(None) => continue,
-                                Err(error) => {
-                                    log_parse_failure(
-                                        disable_verbose_logs,
-                                        listen_addr,
-                                        &peer_addr,
-                                        &frame,
-                                        &error,
-                                    );
-                                }
-                            }
-                        }
-                        Ok(None) => break,
-                        Err(error) => {
-                            metrics.framing_errors().increment(1);
-                            debug!(%listen_addr, %peer_addr, %error, "Error decoding datagram frame. Continuing listener.");
-                            break;
-                        }
-                    }
-                }
+                let outcome = decoder
+                    .decode_buffer(
+                        &mut framer,
+                        &mut stream_capture,
+                        &mut buffer,
+                        bytes_read,
+                        BufferDecodeContext {
+                            listen_addr,
+                            peer_addr: &peer_addr,
+                            process_origin: process_origin.as_ref(),
+                            metrics,
+                            packet_forwarder: packet_forwarder.as_ref(),
+                            mode: BufferDecodeMode::Connectionless,
+                        },
+                    )
+                    .await;
+                debug_assert_eq!(outcome, DecodeOutcome::Continue);
 
                 buffer_handoff.return_to_reader(buffer);
             }
             _ = buffer_flush.tick() => {
-                if let (Some(event_buffer), Some(listen_addr)) =
-                    (event_buffer_manager.consume(), last_listen_addr.as_ref())
-                {
-                    dispatch_events(event_buffer, &source_context, listen_addr).await;
-                }
+                decoder.flush_events().await;
             }
         }
     }
 
-    if let (Some(event_buffer), Some(listen_addr)) = (event_buffer_manager.consume(), last_listen_addr.as_ref()) {
-        dispatch_events(event_buffer, &source_context, listen_addr).await;
-    }
+    decoder.flush_events().await;
 }
 
-async fn drive_stream(
-    stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    enabled_filter: EnablePayloadsFilter,
-) {
+async fn drive_stream(stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
     if stream.is_connectionless() {
         let memory_limiter = source_context.topology_context().memory_limiter().clone();
         let socket_context = handler_context
@@ -1807,13 +1925,10 @@ async fn drive_stream(
         return;
     }
 
-    drive_connected_stream(stream, source_context, handler_context, enabled_filter).await;
+    drive_connected_stream(stream, source_context, handler_context).await;
 }
 
-async fn drive_connected_stream(
-    stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
-    enabled_filter: EnablePayloadsFilter,
-) {
+async fn drive_connected_stream(stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
     let listen_addr = handler_context.listen_addr.clone();
     let metrics = handler_context.metrics.clone();
     let memory_limiter = source_context.topology_context().memory_limiter().clone();
@@ -1828,7 +1943,7 @@ async fn drive_connected_stream(
     debug!(%listen_addr, "Stream handler started.");
 
     metrics.connections_active().increment(1);
-    drive_decoder(receiver, source_context, handler_context, enabled_filter).await;
+    drive_decoder(receiver, source_context, handler_context).await;
     metrics.connections_active().decrement(1);
 
     debug!(%listen_addr, "Stream handler stopped.");
@@ -1836,37 +1951,27 @@ async fn drive_connected_stream(
 
 async fn drive_decoder(
     mut stream_receiver: mpsc::Receiver<io::Result<ReceivedBuffer>>, source_context: SourceContext,
-    handler_context: HandlerContext, enabled_filter: EnablePayloadsFilter,
+    handler_context: HandlerContext,
 ) {
     let HandlerContext {
         listen_addr,
         eol_required,
-        codec,
         metrics,
-        mut context_resolvers,
-        default_hostname,
-        origin_detection_enabled,
-        stream_log_too_big,
-        disable_verbose_logs,
-        additional_tags,
-        traffic_capture,
+        decoder_context,
         packet_forwarder,
         ..
     } = handler_context;
+    let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
     let mut framer = get_framer(&listen_addr, eol_required);
-
     let mut stream_capture = StreamCaptureState::new();
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    let mut event_buffer_manager = EventBufferManager::default();
     let mut last_process_origin = None;
 
     'read: loop {
-        let mut eof = false;
-
         select! {
             // We read from the stream.
             maybe_read_result = stream_receiver.recv() => match maybe_read_result {
@@ -1878,121 +1983,30 @@ async fn drive_decoder(
                         process_origin,
                         buffer_handoff,
                     } = received;
-                    let io_buffer = &mut buffer;
                     if process_origin.is_some() {
                         last_process_origin = process_origin;
                     }
 
-                    if bytes_read == 0 {
-                        eof = true;
-                    }
-
-                    let payload = received_payload(io_buffer, bytes_read);
-
-                    capture_uds_traffic(
-                        &listen_addr,
-                        &traffic_capture,
-                        &peer_addr,
-                        last_process_origin.as_ref(),
-                        payload,
-                        &mut stream_capture,
-                    );
-
-                    metrics.bytes_received().increment(bytes_read as u64);
-                    metrics.bytes_received_size().record(bytes_read as f64);
-                    let origin_detection_failed =
-                        origin_detection_failed_for_telemetry(origin_detection_enabled, bytes_read, &peer_addr);
-
-                    trace!(
-                        buffer_len = io_buffer.remaining(),
-                        buffer_cap = io_buffer.remaining_mut(),
-                        eof,
-                        %listen_addr,
-                        %peer_addr,
-                        "Received {} bytes from stream.",
-                        bytes_read
-                    );
-
-                    if should_drop_oversized_named_pipe_frame(&listen_addr, io_buffer) {
-                        metrics.framing_errors().increment(1);
-                        debug!(%listen_addr, %peer_addr, "DogStatsD named pipe frame exceeded the configured buffer size. Dropping frame.");
-                        io_buffer.clear();
-                        buffer_handoff.return_to_reader(buffer);
-                        continue 'read;
-                    }
-
-                    'frame: loop {
-                        let frame_result = framer.next_frame(io_buffer, eof);
-                        let completed_outer_frames = framer.take_completed_outer_frames();
-                        if completed_outer_frames > 0 {
-                            metrics.packet_receive_success().increment(completed_outer_frames as u64);
-                        }
-                        if origin_detection_failed && completed_outer_frames > 0 {
-                            metrics.origin_detection_errors().increment(completed_outer_frames as u64);
-                        }
-
-                        match frame_result {
-                            Ok(Some(frame)) => {
-                                if matches!(listen_addr, ListenAddress::NamedPipe { .. }) {
-                                    metrics.packet_receive_success().increment(1);
-                                }
-                                trace!(%listen_addr, %peer_addr, ?frame, "Decoded frame.");
-                                if let Some(forwarder) = &packet_forwarder {
-                                    forwarder.forward(frame.clone()).await;
-                                }
-                                match handle_frame(
-                                    &frame[..],
-                                    &codec,
-                                    &mut context_resolvers,
-                                    &metrics,
-                                    origin_detection_enabled,
-                                    last_process_origin.as_ref(),
-                                    enabled_filter,
-                                    &additional_tags,
-                                    &default_hostname,
-                                ) {
-                                    Ok(Some(event)) => {
-                                        if let Some(event_buffer) = event_buffer_manager.try_push(event) {
-                                            debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                                            dispatch_events(event_buffer, &source_context, &listen_addr).await;
-                                        }
-                                    },
-                                    Ok(None) => {
-                                        // We didn't decode an event, but there was no inherent error. This is likely
-                                        // due to hitting resource limits, etc.
-                                        //
-                                        // Simply continue on.
-                                        continue
-                                    },
-                                    Err(e) => {
-                                        log_parse_failure(disable_verbose_logs, &listen_addr, &peer_addr, &frame, &e);
-                                    },
-                                }
-                            }
-                            Err(e) => {
-                                metrics.framing_errors().increment(1);
-                                if should_warn_stream_log_too_big(&listen_addr, &e, stream_log_too_big) {
-                                    warn!(
-                                        %listen_addr,
-                                        %peer_addr,
-                                        error = %e,
-                                        "DogStatsD stream frame exceeded the configured buffer size."
-                                    );
-                                }
-
-                                debug!(%listen_addr, %peer_addr, error = %e, "Error decoding frame. Stopping stream.");
-                                break 'read;
-                            }
-                            Ok(None) => {
-                                trace!(%listen_addr, %peer_addr, "Not enough data to decode another frame.");
-                                if eof {
-                                    debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
-                                    break 'read;
-                                } else {
-                                    break 'frame;
-                                }
-                            }
-                        }
+                    let outcome = decoder
+                        .decode_buffer(
+                            &mut framer,
+                            &mut stream_capture,
+                            &mut buffer,
+                            bytes_read,
+                            BufferDecodeContext {
+                                listen_addr: &listen_addr,
+                                peer_addr: &peer_addr,
+                                process_origin: last_process_origin.as_ref(),
+                                metrics: &metrics,
+                                packet_forwarder: packet_forwarder.as_ref(),
+                                mode: BufferDecodeMode::Connected {
+                                    eof: bytes_read == 0,
+                                },
+                            },
+                        )
+                        .await;
+                    if outcome == DecodeOutcome::Stop {
+                        break 'read;
                     }
 
                     buffer_handoff.return_to_reader(buffer);
@@ -2009,17 +2023,13 @@ async fn drive_decoder(
             },
 
             _ = buffer_flush.tick() => {
-                if let Some(event_buffer) = event_buffer_manager.consume() {
-                    dispatch_events(event_buffer, &source_context, &listen_addr).await;
-                }
+                decoder.flush_events().await;
             },
 
         }
     }
 
-    if let Some(event_buffer) = event_buffer_manager.consume() {
-        dispatch_events(event_buffer, &source_context, &listen_addr).await;
-    }
+    decoder.flush_events().await;
 }
 
 fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &BytesBuffer) -> bool {
