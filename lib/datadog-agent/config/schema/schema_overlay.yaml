@@ -1104,7 +1104,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Packet buffer flush timeout"
-    documentation: "ADP decodes inline."
+    documentation: "ADP queues individual datagrams without packet batching."
 
   dogstatsd_packet_buffer_size:
     support: none
@@ -1112,7 +1112,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Datagrams per packet buffer"
-    documentation: "ADP decodes inline."
+    documentation: "ADP queues individual datagrams in its bounded I/O buffer pool."
 
   dogstatsd_pipe_name:
     support: full
@@ -1155,7 +1155,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Packet channel buffer size"
-    documentation: "ADP uses async tasks."
+    documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
 
   dogstatsd_so_rcvbuf:
     support: full
@@ -1296,12 +1296,23 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   dogstatsd_workers_count:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [dogstatsd]
     description: "Number of DSD processing workers"
-    documentation: "ADP uses async tasks."
+    documentation: |-
+      The core Agent uses `dogstatsd_workers_count` to override the size of one worker pool shared by
+      all DogStatsD listeners. When this setting is `0`, it derives the count from available vCPUs
+      and the DogStatsD pipeline configuration.
+
+      ADP uses the same explicit override for one decoder worker pool shared by all connectionless
+      UDP and UDS datagram listeners. When this setting is `0`, ADP matches the core Agent's default
+      pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
+      workers. Connection-oriented listeners continue to use one decoder per connection.
+    issue: "#2079"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   enable_json_stream_shared_compressor_buffers:
     support: none

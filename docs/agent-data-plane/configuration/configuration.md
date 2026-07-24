@@ -59,16 +59,15 @@ architecture is fundamentally different or the feature is platform-specific.
 | `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max`    | Memory rate limiter FreeOS check max               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
 | `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min`    | Memory rate limiter FreeOS check min               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
 | `dogstatsd_no_aggregation_pipeline_batch_size`                    | No-aggregation pipeline batch size                 | Fixed in ADP topology.                                                                                                                                                                                                                                                    |
-| `dogstatsd_packet_buffer_flush_timeout`                           | Packet buffer flush timeout                        | ADP decodes inline.                                                                                                                                                                                                                                                       |
-| `dogstatsd_packet_buffer_size`                                    | Datagrams per packet buffer                        | ADP decodes inline.                                                                                                                                                                                                                                                       |
+| `dogstatsd_packet_buffer_flush_timeout`                           | Packet buffer flush timeout                        | ADP queues individual datagrams without packet batching.                                                                                                                                                                                                                  |
+| `dogstatsd_packet_buffer_size`                                    | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
 | `dogstatsd_pipeline_autoadjust`                                   | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
 | `dogstatsd_pipeline_count`                                        | Parallel processing pipelines                      | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_queue_size`                                            | Packet channel buffer size                         | ADP uses async tasks.                                                                                                                                                                                                                                                     |
+| `dogstatsd_queue_size`                                            | Packet channel buffer size                         | ADP bounds datagram queues with `dogstatsd_buffer_count_max`.                                                                                                                                                                                                             |
 | `dogstatsd_stats_buffer`                                          | Internal stats buffer size                         | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
 | `dogstatsd_stats_enable`                                          | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
 | `dogstatsd_stats_port`                                            | Internal stats endpoint port                       | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
 | `dogstatsd_telemetry_enabled_listener_id`                         | Per-listener telemetry tagging                     | Not feasible to thread listener identity through ADP's async decode pipeline.                                                                                                                                                                                             |
-| `dogstatsd_workers_count`                                         | Number of DSD processing workers                   | ADP uses async tasks.                                                                                                                                                                                                                                                     |
 | `enable_json_stream_shared_compressor_buffers`                    | Pre-allocate shared compressor buffers             | ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.                                                                                                                                               |
 | `entity_id`                                                       | Agent pod entity ID                                | ADP internal DogStatsD telemetry uses OpenMetrics.                                                                                                                                                                                                                        |
 | `forwarder_requeue_buffer_size`                                   | In-memory re-queue buffer size                     | See below                                                                                                                                                                                                                                                                 |
@@ -245,6 +244,7 @@ default values.
 | `aggregator_stop_timeout`              | Timeout (s) for aggregator flush on stop  |
 | `dogstatsd_mapper_cache_size`          | Mapper result LRU cache size              |
 | `dogstatsd_metrics_stats_enable`       | Enable per-metric debug stats             |
+| `dogstatsd_workers_count`              | Number of DSD processing workers          |
 | `forwarder_apikey_validation_interval` | API key check interval (minutes)          |
 | `forwarder_high_prio_buffer_size`      | High-priority request queue size          |
 | `forwarder_num_workers`                | Concurrent forwarder workers              |
@@ -293,6 +293,17 @@ mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
 ### `dogstatsd_metrics_stats_enable`
 
 See `dogstatsd_stats_enable`
+
+### `dogstatsd_workers_count`
+
+The core Agent uses `dogstatsd_workers_count` to override the size of one worker pool shared by
+all DogStatsD listeners. When this setting is `0`, it derives the count from available vCPUs
+and the DogStatsD pipeline configuration.
+
+ADP uses the same explicit override for one decoder worker pool shared by all connectionless
+UDP and UDS datagram listeners. When this setting is `0`, ADP matches the core Agent's default
+pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
+workers. Connection-oriented listeners continue to use one decoder per connection.
 
 ### `forwarder_apikey_validation_interval`
 
@@ -449,7 +460,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived        |
 | `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |                |
 | `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |                |
-| `dogstatsd_buffer_count_max`                                    | Max receive buffers                        | 256            |
+| `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count               | 32768          |
 | `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128            |
 | `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 |                |
 | `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         |                |
@@ -792,3 +803,4 @@ compressed wire payload bytes.
 [#1753]: https://github.com/DataDog/saluki/issues/1753
 [#1754]: https://github.com/DataDog/saluki/issues/1754
 [#1755]: https://github.com/DataDog/saluki/issues/1755
+[#2079]: https://github.com/DataDog/saluki/issues/2079

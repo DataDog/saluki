@@ -620,6 +620,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.dogstatsd.listeners.windows_pipe_security_descriptor = value;
     }
 
+    fn consume_dogstatsd_workers_count(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(worker_count) => self.config.domains.dogstatsd.listeners.workers_count = worker_count,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_workers_count",
+                "worker count must be greater than or equal to 0",
+            )),
+        }
+    }
+
     fn consume_enable_payloads_events(&mut self, value: bool) {
         self.config.domains.dogstatsd.enable_payloads.events = value;
     }
@@ -1166,6 +1176,7 @@ mod tests {
             "api_key": "abc",
             "dd_url": "https://custom.example.com",
             "dogstatsd_port": 9125,
+            "dogstatsd_workers_count": 3,
             "dogstatsd_tag_cardinality": "high",
             "expected_tags_duration": "15s",
             "telemetry": { "dogstatsd_origin": true },
@@ -1184,6 +1195,7 @@ mod tests {
 
         // Driven scalar conversion: i64 -> u16.
         assert_eq!(config.domains.dogstatsd.listeners.port, 9125);
+        assert_eq!(config.domains.dogstatsd.listeners.workers_count, 3);
         // Driven enum parse.
         assert_eq!(
             config.domains.dogstatsd.origin.tag_cardinality,
@@ -1201,6 +1213,21 @@ mod tests {
         );
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
+    }
+
+    #[test]
+    fn negative_dogstatsd_workers_count_records_translation_error() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "dogstatsd_workers_count": -1,
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert_eq!(config.domains.dogstatsd.listeners.workers_count, 0);
+        let errors = errors.expect("negative worker count should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_workers_count"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
     }
 
     #[test]

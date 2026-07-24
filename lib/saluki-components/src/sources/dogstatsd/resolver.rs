@@ -1,11 +1,13 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use saluki_context::{ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder};
+use saluki_context::{
+    origin::RawOrigin, tags::SharedTagSet, ContextResolver, ContextResolverBuilder, TagsResolver, TagsResolverBuilder,
+};
 use saluki_core::components::ComponentContext;
 use saluki_error::{generic_error, GenericError};
 use stringtheory::interning::GenericMapInterner;
 
-use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver};
+use super::{DogStatsDConfiguration, DogStatsDOriginTagResolver, ProcessOrigin};
 
 /// Context resolvers for the DogStatsD source.
 #[derive(Clone)]
@@ -13,6 +15,7 @@ pub struct ContextResolvers {
     primary: ContextResolver,
     no_agg: ContextResolver,
     tags: TagsResolver,
+    origin_tags: Option<DogStatsDOriginTagResolver>,
 }
 
 impl ContextResolvers {
@@ -39,6 +42,7 @@ impl ContextResolvers {
 
         let interner = GenericMapInterner::new(context_string_interner_size);
 
+        let origin_tags = maybe_origin_tags_resolver.clone();
         let tags_resolver = TagsResolverBuilder::new(format!("{}/dsd/tags", context.component_id()), interner.clone())?
             .with_cached_tagsets_limit(cached_tagsets_limit)
             .with_idle_tagsets_expiration(context_expiry_seconds)
@@ -70,12 +74,30 @@ impl ContextResolvers {
             primary: primary_resolver,
             no_agg: no_agg_resolver,
             tags: tags_resolver,
+            origin_tags,
         })
     }
 
     #[cfg(test)]
     pub fn manual(primary: ContextResolver, no_agg: ContextResolver, tags: TagsResolver) -> Self {
-        ContextResolvers { primary, no_agg, tags }
+        ContextResolvers {
+            primary,
+            no_agg,
+            tags,
+            origin_tags: None,
+        }
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub fn manual_with_origin(
+        primary: ContextResolver, no_agg: ContextResolver, tags: TagsResolver, origin_tags: DogStatsDOriginTagResolver,
+    ) -> Self {
+        ContextResolvers {
+            primary,
+            no_agg,
+            tags,
+            origin_tags: Some(origin_tags),
+        }
     }
 
     /// Returns a mutable reference to the primary context resolver.
@@ -96,6 +118,14 @@ impl ContextResolvers {
     /// Returns a mutable reference to the tags resolver.
     pub fn tags(&mut self) -> &mut TagsResolver {
         &mut self.tags
+    }
+
+    /// Resolves origin tags using the sender identity pinned when the packet was received.
+    pub fn resolve_origin_tags(&self, origin: RawOrigin<'_>, process_origin: Option<&ProcessOrigin>) -> SharedTagSet {
+        match &self.origin_tags {
+            Some(resolver) => resolver.resolve_origin_tags_with_process_origin(origin, process_origin),
+            None => self.tags.resolve_origin_tags(Some(origin)),
+        }
     }
 }
 

@@ -4,8 +4,8 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{
-            AtomicUsize,
-            Ordering::{AcqRel, Acquire, Relaxed},
+            AtomicBool, AtomicUsize,
+            Ordering::{AcqRel, Acquire, Relaxed, Release},
         },
         Arc, Mutex,
     },
@@ -17,7 +17,7 @@ use pin_project::pin_project;
 use saluki_common::resource_tracking::ResourceGroupToken;
 use tokio::{
     sync::{futures::OwnedNotified, Notify, OwnedSemaphorePermit, Semaphore, SemaphorePermit},
-    time::sleep,
+    time::{sleep, Instant},
 };
 use tokio_util::sync::PollSemaphore;
 use tracing::{debug, trace};
@@ -25,6 +25,8 @@ use tracing::{debug, trace};
 use super::{Clearable, ObjectPool, PoolMetrics, Poolable, ReclaimStrategy};
 
 const SHRINKER_SLEEP_DURATION: Duration = Duration::from_secs(1);
+const SHRINK_GRACE_PERIOD: Duration = Duration::from_secs(5);
+const SHRINK_BATCH_DIVISOR: usize = 4;
 
 /// An elastic object pool.
 ///
@@ -32,13 +34,14 @@ const SHRINKER_SLEEP_DURATION: Duration = Duration::from_secs(1);
 /// item is requested and the pool is empty, but hasn't yet reached its maximum size, it will allocate the item on
 /// demand.
 ///
-/// Periodically, a background task will evaluate the utilization of the pool and shrink the pool size in order to
-/// attempt to size it more closely to the recent demand. The frequency of this shrinking, as well as how usage demand
-/// is captured and rolled off, is configurable.
+/// After a grace period without growth, a background task shrinks idle capacity toward the minimum capacity. Shrinking
+/// removes a fraction of the excess idle items each interval, and returned items above the minimum are dropped
+/// immediately while shrinking is active. A new on-demand allocation disables shrinking for another grace period so
+/// nearby bursts can reuse the existing capacity.
 ///
 /// # Missing
 ///
-/// - Actual configurability around the shrinking frequency and usage demand roll-off.
+/// - Configurability for the shrinking frequency, grace period, and batch fraction.
 pub struct ElasticObjectPool<T: Poolable> {
     strategy: Arc<ElasticStrategy<T>>,
 }
@@ -109,11 +112,16 @@ struct ElasticStrategy<T: Poolable> {
     available: Arc<Semaphore>,
     active_decreased: Arc<Notify>,
     active: AtomicUsize,
-    on_demand_allocs: AtomicUsize,
+    shrinking_enabled: AtomicBool,
+    shrink_state: Mutex<ShrinkState>,
     min_capacity: usize,
     max_capacity: usize,
     resource_group: ResourceGroupToken,
     metrics: PoolMetrics,
+}
+
+struct ShrinkState {
+    last_growth: Instant,
 }
 
 impl<T: Poolable> ElasticStrategy<T> {
@@ -122,6 +130,11 @@ impl<T: Poolable> ElasticStrategy<T> {
         S: Into<String>,
         B: Fn() -> T::Data + Send + Sync + 'static,
     {
+        assert!(
+            min_capacity <= max_capacity,
+            "minimum capacity must not exceed maximum capacity"
+        );
+
         let builder = Box::new(builder);
 
         // Allocate enough storage to hold the maximum number of items, but only _build_ the minimum number of items.
@@ -139,7 +152,10 @@ impl<T: Poolable> ElasticStrategy<T> {
             available,
             active_decreased: Arc::new(Notify::new()),
             active: AtomicUsize::new(min_capacity),
-            on_demand_allocs: AtomicUsize::new(0),
+            shrinking_enabled: AtomicBool::new(false),
+            shrink_state: Mutex::new(ShrinkState {
+                last_growth: Instant::now(),
+            }),
             min_capacity,
             max_capacity,
             resource_group: ResourceGroupToken::current(),
@@ -157,6 +173,56 @@ impl<T: Poolable> ElasticStrategy<T> {
 
         data
     }
+
+    fn try_increase_active_for_growth(&self, active: usize) -> bool {
+        let mut shrink_state = self.shrink_state.lock().unwrap();
+        if self
+            .active
+            .compare_exchange_weak(active, active + 1, AcqRel, Relaxed)
+            .is_err()
+        {
+            return false;
+        }
+
+        shrink_state.last_growth = Instant::now();
+        self.shrinking_enabled.store(false, Release);
+        true
+    }
+
+    fn enable_shrinking_if_grace_elapsed(&self) -> bool {
+        let shrink_state = self.shrink_state.lock().unwrap();
+        if shrink_state.last_growth.elapsed() < SHRINK_GRACE_PERIOD {
+            return false;
+        }
+
+        self.shrinking_enabled.store(true, Release);
+        true
+    }
+
+    fn try_decrease_active(&self) -> bool {
+        self.active
+            .fetch_update(AcqRel, Acquire, |active| {
+                (active > self.min_capacity).then_some(active - 1)
+            })
+            .is_ok()
+    }
+
+    fn shrinking_is_current(&self, shrink_state: &ShrinkState) -> bool {
+        self.shrinking_enabled.load(Acquire) && shrink_state.last_growth.elapsed() >= SHRINK_GRACE_PERIOD
+    }
+
+    fn excess_idle_capacity(&self) -> usize {
+        let idle_excess = self.available.available_permits().saturating_sub(self.min_capacity);
+        let capacity_excess = self.active.load(Acquire).saturating_sub(self.min_capacity);
+
+        idle_excess.min(capacity_excess)
+    }
+
+    fn record_deletion(&self) {
+        self.metrics.deleted().increment(1);
+        self.metrics.capacity().decrement(1.0);
+        self.active_decreased.notify_waiters();
+    }
 }
 
 impl<T> ElasticStrategy<T>
@@ -173,10 +239,25 @@ impl<T: Poolable> ReclaimStrategy<T> for ElasticStrategy<T> {
     fn reclaim(&self, mut data: T::Data) {
         data.clear();
 
-        self.items.lock().unwrap().push_back(data);
-        self.available.add_permits(1);
         self.metrics.released().increment(1);
         self.metrics.in_use().decrement(1.0);
+
+        if self.shrinking_enabled.load(Acquire) {
+            let shrink_state = self.shrink_state.lock().unwrap();
+            if self.shrinking_is_current(&shrink_state)
+                && self.available.available_permits() >= self.min_capacity
+                && self.try_decrease_active()
+            {
+                drop(shrink_state);
+                drop(data);
+                self.record_deletion();
+                trace!("Dropped returned item above the minimum capacity.");
+                return;
+            }
+        }
+
+        self.items.lock().unwrap().push_back(data);
+        self.available.add_permits(1);
     }
 }
 
@@ -244,13 +325,8 @@ where
                     break;
                 }
 
-                // Try to atomically increment `active` which signals that we still have capacity to allocate another
-                // item, and more importantly, that _we_ are authorized to do so.
-                if strategy
-                    .active
-                    .compare_exchange_weak(active, active + 1, AcqRel, Relaxed)
-                    .is_err()
-                {
+                // Claim capacity and record growth under the same lock that guards shrink completion.
+                if !strategy.try_increase_active_for_growth(active) {
                     continue;
                 }
 
@@ -261,7 +337,6 @@ where
                     (strategy.builder)()
                 };
 
-                strategy.on_demand_allocs.fetch_add(1, Relaxed);
                 strategy.metrics.created().increment(1);
                 strategy.metrics.capacity().increment(1.0);
                 strategy.metrics.in_use().increment(1.0);
@@ -308,113 +383,81 @@ where
 }
 
 async fn run_background_shrinker<T: Poolable>(strategy: Arc<ElasticStrategy<T>>) {
-    // The shrinker continuously tracks the "demand" for items in the pool, and attempts to shrink the pool size such
-    // that it stays at the smallest possible size while minimizing the amount of on-demand allocations seen.
-    //
-    // Every time the shrinker runs, it consumes the current value of `fallback_count`, which gives us a delta of the
-    // number of on-demand allocations that have occurred since the last time the shrinker ran, or simply "demand". We
-    // track a rolling average of this demand, and if the average demand is less than N, where N is configurable, then
-    // we consider the pool eligible to shrink.
-    //
-    // We only shrink the pool down to its minimum capacity, even if the average demand is less than N. When the pool is
-    // eligible to shrink and not yet at the minimum capacity, we remove a single item from the pool per iteration.
-
-    // We use an alpha of 0.1, which provides a fairly strong smoothing effect.
-    let mut average_demand = Ewma::new(0.1);
-    let min_capacity = strategy.min_capacity;
-
     loop {
         debug!("Shrinker sleeping.");
         sleep(SHRINKER_SLEEP_DURATION).await;
 
-        // Track the number of available permits, and the number of active items.
-        //
-        // When we have available permits, and our active count is greater than the minimum capacity, we'll take an item
-        // from the pool.
-        let active = strategy.active.load(Relaxed);
-        if active <= min_capacity {
-            debug!("Object pool already at minimum capacity. Nothing to do.");
+        if !strategy.enable_shrinking_if_grace_elapsed() {
+            debug!("Object pool is within the post-growth grace period. Skipping shrinking.");
             continue;
         }
 
-        let delta_demand = strategy.on_demand_allocs.swap(0, Relaxed);
-        average_demand.update(delta_demand as f64);
-        if average_demand.value() < 1.0 {
-            debug!(
-                avg_demand = average_demand.value(),
-                active, min_capacity, "Pool qualifies for shrinking. Attempting to remove single item..."
-            );
-
-            try_shrink_one_available_item(&strategy);
-        } else {
-            debug!(
-                avg_demand = average_demand.value(),
-                active, min_capacity, "Pool does not qualify for shrinking."
-            );
+        let idle_excess = strategy.excess_idle_capacity();
+        if idle_excess == 0 {
+            debug!("Object pool has no excess idle capacity. Nothing to shrink.");
+            continue;
         }
+
+        let batch_size = idle_excess.div_ceil(SHRINK_BATCH_DIVISOR);
+        let removed = try_shrink_available_items(&strategy, batch_size);
+        debug!(
+            idle_excess,
+            batch_size, removed, "Shrank excess idle object pool capacity."
+        );
     }
+}
+
+fn try_shrink_available_items<T: Poolable>(strategy: &ElasticStrategy<T>, count: usize) -> usize {
+    (0..count)
+        .take_while(|_| try_shrink_one_available_item(strategy))
+        .count()
 }
 
 fn try_shrink_one_available_item<T: Poolable>(strategy: &ElasticStrategy<T>) -> bool {
+    if strategy.excess_idle_capacity() == 0 {
+        return false;
+    }
+
     // Only shrink idle pool capacity. Waiting here can let the shrinker consume the next returned item ahead of
     // application waiters that are already blocked on the same semaphore.
     let Ok(permit) = strategy.available.try_acquire() else {
-        debug!("Pool qualifies for shrinking, but no idle item is available.");
+        debug!("Pool has excess idle capacity, but no idle item is available.");
         return false;
     };
 
-    // Keep shrink completion separate so tests can reproduce interleavings after the shrinker takes a permit.
-    shrink_available_item(strategy, permit);
-    true
+    try_shrink_available_item(strategy, permit)
 }
 
-fn shrink_available_item<T: Poolable>(strategy: &ElasticStrategy<T>, permit: SemaphorePermit<'_>) {
-    // Lock the pool and remove an item, taking care to update the active count while holding the lock.
-    let item = {
-        let item = strategy.items.lock().unwrap().pop_back().unwrap();
-        strategy.active.fetch_sub(1, AcqRel);
-        item
-    };
+fn try_shrink_available_item<T: Poolable>(strategy: &ElasticStrategy<T>, permit: SemaphorePermit<'_>) -> bool {
+    let shrink_state = strategy.shrink_state.lock().unwrap();
+    if !strategy.shrinking_is_current(&shrink_state) {
+        return false;
+    }
 
-    // Drop the item itself, and update our metrics.
+    let mut items = strategy.items.lock().unwrap();
+    if !strategy.try_decrease_active() {
+        return false;
+    }
+    let item = items.pop_back().unwrap();
+    drop(items);
+    drop(shrink_state);
     drop(item);
-    strategy.metrics.deleted().increment(1);
-    strategy.metrics.capacity().decrement(1.0);
 
-    // Forget the permit so that we shrink the overall number of permits attached to the semaphore.
     permit.forget();
-
-    strategy.active_decreased.notify_waiters();
-
-    debug!("Shrinker successfully removed an item from the pool.");
-}
-
-struct Ewma {
-    value: f64,
-    alpha: f64,
-}
-
-impl Ewma {
-    fn new(alpha: f64) -> Self {
-        Self { value: 0.0, alpha }
-    }
-
-    fn update(&mut self, new_value: f64) {
-        self.value = (1.0 - self.alpha) * self.value + self.alpha * new_value;
-    }
-
-    fn value(&self) -> f64 {
-        self.value
-    }
+    strategy.record_deletion();
+    true
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering::Acquire;
+    use std::sync::atomic::Ordering::{Acquire, Release};
 
     use tokio_test::{assert_pending, assert_ready, task::spawn};
 
-    use super::{shrink_available_item, try_shrink_one_available_item, ElasticObjectPool};
+    use super::{
+        try_shrink_available_item, try_shrink_one_available_item, ElasticObjectPool, SHRINKER_SLEEP_DURATION,
+        SHRINK_GRACE_PERIOD,
+    };
     use crate::{pooled, pooling::ObjectPool as _};
 
     pooled! {
@@ -429,6 +472,11 @@ mod tests {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("TestObject").finish_non_exhaustive()
         }
+    }
+
+    fn make_shrink_eligible(pool: &ElasticObjectPool<TestObject>) {
+        pool.strategy.shrink_state.lock().unwrap().last_growth = tokio::time::Instant::now() - SHRINK_GRACE_PERIOD;
+        pool.strategy.shrinking_enabled.store(true, Release);
     }
 
     #[test]
@@ -521,6 +569,7 @@ mod tests {
         drop(second_item);
         assert_eq!(pool.strategy.active.load(Acquire), 2);
         assert_eq!(pool.strategy.available.available_permits(), 1);
+        make_shrink_eligible(&pool);
 
         // Simulate the shrinker winning the race to the idle permit before a new acquire starts waiting:
         // active = 2, permits = 0, shrinker holds the permit.
@@ -537,7 +586,7 @@ mod tests {
         assert!(!third_acquire.is_woken());
 
         // Shrinking removes the idle item and lowers active: active = 1, permits = 0.
-        shrink_available_item(&pool.strategy, permit);
+        assert!(try_shrink_available_item(&pool.strategy, permit));
         assert_eq!(pool.strategy.active.load(Acquire), 1);
         assert_eq!(pool.strategy.available.available_permits(), 0);
 
@@ -555,50 +604,121 @@ mod tests {
         drop(third_item);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn background_shrinker_shrinks_idle_pool_to_min_capacity() {
-        use super::SHRINKER_SLEEP_DURATION;
+    #[test]
+    fn eligible_pool_drops_returned_items_above_minimum_capacity() {
+        let (pool, _) = ElasticObjectPool::<TestObject>::with_builder("test", 1, 4, || TestObjectInner { value: 0 });
 
-        // min=1, max=3: one item is preallocated, and up to two more can be burst-allocated on demand.
-        let (pool, shrinker) = ElasticObjectPool::<TestObject>::with_capacity("test", 1, 3);
-
-        // Burst all the way to max capacity, then return every item so the pool is fully idle. The two
-        // burst allocations register as recent "demand" that the shrinker's EWMA has to decay past
-        // before it will start reclaiming items.
         let mut items = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..4 {
             let mut acquire = spawn(pool.acquire());
             items.push(assert_ready!(acquire.poll()));
         }
-        assert_eq!(pool.strategy.active.load(Acquire), 3);
+        make_shrink_eligible(&pool);
+
         drop(items);
-        assert_eq!(pool.strategy.available.available_permits(), 3);
 
-        // Drive the real background shrinker one loop iteration per poll under paused time.
+        assert_eq!(pool.strategy.active.load(Acquire), 1);
+        assert_eq!(pool.strategy.available.available_permits(), 1);
+        assert_eq!(pool.strategy.items.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn fresh_growth_cancels_an_in_flight_shrink() {
+        let (pool, _) = ElasticObjectPool::<TestObject>::with_builder("test", 1, 4, || TestObjectInner { value: 0 });
+
+        let mut first_acquire = spawn(pool.acquire());
+        let first_item = assert_ready!(first_acquire.poll());
+        let mut second_acquire = spawn(pool.acquire());
+        let second_item = assert_ready!(second_acquire.poll());
+        let mut third_acquire = spawn(pool.acquire());
+        let third_item = assert_ready!(third_acquire.poll());
+        drop(second_item);
+        drop(third_item);
+        make_shrink_eligible(&pool);
+
+        let shrink_permit = pool
+            .strategy
+            .available
+            .try_acquire()
+            .expect("an idle item should be available to the shrinker");
+        let mut fourth_acquire = spawn(pool.acquire());
+        let fourth_item = assert_ready!(fourth_acquire.poll());
+        let mut fifth_acquire = spawn(pool.acquire());
+        let fifth_item = assert_ready!(fifth_acquire.poll());
+
+        assert!(!pool.strategy.shrinking_enabled.load(Acquire));
+        assert!(
+            !try_shrink_available_item(&pool.strategy, shrink_permit),
+            "growth must cancel shrink work that sampled an older grace period"
+        );
+        assert_eq!(pool.strategy.active.load(Acquire), 4);
+        assert_eq!(pool.strategy.available.available_permits(), 1);
+
+        drop(first_item);
+        drop(fourth_item);
+        drop(fifth_item);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn background_shrinker_honors_grace_and_shrinks_idle_excess_in_batches() {
+        let (pool, shrinker) =
+            ElasticObjectPool::<TestObject>::with_builder("test", 1, 10, || TestObjectInner { value: 0 });
+
+        let mut items = Vec::new();
+        for _ in 0..10 {
+            let mut acquire = spawn(pool.acquire());
+            items.push(assert_ready!(acquire.poll()));
+        }
+        assert_eq!(pool.strategy.active.load(Acquire), 10);
+        drop(items);
+        assert_eq!(pool.strategy.available.available_permits(), 10);
+
         let mut shrinker = spawn(shrinker);
-        assert_pending!(shrinker.poll()); // first iteration parks on the initial sleep
+        assert_pending!(shrinker.poll());
 
-        // With no further on-demand demand, the smoothed demand stays below the shrink threshold, so the
-        // shrinker removes exactly one idle item per iteration.
+        tokio::time::advance(SHRINK_GRACE_PERIOD - SHRINKER_SLEEP_DURATION).await;
+        assert_pending!(shrinker.poll());
+        assert_eq!(pool.strategy.active.load(Acquire), 10);
+
         tokio::time::advance(SHRINKER_SLEEP_DURATION).await;
         assert_pending!(shrinker.poll());
+        assert_eq!(pool.strategy.active.load(Acquire), 7);
+        assert_eq!(pool.strategy.available.available_permits(), 7);
+
+        for _ in 0..8 {
+            tokio::time::advance(SHRINKER_SLEEP_DURATION).await;
+            assert_pending!(shrinker.poll());
+        }
+        assert_eq!(pool.strategy.active.load(Acquire), 1);
+        assert_eq!(pool.strategy.available.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn on_demand_growth_restarts_shrink_grace_period() {
+        let (pool, shrinker) =
+            ElasticObjectPool::<TestObject>::with_builder("test", 1, 3, || TestObjectInner { value: 0 });
+        let mut shrinker = spawn(shrinker);
+        assert_pending!(shrinker.poll());
+
+        tokio::time::advance(SHRINK_GRACE_PERIOD).await;
+        assert_pending!(shrinker.poll());
+        assert!(pool.strategy.shrinking_enabled.load(Acquire));
+
+        let mut first_acquire = spawn(pool.acquire());
+        let first_item = assert_ready!(first_acquire.poll());
+        let mut second_acquire = spawn(pool.acquire());
+        let second_item = assert_ready!(second_acquire.poll());
+        assert!(!pool.strategy.shrinking_enabled.load(Acquire));
+        drop(first_item);
+        drop(second_item);
         assert_eq!(pool.strategy.active.load(Acquire), 2);
-        assert_eq!(pool.strategy.available.available_permits(), 2);
+
+        tokio::time::advance(SHRINK_GRACE_PERIOD - SHRINKER_SLEEP_DURATION).await;
+        assert_pending!(shrinker.poll());
+        assert_eq!(pool.strategy.active.load(Acquire), 2);
 
         tokio::time::advance(SHRINKER_SLEEP_DURATION).await;
         assert_pending!(shrinker.poll());
         assert_eq!(pool.strategy.active.load(Acquire), 1);
-        assert_eq!(pool.strategy.available.available_permits(), 1);
-
-        // Once the pool is back at its minimum capacity, further shrinker iterations leave it untouched:
-        // the pool is documented to only ever shrink down to (never below) its minimum capacity.
-        tokio::time::advance(SHRINKER_SLEEP_DURATION).await;
-        assert_pending!(shrinker.poll());
-        assert_eq!(
-            pool.strategy.active.load(Acquire),
-            1,
-            "the shrinker must never shrink a pool below its minimum capacity"
-        );
-        assert_eq!(pool.strategy.available.available_permits(), 1);
     }
 }

@@ -81,7 +81,7 @@ static DOGSTATSD_BUFFER_COUNT_MAX_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_buffer_count_max",
     env_vars: &[],
     value_type: ValueType::Integer,
-    default: Some("256"),
+    default: Some("32768"),
 };
 
 crate::declare_annotations! {
@@ -573,6 +573,17 @@ crate::declare_annotations! {
     DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR = SalukiAnnotation {
         schema: &schema::DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR,
         support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `dogstatsd_workers_count`-Number of DSD processing workers
+    DOGSTATSD_WORKERS_COUNT = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_WORKERS_COUNT,
+        support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],

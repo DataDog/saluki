@@ -485,6 +485,23 @@ mod tests {
         assert!(matches!(result, Err(Error::Translate { .. })));
     }
 
+    #[tokio::test]
+    async fn negative_dogstatsd_workers_count_is_rejected_at_startup() {
+        let result = standalone_system(
+            Some(json!({ "dogstatsd_workers_count": -1 })),
+            None,
+            EnvOverlayMode::Fallback,
+        )
+        .await;
+
+        let Err(error) = result else {
+            panic!("negative worker count should fail the startup translation gate");
+        };
+        assert!(matches!(error, Error::Translate { .. }));
+        assert!(error.to_string().contains("dogstatsd_workers_count"));
+        assert!(error.to_string().contains("greater than or equal to 0"));
+    }
+
     #[test]
     fn zero_otlp_trace_interner_size_is_rejected() {
         // Component builders used to discover this after translation. Reject zero before publishing
