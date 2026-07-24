@@ -1537,19 +1537,10 @@ async fn receive_connected_stream(
     let mut buffer_manager = IoBufferManager::new(&io_buffer_pool);
 
     loop {
-        select! {
-            _ = packets_tx.closed() => break,
-            _ = memory_limiter.wait_for_capacity() => {}
-        }
+        memory_limiter.wait_for_capacity().await;
 
-        let mut buffer = select! {
-            _ = packets_tx.closed() => break,
-            buffer = buffer_manager.take_buffer() => buffer,
-        };
-        let (bytes_read, peer_addr) = match select! {
-            _ = packets_tx.closed() => break,
-            result = stream.receive(&mut buffer) => result,
-        } {
+        let mut buffer = buffer_manager.take_buffer().await;
+        let (bytes_read, peer_addr) = match stream.receive(&mut buffer).await {
             Ok(received) => received,
             Err(error) => {
                 buffer_manager.return_buffer(buffer);
@@ -1569,6 +1560,7 @@ async fn receive_connected_stream(
         };
 
         if packets_tx.send(Ok(received)).await.is_err() {
+            debug!("Failed to enqueue DogStatsD packet for decoding: receiver dropped.");
             break;
         }
 
@@ -1591,19 +1583,10 @@ async fn receive_connectionless_stream(
 
     let mut buffer_manager = IoBufferManager::new(&io_buffer_pool);
     loop {
-        select! {
-            _ = datagram_sender.closed() => break,
-            _ = memory_limiter.wait_for_capacity() => {}
-        }
+        memory_limiter.wait_for_capacity().await;
 
-        let mut buffer = select! {
-            _ = datagram_sender.closed() => break,
-            buffer = buffer_manager.take_buffer() => buffer,
-        };
-        let result = match select! {
-            _ = datagram_sender.closed() => break,
-            result = stream.receive(&mut buffer) => result,
-        } {
+        let mut buffer = buffer_manager.take_buffer().await;
+        let result = match stream.receive(&mut buffer).await {
             Ok((bytes_read, peer_addr)) => {
                 let process_origin = resolve_process_origin(capture_entity_resolver.as_deref(), &peer_addr);
                 Ok(ReceivedBuffer {
@@ -1626,6 +1609,10 @@ async fn receive_connectionless_stream(
             socket_context: socket_context.clone(),
         };
         if datagram_sender.send(queued).await.is_err() {
+            debug!(
+                listen_addr = %socket_context.listen_addr,
+                "Failed to enqueue DogStatsD packet for decoding: receiver dropped."
+            );
             break;
         }
         if receive_failed {
@@ -3337,9 +3324,13 @@ mod tests {
         }
 
         drop(packets_rx);
+        sender
+            .send_to(b"shutdown", &socket_path)
+            .await
+            .expect("shutdown payload should send");
         timeout(Duration::from_secs(1), reader)
             .await
-            .expect("reader should stop when the queue closes")
+            .expect("reader should stop after observing the closed queue")
             .expect("reader task should not panic");
         drop(shrinker);
     }
@@ -3428,10 +3419,15 @@ mod tests {
         assert!(metric.context().origin_tags().has_tag("container:original"));
         assert!(!metric.context().origin_tags().has_tag("container:reused"));
 
+        drop(received);
         drop(packets_rx);
+        sender
+            .send_to(b"shutdown", &socket_path)
+            .await
+            .expect("shutdown payload should send");
         timeout(Duration::from_secs(1), reader)
             .await
-            .expect("reader should stop when the queue closes")
+            .expect("reader should stop after observing the closed queue")
             .expect("reader task should not panic");
         drop(shrinker);
     }
@@ -3476,9 +3472,13 @@ mod tests {
         buffer_handoff.return_to_reader(buffer);
 
         drop(packets_rx);
+        sender
+            .write_all(b"shutdown")
+            .await
+            .expect("shutdown payload should send");
         timeout(Duration::from_secs(1), reader)
             .await
-            .expect("reader should stop when the queue closes")
+            .expect("reader should stop after observing the closed queue")
             .expect("reader task should not panic");
         drop(shrinker);
     }
