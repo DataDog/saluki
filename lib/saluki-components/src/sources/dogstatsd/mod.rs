@@ -124,7 +124,6 @@ const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
 const DOGSTATSD_LISTENER_WORKER_COUNT: usize = 1;
 const DOGSTATSD_PIPELINE_COUNT: usize = 1;
 const MIN_DOGSTATSD_WORKER_COUNT: usize = 2;
-const DOGSTATSD_RETAINED_IDLE_BUFFER_COUNT: usize = 256;
 
 fn default_decoder_worker_count(vcpus: usize) -> usize {
     vcpus
@@ -141,7 +140,7 @@ const fn default_buffer_count() -> usize {
 }
 
 const fn default_buffer_count_max() -> usize {
-    // Temporary ceiling for testing with the Core Agent's default 256 MiB receive backlog.
+    // 32768 buffers at the default 8 KiB size provide about 256 MiB of payload capacity.
     32768
 }
 
@@ -312,13 +311,13 @@ pub struct DogStatsDConfiguration {
     /// decoding. Increasing this value lets datagram listeners absorb larger bursts at the cost of up to one additional
     /// `dogstatsd_buffer_size` allocation per buffer. High-throughput workloads with traffic bursts may increase it.
     /// This limit bounds payload buffers, but not per-connection task and channel bookkeeping.
-    /// After a short grace period without pool growth, ADP retains at most 256 idle buffers, or
-    /// `dogstatsd_buffer_count` if it is larger, and releases additional idle buffers.
+    /// After a short grace period without pool growth, ADP releases idle buffers until the pool returns to
+    /// `dogstatsd_buffer_count`.
     ///
     /// The pool never holds fewer buffers than `dogstatsd_buffer_count`, so a value below the baseline is treated as
     /// equal to it.
     ///
-    /// Defaults to 32768 for burst testing, or `dogstatsd_buffer_count` if that is larger.
+    /// Defaults to 32768, or `dogstatsd_buffer_count` if that is larger.
     #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
     buffer_count_max: usize,
 
@@ -808,12 +807,6 @@ impl DogStatsDConfiguration {
         self.buffer_count_max.max(self.buffer_count)
     }
 
-    fn retained_idle_buffer_count(&self) -> usize {
-        DOGSTATSD_RETAINED_IDLE_BUFFER_COUNT
-            .max(self.buffer_count)
-            .min(self.effective_max_buffer_count())
-    }
-
     fn decoder_worker_count(&self) -> NonZeroUsize {
         let worker_count = if self.workers_count == 0 {
             let vcpus = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
@@ -1063,12 +1056,8 @@ impl SourceBuilder for DogStatsDConfiguration {
         // The pool allocates `buffer_count` buffers up front and may grow on demand up to `max_buffers`. The effective
         // maximum is never below the baseline, so configs that only raise `dogstatsd_buffer_count` keep their full
         // capacity instead of being silently reduced to the `dogstatsd_buffer_count_max` default.
-        let (io_buffer_pool, io_buffer_pool_shrinker) = build_io_buffer_pool(
-            self.buffer_count,
-            max_buffers,
-            self.retained_idle_buffer_count(),
-            self.buffer_size,
-        );
+        let (io_buffer_pool, io_buffer_pool_shrinker) =
+            build_io_buffer_pool(self.buffer_count, max_buffers, self.buffer_size);
         Ok(Box::new(DogStatsD {
             listeners,
             decoder_worker_count: self.decoder_worker_count(),
@@ -1342,7 +1331,7 @@ async fn process_io_buffer_pool_shrinker(
 }
 
 fn build_io_buffer_pool(
-    min_buffers: usize, max_buffers: usize, retained_idle_buffers: usize, buffer_size: usize,
+    min_buffers: usize, max_buffers: usize, buffer_size: usize,
 ) -> (ElasticObjectPool<BytesBuffer>, impl Future<Output = ()> + Send) {
     saluki_antithesis::always_le!(
         buffer_size,
@@ -1351,13 +1340,9 @@ fn build_io_buffer_pool(
         { "buffer_size": buffer_size }
     );
     let adjusted_buffer_size = get_adjusted_buffer_size(buffer_size);
-    ElasticObjectPool::with_builder_and_retained_idle_capacity(
-        "dsd_packet_bufs",
-        min_buffers,
-        max_buffers,
-        retained_idle_buffers,
-        move || FixedSizeVec::with_capacity(adjusted_buffer_size),
-    )
+    ElasticObjectPool::with_builder("dsd_packet_bufs", min_buffers, max_buffers, move || {
+        FixedSizeVec::with_capacity(adjusted_buffer_size)
+    })
 }
 
 fn is_connectionless_listen_address(listen_addr: &ListenAddress) -> bool {
@@ -3180,18 +3165,6 @@ mod tests {
     }
 
     #[test]
-    fn retained_idle_buffer_count_uses_small_burst_cache() {
-        let default = deser_config("{}");
-        assert_eq!(default.retained_idle_buffer_count(), 256);
-
-        let small_max = deser_config(r#"{"dogstatsd_buffer_count": 128, "dogstatsd_buffer_count_max": 192}"#);
-        assert_eq!(small_max.retained_idle_buffer_count(), 192);
-
-        let large_baseline = deser_config(r#"{"dogstatsd_buffer_count": 512}"#);
-        assert_eq!(large_baseline.retained_idle_buffer_count(), 512);
-    }
-
-    #[test]
     fn decoder_worker_count_matches_core_agent_defaults() {
         assert_eq!(default_decoder_worker_count(1), 2);
         assert_eq!(default_decoder_worker_count(4), 2);
@@ -3268,7 +3241,7 @@ mod tests {
     async fn dogstatsd_io_buffer_pool_grows_on_demand_until_limit() {
         let min_buffers = 2;
         let max_buffers = 3;
-        let (pool, shrinker) = build_io_buffer_pool(min_buffers, max_buffers, min_buffers, default_buffer_size());
+        let (pool, shrinker) = build_io_buffer_pool(min_buffers, max_buffers, default_buffer_size());
 
         let mut initial_buffers = Vec::with_capacity(min_buffers);
         for _ in 0..min_buffers {
@@ -3301,7 +3274,7 @@ mod tests {
         let socket_path = temp_dir.path().join("dogstatsd.socket");
         let receiver = UnixDatagram::bind(&socket_path).expect("receiver should bind");
         let sender = UnixDatagram::unbound().expect("sender should be created");
-        let (pool, shrinker) = build_io_buffer_pool(2, 2, 2, default_buffer_size());
+        let (pool, shrinker) = build_io_buffer_pool(2, 2, default_buffer_size());
         let (packets_tx, mut packets_rx) = mpsc::channel(3);
         let listen_addr = ListenAddress::Unixgram(socket_path.clone());
         let socket_context = Arc::new(DatagramSocketContext {
@@ -3389,7 +3362,7 @@ mod tests {
             process_id,
             original_entity.clone(),
         ));
-        let (pool, shrinker) = build_io_buffer_pool(1, 1, 1, default_buffer_size());
+        let (pool, shrinker) = build_io_buffer_pool(1, 1, default_buffer_size());
         let (packets_tx, mut packets_rx) = mpsc::channel(1);
         let reader = tokio::spawn(receive_connectionless_stream(
             stream,
@@ -3467,7 +3440,7 @@ mod tests {
     #[tokio::test]
     async fn connection_oriented_reader_preserves_partial_frames() {
         let (mut sender, receiver) = UnixStream::pair().expect("stream pair should be created");
-        let (pool, shrinker) = build_io_buffer_pool(1, 1, 1, default_buffer_size());
+        let (pool, shrinker) = build_io_buffer_pool(1, 1, default_buffer_size());
         let (packets_tx, mut packets_rx) = mpsc::channel(1);
         let reader = tokio::spawn(receive_connected_stream(
             Stream::from(receiver),
