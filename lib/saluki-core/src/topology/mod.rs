@@ -24,7 +24,7 @@ pub use self::ids::{
 };
 
 pub mod interconnect;
-use self::interconnect::{Consumer, Dispatcher, EventBufferManager};
+use self::interconnect::{Consumer, Dispatcher};
 
 #[cfg(test)]
 pub(super) mod test_util;
@@ -37,9 +37,6 @@ const DEFAULT_INTERCONNECT_CAPACITY: NonZeroUsize = NonZeroUsize::new(128).unwra
 
 /// Default type for dispatching/consuming items from event-based components.
 pub type EventsBuffer = FixedSizeEventBuffer<DEFAULT_EVENTS_BUFFER_CAPACITY>;
-
-/// Default manager for event buffers.
-pub type EventsBufferManager = EventBufferManager<DEFAULT_EVENTS_BUFFER_CAPACITY>;
 
 /// Default dispatcher for event-based components.
 pub type EventsDispatcher = Dispatcher<EventsBuffer>;
