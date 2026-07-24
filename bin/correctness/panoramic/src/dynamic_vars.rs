@@ -172,3 +172,79 @@ pub fn find_unresolved(s: &str, out: &mut Vec<String>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a minimal integration config whose `env` map contains exactly the given keys (each with a
+    /// placeholder command value, which the Windows resolver never actually executes).
+    fn config_with_env_keys(keys: &[&str]) -> IntegrationConfig {
+        let env_block = keys.iter().map(|k| format!("  {k}: \"cmd\"\n")).collect::<String>();
+        let yaml = format!("name: t\ntimeout: 10s\nprocedure: []\nenv:\n{env_block}");
+        serde_yaml::from_str(&yaml).expect("minimal integration config should deserialize")
+    }
+
+    #[tokio::test]
+    async fn resolve_windows_vars_supports_container_ip_and_custom_hostname() {
+        // The two documented Windows variants: CONTAINER_IP echoes the provided container IP, and
+        // CUSTOM_HOSTNAME resolves to the fixed sentinel value.
+        let config = config_with_env_keys(&["PANORAMIC_DYNAMIC_CONTAINER_IP", "PANORAMIC_DYNAMIC_CUSTOM_HOSTNAME"]);
+
+        let vars = resolve_windows_vars(&config, Some("172.17.0.2"))
+            .await
+            .expect("supported variables should resolve");
+
+        assert_eq!(vars.get("CONTAINER_IP"), Some(&"172.17.0.2".to_string()));
+        assert_eq!(vars.get("CUSTOM_HOSTNAME"), Some(&"foo.local".to_string()));
+    }
+
+    #[tokio::test]
+    async fn resolve_windows_vars_errors_when_container_ip_unavailable() {
+        let config = config_with_env_keys(&["PANORAMIC_DYNAMIC_CONTAINER_IP"]);
+
+        let err = resolve_windows_vars(&config, None)
+            .await
+            .expect_err("CONTAINER_IP with no available IP should error");
+        assert!(
+            err.to_string().contains("Container IP unavailable"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_windows_vars_rejects_unsupported_variables() {
+        let config = config_with_env_keys(&["PANORAMIC_DYNAMIC_SOMETHING_ELSE"]);
+
+        let err = resolve_windows_vars(&config, Some("172.17.0.2"))
+            .await
+            .expect_err("an unsupported Windows dynamic variable should error");
+        assert!(
+            err.to_string()
+                .contains("Unsupported Windows dynamic variable PANORAMIC_DYNAMIC_SOMETHING_ELSE"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_placeholders_replaces_every_occurrence() {
+        let vars = HashMap::from([("IP".to_string(), "10.0.0.5".to_string())]);
+        let mut s = "a={{PANORAMIC_DYNAMIC_IP}} b={{PANORAMIC_DYNAMIC_IP}}".to_string();
+
+        resolve_placeholders(&mut s, &vars);
+
+        assert_eq!(s, "a=10.0.0.5 b=10.0.0.5");
+    }
+
+    #[test]
+    fn find_unresolved_collects_only_the_remaining_placeholders() {
+        let vars = HashMap::from([("KNOWN".to_string(), "v".to_string())]);
+        let mut s = "known={{PANORAMIC_DYNAMIC_KNOWN}} missing={{PANORAMIC_DYNAMIC_MISSING}}".to_string();
+        resolve_placeholders(&mut s, &vars);
+
+        let mut out = Vec::new();
+        find_unresolved(&s, &mut out);
+
+        assert_eq!(out, vec!["{{PANORAMIC_DYNAMIC_MISSING}}".to_string()]);
+    }
+}

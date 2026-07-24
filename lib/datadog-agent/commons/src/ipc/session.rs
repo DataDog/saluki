@@ -101,3 +101,72 @@ impl SessionIdHandle {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::time::timeout;
+
+    use super::{SessionId, SessionIdHandle};
+
+    // Bound every await so that a regression reintroducing the lost-wakeup race fails fast instead of
+    // hanging the test suite forever.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn wait_for_update_returns_immediately_when_value_already_set() {
+        // When a value is already present, `wait_for_update` must return it on the first loop iteration
+        // without ever awaiting a change notification.
+        let handle = SessionIdHandle::empty();
+        handle.update(Some(SessionId::new("already-set").unwrap()));
+
+        let session_id = timeout(TEST_TIMEOUT, handle.wait_for_update())
+            .await
+            .expect("should return without waiting on a notification");
+        assert_eq!(session_id.as_str(), "already-set");
+    }
+
+    #[tokio::test]
+    async fn wait_for_update_wakes_on_concurrent_update() {
+        // This exercises the documented race-avoidance idiom: `wait_for_update` registers the change
+        // notification *before* it reads the current value, so an update applied while a caller is parked
+        // is delivered rather than lost.
+        let handle = SessionIdHandle::empty();
+        let waiter = handle.clone();
+        let waiter_task = tokio::spawn(async move { waiter.wait_for_update().await });
+
+        // Let the spawned task advance to (and park on) its notification await while the value is still
+        // empty, then apply the update.
+        tokio::task::yield_now().await;
+        handle.update(Some(SessionId::new("session-123").unwrap()));
+
+        let session_id = timeout(TEST_TIMEOUT, waiter_task)
+            .await
+            .expect("waiter should wake within the timeout")
+            .expect("waiter task should not panic");
+        assert_eq!(session_id.as_str(), "session-123");
+    }
+
+    #[tokio::test]
+    async fn wait_for_update_ignores_clears_and_returns_first_non_empty_value() {
+        // `update(None)` still notifies waiters, but `wait_for_update` documents that it waits for a
+        // *non-empty* value, so a clear must not cause it to return early — it must keep waiting until a
+        // real session ID arrives.
+        let handle = SessionIdHandle::empty();
+        let waiter = handle.clone();
+        let waiter_task = tokio::spawn(async move { waiter.wait_for_update().await });
+
+        tokio::task::yield_now().await;
+        // Notifies waiters, but leaves the value empty: the waiter must loop and keep waiting.
+        handle.update(None);
+        tokio::task::yield_now().await;
+        handle.update(Some(SessionId::new("finally").unwrap()));
+
+        let session_id = timeout(TEST_TIMEOUT, waiter_task)
+            .await
+            .expect("waiter should wake within the timeout")
+            .expect("waiter task should not panic");
+        assert_eq!(session_id.as_str(), "finally");
+    }
+}
