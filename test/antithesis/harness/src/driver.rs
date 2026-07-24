@@ -1,9 +1,10 @@
 //! Shared `DogStatsD` load-driver engine.
 //!
-//! A producer thread samples lines into a bounded channel; a consumer thread
-//! fans each line out to every socket and tallies per-socket sends. Drivers
-//! differ only in how many sockets they target and which anchors they fire, so
-//! both the single-socket and differential drivers run on this one engine.
+//! The engine fetches a working set of contexts from the shared intake pool, then a producer thread
+//! renders per-occurrence payloads against them into a bounded channel while a consumer thread fans
+//! each datagram out to every socket and tallies per-socket sends. Drivers differ only in how many
+//! sockets they target and which anchors they fire, so both the single-socket and differential
+//! drivers run on this one engine.
 //!
 //! NOTE: this driver intentionally blocks on backpressure from the SUT. Retry
 //! and backoff timers are meant to endure transient errors.
@@ -19,11 +20,19 @@ use antithesis_sdk::prelude::*;
 use rand::Rng;
 use serde_json::json;
 
+use crate::contexts::{decode_response, Context};
 use crate::dogstatsd::is_malformed;
 use crate::payload::dogstatsd;
 
 const SEND_RETRY_BUDGET: Duration = Duration::from_secs(5);
 const SEND_RETRY_BACKOFF: Duration = Duration::from_millis(1);
+
+/// How long to keep retrying the context fetch before giving up and running no load this invocation.
+const CONTEXT_FETCH_BUDGET: Duration = Duration::from_secs(30);
+/// Backoff between context-fetch attempts.
+const CONTEXT_FETCH_BACKOFF: Duration = Duration::from_millis(250);
+/// Per-request timeout on a single context fetch.
+const CONTEXT_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A generated payload queued for the sockets: the packed bytes and what they hold.
 struct Datagram {
@@ -49,30 +58,51 @@ pub struct Stats {
     pub timed_out: bool,
 }
 
-/// Drive `count` sampled `DogStatsD` datagrams to every socket, packing each to
-/// at most `limit_bytes` and blocking through transient backpressure so every
-/// datagram reaches every socket. Both `count` and `limit_bytes` come from a load
-/// generator's [`crate::config::DriverConfig`], so a datagram never truncates on
-/// receive.
+impl Stats {
+    /// The zero result for `sockets` sockets: nothing received, nothing sent. Reported when the
+    /// context pool is unreachable so a driver invocation degrades to a no-op rather than an error.
+    fn empty(sockets: usize) -> Self {
+        Self {
+            received: 0,
+            sent: vec![0; sockets],
+            max_packed: vec![0; sockets],
+            timed_out: false,
+        }
+    }
+}
+
+/// Fetch a working set of `context_count` contexts from the intake pool at `intake_addr`, then drive
+/// `count` datagrams to every socket, each a fresh render of a sampled context packed to at most
+/// `limit_bytes`, blocking through transient backpressure so every datagram reaches every socket.
+/// `context_count`, `count`, and `limit_bytes` come from a load generator's
+/// [`crate::config::DriverConfig`], so a datagram never truncates on receive.
 ///
-/// A peer that leaves mid-batch, or backpressure that outlasts the retry budget,
-/// ends the run early with a partial [`Stats`] rather than an error.
+/// An unreachable pool ends the run with an empty [`Stats`] rather than an error, so a driver started
+/// before the intake serves degrades to a no-op. A peer that leaves mid-batch, or backpressure that
+/// outlasts the retry budget, ends the run early with a partial [`Stats`].
 ///
 /// # Errors
 ///
 /// Errors if a worker thread panics. Sustained backpressure is reported via
 /// [`Stats::timed_out`], not as an error.
 pub fn run<R: Rng + Send + 'static>(
-    mut rng: R, limit_bytes: usize, count: usize, sockets: Vec<UnixDatagram>,
+    mut rng: R, intake_addr: &str, context_count: usize, limit_bytes: usize, count: usize, sockets: Vec<UnixDatagram>,
 ) -> anyhow::Result<Stats> {
+    let contexts = match fetch_contexts(intake_addr, context_count) {
+        // Ordered by floor once here, not per datagram: the working set is fixed for the invocation.
+        Some(contexts) if !contexts.is_empty() => dogstatsd::WorkingSet::new(contexts),
+        // Pool unreachable or empty. No load this invocation, not a failure.
+        _ => return Ok(Stats::empty(sockets.len())),
+    };
+
     let (tx, rx) = sync_channel::<Datagram>(2024);
 
     let producer = thread::spawn(move || {
         for _ in 0..count {
             let mut bytes = Vec::new();
-            let payload = dogstatsd::write_payload(&mut rng, &mut bytes, limit_bytes);
-            // Green by construction: write_payload emits only lines the Agent forwards. The anchor
-            // catches any generator drift that would ship a droppable datagram.
+            let payload = dogstatsd::write_payload(&mut rng, &contexts, &mut bytes, limit_bytes);
+            // Green by construction: write_payload packs only rendered lines the Agent forwards. The
+            // anchor catches any drift that would ship a droppable datagram.
             assert_always!(
                 is_malformed(&bytes).is_ok(),
                 "driver payload is well-formed",
@@ -123,6 +153,37 @@ pub fn run<R: Rng + Send + 'static>(
     consumer
         .join()
         .map_err(|_| anyhow::anyhow!("consumer thread panicked"))?
+}
+
+/// Fetch a working set of `n` contexts from the pool at `intake_addr` over blocking HTTP, retrying
+/// through [`CONTEXT_FETCH_BUDGET`]. Returns `None` if the pool never answers or the body does not
+/// decode, so the caller degrades to no load rather than failing.
+fn fetch_contexts(intake_addr: &str, n: usize) -> Option<Vec<Context>> {
+    let url = format!("http://{intake_addr}/contexts?n={n}");
+    let client = reqwest::blocking::Client::builder()
+        .timeout(CONTEXT_FETCH_TIMEOUT)
+        .build()
+        .ok()?;
+    let deadline = Instant::now() + CONTEXT_FETCH_BUDGET;
+    loop {
+        if let Some(contexts) = try_fetch_contexts(&client, &url) {
+            return Some(contexts);
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        sleep(CONTEXT_FETCH_BACKOFF);
+    }
+}
+
+/// One context-fetch attempt: `None` on a transport error, a non-success status, or a body that does
+/// not decode, so a partial or corrupt response is retried rather than trusted.
+fn try_fetch_contexts(client: &reqwest::blocking::Client, url: &str) -> Option<Vec<Context>> {
+    let response = client.get(url).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    decode_response(&response.bytes().ok()?)
 }
 
 /// Outcome of delivering one line to a socket.

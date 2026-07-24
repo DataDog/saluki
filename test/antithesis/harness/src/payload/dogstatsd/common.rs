@@ -102,26 +102,31 @@ const RATE_TOKEN: &[&[u8]] = &[
     b"-inf", b"nan",
 ];
 
-/// Segment counts for a required field: at least one, with a large-boundary tail so huge fields stay
-/// in the explored surface.
-const COUNTS_REQUIRED: &[usize] = &[1, 1, 2, 2, 3, 3, 4, 5, 6, 127, 255];
+/// Segment counts for a required field: at least one, a small body. Field length crosses the intake
+/// byte caps through the long-field path below, not through a huge segment count, so a pooled context
+/// never compounds into a behemoth.
+const COUNTS_REQUIRED: &[usize] = &[1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8];
 
 /// Segment counts for an optional field: the required body plus zero.
-const COUNTS_OPTIONAL: &[usize] = &[0, 1, 1, 2, 2, 3, 3, 4, 5, 6, 127, 255];
+const COUNTS_OPTIONAL: &[usize] = &[0, 1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8];
+
+/// Tag counts. Reaches past `MaxTags` (100) so the tag-count cap is exercised, but bounded so a
+/// context stays a few KiB even at the high end.
+const TAG_COUNTS: &[usize] = &[0, 1, 1, 2, 2, 3, 3, 4, 5, 6, 16, 64, 101, 127];
+
+/// Byte-length targets for a long field, crossing `MaxTagLength` (200) and the metric-name cap (350)
+/// directly rather than via a huge segment count.
+const LONG_TARGETS: &[usize] = &[128, 199, 200, 201, 256, 300, 349, 350, 351, 400];
 
 /// Pick one item from a static, non-empty pool by index.
 fn pick<'a>(rng: &mut (impl Rng + ?Sized), pool: &[&'a [u8]]) -> &'a [u8] {
     pool[rng.random_range(0..pool.len())]
 }
 
-/// The shortest item `pools` can yield, which is the floor cost of one more segment.
-pub(crate) fn min_item(pools: &[&[&[u8]]]) -> usize {
-    pools
-        .iter()
-        .flat_map(|pool| pool.iter())
-        .map(|item| item.len())
-        .min()
-        .unwrap_or(0)
+/// Pick one item from the union of static, non-empty pools by index.
+fn pick_union<'a>(rng: &mut (impl Rng + ?Sized), pools: &[&[&'a [u8]]]) -> &'a [u8] {
+    let pool = pools[rng.random_range(0..pools.len())];
+    pick(rng, pool)
 }
 
 /// Pick an item no longer than `budget`, or `None` when the pools hold nothing that small. Counts the
@@ -149,6 +154,30 @@ fn pick_within<'a>(rng: &mut (impl Rng + ?Sized), pools: &[&[&'a [u8]]], budget:
 /// Sampling against the room left is what keeps the generator from building a field it would have to
 /// throw away.
 fn field_within(rng: &mut (impl Rng + ?Sized), pools: &[&[&[u8]]], counts: &[usize], budget: usize) -> Vec<u8> {
+    // One in eight: fill to a byte target that crosses the intake length caps, taking the largest
+    // target the budget affords. Without this an identity built against a budget never reaches the
+    // 350-byte name or 200-byte tag boundary, since the segment counts alone do not get there.
+    if rng.random_range(0..8u8) == 0 {
+        let affordable = LONG_TARGETS.iter().filter(|&&target| target <= budget).count();
+        if affordable > 0 {
+            let target = LONG_TARGETS[rng.random_range(0..affordable)];
+            let mut out = Vec::new();
+            while out.len() < target {
+                // Separated like the segment run below. Concatenating raw pool items would let a `|`
+                // and a `#` land adjacent, which opens a second tags field and swaps the identity's
+                // tag set for occurrence content.
+                let separator = usize::from(!out.is_empty());
+                let Some(item) = pick_within(rng, pools, (target - out.len()).saturating_sub(separator)) else {
+                    break;
+                };
+                if !out.is_empty() {
+                    out.push(NAME_SEPARATORS[rng.random_range(0..NAME_SEPARATORS.len())]);
+                }
+                out.extend_from_slice(item);
+            }
+            return out;
+        }
+    }
     let count = counts[rng.random_range(0..counts.len())];
     let mut out = Vec::new();
     for i in 0..count {
@@ -165,22 +194,55 @@ fn field_within(rng: &mut (impl Rng + ?Sized), pools: &[&[&[u8]]], counts: &[usi
     out
 }
 
+/// Build a field of separator-joined segments drawn from `pools`, with the segment count sampled from
+/// `counts`. A `counts` slice containing `0` can yield an empty field. Used to mint an identity, which
+/// carries no budget: the budget applies when a context is rendered, not when it is minted.
+fn field(rng: &mut (impl Rng + ?Sized), pools: &[&[&[u8]]], counts: &[usize]) -> Vec<u8> {
+    // One in eight: a long field filled to a byte target that crosses the intake length caps. This
+    // reaches the same length surface as a huge segment count without the behemoth a pooled context
+    // cannot afford.
+    if rng.random_range(0..8u8) == 0 {
+        let target = LONG_TARGETS[rng.random_range(0..LONG_TARGETS.len())];
+        let mut out = Vec::new();
+        while out.len() < target {
+            if !out.is_empty() {
+                out.push(NAME_SEPARATORS[rng.random_range(0..NAME_SEPARATORS.len())]);
+            }
+            out.extend_from_slice(pick_union(rng, pools));
+        }
+        return out;
+    }
+    let count = counts[rng.random_range(0..counts.len())];
+    let mut out = Vec::new();
+    for i in 0..count {
+        if i > 0 {
+            out.push(NAME_SEPARATORS[rng.random_range(0..NAME_SEPARATORS.len())]);
+        }
+        out.extend_from_slice(pick_union(rng, pools));
+    }
+    out
+}
+
+/// The shortest item `pools` can yield, the floor cost of one more segment.
+fn min_item(pools: &[&[&[u8]]]) -> usize {
+    pools
+        .iter()
+        .flat_map(|pool| pool.iter())
+        .map(|item| item.len())
+        .min()
+        .unwrap_or(0)
+}
+
 /// A required identifier within `budget`. Empty when the budget cannot hold one segment, which the
-/// caller must treat as "no line fits" rather than emitting an invalid name.
+/// caller treats as "no identity fits" rather than minting an invalid name.
 pub(crate) fn identifier_within(rng: &mut (impl Rng + ?Sized), budget: usize) -> Vec<u8> {
     field_within(rng, WORD_POOLS, COUNTS_REQUIRED, budget)
 }
 
-/// An optional free-text field within `budget`.
-pub(crate) fn optional_text_within(rng: &mut (impl Rng + ?Sized), budget: usize) -> Vec<u8> {
-    field_within(rng, WORD_POOLS, COUNTS_OPTIONAL, budget)
-}
-
 /// A tag set serialized within `budget` bytes, `|#` and separating commas included. Each tag is built
-/// against the room left, and the run stops when the next one cannot fit.
+/// against the room left and the run stops when the next one cannot fit.
 pub(crate) fn tags_within(rng: &mut (impl Rng + ?Sized), budget: usize) -> Vec<Vec<u8>> {
-    let count = COUNTS_OPTIONAL[rng.random_range(0..COUNTS_OPTIONAL.len())];
-    // `|#` before the first tag, then a comma before each later one.
+    let count = TAG_COUNTS[rng.random_range(0..TAG_COUNTS.len())];
     let Some(mut room) = budget.checked_sub(2) else {
         return Vec::new();
     };
@@ -190,7 +252,6 @@ pub(crate) fn tags_within(rng: &mut (impl Rng + ?Sized), budget: usize) -> Vec<V
         let Some(tag_room) = room.checked_sub(separator) else {
             break;
         };
-        // A tag is `key:value` with a required key, so it needs a segment plus the colon.
         if tag_room < min_item(TAG_KEY_POOLS) + 1 {
             break;
         }
@@ -206,6 +267,16 @@ pub(crate) fn tags_within(rng: &mut (impl Rng + ?Sized), budget: usize) -> Vec<V
         out.push(tag);
     }
     out
+}
+
+/// An optional free-text field for an identity.
+pub(crate) fn optional_text(rng: &mut (impl Rng + ?Sized)) -> Vec<u8> {
+    field(rng, WORD_POOLS, COUNTS_OPTIONAL)
+}
+
+/// An optional free-text field within `budget`.
+pub(crate) fn optional_text_within(rng: &mut (impl Rng + ?Sized), budget: usize) -> Vec<u8> {
+    field_within(rng, WORD_POOLS, COUNTS_OPTIONAL, budget)
 }
 
 /// Serialize a tag set as `|#key:value,key:value`. An empty set appends nothing.
@@ -236,6 +307,16 @@ pub(crate) fn float_token(rng: &mut (impl Rng + ?Sized)) -> Vec<u8> {
             render_number(rng, itoa.format(v).as_bytes())
         }
     }
+}
+
+/// A sample-rate token.
+pub(crate) fn rate_token(rng: &mut (impl Rng + ?Sized)) -> Vec<u8> {
+    pick(rng, RATE_TOKEN).to_vec()
+}
+
+/// A set-type value: an opaque required field over the full alphabet.
+pub(crate) fn opaque_value(rng: &mut (impl Rng + ?Sized)) -> Vec<u8> {
+    field(rng, WORD_POOLS, COUNTS_REQUIRED)
 }
 
 /// The floor cost of a value token, the shortest `SPECIAL_VALUE` entry.
@@ -306,4 +387,34 @@ fn pad_zeros(rng: &mut (impl Rng + ?Sized), out: &mut Vec<u8>) {
 fn pick_padding_run(rng: &mut (impl Rng + ?Sized)) -> u8 {
     const RUNS: &[u8] = &[0, 1, 2, 8, 16, 32, 64, 127];
     RUNS[rng.random_range(0..RUNS.len())]
+}
+
+#[cfg(test)]
+mod tests {
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    use super::{identifier_within, tags_within};
+
+    // A field built against a budget must still reach the intake's length boundaries, 350 bytes for a
+    // metric name and 200 for a tag. The segment counts stop well short of both, so the long-target arm
+    // is what gets there, and giving the builder a budget must not cost that coverage.
+    #[test]
+    fn budgeted_fields_reach_the_length_boundaries() {
+        let mut max_name = 0;
+        let mut max_tag = 0;
+        for seed in 0..512u64 {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            max_name = max_name.max(identifier_within(&mut rng, 8_000).len());
+            max_tag = max_tag.max(tags_within(&mut rng, 8_000).iter().map(Vec::len).max().unwrap_or(0));
+        }
+        assert!(
+            max_name > 350,
+            "longest field {max_name} never crossed the 350-byte name cap"
+        );
+        assert!(
+            max_tag > 200,
+            "longest tag {max_tag} never crossed the 200-byte tag cap"
+        );
+    }
 }
