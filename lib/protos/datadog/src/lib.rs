@@ -54,13 +54,22 @@ pub mod events {
 /// Trace-related definitions.
 pub mod traces {
     pub use super::trace_include::agent_payload::*;
-    pub use super::trace_include::span::{attribute_any_value::*, attribute_array_value::*, *};
+    pub use super::trace_include::classic_span::{attribute_any_value::*, attribute_array_value::*, *};
+    pub use super::trace_include::classic_tracer_payload::*;
     pub use super::trace_include::stats::*;
-    pub use super::trace_include::tracer_payload::*;
 
     /// Piecemeal-generated builder types for incremental trace encoding.
     pub mod builders {
         pub use super::super::trace_piecemeal_include::datadog::trace::*;
+    }
+
+    /// Efficient Trace Payload (ETP) types: the string-indexed trace payload format used by the v0.2 trace intake.
+    ///
+    /// The `idx` module name mirrors the Agent's proto package (`datadog.trace.idx`); prefer the term "ETP" when
+    /// referring to this format in prose and in our own (non-generated) code.
+    pub mod idx {
+        pub use super::super::trace_include::idx_span::{any_value, *};
+        pub use super::super::trace_include::idx_tracer_payload::*;
     }
 }
 
@@ -83,4 +92,33 @@ pub mod sketches {
 /// Checks definitions.
 pub mod checks {
     pub use super::checks_include::datadog::checks::v1::*;
+}
+
+#[cfg(test)]
+mod tests {
+    use protobuf::Message as _;
+
+    use super::traces::{self, AgentPayload};
+
+    #[test]
+    fn agent_payload_round_trips_classic_and_indexed_tracer_payloads() {
+        let mut classic_payload = traces::TracerPayload::new();
+        classic_payload.containerID = "classic-container".to_string();
+
+        let mut indexed_payload = traces::idx::TracerPayload::new();
+        indexed_payload.strings = vec!["".to_string(), "indexed-container".to_string()];
+        indexed_payload.containerIDRef = 1;
+
+        let mut payload = AgentPayload::new();
+        payload.tracerPayloads.push(classic_payload);
+        payload.idxTracerPayloads.push(indexed_payload);
+
+        let encoded = payload.write_to_bytes().expect("payload should encode");
+        let decoded = AgentPayload::parse_from_bytes(&encoded).expect("payload should decode");
+
+        let indexed_payloads: &[traces::idx::TracerPayload] = decoded.idxTracerPayloads();
+        assert_eq!(decoded.tracerPayloads()[0].containerID(), "classic-container");
+        assert_eq!(indexed_payloads[0].containerIDRef(), 1);
+        assert_eq!(indexed_payloads[0].strings(), &["", "indexed-container"]);
+    }
 }
