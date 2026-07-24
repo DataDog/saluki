@@ -228,7 +228,7 @@ tikv-jemallocator = { version = "0.7", default-features = false }
 axum-extra = { version = "0.12", default-features = false }
 papaya = { version = "0.2", default-features = false }
 tempfile = { version = "3", default-features = false }
-fs4 = { version = "0.13.1", default-features = false }
+fs4 = { version = "1.0.0", default-features = false }
 fnv = { version = "1", default-features = false }
 twox-hash = { version = "2", features = ["xxhash64"] }
 shake = { version = "0.1", default-features = false }
