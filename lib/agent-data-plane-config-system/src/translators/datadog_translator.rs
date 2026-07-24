@@ -620,6 +620,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.dogstatsd.listeners.windows_pipe_security_descriptor = value;
     }
 
+    fn consume_dogstatsd_workers_count(&mut self, value: i64) {
+        self.config.domains.dogstatsd.listeners.workers_count = value.max(0) as usize;
+    }
+
     fn consume_enable_payloads_events(&mut self, value: bool) {
         self.config.domains.dogstatsd.enable_payloads.events = value;
     }
@@ -1166,6 +1170,7 @@ mod tests {
             "api_key": "abc",
             "dd_url": "https://custom.example.com",
             "dogstatsd_port": 9125,
+            "dogstatsd_workers_count": 3,
             "dogstatsd_tag_cardinality": "high",
             "expected_tags_duration": "15s",
             "telemetry": { "dogstatsd_origin": true },
@@ -1184,6 +1189,7 @@ mod tests {
 
         // Driven scalar conversion: i64 -> u16.
         assert_eq!(config.domains.dogstatsd.listeners.port, 9125);
+        assert_eq!(config.domains.dogstatsd.listeners.workers_count, 3);
         // Driven enum parse.
         assert_eq!(
             config.domains.dogstatsd.origin.tag_cardinality,

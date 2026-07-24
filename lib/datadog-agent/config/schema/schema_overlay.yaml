@@ -1296,12 +1296,23 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   dogstatsd_workers_count:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [dogstatsd]
     description: "Number of DSD processing workers"
-    documentation: "ADP uses async tasks."
+    documentation: |-
+      The core Agent uses `dogstatsd_workers_count` to override the size of one worker pool shared by
+      all DogStatsD listeners. When this setting is `0`, it derives the count from available vCPUs
+      and the DogStatsD pipeline configuration.
+
+      ADP uses the same explicit override for the decoder worker pool attached to each
+      connectionless UDP or UDS datagram socket. When this setting is `0`, ADP matches the core
+      Agent's default pipeline settings: one listener worker, one aggregation pipeline, and at least
+      two decoder workers. Connection-oriented listeners continue to use one decoder per connection.
+    issue: "#2079"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   enable_json_stream_shared_compressor_buffers:
     support: none

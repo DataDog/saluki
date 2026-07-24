@@ -84,6 +84,9 @@ pub struct Listeners {
     /// Maximum number of receive buffers. (not in Datadog Agent config schema)
     pub buffer_count_max: usize,
 
+    /// Number of connectionless packet decoder workers.
+    pub workers_count: usize,
+
     /// Whether to bind multiple UDP sockets via `SO_REUSEPORT`. (not in Datadog Agent config
     /// schema)
     pub autoscale_udp_listeners: bool,

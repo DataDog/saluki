@@ -22,7 +22,7 @@ use bytes::{Buf, BufMut};
 use bytesize::ByteSize;
 use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
-    task::spawn_traced_named,
+    task::{spawn_traced_named, JoinSetExt as _},
 };
 use saluki_config::{deserialize_space_separated_or_seq, GenericConfiguration};
 use saluki_context::{
@@ -61,8 +61,8 @@ use snafu::{ResultExt as _, Snafu};
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
-    sync::{mpsc, oneshot},
-    task::JoinHandle,
+    sync::{mpsc, oneshot, Mutex},
+    task::{JoinHandle, JoinSet},
     time::{interval, MissedTickBehavior},
 };
 use tracing::{debug, error, info, trace, warn};
@@ -71,7 +71,7 @@ mod forwarder;
 use self::forwarder::{PacketForwarder, PacketForwarderTarget};
 
 mod framer;
-use self::framer::{get_framer, DsdFramer};
+use self::framer::get_framer;
 use crate::sources::dogstatsd::tags::{WellKnownTags, WellKnownTagsFilterPredicate};
 
 mod filters;
@@ -125,6 +125,15 @@ enum Error {
 ///
 /// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
 const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
+const DOGSTATSD_LISTENER_WORKER_COUNT: usize = 1;
+const DOGSTATSD_PIPELINE_COUNT: usize = 1;
+const MIN_DOGSTATSD_WORKER_COUNT: usize = 2;
+
+fn default_decoder_worker_count(vcpus: usize) -> usize {
+    vcpus
+        .saturating_sub(DOGSTATSD_LISTENER_WORKER_COUNT + DOGSTATSD_PIPELINE_COUNT)
+        .max(MIN_DOGSTATSD_WORKER_COUNT)
+}
 
 const fn default_buffer_size() -> usize {
     8192
@@ -312,6 +321,16 @@ pub struct DogStatsDConfiguration {
     /// Defaults to 32768 for burst testing, or `dogstatsd_buffer_count` if that is larger.
     #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
     buffer_count_max: usize,
+
+    /// The number of workers that decode connectionless DogStatsD packets.
+    ///
+    /// If set to `0`, the worker count is derived from the available vCPUs using the Core Agent's default formula.
+    /// Positive values force an exact worker count. Higher values can improve throughput when decoding is CPU-bound,
+    /// but also increase task scheduling and per-worker event buffering overhead.
+    ///
+    /// Defaults to 0.
+    #[serde(rename = "dogstatsd_workers_count", default)]
+    workers_count: usize,
 
     /// The port to listen on in UDP mode.
     ///
@@ -789,6 +808,17 @@ impl DogStatsDConfiguration {
         self.buffer_count_max.max(self.buffer_count)
     }
 
+    fn decoder_worker_count(&self) -> NonZeroUsize {
+        let worker_count = if self.workers_count == 0 {
+            let vcpus = std::thread::available_parallelism().map(NonZeroUsize::get).unwrap_or(1);
+            default_decoder_worker_count(vcpus)
+        } else {
+            self.workers_count
+        };
+
+        NonZeroUsize::new(worker_count).expect("DogStatsD decoder worker count must be non-zero")
+    }
+
     /// Sets the default hostname used when DogStatsD metrics do not carry an explicit `host:` tag.
     pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
         self.default_hostname = hostname.into();
@@ -1031,6 +1061,7 @@ impl SourceBuilder for DogStatsDConfiguration {
 
         Ok(Box::new(DogStatsD {
             listeners,
+            decoder_worker_count: self.decoder_worker_count(),
             io_buffer_pool,
             io_buffer_queue_capacity: max_buffers,
             io_buffer_pool_shrinker: Box::pin(io_buffer_pool_shrinker),
@@ -1096,6 +1127,7 @@ impl MemoryBounds for DogStatsDConfiguration {
 /// DogStatsD source.
 pub struct DogStatsD {
     listeners: Vec<Listener>,
+    decoder_worker_count: NonZeroUsize,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     io_buffer_queue_capacity: usize,
     io_buffer_pool_shrinker: Pin<Box<dyn Future<Output = ()> + Send>>,
@@ -1117,6 +1149,7 @@ pub struct DogStatsD {
 struct ListenerContext {
     shutdown_handle: ShutdownHandle,
     listener: Listener,
+    decoder_worker_count: NonZeroUsize,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     io_buffer_queue_capacity: usize,
     codec: DogStatsDCodec,
@@ -1133,9 +1166,11 @@ struct ListenerContext {
     packet_forwarder_target: Option<PacketForwarderTarget>,
 }
 
+#[derive(Clone)]
 struct HandlerContext {
     listen_addr: ListenAddress,
-    framer: DsdFramer,
+    eol_required: bool,
+    decoder_worker_count: NonZeroUsize,
     codec: DogStatsDCodec,
     io_buffer_pool: ElasticObjectPool<BytesBuffer>,
     io_buffer_queue_capacity: usize,
@@ -1178,6 +1213,7 @@ impl Source for DogStatsD {
             let listener_context = ListenerContext {
                 shutdown_handle: listener_shutdown_coordinator.register(),
                 listener,
+                decoder_worker_count: self.decoder_worker_count,
                 io_buffer_pool: self.io_buffer_pool.clone(),
                 io_buffer_queue_capacity: self.io_buffer_queue_capacity,
                 codec: self.codec.clone(),
@@ -1263,6 +1299,7 @@ async fn process_listener(
     let ListenerContext {
         shutdown_handle,
         mut listener,
+        decoder_worker_count,
         io_buffer_pool,
         io_buffer_queue_capacity,
         codec,
@@ -1310,7 +1347,8 @@ async fn process_listener(
 
                     let handler_context = HandlerContext {
                         listen_addr: listen_addr.clone(),
-                        framer: get_framer(&listen_addr, eol_required.for_listener(&listen_addr)),
+                        eol_required: eol_required.for_listener(&listen_addr),
+                        decoder_worker_count,
                         codec: codec.clone(),
                         io_buffer_pool: io_buffer_pool.clone(),
                         io_buffer_queue_capacity,
@@ -1381,7 +1419,7 @@ impl BufferReturn {
 }
 
 struct BufferedStreamReader {
-    receiver: mpsc::Receiver<io::Result<ReceivedBuffer>>,
+    receiver: Option<mpsc::Receiver<io::Result<ReceivedBuffer>>>,
     task: JoinHandle<()>,
     is_connectionless: bool,
 }
@@ -1399,7 +1437,7 @@ impl BufferedStreamReader {
         );
 
         Self {
-            receiver,
+            receiver: Some(receiver),
             task,
             is_connectionless,
         }
@@ -1409,8 +1447,8 @@ impl BufferedStreamReader {
         self.is_connectionless
     }
 
-    async fn receive(&mut self) -> Option<io::Result<ReceivedBuffer>> {
-        self.receiver.recv().await
+    fn take_receiver(&mut self) -> mpsc::Receiver<io::Result<ReceivedBuffer>> {
+        self.receiver.take().expect("Buffered stream receiver already taken")
     }
 }
 
@@ -1481,16 +1519,95 @@ async fn receive_stream(
     debug!("Stream reader stopped.");
 }
 
+enum StreamReceiver {
+    Exclusive(mpsc::Receiver<io::Result<ReceivedBuffer>>),
+    Shared(Arc<Mutex<mpsc::Receiver<io::Result<ReceivedBuffer>>>>),
+}
+
+impl StreamReceiver {
+    async fn receive(&mut self) -> Option<io::Result<ReceivedBuffer>> {
+        match self {
+            Self::Exclusive(receiver) => receiver.recv().await,
+            Self::Shared(receiver) => receiver.lock().await.recv().await,
+        }
+    }
+}
+
 async fn drive_stream(
     stream: Stream, source_context: SourceContext, handler_context: HandlerContext,
     enabled_filter: EnablePayloadsFilter,
 ) {
+    let listen_addr = handler_context.listen_addr.clone();
+    let metrics = handler_context.metrics.clone();
+    let memory_limiter = source_context.topology_context().memory_limiter().clone();
+    let mut stream_reader = BufferedStreamReader::new(
+        stream,
+        handler_context.io_buffer_pool.clone(),
+        memory_limiter,
+        handler_context.io_buffer_queue_capacity,
+    );
+    let is_connectionless = stream_reader.is_connectionless();
+    let receiver = stream_reader.take_receiver();
+
+    debug!(%listen_addr, "Stream handler started.");
+
+    if !is_connectionless {
+        metrics.connections_active().increment(1);
+    }
+
+    if is_connectionless && handler_context.decoder_worker_count.get() > 1 {
+        let worker_count = handler_context.decoder_worker_count.get();
+        let shared_receiver = Arc::new(Mutex::new(receiver));
+        let mut decoder_tasks = JoinSet::new();
+
+        debug!(%listen_addr, worker_count, "Starting parallel DogStatsD decoders.");
+        for worker_id in 0..worker_count {
+            decoder_tasks.spawn_traced_named(
+                format!("dogstatsd-decoder-{worker_id}"),
+                drive_decoder(
+                    StreamReceiver::Shared(shared_receiver.clone()),
+                    source_context.clone(),
+                    handler_context.clone(),
+                    enabled_filter,
+                    true,
+                ),
+            );
+        }
+        drop(shared_receiver);
+
+        while let Some(result) = decoder_tasks.join_next().await {
+            if let Err(error) = result {
+                error!(%listen_addr, %error, "DogStatsD decoder worker stopped unexpectedly.");
+                decoder_tasks.abort_all();
+                break;
+            }
+        }
+    } else {
+        drive_decoder(
+            StreamReceiver::Exclusive(receiver),
+            source_context,
+            handler_context,
+            enabled_filter,
+            is_connectionless,
+        )
+        .await;
+    }
+
+    if !is_connectionless {
+        metrics.connections_active().decrement(1);
+    }
+
+    debug!(%listen_addr, "Stream handler stopped.");
+}
+
+async fn drive_decoder(
+    mut stream_receiver: StreamReceiver, source_context: SourceContext, handler_context: HandlerContext,
+    enabled_filter: EnablePayloadsFilter, is_connectionless: bool,
+) {
     let HandlerContext {
         listen_addr,
-        mut framer,
+        eol_required,
         codec,
-        io_buffer_pool,
-        io_buffer_queue_capacity,
         metrics,
         mut context_resolvers,
         default_hostname,
@@ -1501,17 +1618,9 @@ async fn drive_stream(
         capture_entity_resolver,
         traffic_capture,
         packet_forwarder,
+        ..
     } = handler_context;
-
-    debug!(%listen_addr, "Stream handler started.");
-
-    let memory_limiter = source_context.topology_context().memory_limiter().clone();
-    let mut stream_reader = BufferedStreamReader::new(stream, io_buffer_pool, memory_limiter, io_buffer_queue_capacity);
-    let is_connectionless = stream_reader.is_connectionless();
-
-    if !is_connectionless {
-        metrics.connections_active().increment(1);
-    }
+    let mut framer = get_framer(&listen_addr, eol_required);
 
     let mut stream_capture = StreamCaptureState::new();
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
@@ -1526,7 +1635,7 @@ async fn drive_stream(
 
         select! {
             // We read from the stream.
-            maybe_read_result = stream_reader.receive() => match maybe_read_result {
+            maybe_read_result = stream_receiver.receive() => match maybe_read_result {
                 Some(Ok(received)) => {
                     let ReceivedBuffer {
                         mut buffer,
@@ -1703,10 +1812,6 @@ async fn drive_stream(
     if let Some(event_buffer) = event_buffer_manager.consume() {
         dispatch_events(event_buffer, &source_context, &listen_addr).await;
     }
-
-    metrics.connections_active().decrement(1);
-
-    debug!(%listen_addr, "Stream handler stopped.");
 }
 
 fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &BytesBuffer) -> bool {
@@ -2203,10 +2308,15 @@ mod tests {
         net::{UnixDatagram, UnixStream},
         task::yield_now,
     };
-    use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
+    use tokio::{
+        net::UdpSocket,
+        sync::{mpsc, Mutex},
+        time::timeout,
+    };
 
     use super::{
-        build_io_buffer_pool, default_buffer_size, default_windows_pipe_security_descriptor,
+        build_io_buffer_pool, default_buffer_size, default_decoder_worker_count,
+        default_windows_pipe_security_descriptor,
         filters::EnablePayloadsFilter,
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
@@ -2214,7 +2324,7 @@ mod tests {
         handle_frame, handle_metric_packet,
         metrics::build_metrics,
         origin_detection_failed_for_telemetry, resolve_capture_container_id, ContextResolvers, DogStatsDConfiguration,
-        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        StreamReceiver, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
     #[cfg(unix)]
     use super::{receive_stream, received_payload, ReceivedBuffer};
@@ -2816,6 +2926,42 @@ mod tests {
         // A maximum below the baseline is treated as equal to the baseline.
         let below = deser_config(r#"{"dogstatsd_buffer_count": 200, "dogstatsd_buffer_count_max": 64}"#);
         assert_eq!(below.effective_max_buffer_count(), 200);
+    }
+
+    #[test]
+    fn decoder_worker_count_matches_core_agent_defaults() {
+        assert_eq!(default_decoder_worker_count(1), 2);
+        assert_eq!(default_decoder_worker_count(4), 2);
+        assert_eq!(default_decoder_worker_count(8), 6);
+    }
+
+    #[test]
+    fn decoder_worker_count_honors_explicit_override() {
+        let config = deser_config(r#"{"dogstatsd_workers_count": 1}"#);
+
+        assert_eq!(config.decoder_worker_count().get(), 1);
+    }
+
+    #[tokio::test]
+    async fn shared_stream_receiver_distributes_packets_to_workers() {
+        let (sender, receiver) = mpsc::channel(2);
+        let receiver = Arc::new(Mutex::new(receiver));
+        let mut first_worker = StreamReceiver::Shared(receiver.clone());
+        let mut second_worker = StreamReceiver::Shared(receiver);
+
+        sender
+            .send(Err(std::io::Error::other("first")))
+            .await
+            .expect("first packet should be queued");
+        sender
+            .send(Err(std::io::Error::other("second")))
+            .await
+            .expect("second packet should be queued");
+
+        let (first, second) = tokio::join!(first_worker.receive(), second_worker.receive());
+
+        assert!(first.expect("first worker should receive a packet").is_err());
+        assert!(second.expect("second worker should receive a packet").is_err());
     }
 
     #[tokio::test]

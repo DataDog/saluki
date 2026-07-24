@@ -243,13 +243,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("false"),
     },
     ClassifierEntry {
-        yaml_path: "dogstatsd_workers_count",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("0"),
-    },
-    ClassifierEntry {
         yaml_path: "enable_json_stream_shared_compressor_buffers",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),

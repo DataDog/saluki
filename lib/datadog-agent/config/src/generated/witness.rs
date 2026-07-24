@@ -104,6 +104,7 @@ pub trait DatadogConfigWitness {
     fn consume_dogstatsd_tag_cardinality(&mut self, value: String);
     fn consume_dogstatsd_tags(&mut self, value: Vec<String>);
     fn consume_dogstatsd_windows_pipe_security_descriptor(&mut self, value: String);
+    fn consume_dogstatsd_workers_count(&mut self, value: i64);
     fn consume_enable_payloads_events(&mut self, value: bool);
     fn consume_enable_payloads_series(&mut self, value: bool);
     fn consume_enable_payloads_service_checks(&mut self, value: bool);
@@ -357,6 +358,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_dogstatsd_tags(config.dogstatsd_tags.clone());
     consumer
         .consume_dogstatsd_windows_pipe_security_descriptor(config.dogstatsd_windows_pipe_security_descriptor.clone());
+    consumer.consume_dogstatsd_workers_count(config.dogstatsd_workers_count.clone());
     consumer.consume_enable_payloads_events(config.enable_payloads.events.clone());
     consumer.consume_enable_payloads_series(config.enable_payloads.series.clone());
     consumer.consume_enable_payloads_service_checks(config.enable_payloads.service_checks.clone());

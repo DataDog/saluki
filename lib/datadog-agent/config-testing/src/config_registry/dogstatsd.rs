@@ -580,6 +580,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `dogstatsd_workers_count`-Number of DSD processing workers
+    DOGSTATSD_WORKERS_COUNT = SalukiAnnotation {
+        schema: &schema::DOGSTATSD_WORKERS_COUNT,
+        support_level: SupportLevel::Partial,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
     /// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
     TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
         schema: &schema::TELEMETRY_DOGSTATSD_ORIGIN,

@@ -471,6 +471,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_DOGSTATSD_WORKERS_COUNT"],
+        path: &["dogstatsd_workers_count"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_ENABLE_PAYLOADS_EVENTS"],
         path: &["enable_payloads", "events"],
         decode: EnvDecode::Bool,
