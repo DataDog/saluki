@@ -15,24 +15,15 @@ use std::sync::mpsc::sync_channel;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant};
 
-use rand::seq::IndexedRandom;
+use antithesis_sdk::prelude::*;
 use rand::Rng;
+use serde_json::json;
 
+use crate::dogstatsd::is_malformed;
 use crate::payload::dogstatsd;
-pub use crate::payload::dogstatsd::Batch;
 
 const SEND_RETRY_BUDGET: Duration = Duration::from_secs(5);
 const SEND_RETRY_BACKOFF: Duration = Duration::from_millis(1);
-
-/// Sample a line composition: half clean, a quarter feral, a quarter mixed.
-#[must_use]
-pub fn sample<R: Rng + ?Sized>(rng: &mut R) -> Batch {
-    match [Batch::Clean, Batch::Clean, Batch::Feral, Batch::Mixed].choose(rng) {
-        Some(Batch::Feral) => Batch::Feral,
-        Some(Batch::Mixed) => Batch::Mixed,
-        _ => Batch::Clean,
-    }
-}
 
 /// A generated payload queued for the sockets: the packed bytes and what they hold.
 struct Datagram {
@@ -72,14 +63,21 @@ pub struct Stats {
 /// Errors if a worker thread panics. Sustained backpressure is reported via
 /// [`Stats::timed_out`], not as an error.
 pub fn run<R: Rng + Send + 'static>(
-    mut rng: R, batch: Batch, limit_bytes: usize, count: usize, sockets: Vec<UnixDatagram>,
+    mut rng: R, limit_bytes: usize, count: usize, sockets: Vec<UnixDatagram>,
 ) -> anyhow::Result<Stats> {
     let (tx, rx) = sync_channel::<Datagram>(2024);
 
     let producer = thread::spawn(move || {
         for _ in 0..count {
             let mut bytes = Vec::new();
-            let payload = dogstatsd::write_payload(&mut rng, &mut bytes, batch, limit_bytes);
+            let payload = dogstatsd::write_payload(&mut rng, &mut bytes, limit_bytes);
+            // Green by construction: write_payload emits only lines the Agent forwards. The anchor
+            // catches any generator drift that would ship a droppable datagram.
+            assert_always!(
+                is_malformed(&bytes).is_ok(),
+                "driver payload is well-formed",
+                &json!({})
+            );
             if tx.send(Datagram { bytes, payload }).is_err() {
                 break;
             }
