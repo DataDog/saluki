@@ -35,13 +35,13 @@ use saluki_core::data_model::event::{
 };
 use saluki_core::{
     components::{sources::*, ComponentContext},
-    pooling::ElasticObjectPool,
+    pooling::{ElasticObjectPool, ObjectPool as _},
     topology::{EventsBuffer, EventsBufferManager, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::{
-    buf::{BytesBuffer, ClearableIoBuffer as _, FixedSizeVec},
+    buf::{BytesBuffer, ClearableIoBuffer as _, CollapsibleReadWriteIoBuffer as _, FixedSizeVec, ReadIoBuffer as _},
     deser::{
         codec::dogstatsd::*,
         framing::{Framer as _, FramingError, LengthDelimitedFramer},
@@ -72,9 +72,6 @@ use crate::sources::dogstatsd::tags::{WellKnownTags, WellKnownTagsFilterPredicat
 
 mod filters;
 use self::filters::EnablePayloadsFilter;
-
-mod io_buffer;
-use self::io_buffer::IoBufferManager;
 
 mod metrics;
 use self::metrics::{build_metrics, Metrics};
@@ -1545,16 +1542,20 @@ async fn receive_connected_stream(
 ) {
     debug!("Stream reader started.");
 
-    let mut buffer_manager = IoBufferManager::new(&io_buffer_pool);
-
+    let mut retained_buffer: Option<BytesBuffer> = None;
     loop {
         memory_limiter.wait_for_capacity().await;
 
-        let mut buffer = buffer_manager.take_buffer().await;
+        let mut buffer = match retained_buffer.take() {
+            Some(mut buffer) => {
+                buffer.collapse();
+                buffer
+            }
+            None => acquire_io_buffer(&io_buffer_pool).await,
+        };
         let (bytes_read, peer_addr) = match stream.receive(&mut buffer).await {
             Ok(received) => received,
             Err(error) => {
-                buffer_manager.return_buffer(buffer);
                 let _ = packets_tx.send(Err(error)).await;
                 break;
             }
@@ -1576,7 +1577,7 @@ async fn receive_connected_stream(
         }
 
         match returned_buffer.await {
-            Ok(buffer) if buffer.has_remaining() => buffer_manager.return_buffer(buffer),
+            Ok(buffer) if buffer.has_remaining() => retained_buffer = Some(buffer),
             Ok(buffer) => drop(buffer),
             Err(_) => break,
         }
@@ -1592,11 +1593,10 @@ async fn receive_connectionless_stream(
 ) {
     debug!(listen_addr = %socket_context.listen_addr, "Datagram reader started.");
 
-    let mut buffer_manager = IoBufferManager::new(&io_buffer_pool);
     loop {
         memory_limiter.wait_for_capacity().await;
 
-        let mut buffer = buffer_manager.take_buffer().await;
+        let mut buffer = acquire_io_buffer(&io_buffer_pool).await;
         let result = match stream.receive(&mut buffer).await {
             Ok((bytes_read, peer_addr)) => {
                 let process_origin = resolve_process_origin(capture_entity_resolver.as_deref(), &peer_addr);
@@ -1608,10 +1608,7 @@ async fn receive_connectionless_stream(
                     buffer_handoff: ReadBufferHandoff(None),
                 })
             }
-            Err(error) => {
-                buffer_manager.return_buffer(buffer);
-                Err(error)
-            }
+            Err(error) => Err(error),
         };
 
         let receive_failed = result.is_err();
@@ -1632,6 +1629,16 @@ async fn receive_connectionless_stream(
     }
 
     debug!(listen_addr = %socket_context.listen_addr, "Datagram reader stopped.");
+}
+
+async fn acquire_io_buffer(io_buffer_pool: &ElasticObjectPool<BytesBuffer>) -> BytesBuffer {
+    let buffer = io_buffer_pool.acquire().await;
+    trace!(
+        remaining = buffer.remaining(),
+        capacity = buffer.capacity(),
+        "Acquired new buffer from pool."
+    );
+    buffer
 }
 
 async fn process_datagram_decoder(
@@ -3479,6 +3486,63 @@ mod tests {
         let ReceivedBuffer {
             buffer, buffer_handoff, ..
         } = second;
+        buffer_handoff.return_to_reader(buffer);
+
+        drop(packets_rx);
+        sender
+            .write_all(b"shutdown")
+            .await
+            .expect("shutdown payload should send");
+        timeout(Duration::from_secs(1), reader)
+            .await
+            .expect("reader should stop after observing the closed queue")
+            .expect("reader task should not panic");
+        drop(shrinker);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connection_oriented_reader_releases_drained_buffer_before_reacquiring() {
+        let (mut sender, receiver) = UnixStream::pair().expect("stream pair should be created");
+        let (pool, shrinker) = build_io_buffer_pool(1, 1, default_buffer_size());
+        let (packets_tx, mut packets_rx) = mpsc::channel(1);
+        let reader = tokio::spawn(receive_connected_stream(
+            Stream::from(receiver),
+            pool,
+            MemoryLimiter::noop(),
+            None,
+            packets_tx,
+        ));
+
+        sender.write_all(b"first").await.expect("first payload should send");
+        let first = timeout(Duration::from_secs(1), packets_rx.recv())
+            .await
+            .expect("first read should finish")
+            .expect("reader should remain active")
+            .expect("first read should succeed");
+        let ReceivedBuffer {
+            mut buffer,
+            bytes_read,
+            buffer_handoff,
+            ..
+        } = first;
+        buffer.advance(bytes_read);
+        buffer_handoff.return_to_reader(buffer);
+
+        sender.write_all(b"second").await.expect("second payload should send");
+        let second = timeout(Duration::from_secs(1), packets_rx.recv())
+            .await
+            .expect("reader should reacquire the released buffer")
+            .expect("reader should remain active")
+            .expect("second read should succeed");
+        let ReceivedBuffer {
+            mut buffer,
+            bytes_read,
+            buffer_handoff,
+            ..
+        } = second;
+        assert_eq!(received_payload(&buffer, bytes_read), b"second");
+        buffer.advance(bytes_read);
         buffer_handoff.return_to_reader(buffer);
 
         drop(packets_rx);
