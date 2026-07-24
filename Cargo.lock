@@ -1267,6 +1267,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tinytemplate",
+ "tokio",
 ]
 
 [[package]]
@@ -1309,6 +1310,7 @@ dependencies = [
  "protobuf-codegen",
  "serde",
  "serde_bytes",
+ "serde_json",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

@@ -298,3 +298,133 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Meta-tests for the [`run_config_smoke_tests`] harness itself.
+    //!
+    //! [`run_config_smoke_tests`] documents three guarantees (supported keys, unsupported keys, full
+    //! field coverage). These tests verify the harness actually *enforces* each guarantee by feeding it a
+    //! `config_factory` that deliberately violates exactly one and asserting the harness reports that
+    //! guarantee's specific failure, plus one case where no guarantee is violated and the harness passes.
+    //!
+    //! We drive the negative cases against a struct name with no registered keys (so every registered key
+    //! is "foreign") or an ignore-everything factory, rather than a real config type. Faithfully
+    //! reproducing a *passing* struct here would require the production env-var remapper, which lives in
+    //! `saluki-components` and isn't a dependency of this crate; the guarantee-1 passing path is therefore
+    //! left to the real per-component smoke tests that call this harness.
+
+    use saluki_config::GenericConfiguration;
+    use serde_json::json;
+
+    use super::run_config_smoke_tests;
+    use crate::config_registry::structs;
+
+    /// Struct name that no annotation's `used_by` references, so every registered key is "foreign" to it.
+    const UNREGISTERED_STRUCT: &str = "NonExistentConfiguration";
+
+    fn empty_provider() -> figment::providers::Serialized<serde_json::Value> {
+        figment::providers::Serialized::defaults(json!({}))
+    }
+
+    fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_else(|| "<non-string panic payload>".to_string())
+    }
+
+    #[tokio::test]
+    async fn flags_a_supported_key_that_never_changes_the_struct() {
+        // `PROXY_CONFIGURATION` has registered (supported) keys. A factory that ignores the config
+        // entirely means each supported key "produces the default struct", violating the supported-key
+        // guarantee, which the harness must flag.
+        let outcome = tokio::spawn(async {
+            run_config_smoke_tests(
+                structs::PROXY_CONFIGURATION,
+                &[],
+                json!({}),
+                |_cfg: GenericConfiguration| json!({}),
+                &[],
+                empty_provider,
+            )
+            .await
+        })
+        .await;
+
+        let panic = outcome.expect_err("harness should panic when a supported key never changes the struct");
+        let message = panic_message(panic.into_panic());
+        assert!(
+            message.contains("did not change from its default"),
+            "expected supported-key failure, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn flags_a_foreign_key_that_changes_the_struct() {
+        // For a struct with no registered keys, every key is foreign and must leave the struct at its
+        // default. A factory that reflects the entire merged config changes for any foreign key, violating
+        // the unsupported-key guarantee.
+        let outcome = tokio::spawn(async {
+            run_config_smoke_tests(
+                UNREGISTERED_STRUCT,
+                &[],
+                json!({}),
+                |cfg: GenericConfiguration| cfg.as_typed::<serde_json::Value>().unwrap_or(serde_json::Value::Null),
+                &[],
+                empty_provider,
+            )
+            .await
+        })
+        .await;
+
+        let panic = outcome.expect_err("harness should panic when a foreign key changes the struct");
+        let message = panic_message(panic.into_panic());
+        assert!(
+            message.contains("unexpectedly changed the struct"),
+            "expected unsupported-key failure, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn flags_a_serialized_field_no_key_ever_changes() {
+        // A factory that always serializes a constant field means that field is never driven by any
+        // registered key, violating the full-field-coverage guarantee.
+        let outcome = tokio::spawn(async {
+            run_config_smoke_tests(
+                UNREGISTERED_STRUCT,
+                &[],
+                json!({}),
+                |_cfg: GenericConfiguration| json!({ "phantom": "constant" }),
+                &[],
+                empty_provider,
+            )
+            .await
+        })
+        .await;
+
+        let panic = outcome.expect_err("harness should panic about a serialized field no key changes");
+        let message = panic_message(panic.into_panic());
+        assert!(
+            message.contains("never changed by any registered config key"),
+            "expected full-field-coverage failure, got: {message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn passes_when_no_guarantee_is_violated() {
+        // A factory that ignores every (foreign) key and serializes no fields satisfies both the
+        // unsupported-key and full-field-coverage guarantees for a struct with no registered keys, so the
+        // harness returns without panicking.
+        run_config_smoke_tests(
+            UNREGISTERED_STRUCT,
+            &[],
+            json!({}),
+            |_cfg: GenericConfiguration| json!({}),
+            &[],
+            empty_provider,
+        )
+        .await;
+    }
+}
