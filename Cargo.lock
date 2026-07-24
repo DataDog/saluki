@@ -4576,6 +4576,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "saluki-metrics-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "saluki-tls"
 version = "0.1.0"
 dependencies = [
