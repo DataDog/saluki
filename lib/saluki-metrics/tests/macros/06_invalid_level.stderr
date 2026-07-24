@@ -1,0 +1,5 @@
+error: metric level must be `info`, `debug`, or `trace`
+ --> tests/macros/06_invalid_level.rs:6:22
+  |
+6 |     #[metric(level = warn)]
+  |                      ^^^^

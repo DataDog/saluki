@@ -1,0 +1,6 @@
+error: `static_metrics` requires at least one metric field
+ --> tests/macros/05_empty_struct.rs:4:1
+  |
+4 | / #[derive(Clone)]
+5 | | struct Metrics {}
+  | |_________________^
