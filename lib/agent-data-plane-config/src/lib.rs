@@ -22,7 +22,7 @@ pub mod domains;
 pub mod live;
 pub mod shared;
 
-pub use control::{ControlConfiguration, ListenAddress, Logging};
+pub use control::{ControlConfiguration, Logging};
 pub use domains::DomainConfiguration;
 pub use live::Live;
 pub use shared::SharedConfiguration;

@@ -18,6 +18,7 @@ use saluki_io::net::{
     ListenAddress,
 };
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROUTE};
 
@@ -25,6 +26,19 @@ use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROU
 pub struct DataPlaneAPIClient {
     client: HttpClient,
     authority: String,
+}
+
+/// Builds a data plane API client or exits after logging the error.
+pub(super) async fn api_or_exit(
+    dp: &DataPlaneConfiguration<'_>, raw_config: &GenericConfiguration,
+) -> DataPlaneAPIClient {
+    match DataPlaneAPIClient::from_configuration(dp, raw_config).await {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to create data plane API client: {:#}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -47,17 +61,22 @@ struct DogStatsDReplaySessionResponseBody {
 }
 
 impl DataPlaneAPIClient {
-    /// Creates a new `DataPlaneAPIClient` from the given generic configuration.
+    /// Creates a new `DataPlaneAPIClient` from the typed data plane configuration.
+    ///
+    /// The listen address for the privileged API comes from the typed model. The shared Agent IPC identity does not: the
+    /// schema overlay excludes `ipc_cert_file_path` and `auth_token_file_path`, so they are deliberately absent from
+    /// `SalukiConfiguration` and are still read by key, the same way the privileged API server reads them.
     ///
     /// # Errors
     ///
-    /// If the data plane or IPC authentication configuration can't be loaded, the IPC certificate can't be read or
-    /// parsed into a client TLS configuration, the privileged API endpoint isn't connection-oriented, or the HTTP
-    /// client can't be constructed, an error is returned.
-    pub async fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)
-            .error_context("Failed to load data plane configuration for privileged API client.")?;
-        let ipc_config = IpcAuthConfiguration::from_configuration(config)
+    /// If the IPC authentication configuration can't be loaded, the IPC certificate can't be read or parsed into a
+    /// client TLS configuration, the privileged API endpoint isn't connection-oriented, or the HTTP client can't be
+    /// constructed, an error is returned.
+    pub async fn from_configuration(
+        dp: &DataPlaneConfiguration<'_>, raw_config: &GenericConfiguration,
+    ) -> Result<Self, GenericError> {
+        let listen_address = dp.secure_api_listen_address()?;
+        let ipc_config = IpcAuthConfiguration::from_configuration(raw_config)
             .error_context("Failed to load IPC authentication configuration for privileged API client.")?;
 
         let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
@@ -70,7 +89,7 @@ impl DataPlaneAPIClient {
                 )
             })?;
         let builder = HttpClient::builder().with_client_tls_config(client_tls_config);
-        Self::from_builder(builder, dp_config.secure_api_listen_address())
+        Self::from_builder(builder, &listen_address)
     }
 
     fn from_builder(builder: HttpClientBuilder, listen_address: &ListenAddress) -> Result<Self, GenericError> {
