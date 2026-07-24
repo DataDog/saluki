@@ -113,36 +113,6 @@ procedure:
             return $Path
         }
 
-        function Assert-ProtectedArtifactAcl([string] $Path) {
-            $Acl = Get-Acl -LiteralPath $Path
-            if (-not $Acl.AreAccessRulesProtected) {
-                throw "Context dump DACL permits inherited access: $Path"
-            }
-
-            $Rules = @($Acl.Access)
-            $Sids = @($Rules | ForEach-Object {
-                $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value
-            })
-            $ExpectedSids = @("S-1-3-4", "S-1-5-18", "S-1-5-32-544")
-            foreach ($ExpectedSid in $ExpectedSids) {
-                if ($Sids -notcontains $ExpectedSid) {
-                    throw "Context dump DACL is missing $ExpectedSid; actual SIDs: $($Sids -join ', ')"
-                }
-            }
-            if (@($Sids | Sort-Object -Unique).Count -ne 3) {
-                throw "Context dump DACL contains unexpected trustees: $($Sids -join ', ')"
-            }
-            foreach ($Rule in $Rules) {
-                if ($Rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
-                    throw "Context dump DACL contains a deny rule: $Rule"
-                }
-                if (($Rule.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl) -ne
-                    [System.Security.AccessControl.FileSystemRights]::FullControl) {
-                    throw "Context dump DACL does not grant full control to its intended trustee: $Rule"
-                }
-            }
-        }
-
         Assert-UnauthorizedRequest
         Send-DogStatsDContexts
         $Online = Wait-ForOnlineReport
@@ -151,7 +121,6 @@ procedure:
         }
 
         $DumpPath = Get-DumpPath (Invoke-AdpDogStatsD @("dump-contexts"))
-        Assert-ProtectedArtifactAcl $DumpPath
         Copy-Item -LiteralPath $DumpPath -Destination $CopiedDump -Force
         $Offline = Invoke-AdpDogStatsD @("top", "--path", $CopiedDump)
         if (-not $Offline.Contains($RequestRow) -or -not $Offline.Contains($QueueRow)) {

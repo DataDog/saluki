@@ -74,7 +74,7 @@ Use the remainder row to account for hidden contexts. For example, `17 (other 4 
 > [!WARNING]
 > DogStatsD context dumps can contain metric names, hosts, client tags, and origin tags that reveal tenant or workload details. Treat every dump and copy as sensitive diagnostic data.
 
-On Unix, ADP creates the artifact with mode `0600`, owned by the ADP process owner. Keep that access restriction when you copy or store the file, use an encrypted and access-controlled transfer method, and avoid placing it in shared temporary directories. Remove the server-side artifact and every copied artifact manually when you finish the investigation.
+On Unix, ADP creates the artifact with mode `0600`, owned by the ADP process owner. On Windows, the artifact inherits the configured `run_path` directory ACL, matching the Datadog Agent; secure a custom `run_path` for the ADP service identity and intended administrators before requesting a dump. Keep the resulting access restriction when you copy or store the file, use an encrypted and access-controlled transfer method, and avoid placing it in shared temporary directories. Remove the server-side artifact and every copied artifact manually when you finish the investigation.
 
 A later successful dump replaces the fixed server-side file but does not remove copies elsewhere. ADP does not apply a retention or cleanup policy to the completed file.
 
