@@ -4,23 +4,21 @@ use arc_swap::ArcSwap;
 use saluki_common::collections::{FastHashSet, FastIndexMap};
 use saluki_context::origin::{ExternalData, RawExternalData};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Gauge};
 use tracing::{debug, trace};
 
 use crate::workload::{
     aggregator::MetadataStore, origin::ResolvedExternalData, EntityId, MetadataAction, MetadataOperation,
 };
 
-static_metrics!(
-    name => Telemetry,
-    prefix => external_data_store,
-    metrics => [
-        gauge(entity_limit),
-        gauge(active_entities),
-        counter(ops_delete_total),
-        counter(ops_attach_external_data_total),
-   ],
-);
+#[static_metrics(prefix = "external_data_store")]
+#[derive(Clone)]
+struct Telemetry {
+    entity_limit: Gauge,
+    active_entities: Gauge,
+    ops_delete_total: Counter,
+    ops_attach_external_data_total: Counter,
+}
 
 /// A store for External Data entity mappings.
 ///

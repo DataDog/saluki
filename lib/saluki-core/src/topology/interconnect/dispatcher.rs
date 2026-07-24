@@ -2,7 +2,7 @@ use std::{borrow::Cow, time::Instant};
 
 use saluki_common::collections::FastHashMap;
 use saluki_error::{generic_error, GenericError};
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Histogram};
 use tokio::sync::mpsc;
 
 use super::Dispatchable;
@@ -10,16 +10,14 @@ use crate::{components::ComponentContext, topology::OutputName};
 
 // TODO: When we have support for additional static labels on a per-metric basis, add `discard_reason` to
 // `events_discarded_total` metric to indicate that it's due to the destination component being disconnected.
-static_metrics!(
-    name => DispatcherMetrics,
-    prefix => component,
-    labels => [component_id: String, component_type: &'static str, output: String],
-    metrics => [
-        counter(events_sent_total),
-        trace_histogram(send_latency_seconds),
-        counter(events_discarded_total),
-    ],
-);
+#[static_metrics(prefix = "component", labels(component_id, component_type, output))]
+#[derive(Clone)]
+struct DispatcherMetrics {
+    events_sent_total: Counter,
+    #[metric(level = trace)]
+    send_latency_seconds: Histogram,
+    events_discarded_total: Counter,
+}
 
 impl DispatcherMetrics {
     fn default_output(context: ComponentContext) -> Self {
@@ -31,11 +29,7 @@ impl DispatcherMetrics {
     }
 
     fn with_output_name(context: ComponentContext, output_name: &str) -> Self {
-        Self::new(
-            context.component_id().to_string(),
-            context.component_type().as_str(),
-            output_name.to_string(),
-        )
+        Self::new(context.component_id(), context.component_type().as_str(), output_name)
     }
 }
 

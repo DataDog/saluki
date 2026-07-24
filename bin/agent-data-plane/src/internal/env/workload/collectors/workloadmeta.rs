@@ -9,7 +9,7 @@ use saluki_core::health::Health;
 use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataOperation};
 use saluki_error::GenericError;
 use saluki_io::net::util::tonic::StatusError;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     MetaString,
@@ -17,18 +17,16 @@ use stringtheory::{
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
 
-static_metrics!(
-   name => Telemetry,
-   prefix => remote_workloadmeta_metadata_collector,
-   metrics => [
-       counter(rpc_errors_total),
-       counter(intern_failed_total),
-       counter(events_kubernetes_pod_updated_total),
-       counter(events_kubernetes_pod_removed_total),
-       counter(events_container_updated_total),
-       counter(events_container_removed_total),
-   ],
-);
+#[static_metrics(prefix = "remote_workloadmeta_metadata_collector")]
+#[derive(Clone)]
+struct Telemetry {
+    rpc_errors_total: Counter,
+    intern_failed_total: Counter,
+    events_kubernetes_pod_updated_total: Counter,
+    events_kubernetes_pod_removed_total: Counter,
+    events_container_updated_total: Counter,
+    events_container_removed_total: Counter,
+}
 
 #[derive(Clone, Copy)]
 enum EventType {

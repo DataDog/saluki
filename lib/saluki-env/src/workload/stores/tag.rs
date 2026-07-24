@@ -6,7 +6,7 @@ use saluki_context::{
     tags::{SharedTagSet, TagSet},
 };
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Gauge};
 use tracing::{debug, trace};
 
 use crate::workload::{
@@ -15,19 +15,17 @@ use crate::workload::{
     metadata::{MetadataAction, MetadataOperation},
 };
 
-static_metrics!(
-    name => Telemetry,
-    prefix => tag_store,
-    metrics => [
-        gauge(entity_limit),
-        gauge(active_entities),
-        gauge(entity_aliases),
-        counter(ops_delete_total),
-        counter(ops_set_tags_total),
-        counter(ops_add_alias_total),
-        counter(ops_remove_alias_total),
-   ],
-);
+#[static_metrics(prefix = "tag_store")]
+#[derive(Clone)]
+struct Telemetry {
+    entity_limit: Gauge,
+    active_entities: Gauge,
+    entity_aliases: Gauge,
+    ops_delete_total: Counter,
+    ops_set_tags_total: Counter,
+    ops_add_alias_total: Counter,
+    ops_remove_alias_total: Counter,
+}
 
 #[derive(Clone, Default)]
 struct TagStorage {

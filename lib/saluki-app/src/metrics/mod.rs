@@ -143,28 +143,36 @@ impl Supervisable for RuntimeMetricsWorker {
     }
 }
 
-static_metrics!(
-    name => WorkerMetrics,
-    prefix => runtime_worker,
-    labels => [runtime_id: String, worker_idx: String],
-    metrics => [
-        trace_gauge(local_queue_depth),
-        trace_gauge(local_schedule_count),
-        trace_gauge(mean_poll_time),
-        trace_gauge(noop_count),
-        trace_gauge(overflow_count),
-        trace_gauge(park_count),
-        trace_gauge(park_unpark_count),
-        trace_gauge(poll_count),
-        trace_gauge(steal_count),
-        trace_gauge(steal_operations),
-        trace_gauge(total_busy_duration),
-    ]
-);
+#[static_metrics(prefix = "runtime_worker", labels(runtime_id, worker_idx))]
+#[derive(Clone)]
+struct WorkerMetrics {
+    #[metric(level = trace)]
+    local_queue_depth: Gauge,
+    #[metric(level = trace)]
+    local_schedule_count: Gauge,
+    #[metric(level = trace)]
+    mean_poll_time: Gauge,
+    #[metric(level = trace)]
+    noop_count: Gauge,
+    #[metric(level = trace)]
+    overflow_count: Gauge,
+    #[metric(level = trace)]
+    park_count: Gauge,
+    #[metric(level = trace)]
+    park_unpark_count: Gauge,
+    #[metric(level = trace)]
+    poll_count: Gauge,
+    #[metric(level = trace)]
+    steal_count: Gauge,
+    #[metric(level = trace)]
+    steal_operations: Gauge,
+    #[metric(level = trace)]
+    total_busy_duration: Gauge,
+}
 
 impl WorkerMetrics {
     fn with_worker_idx(runtime_id: &str, worker_idx: usize) -> Self {
-        Self::new(runtime_id.to_string(), worker_idx.to_string())
+        Self::new(runtime_id, worker_idx)
     }
 
     fn update(&self, worker_idx: usize, metrics: &tokio::runtime::RuntimeMetrics) {
@@ -189,25 +197,34 @@ impl WorkerMetrics {
     }
 }
 
-static_metrics!(
-    name => GlobalRuntimeMetrics,
-    prefix => runtime,
-    labels => [runtime_id: String],
-    metrics => [
-        debug_gauge(num_alive_tasks),
-        debug_gauge(blocking_queue_depth),
-        debug_gauge(budget_forced_yield_count),
-        debug_gauge(global_queue_depth),
-        debug_gauge(io_driver_fd_deregistered_count),
-        debug_gauge(io_driver_fd_registered_count),
-        debug_gauge(io_driver_ready_count),
-        debug_gauge(num_blocking_threads),
-        debug_gauge(num_idle_blocking_threads),
-        debug_gauge(num_workers),
-        debug_gauge(remote_schedule_count),
-        debug_gauge(spawned_tasks_count),
-    ],
-);
+#[static_metrics(prefix = "runtime", labels(runtime_id))]
+#[derive(Clone)]
+struct GlobalRuntimeMetrics {
+    #[metric(level = debug)]
+    num_alive_tasks: Gauge,
+    #[metric(level = debug)]
+    blocking_queue_depth: Gauge,
+    #[metric(level = debug)]
+    budget_forced_yield_count: Gauge,
+    #[metric(level = debug)]
+    global_queue_depth: Gauge,
+    #[metric(level = debug)]
+    io_driver_fd_deregistered_count: Gauge,
+    #[metric(level = debug)]
+    io_driver_fd_registered_count: Gauge,
+    #[metric(level = debug)]
+    io_driver_ready_count: Gauge,
+    #[metric(level = debug)]
+    num_blocking_threads: Gauge,
+    #[metric(level = debug)]
+    num_idle_blocking_threads: Gauge,
+    #[metric(level = debug)]
+    num_workers: Gauge,
+    #[metric(level = debug)]
+    remote_schedule_count: Gauge,
+    #[metric(level = debug)]
+    spawned_tasks_count: Gauge,
+}
 
 struct RuntimeMetrics {
     global: GlobalRuntimeMetrics,
@@ -222,7 +239,7 @@ impl RuntimeMetrics {
         }
 
         Self {
-            global: GlobalRuntimeMetrics::new(runtime_id.to_string()),
+            global: GlobalRuntimeMetrics::new(runtime_id),
             workers,
         }
     }

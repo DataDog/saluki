@@ -14,7 +14,7 @@ test = []
 
 [dependencies]
 metrics = { workspace = true }
-pastey = { workspace = true }
+saluki-metrics-derive = { workspace = true }
 
 [dev-dependencies]
 trybuild = { workspace = true }

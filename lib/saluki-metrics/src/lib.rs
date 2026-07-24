@@ -7,10 +7,9 @@ mod builder;
 // The `metrics` handle types are re-exported so that structs using the `static_metrics` macro can name their fields
 // (`Counter`/`Gauge`/`Histogram`) via `saluki_metrics` without depending on `metrics` directly.
 pub use ::metrics::{Counter, Gauge, Histogram};
+pub use saluki_metrics_derive::static_metrics;
 
 pub use self::builder::{MetricTag, MetricsBuilder};
-
-mod macros;
 
 #[cfg(feature = "test")]
 pub mod test;
@@ -18,14 +17,13 @@ pub mod test;
 #[doc(hidden)]
 pub mod reexport {
     pub use ::metrics;
-    pub use pastey::paste;
 }
 
 /// A type that can be converted into a `SharedString`.
 ///
 /// This is a blanket trait used to generically support converting any type which already supports conversion to
-/// `String` into a `SharedString`. This is purely used by the `static_metrics!` macro to allow for ergonomic handling
-/// of labels, and should generally not need to be implemented manually.
+/// `String` into a `SharedString`. This is purely used by the `static_metrics` macro to allow for ergonomic
+/// handling of labels, and should generally not need to be implemented manually.
 pub trait Stringable {
     /// Converts the given value to a `SharedString`.
     fn to_shared_string(&self) -> ::metrics::SharedString;

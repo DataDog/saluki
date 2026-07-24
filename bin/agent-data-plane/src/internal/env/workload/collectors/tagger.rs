@@ -12,7 +12,7 @@ use saluki_core::health::Health;
 use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataAction, MetadataOperation};
 use saluki_error::GenericError;
 use saluki_io::net::util::tonic::StatusError;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     MetaString,
@@ -20,17 +20,15 @@ use stringtheory::{
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
 
-static_metrics!(
-   name => Telemetry,
-   prefix => remote_tagger_metadata_collector,
-   metrics => [
-       counter(rpc_errors_total),
-       counter(intern_failed_total),
-       counter(events_added_total),
-       counter(events_modified_total),
-       counter(events_deleted_total),
-   ],
-);
+#[static_metrics(prefix = "remote_tagger_metadata_collector")]
+#[derive(Clone)]
+struct Telemetry {
+    rpc_errors_total: Counter,
+    intern_failed_total: Counter,
+    events_added_total: Counter,
+    events_modified_total: Counter,
+    events_deleted_total: Counter,
+}
 
 /// A workload provider that uses the remote tagger API from a Datadog Agent to provide workload information.
 pub struct RemoteAgentTaggerMetadataCollector {
