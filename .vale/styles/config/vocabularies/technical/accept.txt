@@ -248,6 +248,9 @@ varint
 serializer
 backreference(s)?
 Miri
-proptest
+proptest(s?)
+subtransform(s?)
+reimplemented
+hoc
 rss
 waker

@@ -261,7 +261,8 @@ mod tests {
     async fn get_remote_agent_config(
         ipc_cert_file_path: Option<&Path>, auth_token_file_path: Option<&Path>,
     ) -> RemoteAgentClientConfiguration {
-        // Set the values in the config map if provided.
+        // Set the values in the config map if provided, then defer to the shared loader helper so both
+        // entry points build the configuration the exact same way.
         let mut values = serde_json::Map::new();
         if let Some(path) = ipc_cert_file_path {
             values.insert(
@@ -276,9 +277,7 @@ mod tests {
             );
         }
 
-        let (base_config, _) =
-            ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
-        RemoteAgentClientConfiguration::from_configuration(&base_config).unwrap()
+        config_from_values(values).await
     }
 
     #[tokio::test]

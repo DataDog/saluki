@@ -342,7 +342,7 @@ mod tests {
         fn wake(self: Arc<Self>) {}
     }
 
-    /// Polls a future to completion on the current thread using a no-op waker.
+    /// Polls a future to completion on the current thread using a no-op `waker`.
     fn poll_to_completion<F: Future>(future: F) -> F::Output {
         let mut future = Box::pin(future);
         let waker = Waker::from(Arc::new(NoopWaker));
