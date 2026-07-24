@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 mod builder;
+mod mapped;
 
 // The `metrics` handle types are re-exported so that structs using the `static_metrics` macro can name their fields
 // (`Counter`/`Gauge`/`Histogram`) via `saluki_metrics` without depending on `metrics` directly.
@@ -10,6 +11,7 @@ pub use ::metrics::{Counter, Gauge, Histogram};
 pub use saluki_metrics_derive::static_metrics;
 
 pub use self::builder::{MetricTag, MetricsBuilder};
+pub use self::mapped::MappedMetric;
 
 #[cfg(feature = "test")]
 pub mod test;
