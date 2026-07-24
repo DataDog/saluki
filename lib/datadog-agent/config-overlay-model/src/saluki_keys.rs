@@ -173,7 +173,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     },
     SalukiKey {
         yaml_path: "dogstatsd_buffer_count_max",
-        description: "Max receive buffers (burst testing)",
+        description: "Maximum receive buffer count",
         default: "32768",
         documentation: None,
         value_type: "ValueType::Integer",
