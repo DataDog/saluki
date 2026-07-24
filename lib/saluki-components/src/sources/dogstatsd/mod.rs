@@ -9,7 +9,7 @@
 use std::{
     collections::VecDeque,
     future::Future,
-    io,
+    io, mem,
     num::NonZeroUsize,
     path::PathBuf,
     pin::Pin,
@@ -36,7 +36,7 @@ use saluki_core::data_model::event::{
 use saluki_core::{
     components::{sources::*, ComponentContext},
     pooling::{ElasticObjectPool, ObjectPool as _},
-    topology::{EventsBuffer, EventsBufferManager, OutputDefinition},
+    topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -1203,8 +1203,7 @@ struct DogStatsDDecoder {
     disable_verbose_logs: bool,
     additional_tags: Arc<[String]>,
     traffic_capture: TrafficCapture,
-    event_buffer_manager: EventsBufferManager,
-    last_listen_addr: Option<ListenAddress>,
+    event_buffer: Option<EventsBuffer>,
 }
 
 #[derive(Clone, Copy)]
@@ -1688,8 +1687,7 @@ impl DogStatsDDecoder {
             disable_verbose_logs,
             additional_tags,
             traffic_capture,
-            event_buffer_manager: EventsBufferManager::default(),
-            last_listen_addr: None,
+            event_buffer: None,
         }
     }
 
@@ -1705,9 +1703,6 @@ impl DogStatsDDecoder {
             packet_forwarder,
             mode,
         } = context;
-        if self.last_listen_addr.as_ref() != Some(listen_addr) {
-            self.last_listen_addr = Some(listen_addr.clone());
-        }
 
         let payload = received_payload(io_buffer, bytes_read);
         capture_uds_traffic(
@@ -1822,7 +1817,7 @@ impl DogStatsDDecoder {
             &self.default_hostname,
         ) {
             Ok(Some(event)) => {
-                if let Some(event_buffer) = self.event_buffer_manager.try_push(event) {
+                if let Some(event_buffer) = self.buffer_event(event) {
                     debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
                     dispatch_events(event_buffer, &self.source_context, listen_addr).await;
                 }
@@ -1834,12 +1829,24 @@ impl DogStatsDDecoder {
         }
     }
 
-    async fn flush_events(&mut self) {
-        let Some(listen_addr) = self.last_listen_addr.clone() else {
-            return;
-        };
-        if let Some(event_buffer) = self.event_buffer_manager.consume() {
-            dispatch_events(event_buffer, &self.source_context, &listen_addr).await;
+    fn buffer_event(&mut self, event: Event) -> Option<EventsBuffer> {
+        let event_buffer = self.event_buffer.get_or_insert_default();
+        match event_buffer.try_push(event) {
+            Some(event) => {
+                let full_event_buffer = mem::take(event_buffer);
+                assert!(
+                    event_buffer.try_push(event).is_none(),
+                    "New event buffer is unexpectedly full."
+                );
+                Some(full_event_buffer)
+            }
+            None => None,
+        }
+    }
+
+    async fn flush_events(&mut self, listen_addr: &ListenAddress) {
+        if let Some(event_buffer) = self.event_buffer.take() {
+            dispatch_events(event_buffer, &self.source_context, listen_addr).await;
         }
     }
 }
@@ -1850,6 +1857,7 @@ async fn drive_datagram_decoder(
 ) {
     let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
     let mut stream_capture = StreamCaptureState::new();
+    let mut last_socket_context: Option<Arc<DatagramSocketContext>> = None;
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -1861,56 +1869,63 @@ async fn drive_datagram_decoder(
                 let Some(QueuedDatagram { result, socket_context }) = maybe_datagram else {
                     break;
                 };
-                let DatagramSocketContext {
-                    listen_addr,
-                    eol_required,
-                    metrics,
-                    packet_forwarder,
-                } = socket_context.as_ref();
+                {
+                    let DatagramSocketContext {
+                        listen_addr,
+                        eol_required,
+                        metrics,
+                        packet_forwarder,
+                    } = socket_context.as_ref();
 
-                let ReceivedBuffer {
-                    mut buffer,
-                    bytes_read,
-                    peer_addr,
-                    process_origin,
-                    buffer_handoff,
-                } = match result {
-                    Ok(received) => received,
-                    Err(error) => {
-                        metrics.packet_receive_failure().increment(1);
-                        warn!(%listen_addr, %error, "I/O error while reading datagram. Continuing listener.");
-                        continue;
-                    }
-                };
-
-                let mut framer = get_framer(listen_addr, *eol_required);
-                let outcome = decoder
-                    .decode_buffer(
-                        &mut framer,
-                        &mut stream_capture,
-                        &mut buffer,
+                    let ReceivedBuffer {
+                        mut buffer,
                         bytes_read,
-                        BufferDecodeContext {
-                            listen_addr,
-                            peer_addr: &peer_addr,
-                            process_origin: process_origin.as_ref(),
-                            metrics,
-                            packet_forwarder: packet_forwarder.as_ref(),
-                            mode: BufferDecodeMode::Connectionless,
-                        },
-                    )
-                    .await;
-                debug_assert_eq!(outcome, DecodeOutcome::Continue);
+                        peer_addr,
+                        process_origin,
+                        buffer_handoff,
+                    } = match result {
+                        Ok(received) => received,
+                        Err(error) => {
+                            metrics.packet_receive_failure().increment(1);
+                            warn!(%listen_addr, %error, "I/O error while reading datagram. Continuing listener.");
+                            continue;
+                        }
+                    };
 
-                buffer_handoff.return_to_reader(buffer);
+                    let mut framer = get_framer(listen_addr, *eol_required);
+                    let outcome = decoder
+                        .decode_buffer(
+                            &mut framer,
+                            &mut stream_capture,
+                            &mut buffer,
+                            bytes_read,
+                            BufferDecodeContext {
+                                listen_addr,
+                                peer_addr: &peer_addr,
+                                process_origin: process_origin.as_ref(),
+                                metrics,
+                                packet_forwarder: packet_forwarder.as_ref(),
+                                mode: BufferDecodeMode::Connectionless,
+                            },
+                        )
+                        .await;
+                    debug_assert_eq!(outcome, DecodeOutcome::Continue);
+
+                    buffer_handoff.return_to_reader(buffer);
+                }
+                last_socket_context = Some(socket_context);
             }
             _ = buffer_flush.tick() => {
-                decoder.flush_events().await;
+                if let Some(socket_context) = last_socket_context.as_ref() {
+                    decoder.flush_events(&socket_context.listen_addr).await;
+                }
             }
         }
     }
 
-    decoder.flush_events().await;
+    if let Some(socket_context) = last_socket_context.as_ref() {
+        decoder.flush_events(&socket_context.listen_addr).await;
+    }
 }
 
 async fn drive_stream(stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
@@ -2030,13 +2045,13 @@ async fn drive_decoder(
             },
 
             _ = buffer_flush.tick() => {
-                decoder.flush_events().await;
+                decoder.flush_events(&listen_addr).await;
             },
 
         }
     }
 
-    decoder.flush_events().await;
+    decoder.flush_events(&listen_addr).await;
 }
 
 fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &BytesBuffer) -> bool {
@@ -2494,7 +2509,6 @@ mod tests {
         time::Duration,
     };
 
-    #[cfg(unix)]
     use bytes::Buf as _;
     use bytes::{BufMut as _, Bytes};
     use bytesize::ByteSize;
@@ -2502,11 +2516,14 @@ mod tests {
     use saluki_common::sync::shutdown::ShutdownCoordinator;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
-    #[cfg(unix)]
-    use saluki_core::accounting::MemoryLimiter;
+    use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
     use saluki_core::{
-        components::ComponentContext,
+        components::{sources::SourceContext, ComponentContext},
+        health::HealthRegistry,
         pooling::{helpers::get_pooled_object_via_builder, ObjectPool as _},
+        runtime::{state::DataspaceRegistry, Supervisor},
+        support::SubsystemIdentifier,
+        topology::{EventsBuffer, EventsDispatcher, OutputName, TopologyContext},
     };
     #[cfg(target_os = "linux")]
     use saluki_env::workload::providers::TestWorkloadProvider;
@@ -2529,6 +2546,7 @@ mod tests {
     };
     use tokio::{
         net::UdpSocket,
+        runtime::Handle,
         sync::{mpsc, Mutex},
         time::timeout,
     };
@@ -2540,10 +2558,11 @@ mod tests {
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
-        handle_frame, handle_metric_packet,
+        get_framer, handle_frame, handle_metric_packet,
         metrics::build_metrics,
         origin_detection_failed_for_telemetry, resolve_process_origin, shutdown_listeners_and_drain_datagram_decoders,
-        ContextResolvers, DatagramSocketContext, DogStatsDConfiguration, ProcessOrigin, QueuedDatagram,
+        BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
+        DogStatsDConfiguration, DogStatsDDecoder, ProcessOrigin, QueuedDatagram, StreamCaptureState, TrafficCapture,
         DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
     #[cfg(unix)]
@@ -2634,6 +2653,408 @@ mod tests {
             .with_tags_resolver(Some(tags_resolver.clone()))
             .build();
         ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver)
+    }
+
+    fn test_source_context() -> (SourceContext, mpsc::Receiver<EventsBuffer>) {
+        let component_context = test_component_context();
+        let mut dispatcher = EventsDispatcher::new(component_context.clone());
+        let metrics_output = OutputName::Given("metrics".into());
+        dispatcher
+            .add_output(metrics_output.clone())
+            .expect("metrics output should be added");
+        let (metrics_tx, metrics_rx) = mpsc::channel(4);
+        dispatcher
+            .attach_sender_to_output(&metrics_output, metrics_tx)
+            .expect("metrics output should accept a sender");
+
+        let health_registry = HealthRegistry::new();
+        let topology_context = TopologyContext::new(
+            Arc::from("test"),
+            MemoryLimiter::noop(),
+            health_registry.clone(),
+            Handle::current(),
+            DataspaceRegistry::new(),
+        );
+        let health = health_registry
+            .register_component(&SubsystemIdentifier::from_dotted("test.decoder"))
+            .expect("test decoder should have a health handle");
+        let supervisor_handle = Supervisor::new("dogstatsd-decoder-test")
+            .expect("test supervisor name should be valid")
+            .handle();
+        let source_context = SourceContext::new(
+            &topology_context,
+            &component_context,
+            ComponentRegistry::default(),
+            health,
+            dispatcher,
+            supervisor_handle,
+        );
+
+        (source_context, metrics_rx)
+    }
+
+    fn test_decoder_context(origin_detection_enabled: bool) -> DecoderContext {
+        DecoderContext {
+            codec: DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default()),
+            context_resolvers: test_context_resolvers(),
+            default_hostname: MetaString::from_static("default-hostname"),
+            enabled_filter: EnablePayloadsFilter::default(),
+            origin_detection_enabled,
+            stream_log_too_big: false,
+            disable_verbose_logs: false,
+            additional_tags: Vec::<String>::new().into(),
+            traffic_capture: TrafficCapture::new(PathBuf::new(), 1),
+        }
+    }
+
+    fn test_io_buffer(payload: &[u8], capacity: usize) -> BytesBuffer {
+        let mut buffer: BytesBuffer = get_pooled_object_via_builder(|| FixedSizeVec::with_capacity(capacity));
+        buffer.put_slice(payload);
+        buffer
+    }
+
+    #[tokio::test]
+    async fn connectionless_decoder_dispatches_full_and_flushed_buffers_and_forwards_frames() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
+        let metrics = build_metrics(&listen_addr, &test_component_context(), false);
+        let (source_context, mut metrics_rx) = test_source_context();
+        let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(false));
+        let mut framer = get_framer(&listen_addr, false);
+        let mut stream_capture = StreamCaptureState::new();
+        let event_buffer_capacity = EventsBuffer::default().capacity();
+        let (packets_tx, mut packets_rx) = mpsc::channel(event_buffer_capacity + 1);
+        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics.clone());
+
+        let mut payload = b"decoder.metric:1|c\n".repeat(event_buffer_capacity);
+        payload.extend_from_slice(b"decoder.metric:1|c");
+        let mut io_buffer = test_io_buffer(&payload, payload.len());
+        let outcome = decoder
+            .decode_buffer(
+                &mut framer,
+                &mut stream_capture,
+                &mut io_buffer,
+                payload.len(),
+                BufferDecodeContext {
+                    listen_addr: &listen_addr,
+                    peer_addr: &peer_addr,
+                    process_origin: None,
+                    metrics: &metrics,
+                    packet_forwarder: Some(&packet_forwarder),
+                    mode: BufferDecodeMode::Connectionless,
+                },
+            )
+            .await;
+
+        assert_eq!(outcome, DecodeOutcome::Continue);
+        assert_eq!(io_buffer.remaining(), 0);
+        let full_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
+            .await
+            .expect("full event buffer dispatch should not time out")
+            .expect("metrics output should remain connected");
+        assert_eq!(full_buffer.len(), event_buffer_capacity);
+        assert!(
+            timeout(Duration::from_secs(1), packets_rx.recv())
+                .await
+                .expect("forwarded packet should not time out")
+                .is_some(),
+            "forwarded packet should be queued"
+        );
+        assert_eq!(packets_rx.len(), event_buffer_capacity);
+
+        decoder.flush_events(&listen_addr).await;
+        let flushed_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
+            .await
+            .expect("partial event buffer flush should not time out")
+            .expect("metrics output should remain connected");
+        assert_eq!(flushed_buffer.len(), 1);
+        decoder.flush_events(&listen_addr).await;
+        assert!(
+            metrics_rx.try_recv().is_err(),
+            "empty flush should not dispatch another buffer"
+        );
+
+        assert_eq!(
+            recorder.counter((
+                "component_packets_received_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "unixgram"),
+                    ("state", "ok"),
+                ],
+            )),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_bytes_received_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "unixgram"),
+                ],
+            )),
+            Some(payload.len() as u64)
+        );
+        assert_eq!(
+            recorder.counter(processed_metric_key("unixgram", None)),
+            Some((event_buffer_capacity + 1) as u64)
+        );
+    }
+
+    #[tokio::test]
+    async fn connected_decoder_waits_for_complete_outer_frame_and_stops_on_eof() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let listen_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Error(
+            saluki_io::net::ProcessCredentialsError::InvalidCredentials,
+        ));
+        let metrics = build_metrics(&listen_addr, &test_component_context(), false);
+        let (source_context, mut metrics_rx) = test_source_context();
+        let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(true));
+        let mut framer = get_framer(&listen_addr, false);
+        let mut stream_capture = StreamCaptureState::new();
+        let (packets_tx, mut packets_rx) = mpsc::channel(1);
+        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics.clone());
+
+        let frame = b"stream.metric:1|c\n";
+        let mut payload = Vec::with_capacity(frame.len() + 4);
+        payload.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        payload.extend_from_slice(frame);
+        let mut io_buffer = test_io_buffer(&payload[..2], payload.len() + 16);
+
+        let partial_outcome = decoder
+            .decode_buffer(
+                &mut framer,
+                &mut stream_capture,
+                &mut io_buffer,
+                2,
+                BufferDecodeContext {
+                    listen_addr: &listen_addr,
+                    peer_addr: &peer_addr,
+                    process_origin: None,
+                    metrics: &metrics,
+                    packet_forwarder: Some(&packet_forwarder),
+                    mode: BufferDecodeMode::Connected { eof: false },
+                },
+            )
+            .await;
+        assert_eq!(partial_outcome, DecodeOutcome::Continue);
+        assert_eq!(io_buffer.remaining(), 2);
+        assert!(
+            packets_rx.try_recv().is_err(),
+            "partial outer frame should not be forwarded"
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_packets_received_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "unix"),
+                    ("state", "ok"),
+                ],
+            )),
+            Some(0)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_errors_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("error_type", "origin_detection"),
+                ],
+            )),
+            Some(0)
+        );
+
+        io_buffer.put_slice(&payload[2..]);
+        let complete_outcome = decoder
+            .decode_buffer(
+                &mut framer,
+                &mut stream_capture,
+                &mut io_buffer,
+                payload.len() - 2,
+                BufferDecodeContext {
+                    listen_addr: &listen_addr,
+                    peer_addr: &peer_addr,
+                    process_origin: None,
+                    metrics: &metrics,
+                    packet_forwarder: Some(&packet_forwarder),
+                    mode: BufferDecodeMode::Connected { eof: false },
+                },
+            )
+            .await;
+        assert_eq!(complete_outcome, DecodeOutcome::Continue);
+        assert_eq!(io_buffer.remaining(), 0);
+        assert!(
+            timeout(Duration::from_secs(1), packets_rx.recv())
+                .await
+                .expect("forwarded stream packet should not time out")
+                .is_some(),
+            "complete outer frame should be forwarded"
+        );
+
+        let eof_outcome = decoder
+            .decode_buffer(
+                &mut framer,
+                &mut stream_capture,
+                &mut io_buffer,
+                0,
+                BufferDecodeContext {
+                    listen_addr: &listen_addr,
+                    peer_addr: &peer_addr,
+                    process_origin: None,
+                    metrics: &metrics,
+                    packet_forwarder: Some(&packet_forwarder),
+                    mode: BufferDecodeMode::Connected { eof: true },
+                },
+            )
+            .await;
+        assert_eq!(eof_outcome, DecodeOutcome::Stop);
+
+        decoder.flush_events(&listen_addr).await;
+        let flushed_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
+            .await
+            .expect("connected event buffer flush should not time out")
+            .expect("metrics output should remain connected");
+        assert_eq!(flushed_buffer.len(), 1);
+        assert_eq!(
+            recorder.counter((
+                "component_packets_received_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "unix"),
+                    ("state", "ok"),
+                ],
+            )),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_bytes_received_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "unix"),
+                ],
+            )),
+            Some(payload.len() as u64)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_errors_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("error_type", "origin_detection"),
+                ],
+            )),
+            Some(1)
+        );
+        assert_eq!(recorder.counter(processed_metric_key("unix", None)), Some(1));
+    }
+
+    #[tokio::test]
+    async fn decoder_continues_connectionless_but_stops_connected_on_framing_error() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
+        let (source_context, _metrics_rx) = test_source_context();
+        let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(false));
+        let mut stream_capture = StreamCaptureState::new();
+
+        let datagram_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
+        let datagram_metrics = build_metrics(&datagram_addr, &test_component_context(), false);
+        let mut datagram_framer = get_framer(&datagram_addr, true);
+        let payload = b"missing.newline:1|c";
+        let mut datagram_buffer = test_io_buffer(payload, payload.len());
+        let datagram_outcome = decoder
+            .decode_buffer(
+                &mut datagram_framer,
+                &mut stream_capture,
+                &mut datagram_buffer,
+                payload.len(),
+                BufferDecodeContext {
+                    listen_addr: &datagram_addr,
+                    peer_addr: &peer_addr,
+                    process_origin: None,
+                    metrics: &datagram_metrics,
+                    packet_forwarder: None,
+                    mode: BufferDecodeMode::Connectionless,
+                },
+            )
+            .await;
+        assert_eq!(datagram_outcome, DecodeOutcome::Continue);
+
+        let stream_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
+        let stream_metrics = build_metrics(&stream_addr, &test_component_context(), false);
+        let mut stream_framer = get_framer(&stream_addr, false);
+        let stream_buffer_capacity = 64;
+        let oversized_frame = (stream_buffer_capacity as u32).to_le_bytes();
+        let mut stream_buffer = test_io_buffer(&oversized_frame, stream_buffer_capacity);
+        let stream_outcome = decoder
+            .decode_buffer(
+                &mut stream_framer,
+                &mut stream_capture,
+                &mut stream_buffer,
+                oversized_frame.len(),
+                BufferDecodeContext {
+                    listen_addr: &stream_addr,
+                    peer_addr: &peer_addr,
+                    process_origin: None,
+                    metrics: &stream_metrics,
+                    packet_forwarder: None,
+                    mode: BufferDecodeMode::Connected { eof: false },
+                },
+            )
+            .await;
+        assert_eq!(stream_outcome, DecodeOutcome::Stop);
+
+        for listener_type in ["unixgram", "unix"] {
+            assert_eq!(
+                recorder.counter((
+                    "component_errors_total",
+                    &[
+                        ("component_id", "dogstatsd_test"),
+                        ("component_type", "source"),
+                        ("listener_type", listener_type),
+                        ("error_type", "framing"),
+                    ],
+                )),
+                Some(1)
+            );
+        }
+        assert_eq!(
+            recorder.counter((
+                "component_packets_received_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "unixgram"),
+                    ("state", "ok"),
+                ],
+            )),
+            Some(1)
+        );
+        assert_eq!(
+            recorder.counter((
+                "component_packets_received_total",
+                &[
+                    ("component_id", "dogstatsd_test"),
+                    ("component_type", "source"),
+                    ("listener_type", "unix"),
+                    ("state", "ok"),
+                ],
+            )),
+            Some(0)
+        );
     }
 
     #[test]
