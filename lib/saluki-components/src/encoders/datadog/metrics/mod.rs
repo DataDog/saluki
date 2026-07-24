@@ -1646,8 +1646,12 @@ fn write_metric_to_v3(
         MetricValues::Rate(points, interval) => {
             builder.set_interval(interval.as_secs());
             for (ts, val) in points {
-                // Scale by interval as done in V2
-                let scaled = val / interval.as_secs_f64();
+                // Scale by interval as done in V2. A zero interval is an unnormalized rate.
+                let scaled = if interval.is_zero() {
+                    val
+                } else {
+                    val / interval.as_secs_f64()
+                };
                 if !emittable_scalar_point(scaled) {
                     continue;
                 }
@@ -2086,6 +2090,26 @@ serializer_experimental_use_v3_api:
         assert_eq!(column(VALUE_SINT64_FIELD_NUMBER), Some(&[2, 4, 6, 8, 6, 2][..]));
         assert_eq!(encoded.stats.value_encoding_stats.sint64, 6);
         assert_eq!(encoded.stats.value_encoding_stats.float64, 0);
+    }
+
+    #[test]
+    fn v3_encodes_zero_interval_rate_without_scaling() {
+        const NUM_POINTS_FIELD_NUMBER: u32 = 15;
+        const VALUE_SINT64_FIELD_NUMBER: u32 = 17;
+
+        let metrics = vec![Metric::rate("v3.unnormalized.rate", 42.0, Duration::ZERO)];
+        let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("rate should encode to V3");
+        let column = |field_number| {
+            encoded
+                .stats
+                .columns
+                .iter()
+                .find(|column| column.field_number == field_number)
+                .map(|column| column.bytes.as_slice())
+        };
+
+        assert_eq!(column(NUM_POINTS_FIELD_NUMBER), Some(&[1][..]));
+        assert_eq!(column(VALUE_SINT64_FIELD_NUMBER), Some(&[84][..]));
     }
 
     #[tokio::test]
