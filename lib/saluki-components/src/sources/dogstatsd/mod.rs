@@ -1226,10 +1226,13 @@ impl Source for DogStatsD {
 
         let mut health = context.take_health_handle();
 
-        let mut listener_shutdown_coordinator = ShutdownCoordinator::default();
+        let mut pool_shrinker_shutdown_coordinator = ShutdownCoordinator::default();
         spawn_traced_named(
             "dogstatsd-io-buffer-pool-shrinker",
-            process_io_buffer_pool_shrinker(self.io_buffer_pool_shrinker, listener_shutdown_coordinator.register()),
+            process_io_buffer_pool_shrinker(
+                self.io_buffer_pool_shrinker,
+                pool_shrinker_shutdown_coordinator.register(),
+            ),
         );
 
         let (datagram_sender, datagram_receiver) = mpsc::channel(self.io_buffer_queue_capacity);
@@ -1244,20 +1247,21 @@ impl Source for DogStatsD {
             traffic_capture: self.traffic_capture.clone(),
         };
 
+        let mut datagram_decoder_tasks = Vec::with_capacity(self.decoder_worker_count.get());
         for worker_id in 0..self.decoder_worker_count.get() {
-            spawn_traced_named(
+            datagram_decoder_tasks.push(spawn_traced_named(
                 format!("dogstatsd-datagram-decoder-{worker_id}"),
                 process_datagram_decoder(
                     datagram_receiver.clone(),
                     context.clone(),
                     datagram_decoder_context.clone(),
                     self.enabled_filter,
-                    listener_shutdown_coordinator.register(),
                 ),
-            );
+            ));
         }
         drop(datagram_receiver);
 
+        let mut listener_shutdown_coordinator = ShutdownCoordinator::default();
         // For each listener, spawn a dedicated task to run it.
         for listener in self.listeners {
             let task_name = format!("dogstatsd-listener-{}", listener.listen_address().listener_type());
@@ -1313,7 +1317,8 @@ impl Source for DogStatsD {
 
         debug!("Stopping DogStatsD source...");
 
-        listener_shutdown_coordinator.shutdown_and_wait().await;
+        shutdown_listeners_and_drain_datagram_decoders(listener_shutdown_coordinator, datagram_decoder_tasks).await?;
+        pool_shrinker_shutdown_coordinator.shutdown_and_wait().await;
 
         debug!("DogStatsD source stopped.");
 
@@ -1648,14 +1653,24 @@ async fn receive_connectionless_stream(
 
 async fn process_datagram_decoder(
     datagram_receiver: Arc<Mutex<mpsc::Receiver<QueuedDatagram>>>, source_context: SourceContext,
-    decoder_context: DatagramDecoderContext, enabled_filter: EnablePayloadsFilter, shutdown_handle: ShutdownHandle,
+    decoder_context: DatagramDecoderContext, enabled_filter: EnablePayloadsFilter,
 ) {
-    select! {
-        _ = shutdown_handle => {
-            debug!("Datagram decoder received shutdown signal.");
-        },
-        _ = drive_datagram_decoder(datagram_receiver, source_context, decoder_context, enabled_filter) => {},
+    drive_datagram_decoder(datagram_receiver, source_context, decoder_context, enabled_filter).await;
+    debug!("Datagram decoder drained its queue.");
+}
+
+async fn shutdown_listeners_and_drain_datagram_decoders(
+    listener_shutdown_coordinator: ShutdownCoordinator, datagram_decoder_tasks: Vec<JoinHandle<()>>,
+) -> Result<(), GenericError> {
+    listener_shutdown_coordinator.shutdown_and_wait().await;
+
+    for decoder_task in datagram_decoder_tasks {
+        decoder_task
+            .await
+            .error_context("DogStatsD datagram decoder stopped unexpectedly while draining.")?;
     }
+
+    Ok(())
 }
 
 async fn drive_datagram_decoder(
@@ -2483,7 +2498,10 @@ mod tests {
         io::ErrorKind,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
-        sync::{Arc, Mutex as StdMutex, OnceLock},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex as StdMutex, OnceLock,
+        },
         time::Duration,
     };
 
@@ -2492,6 +2510,7 @@ mod tests {
     use bytes::{BufMut as _, Bytes};
     use bytesize::ByteSize;
     use metrics::{Key, Label};
+    use saluki_common::sync::shutdown::ShutdownCoordinator;
     use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     #[cfg(unix)]
@@ -2534,8 +2553,9 @@ mod tests {
         },
         handle_frame, handle_metric_packet,
         metrics::build_metrics,
-        origin_detection_failed_for_telemetry, resolve_process_origin, ContextResolvers, DatagramSocketContext,
-        DogStatsDConfiguration, ProcessOrigin, QueuedDatagram, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        origin_detection_failed_for_telemetry, resolve_process_origin, shutdown_listeners_and_drain_datagram_decoders,
+        ContextResolvers, DatagramSocketContext, DogStatsDConfiguration, ProcessOrigin, QueuedDatagram,
+        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload, ReceivedBuffer};
@@ -3214,6 +3234,34 @@ mod tests {
 
         assert!(first.expect("first worker should receive a packet").result.is_err());
         assert!(second.expect("second worker should receive a packet").result.is_err());
+    }
+
+    #[tokio::test]
+    async fn shutdown_drains_queued_datagrams_after_listeners_stop() {
+        let mut listener_shutdown_coordinator = ShutdownCoordinator::default();
+        let listener_shutdown = listener_shutdown_coordinator.register();
+        let (sender, mut receiver) = mpsc::channel(2);
+        sender.send(()).await.expect("first datagram should be queued");
+        sender.send(()).await.expect("second datagram should be queued");
+
+        let listener_task = tokio::spawn(async move {
+            listener_shutdown.await;
+            drop(sender);
+        });
+        let decoded = Arc::new(AtomicUsize::new(0));
+        let decoder_count = decoded.clone();
+        let decoder_task = tokio::spawn(async move {
+            while receiver.recv().await.is_some() {
+                decoder_count.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        shutdown_listeners_and_drain_datagram_decoders(listener_shutdown_coordinator, vec![decoder_task])
+            .await
+            .expect("datagram decoder should drain cleanly");
+        listener_task.await.expect("listener task should stop cleanly");
+
+        assert_eq!(decoded.load(Ordering::Relaxed), 2);
     }
 
     #[tokio::test]

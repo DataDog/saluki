@@ -621,7 +621,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_workers_count(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.workers_count = value.max(0) as usize;
+        match usize::try_from(value) {
+            Ok(worker_count) => self.config.domains.dogstatsd.listeners.workers_count = worker_count,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_workers_count",
+                "worker count must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_enable_payloads_events(&mut self, value: bool) {
@@ -1207,6 +1213,21 @@ mod tests {
         );
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
+    }
+
+    #[test]
+    fn negative_dogstatsd_workers_count_records_translation_error() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "dogstatsd_workers_count": -1,
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert_eq!(config.domains.dogstatsd.listeners.workers_count, 0);
+        let errors = errors.expect("negative worker count should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_workers_count"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
     }
 
     #[test]
