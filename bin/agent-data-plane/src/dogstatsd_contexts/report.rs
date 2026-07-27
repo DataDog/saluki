@@ -16,15 +16,7 @@ impl ContextReport {
     }
 
     pub(super) fn ingest(&mut self, record: AgentContextRecord) {
-        let AgentContextRecord {
-            name,
-            host: _,
-            metric_type: _,
-            tagger_tags: _,
-            metric_tags,
-            no_index: _,
-            source: _,
-        } = record;
+        let AgentContextRecord { name, metric_tags, .. } = record;
         let summary = self.metrics.entry(name).or_default();
         summary.context_count += 1;
         summary.metric_tags.extend(metric_tags);

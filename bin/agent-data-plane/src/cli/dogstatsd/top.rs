@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use argh::FromArgs;
 use async_trait::async_trait;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 
 use crate::cli::utils::DataPlaneAPIClient;
 use crate::dogstatsd_contexts::read_report;
@@ -33,7 +33,7 @@ impl TopCommand {
     pub(super) fn validate(self) -> Result<ValidatedTopCommand, GenericError> {
         let num_tags = match (self.num_tags, self.legacy_num_tags) {
             (Some(_), Some(_)) => {
-                return Err(saluki_error::generic_error!(
+                return Err(generic_error!(
                     "Cannot use `--num-tags` and legacy `--mum-tags` together; use `--num-tags`."
                 ));
             }
@@ -85,9 +85,8 @@ pub(super) async fn handle_dogstatsd_top(
     let path = match cmd.path {
         Some(path) => path,
         None => {
-            let requester = requester.ok_or_else(|| {
-                saluki_error::generic_error!("Online DogStatsD top requires a context dump requester.")
-            })?;
+            let requester =
+                requester.ok_or_else(|| generic_error!("Online DogStatsD top requires a context dump requester."))?;
             let path = requester
                 .request_context_dump()
                 .await

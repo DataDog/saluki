@@ -17,9 +17,7 @@ use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
 use saluki_config::{DurationString, GenericConfiguration};
-#[cfg(any(target_os = "linux", test))]
-use saluki_error::generic_error;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 #[cfg(target_os = "linux")]
 use saluki_io::net::{unix::uds_sendmsg_with_creds, ProcessCredentials};
 use serde::Deserialize;
@@ -211,9 +209,7 @@ async fn run_dogstatsd_command(
                     loops,
                 } = config;
                 let _ = (replay_file_path, loops);
-                Err(saluki_error::generic_error!(
-                    "DogStatsD replay is only supported on Linux."
-                ))
+                Err(generic_error!("DogStatsD replay is only supported on Linux."))
             }
         }
         DogstatsdSubcommand::Top(config) => {
