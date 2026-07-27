@@ -21,7 +21,9 @@ mod helpers;
 mod metadata;
 pub use self::metadata::{MetadataAction, MetadataOperation};
 
+#[cfg(target_os = "linux")]
 mod on_demand_pid;
+#[cfg(target_os = "linux")]
 pub use self::on_demand_pid::OnDemandPIDResolver;
 
 pub mod origin;
