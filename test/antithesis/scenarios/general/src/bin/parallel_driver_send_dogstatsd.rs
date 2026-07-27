@@ -50,7 +50,7 @@ mod unix_driver {
             AntithesisRng,
             &config.intake_addr,
             driver_config.context_count,
-            driver_config.payload_byte_limit,
+            driver_config.datagram_byte_limit,
             driver_config.datagram_count,
             vec![socket],
         )?;

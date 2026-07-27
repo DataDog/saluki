@@ -1,11 +1,16 @@
 //! The context protocol: reusable `DogStatsD` identities a driver renders load against.
 //!
 //! A [`Context`] is a per-type stable identity — a metric's `(kind, name, tags)`, an event's title +
-//! tags + option fields, a service check's name + tags + host. It is minted over the free generator's
-//! full content alphabet (`payload/dogstatsd/common.rs`) and accepted only when a probe render is
-//! `!is_malformed` (see [`crate::dogstatsd`]) — conforming to the Agent parser and nothing stricter.
-//! The driver varies the per-occurrence payload (value/text/status, extensions, timestamp) each
-//! render, so a pooled identity recurs while its load varies.
+//! tags + option fields, a service check's name + tags + host. It is minted over the content alphabet in
+//! `payload/dogstatsd/common.rs` and accepted only when a probe render is `!is_malformed`, see
+//! [`crate::dogstatsd`], conforming to the Agent parser and nothing stricter. The driver varies the
+//! per-occurrence payload each render, the value, text, status, extensions and timestamp, so a pooled
+//! identity recurs while its load varies.
+//!
+//! [`Context::mint_non_utf8_within`] mints an identity carrying an invalid UTF-8 byte in its name or a
+//! tag. That is the only source of such a byte in generated load, and it lives in the identity so the
+//! pool counts it against a cap. Poisoning a rendered datagram instead would invent an identity the pool
+//! never issued, one per datagram, which is how bounded cardinality leaks.
 //!
 //! A shared intake pool mints identities up to a per-kind cap then recurs them, and serves them to
 //! drivers over the length-prefixed binary codec here ([`encode_response`] / [`decode_response`]),
@@ -14,17 +19,18 @@
 use rand::{Rng, RngExt};
 
 use crate::dogstatsd::is_malformed;
+use crate::payload::dogstatsd::common;
 
 pub mod event;
 pub mod metric;
 pub mod service_check;
 
-/// How many times to re-mint an identity whose probe render the Agent would drop before falling back
-/// to a guaranteed-sound identity. Mint is mostly-valid, so the fallback is rare.
+/// How many times to re-mint an identity whose probe render the Agent would drop before yielding
+/// nothing. Mint is mostly-valid, so an exhausted loop is rare.
 const REMINT_TRIES: usize = 16;
 
 /// How many times to re-render a context whose per-occurrence payload the Agent would drop before
-/// falling back to a guaranteed-well-formed line.
+/// yielding nothing. 2.3% of single renders need a retry and none has yet exhausted the loop.
 const RENDER_TRIES: usize = 8;
 
 /// Digits allowed for a rendered length field, generous so a floor is never an underestimate.
@@ -105,6 +111,82 @@ impl Context {
         }
     }
 
+    /// Replace one byte of this identity with an invalid UTF-8 byte, so the identity itself is the
+    /// corrupt one rather than a datagram being edited after the fact.
+    ///
+    /// The Agent does no charset validation, so the line still forwards and the criterion stays "does
+    /// the Agent discard it". Which identity field takes the byte is what the intake distinguishes: a
+    /// v3 name dictionary rejects the whole payload, a tag dictionary coerces. A delimiter is never
+    /// overwritten, since removing one reshapes the line. Returns whether a byte was replaced.
+    fn poison(&mut self, rng: &mut (impl Rng + ?Sized)) -> bool {
+        let fields: Vec<&mut Vec<u8>> = match self {
+            Context::Metric(c) => std::iter::once(&mut c.name).chain(c.tags.iter_mut()).collect(),
+            Context::Event(c) => std::iter::once(&mut c.title).chain(c.tags.iter_mut()).collect(),
+            Context::ServiceCheck(c) => std::iter::once(&mut c.name).chain(c.tags.iter_mut()).collect(),
+        };
+        let targets: Vec<(usize, usize)> = fields
+            .iter()
+            .enumerate()
+            .flat_map(|(f, bytes)| {
+                bytes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &b)| !matches!(b, b':' | b'|' | b',' | b'#' | b'@'))
+                    .map(move |(i, _)| (f, i))
+            })
+            .collect();
+        if targets.is_empty() {
+            return false;
+        }
+        let (field, at) = targets[rng.random_range(0..targets.len())];
+        let mut fields = fields;
+        fields[field][at] = common::invalid_utf8_byte(rng);
+        true
+    }
+
+    /// Mint an identity of `kind` that carries an invalid UTF-8 byte, or `None` when none can be built
+    /// within `budget`. Corrupt identities live in the pool like any other, so they recur across
+    /// datagrams and count against the kind's cap instead of appearing as fresh one-offs.
+    #[must_use]
+    pub fn mint_non_utf8_within(kind: Kind, rng: &mut (impl Rng + ?Sized), budget: usize) -> Option<Context> {
+        for _ in 0..REMINT_TRIES {
+            let mut context = Context::mint_within(kind, rng, budget)?;
+            if !context.poison(rng) {
+                continue;
+            }
+            // A replaced byte does not always invalidate the field. `0x80` is a valid continuation byte,
+            // so poisoning the trailing byte of `café` turns `C3 A9` into the valid `C3 80`. Verify the
+            // field instead of trimming `0x80` from the pool, which would drop it from the byte space the
+            // SUT ever sees. Unverified, 3.4% of corrupt mints carried no invalid byte at all.
+            if !context.has_non_utf8() {
+                continue;
+            }
+            let mut probe = Vec::new();
+            context.render(rng, &mut probe);
+            if is_malformed(&probe).is_ok() {
+                return Some(context);
+            }
+        }
+        None
+    }
+
+    /// Whether this identity carries an invalid UTF-8 byte.
+    #[must_use]
+    pub fn has_non_utf8(&self) -> bool {
+        let fields: Vec<&[u8]> = match self {
+            Context::Metric(c) => std::iter::once(c.name.as_slice())
+                .chain(c.tags.iter().map(Vec::as_slice))
+                .collect(),
+            Context::Event(c) => std::iter::once(c.title.as_slice())
+                .chain(c.tags.iter().map(Vec::as_slice))
+                .collect(),
+            Context::ServiceCheck(c) => std::iter::once(c.name.as_slice())
+                .chain(c.tags.iter().map(Vec::as_slice))
+                .collect(),
+        };
+        fields.iter().any(|f| simdutf8::basic::from_utf8(f).is_err())
+    }
+
     /// Bytes every render of this identity must spend, whatever the per-occurrence payload.
     #[must_use]
     pub fn floor(&self) -> usize {
@@ -131,9 +213,17 @@ impl Context {
     pub fn render_wellformed_within(
         &self, rng: &mut (impl Rng + ?Sized), out: &mut Vec<u8>, budget: usize,
     ) -> Option<usize> {
-        for _ in 0..RENDER_TRIES {
+        for try_index in 0..RENDER_TRIES {
             let start = out.len();
-            let packed = self.render_within(rng, out, budget)?;
+            // The last try renders at the identity's floor, where the occurrence is the shortest the
+            // identity admits and no extension chunk has room. Sampling a wide occurrence one more time
+            // would be hoping again, and a caller has nowhere to go when the tries run out.
+            let attempt = if try_index + 1 == RENDER_TRIES {
+                self.floor().min(budget)
+            } else {
+                budget
+            };
+            let packed = self.render_within(rng, out, attempt)?;
             if is_malformed(&out[start..]).is_ok() {
                 return Some(packed);
             }
@@ -286,6 +376,19 @@ mod tests {
     }
 
     proptest! {
+        /// A corrupt mint always carries an invalid byte. The replacement byte does not guarantee it on
+        /// its own, and an identity that looks corrupt but is not lands in the clean half of the working
+        /// set and quietly thins the non-UTF-8 rate.
+        #[test]
+        fn property_test_a_corrupt_mint_is_corrupt(seed: u64) {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            for _ in 0..16 {
+                if let Some(context) = Context::mint_non_utf8_within(Kind::sample(&mut rng), &mut rng, 8_191) {
+                    prop_assert!(context.has_non_utf8(), "a corrupt mint carried no invalid byte: {context:?}");
+                }
+            }
+        }
+
         /// A minted context conforms to is_malformed. Content carries delimiters, so a raw render may
         /// land on the drop side. The repair loop is the sorter, and any line it does yield forwards.
         #[test]
@@ -294,7 +397,10 @@ mod tests {
             let Some(context) = Context::mint_within(kind, &mut rng, 8_192) else { return Ok(()) };
             for _ in 0..8 {
                 let mut line = Vec::new();
-                if context.render_wellformed_within(&mut rng, &mut line, 8_192).is_some() {
+                if context
+                    .render_wellformed_within(&mut rng, &mut line, 8_192)
+                    .is_some()
+                {
                     prop_assert_eq!(is_malformed(&line), Ok(()), "a rendered line was droppable");
                 }
             }
