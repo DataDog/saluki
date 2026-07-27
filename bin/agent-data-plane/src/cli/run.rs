@@ -45,8 +45,8 @@ use crate::{
         apm_onboarding::ApmOnboardingConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
-        tag_filterlist::TagFilterlistConfiguration,
+        liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
@@ -380,8 +380,9 @@ async fn create_topology(
 
     let mut control_surfaces = TopologyControlSurfaces::default();
 
-    // If no data pipelines are enabled, then there's nothing for us to do.
-    if !dp_config.data_pipelines_enabled() {
+    // A running data plane always emits liveness signals, even if every data pipeline is disabled. Standalone mode
+    // can still invoke this setup while disabled, where no topology is useful.
+    if !dp_config.enabled() && !dp_config.data_pipelines_enabled() {
         return Err(generic_error!("No data pipelines are enabled. Exiting."));
     }
 
@@ -426,6 +427,10 @@ async fn create_topology(
         add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
+    if dp_config.enabled() {
+        add_liveness_source_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
+    }
+
     // Now we move on to our actual data pipelines.
     if dp_config.checks().enabled() {
         add_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
@@ -443,6 +448,19 @@ async fn create_topology(
     }
 
     Ok((blueprint, control_surfaces))
+}
+
+async fn add_liveness_source_to_blueprint(
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+) -> Result<(), GenericError> {
+    let liveness_config = LivenessConfiguration::from_environment_provider(config, env_provider).await?;
+
+    blueprint
+        .add_source("liveness_in", liveness_config)?
+        .connect_components("liveness_in.metrics", "metrics_enrich")?
+        .connect_components("liveness_in.service_checks", "dd_service_checks_encode")?;
+
+    Ok(())
 }
 
 async fn add_checks_pipeline_to_blueprint(

@@ -99,13 +99,14 @@ impl DataPlaneConfiguration {
     /// Returns `true` if the metrics pipeline is required.
     ///
     /// This indicates that the "baseline" metrics pipeline (aggregation, enrichment, encoding, forwarding) is required
-    /// by higher-level data pipelines, such as DogStatsD.
+    /// by liveness signals or higher-level data pipelines, such as DogStatsD.
     pub const fn metrics_pipeline_required(&self) -> bool {
         // We consider the metrics pipeline to be enabled if:
         // - Checks is enabled
         // - DogStatsD is enabled
         // - OTLP is enabled and not in proxy mode
-        self.checks().enabled()
+        self.enabled
+            || self.checks().enabled()
             || self.dogstatsd().enabled()
             || (self.otlp().enabled() && !self.otlp().proxy().enabled())
     }
@@ -131,10 +132,10 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if the service checks pipeline is required.
     ///
-    /// This indicates that the "baseline" service checks pipeline (encoding, forwarding) is required by higher-level
-    /// data pipelines, such as Checks or DogStatsD.
+    /// This indicates that the "baseline" service checks pipeline (encoding, forwarding) is required by liveness
+    /// signals or higher-level data pipelines, such as Checks or DogStatsD.
     pub const fn service_checks_pipeline_required(&self) -> bool {
-        self.checks().enabled() || self.dogstatsd().enabled()
+        self.enabled || self.checks().enabled() || self.dogstatsd().enabled()
     }
 
     /// Returns `true` if the traces pipeline is required.
@@ -441,14 +442,14 @@ mod tests {
         assert!(dp.metrics_pipeline_required());
         assert!(dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
-        assert!(!dp.service_checks_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
     }
 
     #[tokio::test]
-    async fn otlp_proxy_mode_proxying_all_signals_requires_no_baseline_pipelines() {
-        // With proxy mode enabled and traces still proxied to the Core Agent (the default), ADP handles no signals
-        // itself, so no baseline pipeline is required even though a data pipeline (OTLP) is enabled.
+    async fn otlp_proxy_mode_proxying_all_signals_requires_liveness_baseline_pipelines() {
+        // With proxy mode enabled and traces still proxied to the Core Agent (the default), ADP handles no OTLP
+        // signals itself, but it still needs the liveness metric and service-check baseline pipelines.
         let dp = dp_config_from(json!({
             "data_plane": {
                 "enabled": true,
@@ -459,17 +460,17 @@ mod tests {
         .await;
 
         assert!(dp.data_pipelines_enabled());
-        assert!(!dp.metrics_pipeline_required());
+        assert!(dp.metrics_pipeline_required());
         assert!(!dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
-        assert!(!dp.service_checks_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
     }
 
     #[tokio::test]
-    async fn otlp_proxy_mode_with_local_traces_requires_traces_pipeline() {
-        // Proxy mode is enabled but trace proxying is turned off, so ADP must handle traces locally and the traces
-        // pipeline becomes required again while the other baseline pipelines stay off.
+    async fn otlp_proxy_mode_with_local_traces_requires_liveness_and_traces_pipelines() {
+        // Proxy mode is enabled but trace proxying is turned off, so ADP must handle traces locally. The liveness
+        // metric and service-check baselines remain required regardless of the OTLP routing.
         let dp = dp_config_from(json!({
             "data_plane": {
                 "enabled": true,
@@ -483,15 +484,15 @@ mod tests {
         .await;
 
         assert!(dp.data_pipelines_enabled());
-        assert!(!dp.metrics_pipeline_required());
+        assert!(dp.metrics_pipeline_required());
         assert!(!dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
-        assert!(!dp.service_checks_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
         assert!(dp.traces_pipeline_required());
     }
 
     #[tokio::test]
-    async fn no_pipelines_enabled_requires_no_baseline_pipelines() {
+    async fn liveness_requires_metrics_and_service_checks_without_data_pipelines() {
         let dp = dp_config_from(json!({
             "data_plane": {
                 "enabled": true,
@@ -503,10 +504,10 @@ mod tests {
         .await;
 
         assert!(!dp.data_pipelines_enabled());
-        assert!(!dp.metrics_pipeline_required());
+        assert!(dp.metrics_pipeline_required());
         assert!(!dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
-        assert!(!dp.service_checks_pipeline_required());
+        assert!(dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
     }
 
