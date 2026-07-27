@@ -1071,49 +1071,6 @@ impl AggregationState {
     }
 }
 
-/// A benchmark fixture backed by a real aggregate state populated before snapshot timing begins.
-#[cfg(any(test, feature = "test-util"))]
-pub struct AggregateContextSnapshotBenchmarkHarness {
-    state: AggregationState,
-}
-
-#[cfg(any(test, feature = "test-util"))]
-impl AggregateContextSnapshotBenchmarkHarness {
-    /// Creates a harness retaining exactly `context_count` distinct gauge contexts.
-    pub fn with_contexts(context_count: usize) -> Self {
-        let mut state = AggregationState::new(
-            default_window_duration_seconds(),
-            context_count,
-            None,
-            HistogramConfiguration::default(),
-            Telemetry::new(&MetricsBuilder::default()),
-        );
-
-        for index in 0..context_count {
-            let context = Context::from_parts(
-                format!("aggregate.snapshot.benchmark.{index}"),
-                saluki_context::tags::TagSet::default(),
-            );
-            assert!(
-                state.insert(0, Metric::gauge(context, 0.0)),
-                "benchmark fixture must retain every requested context"
-            );
-        }
-
-        Self { state }
-    }
-
-    /// Takes a retained-context snapshot from the populated aggregate state.
-    pub fn snapshot(&self) -> Vec<AggregateContextSnapshotEntry> {
-        self.state.snapshot_contexts()
-    }
-
-    /// Returns the exact number of contexts retained by the aggregate state.
-    pub fn retained_len(&self) -> usize {
-        self.state.contexts.len()
-    }
-}
-
 async fn transform_and_push_metric(
     context: Context, mut values: MetricValues, metadata: MetricMetadata, bucket_width_secs: NonZeroU64,
     hist_config: &HistogramConfiguration, dispatcher: &mut BufferedDispatcher<'_, EventsBuffer>,
@@ -1870,17 +1827,6 @@ mod tests {
         let _ = snapshot_task.await;
 
         pending_response.respond(Vec::new());
-    }
-
-    #[test]
-    fn snapshot_benchmark_harness_populates_exact_context_count() {
-        let empty_harness = AggregateContextSnapshotBenchmarkHarness::with_contexts(0);
-        assert_eq!(empty_harness.retained_len(), 0);
-        assert!(empty_harness.snapshot().is_empty());
-
-        let harness = AggregateContextSnapshotBenchmarkHarness::with_contexts(32);
-        assert_eq!(harness.retained_len(), 32);
-        assert_eq!(harness.snapshot().len(), 32);
     }
 
     #[test]

@@ -12,7 +12,6 @@ workspace = true
 default = []
 fips = ["saluki-app/tls-fips", "saluki-components/fips"]
 antithesis = ["saluki-antithesis/antithesis", "dep:antithesis-instrumentation"]
-context-dump-benchmark = []
 
 [dependencies]
 agent-data-plane-config = { workspace = true }
@@ -85,7 +84,6 @@ tikv-jemallocator = { workspace = true, features = [
 chrono = { workspace = true }
 
 [dev-dependencies]
-criterion = { workspace = true }
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
@@ -103,8 +101,3 @@ rcgen = { workspace = true, features = ["aws_lc_rs"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 rcgen = { workspace = true, features = ["ring"] }
-
-[[bench]]
-name = "dogstatsd_context_dump"
-harness = false
-required-features = ["context-dump-benchmark"]
