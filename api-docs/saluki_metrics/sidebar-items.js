@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"macro":["static_metrics"],"struct":["MetricsBuilder"],"trait":["MetricTag","Stringable"]};
+window.SIDEBAR_ITEMS = {"macro":["static_metrics"],"struct":["Counter","Gauge","Histogram","MetricsBuilder"],"trait":["MetricTag","Stringable"]};

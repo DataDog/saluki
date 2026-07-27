@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"attr":["static_metrics"]};
