@@ -450,6 +450,8 @@ async fn create_topology(
     Ok((blueprint, control_surfaces))
 }
 
+const LIVENESS_METRICS_DESTINATION: &str = "dd_metrics_encode";
+
 async fn add_liveness_source_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
@@ -457,7 +459,7 @@ async fn add_liveness_source_to_blueprint(
 
     blueprint
         .add_source("liveness_in", liveness_config)?
-        .connect_components("liveness_in.metrics", "metrics_enrich")?
+        .connect_components("liveness_in.metrics", LIVENESS_METRICS_DESTINATION)?
         .connect_components("liveness_in.service_checks", "dd_service_checks_encode")?;
 
     Ok(())
@@ -908,4 +910,15 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
     output.flush()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod liveness_topology_tests {
+    use super::LIVENESS_METRICS_DESTINATION;
+
+    #[test]
+    fn liveness_metrics_bypass_optional_host_tag_enrichment() {
+        assert_eq!(LIVENESS_METRICS_DESTINATION, "dd_metrics_encode");
+        assert_ne!(LIVENESS_METRICS_DESTINATION, "metrics_enrich");
+    }
 }

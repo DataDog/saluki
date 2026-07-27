@@ -1,7 +1,10 @@
-use std::{sync::LazyLock, time::Duration};
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 use async_trait::async_trait;
-use datadog_agent_commons::ipc::client::RemoteAgentClient;
+use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
 use saluki_context::{
     tags::{Tag, TagSet},
     Context,
@@ -19,12 +22,17 @@ use saluki_core::{
 use saluki_env::{EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{ErrorContext as _, GenericError};
 use stringtheory::MetaString;
-use tokio::{pin, select, time::interval};
+use tokio::{
+    pin, select,
+    time::{interval, timeout, MissedTickBehavior},
+};
 use tracing::{debug, warn};
 
 use crate::internal::env::ADPEnvironmentProvider;
 
 const LIVENESS_INTERVAL: Duration = Duration::from_secs(15);
+const LIVENESS_IPC_TIMEOUT: Duration = Duration::from_secs(2);
+const LIVENESS_DISPATCH_TIMEOUT: Duration = Duration::from_secs(2);
 const RUNNING_METRIC_NAME: &str = "datadog.agent_data_plane.running";
 const UP_SERVICE_CHECK_NAME: &str = "datadog.agent_data_plane.up";
 
@@ -32,11 +40,11 @@ const UP_SERVICE_CHECK_NAME: &str = "datadog.agent_data_plane.up";
 pub struct LivenessConfiguration {
     hostname: MetaString,
     version: MetaString,
-    client: Option<RemoteAgentClient>,
+    client_config: Option<Arc<RemoteAgentClientConfiguration>>,
 }
 
 impl LivenessConfiguration {
-    /// Creates a liveness source configuration using the configured environment and Agent IPC client.
+    /// Creates a liveness source configuration using the configured environment and Agent IPC client settings.
     pub async fn from_environment_provider(
         config: &saluki_config::GenericConfiguration, env_provider: &ADPEnvironmentProvider,
     ) -> Result<Self, GenericError> {
@@ -45,18 +53,16 @@ impl LivenessConfiguration {
             .get_hostname()
             .await
             .error_context("Failed to get hostname for liveness source.")?;
-        let client = match RemoteAgentClient::from_configuration(config).await {
-            Ok(client) => Some(client),
-            Err(error) => {
-                warn!(error = %error, "Failed to create Agent IPC client for liveness host tags; continuing without tags.");
-                None
-            }
-        };
+        Self::from_hostname(config, hostname)
+    }
+
+    fn from_hostname(config: &saluki_config::GenericConfiguration, hostname: String) -> Result<Self, GenericError> {
+        let client_config = RemoteAgentClientConfiguration::from_configuration(config)?;
 
         Ok(Self {
             hostname: hostname.into(),
             version: saluki_metadata::get_app_details().version().raw().into(),
-            client,
+            client_config: Some(Arc::new(client_config)),
         })
     }
 
@@ -65,7 +71,7 @@ impl LivenessConfiguration {
         Self {
             hostname: hostname.into(),
             version: version.into(),
-            client: None,
+            client_config: None,
         }
     }
 }
@@ -76,7 +82,8 @@ impl SourceBuilder for LivenessConfiguration {
         Ok(Box::new(Liveness {
             hostname: self.hostname.clone(),
             version: self.version.clone(),
-            client: self.client.clone(),
+            client_config: self.client_config.clone(),
+            client: None,
             system_tags: None,
         }))
     }
@@ -101,23 +108,51 @@ impl MemoryBounds for LivenessConfiguration {
 struct Liveness {
     hostname: MetaString,
     version: MetaString,
+    client_config: Option<Arc<RemoteAgentClientConfiguration>>,
     client: Option<RemoteAgentClient>,
     system_tags: Option<TagSet>,
 }
 
 impl Liveness {
     async fn system_tags(&mut self) -> TagSet {
-        let Some(client) = self.client.as_ref() else {
-            return self.system_tags.clone().unwrap_or_default();
-        };
+        if let Some(system_tags) = &self.system_tags {
+            return system_tags.clone();
+        }
 
-        match client.get_host_tags().await {
-            Ok(response) => {
+        if self.client.is_none() {
+            let Some(client_config) = &self.client_config else {
+                return TagSet::default();
+            };
+
+            match timeout(
+                LIVENESS_IPC_TIMEOUT,
+                RemoteAgentClient::from_client_configuration(client_config),
+            )
+            .await
+            {
+                Ok(Ok(client)) => self.client = Some(client),
+                Ok(Err(error)) => {
+                    warn!(error = %error, "Failed to create Agent IPC client for liveness host tags; continuing without tags.");
+                    return TagSet::default();
+                }
+                Err(_) => {
+                    warn!("Timed out creating Agent IPC client for liveness host tags; continuing without tags.");
+                    return TagSet::default();
+                }
+            }
+        }
+
+        let client = self.client.as_ref().expect("client is initialized above");
+        match timeout(LIVENESS_IPC_TIMEOUT, client.get_host_tags()).await {
+            Ok(Ok(response)) => {
                 let tags = response.into_inner().system.into_iter().map(Tag::from).collect();
                 self.system_tags = Some(tags);
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 warn!(error = %error, "Failed to fetch liveness host tags; continuing with cached or empty tags.");
+            }
+            Err(_) => {
+                warn!("Timed out fetching liveness host tags; continuing with cached or empty tags.");
             }
         }
 
@@ -133,11 +168,12 @@ impl Source for Liveness {
 
         let mut health = context.take_health_handle();
         let mut tick_interval = interval(LIVENESS_INTERVAL);
+        tick_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         health.mark_ready();
         debug!("Liveness source started.");
 
-        loop {
+        'run: loop {
             select! {
                 _ = &mut global_shutdown => {
                     debug!("Received shutdown signal.");
@@ -145,14 +181,53 @@ impl Source for Liveness {
                 },
                 _ = health.live() => continue,
                 _ = tick_interval.tick() => {
-                    let system_tags = self.system_tags().await;
-                    let (metric, service_check) = create_liveness_events(self.hostname.clone(), self.version.clone(), &system_tags);
+                    let system_tags = {
+                        let system_tags = self.system_tags();
+                        pin!(system_tags);
+                        select! {
+                            _ = &mut global_shutdown => {
+                                debug!("Received shutdown signal.");
+                                break 'run;
+                            },
+                            _ = health.live() => continue 'run,
+                            system_tags = &mut system_tags => system_tags,
+                        }
+                    };
+                    let (metric, service_check) =
+                        create_liveness_events(self.hostname.clone(), self.version.clone(), &system_tags);
 
-                    if let Err(error) = context.dispatcher().dispatch_one_named("metrics", metric).await {
-                        warn!(error = %error, "Failed to dispatch liveness metric.");
+                    let metric_dispatch =
+                        timeout(LIVENESS_DISPATCH_TIMEOUT, context.dispatcher().dispatch_one_named("metrics", metric));
+                    pin!(metric_dispatch);
+                    select! {
+                        _ = &mut global_shutdown => {
+                            debug!("Received shutdown signal.");
+                            break 'run;
+                        },
+                        _ = health.live() => continue 'run,
+                        result = &mut metric_dispatch => match result {
+                            Ok(Ok(())) => {},
+                            Ok(Err(error)) => warn!(error = %error, "Failed to dispatch liveness metric."),
+                            Err(_) => warn!("Timed out dispatching liveness metric."),
+                        },
                     }
-                    if let Err(error) = context.dispatcher().dispatch_one_named("service_checks", service_check).await {
-                        warn!(error = %error, "Failed to dispatch liveness service check.");
+
+                    let service_check_dispatch = timeout(
+                        LIVENESS_DISPATCH_TIMEOUT,
+                        context.dispatcher().dispatch_one_named("service_checks", service_check),
+                    );
+                    pin!(service_check_dispatch);
+                    select! {
+                        _ = &mut global_shutdown => {
+                            debug!("Received shutdown signal.");
+                            break 'run;
+                        },
+                        _ = health.live() => continue 'run,
+                        result = &mut service_check_dispatch => match result {
+                            Ok(Ok(())) => {},
+                            Ok(Err(error)) => warn!(error = %error, "Failed to dispatch liveness service check."),
+                            Err(_) => warn!("Timed out dispatching liveness service check."),
+                        },
                     }
                 },
             }
@@ -182,11 +257,13 @@ fn create_liveness_events(hostname: MetaString, version: MetaString, system_tags
 
 #[cfg(test)]
 mod tests {
+    use saluki_config::ConfigurationLoader;
     use saluki_context::tags::TagSet;
     use saluki_core::{
         components::sources::SourceBuilder as _,
         data_model::event::{metric::MetricValues, service_check::CheckStatus, Event, EventType},
     };
+    use serde_json::json;
 
     use super::*;
 
@@ -200,6 +277,24 @@ mod tests {
         assert_eq!(outputs[0].data_ty(), EventType::Metric);
         assert_eq!(outputs[1].output_name(), Some("service_checks"));
         assert_eq!(outputs[1].data_ty(), EventType::ServiceCheck);
+    }
+
+    #[tokio::test]
+    async fn source_configuration_parses_ipc_settings_without_creating_a_client() {
+        let (config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "auth_token_file_path": "/path/that/does/not/exist",
+                "cmd_port": 9,
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let configuration = LivenessConfiguration::from_hostname(&config, "host-a".to_string())
+            .expect("IPC settings should parse without connecting to the Agent");
+
+        assert!(configuration.client_config.is_some());
     }
 
     #[test]
