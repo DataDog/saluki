@@ -32,7 +32,7 @@ $ agent-data-plane dogstatsd top --num-metrics 20 --num-tags 8
 $ agent-data-plane dogstatsd top -m 20 -t 8
 ```
 
-The legacy `--mum-tags` spelling remains an alias for `--num-tags`. Do not pass both spellings in one command. Limits must be non-negative integers, and `top` rejects extra positional arguments.
+Limits must be non-negative integers, and `top` rejects extra positional arguments.
 
 The report orders metric names by descending context count and tag keys by descending unique-value count. It resolves ties lexically. When only one item exceeds a limit, the report displays that item; when two or more exceed it, the report replaces them with one remainder row or tag summary.
 

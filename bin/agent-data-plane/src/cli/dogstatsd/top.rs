@@ -23,29 +23,15 @@ pub(super) struct TopCommand {
     /// set the maximum number of tags to display for each metric
     #[argh(option, short = 't', long = "num-tags")]
     num_tags: Option<usize>,
-
-    /// use the legacy `--mum-tags` typo for `--num-tags`
-    #[argh(option, long = "mum-tags")]
-    legacy_num_tags: Option<usize>,
 }
 
 impl TopCommand {
-    pub(super) fn validate(self) -> Result<ValidatedTopCommand, GenericError> {
-        let num_tags = match (self.num_tags, self.legacy_num_tags) {
-            (Some(_), Some(_)) => {
-                return Err(generic_error!(
-                    "Cannot use `--num-tags` and legacy `--mum-tags` together; use `--num-tags`."
-                ));
-            }
-            (Some(limit), None) | (None, Some(limit)) => limit,
-            (None, None) => 5,
-        };
-
-        Ok(ValidatedTopCommand {
+    pub(super) fn validate(self) -> ValidatedTopCommand {
+        ValidatedTopCommand {
             path: self.path,
             num_metrics: self.num_metrics,
-            num_tags,
-        })
+            num_tags: self.num_tags.unwrap_or(5),
+        }
     }
 }
 
@@ -162,8 +148,7 @@ mod tests {
         assert_eq!(top.path, None);
         assert_eq!(top.num_metrics, 10);
         assert_eq!(top.num_tags, None);
-        assert_eq!(top.legacy_num_tags, None);
-        let validated = top.validate().expect("defaults should pass preflight");
+        let validated = top.validate();
         assert_eq!(validated.path, None);
         assert_eq!(validated.num_metrics, 10);
         assert_eq!(validated.num_tags, 5);
@@ -180,8 +165,7 @@ mod tests {
         assert_eq!(top.path, Some(PathBuf::from(PLAIN_FIXTURE)));
         assert_eq!(top.num_metrics, 7);
         assert_eq!(top.num_tags, Some(3));
-        assert_eq!(top.legacy_num_tags, None);
-        let validated = top.validate().expect("short options should pass preflight");
+        let validated = top.validate();
         assert_eq!(validated.path, Some(PathBuf::from(PLAIN_FIXTURE)));
         assert_eq!(validated.num_metrics, 7);
         assert_eq!(validated.num_tags, 3);
@@ -195,35 +179,12 @@ mod tests {
         };
 
         assert_eq!(top.num_tags, Some(4));
-        assert_eq!(top.legacy_num_tags, None);
-        assert_eq!(top.validate().unwrap().num_tags, 4);
+        assert_eq!(top.validate().num_tags, 4);
     }
 
     #[test]
-    fn dogstatsd_top_parses_legacy_mum_tags() {
-        let command = parse_dogstatsd(&["top", "--mum-tags", "6"]).expect("legacy option should parse");
-        let DogstatsdSubcommand::Top(top) = command.subcommand else {
-            panic!("expected top subcommand");
-        };
-
-        assert_eq!(top.num_tags, None);
-        assert_eq!(top.legacy_num_tags, Some(6));
-        assert_eq!(top.validate().unwrap().num_tags, 6);
-    }
-
-    #[test]
-    fn dogstatsd_top_preflight_rejects_both_num_tags_spellings() {
-        let command = parse_dogstatsd(&["top", "--num-tags", "4", "--mum-tags", "6"])
-            .expect("each spelling should parse before conflict validation");
-        let DogstatsdSubcommand::Top(top) = command.subcommand else {
-            panic!("expected top subcommand");
-        };
-
-        let error = top.validate().expect_err("preflight should reject conflicting options");
-        assert_eq!(
-            error.to_string(),
-            "Cannot use `--num-tags` and legacy `--mum-tags` together; use `--num-tags`."
-        );
+    fn dogstatsd_top_rejects_legacy_mum_tags() {
+        assert!(parse_dogstatsd(&["top", "--mum-tags", "6"]).is_err());
     }
 
     #[test]
@@ -231,7 +192,6 @@ mod tests {
         for args in [
             &["top", "--num-metrics", "-1"][..],
             &["top", "--num-tags", "-1"][..],
-            &["top", "--mum-tags", "-1"][..],
             &["top", "artifact.ndjson"][..],
         ] {
             assert!(parse_dogstatsd(args).is_err(), "arguments should be rejected: {args:?}");
@@ -253,7 +213,7 @@ mod tests {
 
     #[tokio::test]
     async fn dogstatsd_top_reads_an_offline_fixture_without_triggering_a_dump() {
-        let command = top_command(Some(PathBuf::from(PLAIN_FIXTURE)), 10, None, None);
+        let command = top_command(Some(PathBuf::from(PLAIN_FIXTURE)), 10, None);
         let mut requester = FakeRequester::returning_path("unused");
         let mut output = RecordingWriter::default();
 
@@ -270,7 +230,7 @@ mod tests {
         let mut requester = FakeRequester::returning_path(PLAIN_FIXTURE);
         let mut output = RecordingWriter::default();
 
-        handle_dogstatsd_top(Some(&mut requester), top_command(None, 10, None, None), &mut output)
+        handle_dogstatsd_top(Some(&mut requester), top_command(None, 10, None), &mut output)
             .await
             .expect("online top should succeed");
 
@@ -318,7 +278,7 @@ mod tests {
         let mut requester = FakeRequester::returning_path(artifact.path());
         let mut output = RecordingWriter::default();
 
-        let error = handle_dogstatsd_top(Some(&mut requester), top_command(None, 10, None, None), &mut output)
+        let error = handle_dogstatsd_top(Some(&mut requester), top_command(None, 10, None), &mut output)
             .await
             .expect_err("corrupt artifact should fail");
 
@@ -344,7 +304,7 @@ mod tests {
 
         let error = handle_dogstatsd_top(
             None,
-            top_command(Some(artifact.path().to_owned()), 10, None, None),
+            top_command(Some(artifact.path().to_owned()), 10, None),
             &mut output,
         )
         .await
@@ -368,7 +328,7 @@ mod tests {
 
         handle_dogstatsd_top(
             None,
-            top_command(Some(artifact.path().to_owned()), 10, None, None),
+            top_command(Some(artifact.path().to_owned()), 10, None),
             &mut output,
         )
         .await
@@ -384,14 +344,14 @@ mod tests {
     async fn dogstatsd_top_applies_custom_and_zero_report_limits() {
         let cases = [
             (
-                top_command(Some(PathBuf::from(PLAIN_FIXTURE)), 0, Some(5), None),
+                top_command(Some(PathBuf::from(PLAIN_FIXTURE)), 0, Some(5)),
                 concat!(
                     "   Contexts\tMetric name\t(number of unique values for each tag)\n",
                     "          4\t(other 2 metrics)\n",
                 ),
             ),
             (
-                top_command(Some(PathBuf::from(PLAIN_FIXTURE)), 10, Some(0), None),
+                top_command(Some(PathBuf::from(PLAIN_FIXTURE)), 10, Some(0)),
                 concat!(
                     "   Contexts\tMetric name\t(number of unique values for each tag)\n",
                     "          3\ta.metric\t(3 values in 2 other tags)\n",
@@ -399,7 +359,7 @@ mod tests {
                 ),
             ),
             (
-                top_command(Some(PathBuf::from(PLAIN_FIXTURE)), 1, Some(1), None),
+                top_command(Some(PathBuf::from(PLAIN_FIXTURE)), 1, Some(1)),
                 concat!(
                     "   Contexts\tMetric name\t(number of unique values for each tag)\n",
                     "          3\ta.metric\t(2 env, 1 service)\n",
@@ -421,17 +381,13 @@ mod tests {
         DogstatsdCommand::from_args(&["agent-data-plane", "dogstatsd"], args)
     }
 
-    fn top_command(
-        path: Option<PathBuf>, num_metrics: usize, num_tags: Option<usize>, legacy_num_tags: Option<usize>,
-    ) -> ValidatedTopCommand {
+    fn top_command(path: Option<PathBuf>, num_metrics: usize, num_tags: Option<usize>) -> ValidatedTopCommand {
         TopCommand {
             path,
             num_metrics,
             num_tags,
-            legacy_num_tags,
         }
         .validate()
-        .expect("test command should pass preflight")
     }
 
     struct FakeRequester {
