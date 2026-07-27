@@ -1209,33 +1209,49 @@ struct DogStatsDDecoder {
 #[derive(Clone, Copy)]
 enum BufferDecodeMode {
     Connectionless,
-    Connected { eof: bool },
+    Connected,
 }
 
 impl BufferDecodeMode {
-    fn is_eof(self) -> bool {
+    fn is_eof(self, bytes_read: usize) -> bool {
         match self {
             Self::Connectionless => true,
-            Self::Connected { eof } => eof,
+            Self::Connected => bytes_read == 0,
         }
     }
 
-    fn should_stop_on_eof(self) -> bool {
-        matches!(self, Self::Connected { eof: true })
+    fn should_stop_on_eof(self, eof: bool) -> bool {
+        matches!(self, Self::Connected) && eof
     }
 
     fn should_stop_on_framing_error(self) -> bool {
-        matches!(self, Self::Connected { .. })
+        matches!(self, Self::Connected)
     }
 }
 
 struct BufferDecodeContext<'a> {
     listen_addr: &'a ListenAddress,
-    peer_addr: &'a ConnectionAddress,
-    process_origin: Option<&'a ProcessOrigin>,
     metrics: &'a Metrics,
     packet_forwarder: Option<&'a PacketForwarder>,
     mode: BufferDecodeMode,
+    framer: DsdFramer,
+    stream_capture: StreamCaptureState,
+}
+
+impl<'a> BufferDecodeContext<'a> {
+    fn new(
+        listen_addr: &'a ListenAddress, eol_required: bool, metrics: &'a Metrics,
+        packet_forwarder: Option<&'a PacketForwarder>, mode: BufferDecodeMode,
+    ) -> Self {
+        Self {
+            listen_addr,
+            metrics,
+            packet_forwarder,
+            mode,
+            framer: get_framer(listen_addr, eol_required),
+            stream_capture: StreamCaptureState::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1477,18 +1493,73 @@ fn origin_detection_failed_for_telemetry(
 }
 
 struct ReceivedBuffer {
-    buffer: BytesBuffer,
+    buffer: Option<BytesBuffer>,
     bytes_read: usize,
     peer_addr: ConnectionAddress,
     process_origin: Option<ProcessOrigin>,
-    buffer_handoff: ReadBufferHandoff,
+    buffer_sender: Option<oneshot::Sender<BytesBuffer>>,
 }
 
-struct ReadBufferHandoff(Option<oneshot::Sender<BytesBuffer>>);
+impl ReceivedBuffer {
+    fn with_return(
+        buffer: BytesBuffer, bytes_read: usize, peer_addr: ConnectionAddress, process_origin: Option<ProcessOrigin>,
+    ) -> (Self, oneshot::Receiver<BytesBuffer>) {
+        let (buffer_sender, returned_buffer) = oneshot::channel();
+        (
+            Self {
+                buffer: Some(buffer),
+                bytes_read,
+                peer_addr,
+                process_origin,
+                buffer_sender: Some(buffer_sender),
+            },
+            returned_buffer,
+        )
+    }
 
-impl ReadBufferHandoff {
-    fn return_to_reader(self, buffer: BytesBuffer) {
-        if let Some(sender) = self.0 {
+    fn without_return(
+        buffer: BytesBuffer, bytes_read: usize, peer_addr: ConnectionAddress, process_origin: Option<ProcessOrigin>,
+    ) -> Self {
+        Self {
+            buffer: Some(buffer),
+            bytes_read,
+            peer_addr,
+            process_origin,
+            buffer_sender: None,
+        }
+    }
+
+    fn parts_mut(&mut self) -> (&mut BytesBuffer, usize, &ConnectionAddress, Option<&ProcessOrigin>) {
+        let Self {
+            buffer,
+            bytes_read,
+            peer_addr,
+            process_origin,
+            ..
+        } = self;
+        (
+            buffer.as_mut().expect("Received buffer already taken."),
+            *bytes_read,
+            peer_addr,
+            process_origin.as_ref(),
+        )
+    }
+
+    #[cfg(test)]
+    fn buffer(&self) -> &BytesBuffer {
+        self.buffer.as_ref().expect("Received buffer already taken.")
+    }
+
+    #[cfg(test)]
+    fn buffer_mut(&mut self) -> &mut BytesBuffer {
+        self.buffer.as_mut().expect("Received buffer already taken.")
+    }
+}
+
+impl Drop for ReceivedBuffer {
+    fn drop(&mut self) {
+        if let Some(sender) = self.buffer_sender.take() {
+            let buffer = self.buffer.take().expect("Received buffer already taken.");
             let _ = sender.send(buffer);
         }
     }
@@ -1561,14 +1632,7 @@ async fn receive_connected_stream(
         };
         let process_origin = resolve_process_origin(capture_entity_resolver.as_deref(), &peer_addr);
 
-        let (buffer_sender, returned_buffer) = oneshot::channel();
-        let received = ReceivedBuffer {
-            buffer,
-            bytes_read,
-            peer_addr,
-            process_origin,
-            buffer_handoff: ReadBufferHandoff(Some(buffer_sender)),
-        };
+        let (received, returned_buffer) = ReceivedBuffer::with_return(buffer, bytes_read, peer_addr, process_origin);
 
         if packets_tx.send(Ok(received)).await.is_err() {
             debug!("Failed to enqueue DogStatsD packet for decoding: receiver dropped.");
@@ -1599,13 +1663,12 @@ async fn receive_connectionless_stream(
         let result = match stream.receive(&mut buffer).await {
             Ok((bytes_read, peer_addr)) => {
                 let process_origin = resolve_process_origin(capture_entity_resolver.as_deref(), &peer_addr);
-                Ok(ReceivedBuffer {
+                Ok(ReceivedBuffer::without_return(
                     buffer,
                     bytes_read,
                     peer_addr,
                     process_origin,
-                    buffer_handoff: ReadBufferHandoff(None),
-                })
+                ))
             }
             Err(error) => Err(error),
         };
@@ -1692,17 +1755,21 @@ impl DogStatsDDecoder {
     }
 
     async fn decode_buffer(
-        &mut self, framer: &mut DsdFramer, stream_capture: &mut StreamCaptureState, io_buffer: &mut BytesBuffer,
-        bytes_read: usize, context: BufferDecodeContext<'_>,
+        &mut self, context: &mut BufferDecodeContext<'_>, mut received: ReceivedBuffer,
     ) -> DecodeOutcome {
-        let BufferDecodeContext {
-            listen_addr,
-            peer_addr,
-            process_origin,
-            metrics,
-            packet_forwarder,
-            mode,
-        } = context;
+        let (buffer, bytes_read, peer_addr, process_origin) = received.parts_mut();
+        self.decode_buffer_contents(context, buffer, bytes_read, peer_addr, process_origin)
+            .await
+    }
+
+    async fn decode_buffer_contents(
+        &mut self, context: &mut BufferDecodeContext<'_>, io_buffer: &mut BytesBuffer, bytes_read: usize,
+        peer_addr: &ConnectionAddress, process_origin: Option<&ProcessOrigin>,
+    ) -> DecodeOutcome {
+        let listen_addr = context.listen_addr;
+        let metrics = context.metrics;
+        let packet_forwarder = context.packet_forwarder;
+        let mode = context.mode;
 
         let payload = received_payload(io_buffer, bytes_read);
         capture_uds_traffic(
@@ -1711,7 +1778,7 @@ impl DogStatsDDecoder {
             peer_addr,
             process_origin,
             payload,
-            stream_capture,
+            &mut context.stream_capture,
         );
 
         metrics.bytes_received().increment(bytes_read as u64);
@@ -1726,7 +1793,7 @@ impl DogStatsDDecoder {
             }
         }
 
-        let eof = mode.is_eof();
+        let eof = mode.is_eof(bytes_read);
         trace!(
             buffer_len = io_buffer.remaining(),
             buffer_cap = io_buffer.remaining_mut(),
@@ -1745,8 +1812,8 @@ impl DogStatsDDecoder {
         }
 
         loop {
-            let frame_result = framer.next_frame(io_buffer, eof);
-            let completed_outer_frames = framer.take_completed_outer_frames();
+            let frame_result = context.framer.next_frame(io_buffer, eof);
+            let completed_outer_frames = context.framer.take_completed_outer_frames();
             if completed_outer_frames > 0 {
                 metrics
                     .packet_receive_success()
@@ -1767,7 +1834,7 @@ impl DogStatsDDecoder {
                         .await;
                 }
                 Ok(None) => {
-                    if mode.should_stop_on_eof() {
+                    if mode.should_stop_on_eof(eof) {
                         debug!(%listen_addr, %peer_addr, "Stream received EOF. Shutting down handler.");
                         return DecodeOutcome::Stop;
                     }
@@ -1856,7 +1923,6 @@ async fn drive_datagram_decoder(
     decoder_context: DecoderContext,
 ) {
     let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
-    let mut stream_capture = StreamCaptureState::new();
     let mut last_socket_context: Option<Arc<DatagramSocketContext>> = None;
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1877,13 +1943,7 @@ async fn drive_datagram_decoder(
                         packet_forwarder,
                     } = socket_context.as_ref();
 
-                    let ReceivedBuffer {
-                        mut buffer,
-                        bytes_read,
-                        peer_addr,
-                        process_origin,
-                        buffer_handoff,
-                    } = match result {
+                    let received = match result {
                         Ok(received) => received,
                         Err(error) => {
                             metrics.packet_receive_failure().increment(1);
@@ -1892,26 +1952,15 @@ async fn drive_datagram_decoder(
                         }
                     };
 
-                    let mut framer = get_framer(listen_addr, *eol_required);
-                    let outcome = decoder
-                        .decode_buffer(
-                            &mut framer,
-                            &mut stream_capture,
-                            &mut buffer,
-                            bytes_read,
-                            BufferDecodeContext {
-                                listen_addr,
-                                peer_addr: &peer_addr,
-                                process_origin: process_origin.as_ref(),
-                                metrics,
-                                packet_forwarder: packet_forwarder.as_ref(),
-                                mode: BufferDecodeMode::Connectionless,
-                            },
-                        )
-                        .await;
+                    let mut buffer_decode_context = BufferDecodeContext::new(
+                        listen_addr,
+                        *eol_required,
+                        metrics,
+                        packet_forwarder.as_ref(),
+                        BufferDecodeMode::Connectionless,
+                    );
+                    let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
                     debug_assert_eq!(outcome, DecodeOutcome::Continue);
-
-                    buffer_handoff.return_to_reader(buffer);
                 }
                 last_socket_context = Some(socket_context);
             }
@@ -1984,54 +2033,27 @@ async fn drive_decoder(
         ..
     } = handler_context;
     let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
-    let mut framer = get_framer(&listen_addr, eol_required);
-    let mut stream_capture = StreamCaptureState::new();
     // Set a buffer flush interval of 100ms, which will ensure we always flush buffered events at least every 100ms if
     // we're otherwise idle and not receiving packets from the client.
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
-
-    let mut last_process_origin = None;
+    let mut buffer_decode_context = BufferDecodeContext::new(
+        &listen_addr,
+        eol_required,
+        &metrics,
+        packet_forwarder.as_ref(),
+        BufferDecodeMode::Connected,
+    );
 
     'read: loop {
         select! {
             // We read from the stream.
             maybe_read_result = stream_receiver.recv() => match maybe_read_result {
                 Some(Ok(received)) => {
-                    let ReceivedBuffer {
-                        mut buffer,
-                        bytes_read,
-                        peer_addr,
-                        process_origin,
-                        buffer_handoff,
-                    } = received;
-                    if process_origin.is_some() {
-                        last_process_origin = process_origin;
-                    }
-
-                    let outcome = decoder
-                        .decode_buffer(
-                            &mut framer,
-                            &mut stream_capture,
-                            &mut buffer,
-                            bytes_read,
-                            BufferDecodeContext {
-                                listen_addr: &listen_addr,
-                                peer_addr: &peer_addr,
-                                process_origin: last_process_origin.as_ref(),
-                                metrics: &metrics,
-                                packet_forwarder: packet_forwarder.as_ref(),
-                                mode: BufferDecodeMode::Connected {
-                                    eof: bytes_read == 0,
-                                },
-                            },
-                        )
-                        .await;
+                    let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
                     if outcome == DecodeOutcome::Stop {
                         break 'read;
                     }
-
-                    buffer_handoff.return_to_reader(buffer);
                 },
                 Some(Err(e)) => {
                     metrics.packet_receive_failure().increment(1);
@@ -2558,15 +2580,15 @@ mod tests {
         forwarder::{
             ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
         },
-        get_framer, handle_frame, handle_metric_packet,
+        handle_frame, handle_metric_packet,
         metrics::build_metrics,
         origin_detection_failed_for_telemetry, resolve_process_origin, shutdown_listeners_and_drain_datagram_decoders,
         BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
-        DogStatsDConfiguration, DogStatsDDecoder, ProcessOrigin, QueuedDatagram, StreamCaptureState, TrafficCapture,
+        DogStatsDConfiguration, DogStatsDDecoder, ProcessOrigin, QueuedDatagram, ReceivedBuffer, TrafficCapture,
         DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
     #[cfg(unix)]
-    use super::{receive_connected_stream, receive_connectionless_stream, received_payload, ReceivedBuffer};
+    use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
     #[cfg(target_os = "linux")]
     use super::{DogStatsDOriginTagResolver, Listener, OriginEnrichmentConfiguration};
 
@@ -2722,33 +2744,27 @@ mod tests {
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
         let (source_context, mut metrics_rx) = test_source_context();
         let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(false));
-        let mut framer = get_framer(&listen_addr, false);
-        let mut stream_capture = StreamCaptureState::new();
         let event_buffer_capacity = EventsBuffer::default().capacity();
         let (packets_tx, mut packets_rx) = mpsc::channel(event_buffer_capacity + 1);
         let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics.clone());
+        let mut buffer_decode_context = BufferDecodeContext::new(
+            &listen_addr,
+            false,
+            &metrics,
+            Some(&packet_forwarder),
+            BufferDecodeMode::Connectionless,
+        );
 
         let mut payload = b"decoder.metric:1|c\n".repeat(event_buffer_capacity);
         payload.extend_from_slice(b"decoder.metric:1|c");
-        let mut io_buffer = test_io_buffer(&payload, payload.len());
-        let outcome = decoder
-            .decode_buffer(
-                &mut framer,
-                &mut stream_capture,
-                &mut io_buffer,
-                payload.len(),
-                BufferDecodeContext {
-                    listen_addr: &listen_addr,
-                    peer_addr: &peer_addr,
-                    process_origin: None,
-                    metrics: &metrics,
-                    packet_forwarder: Some(&packet_forwarder),
-                    mode: BufferDecodeMode::Connectionless,
-                },
-            )
-            .await;
+        let io_buffer = test_io_buffer(&payload, payload.len());
+        let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, payload.len(), peer_addr, None);
+        let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
 
         assert_eq!(outcome, DecodeOutcome::Continue);
+        let io_buffer = returned_buffer
+            .await
+            .expect("connectionless decoder should return the I/O buffer");
         assert_eq!(io_buffer.remaining(), 0);
         let full_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
             .await
@@ -2816,34 +2832,28 @@ mod tests {
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
         let (source_context, mut metrics_rx) = test_source_context();
         let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(true));
-        let mut framer = get_framer(&listen_addr, false);
-        let mut stream_capture = StreamCaptureState::new();
         let (packets_tx, mut packets_rx) = mpsc::channel(1);
         let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics.clone());
+        let mut buffer_decode_context = BufferDecodeContext::new(
+            &listen_addr,
+            false,
+            &metrics,
+            Some(&packet_forwarder),
+            BufferDecodeMode::Connected,
+        );
 
         let frame = b"stream.metric:1|c\n";
         let mut payload = Vec::with_capacity(frame.len() + 4);
         payload.extend_from_slice(&(frame.len() as u32).to_le_bytes());
         payload.extend_from_slice(frame);
-        let mut io_buffer = test_io_buffer(&payload[..2], payload.len() + 16);
+        let io_buffer = test_io_buffer(&payload[..2], payload.len() + 16);
+        let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, 2, peer_addr.clone(), None);
 
-        let partial_outcome = decoder
-            .decode_buffer(
-                &mut framer,
-                &mut stream_capture,
-                &mut io_buffer,
-                2,
-                BufferDecodeContext {
-                    listen_addr: &listen_addr,
-                    peer_addr: &peer_addr,
-                    process_origin: None,
-                    metrics: &metrics,
-                    packet_forwarder: Some(&packet_forwarder),
-                    mode: BufferDecodeMode::Connected { eof: false },
-                },
-            )
-            .await;
+        let partial_outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
         assert_eq!(partial_outcome, DecodeOutcome::Continue);
+        let mut io_buffer = returned_buffer
+            .await
+            .expect("connected decoder should return the partial I/O buffer");
         assert_eq!(io_buffer.remaining(), 2);
         assert!(
             packets_rx.try_recv().is_err(),
@@ -2874,23 +2884,13 @@ mod tests {
         );
 
         io_buffer.put_slice(&payload[2..]);
-        let complete_outcome = decoder
-            .decode_buffer(
-                &mut framer,
-                &mut stream_capture,
-                &mut io_buffer,
-                payload.len() - 2,
-                BufferDecodeContext {
-                    listen_addr: &listen_addr,
-                    peer_addr: &peer_addr,
-                    process_origin: None,
-                    metrics: &metrics,
-                    packet_forwarder: Some(&packet_forwarder),
-                    mode: BufferDecodeMode::Connected { eof: false },
-                },
-            )
-            .await;
+        let (received, returned_buffer) =
+            ReceivedBuffer::with_return(io_buffer, payload.len() - 2, peer_addr.clone(), None);
+        let complete_outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
         assert_eq!(complete_outcome, DecodeOutcome::Continue);
+        let io_buffer = returned_buffer
+            .await
+            .expect("connected decoder should return the consumed I/O buffer");
         assert_eq!(io_buffer.remaining(), 0);
         assert!(
             timeout(Duration::from_secs(1), packets_rx.recv())
@@ -2900,23 +2900,13 @@ mod tests {
             "complete outer frame should be forwarded"
         );
 
-        let eof_outcome = decoder
-            .decode_buffer(
-                &mut framer,
-                &mut stream_capture,
-                &mut io_buffer,
-                0,
-                BufferDecodeContext {
-                    listen_addr: &listen_addr,
-                    peer_addr: &peer_addr,
-                    process_origin: None,
-                    metrics: &metrics,
-                    packet_forwarder: Some(&packet_forwarder),
-                    mode: BufferDecodeMode::Connected { eof: true },
-                },
-            )
-            .await;
+        let (received, returned_buffer) = ReceivedBuffer::with_return(io_buffer, 0, peer_addr, None);
+        let eof_outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
         assert_eq!(eof_outcome, DecodeOutcome::Stop);
+        let returned_buffer = returned_buffer
+            .await
+            .expect("stopped decoder should return the I/O buffer");
+        assert!(!returned_buffer.has_remaining());
 
         decoder.flush_events(&listen_addr).await;
         let flushed_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
@@ -2968,53 +2958,33 @@ mod tests {
         let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
         let (source_context, _metrics_rx) = test_source_context();
         let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(false));
-        let mut stream_capture = StreamCaptureState::new();
 
         let datagram_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
         let datagram_metrics = build_metrics(&datagram_addr, &test_component_context(), false);
-        let mut datagram_framer = get_framer(&datagram_addr, true);
         let payload = b"missing.newline:1|c";
-        let mut datagram_buffer = test_io_buffer(payload, payload.len());
-        let datagram_outcome = decoder
-            .decode_buffer(
-                &mut datagram_framer,
-                &mut stream_capture,
-                &mut datagram_buffer,
-                payload.len(),
-                BufferDecodeContext {
-                    listen_addr: &datagram_addr,
-                    peer_addr: &peer_addr,
-                    process_origin: None,
-                    metrics: &datagram_metrics,
-                    packet_forwarder: None,
-                    mode: BufferDecodeMode::Connectionless,
-                },
-            )
-            .await;
+        let datagram_buffer = test_io_buffer(payload, payload.len());
+        let mut datagram_context = BufferDecodeContext::new(
+            &datagram_addr,
+            true,
+            &datagram_metrics,
+            None,
+            BufferDecodeMode::Connectionless,
+        );
+        let (received, _returned_datagram_buffer) =
+            ReceivedBuffer::with_return(datagram_buffer, payload.len(), peer_addr.clone(), None);
+        let datagram_outcome = decoder.decode_buffer(&mut datagram_context, received).await;
         assert_eq!(datagram_outcome, DecodeOutcome::Continue);
 
         let stream_addr = ListenAddress::Unix("/tmp/dsd.socket".into());
         let stream_metrics = build_metrics(&stream_addr, &test_component_context(), false);
-        let mut stream_framer = get_framer(&stream_addr, false);
         let stream_buffer_capacity = 64;
         let oversized_frame = (stream_buffer_capacity as u32).to_le_bytes();
-        let mut stream_buffer = test_io_buffer(&oversized_frame, stream_buffer_capacity);
-        let stream_outcome = decoder
-            .decode_buffer(
-                &mut stream_framer,
-                &mut stream_capture,
-                &mut stream_buffer,
-                oversized_frame.len(),
-                BufferDecodeContext {
-                    listen_addr: &stream_addr,
-                    peer_addr: &peer_addr,
-                    process_origin: None,
-                    metrics: &stream_metrics,
-                    packet_forwarder: None,
-                    mode: BufferDecodeMode::Connected { eof: false },
-                },
-            )
-            .await;
+        let stream_buffer = test_io_buffer(&oversized_frame, stream_buffer_capacity);
+        let mut stream_context =
+            BufferDecodeContext::new(&stream_addr, false, &stream_metrics, None, BufferDecodeMode::Connected);
+        let (received, _returned_stream_buffer) =
+            ReceivedBuffer::with_return(stream_buffer, oversized_frame.len(), peer_addr, None);
+        let stream_outcome = decoder.decode_buffer(&mut stream_context, received).await;
         assert_eq!(stream_outcome, DecodeOutcome::Stop);
 
         for listener_type in ["unixgram", "unix"] {
@@ -3740,7 +3710,7 @@ mod tests {
             .expect("first packet should be queued")
             .result
             .expect("first receive should succeed");
-        assert_eq!(received_payload(&first.buffer, first.bytes_read), payloads[0]);
+        assert_eq!(received_payload(first.buffer(), first.bytes_read), payloads[0]);
         drop(first);
 
         timeout(Duration::from_secs(1), async {
@@ -3758,7 +3728,7 @@ mod tests {
                 .expect("packet should be queued")
                 .result
                 .expect("receive should succeed");
-            assert_eq!(received_payload(&received.buffer, received.bytes_read), *expected);
+            assert_eq!(received_payload(received.buffer(), received.bytes_read), *expected);
         }
 
         drop(packets_rx);
@@ -3890,11 +3860,8 @@ mod tests {
             .expect("first read should finish")
             .expect("reader should remain active")
             .expect("first read should succeed");
-        assert_eq!(first.buffer.chunk(), b"partial");
-        let ReceivedBuffer {
-            buffer, buffer_handoff, ..
-        } = first;
-        buffer_handoff.return_to_reader(buffer);
+        assert_eq!(first.buffer().chunk(), b"partial");
+        drop(first);
 
         sender.write_all(b"-frame").await.expect("second payload should send");
         let second = timeout(Duration::from_secs(1), packets_rx.recv())
@@ -3903,11 +3870,8 @@ mod tests {
             .expect("reader should remain active")
             .expect("second read should succeed");
         assert_eq!(second.bytes_read, b"-frame".len());
-        assert_eq!(second.buffer.chunk(), b"partial-frame");
-        let ReceivedBuffer {
-            buffer, buffer_handoff, ..
-        } = second;
-        buffer_handoff.return_to_reader(buffer);
+        assert_eq!(second.buffer().chunk(), b"partial-frame");
+        drop(second);
 
         drop(packets_rx);
         sender
@@ -3936,35 +3900,25 @@ mod tests {
         ));
 
         sender.write_all(b"first").await.expect("first payload should send");
-        let first = timeout(Duration::from_secs(1), packets_rx.recv())
+        let mut first = timeout(Duration::from_secs(1), packets_rx.recv())
             .await
             .expect("first read should finish")
             .expect("reader should remain active")
             .expect("first read should succeed");
-        let ReceivedBuffer {
-            mut buffer,
-            bytes_read,
-            buffer_handoff,
-            ..
-        } = first;
-        buffer.advance(bytes_read);
-        buffer_handoff.return_to_reader(buffer);
+        let bytes_read = first.bytes_read;
+        first.buffer_mut().advance(bytes_read);
+        drop(first);
 
         sender.write_all(b"second").await.expect("second payload should send");
-        let second = timeout(Duration::from_secs(1), packets_rx.recv())
+        let mut second = timeout(Duration::from_secs(1), packets_rx.recv())
             .await
             .expect("reader should reacquire the released buffer")
             .expect("reader should remain active")
             .expect("second read should succeed");
-        let ReceivedBuffer {
-            mut buffer,
-            bytes_read,
-            buffer_handoff,
-            ..
-        } = second;
-        assert_eq!(received_payload(&buffer, bytes_read), b"second");
-        buffer.advance(bytes_read);
-        buffer_handoff.return_to_reader(buffer);
+        let bytes_read = second.bytes_read;
+        assert_eq!(received_payload(second.buffer(), bytes_read), b"second");
+        second.buffer_mut().advance(bytes_read);
+        drop(second);
 
         drop(packets_rx);
         sender

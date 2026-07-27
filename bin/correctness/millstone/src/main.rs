@@ -4,7 +4,7 @@
 #![deny(warnings)]
 #![deny(missing_docs)]
 
-use std::{fs::File, path::PathBuf, thread};
+use std::{fs::File, path::PathBuf, thread, time::Duration};
 
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
@@ -101,9 +101,7 @@ fn run() -> Result<(), GenericError> {
             "Millstone finished sending. Waiting for shutdown."
         );
 
-        loop {
-            thread::park();
-        }
+        thread::sleep(Duration::MAX);
     }
 
     Ok(())

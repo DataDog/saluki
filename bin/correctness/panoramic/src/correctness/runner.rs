@@ -468,7 +468,6 @@ impl CorrectnessRunner {
                 }
             };
         let mut millstone_exit = Box::pin(millstone_guard.millstone_handle.wait());
-        info!("Both Millstone senders completed. Keeping them alive while agents flush...");
         debug!(
             "Millstone finished sending. Waiting {:?} for agents to flush...",
             FLUSH_WAIT

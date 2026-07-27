@@ -549,12 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn negative_dogstatsd_workers_count_is_rejected_at_startup() {
-        let result = standalone_system(
-            Some(json!({ "dogstatsd_workers_count": -1 })),
-            None,
-            EnvOverlayMode::Fallback,
-        )
-        .await;
+        let result = standalone_system(Some(json!({ "dogstatsd_workers_count": -1 })), None).await;
 
         let Err(error) = result else {
             panic!("negative worker count should fail the startup translation gate");
