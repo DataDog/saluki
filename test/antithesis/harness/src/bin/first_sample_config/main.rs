@@ -73,7 +73,7 @@ fn main() -> anyhow::Result<()> {
     let context_source_path = cli.config_dir.join("context_source.yaml");
     fs::write(
         &context_source_path,
-        ContextSourceConfig::sample(&mut rng, driver.payload_byte_limit)
+        ContextSourceConfig::sample(&mut rng, driver.datagram_byte_limit)
             .to_yaml()?
             .as_bytes(),
     )
