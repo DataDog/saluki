@@ -380,9 +380,9 @@ async fn create_topology(
 
     let mut control_surfaces = TopologyControlSurfaces::default();
 
-    // A running data plane always emits liveness signals, even if every data pipeline is disabled. Standalone mode
-    // can still invoke this setup while disabled, where no topology is useful.
-    if !dp_config.enabled() && !dp_config.data_pipelines_enabled() {
+    // Without a data pipeline, there is no useful topology to run. In particular, liveness alone must not keep ADP
+    // alive.
+    if !dp_config.data_pipelines_enabled() {
         return Err(generic_error!("No data pipelines are enabled. Exiting."));
     }
 
@@ -393,8 +393,8 @@ async fn create_topology(
     // we additionally create metrics- and logs-specific components connected to that forwarder depending on which of
     // the baseline pipelines are required.
     //
-    // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
-    // is the only reason we're differentiating here.
+    // Liveness requires the metrics and service-check baseline pipelines for every running topology, including an
+    // OTLP proxy-only topology.
     if dp_config.metrics_pipeline_required()
         || dp_config.logs_pipeline_required()
         || dp_config.events_pipeline_required()
@@ -427,7 +427,9 @@ async fn create_topology(
         add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
-    if dp_config.enabled() {
+    // Every running topology has at least one data pipeline and emits liveness through the metric and service-check
+    // baselines created above.
+    if dp_config.data_pipelines_enabled() {
         add_liveness_source_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 

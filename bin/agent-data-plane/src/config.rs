@@ -98,17 +98,10 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if the metrics pipeline is required.
     ///
-    /// This indicates that the "baseline" metrics pipeline (aggregation, enrichment, encoding, forwarding) is required
-    /// by liveness signals or higher-level data pipelines, such as DogStatsD.
+    /// A running topology needs this pipeline whenever it has a data pipeline so liveness signals can be encoded and
+    /// forwarded, including when the only data pipeline is an OTLP proxy.
     pub const fn metrics_pipeline_required(&self) -> bool {
-        // We consider the metrics pipeline to be enabled if:
-        // - Checks is enabled
-        // - DogStatsD is enabled
-        // - OTLP is enabled and not in proxy mode
-        self.enabled
-            || self.checks().enabled()
-            || self.dogstatsd().enabled()
-            || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+        self.data_pipelines_enabled()
     }
 
     /// Returns `true` if the logs pipeline is required.
@@ -132,10 +125,10 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if the service checks pipeline is required.
     ///
-    /// This indicates that the "baseline" service checks pipeline (encoding, forwarding) is required by liveness
-    /// signals or higher-level data pipelines, such as Checks or DogStatsD.
+    /// A running topology needs this pipeline whenever it has a data pipeline so liveness signals can be encoded and
+    /// forwarded, including when the only data pipeline is an OTLP proxy.
     pub const fn service_checks_pipeline_required(&self) -> bool {
-        self.enabled || self.checks().enabled() || self.dogstatsd().enabled()
+        self.data_pipelines_enabled()
     }
 
     /// Returns `true` if the traces pipeline is required.
@@ -492,7 +485,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn liveness_requires_metrics_and_service_checks_without_data_pipelines() {
+    async fn topology_without_data_pipelines_requires_no_baseline_pipelines() {
         let dp = dp_config_from(json!({
             "data_plane": {
                 "enabled": true,
@@ -504,10 +497,10 @@ mod tests {
         .await;
 
         assert!(!dp.data_pipelines_enabled());
-        assert!(dp.metrics_pipeline_required());
+        assert!(!dp.metrics_pipeline_required());
         assert!(!dp.logs_pipeline_required());
         assert!(!dp.events_pipeline_required());
-        assert!(dp.service_checks_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
         assert!(!dp.traces_pipeline_required());
     }
 
