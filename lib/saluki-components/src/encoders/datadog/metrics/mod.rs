@@ -181,8 +181,10 @@ fn selected_metrics_primary_endpoint<'a>(
     vector_use_v3_series: bool,
 ) -> Option<(&'a str, bool)> {
     if opw_enabled {
+        let opw_url = opw_url.trim();
         metrics_primary_url_can_resolve(opw_url).then_some((opw_url, opw_use_v3_series))
     } else if vector_enabled {
+        let vector_url = vector_url.trim();
         metrics_primary_url_can_resolve(vector_url).then_some((vector_url, vector_use_v3_series))
     } else {
         None
@@ -190,7 +192,6 @@ fn selected_metrics_primary_endpoint<'a>(
 }
 
 fn metrics_primary_url_can_resolve(url: &str) -> bool {
-    let url = url.trim();
     if url.is_empty() {
         return false;
     }
@@ -403,10 +404,14 @@ pub struct DatadogMetricsConfiguration {
     vector_metrics_use_v3_api_series: bool,
 
     /// The Datadog site used to resolve the primary metrics endpoint.
+    ///
+    /// Defaults to `datadoghq.com`.
     #[serde(default = "default_site")]
     site: String,
 
     /// The optional explicit primary metrics endpoint.
+    ///
+    /// Defaults to unset, in which case `site` determines the endpoint.
     #[serde(default, alias = "url", deserialize_with = "deserialize_dd_url")]
     dd_url: Option<String>,
 
@@ -424,6 +429,27 @@ impl DatadogMetricsConfiguration {
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
         self.additional_tags = Some(additional_tags);
+        self
+    }
+
+    /// Restricts endpoint-aware protocol selection to a single overridden metrics endpoint.
+    ///
+    /// This mirrors a forwarder branch that replaces the normal primary endpoint and removes additional and
+    /// OPW/Vector endpoints, such as Multi-Region Failover.
+    pub fn with_metrics_endpoint_override(mut self, dd_url: String) -> Self {
+        self.dd_url = Some(dd_url);
+        self.additional_endpoints = AdditionalEndpoints::default();
+        self.observability_pipelines_worker_metrics_enabled = false;
+        self.vector_metrics_enabled = false;
+        self
+    }
+
+    /// Forces series metrics to use V2 without producing V3 shadow payloads.
+    ///
+    /// This is used for local destinations that only accept the V2 series protocol, such as the Cluster Agent.
+    pub fn with_v2_series_only(mut self) -> Self {
+        self.data_plane_metrics_v3_series_enabled = false;
+        self.v3_api.series.shadow_sample_rate = 0.0;
         self
     }
 
@@ -2055,6 +2081,52 @@ serializer_experimental_use_v3_api:
         );
 
         assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn endpoint_override_uses_the_overridden_endpoint_protocol() {
+        let config = v3_series_config(
+            r#"
+dd_url: https://primary.example.com
+data_plane_metrics_v3_series_enabled: true
+use_v3_api_series_enabled: "false"
+serializer_experimental_use_v3_api:
+  series:
+    endpoints:
+      - https://primary.example.com
+      - https://v3-mrf.example.com
+"#,
+        );
+
+        let v2_mrf_config = config
+            .clone()
+            .with_metrics_endpoint_override("https://v2-mrf.example.com".to_string());
+        let v3_mrf_config = config.with_metrics_endpoint_override("https://v3-mrf.example.com".to_string());
+
+        assert!(v2_mrf_config
+            .requires_v2_series(false)
+            .expect("V2 MRF endpoint should resolve"));
+        assert!(!v3_mrf_config
+            .requires_v2_series(false)
+            .expect("V3 MRF endpoint should resolve"));
+    }
+
+    #[test]
+    fn v2_series_only_override_keeps_v2_and_disables_shadowing() {
+        let config = v3_series_config(
+            r#"
+data_plane_metrics_v3_series_enabled: true
+use_v3_api_series_enabled: "true"
+serializer_experimental_use_v3_api:
+  series:
+    shadow_sample_rate: 1.0
+"#,
+        )
+        .with_v2_series_only();
+
+        assert!(!config.data_plane_metrics_v3_series_enabled);
+        assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);
+        assert!(config.requires_v2_series(false).expect("endpoint should resolve"));
     }
 
     #[test]

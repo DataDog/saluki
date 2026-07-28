@@ -395,6 +395,12 @@ impl ForwarderConfiguration {
         self.opw_metrics = OpwMetricsConfiguration::default();
     }
 
+    /// Forces series metrics routing to accept only V2 payloads.
+    pub(crate) fn force_v2_series(&mut self) {
+        self.data_plane_metrics_v3_series_enabled = false;
+        self.v3_api.series.shadow_sites.clear();
+    }
+
     /// Builds resolved endpoints with routing metadata.
     ///
     /// The normal primary and OPW metrics primary endpoints share the same dynamic API key source.
