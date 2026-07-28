@@ -1,15 +1,8 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::PathBuf, time::Duration};
 
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config};
 use futures::TryFutureExt as _;
-use http::{
-    header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE},
-    uri::PathAndQuery,
-    Request, Response, StatusCode, Uri,
-};
+use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
 #[cfg(target_os = "linux")]
 use http_body_util::Full;
@@ -32,7 +25,6 @@ use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROU
 pub struct DataPlaneAPIClient {
     client: HttpClient,
     authority: String,
-    authorization: Option<HeaderValue>,
 }
 
 #[derive(Serialize)]
@@ -65,49 +57,32 @@ impl DataPlaneAPIClient {
         let dp_config = DataPlaneConfiguration::from_configuration(config)?;
 
         let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
-        Self::from_builder(builder, dp_config.secure_api_listen_address(), None)
+        Self::from_builder(builder, dp_config.secure_api_listen_address())
     }
 
-    /// Creates an authenticated `DataPlaneAPIClient` for commands that use the Agent IPC credentials.
+    /// Creates a `DataPlaneAPIClient` that uses the configured Agent IPC certificate.
     ///
-    /// This mirrors the Agent IPC HTTP client contract: verify the configured IPC certificate and attach the Agent
-    /// authentication token. The complete Rustls configuration is required because it carries a custom certificate
-    /// verifier and client identity that the generic HTTP TLS option builder cannot express.
-    ///
-    /// This client pins the privileged API server certificate to the configured IPC certificate and authenticates
-    /// requests with the raw contents of the configured Agent authentication token file. Unlike the general-purpose
-    /// client, it does not impose a whole-request timeout because context dump generation can legitimately take longer
-    /// than the default timeout.
+    /// The complete Rustls configuration carries the custom server-certificate verifier and client identity needed by
+    /// Agent IPC TLS. Unlike the general-purpose client, this client does not impose a whole-request timeout because
+    /// context dump generation can legitimately take longer than the default timeout.
     ///
     /// # Errors
     ///
-    /// If the data plane or IPC authentication configuration is invalid, the IPC certificate or authentication token
-    /// cannot be read, the token cannot be represented as an HTTP header, or the HTTP client cannot be built, an error
-    /// is returned.
-    pub async fn from_config_with_ipc_auth(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    /// If the data plane or IPC TLS configuration is invalid, the IPC certificate cannot be read, or the HTTP client
+    /// cannot be built, an error is returned.
+    pub async fn from_config_with_ipc_tls(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let dp_config = DataPlaneConfiguration::from_configuration(config)?;
         let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
         let tls_config = build_ipc_client_ipc_tls_config(ipc_config.ipc_cert_file_path()).await?;
-        let auth_token_path = ipc_config.auth_token_file_path();
-        let raw_token = tokio::fs::read(&auth_token_path).await.map_err(|error| {
-            generic_error!(
-                "Failed to read Agent authentication token from file '{}' ({}).",
-                auth_token_path.display(),
-                error.kind()
-            )
-        })?;
-        let authorization = authorization_from_token_file_contents(&raw_token, &auth_token_path)?;
 
         let builder = HttpClient::builder()
             .with_client_tls_config(tls_config)
             .with_connect_timeout(Duration::from_secs(20))
             .without_request_timeout();
-        Self::from_builder(builder, dp_config.secure_api_listen_address(), Some(authorization))
+        Self::from_builder(builder, dp_config.secure_api_listen_address())
     }
 
-    fn from_builder(
-        builder: HttpClientBuilder, listen_address: &ListenAddress, authorization: Option<HeaderValue>,
-    ) -> Result<Self, GenericError> {
+    fn from_builder(builder: HttpClientBuilder, listen_address: &ListenAddress) -> Result<Self, GenericError> {
         let (builder, authority) = match listen_address {
             ListenAddress::Tcp(_) => {
                 let local_address = listen_address
@@ -131,11 +106,7 @@ impl DataPlaneAPIClient {
             .build()
             .error_context("Failed to construct API client for privileged API endpoint.")?;
 
-        Ok(Self {
-            client,
-            authority,
-            authorization,
-        })
+        Ok(Self { client, authority })
     }
 
     fn build_uri(&self, path: &str, query: Option<&str>) -> Uri {
@@ -251,22 +222,17 @@ impl DataPlaneAPIClient {
             .and_then(body_when_success)
     }
 
-    /// Requests an authenticated DogStatsD context dump and returns its path on the server.
+    /// Requests a DogStatsD context dump and returns its path on the server.
     ///
     /// The response contains only the server-local artifact path; this method does not download the dump contents.
     ///
     /// # Errors
     ///
-    /// If this client was not created with [`Self::from_config_with_ipc_auth`], the request fails, the server rejects
-    /// the request, or the successful response does not contain a JSON string path, an error is returned.
+    /// If the request fails, the server rejects it, or the successful response does not contain a JSON string path, an
+    /// error is returned.
     pub async fn dogstatsd_contexts_dump(&mut self) -> Result<PathBuf, GenericError> {
-        let authorization = self.authorization.as_ref().ok_or_else(|| {
-            generic_error!(
-                "DogStatsD context dumps require an authenticated API client; construct it with `from_config_with_ipc_auth`."
-            )
-        })?;
         let uri = self.build_uri(CONTEXT_DUMP_ROUTE, None);
-        let request = build_dogstatsd_contexts_dump_request(uri, authorization);
+        let request = build_dogstatsd_contexts_dump_request(uri);
         let response = self
             .client
             .send(request)
@@ -414,30 +380,8 @@ impl DataPlaneAPIClient {
     }
 }
 
-fn authorization_from_token_file_contents(raw_token: &[u8], token_path: &Path) -> Result<HeaderValue, GenericError> {
-    if raw_token.is_empty() {
-        return Err(generic_error!(
-            "Agent authentication token file '{}' is empty.",
-            token_path.display()
-        ));
-    }
-
-    let mut raw_authorization = Vec::with_capacity("Bearer ".len() + raw_token.len());
-    raw_authorization.extend_from_slice(b"Bearer ");
-    raw_authorization.extend_from_slice(raw_token);
-    let mut authorization = HeaderValue::from_bytes(&raw_authorization).map_err(|_| {
-        generic_error!(
-            "Agent authentication token file '{}' contains characters that are invalid in an HTTP Authorization header.",
-            token_path.display()
-        )
-    })?;
-    authorization.set_sensitive(true);
-    Ok(authorization)
-}
-
-fn build_dogstatsd_contexts_dump_request(uri: Uri, authorization: &HeaderValue) -> Request<String> {
+fn build_dogstatsd_contexts_dump_request(uri: Uri) -> Request<String> {
     Request::post(uri)
-        .header(AUTHORIZATION, authorization.clone())
         .body(String::new())
         .expect("valid DogStatsD context dump request")
 }
@@ -446,10 +390,6 @@ fn path_when_context_dump_success(resp: Response<String>) -> Result<PathBuf, Gen
     match resp.status() {
         status if status.is_success() => serde_json::from_str::<PathBuf>(resp.body())
             .error_context("Failed to decode DogStatsD context dump path from response JSON."),
-        StatusCode::UNAUTHORIZED => Err(generic_error!(
-            "DogStatsD context dump authentication failed ({}); verify the configured Agent authentication token file.",
-            resp.status()
-        )),
         status => Err(generic_error!(
             "Failed to create DogStatsD context dump ({}): {}.",
             status,
@@ -543,21 +483,17 @@ fn empty_when_replay_session_success(resp: Response<String>) -> Result<(), Gener
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::{Path, PathBuf},
-        sync::Arc,
-        time::Duration,
-    };
+    use std::{path::PathBuf, sync::Arc, time::Duration};
 
     use datadog_agent_commons::ipc::tls::{build_ipc_client_ipc_tls_config, build_ipc_server_tls_config};
-    use http::{header::AUTHORIZATION, HeaderValue, Method, Response, StatusCode, Uri};
+    use http::{Method, Response, StatusCode, Uri};
     use rcgen::{generate_simple_self_signed, CertifiedKey};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio_rustls::TlsAcceptor;
 
     use super::{
-        authorization_from_token_file_contents, body_when_capture_success, build_dogstatsd_contexts_dump_request,
-        path_when_context_dump_success, DataPlaneAPIClient,
+        body_when_capture_success, build_dogstatsd_contexts_dump_request, path_when_context_dump_success,
+        DataPlaneAPIClient,
     };
     #[cfg(target_os = "linux")]
     use super::{body_when_replay_session_success, empty_when_replay_session_success};
@@ -623,62 +559,15 @@ mod tests {
     }
 
     #[test]
-    fn dogstatsd_contexts_authorization_preserves_raw_token_and_is_sensitive() {
-        let authorization = authorization_from_token_file_contents(b" token with spaces ", Path::new("token-file"))
-            .expect("visible token bytes should be accepted");
-
-        assert_eq!(authorization, "Bearer  token with spaces ");
-        assert!(authorization.is_sensitive());
-    }
-
-    #[test]
-    fn dogstatsd_contexts_authorization_rejects_empty_or_invalid_token_without_exposing_it() {
-        let path = Path::new("/private/auth_token");
-        let empty_error = authorization_from_token_file_contents(b"", path).expect_err("empty token must fail");
-        assert!(empty_error.to_string().contains("/private/auth_token"));
-
-        let invalid_error =
-            authorization_from_token_file_contents(b"secret\ntoken", path).expect_err("newline in token must fail");
-        let message = invalid_error.to_string();
-        assert!(message.contains("/private/auth_token"));
-        assert!(!message.contains("secret"));
-    }
-
-    #[test]
-    fn dogstatsd_contexts_request_is_authenticated_empty_post() {
-        let mut auth = HeaderValue::from_static("Bearer exact-token");
-        auth.set_sensitive(true);
+    fn dogstatsd_contexts_request_is_empty_post_without_authorization() {
         let uri = Uri::from_static("https://127.0.0.1:5101/agent/dogstatsd-contexts-dump");
 
-        let request = build_dogstatsd_contexts_dump_request(uri, &auth);
+        let request = build_dogstatsd_contexts_dump_request(uri);
 
         assert_eq!(request.method(), Method::POST);
         assert_eq!(request.uri().path(), CONTEXT_DUMP_ROUTE);
         assert!(request.body().is_empty());
-        let request_auth = request.headers().get(AUTHORIZATION).expect("authorization header");
-        assert_eq!(request_auth, "Bearer exact-token");
-        assert!(request_auth.is_sensitive());
-    }
-
-    #[tokio::test]
-    async fn dogstatsd_contexts_unauthenticated_client_errors_before_network() {
-        let _ = saluki_tls::initialize_default_crypto_provider();
-        let client = saluki_io::net::client::http::HttpClient::builder()
-            .with_tls_config(|builder| builder.danger_accept_invalid_certs())
-            .build()
-            .expect("test client should build");
-        let mut client = DataPlaneAPIClient {
-            client,
-            authority: "unresolvable.invalid:1".to_string(),
-            authorization: None,
-        };
-
-        let error = client
-            .dogstatsd_contexts_dump()
-            .await
-            .expect_err("an unauthenticated client must be rejected");
-
-        assert!(error.to_string().contains("authenticated"));
+        assert!(request.headers().is_empty());
     }
 
     #[test]
@@ -703,22 +592,6 @@ mod tests {
         let error = path_when_context_dump_success(response).expect_err("malformed JSON should fail");
 
         assert!(error.to_string().contains("DogStatsD context dump path"));
-    }
-
-    #[test]
-    fn dogstatsd_contexts_unauthorized_error_is_safe() {
-        let response = Response::builder()
-            .status(StatusCode::UNAUTHORIZED)
-            .body("rejected Bearer exact-token".to_string())
-            .expect("valid response");
-
-        let error = path_when_context_dump_success(response).expect_err("unauthorized response should fail");
-        let message = error.to_string();
-
-        assert!(message.contains("authentication"));
-        assert!(message.contains("401"));
-        assert!(!message.contains("rejected"));
-        assert!(!message.contains("exact-token"));
     }
 
     #[test]
@@ -788,8 +661,8 @@ mod tests {
             assert!(
                 request
                     .lines()
-                    .any(|line| line.eq_ignore_ascii_case("authorization: Bearer exact-token")),
-                "request must contain the exact bearer header"
+                    .all(|line| !line.to_ascii_lowercase().starts_with("authorization:")),
+                "request must not contain an authorization header"
             );
 
             let body = r#""/tmp/dogstatsd_contexts.json.zstd""#;
@@ -806,11 +679,7 @@ mod tests {
         (address, task)
     }
 
-    fn authenticated_test_client(
-        address: std::net::SocketAddr, tls_config: rustls::ClientConfig,
-    ) -> DataPlaneAPIClient {
-        let mut authorization = HeaderValue::from_static("Bearer exact-token");
-        authorization.set_sensitive(true);
+    fn ipc_tls_test_client(address: std::net::SocketAddr, tls_config: rustls::ClientConfig) -> DataPlaneAPIClient {
         let client = saluki_io::net::client::http::HttpClient::builder()
             .with_client_tls_config(tls_config)
             .with_connect_timeout(Duration::from_secs(2))
@@ -820,7 +689,6 @@ mod tests {
         DataPlaneAPIClient {
             client,
             authority: format!("localhost:{}", address.port()),
-            authorization: Some(authorization),
         }
     }
 
@@ -838,7 +706,7 @@ mod tests {
             let matching_tls = build_ipc_client_ipc_tls_config(&certificate_a)
                 .await
                 .expect("matching client TLS configuration should build");
-            let mut matching_client = authenticated_test_client(matching_address, matching_tls);
+            let mut matching_client = ipc_tls_test_client(matching_address, matching_tls);
             let path = matching_client
                 .dogstatsd_contexts_dump()
                 .await
@@ -854,7 +722,7 @@ mod tests {
             let mismatched_tls = build_ipc_client_ipc_tls_config(&certificate_b)
                 .await
                 .expect("mismatched client TLS configuration should build");
-            let mut mismatched_client = authenticated_test_client(mismatched_address, mismatched_tls);
+            let mut mismatched_client = ipc_tls_test_client(mismatched_address, mismatched_tls);
             let error = mismatched_client
                 .dogstatsd_contexts_dump()
                 .await

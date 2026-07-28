@@ -7,14 +7,12 @@ import ssl
 import stat
 import subprocess
 import time
-import urllib.error
 import urllib.request
 from pathlib import Path
 
 ADP = Path("/opt/datadog-agent/embedded/bin/agent-data-plane")
 AGENT = Path("/opt/datadog-agent/bin/agent/agent")
 CONFIG = Path("/etc/datadog-agent/datadog.yaml")
-AUTH_TOKEN = Path("/etc/datadog-agent/auth_token")
 API_URL = "https://127.0.0.1:55101/agent/dogstatsd-contexts-dump"
 DUMP_FILENAME = "dogstatsd_contexts.json.zstd"
 COPIED_DUMP = Path("/tmp/dogstatsd-top-copied.json.zstd")
@@ -50,23 +48,9 @@ def unverified_tls_context():
     return context
 
 
-def post_dump(authorization=None):
-    headers = {}
-    if authorization is not None:
-        headers["Authorization"] = f"Bearer {authorization}"
-    request = urllib.request.Request(API_URL, data=b"", headers=headers, method="POST")
+def post_dump():
+    request = urllib.request.Request(API_URL, data=b"", method="POST")
     return urllib.request.urlopen(request, context=unverified_tls_context(), timeout=10)
-
-
-def assert_unauthorized_request():
-    try:
-        post_dump()
-    except urllib.error.HTTPError as error:
-        body = error.read().decode("utf-8")
-        if error.code != 401 or body != "Authentication required.":
-            raise AssertionError(f"unexpected unauthenticated response: {error.code} {body!r}")
-    else:
-        raise AssertionError("context dump API accepted an unauthenticated request")
 
 
 def send_dogstatsd_contexts():
@@ -109,16 +93,16 @@ def normalize_report(output):
     return output.replace("\r\n", "\n").rstrip("\n")
 
 
-def validate_online_api(token):
-    with post_dump(token) as response:
+def validate_online_api():
+    with post_dump() as response:
         body = response.read().decode("utf-8")
         if response.status != 200:
-            raise AssertionError(f"authenticated API returned {response.status}: {body}")
+            raise AssertionError(f"context dump API returned {response.status}: {body}")
         if not response.headers.get_content_type() == "application/json":
             raise AssertionError(f"unexpected API content type: {response.headers.get('Content-Type')}")
     path = Path(json.loads(body))
     if path.name != DUMP_FILENAME or not path.is_file():
-        raise AssertionError(f"authenticated API returned an invalid artifact path: {path}")
+        raise AssertionError(f"context dump API returned an invalid artifact path: {path}")
 
 
 def validate_agent_fixture_interoperability():
@@ -152,19 +136,17 @@ def validate_dump_and_offline_interoperability():
 
 
 def main():
-    for required_path in [ADP, AGENT, CONFIG, AUTH_TOKEN, AGENT_FIXTURE_COMPRESSED, AGENT_FIXTURE_PLAIN]:
+    for required_path in [ADP, AGENT, CONFIG, AGENT_FIXTURE_COMPRESSED, AGENT_FIXTURE_PLAIN]:
         if not required_path.exists():
             raise AssertionError(f"required test path does not exist: {required_path}")
 
-    assert_unauthorized_request()
     validate_agent_fixture_interoperability()
     send_dogstatsd_contexts()
     online = wait_for_online_report()
     if not online.startswith("Wrote "):
         raise AssertionError(f"online top did not print the generated artifact path:\n{online}")
 
-    token = AUTH_TOKEN.read_text(encoding="utf-8")
-    validate_online_api(token)
+    validate_online_api()
     validate_dump_and_offline_interoperability()
     RESULT.write_text("passed\n", encoding="utf-8")
 

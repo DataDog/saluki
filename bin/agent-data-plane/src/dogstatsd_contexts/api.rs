@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::try_join_all;
-use http::{header::AUTHORIZATION, HeaderMap, StatusCode};
+use http::StatusCode;
 use saluki_api::{
     extract::State,
     response::{IntoResponse as _, Response},
@@ -11,8 +11,7 @@ use saluki_api::{
     APIHandler, Json,
 };
 use saluki_components::transforms::{AggregateContextSnapshotEntry, AggregateContextSnapshotHandle};
-use saluki_error::{generic_error, GenericError};
-use subtle::ConstantTimeEq as _;
+use saluki_error::GenericError;
 use tokio::sync::Mutex;
 
 use super::{publish_context_dump, CONTEXT_DUMP_ROUTE};
@@ -20,7 +19,6 @@ use super::{publish_context_dump, CONTEXT_DUMP_ROUTE};
 // The Agent has no owner-request timeout. ADP uses a finite bound so a stopped topology cannot hold an HTTP request
 // indefinitely; 30 seconds is several orders of magnitude above the measured one-million-context snapshot time.
 const PRODUCTION_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(30);
-const AUTHENTICATION_REQUIRED: &str = "Authentication required.";
 const SNAPSHOT_UNAVAILABLE: &str =
     "DogStatsD context snapshot is unavailable; retry after the aggregate owner is running.";
 const SNAPSHOT_TIMED_OUT: &str = "Timed out waiting for the DogStatsD context snapshot; retry the request.";
@@ -29,63 +27,6 @@ const PUBLICATION_FAILED: &str =
 const PUBLICATION_TASK_FAILED: &str = "DogStatsD context dump publication did not complete; retry the request.";
 const NON_UTF8_RESULT_PATH: &str =
     "The completed DogStatsD context dump path is not valid UTF-8; configure a UTF-8 run path.";
-
-#[derive(Clone)]
-struct AuthenticationSecret(Arc<[u8]>);
-
-impl AuthenticationSecret {
-    fn new(token: &[u8]) -> Result<Self, GenericError> {
-        if token.is_empty() {
-            return Err(generic_error!("Agent authentication token must not be empty."));
-        }
-        if !is_valid_bearer_token(token) {
-            return Err(generic_error!(
-                "Agent authentication token cannot be represented as an HTTP bearer credential."
-            ));
-        }
-        Ok(Self(Arc::from(token)))
-    }
-
-    fn authenticates(&self, headers: &HeaderMap) -> bool {
-        let mut authorization_values = headers.get_all(AUTHORIZATION).iter();
-        let Some(authorization) = authorization_values.next() else {
-            return false;
-        };
-        if authorization_values.next().is_some() {
-            return false;
-        }
-
-        let value = authorization.as_bytes();
-        let Some(separator) = value.iter().position(|byte| *byte == b' ') else {
-            return false;
-        };
-        if !value[..separator].eq_ignore_ascii_case(b"bearer") {
-            return false;
-        }
-        let supplied = &value[separator..];
-        let Some(first_credential_byte) = supplied.iter().position(|byte| *byte != b' ') else {
-            return false;
-        };
-        let supplied = &supplied[first_credential_byte..];
-        if supplied.len() != self.0.len() {
-            return false;
-        }
-
-        bool::from(supplied.ct_eq(self.0.as_ref()))
-    }
-}
-
-fn is_valid_bearer_token(token: &[u8]) -> bool {
-    let core_length = token
-        .iter()
-        .rposition(|byte| *byte != b'=')
-        .map_or(0, |index| index + 1);
-    core_length > 0
-        && token[..core_length]
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b'+' | b'/'))
-        && token[core_length..].iter().all(|byte| *byte == b'=')
-}
 
 #[derive(Clone)]
 struct ContextSnapshotCoordinator {
@@ -147,7 +88,6 @@ impl ContextDumpPublisher for FileSystemContextDumpPublisher {
 
 #[derive(Clone)]
 pub(crate) struct DogStatsDContextDumpAPIState {
-    auth_secret: AuthenticationSecret,
     coordinator: ContextSnapshotCoordinator,
     run_path: PathBuf,
     publication_lock: Arc<Mutex<()>>,
@@ -160,11 +100,8 @@ pub(crate) struct DogStatsDContextDumpAPIHandler {
 }
 
 impl DogStatsDContextDumpAPIHandler {
-    pub(crate) fn new(
-        auth_token: impl AsRef<[u8]>, handles: Vec<AggregateContextSnapshotHandle>, run_path: impl Into<PathBuf>,
-    ) -> Result<Self, GenericError> {
+    pub(crate) fn new(handles: Vec<AggregateContextSnapshotHandle>, run_path: impl Into<PathBuf>) -> Self {
         Self::new_with_services(
-            auth_token.as_ref(),
             handles,
             run_path.into(),
             PRODUCTION_SNAPSHOT_TIMEOUT,
@@ -174,33 +111,27 @@ impl DogStatsDContextDumpAPIHandler {
 
     #[cfg(test)]
     fn new_for_test(
-        auth_token: impl AsRef<[u8]>, handles: Vec<AggregateContextSnapshotHandle>, run_path: PathBuf,
-        snapshot_timeout: Duration, publisher: Arc<dyn ContextDumpPublisher>,
-    ) -> Result<Self, GenericError> {
-        Self::new_with_services(auth_token.as_ref(), handles, run_path, snapshot_timeout, publisher)
+        handles: Vec<AggregateContextSnapshotHandle>, run_path: PathBuf, snapshot_timeout: Duration,
+        publisher: Arc<dyn ContextDumpPublisher>,
+    ) -> Self {
+        Self::new_with_services(handles, run_path, snapshot_timeout, publisher)
     }
 
     fn new_with_services(
-        auth_token: &[u8], handles: Vec<AggregateContextSnapshotHandle>, run_path: PathBuf, snapshot_timeout: Duration,
+        handles: Vec<AggregateContextSnapshotHandle>, run_path: PathBuf, snapshot_timeout: Duration,
         publisher: Arc<dyn ContextDumpPublisher>,
-    ) -> Result<Self, GenericError> {
-        let auth_secret = AuthenticationSecret::new(auth_token)?;
-        Ok(Self {
+    ) -> Self {
+        Self {
             state: DogStatsDContextDumpAPIState {
-                auth_secret,
                 coordinator: ContextSnapshotCoordinator::new(handles, snapshot_timeout),
                 run_path,
                 publication_lock: Arc::new(Mutex::new(())),
                 publisher,
             },
-        })
+        }
     }
 
-    async fn dump_handler(State(state): State<DogStatsDContextDumpAPIState>, headers: HeaderMap) -> Response {
-        if !state.auth_secret.authenticates(&headers) {
-            return (StatusCode::UNAUTHORIZED, AUTHENTICATION_REQUIRED).into_response();
-        }
-
+    async fn dump_handler(State(state): State<DogStatsDContextDumpAPIState>) -> Response {
         let publication_guard = state.publication_lock.clone().lock_owned().await;
         let snapshot = match state.coordinator.snapshot().await {
             Ok(snapshot) => snapshot,

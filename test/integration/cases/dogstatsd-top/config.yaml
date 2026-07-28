@@ -1,6 +1,6 @@
 type: integration
 name: "dogstatsd-top"
-description: "Verifies retained DogStatsD contexts through the authenticated API, online CLI, and offline Agent-compatible artifact"
+description: "Verifies retained DogStatsD contexts through the privileged API, online CLI, and offline Agent-compatible artifact"
 timeout: 180s
 runtimes: [linux]
 

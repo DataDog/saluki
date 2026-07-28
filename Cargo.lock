@@ -67,7 +67,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "stringtheory",
- "subtle",
  "tempfile",
  "tikv-jemallocator",
  "tokio",

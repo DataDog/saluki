@@ -7,7 +7,7 @@ use std::{
 
 use agent_data_plane_config_system::{ConfigurationSystem, EnvPrecedence, LoadedConfiguration};
 use argh::FromArgs;
-use datadog_agent_commons::{ipc::config::IpcAuthConfiguration, platform::PlatformSettings};
+use datadog_agent_commons::platform::PlatformSettings;
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
@@ -679,25 +679,15 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn build_dogstatsd_context_dump_api_handler(
+fn build_dogstatsd_context_dump_api_handler(
     config: &GenericConfiguration, snapshot_handle: AggregateContextSnapshotHandle,
 ) -> Result<DogStatsDContextDumpAPIHandler, GenericError> {
-    let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
-    let auth_token_path = ipc_config.auth_token_file_path();
-    let auth_token = tokio::fs::read(&auth_token_path).await.map_err(|error| {
-        generic_error!(
-            "Failed to read Agent authentication token from file '{}' ({}).",
-            auth_token_path.display(),
-            error.kind()
-        )
-    })?;
     let run_path = config
         .try_get_typed::<PathBuf>("run_path")
         .error_context("Failed to read configured `run_path` for DogStatsD context dumps.")?
         .unwrap_or_default();
 
-    DogStatsDContextDumpAPIHandler::new(auth_token, vec![snapshot_handle], run_path)
-        .error_context("Failed to configure DogStatsD context dump API handler.")
+    Ok(DogStatsDContextDumpAPIHandler::new(vec![snapshot_handle], run_path))
 }
 
 async fn add_dsd_pipeline_to_blueprint(
@@ -782,8 +772,7 @@ async fn add_dsd_pipeline_to_blueprint(
     let stats_api_handler = dsd_stats_config.api_handler();
     let capture_api_handler = dsd_config.capture_api_handler();
     let replay_api_handler = dsd_config.replay_api_handler();
-    let context_dump_api_handler =
-        build_dogstatsd_context_dump_api_handler(config, dsd_context_snapshot_handle).await?;
+    let context_dump_api_handler = build_dogstatsd_context_dump_api_handler(config, dsd_context_snapshot_handle)?;
 
     blueprint
         // Components.
@@ -926,10 +915,10 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, sync::Mutex, time::Duration};
+    use std::{path::Path, sync::Mutex, time::Duration};
 
     use async_trait::async_trait;
-    use http::{header::AUTHORIZATION, Request, StatusCode};
+    use http::{Request, StatusCode};
     use http_body_util::{BodyExt as _, Empty};
     use hyper::body::Bytes;
     use saluki_api::{response::Response, APIHandler as _};
@@ -965,7 +954,6 @@ mod tests {
         dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     };
 
-    const AUTH_TOKEN: &[u8] = b"configured-agent-token";
     const CONTEXT_DUMP_FILENAME: &str = "dogstatsd_contexts.json.zstd";
     const CONTEXT_DUMP_ROUTE: &str = crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
@@ -1110,15 +1098,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_dump_handler_reads_configured_credentials_and_run_path_and_uses_supplied_owner() {
+    async fn context_dump_handler_reads_configured_run_path_and_uses_supplied_owner() {
         let run_directory = tempfile::tempdir().expect("run directory should be created");
-        let token_file = run_directory.path().join("auth_token");
-        fs::write(&token_file, AUTH_TOKEN).expect("token should be written");
-        let config = context_dump_config(Some(run_directory.path()), &token_file).await;
+        let config = context_dump_config(Some(run_directory.path())).await;
         let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
 
         let handler = build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
-            .await
             .expect("configured handler should build");
         let owner = tokio::spawn(async move {
             snapshot_responder
@@ -1126,7 +1111,7 @@ mod tests {
                 .await
         });
 
-        let response = send(&handler, authorized_post()).await;
+        let response = send(&handler, context_dump_post()).await;
 
         assert_eq!(response.status(), StatusCode::OK);
         let artifact_path = run_directory.path().join(CONTEXT_DUMP_FILENAME);
@@ -1139,64 +1124,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_dump_handler_reports_missing_and_unreadable_token_paths_with_io_kind() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let cases = [directory.path().join("missing-token"), directory.path().to_owned()];
-
-        for token_path in cases {
-            let expected_kind = tokio::fs::read(&token_path)
-                .await
-                .expect_err("token fixture should be unreadable")
-                .kind();
-            let config = context_dump_config(Some(directory.path()), &token_path).await;
-            let (snapshot_handle, _snapshot_responder) = aggregate_context_snapshot_channel_for_test();
-
-            let error = match build_dogstatsd_context_dump_api_handler(&config, snapshot_handle).await {
-                Ok(_) => panic!("unreadable token should fail handler construction"),
-                Err(error) => error,
-            };
-            let message = format!("{error:#}");
-            assert!(message.contains(&token_path.display().to_string()), "{message}");
-            assert!(message.contains(&expected_kind.to_string()), "{message}");
-        }
-    }
-
-    #[tokio::test]
-    async fn context_dump_handler_rejects_empty_and_invalid_raw_token_contents() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let token_file = directory.path().join("auth_token");
-
-        for token in [b"".as_slice(), b"token-with-newline\n".as_slice()] {
-            fs::write(&token_file, token).expect("token fixture should be written");
-            let config = context_dump_config(Some(directory.path()), &token_file).await;
-            let (snapshot_handle, _snapshot_responder) = aggregate_context_snapshot_channel_for_test();
-
-            if build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
-                .await
-                .is_ok()
-            {
-                panic!("invalid raw token should fail closed");
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn context_dump_handler_keeps_missing_and_empty_run_path_empty_until_authorized_publication() {
-        let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let token_file = directory.path().join("auth_token");
-        fs::write(&token_file, AUTH_TOKEN).expect("token should be written");
+    async fn context_dump_handler_keeps_missing_and_empty_run_path_empty_until_publication() {
         let cwd_artifact = std::env::current_dir().unwrap().join(CONTEXT_DUMP_FILENAME);
         assert!(!cwd_artifact.exists(), "test requires no pre-existing cwd artifact");
 
         for run_path in [None, Some(Path::new(""))] {
-            let config = context_dump_config(run_path, &token_file).await;
+            let config = context_dump_config(run_path).await;
             let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
             let handler = build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
-                .await
-                .expect("empty run path should not weaken authentication setup");
+                .expect("empty run path should reach publication");
             let owner = tokio::spawn(async move { snapshot_responder.respond(Vec::new()).await });
 
-            let response = send(&handler, authorized_post()).await;
+            let response = send(&handler, context_dump_post()).await;
 
             assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
             assert!(!cwd_artifact.exists());
@@ -1281,21 +1220,18 @@ mod tests {
         fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
     }
 
-    async fn context_dump_config(run_path: Option<&Path>, token_path: &Path) -> GenericConfiguration {
-        let mut values = json!({
-            "auth_token_file_path": token_path,
-        });
+    async fn context_dump_config(run_path: Option<&Path>) -> GenericConfiguration {
+        let mut values = json!({});
         if let Some(run_path) = run_path {
             values["run_path"] = json!(run_path);
         }
         config_from(values).await
     }
 
-    fn authorized_post() -> Request<Empty<Bytes>> {
+    fn context_dump_post() -> Request<Empty<Bytes>> {
         Request::builder()
             .method("POST")
             .uri(CONTEXT_DUMP_ROUTE)
-            .header(AUTHORIZATION, "Bearer configured-agent-token")
             .body(Empty::new())
             .unwrap()
     }

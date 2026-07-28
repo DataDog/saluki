@@ -21,7 +21,7 @@ Wrote /var/run/datadog/dogstatsd_contexts.json.zstd
           3	request.count	(2 env, 1 service)
 ```
 
-Online requests read the configured Agent IPC authentication token and pin the API server certificate to the configured IPC certificate. The API creates and returns only the server-local path `<run_path>/dogstatsd_contexts.json.zstd`.
+Online requests pin the privileged API server certificate to the configured Agent IPC certificate. The context-dump route does not apply separate bearer-token authentication; it relies on the privileged API access-control boundary. The API creates and returns only the server-local path `<run_path>/dogstatsd_contexts.json.zstd`.
 
 The API does not return the artifact contents. The CLI reads the returned path directly, so the CLI process and ADP must see the same filesystem and path. If ADP runs in a container, run the CLI with the same mount or use the copy workflow in the next section. The API does not provide a remote download endpoint.
 
@@ -59,7 +59,7 @@ You can combine `--path` (`-p`) with the metric and tag limits:
 $ agent-data-plane dogstatsd top -p /secure/cases/incident-123/dogstatsd_contexts.json.zstd -m 25 -t 10
 ```
 
-Offline mode reads only the supplied file. It does not contact ADP or read the Agent IPC authentication token or certificate. `top` requires the `--path` value and does not fall back to a file in the current working directory.
+Offline mode reads only the supplied file. It does not contact ADP or read the Agent IPC certificate. `top` requires the `--path` value and does not fall back to a file in the current working directory.
 
 ## Interpret context and tag counts
 
@@ -90,7 +90,7 @@ If ADP uses multiple aggregate owners in the future, each owner's snapshot remai
 
 Use the status or file error in the CLI output to choose a response:
 
-- **401 Unauthorized**: The configured Agent authentication token does not match the server token. Verify that the CLI and ADP use the same current token file. Online commands also fail before the request if they cannot read the token or certificate, or if certificate pinning rejects the server certificate.
+- **TLS connection failure**: Online commands fail before the request if they cannot read the configured IPC certificate or if certificate pinning rejects the server certificate.
 - **404 Not Found**: The context-dump route is absent when DogStatsD is disabled. Also verify that the CLI targets the intended ADP privileged API endpoint.
 - **503 Service Unavailable**: The aggregate snapshot owner is not running or stopped before it responded. Wait for the topology and `dsd_agg` to become healthy, then retry.
 - **504 Gateway Timeout**: The aggregate owner did not return a snapshot within the 30-second API snapshot deadline. Check ADP health and load before retrying.

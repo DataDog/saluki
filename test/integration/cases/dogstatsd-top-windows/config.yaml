@@ -1,6 +1,6 @@
 type: integration
 name: "dogstatsd-top-windows"
-description: "Verifies the authenticated DogStatsD top workflow and protected context artifact on Windows"
+description: "Verifies the privileged DogStatsD top workflow and context artifact replacement on Windows"
 timeout: 180s
 runtimes: [windows]
 
@@ -59,18 +59,6 @@ procedure:
             return $Output -join "`n"
         }
 
-        function Assert-UnauthorizedRequest {
-            try {
-                Invoke-WebRequest -Uri $ApiUrl -Method Post -SkipCertificateCheck -TimeoutSec 10 | Out-Null
-                throw "Context dump API accepted an unauthenticated request."
-            } catch {
-                $Response = $_.Exception.Response
-                if ($null -eq $Response -or [int] $Response.StatusCode -ne 401) {
-                    throw
-                }
-            }
-        }
-
         function Send-DogStatsDContexts {
             $Payload = @(
                 "integration.windows.top.requests:1|c|#host:windows-a,env:prod,instance:a",
@@ -113,7 +101,6 @@ procedure:
             return $Path
         }
 
-        Assert-UnauthorizedRequest
         Send-DogStatsDContexts
         $Online = Wait-ForOnlineReport
         if (-not $Online.StartsWith("Wrote ")) {
