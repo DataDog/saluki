@@ -1,6 +1,5 @@
-use std::{path::PathBuf, time::Duration};
+use std::path::PathBuf;
 
-use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config};
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
@@ -57,28 +56,6 @@ impl DataPlaneAPIClient {
         let dp_config = DataPlaneConfiguration::from_configuration(config)?;
 
         let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
-        Self::from_builder(builder, dp_config.secure_api_listen_address())
-    }
-
-    /// Creates a `DataPlaneAPIClient` that uses the configured Agent IPC certificate.
-    ///
-    /// The complete Rustls configuration carries the custom server-certificate verifier and client identity needed by
-    /// Agent IPC TLS. Unlike the general-purpose client, this client does not impose a whole-request timeout because
-    /// context dump generation can legitimately take longer than the default timeout.
-    ///
-    /// # Errors
-    ///
-    /// If the data plane or IPC TLS configuration is invalid, the IPC certificate cannot be read, or the HTTP client
-    /// cannot be built, an error is returned.
-    pub async fn from_config_with_ipc_tls(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
-        let ipc_config = IpcAuthConfiguration::from_configuration(config)?;
-        let tls_config = build_ipc_client_ipc_tls_config(ipc_config.ipc_cert_file_path()).await?;
-
-        let builder = HttpClient::builder()
-            .with_client_tls_config(tls_config)
-            .with_connect_timeout(Duration::from_secs(20))
-            .without_request_timeout();
         Self::from_builder(builder, dp_config.secure_api_listen_address())
     }
 
@@ -483,18 +460,11 @@ fn empty_when_replay_session_success(resp: Response<String>) -> Result<(), Gener
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, sync::Arc, time::Duration};
+    use std::path::PathBuf;
 
-    use datadog_agent_commons::ipc::tls::{build_ipc_client_ipc_tls_config, build_ipc_server_tls_config};
     use http::{Method, Response, StatusCode, Uri};
-    use rcgen::{generate_simple_self_signed, CertifiedKey};
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use tokio_rustls::TlsAcceptor;
 
-    use super::{
-        body_when_capture_success, build_dogstatsd_contexts_dump_request, path_when_context_dump_success,
-        DataPlaneAPIClient,
-    };
+    use super::{body_when_capture_success, build_dogstatsd_contexts_dump_request, path_when_context_dump_success};
     #[cfg(target_os = "linux")]
     use super::{body_when_replay_session_success, empty_when_replay_session_success};
     use crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
@@ -559,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn dogstatsd_contexts_request_is_empty_post_without_authorization() {
+    fn dogstatsd_contexts_request_is_empty_post() {
         let uri = Uri::from_static("https://127.0.0.1:5101/agent/dogstatsd-contexts-dump");
 
         let request = build_dogstatsd_contexts_dump_request(uri);
@@ -615,133 +585,5 @@ mod tests {
                 "missing response body in: {message}"
             );
         }
-    }
-
-    fn write_generated_ipc_certificate(path: &std::path::Path) {
-        let CertifiedKey { cert, signing_key } =
-            generate_simple_self_signed(["localhost".to_string()]).expect("certificate generation should succeed");
-        std::fs::write(path, format!("{}{}", cert.pem(), signing_key.serialize_pem()))
-            .expect("certificate file should be written");
-    }
-
-    async fn start_context_dump_tls_server(
-        certificate_path: &std::path::Path,
-    ) -> (
-        std::net::SocketAddr,
-        tokio::task::JoinHandle<Result<Option<String>, Box<dyn std::error::Error + Send + Sync>>>,
-    ) {
-        let server_config = build_ipc_server_tls_config(certificate_path)
-            .await
-            .expect("server TLS configuration should build");
-        let acceptor = TlsAcceptor::from(Arc::new(server_config));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("test listener should bind");
-        let address = listener.local_addr().expect("test listener should have an address");
-        let task = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await?;
-            let mut stream = match acceptor.accept(stream).await {
-                Ok(stream) => stream,
-                Err(error) => return Ok(Some(error.to_string())),
-            };
-            let mut request = Vec::new();
-            loop {
-                let mut buffer = [0_u8; 1024];
-                let read = stream.read(&mut buffer).await?;
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&buffer[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let request = String::from_utf8(request)?;
-            assert!(request.starts_with("POST /agent/dogstatsd-contexts-dump HTTP/1.1\r\n"));
-            assert!(
-                request
-                    .lines()
-                    .all(|line| !line.to_ascii_lowercase().starts_with("authorization:")),
-                "request must not contain an authorization header"
-            );
-
-            let body = r#""/tmp/dogstatsd_contexts.json.zstd""#;
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            stream.write_all(response.as_bytes()).await?;
-            stream.shutdown().await?;
-            Ok(None)
-        });
-
-        (address, task)
-    }
-
-    fn ipc_tls_test_client(address: std::net::SocketAddr, tls_config: rustls::ClientConfig) -> DataPlaneAPIClient {
-        let client = saluki_io::net::client::http::HttpClient::builder()
-            .with_client_tls_config(tls_config)
-            .with_connect_timeout(Duration::from_secs(2))
-            .without_request_timeout()
-            .build()
-            .expect("test HTTP client should build");
-        DataPlaneAPIClient {
-            client,
-            authority: format!("localhost:{}", address.port()),
-        }
-    }
-
-    #[tokio::test]
-    async fn dogstatsd_contexts_certificate_pinning_accepts_match_and_rejects_mismatch() {
-        tokio::time::timeout(Duration::from_secs(10), async {
-            let _ = saluki_tls::initialize_default_crypto_provider();
-            let directory = tempfile::tempdir().expect("temporary directory should be created");
-            let certificate_a = directory.path().join("ipc-a.pem");
-            let certificate_b = directory.path().join("ipc-b.pem");
-            write_generated_ipc_certificate(&certificate_a);
-            write_generated_ipc_certificate(&certificate_b);
-
-            let (matching_address, matching_server) = start_context_dump_tls_server(&certificate_a).await;
-            let matching_tls = build_ipc_client_ipc_tls_config(&certificate_a)
-                .await
-                .expect("matching client TLS configuration should build");
-            let mut matching_client = ipc_tls_test_client(matching_address, matching_tls);
-            let path = matching_client
-                .dogstatsd_contexts_dump()
-                .await
-                .expect("matching pinned certificate should succeed");
-            assert_eq!(path, PathBuf::from("/tmp/dogstatsd_contexts.json.zstd"));
-            assert!(matching_server
-                .await
-                .expect("matching server task should join")
-                .expect("matching server should complete")
-                .is_none());
-
-            let (mismatched_address, mismatched_server) = start_context_dump_tls_server(&certificate_a).await;
-            let mismatched_tls = build_ipc_client_ipc_tls_config(&certificate_b)
-                .await
-                .expect("mismatched client TLS configuration should build");
-            let mut mismatched_client = ipc_tls_test_client(mismatched_address, mismatched_tls);
-            let error = mismatched_client
-                .dogstatsd_contexts_dump()
-                .await
-                .expect_err("mismatched pinned certificate must fail");
-            let chain = format!("{error:#}").to_ascii_lowercase();
-            assert!(
-                chain.contains("certificate") || chain.contains("unknownissuer") || chain.contains("unknown issuer"),
-                "expected a certificate verification failure, got: {error:#}"
-            );
-            assert!(
-                mismatched_server
-                    .await
-                    .expect("mismatched server task should join")
-                    .expect("mismatched server should complete")
-                    .is_some(),
-                "the HTTP server must not receive a request after TLS verification fails"
-            );
-        })
-        .await
-        .expect("certificate pinning test should finish within its timeout");
     }
 }
