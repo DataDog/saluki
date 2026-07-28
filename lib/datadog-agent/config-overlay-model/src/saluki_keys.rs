@@ -271,7 +271,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         env_var_override: None,
         additional_yaml_paths: &[],
         used_by: &["DOGSTATSD_CONFIGURATION"],
-        test_json: None,
+        test_json: Some(r#""12MiB""#),
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
         filename: "dogstatsd.rs",
     },

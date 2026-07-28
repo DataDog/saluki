@@ -478,7 +478,7 @@ crate::declare_annotations! {
         env_var_override: None,
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
-        test_json: None,
+        test_json: Some(r#""12MiB""#),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
     /// `dogstatsd_tcp_port`
