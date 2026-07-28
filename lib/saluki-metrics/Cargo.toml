@@ -14,6 +14,7 @@ test = []
 
 [dependencies]
 metrics = { workspace = true }
+papaya = { workspace = true }
 saluki-metrics-macros = { workspace = true }
 
 [dev-dependencies]
