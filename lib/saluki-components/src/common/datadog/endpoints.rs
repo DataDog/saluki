@@ -82,8 +82,6 @@ pub(crate) struct V3EndpointConfig<'a> {
     pub(crate) resolved_endpoint: &'a Url,
     /// Optional primary endpoint name used by serializer V3 endpoint-list matching.
     pub(crate) serializer_v3_configured_endpoint: Option<&'a str>,
-    /// Whether the ADP V3 series safety gate is enabled.
-    pub(crate) data_plane_v3_series_enabled: bool,
     /// Agent-compatible V3 series config.
     pub(crate) series_config: &'a UseV3ApiSeriesConfig,
     /// OPW/Vector route-specific V3 override.
@@ -137,7 +135,7 @@ impl EndpointV3Settings {
         }
     }
 
-    /// Creates V3 settings using Agent-compatible series V3 configuration plus the ADP safety gate.
+    /// Creates V3 settings using Agent-compatible series V3 configuration.
     ///
     /// `V3EndpointConfig::serializer_v3_configured_endpoint` lets metrics-primary OPW/Vector routes match
     /// `serializer_experimental_use_v3_api.series.endpoints` against the normal primary endpoint name, matching the
@@ -148,26 +146,25 @@ impl EndpointV3Settings {
                 || config.serializer_v3_configured_endpoint.is_some_and(|endpoint| {
                     serializer_v3_config_matches_endpoint(endpoint, config.serializer_v3_series_endpoints)
                 });
-        let use_v3_series = config.data_plane_v3_series_enabled
-            && if serializer_use_v3_series {
-                true
-            } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
-                metrics_primary_use_v3
-            } else if let Some(endpoint_value) = config.series_config.endpoints.get(config.configured_endpoint) {
-                evaluate_series_v3_mode(
-                    "use_v3_api.series.endpoints",
-                    endpoint_value,
-                    config.configured_endpoint,
-                    Some(config.resolved_endpoint),
-                )
-            } else {
-                evaluate_series_v3_mode(
-                    "use_v3_api.series.enabled",
-                    &config.series_config.enabled,
-                    config.configured_endpoint,
-                    Some(config.resolved_endpoint),
-                )
-            };
+        let use_v3_series = if serializer_use_v3_series {
+            true
+        } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
+            metrics_primary_use_v3
+        } else if let Some(endpoint_value) = config.series_config.endpoints.get(config.configured_endpoint) {
+            evaluate_series_v3_mode(
+                "use_v3_api.series.endpoints",
+                endpoint_value,
+                config.configured_endpoint,
+                Some(config.resolved_endpoint),
+            )
+        } else {
+            evaluate_series_v3_mode(
+                "use_v3_api.series.enabled",
+                &config.series_config.enabled,
+                config.configured_endpoint,
+                Some(config.resolved_endpoint),
+            )
+        };
 
         let use_v3_sketches = config
             .serializer_v3_sketches_endpoints
@@ -1435,7 +1432,6 @@ mod tests {
             configured_endpoint: endpoint.configured_endpoint(),
             resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint: None,
-            data_plane_v3_series_enabled: true,
             series_config,
             metrics_primary_v3_override: None,
             serializer_v3_series_endpoints: &[],
@@ -1447,20 +1443,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_v3_default_requires_data_plane_gate() {
+    fn agent_v3_default_enables_authoritative_v3() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
             .expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig::default();
-
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            data_plane_v3_series_enabled: false,
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
-        assert!(!settings.use_v3_series);
-        assert!(settings.series_shadow_mode);
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_series())));
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
             series_shadow_sites: &["datadoghq.com".to_string()],
@@ -1606,7 +1592,7 @@ mod tests {
     }
 
     #[test]
-    fn serializer_v3_endpoint_list_wins_when_data_plane_gate_enabled() {
+    fn serializer_v3_endpoint_list_wins_over_other_agent_settings() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
             .expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig {

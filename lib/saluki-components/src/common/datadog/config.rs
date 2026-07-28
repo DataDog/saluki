@@ -258,13 +258,6 @@ pub struct ForwarderConfiguration {
     #[serde(flatten)]
     use_v3_api_series: UseV3ApiSeriesConfig,
 
-    /// ADP safety gate for authoritative V3 series metrics.
-    ///
-    /// Defaults to `false`. This keeps ADP on V2 unless both Agent-compatible V3 config and this ADP-specific flag
-    /// enable V3.
-    #[serde(default, rename = "data_plane_metrics_v3_series_enabled")]
-    data_plane_metrics_v3_series_enabled: bool,
-
     /// Payload compressor kind used by the metrics serializer.
     ///
     /// V3 metrics intake is incompatible with zlib/deflate, so the forwarder needs this setting to keep endpoint
@@ -477,11 +470,6 @@ impl ForwarderConfiguration {
     /// Returns the Agent-compatible V3 series configuration.
     pub(crate) const fn use_v3_api_series(&self) -> &UseV3ApiSeriesConfig {
         &self.use_v3_api_series
-    }
-
-    /// Returns true when the ADP V3 series safety gate is enabled.
-    pub(crate) const fn data_plane_metrics_v3_series_enabled(&self) -> bool {
-        self.data_plane_metrics_v3_series_enabled
     }
 
     /// Returns the OPW/Vector V3 series override for metrics-primary routing, if configured.
@@ -980,22 +968,12 @@ mod tests {
                             "http://datadog.example.com": false
                         }
                     }
-                },
-                "data_plane": {
-                    "metrics": {
-                        "v3": {
-                            "series": {
-                                "enabled": true
-                            }
-                        }
-                    }
                 }
             })),
             None,
         )
         .await;
 
-        assert!(config.data_plane_metrics_v3_series_enabled());
         assert_eq!(config.use_v3_api_series().enabled, "datadog_only");
         assert_eq!(
             config.use_v3_api_series().endpoints.get(DATADOG_URL),

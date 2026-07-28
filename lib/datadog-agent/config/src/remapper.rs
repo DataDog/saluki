@@ -170,11 +170,6 @@ pub const KEY_ALIASES: &[(&str, &str)] = &[
     // shared ADP config structs.
     ("use_v3_api.series.enabled", "use_v3_api_series_enabled"),
     ("use_v3_api.series.endpoints", "use_v3_api_series_endpoints"),
-    // ADP-specific safety gate for enabling authoritative V3 series.
-    (
-        "data_plane.metrics.v3.series.enabled",
-        "data_plane_metrics_v3_series_enabled",
-    ),
     // ADP-specific zstd compression level: YAML `data_plane.serializer_zstd_compressor_level` →
     // flat key `data_plane_serializer_zstd_compressor_level`. This lets both YAML and env-var
     // sources feed the shared encoder config structs with correct precedence.

@@ -4,14 +4,6 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
-static DATA_PLANE_METRICS_V3_SERIES_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
-    schema: Schema::Saluki,
-    yaml_path: "data_plane.metrics.v3.series.enabled",
-    env_vars: &[],
-    value_type: ValueType::Bool,
-    default: Some("false"),
-};
-
 static DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
@@ -66,17 +58,6 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `data_plane.metrics.v3.series.enabled`
-    DATA_PLANE_METRICS_V3_SERIES_ENABLED = SalukiAnnotation {
-        schema: &DATA_PLANE_METRICS_V3_SERIES_ENABLED_SCHEMA,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
     /// `data_plane.otlp.proxy.logs.enabled`-Proxy OTLP logs to Core Agent
     DATA_PLANE_OTLP_PROXY_LOGS_ENABLED = SalukiAnnotation {

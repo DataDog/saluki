@@ -39,8 +39,7 @@
 //!
 //! - a top-level key (`dogstatsd_tcp_port`, `aggregate_window_duration_seconds`) is a top-level
 //!   field of the same name;
-//! - a nested key (`apm_config.default_env`, `data_plane.metrics.v3.series.enabled`) is a field on
-//!   a matching chain of nested sub-structs.
+//! - a nested key (`apm_config.default_env`) is a field on a matching chain of nested sub-structs.
 //!
 //! A mismatch does not error. The field deserializes to `None`, `seed` skips it, and the model
 //! keeps its default: the value silently fails to transport.
@@ -177,8 +176,6 @@ pub struct DataPlane {
     pub standalone_mode: Option<bool>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
-    /// Metrics-intake knobs (`data_plane.metrics.*`).
-    pub metrics: DataPlaneMetrics,
     /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
     pub otlp: DataPlaneOtlp,
 }
@@ -213,30 +210,6 @@ pub struct DataPlaneOtlp {
 #[serde(default)]
 pub struct DataPlaneChecks {
     /// Whether the checks pipeline is enabled (`data_plane.checks.enabled`).
-    pub enabled: Option<bool>,
-}
-
-/// `data_plane.metrics.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct DataPlaneMetrics {
-    /// V3 metrics-intake knobs (`data_plane.metrics.v3.*`).
-    pub v3: DataPlaneMetricsV3,
-}
-
-/// `data_plane.metrics.v3.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct DataPlaneMetricsV3 {
-    /// V3 series knobs (`data_plane.metrics.v3.series.*`).
-    pub series: DataPlaneMetricsV3Series,
-}
-
-/// `data_plane.metrics.v3.series.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct DataPlaneMetricsV3Series {
-    /// ADP-only safety gate authorizing V3 series (`data_plane.metrics.v3.series.enabled`).
     pub enabled: Option<bool>,
 }
 
@@ -444,9 +417,6 @@ impl SalukiOnly {
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
-        if let Some(v) = self.data_plane.metrics.v3.series.enabled {
-            config.shared.metrics_encoding.v3_series_enabled = v;
-        }
 
         // domains.dogstatsd
         let dsd = &mut config.domains.dogstatsd;
@@ -640,7 +610,6 @@ mod tests {
                 "stop_timeout": 45,
                 "standalone_mode": true,
                 "checks": { "enabled": true },
-                "metrics": { "v3": { "series": { "enabled": true } } },
                 // TODO(#2177): Remove this block and its endpoint assertions when ADP uses the
                 // canonical schema-provided endpoint keys.
                 "otlp": {
@@ -693,7 +662,6 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
-        assert!(config.shared.metrics_encoding.v3_series_enabled);
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;

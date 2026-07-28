@@ -367,12 +367,6 @@ pub struct DatadogMetricsConfiguration {
     #[serde(flatten)]
     use_v3_api_series: UseV3ApiSeriesConfig,
 
-    /// ADP safety gate for authoritative V3 series metrics.
-    ///
-    /// Defaults to `false`.
-    #[serde(default, rename = "data_plane_metrics_v3_series_enabled")]
-    data_plane_metrics_v3_series_enabled: bool,
-
     /// Enables routing all metrics to Observability Pipelines Worker.
     #[serde(default, rename = "observability_pipelines_worker_metrics_enabled")]
     observability_pipelines_worker_metrics_enabled: bool,
@@ -602,9 +596,8 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             !self.additional_endpoints.is_empty(),
             &self.use_v3_api_series,
         );
-        let use_v3_series = self.data_plane_metrics_v3_series_enabled && series_v3_can_be_enabled;
         let series_mode = metrics_encoder_mode_for_config(
-            use_v3_series,
+            series_v3_can_be_enabled,
             self.v3_api.series.validate,
             metrics_v3_disabled_by_compressor,
         );
