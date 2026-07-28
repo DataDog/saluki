@@ -482,11 +482,11 @@ impl DatadogMetricsConfiguration {
         )
     }
 
-    fn endpoint_requires_v2_series(
+    fn endpoint_v3_settings(
         &self, endpoint: &ResolvedEndpoint, metrics_primary_v3_override: Option<bool>,
         serializer_v3_configured_endpoint: Option<&str>,
-    ) -> bool {
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+    ) -> EndpointV3Settings {
+        EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: endpoint.configured_endpoint(),
             resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint,
@@ -497,9 +497,7 @@ impl DatadogMetricsConfiguration {
             series_validate: self.v3_api.series.validate,
             sketches_validate: self.v3_api.sketches.validate,
             series_shadow_sites: &self.v3_api.series.shadow_sites,
-        });
-
-        !settings.use_v3_series || settings.series_validation_mode
+        })
     }
 
     fn configured_primary_endpoint(&self) -> String {
@@ -512,11 +510,9 @@ impl DatadogMetricsConfiguration {
         }
     }
 
-    fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
-        if !self.use_v2_api_series || metrics_v3_disabled_by_compressor {
-            return Ok(true);
-        }
-
+    fn any_series_endpoint_matches(
+        &self, mut predicate: impl FnMut(&EndpointV3Settings) -> bool,
+    ) -> Result<bool, GenericError> {
         let configured_primary_endpoint = self.configured_primary_endpoint();
         if let Some((metrics_primary_url, metrics_primary_v3_override)) = selected_metrics_primary_endpoint(
             self.observability_pipelines_worker_metrics_enabled,
@@ -528,17 +524,19 @@ impl DatadogMetricsConfiguration {
         ) {
             let metrics_primary = calculate_resolved_endpoint(Some(metrics_primary_url), &self.site, "")
                 .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
-            if self.endpoint_requires_v2_series(
+            let settings = self.endpoint_v3_settings(
                 &metrics_primary,
                 Some(metrics_primary_v3_override),
                 Some(&configured_primary_endpoint),
-            ) {
+            );
+            if predicate(&settings) {
                 return Ok(true);
             }
         } else {
             let primary = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, "")
                 .error_context("Failed parsing/resolving the primary destination endpoint.")?;
-            if self.endpoint_requires_v2_series(&primary, None, None) {
+            let settings = self.endpoint_v3_settings(&primary, None, None);
+            if predicate(&settings) {
                 return Ok(true);
             }
         }
@@ -548,12 +546,47 @@ impl DatadogMetricsConfiguration {
             .resolved_endpoints(None)
             .error_context("Failed parsing/resolving the additional destination endpoints.")?
         {
-            if self.endpoint_requires_v2_series(&endpoint, None, None) {
+            let settings = self.endpoint_v3_settings(&endpoint, None, None);
+            if predicate(&settings) {
                 return Ok(true);
             }
         }
 
         Ok(false)
+    }
+
+    fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
+        if !self.use_v2_api_series || metrics_v3_disabled_by_compressor {
+            return Ok(true);
+        }
+
+        self.any_series_endpoint_matches(|settings| !settings.use_v3_series || settings.series_validation_mode)
+    }
+
+    fn requires_v3_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
+        if metrics_v3_disabled_by_compressor {
+            return Ok(false);
+        }
+
+        let metrics_primary_v3_override = selected_metrics_primary_v3_override(
+            self.observability_pipelines_worker_metrics_enabled,
+            &self.observability_pipelines_worker_metrics_url,
+            self.observability_pipelines_worker_metrics_use_v3_api_series,
+            self.vector_metrics_enabled,
+            &self.vector_metrics_url,
+            self.vector_metrics_use_v3_api_series,
+        );
+        if !series_v3_can_be_enabled_for_config(
+            self.use_v2_api_series,
+            self.v3_api.use_v3_series(),
+            metrics_primary_v3_override,
+            !self.additional_endpoints.is_empty(),
+            &self.use_v3_api_series,
+        ) {
+            return Ok(false);
+        }
+
+        self.any_series_endpoint_matches(|settings| settings.use_v3_series)
     }
 }
 
@@ -607,23 +640,9 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
 
         // Derive the encoding mode for each metric type from the configuration.
         let metrics_v3_disabled_by_compressor = matches!(v3_compression_scheme, CompressionScheme::Zlib(_));
-        let metrics_primary_v3_override = selected_metrics_primary_v3_override(
-            self.observability_pipelines_worker_metrics_enabled,
-            &self.observability_pipelines_worker_metrics_url,
-            self.observability_pipelines_worker_metrics_use_v3_api_series,
-            self.vector_metrics_enabled,
-            &self.vector_metrics_url,
-            self.vector_metrics_use_v3_api_series,
-        );
-        let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
-            self.use_v2_api_series,
-            self.v3_api.use_v3_series(),
-            metrics_primary_v3_override,
-            !self.additional_endpoints.is_empty(),
-            &self.use_v3_api_series,
-        );
+        let use_v3_series = self.requires_v3_series(metrics_v3_disabled_by_compressor)?;
         let series_mode = metrics_encoder_mode_for_config(
-            series_v3_can_be_enabled,
+            use_v3_series,
             self.v3_api.series.validate,
             metrics_v3_disabled_by_compressor,
         );
@@ -2102,7 +2121,7 @@ serializer_experimental_use_v3_api:
     }
 
     #[test]
-    fn mixed_v2_and_v3_endpoints_require_v2_series() {
+    fn mixed_v2_and_v3_endpoints_require_both_series_encoders() {
         let config = v3_series_config(
             r#"
 use_v3_api_series_enabled: "datadog_only"
@@ -2113,6 +2132,20 @@ additional_endpoints:
         );
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn all_v2_endpoints_do_not_require_v3_series() {
+        let config = v3_series_config(
+            r#"
+dd_url: http://127.0.0.1:9091
+use_v3_api_series_enabled: "datadog_only"
+"#,
+        );
+
+        assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(!config.requires_v3_series(false).expect("endpoints should resolve"));
     }
 
     #[test]
@@ -2127,6 +2160,7 @@ serializer_experimental_use_v3_api:
         );
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
     }
 
     #[test]
@@ -2160,7 +2194,7 @@ use_v3_api_series_enabled: "true"
     }
 
     #[test]
-    fn all_v3_serializer_endpoints_do_not_require_v2_series() {
+    fn all_v3_serializer_endpoints_require_only_v3_series() {
         let config = v3_series_config(
             r#"
 dd_url: https://agent.datad0g.com.
@@ -2177,6 +2211,7 @@ serializer_experimental_use_v3_api:
         );
 
         assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
     }
 
     #[test]
@@ -2201,8 +2236,14 @@ serializer_experimental_use_v3_api:
         assert!(v2_mrf_config
             .requires_v2_series(false)
             .expect("V2 MRF endpoint should resolve"));
+        assert!(!v2_mrf_config
+            .requires_v3_series(false)
+            .expect("V2 MRF endpoint should resolve"));
         assert!(!v3_mrf_config
             .requires_v2_series(false)
+            .expect("V3 MRF endpoint should resolve"));
+        assert!(v3_mrf_config
+            .requires_v3_series(false)
             .expect("V3 MRF endpoint should resolve"));
     }
 
@@ -2223,6 +2264,7 @@ serializer_experimental_use_v3_api:
         assert!(config.v3_api.series.endpoints.is_empty());
         assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);
         assert!(config.requires_v2_series(false).expect("endpoint should resolve"));
+        assert!(!config.requires_v3_series(false).expect("endpoint should resolve"));
     }
 
     #[test]
