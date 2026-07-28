@@ -54,19 +54,9 @@ impl DataPlaneAPIClient {
             .error_context("Failed to load data plane configuration for privileged API client.")?;
         let ipc_config = IpcAuthConfiguration::from_configuration(config)
             .error_context("Failed to load IPC authentication configuration for privileged API client.")?;
-        let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
-        let client_tls_config = build_ipc_client_ipc_tls_config(&ipc_cert_file_path)
-            .await
-            .with_error_context(|| {
-                format!(
-                    "Failed to load IPC TLS certificate and construct client TLS configuration from '{}'.",
-                    ipc_cert_file_path.display()
-                )
-            })?;
 
         let listen_address = dp_config.secure_api_listen_address();
-        let builder = HttpClient::builder().with_client_tls_config(client_tls_config);
-
+        let builder = HttpClient::builder();
         let (builder, authority) = match listen_address {
             ListenAddress::Tcp(_) => {
                 let local_address = listen_address
@@ -86,7 +76,17 @@ impl DataPlaneAPIClient {
             }
         };
 
+        let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
+        let client_tls_config = build_ipc_client_ipc_tls_config(&ipc_cert_file_path)
+            .await
+            .with_error_context(|| {
+                format!(
+                    "Failed to load IPC TLS certificate and construct client TLS configuration from '{}'.",
+                    ipc_cert_file_path.display()
+                )
+            })?;
         let client = builder
+            .with_client_tls_config(client_tls_config)
             .build()
             .error_context("Failed to construct mTLS API client for privileged API endpoint.")?;
 
@@ -436,6 +436,7 @@ mod tests {
     use http_body_util::Full;
     use hyper::{body::Bytes, service::service_fn};
     use rcgen::{generate_simple_self_signed, CertifiedKey};
+    use rustls::crypto::CryptoProvider;
     use saluki_config::config_from;
     use saluki_io::net::{listener::ConnectionOrientedListener, server::http::HttpServer, ListenAddress};
     use serde_json::json;
@@ -446,8 +447,41 @@ mod tests {
     use super::{body_when_replay_session_success, empty_when_replay_session_success};
 
     #[tokio::test]
+    async fn from_config_rejects_unsupported_endpoint_before_loading_ipc_certificate() {
+        let temp_dir = tempfile::tempdir().expect("temporary certificate directory should be created");
+        let nonexistent_cert_path = temp_dir.path().join("missing-ipc-cert.pem");
+        let config = config_from(json!({
+            "ipc_cert_file_path": nonexistent_cert_path,
+            "data_plane": {
+                "secure_api_listen_address": "udp://127.0.0.1:5101",
+            },
+        }))
+        .await;
+
+        let error = timeout(Duration::from_secs(1), DataPlaneAPIClient::from_config(&config))
+            .await
+            .expect("unsupported endpoint should be rejected before certificate loading can retry")
+            .err()
+            .expect("unsupported endpoint should fail client construction");
+        let error_message = error.to_string();
+
+        assert!(
+            error_message.contains("Expected connection-oriented address (TCP or UDS stream)"),
+            "unexpected error: {error_message}"
+        );
+        assert!(
+            error_message.contains("udp://127.0.0.1:5101"),
+            "error should identify the unsupported endpoint: {error_message}"
+        );
+    }
+
+    #[tokio::test]
     async fn from_config_authenticates_to_privileged_api_with_configured_ipc_identity() {
         let _ = saluki_tls::initialize_default_crypto_provider();
+        assert!(
+            CryptoProvider::get_default().is_some(),
+            "default crypto provider should be installed"
+        );
 
         let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()])
             .expect("self-signed localhost certificate should be generated");

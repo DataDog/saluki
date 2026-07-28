@@ -83,9 +83,16 @@ chrono = { workspace = true }
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }
 rcgen = { workspace = true, features = ["crypto", "pem"] }
+rustls = { workspace = true }
 saluki-components = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
 tempfile = { workspace = true }
+
+[target.'cfg(not(windows))'.dev-dependencies]
+rcgen = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+rcgen = { workspace = true, features = ["ring"] }
