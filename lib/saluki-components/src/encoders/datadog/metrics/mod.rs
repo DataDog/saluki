@@ -46,7 +46,10 @@ use self::{
 use crate::{
     common::datadog::{
         clamp_payload_limits, default_serializer_compressor_kind,
-        endpoints::{series_v3_config_can_enable_v3, AdditionalEndpoints},
+        endpoints::{
+            calculate_resolved_endpoint, default_site, deserialize_dd_url, series_v3_config_can_enable_v3,
+            AdditionalEndpoints, EndpointV3Settings, ResolvedEndpoint, V3EndpointConfig, DEFAULT_SITE,
+        },
         io::RB_BUFFER_CHUNK_SIZE,
         protocol::{MetricsPayloadInfo, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
@@ -162,17 +165,28 @@ fn selected_metrics_primary_v3_override(
     opw_enabled: bool, opw_url: &str, opw_use_v3_series: bool, vector_enabled: bool, vector_url: &str,
     vector_use_v3_series: bool,
 ) -> Option<bool> {
+    selected_metrics_primary_endpoint(
+        opw_enabled,
+        opw_url,
+        opw_use_v3_series,
+        vector_enabled,
+        vector_url,
+        vector_use_v3_series,
+    )
+    .map(|(_, use_v3_series)| use_v3_series)
+}
+
+fn selected_metrics_primary_endpoint<'a>(
+    opw_enabled: bool, opw_url: &'a str, opw_use_v3_series: bool, vector_enabled: bool, vector_url: &'a str,
+    vector_use_v3_series: bool,
+) -> Option<(&'a str, bool)> {
     if opw_enabled {
-        metrics_primary_v3_override_for_url(opw_url, opw_use_v3_series)
+        metrics_primary_url_can_resolve(opw_url).then_some((opw_url, opw_use_v3_series))
     } else if vector_enabled {
-        metrics_primary_v3_override_for_url(vector_url, vector_use_v3_series)
+        metrics_primary_url_can_resolve(vector_url).then_some((vector_url, vector_use_v3_series))
     } else {
         None
     }
-}
-
-fn metrics_primary_v3_override_for_url(url: &str, use_v3_series: bool) -> Option<bool> {
-    metrics_primary_url_can_resolve(url).then_some(use_v3_series)
 }
 
 fn metrics_primary_url_can_resolve(url: &str) -> bool {
@@ -388,6 +402,14 @@ pub struct DatadogMetricsConfiguration {
     #[serde(default, rename = "vector_metrics_use_v3_api_series")]
     vector_metrics_use_v3_api_series: bool,
 
+    /// The Datadog site used to resolve the primary metrics endpoint.
+    #[serde(default = "default_site")]
+    site: String,
+
+    /// The optional explicit primary metrics endpoint.
+    #[serde(default, alias = "url", deserialize_with = "deserialize_dd_url")]
+    dd_url: Option<String>,
+
     /// Additional endpoints that metrics may be dual-shipped to.
     #[serde(default)]
     additional_endpoints: AdditionalEndpoints,
@@ -412,6 +434,81 @@ impl DatadogMetricsConfiguration {
             self.max_metrics_per_payload,
             self.max_series_points_per_payload,
         )
+    }
+
+    fn endpoint_requires_v2_series(
+        &self, endpoint: &ResolvedEndpoint, metrics_primary_v3_override: Option<bool>,
+        serializer_v3_configured_endpoint: Option<&str>,
+    ) -> bool {
+        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            configured_endpoint: endpoint.configured_endpoint(),
+            resolved_endpoint: endpoint.endpoint(),
+            serializer_v3_configured_endpoint,
+            data_plane_v3_series_enabled: self.data_plane_metrics_v3_series_enabled,
+            series_config: &self.use_v3_api_series,
+            metrics_primary_v3_override,
+            serializer_v3_series_endpoints: &self.v3_api.series.endpoints,
+            serializer_v3_sketches_endpoints: &self.v3_api.sketches.endpoints,
+            series_validate: self.v3_api.series.validate,
+            sketches_validate: self.v3_api.sketches.validate,
+            series_shadow_sites: &self.v3_api.series.shadow_sites,
+        });
+
+        !settings.use_v3_series || settings.series_validation_mode
+    }
+
+    fn configured_primary_endpoint(&self) -> String {
+        match self.dd_url.as_deref() {
+            Some(url) => url.to_string(),
+            None => {
+                let base_domain = if self.site.is_empty() { DEFAULT_SITE } else { &self.site };
+                format!("https://app.{base_domain}")
+            }
+        }
+    }
+
+    fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
+        if metrics_v3_disabled_by_compressor || !self.data_plane_metrics_v3_series_enabled {
+            return Ok(true);
+        }
+
+        let configured_primary_endpoint = self.configured_primary_endpoint();
+        if let Some((metrics_primary_url, metrics_primary_v3_override)) = selected_metrics_primary_endpoint(
+            self.observability_pipelines_worker_metrics_enabled,
+            &self.observability_pipelines_worker_metrics_url,
+            self.observability_pipelines_worker_metrics_use_v3_api_series,
+            self.vector_metrics_enabled,
+            &self.vector_metrics_url,
+            self.vector_metrics_use_v3_api_series,
+        ) {
+            let metrics_primary = calculate_resolved_endpoint(Some(metrics_primary_url), &self.site, "")
+                .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
+            if self.endpoint_requires_v2_series(
+                &metrics_primary,
+                Some(metrics_primary_v3_override),
+                Some(&configured_primary_endpoint),
+            ) {
+                return Ok(true);
+            }
+        } else {
+            let primary = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, "")
+                .error_context("Failed parsing/resolving the primary destination endpoint.")?;
+            if self.endpoint_requires_v2_series(&primary, None, None) {
+                return Ok(true);
+            }
+        }
+
+        for endpoint in self
+            .additional_endpoints
+            .resolved_endpoints(None)
+            .error_context("Failed parsing/resolving the additional destination endpoints.")?
+        {
+            if self.endpoint_requires_v2_series(&endpoint, None, None) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }
 
@@ -524,11 +621,16 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         } else {
             generic_payload_limits
         };
-        let mut v2_series_builder = v2::create_v2_request_builder(series_endpoint, &v2_endpoint_config)
-            .await
-            .error_context("Failed to create V2 series request builder.")?;
-        v2_series_builder.with_len_limits(series_uncompressed_limit, series_compressed_limit)?;
-        let v2_series_builder = Some(v2_series_builder);
+        let v2_series_builder = if self.requires_v2_series(metrics_v3_disabled_by_compressor)? {
+            let mut builder = v2::create_v2_request_builder(series_endpoint, &v2_endpoint_config)
+                .await
+                .error_context("Failed to create V2 series request builder.")?;
+            builder.with_len_limits(series_uncompressed_limit, series_compressed_limit)?;
+            Some(builder)
+        } else {
+            debug!("All metrics series endpoints use authoritative V3; disabling V2 series encoding.");
+            None
+        };
 
         let (sketches_uncompressed_limit, sketches_compressed_limit) = generic_payload_limits;
         let mut v2_sketch_builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &v2_endpoint_config)
@@ -1898,6 +2000,61 @@ serializer_experimental_use_v3_api:
             MetricsEncoderMode::Validation,
             metrics_encoder_mode_for_config(true, true, false)
         );
+    }
+
+    fn v3_series_config(raw: &str) -> DatadogMetricsConfiguration {
+        serde_yaml::from_str(raw).expect("configuration should deserialize")
+    }
+
+    #[test]
+    fn mixed_v2_and_v3_endpoints_require_v2_series() {
+        let config = v3_series_config(
+            r#"
+data_plane_metrics_v3_series_enabled: true
+use_v3_api_series_enabled: "datadog_only"
+additional_endpoints:
+  https://custom.example.com:
+    - additional-api-key
+"#,
+        );
+
+        assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn validation_requires_v2_series() {
+        let config = v3_series_config(
+            r#"
+data_plane_metrics_v3_series_enabled: true
+use_v3_api_series_enabled: "true"
+serializer_experimental_use_v3_api:
+  series:
+    validate: true
+"#,
+        );
+
+        assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn all_v3_serializer_endpoints_do_not_require_v2_series() {
+        let config = v3_series_config(
+            r#"
+dd_url: https://agent.datad0g.com.
+data_plane_metrics_v3_series_enabled: true
+use_v3_api_series_enabled: "false"
+additional_endpoints:
+  https://agent.datadoghq.com.:
+    - additional-api-key
+serializer_experimental_use_v3_api:
+  series:
+    endpoints:
+      - https://agent.datad0g.com.
+      - https://agent.datadoghq.com.
+"#,
+        );
+
+        assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
     }
 
     #[test]
