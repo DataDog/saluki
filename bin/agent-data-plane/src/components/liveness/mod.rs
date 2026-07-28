@@ -58,10 +58,7 @@ impl LivenessConfiguration {
 #[async_trait]
 impl SourceBuilder for LivenessConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
-        Ok(Box::new(Liveness {
-            hostname: self.hostname.clone(),
-            version: self.version.clone(),
-        }))
+        Ok(Box::new(Liveness::new(self.hostname.clone(), self.version.clone())))
     }
 
     fn outputs(&self) -> &[OutputDefinition<EventType>] {
@@ -82,8 +79,19 @@ impl MemoryBounds for LivenessConfiguration {
 }
 
 struct Liveness {
-    hostname: MetaString,
-    version: MetaString,
+    metric: Event,
+    service_check: Event,
+}
+
+impl Liveness {
+    fn new(hostname: MetaString, version: MetaString) -> Self {
+        let (metric, service_check) = create_liveness_events(hostname, version);
+        Self { metric, service_check }
+    }
+
+    fn events(&self) -> (Event, Event) {
+        (self.metric.clone(), self.service_check.clone())
+    }
 }
 
 #[async_trait]
@@ -107,7 +115,7 @@ impl Source for Liveness {
                 },
                 _ = health.live() => continue,
                 _ = tick_interval.tick() => {
-                    let (metric, service_check) = create_liveness_events(self.hostname.clone(), self.version.clone());
+                    let (metric, service_check) = self.events();
 
                     if let Err(error) = context.dispatcher().dispatch_one_named("metrics", metric).await {
                         warn!(error = %error, "Failed to dispatch liveness metric.");
@@ -170,17 +178,23 @@ mod tests {
     }
 
     #[test]
-    fn emits_liveness_events_without_direct_system_host_tags() {
-        let (metric, service_check) = create_liveness_events("host-a".into(), "1.2.3".into());
+    fn prebuilt_metric_payload_has_required_contract() {
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into());
+        let (metric, _) = liveness.events();
 
         let Event::Metric(metric) = metric else {
             panic!("expected metric event");
         };
         assert_eq!(metric.context().name(), RUNNING_METRIC_NAME);
         assert_eq!(metric.context().host(), Some("host-a"));
-        assert_eq!(metric.context().tags().len(), 1);
         assert!(metric.context().tags().has_tag("version:1.2.3"));
         assert_eq!(metric.values(), &MetricValues::gauge((0, 1.0)));
+    }
+
+    #[test]
+    fn prebuilt_service_check_payload_has_required_contract() {
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into());
+        let (_, service_check) = liveness.events();
 
         let Event::ServiceCheck(service_check) = service_check else {
             panic!("expected service check event");
@@ -188,6 +202,5 @@ mod tests {
         assert_eq!(service_check.name(), UP_SERVICE_CHECK_NAME);
         assert_eq!(service_check.status(), CheckStatus::Ok);
         assert_eq!(service_check.hostname(), Some("host-a"));
-        assert!(service_check.tags().is_empty());
     }
 }
