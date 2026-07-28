@@ -29,6 +29,9 @@ global:
       DD_HOSTNAME: smp-regression
       DD_API_KEY: foo00000001
       DD_DD_URL: http://127.0.0.1:9091
+      # The SMP blackhole is not a Datadog-owned endpoint, so `datadog_only` would keep series on
+      # V2. Explicitly enable it to exercise the V3 series encoder and forwarder path.
+      DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS: "http://127.0.0.1:9091"
 
       # Dummy, self-signed certificate since we're not running alongside the Datadog Agent which
       # would otherwise be providing the IPC certificate.
