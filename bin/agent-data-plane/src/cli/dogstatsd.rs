@@ -168,7 +168,7 @@ struct StatsResponse<'a> {
 
 /// Entrypoint for the `dogstatsd` commands.
 pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config).await {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create data plane API client: {:#}", e);

@@ -1,3 +1,4 @@
+use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config};
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
@@ -45,14 +46,26 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the data plane configuration can't be deserialized, or the data plane API endpoints can't be
-    /// determined, an error will be returned.
-    pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
+    /// If the data plane or IPC authentication configuration can't be loaded, the IPC certificate can't be read or
+    /// parsed into a client TLS configuration, the privileged API endpoint isn't connection-oriented, or the HTTP
+    /// client can't be constructed, an error is returned.
+    pub async fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let dp_config = DataPlaneConfiguration::from_configuration(config)
+            .error_context("Failed to load data plane configuration for privileged API client.")?;
+        let ipc_config = IpcAuthConfiguration::from_configuration(config)
+            .error_context("Failed to load IPC authentication configuration for privileged API client.")?;
+        let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
+        let client_tls_config = build_ipc_client_ipc_tls_config(&ipc_cert_file_path)
+            .await
+            .with_error_context(|| {
+                format!(
+                    "Failed to load IPC TLS certificate and construct client TLS configuration from '{}'.",
+                    ipc_cert_file_path.display()
+                )
+            })?;
 
         let listen_address = dp_config.secure_api_listen_address();
-
-        let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
+        let builder = HttpClient::builder().with_client_tls_config(client_tls_config);
 
         let (builder, authority) = match listen_address {
             ListenAddress::Tcp(_) => {
@@ -75,7 +88,7 @@ impl DataPlaneAPIClient {
 
         let client = builder
             .build()
-            .error_context("Failed to construct API client for privileged API endpoint.")?;
+            .error_context("Failed to construct mTLS API client for privileged API endpoint.")?;
 
         Ok(Self { client, authority })
     }
@@ -416,11 +429,90 @@ fn empty_when_replay_session_success(resp: Response<String>) -> Result<(), Gener
 
 #[cfg(test)]
 mod tests {
-    use http::{Response, StatusCode};
+    use std::{convert::Infallible, fs, time::Duration};
 
-    use super::body_when_capture_success;
+    use datadog_agent_commons::ipc::tls::build_ipc_server_tls_config;
+    use http::{Request, Response, StatusCode};
+    use http_body_util::Full;
+    use hyper::{body::Bytes, service::service_fn};
+    use rcgen::{generate_simple_self_signed, CertifiedKey};
+    use saluki_config::config_from;
+    use saluki_io::net::{listener::ConnectionOrientedListener, server::http::HttpServer, ListenAddress};
+    use serde_json::json;
+    use tokio::time::timeout;
+
+    use super::{body_when_capture_success, DataPlaneAPIClient};
     #[cfg(target_os = "linux")]
     use super::{body_when_replay_session_success, empty_when_replay_session_success};
+
+    #[tokio::test]
+    async fn from_config_authenticates_to_privileged_api_with_configured_ipc_identity() {
+        let _ = saluki_tls::initialize_default_crypto_provider();
+
+        let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()])
+            .expect("self-signed localhost certificate should be generated");
+        let temp_dir = tempfile::tempdir().expect("temporary certificate directory should be created");
+        let cert_path = temp_dir.path().join("ipc-cert.pem");
+        fs::write(&cert_path, format!("{}{}", cert.pem(), signing_key.serialize_pem()))
+            .expect("certificate and private key should be written");
+
+        let listener = ConnectionOrientedListener::from_listen_address(
+            ListenAddress::try_from("tcp://127.0.0.1:0").expect("ephemeral TCP address should parse"),
+        )
+        .await
+        .expect("privileged API listener should bind");
+        let listen_addr = listener.local_addr().expect("listener should have a local address");
+        let server_tls_config = build_ipc_server_tls_config(&cert_path)
+            .await
+            .expect("production IPC server TLS config should build");
+        let (request_tx, mut request_rx) = tokio::sync::mpsc::channel(1);
+        let service = service_fn(move |request: Request<hyper::body::Incoming>| {
+            let request_tx = request_tx.clone();
+            async move {
+                request_tx
+                    .send(request.uri().path().to_string())
+                    .await
+                    .expect("test should receive the request path");
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(
+                    b"{\"source\":\"privileged-api\"}",
+                ))))
+            }
+        });
+        let (server_shutdown, error_handle) = HttpServer::from_listener(listener, service)
+            .with_tls_config(server_tls_config)
+            .listen();
+
+        let config = config_from(json!({
+            "ipc_cert_file_path": cert_path,
+            "data_plane": {
+                "secure_api_listen_address": format!("tcp://{listen_addr}"),
+            },
+        }))
+        .await;
+        let mut api_client = DataPlaneAPIClient::from_config(&config)
+            .await
+            .expect("privileged API client should build from configuration");
+
+        let body = timeout(Duration::from_secs(5), api_client.config())
+            .await
+            .expect("privileged API request should not time out")
+            .expect("privileged API request should succeed");
+        let request_path = timeout(Duration::from_secs(5), request_rx.recv())
+            .await
+            .expect("privileged API handler should be reached before timeout")
+            .expect("privileged API server should report the request path");
+
+        assert_eq!(body, "{\"source\":\"privileged-api\"}");
+        assert_eq!(request_path, "/config");
+
+        timeout(Duration::from_secs(5), server_shutdown.shutdown_and_wait())
+            .await
+            .expect("privileged API server should shut down before timeout");
+        let server_error = timeout(Duration::from_secs(5), error_handle)
+            .await
+            .expect("privileged API error handle should resolve before timeout");
+        assert!(server_error.is_none(), "privileged API server failed: {server_error:?}");
+    }
 
     #[test]
     fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
