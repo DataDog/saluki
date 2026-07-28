@@ -5432,6 +5432,46 @@ properties:
                     node_type: setting
                     type: integer
                     default: 0
+                  tls:
+                    node_type: section
+                    type: object
+                    visibility: public
+                    description: TLS server configuration for the OTLP/gRPC listener.
+                    tags:
+                    - template_section:CoreAgent
+                    properties:
+                      ca_file:
+                        node_type: setting
+                        type: string
+                        default: ""
+                        visibility: public
+                        description: Path to a CA bundle file used to verify client certificates.
+                        tags:
+                        - template_section:CoreAgent
+                      cert_file:
+                        node_type: setting
+                        type: string
+                        default: ""
+                        visibility: public
+                        description: Path to the TLS certificate file.
+                        tags:
+                        - template_section:CoreAgent
+                      key_file:
+                        node_type: setting
+                        type: string
+                        default: ""
+                        visibility: public
+                        description: Path to the TLS private key file.
+                        tags:
+                        - template_section:CoreAgent
+                      client_ca_file:
+                        node_type: setting
+                        type: string
+                        default: ""
+                        visibility: public
+                        description: Path to a CA certificate file used to verify client certificates for mutual TLS.
+                        tags:
+                        - template_section:CoreAgent
               http:
                 node_type: section
                 type: object
@@ -5476,6 +5516,46 @@ properties:
                     node_type: setting
                     type: integer
                     default: 0
+                  tls:
+                    node_type: section
+                    type: object
+                    visibility: public
+                    description: TLS server configuration for the OTLP/HTTP listener.
+                    tags:
+                    - template_section:CoreAgent
+                    properties:
+                      ca_file:
+                        node_type: setting
+                        type: string
+                        default: ""
+                        visibility: public
+                        description: Path to a CA bundle file used to verify client certificates.
+                        tags:
+                        - template_section:CoreAgent
+                      cert_file:
+                        node_type: setting
+                        type: string
+                        default: ""
+                        visibility: public
+                        description: Path to the TLS certificate file.
+                        tags:
+                        - template_section:CoreAgent
+                      key_file:
+                        node_type: setting
+                        type: string
+                        default: ""
+                        visibility: public
+                        description: Path to the TLS private key file.
+                        tags:
+                        - template_section:CoreAgent
+                      client_ca_file:
+                        node_type: setting
+                        type: string
+                        default: ""
+                        visibility: public
+                        description: Path to a CA certificate file used to verify client certificates for mutual TLS.
+                        tags:
+                        - template_section:CoreAgent
       metrics:
         node_type: section
         type: object

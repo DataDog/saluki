@@ -266,10 +266,12 @@ mod tests {
                 endpoint: "0.0.0.0:4317".to_string(),
                 transport: "tcp".to_string(),
                 max_recv_msg_size_mib: 4,
+                ..Default::default()
             },
             http: domains::otlp::HttpReceiver {
                 endpoint: "0.0.0.0:4318".to_string(),
                 transport: "tcp".to_string(),
+                ..Default::default()
             },
             ..Default::default()
         });

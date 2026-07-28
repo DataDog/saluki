@@ -2237,16 +2237,26 @@ inventory:
     description: "gRPC read buffer size"
 
   otlp_config.receiver.protocols.grpc.tls.ca_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS CA file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
     support: unknown
     description: "gRPC TLS CA PEM"
 
   otlp_config.receiver.protocols.grpc.tls.cert_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS cert file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
     support: unknown
@@ -2257,8 +2267,13 @@ inventory:
     description: "gRPC TLS cipher suites"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS client CA file"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload:
     support: unknown
@@ -2273,8 +2288,13 @@ inventory:
     description: "gRPC TLS include system CA pool"
 
   otlp_config.receiver.protocols.grpc.tls.key_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS key file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
     support: unknown
@@ -2387,16 +2407,26 @@ inventory:
     description: "HTTP response headers"
 
   otlp_config.receiver.protocols.http.tls.ca_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS CA file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
     support: unknown
     description: "HTTP TLS CA PEM"
 
   otlp_config.receiver.protocols.http.tls.cert_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS cert file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
     support: unknown
@@ -2407,8 +2437,13 @@ inventory:
     description: "HTTP TLS cipher suites"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS client CA file"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.client_ca_file_reload:
     support: unknown
@@ -2423,8 +2458,13 @@ inventory:
     description: "HTTP TLS include system CA pool"
 
   otlp_config.receiver.protocols.http.tls.key_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS key file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.key_pem:
     support: unknown

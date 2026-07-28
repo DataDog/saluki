@@ -831,6 +831,26 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "ca_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "cert_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CLIENT_CA_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "client_ca_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "key_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT"],
         path: &["otlp_config", "receiver", "protocols", "grpc", "transport"],
         decode: EnvDecode::RawString,
@@ -838,6 +858,26 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"],
         path: &["otlp_config", "receiver", "protocols", "http", "endpoint"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "ca_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "cert_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CLIENT_CA_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "client_ca_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "key_file"],
         decode: EnvDecode::RawString,
     },
     EnvKey {

@@ -433,16 +433,12 @@ ways that are not yet fully characterized.
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout`                  | gRPC keepalive: ping timeout           |         |
 | `otlp_config.receiver.protocols.grpc.max_concurrent_streams`                               | gRPC max concurrent streams            |         |
 | `otlp_config.receiver.protocols.grpc.read_buffer_size`                                     | gRPC read buffer size                  |         |
-| `otlp_config.receiver.protocols.grpc.tls.ca_file`                                          | gRPC TLS CA file path                  |         |
 | `otlp_config.receiver.protocols.grpc.tls.ca_pem`                                           | gRPC TLS CA PEM                        |         |
-| `otlp_config.receiver.protocols.grpc.tls.cert_file`                                        | gRPC TLS cert file path                |         |
 | `otlp_config.receiver.protocols.grpc.tls.cert_pem`                                         | gRPC TLS cert PEM                      |         |
 | `otlp_config.receiver.protocols.grpc.tls.cipher_suites`                                    | gRPC TLS cipher suites                 |         |
-| `otlp_config.receiver.protocols.grpc.tls.client_ca_file`                                   | gRPC TLS client CA file                |         |
 | `otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload`                            | gRPC TLS client CA reload              |         |
 | `otlp_config.receiver.protocols.grpc.tls.curve_preferences`                                | gRPC TLS curve preferences             |         |
 | `otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool`                     | gRPC TLS include system CA pool        |         |
-| `otlp_config.receiver.protocols.grpc.tls.key_file`                                         | gRPC TLS key file path                 |         |
 | `otlp_config.receiver.protocols.grpc.tls.key_pem`                                          | gRPC TLS key PEM                       |         |
 | `otlp_config.receiver.protocols.grpc.tls.max_version`                                      | gRPC TLS max version                   |         |
 | `otlp_config.receiver.protocols.grpc.tls.min_version`                                      | gRPC TLS min version                   |         |
@@ -466,16 +462,12 @@ ways that are not yet fully characterized.
 | `otlp_config.receiver.protocols.http.read_header_timeout`                                  | HTTP read header timeout               |         |
 | `otlp_config.receiver.protocols.http.read_timeout`                                         | HTTP read timeout                      |         |
 | `otlp_config.receiver.protocols.http.response_headers`                                     | HTTP response headers                  |         |
-| `otlp_config.receiver.protocols.http.tls.ca_file`                                          | HTTP TLS CA file path                  |         |
 | `otlp_config.receiver.protocols.http.tls.ca_pem`                                           | HTTP TLS CA PEM                        |         |
-| `otlp_config.receiver.protocols.http.tls.cert_file`                                        | HTTP TLS cert file path                |         |
 | `otlp_config.receiver.protocols.http.tls.cert_pem`                                         | HTTP TLS cert PEM                      |         |
 | `otlp_config.receiver.protocols.http.tls.cipher_suites`                                    | HTTP TLS cipher suites                 |         |
-| `otlp_config.receiver.protocols.http.tls.client_ca_file`                                   | HTTP TLS client CA file                |         |
 | `otlp_config.receiver.protocols.http.tls.client_ca_file_reload`                            | HTTP TLS client CA reload              |         |
 | `otlp_config.receiver.protocols.http.tls.curve_preferences`                                | HTTP TLS curve preferences             |         |
 | `otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool`                     | HTTP TLS include system CA pool        |         |
-| `otlp_config.receiver.protocols.http.tls.key_file`                                         | HTTP TLS key file path                 |         |
 | `otlp_config.receiver.protocols.http.tls.key_pem`                                          | HTTP TLS key PEM                       |         |
 | `otlp_config.receiver.protocols.http.tls.max_version`                                      | HTTP TLS max version                   |         |
 | `otlp_config.receiver.protocols.http.tls.min_version`                                      | HTTP TLS min version                   |         |
@@ -823,8 +815,16 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.metrics.tags`                                     | Comma-separated tags for all OTLP metrics.         |
 | `otlp_config.receiver.protocols.grpc.endpoint`                 | otlp_config.receiver.protocols.grpc.endpoint       |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`    | Max OTLP inbound gRPC message size (MiB)           |
+| `otlp_config.receiver.protocols.grpc.tls.ca_file`              | gRPC TLS CA file path                              |
+| `otlp_config.receiver.protocols.grpc.tls.cert_file`            | gRPC TLS cert file path                            |
+| `otlp_config.receiver.protocols.grpc.tls.client_ca_file`       | gRPC TLS client CA file                            |
+| `otlp_config.receiver.protocols.grpc.tls.key_file`             | gRPC TLS key file path                             |
 | `otlp_config.receiver.protocols.grpc.transport`                | otlp_config.receiver.protocols.grpc.transport      |
 | `otlp_config.receiver.protocols.http.endpoint`                 | otlp_config.receiver.protocols.http.endpoint       |
+| `otlp_config.receiver.protocols.http.tls.ca_file`              | HTTP TLS CA file path                              |
+| `otlp_config.receiver.protocols.http.tls.cert_file`            | HTTP TLS cert file path                            |
+| `otlp_config.receiver.protocols.http.tls.client_ca_file`       | HTTP TLS client CA file                            |
+| `otlp_config.receiver.protocols.http.tls.key_file`             | HTTP TLS key file path                             |
 | `otlp_config.traces.enabled`                                   | otlp_config.traces.enabled                         |
 | `otlp_config.traces.internal_port`                             | otlp_config.traces.internal_port                   |
 | `otlp_config.traces.probabilistic_sampler.sampling_percentage` | OTLP trace sampling percentage                     |

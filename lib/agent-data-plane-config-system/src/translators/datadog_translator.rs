@@ -1005,6 +1005,38 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.receiver.http.endpoint = value;
     }
 
+    fn consume_otlp_config_receiver_protocols_grpc_tls_ca_file(&mut self, value: String) {
+        self.config.domains.otlp.receiver.grpc.tls.ca_file = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_grpc_tls_cert_file(&mut self, value: String) {
+        self.config.domains.otlp.receiver.grpc.tls.cert_file = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_grpc_tls_key_file(&mut self, value: String) {
+        self.config.domains.otlp.receiver.grpc.tls.key_file = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_grpc_tls_client_ca_file(&mut self, value: String) {
+        self.config.domains.otlp.receiver.grpc.tls.client_ca_file = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_http_tls_ca_file(&mut self, value: String) {
+        self.config.domains.otlp.receiver.http.tls.ca_file = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_http_tls_cert_file(&mut self, value: String) {
+        self.config.domains.otlp.receiver.http.tls.cert_file = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_http_tls_key_file(&mut self, value: String) {
+        self.config.domains.otlp.receiver.http.tls.key_file = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_http_tls_client_ca_file(&mut self, value: String) {
+        self.config.domains.otlp.receiver.http.tls.client_ca_file = value;
+    }
+
     fn consume_otlp_config_traces_enabled(&mut self, value: bool) {
         self.config.domains.otlp.traces.enabled = value;
     }
