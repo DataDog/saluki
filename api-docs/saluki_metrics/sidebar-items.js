@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"attr":["static_metrics"],"struct":["Counter","Gauge","Histogram","MetricsBuilder"],"trait":["MetricTag","Stringable"]};
+window.SIDEBAR_ITEMS = {"attr":["static_metrics"],"struct":["Counter","Gauge","Histogram","MappedMetric","MetricsBuilder"],"trait":["MetricTag","Stringable"]};
