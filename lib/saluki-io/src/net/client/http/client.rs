@@ -288,6 +288,7 @@ impl HttpClientBuilder {
     /// Sets the TLS configuration.
     ///
     /// A TLS configuration builder is provided to allow for more advanced configuration of the TLS connection.
+    /// [`Self::with_client_tls_config`] overrides these settings regardless of call order.
     pub fn with_tls_config<F>(mut self, f: F) -> Self
     where
         F: FnOnce(ClientTLSConfigBuilder) -> ClientTLSConfigBuilder,
@@ -318,7 +319,8 @@ impl HttpClientBuilder {
     /// Defaults to TLS 1.2.
     ///
     /// This updates the same TLS builder configured by [`Self::with_tls_config`], so call order matters when both
-    /// methods change the minimum TLS version.
+    /// methods change the minimum TLS version. [`Self::with_client_tls_config`] overrides this setting regardless of
+    /// call order.
     pub fn with_min_tls_version(mut self, version: TlsMinimumVersion) -> Self {
         self.tls_builder = self.tls_builder.with_min_tls_version(version);
         self
@@ -351,7 +353,8 @@ impl HttpClientBuilder {
     ///
     /// # Errors
     ///
-    /// If there was an error building the TLS configuration for the client, an error will be returned.
+    /// If there was an error building the TLS configuration for the client, or if a supplied complete TLS
+    /// configuration fails FIPS validation in a FIPS build, an error will be returned.
     pub fn build(self) -> Result<HttpClient, GenericError> {
         let tls_config = match self.client_tls_config {
             Some(mut config) => {
@@ -428,8 +431,17 @@ mod tests {
         assert_eq!(Some(5), converted.size_hint().exact());
     }
 
+    fn initialize_crypto_provider() {
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "default crypto provider should be installed"
+        );
+    }
+
     #[tokio::test]
     async fn complete_tls_config_takes_precedence_when_set_last() {
+        initialize_crypto_provider();
         let (server_config, client_config, option_root_store) = mutual_tls_configs();
         let builder = HttpClient::builder()
             .with_tls_config(|builder| builder.with_root_cert_store(option_root_store))
@@ -442,6 +454,7 @@ mod tests {
 
     #[tokio::test]
     async fn complete_tls_config_takes_precedence_when_set_first() {
+        initialize_crypto_provider();
         let (server_config, client_config, option_root_store) = mutual_tls_configs();
         let builder = HttpClient::builder()
             .with_client_tls_config(client_config)
@@ -454,6 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn supplied_alpn_is_replaced_by_auto_protocol_selection() {
+        initialize_crypto_provider();
         let negotiated_alpn = negotiate_alpn_with_supplied_config(HttpProtocol::Auto).await;
 
         assert_eq!(negotiated_alpn.as_deref(), Some(b"h2".as_slice()));
@@ -461,6 +475,7 @@ mod tests {
 
     #[tokio::test]
     async fn supplied_alpn_is_removed_for_http1_protocol_selection() {
+        initialize_crypto_provider();
         let negotiated_alpn = negotiate_alpn_with_supplied_config(HttpProtocol::Http1).await;
 
         assert_eq!(negotiated_alpn, None);
@@ -468,6 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn option_based_tls_config_remains_in_use_without_complete_config() {
+        initialize_crypto_provider();
         let server_cert = SelfSignedCert::localhost();
         let mut root_store = RootCertStore::empty();
         root_store
