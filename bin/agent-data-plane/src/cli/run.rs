@@ -393,8 +393,8 @@ async fn create_topology(
     // we additionally create metrics- and logs-specific components connected to that forwarder depending on which of
     // the baseline pipelines are required.
     //
-    // Liveness requires the metrics and service-check baseline pipelines for every running topology, including an
-    // OTLP proxy-only topology.
+    // Connected liveness requires the metrics and service-check baseline pipelines for every running topology,
+    // including an OTLP proxy-only topology.
     if dp_config.metrics_pipeline_required()
         || dp_config.logs_pipeline_required()
         || dp_config.events_pipeline_required()
@@ -427,10 +427,10 @@ async fn create_topology(
         add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
-    // Every running topology has at least one data pipeline and emits liveness through the metric and service-check
-    // baselines created above.
-    if dp_config.data_pipelines_enabled() {
-        add_liveness_source_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
+    // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
+    // OTLP proxy mode must not construct liveness or output paths that it does not otherwise need.
+    if !dp_config.standalone_mode() {
+        add_liveness_source_to_blueprint(&mut blueprint, env_provider).await?;
     }
 
     // Now we move on to our actual data pipelines.
@@ -452,12 +452,12 @@ async fn create_topology(
     Ok((blueprint, control_surfaces))
 }
 
-const LIVENESS_METRICS_DESTINATION: &str = "dd_metrics_encode";
+const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
 
 async fn add_liveness_source_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let liveness_config = LivenessConfiguration::from_environment_provider(config, env_provider).await?;
+    let liveness_config = LivenessConfiguration::from_environment_provider(env_provider).await?;
 
     blueprint
         .add_source("liveness_in", liveness_config)?
@@ -919,8 +919,8 @@ mod liveness_topology_tests {
     use super::LIVENESS_METRICS_DESTINATION;
 
     #[test]
-    fn liveness_metrics_bypass_optional_host_tag_enrichment() {
-        assert_eq!(LIVENESS_METRICS_DESTINATION, "dd_metrics_encode");
-        assert_ne!(LIVENESS_METRICS_DESTINATION, "metrics_enrich");
+    fn liveness_metrics_use_common_host_tag_enrichment() {
+        assert_eq!(LIVENESS_METRICS_DESTINATION, "metrics_enrich");
+        assert_ne!(LIVENESS_METRICS_DESTINATION, "dd_metrics_encode");
     }
 }

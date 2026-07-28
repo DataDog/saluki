@@ -98,10 +98,14 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if the metrics pipeline is required.
     ///
-    /// A running topology needs this pipeline whenever it has a data pipeline so liveness signals can be encoded and
-    /// forwarded, including when the only data pipeline is an OTLP proxy.
+    /// Connected topologies need this pipeline whenever they have a data pipeline so the liveness metric can be
+    /// enriched and forwarded, including when the only data pipeline is an OTLP proxy. Standalone mode only creates
+    /// the pipeline for data sources that use it directly.
     pub const fn metrics_pipeline_required(&self) -> bool {
-        self.data_pipelines_enabled()
+        self.checks().enabled()
+            || self.dogstatsd().enabled()
+            || (self.otlp().enabled() && !self.otlp().proxy().enabled())
+            || (!self.standalone_mode() && self.data_pipelines_enabled())
     }
 
     /// Returns `true` if the logs pipeline is required.
@@ -125,10 +129,13 @@ impl DataPlaneConfiguration {
 
     /// Returns `true` if the service checks pipeline is required.
     ///
-    /// A running topology needs this pipeline whenever it has a data pipeline so liveness signals can be encoded and
-    /// forwarded, including when the only data pipeline is an OTLP proxy.
+    /// Connected topologies need this pipeline whenever they have a data pipeline so the liveness service check can
+    /// be encoded and forwarded, including when the only data pipeline is an OTLP proxy. Standalone mode only creates
+    /// the pipeline for data sources that use it directly.
     pub const fn service_checks_pipeline_required(&self) -> bool {
-        self.data_pipelines_enabled()
+        self.checks().enabled()
+            || self.dogstatsd().enabled()
+            || (!self.standalone_mode() && self.data_pipelines_enabled())
     }
 
     /// Returns `true` if the traces pipeline is required.
@@ -440,9 +447,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn otlp_proxy_mode_proxying_all_signals_requires_liveness_baseline_pipelines() {
-        // With proxy mode enabled and traces still proxied to the Core Agent (the default), ADP handles no OTLP
-        // signals itself, but it still needs the liveness metric and service-check baseline pipelines.
+    async fn standalone_otlp_proxy_mode_does_not_require_liveness_baseline_pipelines() {
+        // Standalone OTLP proxy mode must only construct the local proxy path, which avoids resolving output endpoints.
+        let dp = dp_config_from(json!({
+            "data_plane": {
+                "enabled": true,
+                "standalone_mode": true,
+                "dogstatsd": { "enabled": false },
+                "otlp": { "enabled": true, "proxy": { "enabled": true } },
+            },
+        }))
+        .await;
+
+        assert!(dp.data_pipelines_enabled());
+        assert!(!dp.metrics_pipeline_required());
+        assert!(!dp.logs_pipeline_required());
+        assert!(!dp.events_pipeline_required());
+        assert!(!dp.service_checks_pipeline_required());
+        assert!(!dp.traces_pipeline_required());
+    }
+
+    #[tokio::test]
+    async fn connected_otlp_proxy_mode_requires_liveness_baseline_pipelines() {
         let dp = dp_config_from(json!({
             "data_plane": {
                 "enabled": true,
