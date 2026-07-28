@@ -15,12 +15,12 @@ fn main() {
     // Non-mapped accessor is unchanged.
     metrics.events_sent_total().increment(1);
 
-    // Mapped accessor takes the label value by reference and returns an owned handle.
-    metrics.events_discarded_total(&"queue_full").increment(1);
+    // Mapped accessor accepts the label value by value or by reference and returns an owned handle.
+    metrics.events_discarded_total("queue_full").increment(1);
     let owned = String::from("invalid");
     metrics.events_discarded_total(&owned).increment(1);
     // Looking up the same value again resolves the cached handle.
-    metrics.events_discarded_total(&"queue_full").increment(1);
+    metrics.events_discarded_total("queue_full").increment(1);
 
     assert_eq!(Metrics::events_discarded_total_name(), "mapped_events_discarded_total");
 }

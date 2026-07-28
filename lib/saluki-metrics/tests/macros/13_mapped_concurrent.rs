@@ -19,8 +19,8 @@ fn main() {
         let metrics = metrics.clone();
         handles.push(thread::spawn(move || {
             for i in 0..1_000 {
-                let shard = (i % 4).to_string();
-                metrics.ops_total(&shard).increment(1);
+                let shard = i % 4;
+                metrics.ops_total(shard).increment(1);
             }
         }));
     }

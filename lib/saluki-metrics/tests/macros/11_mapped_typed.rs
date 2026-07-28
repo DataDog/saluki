@@ -24,6 +24,8 @@ struct Metrics {
 
 fn main() {
     let metrics = Metrics::new("component-1".to_string());
-    metrics.events_discarded_total(&DiscardReason::QueueFull).increment(1);
-    metrics.events_discarded_total(&DiscardReason::Invalid).increment(1);
+
+    let discard_reason = DiscardReason::QueueFull;
+    metrics.events_discarded_total(&discard_reason).increment(1);
+    metrics.events_discarded_total(DiscardReason::Invalid).increment(1);
 }

@@ -63,12 +63,14 @@ use syn::{
 /// ```
 ///
 /// A mapped field's storage is rewritten to hold a concurrent map of the dynamic label values to lazily registered
-/// handles (the source keeps writing `Counter`/`Gauge`/`Histogram`). Its accessor takes the label values by
-/// reference and returns an owned handle:
+/// handles (the source keeps writing `Counter`/`Gauge`/`Histogram`). Its accessor accepts each label value either by
+/// value or by reference and returns an owned handle. A typed label still only accepts its concrete type (or a
+/// reference to it), so lightweight `Copy` values can be passed directly without borrowing:
 ///
 /// ```ignore
-/// // bare label -> generic parameter; typed label -> the concrete type
-/// metrics.events_discarded_total(&"queue_full").increment(1);
+/// // bare label -> generic `Stringable` parameter; typed label -> `Borrow<T>`, so `T` or `&T` are both accepted
+/// metrics.events_discarded_total("queue_full").increment(1);
+/// metrics.other_total(DiscardReason::QueueFull).increment(1);
 /// metrics.other_total(&DiscardReason::QueueFull).increment(1);
 /// ```
 ///
@@ -430,23 +432,35 @@ fn field_methods(metric: &MetricField, prefix: &str) -> TokenStream2 {
         };
     }
 
-    // Mapped accessor: bare labels contribute a generic `Stringable` parameter; typed labels use their concrete type.
+    // Mapped accessor: every label is accepted by value *or* by reference through a generic parameter, so lightweight
+    // `Copy` values (enums, integers) need not be borrowed at the call site. A bare label's parameter is bounded by
+    // `Stringable` directly; a typed label's parameter is bounded by `Borrow<T>`, which keeps the concrete type pinned
+    // (for misuse resistance) while accepting both `T` and `&T` (`T: Borrow<T>` and `&T: Borrow<T>` both hold). In
+    // either case we only ever need a shared reference to stringify the value via its `Display` impl.
     let mut generics = Vec::new();
+    let mut bounds = Vec::new();
     let mut params = Vec::new();
     let mut key_lits = Vec::new();
     let mut value_exprs = Vec::new();
     for label in &metric.mapped {
         let label_name = &label.name;
         key_lits.push(LitStr::new(&label_name.to_string(), label_name.span()));
-        value_exprs.push(quote! { ::saluki_metrics::Stringable::to_shared_string(#label_name) });
+
+        let generic = format_ident!("L{}", generics.len());
+        params.push(quote! { #label_name: #generic });
         match &label.ty {
-            Some(ty) => params.push(quote! { #label_name: &#ty }),
+            Some(ty) => {
+                bounds.push(quote! { #generic: ::std::borrow::Borrow<#ty> });
+                value_exprs.push(quote! {
+                    ::saluki_metrics::Stringable::to_shared_string(::std::borrow::Borrow::borrow(&#label_name))
+                });
+            }
             None => {
-                let generic = format_ident!("L{}", generics.len());
-                params.push(quote! { #label_name: &#generic });
-                generics.push(generic);
+                bounds.push(quote! { #generic: ::saluki_metrics::Stringable });
+                value_exprs.push(quote! { ::saluki_metrics::Stringable::to_shared_string(&#label_name) });
             }
         }
+        generics.push(generic);
     }
 
     let getter_generics = if generics.is_empty() {
@@ -454,10 +468,10 @@ fn field_methods(metric: &MetricField, prefix: &str) -> TokenStream2 {
     } else {
         quote! { < #(#generics),* > }
     };
-    let getter_where = if generics.is_empty() {
+    let getter_where = if bounds.is_empty() {
         quote! {}
     } else {
-        quote! { where #(#generics: ::saluki_metrics::Stringable,)* }
+        quote! { where #(#bounds,)* }
     };
 
     let macro_ident = metric.kind.macro_ident();
@@ -547,9 +561,11 @@ mod tests {
         // The field storage is rewritten to a `MappedMetric`, and the fixed labels are shared via `Arc`.
         assert!(out.contains("MappedMetric<Counter>"));
         assert!(out.contains("Arc::new(labels)"));
-        // The accessor is generic over the bare label's value type and resolves the handle lazily.
+        // The accessor is generic over the bare label's value type (accepted by value or reference) and resolves the
+        // handle lazily.
         assert!(out.contains("fnevents_discarded_total<L0>"));
-        assert!(out.contains("reason:&L0"));
+        assert!(out.contains("reason:L0"));
+        assert!(out.contains("L0:::saluki_metrics::Stringable"));
         assert!(out.contains("get_or_register"));
         assert!(out.contains("\"reason\""));
     }
@@ -566,8 +582,10 @@ mod tests {
             },
         );
 
-        // A typed-only mapped label pins the parameter to the concrete type and emits no getter generic.
-        assert!(out.contains("fnevents_discarded_total(&self,reason:&DiscardReason)"));
+        // A typed mapped label pins the parameter through `Borrow<T>`, so both `T` and `&T` are accepted at the call
+        // site while the concrete type stays fixed.
+        assert!(out.contains("fnevents_discarded_total<L0>(&self,reason:L0)"));
+        assert!(out.contains("L0:::std::borrow::Borrow<DiscardReason>"));
     }
 
     #[test]
@@ -582,9 +600,11 @@ mod tests {
             },
         );
 
-        assert!(out.contains("fnevents_discarded_total<L0>"));
-        assert!(out.contains("origin:&L0"));
-        assert!(out.contains("reason:&DiscardReason"));
+        assert!(out.contains("fnevents_discarded_total<L0,L1>"));
+        assert!(out.contains("origin:L0"));
+        assert!(out.contains("reason:L1"));
+        assert!(out.contains("L0:::saluki_metrics::Stringable"));
+        assert!(out.contains("L1:::std::borrow::Borrow<DiscardReason>"));
         assert!(out.contains("\"origin\""));
         assert!(out.contains("\"reason\""));
     }

@@ -25,9 +25,9 @@ struct Metrics {
 fn main() {
     let metrics = Metrics::new("component-1".to_string());
     metrics
-        .send_latency_seconds(&"upstream", &DiscardReason::QueueFull)
+        .send_latency_seconds("upstream", DiscardReason::QueueFull)
         .record(0.5);
     metrics
-        .send_latency_seconds(&"downstream", &DiscardReason::Invalid)
+        .send_latency_seconds("downstream", DiscardReason::Invalid)
         .record(1.5);
 }
