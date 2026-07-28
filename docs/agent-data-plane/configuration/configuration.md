@@ -499,6 +499,10 @@ ADP enforces a minimum sample rate on incoming metrics to prevent memory exhaust
 
 By default, ADP parses DogStatsD packets with the same leniency as the core agent, accepting packets that technically violate the spec. Setting this to `false` enables strict mode, which rejects non-conformant packets. Strict mode is not available in the core agent.
 
+### `dogstatsd_string_interner_size_bytes`
+
+Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
 ### `memory_limit` / `memory_slop_factor`
 
 ADP uses an explicit process memory limit (`memory_limit`) rather than relying on Go's garbage collector. The `memory_slop_factor` reserves a fraction of the limit to account for allocations not tracked by ADP's internal accounting. When memory usage approaches `memory_limit`, ADP's global limiter begins exerting backpressure (see `enable_global_limiter`).

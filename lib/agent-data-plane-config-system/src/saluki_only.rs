@@ -120,7 +120,10 @@ pub struct SalukiOnly {
     /// Maximum cached tagsets (`dogstatsd_cached_tagsets_limit`).
     pub dogstatsd_cached_tagsets_limit: Option<usize>,
     /// Explicit byte budget for the context interner (`dogstatsd_string_interner_size_bytes`).
-    pub dogstatsd_string_interner_size_bytes: Option<u64>,
+    ///
+    /// Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`.
+    /// When unset, the runtime derives the budget from `dogstatsd_string_interner_size`.
+    pub dogstatsd_string_interner_size_bytes: Option<ByteSize>,
     /// Whether to allow heap allocations for contexts (`dogstatsd_allow_context_heap_allocs`).
     pub dogstatsd_allow_context_heap_allocs: Option<bool>,
     /// Floor for metric sample rates (`dogstatsd_minimum_sample_rate`).
@@ -469,7 +472,7 @@ impl SalukiOnly {
             dsd.contexts.cached_tagsets_limit = v;
         }
         if let Some(v) = self.dogstatsd_string_interner_size_bytes {
-            dsd.contexts.string_interner_size_bytes = Some(v);
+            dsd.contexts.string_interner_size_bytes = Some(v.as_u64());
         }
         if let Some(v) = self.dogstatsd_allow_context_heap_allocs {
             dsd.contexts.allow_context_heap_allocs = v;
@@ -764,6 +767,31 @@ mod tests {
             let mut config = SalukiConfiguration::default();
             saluki_only.seed(&mut config);
             assert_eq!(config.control.memory_limit, expected);
+        }
+    }
+
+    /// `dogstatsd_string_interner_size_bytes` is a byte size the source may express as a bare
+    /// integer or a suffixed string. Both forms must reach the same runtime byte budget.
+    #[test]
+    fn dogstatsd_string_interner_size_bytes_accepts_a_bare_integer_or_a_string() {
+        for (value, expected) in [
+            (
+                json!({ "dogstatsd_string_interner_size_bytes": 12_582_912 }),
+                12_582_912,
+            ),
+            (
+                json!({ "dogstatsd_string_interner_size_bytes": "12MiB" }),
+                ByteSize::mib(12).as_u64(),
+            ),
+        ] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(value).expect("dogstatsd interner byte size deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(
+                config.domains.dogstatsd.contexts.string_interner_size_bytes,
+                Some(expected)
+            );
         }
     }
 
