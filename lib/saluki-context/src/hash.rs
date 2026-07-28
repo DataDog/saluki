@@ -43,7 +43,7 @@ where
 /// and metric name are order-dependent scalar context fields, not tags.
 ///
 /// If a tag is seen more than once, it will be ignored and not included in the overall hash. This function requires the
-/// caller to provide the hash set used for tracking duplicates, and is more efficient than [`hash_context`] which
+/// caller to provide the hash set used for tracking duplicates, and is more efficient than `hash_context` which
 /// allocates a new hash set each time.
 ///
 /// Returns a hash that uniquely identifies the combination of name, host, tags, and origin of the value. An unset host
