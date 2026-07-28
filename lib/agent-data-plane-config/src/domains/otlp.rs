@@ -3,7 +3,7 @@
 
 use std::{num::NonZeroUsize, str::FromStr};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::defaults::DEFAULT_STRING_INTERNER_SIZE_BYTES;
 use crate::Error;
@@ -77,6 +77,54 @@ impl FromStr for HistogramMode {
             other => Err(Error::new_without_source(format!(
                 "unknown histogram mode `{other}`; expected `nobuckets`, `counters`, or `distributions`"
             ))),
+        }
+    }
+}
+
+/// TLS settings for an inbound OTLP receiver.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub struct TlsConfig {
+    /// Path to PEM-encoded certificate authorities loaded for Collector configuration compatibility.
+    ///
+    /// For an inbound receiver, this does not affect client authentication. Use [`Self::client_ca_file`] to configure
+    /// mutual TLS.
+    pub ca_file: String,
+
+    /// Path to the PEM-encoded certificate chain the receiver presents to clients.
+    pub cert_file: String,
+
+    /// Path to the PEM-encoded private key matching [`Self::cert_file`].
+    pub key_file: String,
+
+    /// Path to PEM-encoded certificate authorities trusted for client certificates.
+    ///
+    /// When set, the receiver requires and verifies a client certificate, enabling mutual TLS.
+    pub client_ca_file: String,
+}
+
+impl TlsConfig {
+    /// Returns whether TLS is configured for the receiver.
+    ///
+    /// TLS is disabled when no paths are configured. A configured server identity requires both `cert_file` and
+    /// `key_file`; configuring only one, or configuring either CA path without an identity, is an error.
+    pub fn is_configured(&self) -> Result<bool, Error> {
+        match (
+            self.cert_file.is_empty(),
+            self.key_file.is_empty(),
+            self.ca_file.is_empty(),
+            self.client_ca_file.is_empty(),
+        ) {
+            (true, true, true, true) => Ok(false),
+            (false, false, _, _) => Ok(true),
+            (true, true, false, _) => Err(Error::new_without_source(
+                "`otlp_config.receiver.protocols.*.tls.ca_file` requires `cert_file` and `key_file`",
+            )),
+            (true, true, _, false) => Err(Error::new_without_source(
+                "`otlp_config.receiver.protocols.*.tls.client_ca_file` requires `cert_file` and `key_file`",
+            )),
+            _ => Err(Error::new_without_source(
+                "`otlp_config.receiver.protocols.*.tls.cert_file` and `key_file` must be configured together",
+            )),
         }
     }
 }
@@ -220,6 +268,9 @@ pub struct GrpcReceiver {
 
     /// Transport the gRPC receiver binds (for example, `tcp` or `unix`).
     pub transport: String,
+
+    /// TLS settings for this inbound receiver.
+    pub tls: TlsConfig,
 }
 
 /// OTLP HTTP receiver.
@@ -231,6 +282,9 @@ pub struct HttpReceiver {
     /// Transport the HTTP receiver binds (for example, `tcp` or `unix`). (not in Datadog Agent
     /// config schema)
     pub transport: String,
+
+    /// TLS settings for this inbound receiver.
+    pub tls: TlsConfig,
 }
 
 impl Default for HttpReceiver {
@@ -239,6 +293,7 @@ impl Default for HttpReceiver {
             // Witnessed; overwritten during drive.
             endpoint: String::new(),
             transport: "tcp".to_string(),
+            tls: TlsConfig::default(),
         }
     }
 }
@@ -331,7 +386,28 @@ impl Default for Contexts {
 
 #[cfg(test)]
 mod tests {
-    use super::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue};
+    use super::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue, TlsConfig};
+
+    #[test]
+    fn tls_config_requires_a_complete_server_identity() {
+        let mut config = TlsConfig::default();
+        assert!(!config.is_configured().expect("an empty TLS config should disable TLS"));
+
+        config.cert_file = "server.pem".to_string();
+        assert!(config.is_configured().is_err());
+
+        config.key_file = "server.key".to_string();
+        assert!(config.is_configured().expect("a certificate and key should enable TLS"));
+
+        config.cert_file.clear();
+        config.key_file.clear();
+        config.client_ca_file = "clients.pem".to_string();
+        assert!(config.is_configured().is_err());
+
+        config.client_ca_file.clear();
+        config.ca_file = "compatibility-ca.pem".to_string();
+        assert!(config.is_configured().is_err());
+    }
 
     #[test]
     fn cumulative_monotonic_mode_parses_known_values() {

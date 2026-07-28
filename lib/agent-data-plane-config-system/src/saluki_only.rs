@@ -71,7 +71,10 @@ use std::{num::NonZeroUsize, time::Duration};
 
 use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
-use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
+use agent_data_plane_config::domains::{
+    otlp::TlsConfig,
+    traces::{OttlErrorMode, OttlFilter, OttlTransform},
+};
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
@@ -311,8 +314,18 @@ pub struct OtlpConfigReceiver {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct OtlpConfigReceiverProtocols {
+    /// OTLP gRPC receiver TLS knobs (`otlp_config.receiver.protocols.grpc.tls.*`).
+    pub grpc: OtlpConfigReceiverProtocolsGrpc,
     /// OTLP HTTP receiver knobs (`otlp_config.receiver.protocols.http.*`).
     pub http: OtlpConfigReceiverProtocolsHttp,
+}
+
+/// `otlp_config.receiver.protocols.grpc.*` values absent from the Datadog schema.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OtlpConfigReceiverProtocolsGrpc {
+    /// OTLP gRPC receiver TLS configuration.
+    pub tls: TlsConfig,
 }
 
 /// `otlp_config.receiver.protocols.http.*`.
@@ -321,6 +334,8 @@ pub struct OtlpConfigReceiverProtocols {
 pub struct OtlpConfigReceiverProtocolsHttp {
     /// OTLP HTTP receiver transport (`otlp_config.receiver.protocols.http.transport`).
     pub transport: Option<String>,
+    /// OTLP HTTP receiver TLS configuration.
+    pub tls: TlsConfig,
 }
 
 fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
@@ -513,6 +528,8 @@ impl SalukiOnly {
         if let Some(v) = self.otlp_config.receiver.protocols.http.transport.clone() {
             otlp.receiver.http.transport = v;
         }
+        otlp.receiver.grpc.tls = self.otlp_config.receiver.protocols.grpc.tls.clone();
+        otlp.receiver.http.tls = self.otlp_config.receiver.protocols.http.tls.clone();
         otlp.traces.string_interner_size = self.otlp_config.traces.string_interner_size;
         if let Some(v) = self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind {
             otlp.traces.enable_compute_top_level_by_span_kind = v;

@@ -9,9 +9,10 @@ pub mod semantics;
 pub mod traces;
 pub mod util;
 
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 use ::metrics::Counter;
+use agent_data_plane_config::domains::otlp::TlsConfig;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -29,6 +30,11 @@ use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
 use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
+use rustls::{
+    pki_types::{pem::PemObject as _, CertificateDer, PrivateKeyDer},
+    server::WebPkiClientVerifier,
+    RootCertStore, ServerConfig,
+};
 use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_common::task::HandleExt as _;
 use saluki_core::accounting::MemoryLimiter;
@@ -40,8 +46,10 @@ use saluki_io::net::server::http::{ErrorHandle, HttpServer};
 use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
+use saluki_tls::ensure_server_config_fips_compliant;
 use stringtheory::MetaString;
 use tokio::runtime::Handle;
+use tokio_rustls::TlsAcceptor;
 use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
 use tracing::error;
@@ -117,6 +125,8 @@ pub trait OtlpHandler: Send + Sync + 'static {
 pub struct OtlpServerBuilder {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
+    http_tls_config: Option<ServerConfig>,
+    grpc_tls_config: Option<ServerConfig>,
     grpc_max_recv_msg_size_bytes: usize,
 }
 
@@ -128,8 +138,19 @@ impl OtlpServerBuilder {
         Self {
             http_endpoint,
             grpc_endpoint,
+            http_tls_config: None,
+            grpc_tls_config: None,
             grpc_max_recv_msg_size_bytes,
         }
+    }
+
+    /// Configures TLS for the OTLP HTTP and gRPC servers.
+    pub fn with_tls_configs(
+        mut self, http_tls_config: Option<ServerConfig>, grpc_tls_config: Option<ServerConfig>,
+    ) -> Self {
+        self.http_tls_config = http_tls_config;
+        self.grpc_tls_config = grpc_tls_config;
+        self
     }
 
     /// Builds and starts the OTLP servers (HTTP and gRPC).
@@ -176,8 +197,30 @@ impl OtlpServerBuilder {
         let grpc_listener = tokio::net::TcpListener::bind(grpc_socket_addr)
             .await
             .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
-        let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
-        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
+        match self.grpc_tls_config {
+            Some(tls_config) => {
+                let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
+                let grpc_incoming =
+                    futures::stream::unfold((grpc_listener, tls_acceptor), |(listener, acceptor)| async move {
+                        loop {
+                            match listener.accept().await {
+                                Ok((stream, _)) => match acceptor.accept(stream).await {
+                                    Ok(stream) => return Some((Ok::<_, io::Error>(stream), (listener, acceptor))),
+                                    Err(error) => error!(%error, "Failed to complete OTLP gRPC TLS handshake."),
+                                },
+                                Err(error) => return Some((Err(error), (listener, acceptor))),
+                            }
+                        }
+                    });
+                thread_pool_handle
+                    .spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
+            }
+            None => {
+                let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
+                thread_pool_handle
+                    .spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
+            }
+        }
 
         // Create and spawn the HTTP server.
         let service = TowerToHyperService::new(
@@ -192,12 +235,137 @@ impl OtlpServerBuilder {
             .await
             .map_err(|e| generic_error!("Failed to create OTLP HTTP listener: {}", e))?;
 
-        let (http_shutdown_coordinator, http_error) = HttpServer::from_listener(http_listener, service)
-            .with_executor(thread_pool_handle)
-            .listen();
+        let mut http_server = HttpServer::from_listener(http_listener, service).with_executor(thread_pool_handle);
+        if let Some(tls_config) = self.http_tls_config {
+            http_server = http_server.with_tls_config(tls_config);
+        }
+        let (http_shutdown_coordinator, http_error) = http_server.listen();
 
         Ok((http_shutdown_coordinator, http_error))
     }
+}
+
+/// Builds a server TLS configuration from an OTLP receiver's TLS settings.
+///
+/// An empty configuration leaves TLS disabled. A configured certificate and key enable TLS; an optional client CA file
+/// additionally enables mutual TLS by requiring and verifying client certificates.
+pub async fn build_server_config(tls: &TlsConfig) -> Result<Option<ServerConfig>, GenericError> {
+    if !tls.is_configured()? {
+        return Ok(None);
+    }
+
+    let certificate_pem = tokio::fs::read(&tls.cert_file).await.map_err(|error| {
+        generic_error!(
+            "Failed to read OTLP TLS certificate file '{}': {}",
+            tls.cert_file,
+            error
+        )
+    })?;
+    let private_key_pem = tokio::fs::read(&tls.key_file)
+        .await
+        .map_err(|error| generic_error!("Failed to read OTLP TLS private key file '{}': {}", tls.key_file, error))?;
+
+    let certificate_chain = CertificateDer::pem_slice_iter(&certificate_pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            generic_error!(
+                "Failed to parse OTLP TLS certificate file '{}': {}",
+                tls.cert_file,
+                error
+            )
+        })?;
+    if certificate_chain.is_empty() {
+        return Err(generic_error!(
+            "OTLP TLS certificate file '{}' contains no certificates.",
+            tls.cert_file
+        ));
+    }
+    let private_key = PrivateKeyDer::from_pem_slice(&private_key_pem)
+        .map_err(|error| {
+            generic_error!(
+                "Failed to parse OTLP TLS private key file '{}': {}",
+                tls.key_file,
+                error
+            )
+        })?
+        .clone_key();
+
+    // The Collector loads `ca_file` into `tls.Config.RootCAs`. A pure inbound receiver does not consult those roots,
+    // but loading and validating the file preserves the Collector's configuration behavior.
+    if !tls.ca_file.is_empty() {
+        let ca_pem = tokio::fs::read(&tls.ca_file)
+            .await
+            .map_err(|error| generic_error!("Failed to read OTLP TLS CA file '{}': {}", tls.ca_file, error))?;
+        let ca_certificates = CertificateDer::pem_slice_iter(&ca_pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| generic_error!("Failed to parse OTLP TLS CA file '{}': {}", tls.ca_file, error))?;
+        let mut roots = RootCertStore::empty();
+        for certificate in ca_certificates {
+            roots.add(certificate).map_err(|error| {
+                generic_error!(
+                    "Failed to add a certificate from OTLP TLS CA file '{}': {}",
+                    tls.ca_file,
+                    error
+                )
+            })?;
+        }
+        if roots.is_empty() {
+            return Err(generic_error!(
+                "OTLP TLS CA file '{}' contains no certificates.",
+                tls.ca_file
+            ));
+        }
+    }
+
+    let mut config = if tls.client_ca_file.is_empty() {
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certificate_chain, private_key)
+            .map_err(|error| generic_error!("Failed to build OTLP TLS server configuration: {}", error))?
+    } else {
+        let client_ca_pem = tokio::fs::read(&tls.client_ca_file).await.map_err(|error| {
+            generic_error!(
+                "Failed to read OTLP TLS client CA file '{}': {}",
+                tls.client_ca_file,
+                error
+            )
+        })?;
+        let client_certificates = CertificateDer::pem_slice_iter(&client_ca_pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                generic_error!(
+                    "Failed to parse OTLP TLS client CA file '{}': {}",
+                    tls.client_ca_file,
+                    error
+                )
+            })?;
+        let mut client_roots = RootCertStore::empty();
+        for certificate in client_certificates {
+            client_roots.add(certificate).map_err(|error| {
+                generic_error!(
+                    "Failed to add a certificate from OTLP TLS client CA file '{}': {}",
+                    tls.client_ca_file,
+                    error
+                )
+            })?;
+        }
+        if client_roots.is_empty() {
+            return Err(generic_error!(
+                "OTLP TLS client CA file '{}' contains no certificates.",
+                tls.client_ca_file
+            ));
+        }
+        let client_verifier = WebPkiClientVerifier::builder(Arc::new(client_roots))
+            .build()
+            .map_err(|error| generic_error!("Failed to build OTLP TLS client verifier: {}", error))?;
+        ServerConfig::builder()
+            .with_client_cert_verifier(client_verifier)
+            .with_single_cert(certificate_chain, private_key)
+            .map_err(|error| generic_error!("Failed to build OTLP mutual TLS server configuration: {}", error))?
+    };
+
+    ensure_server_config_fips_compliant(&mut config)?;
+    Ok(Some(config))
 }
 
 /// HTTP handler for OTLP metrics requests.
