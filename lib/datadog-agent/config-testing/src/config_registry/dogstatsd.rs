@@ -64,7 +64,7 @@ static DOGSTATSD_STRING_INTERNER_SIZE_BYTES_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "dogstatsd_string_interner_size_bytes",
     env_vars: &[],
-    value_type: ValueType::Integer,
+    value_type: ValueType::String,
     default: None,
 };
 
