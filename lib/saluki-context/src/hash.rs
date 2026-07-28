@@ -48,6 +48,19 @@ where
 ///
 /// Returns a hash that uniquely identifies the combination of name, host, tags, and origin of the value. An unset host
 /// and an explicitly empty host are distinct contexts.
+pub fn hash_context_with_host<I, I2, T, T2>(
+    name: &str, host: Option<&str>, tags: I, origin_tags: I2,
+) -> (ContextKey, TagSetKey)
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+    I2: IntoIterator<Item = T2>,
+    T2: AsRef<str>,
+{
+    let mut seen = PrehashedHashSet::default();
+    hash_context_with_host_and_seen(name, host, tags, origin_tags, &mut seen)
+}
+
 pub(super) fn hash_context_with_host_and_seen<I, I2, T, T2>(
     name: &str, host: Option<&str>, tags: I, origin_tags: I2, seen: &mut PrehashedHashSet<u64>,
 ) -> (ContextKey, TagSetKey)
@@ -108,6 +121,9 @@ where
     (context_key, tagset_key)
 }
 
+/// A compact hash key that identifies a metric context.
+///
+/// The key is process-local and collision-prone by nature because it stores a 64-bit hash.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ContextKey {
     hash: u64,

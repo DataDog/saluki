@@ -231,7 +231,6 @@ fn raw_tag_value(value: &Value) -> Option<String> {
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let mut pod_uid = None;
 
@@ -328,6 +327,46 @@ mod tests {
 
     fn has(tags: &TagSet, tag: &str) -> bool {
         tags.into_iter().any(|t| t.as_str() == tag)
+    }
+
+    #[test]
+    fn origin_id_uses_container_id() {
+        let attributes = vec![attr(CONTAINER_ID, Value::StringValue("container-123".into()))];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("container_id://container-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_uses_pod_uid_when_container_id_is_absent() {
+        let attributes = vec![attr(K8S_POD_UID, Value::StringValue("pod-123".into()))];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("kubernetes_pod_uid://pod-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_prefers_container_id_over_pod_uid() {
+        let attributes = vec![
+            attr(K8S_POD_UID, Value::StringValue("pod-123".into())),
+            attr(CONTAINER_ID, Value::StringValue("container-123".into())),
+        ];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("container_id://container-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_is_absent_without_supported_attributes() {
+        let attributes = vec![attr("service.name", Value::StringValue("api".into()))];
+
+        assert_eq!(origin_id_from_attributes(&attributes), None);
     }
 
     #[test]

@@ -5,6 +5,12 @@ use saluki_common::cache::{Cache, CacheBuilder};
 use super::config::OtlpMetricsTranslatorConfig;
 use super::dimensions::Dimensions;
 
+type CacheKey = saluki_context::ContextKey;
+
+fn cache_key(dimensions: &Dimensions) -> CacheKey {
+    dimensions.context_key()
+}
+
 /// The state we store for each unique time series.
 #[derive(Clone, Debug)]
 pub struct NumberCounter {
@@ -23,8 +29,8 @@ pub struct Extrema {
 
 /// A cache for storing previous data points to calculate deltas for cumulative metrics.
 pub struct PointsCache {
-    number_points: Cache<String, NumberCounter>,
-    extrema_points: Cache<String, Extrema>,
+    number_points: Cache<CacheKey, NumberCounter>,
+    extrema_points: Cache<CacheKey, Extrema>,
 }
 
 impl PointsCache {
@@ -84,7 +90,7 @@ impl PointsCache {
     }
 
     fn put_and_get_diff(&mut self, dims: &Dimensions, start_timestamp: u64, timestamp: u64, value: f64) -> (f64, bool) {
-        let key = dims.get_cache_key();
+        let key = cache_key(dims);
 
         let mut dx = 0.0;
         let mut ok = false;
@@ -118,7 +124,7 @@ impl PointsCache {
         let mut first_point = true;
         let drop_point = false;
 
-        let key = dims.get_cache_key();
+        let key = cache_key(dims);
 
         if let Some(prev_counter) = self.number_points.get(&key) {
             if prev_counter.timestamp >= timestamp {
@@ -150,7 +156,7 @@ impl PointsCache {
     fn put_and_check_extrema(
         &mut self, dims: &Dimensions, start_timestamp: u64, timestamp: u64, current_extrema: f64, is_min: bool,
     ) -> bool {
-        let key = dims.get_cache_key();
+        let key = cache_key(dims);
         let mut from_last_window = false;
 
         if let Some(prev_extrema) = self.extrema_points.get(&key) {
@@ -244,6 +250,43 @@ mod tests {
             }
         }
         dx
+    }
+
+    fn dimensions_with_origin_id(origin_id: &str) -> Dimensions {
+        Dimensions {
+            name: "http.request.duration".to_string(),
+            tags: Default::default(),
+            host: Some("host-a".into()),
+            origin_id: Some(origin_id.to_string()),
+        }
+    }
+
+    fn assert_origins_use_independent_differential_cache_entries(first_origin_id: &str, second_origin_id: &str) {
+        let first = dimensions_with_origin_id(first_origin_id);
+        let second = dimensions_with_origin_id(second_origin_id);
+        let mut cache = PointsCache::for_tests();
+
+        assert_ne!(first.get_cache_key(), second.get_cache_key());
+        assert_eq!(cache.monotonic_diff(&first, 100, 100, 10.0), (0.0, true, false));
+        assert_eq!(cache.monotonic_diff(&second, 100, 100, 10.0), (0.0, true, false));
+        assert_eq!(cache.monotonic_diff(&first, 100, 200, 15.0), (5.0, false, false));
+        assert_eq!(cache.monotonic_diff(&second, 100, 200, 12.0), (2.0, false, false));
+    }
+
+    #[test]
+    fn container_origins_use_independent_differential_cache_entries() {
+        assert_origins_use_independent_differential_cache_entries(
+            "container_id://container-a",
+            "container_id://container-b",
+        );
+    }
+
+    #[test]
+    fn kubernetes_pod_origins_use_independent_differential_cache_entries() {
+        assert_origins_use_independent_differential_cache_entries(
+            "kubernetes_pod_uid://pod-a",
+            "kubernetes_pod_uid://pod-b",
+        );
     }
 
     fn unknown_start_points() -> Vec<Point> {
