@@ -19,9 +19,10 @@ use hyper_util::{
 };
 use metrics::Counter;
 use pin_project::pin_project;
+use rustls::ClientConfig;
 use saluki_error::GenericError;
 use saluki_metrics::MetricsBuilder;
-use saluki_tls::{ClientTLSConfigBuilder, TlsMinimumVersion};
+use saluki_tls::{ensure_client_config_fips_compliant, ClientTLSConfigBuilder, TlsMinimumVersion};
 use stringtheory::MetaString;
 use tower::{timeout::TimeoutLayer, util::BoxCloneService, BoxError, Service, ServiceBuilder, ServiceExt as _};
 
@@ -165,6 +166,7 @@ pub struct HttpClientBuilder {
     connector_builder: HttpsCapableConnectorBuilder,
     hyper_builder: Builder,
     tls_builder: ClientTLSConfigBuilder,
+    client_tls_config: Option<ClientConfig>,
     request_timeout: Option<Duration>,
     endpoint_telemetry: Option<EndpointTelemetryLayer>,
     proxies: Option<Vec<Proxy>>,
@@ -294,6 +296,23 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Sets a complete Rustls client TLS configuration.
+    ///
+    /// This configuration takes precedence over all option-based settings made through [`Self::with_tls_config`] or
+    /// [`Self::with_min_tls_version`], regardless of call order. The configuration is otherwise preserved, including
+    /// its certificate verifier, client identity, enabled TLS protocol versions, and other security settings.
+    ///
+    /// Any ALPN protocols already present in `config` are discarded before the configuration is passed to
+    /// `hyper-rustls`. [`Self::with_http_protocol`] remains the sole source of HTTP protocol selection:
+    /// [`HttpProtocol::Auto`] advertises HTTP/2 with HTTP/1.1 fallback, while [`HttpProtocol::Http1`] enables only
+    /// HTTP/1.1 and does not advertise ALPN.
+    ///
+    /// The supplied configuration is validated for FIPS compliance during [`Self::build`].
+    pub fn with_client_tls_config(mut self, config: ClientConfig) -> Self {
+        self.client_tls_config = Some(config);
+        self
+    }
+
     /// Sets the minimum TLS protocol version for HTTPS connections.
     ///
     /// Defaults to TLS 1.2.
@@ -334,7 +353,14 @@ impl HttpClientBuilder {
     ///
     /// If there was an error building the TLS configuration for the client, an error will be returned.
     pub fn build(self) -> Result<HttpClient, GenericError> {
-        let tls_config = self.tls_builder.build()?;
+        let tls_config = match self.client_tls_config {
+            Some(mut config) => {
+                ensure_client_config_fips_compliant(&config)?;
+                config.alpn_protocols.clear();
+                config
+            }
+            None => self.tls_builder.build()?,
+        };
         let connector = self.connector_builder.build(tls_config)?;
         // TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
         // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
@@ -369,6 +395,7 @@ impl Default for HttpClientBuilder {
             connector_builder: HttpsCapableConnectorBuilder::default(),
             hyper_builder,
             tls_builder: ClientTLSConfigBuilder::new(),
+            client_tls_config: None,
             request_timeout: Some(Duration::from_secs(20)),
             endpoint_telemetry: None,
             proxies: None,
@@ -378,8 +405,18 @@ impl Default for HttpClientBuilder {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, time::Duration};
+
     use http_body::Body as _;
-    use http_body_util::Full;
+    use http_body_util::{Empty, Full};
+    use rustls::{server::WebPkiClientVerifier, ClientConfig, RootCertStore, ServerConfig};
+    use saluki_tls::test_util::SelfSignedCert;
+    use tokio::{
+        io::{AsyncReadExt as _, AsyncWriteExt as _},
+        net::TcpListener,
+        time::timeout,
+    };
+    use tokio_rustls::TlsAcceptor;
 
     use super::*;
 
@@ -389,5 +426,195 @@ mod tests {
         let converted = into_client_body(body);
 
         assert_eq!(Some(5), converted.size_hint().exact());
+    }
+
+    #[tokio::test]
+    async fn complete_tls_config_takes_precedence_when_set_last() {
+        let (server_config, client_config, option_root_store) = mutual_tls_configs();
+        let builder = HttpClient::builder()
+            .with_tls_config(|builder| builder.with_root_cert_store(option_root_store))
+            .with_client_tls_config(client_config);
+
+        send_request_to_tls_server(builder, server_config)
+            .await
+            .expect("supplied client identity should authenticate");
+    }
+
+    #[tokio::test]
+    async fn complete_tls_config_takes_precedence_when_set_first() {
+        let (server_config, client_config, option_root_store) = mutual_tls_configs();
+        let builder = HttpClient::builder()
+            .with_client_tls_config(client_config)
+            .with_tls_config(|builder| builder.with_root_cert_store(option_root_store));
+
+        send_request_to_tls_server(builder, server_config)
+            .await
+            .expect("supplied client identity should authenticate");
+    }
+
+    #[tokio::test]
+    async fn supplied_alpn_is_replaced_by_auto_protocol_selection() {
+        let negotiated_alpn = negotiate_alpn_with_supplied_config(HttpProtocol::Auto).await;
+
+        assert_eq!(negotiated_alpn.as_deref(), Some(b"h2".as_slice()));
+    }
+
+    #[tokio::test]
+    async fn supplied_alpn_is_removed_for_http1_protocol_selection() {
+        let negotiated_alpn = negotiate_alpn_with_supplied_config(HttpProtocol::Http1).await;
+
+        assert_eq!(negotiated_alpn, None);
+    }
+
+    #[tokio::test]
+    async fn option_based_tls_config_remains_in_use_without_complete_config() {
+        let server_cert = SelfSignedCert::localhost();
+        let mut root_store = RootCertStore::empty();
+        root_store
+            .add(
+                server_cert
+                    .cert_chain()
+                    .into_iter()
+                    .next()
+                    .expect("certificate chain should not be empty"),
+            )
+            .expect("server certificate should be a valid trust anchor");
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(server_cert.cert_chain(), server_cert.private_key())
+            .expect("server TLS config should build");
+        let builder = HttpClient::builder().with_tls_config(|builder| builder.with_root_cert_store(root_store));
+
+        send_request_to_tls_server(builder, server_config)
+            .await
+            .expect("option-based TLS configuration should authenticate the server");
+    }
+
+    fn mutual_tls_configs() -> (ServerConfig, ClientConfig, RootCertStore) {
+        let server_cert = SelfSignedCert::localhost();
+        let client_cert = SelfSignedCert::new(["saluki-client"]);
+
+        let mut client_root_store = RootCertStore::empty();
+        client_root_store
+            .add(
+                client_cert
+                    .cert_chain()
+                    .into_iter()
+                    .next()
+                    .expect("certificate chain should not be empty"),
+            )
+            .expect("client certificate should be a valid trust anchor");
+        let client_verifier = WebPkiClientVerifier::builder(Arc::new(client_root_store))
+            .build()
+            .expect("client certificate verifier should build");
+        let server_config = ServerConfig::builder()
+            .with_client_cert_verifier(client_verifier)
+            .with_single_cert(server_cert.cert_chain(), server_cert.private_key())
+            .expect("server TLS config should build");
+
+        let mut server_root_store = RootCertStore::empty();
+        server_root_store
+            .add(
+                server_cert
+                    .cert_chain()
+                    .into_iter()
+                    .next()
+                    .expect("certificate chain should not be empty"),
+            )
+            .expect("server certificate should be a valid trust anchor");
+        let option_root_store = RootCertStore::empty();
+        let client_config = ClientConfig::builder()
+            .with_root_certificates(server_root_store)
+            .with_client_auth_cert(client_cert.cert_chain(), client_cert.private_key())
+            .expect("client TLS config should build");
+
+        (server_config, client_config, option_root_store)
+    }
+
+    async fn send_request_to_tls_server(
+        builder: HttpClientBuilder, server_config: ServerConfig,
+    ) -> Result<(), GenericError> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let port = listener.local_addr()?.port();
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("server should accept a connection");
+            let mut stream = TlsAcceptor::from(Arc::new(server_config))
+                .accept(stream)
+                .await
+                .expect("TLS handshake should succeed");
+            let mut request = [0; 4096];
+            let bytes_read = stream.read(&mut request).await.expect("server should read the request");
+            assert!(bytes_read > 0, "server should receive an HTTP request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await
+                .expect("server should write the response");
+        });
+
+        let mut client = builder.with_http_protocol(HttpProtocol::Http1).build()?;
+        let request = Request::get(format!("https://localhost:{port}/"))
+            .body(Empty::<Bytes>::new())
+            .expect("request should build");
+        let response = timeout(Duration::from_secs(5), client.send(request))
+            .await
+            .map_err(|_| GenericError::msg("HTTP request timed out"))??;
+        assert_eq!(response.status(), http::StatusCode::OK);
+        timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("TLS server should finish")
+            .expect("TLS server task should not panic");
+
+        Ok(())
+    }
+
+    async fn negotiate_alpn_with_supplied_config(protocol: HttpProtocol) -> Option<Vec<u8>> {
+        let server_cert = SelfSignedCert::localhost();
+        let mut root_store = RootCertStore::empty();
+        root_store
+            .add(
+                server_cert
+                    .cert_chain()
+                    .into_iter()
+                    .next()
+                    .expect("certificate chain should not be empty"),
+            )
+            .expect("server certificate should be a valid trust anchor");
+
+        let mut server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(server_cert.cert_chain(), server_cert.private_key())
+            .expect("server TLS config should build");
+        server_config.alpn_protocols = vec![b"custom".to_vec(), b"h2".to_vec(), b"http/1.1".to_vec()];
+
+        let mut client_config = ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"custom".to_vec()];
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("TLS server should bind");
+        let port = listener.local_addr().expect("TLS server should have an address").port();
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("server should accept a connection");
+            let stream = TlsAcceptor::from(Arc::new(server_config))
+                .accept(stream)
+                .await
+                .expect("TLS handshake should succeed");
+            stream.get_ref().1.alpn_protocol().map(ToOwned::to_owned)
+        });
+
+        let mut client = HttpClient::builder()
+            .with_http_protocol(protocol)
+            .with_client_tls_config(client_config)
+            .build()
+            .expect("client should accept an ALPN-bearing TLS config");
+        let request = Request::get(format!("https://localhost:{port}/"))
+            .body(Empty::<Bytes>::new())
+            .expect("request should build");
+        let _ = timeout(Duration::from_secs(5), client.send(request)).await;
+
+        timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("TLS server should finish")
+            .expect("TLS server task should not panic")
     }
 }
