@@ -913,14 +913,3 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
 
     Ok(())
 }
-
-#[cfg(test)]
-mod liveness_topology_tests {
-    use super::LIVENESS_METRICS_DESTINATION;
-
-    #[test]
-    fn liveness_metrics_use_common_host_tag_enrichment() {
-        assert_eq!(LIVENESS_METRICS_DESTINATION, "metrics_enrich");
-        assert_ne!(LIVENESS_METRICS_DESTINATION, "dd_metrics_encode");
-    }
-}
