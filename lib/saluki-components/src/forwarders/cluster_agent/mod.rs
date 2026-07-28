@@ -1,5 +1,6 @@
 //! Cluster Agent forwarder.
 
+use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
 use async_trait::async_trait;
 use http::{
     header::AUTHORIZATION,
@@ -61,6 +62,20 @@ impl ClusterAgentForwarderConfiguration {
             forwarder_config,
             auth_header_value,
         })
+    }
+
+    /// Creates a Cluster Agent forwarder using authoritative typed metrics-routing configuration.
+    pub fn from_configuration_with_metrics_routing(
+        config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints, endpoint_url: String,
+        auth_token: String,
+    ) -> Result<Self, GenericError> {
+        let mut config = Self::from_configuration(config, endpoint_url, auth_token)?;
+        config
+            .forwarder_config
+            .apply_typed_metrics_configuration(metrics, endpoints);
+        config.forwarder_config.clear_opw_metrics_endpoint();
+        config.forwarder_config.force_v2_series();
+        Ok(config)
     }
 }
 
@@ -252,12 +267,7 @@ mod tests {
                         "url": "https://opw.example.com"
                     }
                 },
-                "data_plane_metrics_v3_series_enabled": true,
-                "use_v3_api": {
-                    "series": {
-                        "enabled": "true"
-                    }
-                },
+                "use_v3_api_series_enabled": "true",
                 "serializer_experimental_use_v3_api": {
                     "series": {
                         "shadow_sites": ["example.com"]
@@ -271,14 +281,19 @@ mod tests {
 
         let unmodified_forwarder =
             ForwarderConfiguration::from_configuration(&config).expect("forwarder configuration should parse");
-        assert!(unmodified_forwarder.data_plane_metrics_v3_series_enabled());
+        assert_eq!("true", unmodified_forwarder.use_v3_api_series().enabled);
         assert_eq!(
             &["example.com".to_string()],
             unmodified_forwarder.v3_api().series.shadow_sites.as_slice()
         );
 
-        let config = ClusterAgentForwarderConfiguration::from_configuration(
+        let mut metrics = MetricsEncoding::default();
+        metrics.v3_series_mode.mode = "true".to_string();
+        metrics.v3_api.series.shadow_sites = vec!["example.com".to_string()];
+        let config = ClusterAgentForwarderConfiguration::from_configuration_with_metrics_routing(
             &config,
+            &metrics,
+            &Endpoints::default(),
             "https://cluster-agent.example.com".to_string(),
             "secret-token".to_string(),
         )
@@ -295,7 +310,9 @@ mod tests {
             "https://cluster-agent.example.com/"
         );
         assert_eq!(endpoints[0].endpoint().cached_api_key(), "secret-token");
-        assert!(!config.forwarder_config.data_plane_metrics_v3_series_enabled());
+        assert_eq!("false", config.forwarder_config.use_v3_api_series().enabled);
+        assert!(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
+        assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
         assert!(config.forwarder_config.v3_api().series.shadow_sites.is_empty());
     }
 }

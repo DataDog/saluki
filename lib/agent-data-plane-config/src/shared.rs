@@ -304,7 +304,10 @@ impl Default for V3ApiSettings {
 /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct V3SeriesMode {
-    /// Global V3 series mode. TODO: consider modeling as an enum.
+    /// Global V3 series mode.
+    ///
+    /// Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
+    /// TODO: consider modeling as an enum.
     pub mode: String,
 
     /// Per-endpoint V3 series mode overrides, keyed by endpoint URL.
@@ -314,7 +317,7 @@ pub struct V3SeriesMode {
 impl Default for V3SeriesMode {
     fn default() -> Self {
         Self {
-            mode: "true".to_string(),
+            mode: "datadog_only".to_string(),
             endpoint_modes: HashMap::new(),
         }
     }

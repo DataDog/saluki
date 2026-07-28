@@ -2,6 +2,9 @@
 
 use std::collections::HashMap;
 
+use agent_data_plane_config::shared::{
+    V3ApiEncoding as TypedV3ApiEncoding, V3ApiSettings as TypedV3ApiSettings, V3SeriesMode as TypedV3SeriesMode,
+};
 use facet::Facet;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +23,7 @@ fn default_v3_series_shadow_sites() -> Vec<String> {
 }
 
 fn default_use_v3_api_series_enabled() -> String {
-    "true".to_string()
+    "datadog_only".to_string()
 }
 
 #[derive(Deserialize)]
@@ -274,13 +277,36 @@ impl V3ApiConfig {
     }
 }
 
+impl From<&TypedV3ApiSettings> for V3ApiSettings {
+    fn from(settings: &TypedV3ApiSettings) -> Self {
+        Self {
+            endpoints: settings.endpoints.clone(),
+            validate: settings.validate,
+            use_beta: settings.use_beta,
+            beta_route: settings.beta_route.clone(),
+            shadow_sample_rate: settings.shadow_sample_rate,
+            shadow_sites: settings.shadow_sites.clone(),
+        }
+    }
+}
+
+impl From<&TypedV3ApiEncoding> for V3ApiConfig {
+    fn from(config: &TypedV3ApiEncoding) -> Self {
+        Self {
+            series: (&config.series).into(),
+            sketches: (&config.sketches).into(),
+            compression_level: config.compression_level,
+        }
+    }
+}
+
 /// Agent-compatible `use_v3_api.series` configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Facet)]
 pub struct UseV3ApiSeriesConfig {
     /// Global V3 series mode.
     ///
     /// Valid Agent values are truthy strings, falsy strings, and `datadog_only`. Invalid values are treated as false by
-    /// the evaluator.
+    /// the evaluator. Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
     #[serde(
         default = "default_use_v3_api_series_enabled",
         deserialize_with = "deserialize_v3_series_mode",
@@ -306,11 +332,20 @@ impl Default for UseV3ApiSeriesConfig {
     }
 }
 
+impl From<&TypedV3SeriesMode> for UseV3ApiSeriesConfig {
+    fn from(config: &TypedV3SeriesMode) -> Self {
+        Self {
+            enabled: config.mode.clone(),
+            endpoints: config.endpoint_modes.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde::Deserialize;
 
-    use super::deserialize_v3_series_mode;
+    use super::{deserialize_v3_series_mode, UseV3ApiSeriesConfig};
 
     #[derive(Deserialize)]
     struct Wrapper {
@@ -339,5 +374,10 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(parse_mode(input.clone()), expected, "{input}");
         }
+    }
+
+    #[test]
+    fn v3_series_mode_defaults_to_datadog_only() {
+        assert_eq!(UseV3ApiSeriesConfig::default().enabled, "datadog_only");
     }
 }

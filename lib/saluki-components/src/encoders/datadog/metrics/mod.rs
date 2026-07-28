@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, ops::Range, time::Duration};
 
+use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use facet::Facet;
@@ -420,6 +421,26 @@ impl DatadogMetricsConfiguration {
         Ok(config.as_typed()?)
     }
 
+    /// Creates a metrics encoder using authoritative typed metrics-routing configuration.
+    pub fn from_configuration_with_metrics_routing(
+        config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints,
+    ) -> Result<Self, GenericError> {
+        let mut metrics_config = Self::from_configuration(config)?;
+
+        metrics_config.compressor_kind = endpoints.compression.compressor_kind.clone();
+        metrics_config.use_v2_api_series = metrics.use_v2_series_api;
+        metrics_config.v3_api = (&metrics.v3_api).into();
+        metrics_config.use_v3_api_series = (&metrics.v3_series_mode).into();
+        metrics_config.observability_pipelines_worker_metrics_enabled = endpoints.opw_intake.enabled;
+        metrics_config.observability_pipelines_worker_metrics_url = endpoints.opw_intake.url.clone();
+        metrics_config.observability_pipelines_worker_metrics_use_v3_api_series = endpoints.opw_intake.use_v3_series;
+        metrics_config.vector_metrics_enabled = endpoints.vector_intake.enabled;
+        metrics_config.vector_metrics_url = endpoints.vector_intake.url.clone();
+        metrics_config.vector_metrics_use_v3_api_series = endpoints.vector_intake.use_v3_series;
+
+        Ok(metrics_config)
+    }
+
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
         self.additional_tags = Some(additional_tags);
@@ -442,8 +463,12 @@ impl DatadogMetricsConfiguration {
     ///
     /// This is used for local destinations that only accept the V2 series protocol, such as the Cluster Agent.
     pub fn with_v2_series_only(mut self) -> Self {
-        self.data_plane_metrics_v3_series_enabled = false;
+        self.use_v3_api_series.enabled = "false".to_string();
+        self.use_v3_api_series.endpoints.clear();
+        self.v3_api.series.endpoints.clear();
         self.v3_api.series.shadow_sample_rate = 0.0;
+        self.observability_pipelines_worker_metrics_use_v3_api_series = false;
+        self.vector_metrics_use_v3_api_series = false;
         self
     }
 
@@ -464,7 +489,6 @@ impl DatadogMetricsConfiguration {
             configured_endpoint: endpoint.configured_endpoint(),
             resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint,
-            data_plane_v3_series_enabled: self.data_plane_metrics_v3_series_enabled,
             series_config: &self.use_v3_api_series,
             metrics_primary_v3_override,
             serializer_v3_series_endpoints: &self.v3_api.series.endpoints,
@@ -488,7 +512,7 @@ impl DatadogMetricsConfiguration {
     }
 
     fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
-        if metrics_v3_disabled_by_compressor || !self.data_plane_metrics_v3_series_enabled {
+        if metrics_v3_disabled_by_compressor {
             return Ok(true);
         }
 
@@ -1921,11 +1945,12 @@ fn content_encoding_for_scheme(compression_scheme: CompressionScheme) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{collections::HashMap, io::Cursor};
 
     use bytes::Bytes;
     use datadog_protos::metrics::v3::MetricData as V3MetricData;
     use protobuf::Message as _;
+    use saluki_config::ConfigurationLoader;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context,
@@ -1976,6 +2001,55 @@ serializer_experimental_use_v3_api:
             Some("https://app.datadoghq.eu"),
             config.v3_api.sketches.endpoints.first().map(String::as_str)
         );
+    }
+
+    #[tokio::test]
+    async fn typed_metrics_routing_is_authoritative() {
+        let (raw, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "serializer_compressor_kind": "zlib",
+                "use_v2_api_series": true,
+                "use_v3_api_series_enabled": "true",
+                "observability_pipelines_worker_metrics_enabled": false,
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let mut endpoints = Endpoints::default();
+        endpoints.compression.compressor_kind = "zstd".to_string();
+        endpoints.opw_intake.enabled = true;
+        endpoints.opw_intake.url = "https://opw.example.com".to_string();
+        endpoints.opw_intake.use_v3_series = true;
+        let mut metrics = MetricsEncoding {
+            use_v2_series_api: false,
+            ..Default::default()
+        };
+        metrics.v3_api.compression_level = 7;
+        metrics.v3_api.series.validate = true;
+        metrics.v3_series_mode.mode = "false".to_string();
+        metrics.v3_series_mode.endpoint_modes =
+            HashMap::from([("https://app.datadoghq.com".to_string(), "true".to_string())]);
+
+        let config = DatadogMetricsConfiguration::from_configuration_with_metrics_routing(&raw, &metrics, &endpoints)
+            .expect("configuration should deserialize");
+
+        assert_eq!(config.compressor_kind, "zstd");
+        assert!(!config.use_v2_api_series);
+        assert_eq!(config.v3_api.compression_level, 7);
+        assert!(config.v3_api.series.validate);
+        assert_eq!(config.use_v3_api_series.enabled, "false");
+        assert_eq!(
+            config.use_v3_api_series.endpoints.get("https://app.datadoghq.com"),
+            Some(&"true".to_string())
+        );
+        assert!(config.observability_pipelines_worker_metrics_enabled);
+        assert_eq!(
+            config.observability_pipelines_worker_metrics_url,
+            "https://opw.example.com"
+        );
+        assert!(config.observability_pipelines_worker_metrics_use_v3_api_series);
     }
 
     #[test]
@@ -2029,7 +2103,6 @@ serializer_experimental_use_v3_api:
     fn mixed_v2_and_v3_endpoints_require_v2_series() {
         let config = v3_series_config(
             r#"
-data_plane_metrics_v3_series_enabled: true
 use_v3_api_series_enabled: "datadog_only"
 additional_endpoints:
   https://custom.example.com:
@@ -2044,7 +2117,6 @@ additional_endpoints:
     fn validation_requires_v2_series() {
         let config = v3_series_config(
             r#"
-data_plane_metrics_v3_series_enabled: true
 use_v3_api_series_enabled: "true"
 serializer_experimental_use_v3_api:
   series:
@@ -2060,7 +2132,6 @@ serializer_experimental_use_v3_api:
         let config = v3_series_config(
             r#"
 dd_url: https://agent.datad0g.com.
-data_plane_metrics_v3_series_enabled: true
 use_v3_api_series_enabled: "false"
 additional_endpoints:
   https://agent.datadoghq.com.:
@@ -2081,7 +2152,6 @@ serializer_experimental_use_v3_api:
         let config = v3_series_config(
             r#"
 dd_url: https://primary.example.com
-data_plane_metrics_v3_series_enabled: true
 use_v3_api_series_enabled: "false"
 serializer_experimental_use_v3_api:
   series:
@@ -2108,7 +2178,6 @@ serializer_experimental_use_v3_api:
     fn v2_series_only_override_keeps_v2_and_disables_shadowing() {
         let config = v3_series_config(
             r#"
-data_plane_metrics_v3_series_enabled: true
 use_v3_api_series_enabled: "true"
 serializer_experimental_use_v3_api:
   series:
@@ -2117,7 +2186,9 @@ serializer_experimental_use_v3_api:
         )
         .with_v2_series_only();
 
-        assert!(!config.data_plane_metrics_v3_series_enabled);
+        assert_eq!("false", config.use_v3_api_series.enabled);
+        assert!(config.use_v3_api_series.endpoints.is_empty());
+        assert!(config.v3_api.series.endpoints.is_empty());
         assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);
         assert!(config.requires_v2_series(false).expect("endpoint should resolve"));
     }

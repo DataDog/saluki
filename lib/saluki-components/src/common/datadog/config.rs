@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
 use facet::Facet;
 use saluki_config::GenericConfiguration;
 use saluki_error::GenericError;
@@ -342,6 +343,21 @@ impl ForwarderConfiguration {
         Ok(forwarder_config)
     }
 
+    /// Applies authoritative typed metrics-routing configuration.
+    pub(crate) fn apply_typed_metrics_configuration(&mut self, metrics: &MetricsEncoding, endpoints: &Endpoints) {
+        self.opw_metrics = OpwMetricsConfiguration {
+            observability_pipelines_worker_enabled: endpoints.opw_intake.enabled,
+            observability_pipelines_worker_url: endpoints.opw_intake.url.clone(),
+            observability_pipelines_worker_use_v3_api_series: endpoints.opw_intake.use_v3_series,
+            vector_enabled: endpoints.vector_intake.enabled,
+            vector_url: endpoints.vector_intake.url.clone(),
+            vector_use_v3_api_series: endpoints.vector_intake.use_v3_series,
+        };
+        self.v3_api = (&metrics.v3_api).into();
+        self.use_v3_api_series = (&metrics.v3_series_mode).into();
+        self.serializer_compressor_kind = endpoints.compression.compressor_kind.clone();
+    }
+
     /// Returns the maximum number of concurrent requests for an individual endpoint.
     pub const fn endpoint_concurrency(&self) -> usize {
         let endpoint_concurrency = if self.endpoint_concurrency == 0 {
@@ -390,7 +406,9 @@ impl ForwarderConfiguration {
 
     /// Forces series metrics routing to accept only V2 payloads.
     pub(crate) fn force_v2_series(&mut self) {
-        self.data_plane_metrics_v3_series_enabled = false;
+        self.use_v3_api_series.enabled = "false".to_string();
+        self.use_v3_api_series.endpoints.clear();
+        self.v3_api.series.endpoints.clear();
         self.v3_api.series.shadow_sites.clear();
     }
 
@@ -524,6 +542,8 @@ impl ForwarderConfiguration {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use saluki_config::ConfigurationLoader;
 
     use super::*;
@@ -979,6 +999,46 @@ mod tests {
             config.use_v3_api_series().endpoints.get(DATADOG_URL),
             Some(&"false".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn typed_metrics_routing_is_authoritative() {
+        let mut config = forwarder_config_from(
+            config_with(serde_json::json!({
+                "serializer_compressor_kind": "zlib",
+                "use_v3_api_series_enabled": "true",
+                "observability_pipelines_worker_metrics_enabled": false,
+            })),
+            None,
+        )
+        .await;
+
+        let mut endpoints = Endpoints::default();
+        endpoints.compression.compressor_kind = "zstd".to_string();
+        endpoints.opw_intake.enabled = true;
+        endpoints.opw_intake.url = OPW_URL.to_string();
+        endpoints.opw_intake.use_v3_series = true;
+        let mut metrics = MetricsEncoding::default();
+        metrics.v3_api.compression_level = 7;
+        metrics.v3_api.series.validate = true;
+        metrics.v3_series_mode.mode = "false".to_string();
+        metrics.v3_series_mode.endpoint_modes = HashMap::from([(DATADOG_URL.to_string(), "true".to_string())]);
+
+        config.apply_typed_metrics_configuration(&metrics, &endpoints);
+
+        assert_eq!(config.serializer_compressor_kind, "zstd");
+        assert_eq!(config.v3_api.compression_level, 7);
+        assert!(config.v3_api.series.validate);
+        assert_eq!(config.use_v3_api_series.enabled, "false");
+        assert_eq!(
+            config.use_v3_api_series.endpoints.get(DATADOG_URL),
+            Some(&"true".to_string())
+        );
+        assert_eq!(
+            endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary),
+            vec![OPW_URI]
+        );
+        assert_eq!(config.opw_metrics_v3_series_override(), Some(true));
     }
 
     #[tokio::test]

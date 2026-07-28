@@ -1844,7 +1844,7 @@ pub mod defaults {
         vec!["datadoghq.com".to_string()]
     }
     pub(super) fn datadog_configuration_use_v3_api_series_enabled() -> String {
-        "true".to_string()
+        "datadog_only".to_string()
     }
 }
 
