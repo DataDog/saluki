@@ -10,6 +10,13 @@ publish = false
 name = "antithesis-intake"
 path = "src/bin/intake.rs"
 
+[features]
+# The two differential oracle routes and their assertions. Off by default because the SDK catalogues an
+# assertion at link time through a `linkme` distributed slice, so a call site compiled into a binary is
+# catalogued whether or not it ever runs, and a catalogued assertion nothing hits reds the run. The general
+# scenario builds this same binary and posts to neither oracle, so those call sites must not be linked in.
+differential = []
+
 [lints]
 workspace = true
 
