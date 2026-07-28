@@ -10,8 +10,9 @@ use rustls::{
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::CryptoProvider,
     pki_types::{CertificateDer, ServerName, UnixTime},
+    server::danger::{ClientCertVerified, ClientCertVerifier},
     version::TLS13,
-    CertificateError, ClientConfig, DigitallySignedStruct, ServerConfig, SignatureScheme,
+    CertificateError, ClientConfig, DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureScheme,
 };
 use rustls_pki_types::{pem::PemObject as _, PrivateKeyDer};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -46,6 +47,58 @@ impl ServerCertVerifier for DatadogAgentServerCertVerifier {
         }
 
         Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+#[derive(Debug)]
+struct DatadogAgentClientCertVerifier {
+    cert: CertificateDer<'static>,
+    provider: Arc<CryptoProvider>,
+}
+
+impl DatadogAgentClientCertVerifier {
+    fn from_certificate_and_provider(cert: CertificateDer<'static>, provider: Arc<CryptoProvider>) -> Self {
+        Self { cert, provider }
+    }
+}
+
+impl ClientCertVerifier for DatadogAgentClientCertVerifier {
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        true
+    }
+
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self, end_entity: &CertificateDer<'_>, _intermediates: &[CertificateDer<'_>], _now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        if end_entity != &self.cert {
+            return Err(rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer));
+        }
+
+        Ok(ClientCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -110,8 +163,9 @@ pub async fn build_ipc_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
 
 /// Builds a server TLS configuration suitable for IPC usage with the Datadog Agent.
 ///
-/// All IPC for the Datadog Agent uses mutual TLS, where both client _and_ server verify each other's certificate, but
-/// crucially, use the _same_ certificate on both sides.
+/// The server requires every client to present a leaf certificate whose DER encoding exactly matches the configured IPC
+/// certificate. This is exact-certificate mutual TLS rather than CA-based trust: the client and server identities must
+/// be coordinated to use the same certificate, and no overlap between different certificates is accepted.
 ///
 /// ## Errors
 ///
@@ -126,8 +180,16 @@ pub async fn build_ipc_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result
     )
     .await?;
 
+    let crypto_provider = rustls::crypto::CryptoProvider::get_default()
+        .map(Arc::clone)
+        .ok_or_else(|| generic_error!("Default cryptography provider not yet installed."))?;
+    let agent_cert_verifier = Arc::new(DatadogAgentClientCertVerifier::from_certificate_and_provider(
+        parsed_cert.clone(),
+        crypto_provider,
+    ));
+
     let mut config = ServerConfig::builder()
-        .with_no_client_auth()
+        .with_client_cert_verifier(agent_cert_verifier)
         .with_single_cert(vec![parsed_cert], parsed_key)
         .with_error_context(|| {
             format!(
@@ -189,4 +251,262 @@ async fn read_and_parse_certificate_file(
         timeout.as_secs(),
         last_error
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
+
+    use rcgen::{generate_simple_self_signed, CertifiedKey};
+    use rustls::{
+        crypto::CryptoProvider,
+        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+        version::TLS13,
+        ClientConfig, ServerConfig,
+    };
+    use tempfile::TempDir;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+    use super::{build_ipc_client_ipc_tls_config, build_ipc_server_tls_config, DatadogAgentServerCertVerifier};
+
+    const REQUEST: &[u8] = b"GET /ipc HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const RESPONSE: &[u8] = b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+
+    struct TestIdentity {
+        _temp_dir: TempDir,
+        cert_path: PathBuf,
+        cert_der: CertificateDer<'static>,
+        key_der: Vec<u8>,
+    }
+
+    impl TestIdentity {
+        fn localhost() -> Self {
+            let CertifiedKey { cert, signing_key } = generate_simple_self_signed(["localhost".to_owned()])
+                .expect("self-signed localhost certificate should be generated");
+            let temp_dir = tempfile::tempdir().expect("temporary certificate directory should be created");
+            let cert_path = temp_dir.path().join("ipc-cert.pem");
+            fs::write(&cert_path, format!("{}{}", cert.pem(), signing_key.serialize_pem()))
+                .expect("certificate and private key should be written");
+
+            Self {
+                _temp_dir: temp_dir,
+                cert_path,
+                cert_der: cert.der().clone(),
+                key_der: signing_key.serialize_der(),
+            }
+        }
+
+        fn private_key(&self) -> PrivateKeyDer<'static> {
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.key_der.clone()))
+        }
+    }
+
+    #[derive(Debug)]
+    enum ClientOutcome {
+        HandshakeRejected,
+        RequestRejected,
+        Response(Vec<u8>),
+    }
+
+    #[derive(Debug)]
+    enum ServerOutcome {
+        HandshakeRejected,
+        RequestReadFailed,
+        RequestHandled(Vec<u8>),
+    }
+
+    #[derive(Debug)]
+    struct ExchangeOutcome {
+        client: ClientOutcome,
+        server: ServerOutcome,
+        request_reached_handler: bool,
+    }
+
+    fn initialize_crypto_provider() {
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        assert!(
+            CryptoProvider::get_default().is_some(),
+            "default crypto provider should be installed"
+        );
+    }
+
+    fn client_config_pinned_to(server_identity: &TestIdentity, client_identity: Option<&TestIdentity>) -> ClientConfig {
+        let provider = CryptoProvider::get_default()
+            .cloned()
+            .expect("default crypto provider should be installed");
+        let verifier = Arc::new(DatadogAgentServerCertVerifier::from_certificate_and_provider(
+            server_identity.cert_der.clone(),
+            provider,
+        ));
+        let builder = ClientConfig::builder_with_protocol_versions(&[&TLS13])
+            .dangerous()
+            .with_custom_certificate_verifier(verifier);
+
+        match client_identity {
+            Some(identity) => builder
+                .with_client_auth_cert(vec![identity.cert_der.clone()], identity.private_key())
+                .expect("client TLS config should accept generated identity"),
+            None => builder.with_no_client_auth(),
+        }
+    }
+
+    async fn exchange(server_config: ServerConfig, client_config: ClientConfig) -> ExchangeOutcome {
+        let (client_io, server_io) = tokio::io::duplex(16 * 1024);
+        let request_reached_handler = Arc::new(AtomicBool::new(false));
+        let server_request_reached_handler = Arc::clone(&request_reached_handler);
+
+        let server_task = tokio::spawn(async move {
+            let acceptor = TlsAcceptor::from(Arc::new(server_config));
+            let mut stream = match acceptor.accept(server_io).await {
+                Ok(stream) => stream,
+                Err(_) => return ServerOutcome::HandshakeRejected,
+            };
+
+            let mut request = vec![0; REQUEST.len()];
+            if stream.read_exact(&mut request).await.is_err() {
+                return ServerOutcome::RequestReadFailed;
+            }
+            server_request_reached_handler.store(true, Ordering::SeqCst);
+
+            if stream.write_all(RESPONSE).await.is_err() {
+                return ServerOutcome::RequestReadFailed;
+            }
+
+            ServerOutcome::RequestHandled(request)
+        });
+
+        let client = tokio::time::timeout(Duration::from_secs(5), async move {
+            let connector = TlsConnector::from(Arc::new(client_config));
+            let server_name = ServerName::try_from("localhost").expect("localhost should be a valid server name");
+            let mut stream = match connector.connect(server_name, client_io).await {
+                Ok(stream) => stream,
+                Err(_) => return ClientOutcome::HandshakeRejected,
+            };
+
+            if stream.write_all(REQUEST).await.is_err() {
+                return ClientOutcome::RequestRejected;
+            }
+            if stream.flush().await.is_err() {
+                return ClientOutcome::RequestRejected;
+            }
+
+            let mut response = vec![0; RESPONSE.len()];
+            match stream.read_exact(&mut response).await {
+                Ok(_) => ClientOutcome::Response(response),
+                Err(_) => ClientOutcome::RequestRejected,
+            }
+        })
+        .await
+        .expect("client TLS exchange should not time out");
+
+        let server = tokio::time::timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("server TLS exchange should not time out")
+            .expect("server task should not panic");
+
+        ExchangeOutcome {
+            client,
+            server,
+            request_reached_handler: request_reached_handler.load(Ordering::SeqCst),
+        }
+    }
+
+    #[tokio::test]
+    async fn matching_ipc_identity_completes_mtls_and_delivers_request() {
+        initialize_crypto_provider();
+        let identity_a = TestIdentity::localhost();
+        let server_config = build_ipc_server_tls_config(&identity_a.cert_path)
+            .await
+            .expect("production server TLS config should build");
+        let client_config = build_ipc_client_ipc_tls_config(&identity_a.cert_path)
+            .await
+            .expect("production client TLS config should build");
+
+        let outcome = exchange(server_config, client_config).await;
+
+        assert!(
+            matches!(&outcome.client, ClientOutcome::Response(response) if response == RESPONSE),
+            "matching client should receive the response: {outcome:?}"
+        );
+        assert!(
+            matches!(&outcome.server, ServerOutcome::RequestHandled(request) if request == REQUEST),
+            "matching client request should reach the handler: {outcome:?}"
+        );
+        assert!(outcome.request_reached_handler);
+    }
+
+    #[tokio::test]
+    async fn missing_client_certificate_is_rejected_before_request_handler() {
+        initialize_crypto_provider();
+        let identity_a = TestIdentity::localhost();
+        let server_config = build_ipc_server_tls_config(&identity_a.cert_path)
+            .await
+            .expect("production server TLS config should build");
+        let client_config = client_config_pinned_to(&identity_a, None);
+
+        let outcome = exchange(server_config, client_config).await;
+
+        assert!(
+            matches!(outcome.server, ServerOutcome::HandshakeRejected),
+            "server should reject a missing client identity during the handshake: {outcome:?}"
+        );
+        assert!(!outcome.request_reached_handler, "request must not reach the handler");
+        assert!(
+            !matches!(outcome.client, ClientOutcome::Response(_)),
+            "anonymous client must not receive an application response: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mismatched_client_certificate_is_rejected_before_request_handler() {
+        initialize_crypto_provider();
+        let identity_a = TestIdentity::localhost();
+        let identity_b = TestIdentity::localhost();
+        let server_config = build_ipc_server_tls_config(&identity_a.cert_path)
+            .await
+            .expect("production server TLS config should build");
+        let client_config = client_config_pinned_to(&identity_a, Some(&identity_b));
+
+        let outcome = exchange(server_config, client_config).await;
+
+        assert!(
+            matches!(outcome.server, ServerOutcome::HandshakeRejected),
+            "server should reject a different client identity during the handshake: {outcome:?}"
+        );
+        assert!(!outcome.request_reached_handler, "request must not reach the handler");
+        assert!(
+            !matches!(outcome.client, ClientOutcome::Response(_)),
+            "mismatched client must not receive an application response: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn production_client_rejects_wrong_server_identity() {
+        initialize_crypto_provider();
+        let identity_a = TestIdentity::localhost();
+        let identity_b = TestIdentity::localhost();
+        let server_config = build_ipc_server_tls_config(&identity_b.cert_path)
+            .await
+            .expect("production server TLS config should build");
+        let client_config = build_ipc_client_ipc_tls_config(&identity_a.cert_path)
+            .await
+            .expect("production client TLS config should build");
+
+        let outcome = exchange(server_config, client_config).await;
+
+        assert!(
+            matches!(outcome.client, ClientOutcome::HandshakeRejected),
+            "production client pinned to A should reject server B: {outcome:?}"
+        );
+        assert!(!outcome.request_reached_handler, "request must not reach the handler");
+    }
 }
