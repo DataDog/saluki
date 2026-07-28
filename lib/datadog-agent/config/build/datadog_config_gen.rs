@@ -15,11 +15,11 @@
 //! cannot render it faithfully. Parsing the duration once, at the deserialization boundary, keeps a
 //! bare number from reaching the translator as an ambiguous unit.
 //!
-//! Every `Vec<String>` leaf also gets a shape-tolerant deserializer: a config file or the remote
-//! Agent stream supplies a real sequence, but an environment variable supplies a single
-//! space-separated string (`DD_DOGSTATSD_TAGS="env:prod team:core"`), and the field must accept
-//! both. Handling that in the deserializer (rather than pre-splitting env values elsewhere) keeps
-//! the concern in one place; see `stringlistize` and `crate::list_de`.
+//! String-list fields also get shape-tolerant decoders. A standalone `Vec<String>` may arrive
+//! as a real sequence or a space-separated environment string, while a `HashMap<String,
+//! Vec<String>>` may carry each map value as either one scalar string or a sequence. Handling those
+//! shapes at the deserialization boundary keeps downstream types consistent; see `stringlistize`
+//! and `crate::list_de`.
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -400,19 +400,20 @@ fn duration_defaults_module(durations: &BTreeMap<String, u64>) -> String {
     module
 }
 
-/// Give every `Vec<String>` leaf a shape-tolerant deserializer.
+/// Give string-list leaves shape-tolerant decoders.
 ///
 /// String lists arrive as a real sequence from a file or the remote Agent stream, but as a single
 /// space-separated string from an environment variable (`DD_DOGSTATSD_TAGS="a b"`), so each field
-/// must accept both. We push an extra `#[serde(deserialize_with = ...)]` attribute rather than
-/// replacing the field's existing serde attributes: serde merges multiple `#[serde(...)]`, so the
-/// field keeps its `default`/`skip_serializing_if`/`alias` and only gains the tolerant reader (the
-/// same additive technique as `inject_serde_aliases`).
+/// must accept both. Map values containing string lists may likewise arrive as either one scalar or
+/// a sequence and are normalized into vectors.
 ///
-/// Fields are matched by their Rust type, not by name: `Vec<String>` is unambiguous, needs no
-/// schema lookup, and correctly skips `HashMap<String, Vec<String>>` (a map, not a list) and the
-/// duration leaves (already retyped to `Duration`). Runs after `PathShortener`, so the type reads
-/// as `Vec<String>` rather than `::std::vec::Vec<::std::string::String>`.
+/// We push an extra `#[serde(deserialize_with = ...)]` attribute rather than replacing the field's
+/// existing serde attributes: serde merges multiple `#[serde(...)]`, so the field keeps its
+/// `default`/`skip_serializing_if`/`alias` and only gains the tolerant reader (the same additive
+/// technique as `inject_serde_aliases`).
+///
+/// Fields are matched by their Rust type, not by name. Runs after `PathShortener`, so the types read
+/// as `Vec<String>` and `HashMap<String, Vec<String>>` rather than fully qualified prelude paths.
 fn stringlistize(file: &mut syn::File) {
     for item in &mut file.items {
         let Item::Struct(s) = item else { continue };
@@ -420,12 +421,15 @@ fn stringlistize(file: &mut syn::File) {
             continue;
         };
         for field in &mut fields.named {
-            if !is_vec_string(&field.ty) {
-                continue;
+            if is_vec_string(&field.ty) {
+                field.attrs.push(parse_quote!(
+                    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+                ));
+            } else if is_string_map_vec_string(&field.ty) {
+                field.attrs.push(parse_quote!(
+                    #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
+                ));
             }
-            field.attrs.push(parse_quote!(
-                #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
-            ));
         }
     }
 }
@@ -447,6 +451,34 @@ fn is_vec_string(ty: &syn::Type) -> bool {
         return false;
     };
     inner.path.segments.last().is_some_and(|seg| seg.ident == "String")
+}
+
+/// Returns whether `ty` is exactly `HashMap<String, Vec<String>>`.
+fn is_string_map_vec_string(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else { return false };
+    let Some(last) = tp.path.segments.last() else {
+        return false;
+    };
+    if last.ident != "HashMap" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return false;
+    };
+    let mut args = args.args.iter();
+    let Some(syn::GenericArgument::Type(key)) = args.next() else {
+        return false;
+    };
+    let Some(syn::GenericArgument::Type(value)) = args.next() else {
+        return false;
+    };
+    is_string(key) && is_vec_string(value)
+}
+
+/// Returns whether `ty` is exactly `String`.
+fn is_string(ty: &syn::Type) -> bool {
+    let syn::Type::Path(tp) = ty else { return false };
+    tp.path.segments.last().is_some_and(|seg| seg.ident == "String")
 }
 
 /// Make nested-section fields non-optional with `#[serde(default)]`.
