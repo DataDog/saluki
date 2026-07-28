@@ -83,6 +83,7 @@ impl FromStr for HistogramMode {
 
 /// TLS settings for an inbound OTLP receiver.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(default)]
 pub struct TlsConfig {
     /// Path to PEM-encoded certificate authorities loaded for Collector configuration compatibility.
     ///

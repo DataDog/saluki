@@ -9,7 +9,7 @@ pub mod semantics;
 pub mod traces;
 pub mod util;
 
-use std::{io, sync::Arc};
+use std::{io, sync::Arc, time::Duration};
 
 use ::metrics::Counter;
 use agent_data_plane_config::domains::otlp::TlsConfig;
@@ -49,10 +49,14 @@ use saluki_metrics::MetricsBuilder;
 use saluki_tls::ensure_server_config_fips_compliant;
 use stringtheory::MetaString;
 use tokio::runtime::Handle;
+use tokio::sync::mpsc;
+use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
 use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
 use tracing::error;
+
+const OTLP_GRPC_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub const OTLP_METRICS_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.metrics.v1.MetricsService/Export");
@@ -198,20 +202,41 @@ impl OtlpServerBuilder {
             .await
             .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
         match self.grpc_tls_config {
-            Some(tls_config) => {
+            Some(mut tls_config) => {
+                // gRPC over TLS requires ALPN negotiation of HTTP/2. Tonic configures this when it owns TLS setup;
+                // configure it explicitly because this server accepts Rustls streams directly.
+                tls_config.alpn_protocols = vec![b"h2".to_vec()];
                 let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
-                let grpc_incoming =
-                    futures::stream::unfold((grpc_listener, tls_acceptor), |(listener, acceptor)| async move {
-                        loop {
-                            match listener.accept().await {
-                                Ok((stream, _)) => match acceptor.accept(stream).await {
-                                    Ok(stream) => return Some((Ok::<_, io::Error>(stream), (listener, acceptor))),
-                                    Err(error) => error!(%error, "Failed to complete OTLP gRPC TLS handshake."),
-                                },
-                                Err(error) => return Some((Err(error), (listener, acceptor))),
+                let (incoming_tx, incoming_rx) = mpsc::channel(1024);
+                let handshake_executor = thread_pool_handle.clone();
+
+                thread_pool_handle.spawn_traced_named("otlp-grpc-tls-acceptor", async move {
+                    loop {
+                        let (stream, _) = match grpc_listener.accept().await {
+                            Ok(stream) => stream,
+                            Err(error) => {
+                                let _ = incoming_tx.send(Err(error)).await;
+                                break;
                             }
-                        }
-                    });
+                        };
+
+                        let acceptor = tls_acceptor.clone();
+                        let incoming_tx = incoming_tx.clone();
+                        handshake_executor.spawn_traced_named("otlp-grpc-tls-handshake", async move {
+                            match timeout(OTLP_GRPC_TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
+                                Ok(Ok(stream)) => {
+                                    let _ = incoming_tx.send(Ok::<_, io::Error>(stream)).await;
+                                }
+                                Ok(Err(error)) => error!(%error, "Failed to complete OTLP gRPC TLS handshake."),
+                                Err(_) => error!("Timed out completing OTLP gRPC TLS handshake."),
+                            }
+                        });
+                    }
+                });
+
+                let grpc_incoming = futures::stream::unfold(incoming_rx, |mut rx| async {
+                    rx.recv().await.map(|stream| (stream, rx))
+                });
                 thread_pool_handle
                     .spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
             }
