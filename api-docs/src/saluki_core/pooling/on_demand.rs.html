@@ -22,7 +22,7 @@
 <a href=#22 id=22 data-nosnippet>22</a>    <span class="doccomment">/// Creates a new `OnDemandObjectPool`.
 <a href=#23 id=23 data-nosnippet>23</a>    </span><span class="kw">pub fn </span>new&lt;S&gt;(pool_name: S) -&gt; <span class="self">Self
 <a href=#24 id=24 data-nosnippet>24</a>    </span><span class="kw">where
-<a href=#25 id=25 data-nosnippet>25</a>        </span>S: Into&lt;String&gt;,
+<a href=#25 id=25 data-nosnippet>25</a>        </span>S: AsRef&lt;str&gt;,
 <a href=#26 id=26 data-nosnippet>26</a>    {
 <a href=#27 id=27 data-nosnippet>27</a>        <span class="self">Self</span>::with_builder(pool_name, T::Data::default)
 <a href=#28 id=28 data-nosnippet>28</a>    }
@@ -37,7 +37,7 @@
 <a href=#37 id=37 data-nosnippet>37</a>    /// `builder` is called to construct each item.
 <a href=#38 id=38 data-nosnippet>38</a>    </span><span class="kw">pub fn </span>with_builder&lt;S, B&gt;(pool_name: S, builder: B) -&gt; <span class="self">Self
 <a href=#39 id=39 data-nosnippet>39</a>    </span><span class="kw">where
-<a href=#40 id=40 data-nosnippet>40</a>        </span>S: Into&lt;String&gt;,
+<a href=#40 id=40 data-nosnippet>40</a>        </span>S: AsRef&lt;str&gt;,
 <a href=#41 id=41 data-nosnippet>41</a>        B: Fn() -&gt; T::Data + Send + Sync + <span class="lifetime">'static</span>,
 <a href=#42 id=42 data-nosnippet>42</a>    {
 <a href=#43 id=43 data-nosnippet>43</a>        <span class="kw">let </span>strategy = Arc::new(OnDemandStrategy::with_builder(pool_name, builder));
@@ -77,12 +77,12 @@
 <a href=#77 id=77 data-nosnippet>77</a><span class="kw">impl</span>&lt;T: Poolable&gt; OnDemandStrategy&lt;T&gt; {
 <a href=#78 id=78 data-nosnippet>78</a>    <span class="kw">fn </span>with_builder&lt;S, B&gt;(pool_name: S, builder: B) -&gt; <span class="self">Self
 <a href=#79 id=79 data-nosnippet>79</a>    </span><span class="kw">where
-<a href=#80 id=80 data-nosnippet>80</a>        </span>S: Into&lt;String&gt;,
+<a href=#80 id=80 data-nosnippet>80</a>        </span>S: AsRef&lt;str&gt;,
 <a href=#81 id=81 data-nosnippet>81</a>        B: Fn() -&gt; T::Data + Send + Sync + <span class="lifetime">'static</span>,
 <a href=#82 id=82 data-nosnippet>82</a>    {
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="kw">let </span>builder = Box::new(builder);
 <a href=#84 id=84 data-nosnippet>84</a>
-<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>metrics = PoolMetrics::new(pool_name.into());
+<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>metrics = PoolMetrics::new(pool_name.as_ref());
 <a href=#86 id=86 data-nosnippet>86</a>        metrics.capacity().set(usize::MAX <span class="kw">as </span>f64);
 <a href=#87 id=87 data-nosnippet>87</a>
 <a href=#88 id=88 data-nosnippet>88</a>        <span class="self">Self </span>{

@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a></span><span class="kw">use </span>std::{future::Future, sync::Arc};
 <a href=#3 id=3 data-nosnippet>3</a>
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">mod </span>elastic;
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_metrics::static_metrics;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_metrics::{static_metrics, Counter, Gauge};
 <a href=#6 id=6 data-nosnippet>6</a>
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">pub use </span><span class="self">self</span>::elastic::ElasticObjectPool;
 <a href=#8 id=8 data-nosnippet>8</a>
@@ -61,17 +61,14 @@
 <a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">fn </span>acquire(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="self">Self</span>::AcquireFuture;
 <a href=#62 id=62 data-nosnippet>62</a>}
 <a href=#63 id=63 data-nosnippet>63</a>
-<a href=#64 id=64 data-nosnippet>64</a><span class="macro">static_metrics!</span> {
-<a href=#65 id=65 data-nosnippet>65</a>    name =&gt; PoolMetrics,
-<a href=#66 id=66 data-nosnippet>66</a>    prefix =&gt; object_pool,
-<a href=#67 id=67 data-nosnippet>67</a>    labels =&gt; [pool_name: String],
-<a href=#68 id=68 data-nosnippet>68</a>    metrics =&gt; [
-<a href=#69 id=69 data-nosnippet>69</a>        counter(created),
-<a href=#70 id=70 data-nosnippet>70</a>        counter(acquired),
-<a href=#71 id=71 data-nosnippet>71</a>        counter(released),
-<a href=#72 id=72 data-nosnippet>72</a>        counter(deleted),
-<a href=#73 id=73 data-nosnippet>73</a>        gauge(capacity),
-<a href=#74 id=74 data-nosnippet>74</a>        gauge(in_use),
-<a href=#75 id=75 data-nosnippet>75</a>    ],
-<a href=#76 id=76 data-nosnippet>76</a>}
+<a href=#64 id=64 data-nosnippet>64</a><span class="attr">#[static_metrics(prefix = object_pool, labels(pool_name))]
+<a href=#65 id=65 data-nosnippet>65</a>#[derive(Clone)]
+<a href=#66 id=66 data-nosnippet>66</a></span><span class="kw">struct </span>PoolMetrics {
+<a href=#67 id=67 data-nosnippet>67</a>    created: Counter,
+<a href=#68 id=68 data-nosnippet>68</a>    acquired: Counter,
+<a href=#69 id=69 data-nosnippet>69</a>    released: Counter,
+<a href=#70 id=70 data-nosnippet>70</a>    deleted: Counter,
+<a href=#71 id=71 data-nosnippet>71</a>    capacity: Gauge,
+<a href=#72 id=72 data-nosnippet>72</a>    in_use: Gauge,
+<a href=#73 id=73 data-nosnippet>73</a>}
 </code></pre></div></section></main></body></html>
