@@ -98,6 +98,8 @@ mod unix_intake {
             adp_result.context("ADP-target intake server stopped unexpectedly")?;
             Ok(())
         } else {
+            // Single-lane mode. The general scenario runs this way and has no differential to void.
+            // The differential oracles refuse to answer here rather than compare a lane with itself.
             let listener = TcpListener::bind(&config.listen_addr)
                 .await
                 .context("Failed to bind HTTP intake listener.")?;

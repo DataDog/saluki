@@ -10,12 +10,13 @@ are invasive.
 
 This document is the specification for an abstract DogStatsD Agent. We assert
 that for any given input stream ADP emits to the intake data that is correctly
-shaped and, in a future update, that the aggregation model of ADP is accurate to
-the reference implementation of Datadog Agent DogStatsD.
+shaped and that the aggregation model of ADP is accurate to the reference
+implementation of Datadog Agent DogStatsD.
 
-The differential scenario adds one narrower oracle. For the same generated
+The differential scenario adds two narrower oracles. For the same generated
 configuration and workload, ADP and the Datadog Agent must eventually report the
-same metric contexts.
+same metric contexts, and each shared context must carry the same aggregation
+curve on both lanes.
 
 ## On Decoding and Correctness
 
@@ -49,6 +50,27 @@ Finally, the goal of this rig is not to demonstrate good behavior -- although
 that will happen -- the goal is to _find faults_. Many payloads below, for
 example Pyld26, are vacuous on a properly functional Datadog Agent and will only
 fire in the prescence of a misbehaving Agent.
+
+## Endpoints
+
+This intake supports many endpoints. The following table lists them, their
+supported methods and, briefly, their purpose.
+
+| Method | Path                                   | Purpose                                                                    |
+|--------|----------------------------------------|----------------------------------------------------------------------------|
+| POST   | `/api/v2/series`                       | v2 metric series                                                           |
+| POST   | `/api/intake/metrics/v3/series`        | v3 native series                                                           |
+| POST   | `/api/beta/sketches`                   | Distribution sketches                                                      |
+| POST   | `/api/v1/events_batch`                 | event batches, currently catch and discard                                 |
+| POST   | `/api/v1/events`                       | JSON events, currently catch and discard                                   |
+| POST   | `/intake/`                             | events and metadata, currently catch and discard                           |
+| POST   | `/api/v1/check_run`                    | service checks, currently catch and discard                                |
+| GET    | `/api/v1/validate`                     | Datadog Agent connectivity probe                                           |
+| POST   | `/antithesis/metrics/contexts`         | Contexts oracle: computes symmetric difference of lane contexts, see below |
+| POST   | `/antithesis/metrics/frechet_distance` | Series oracle: computes Frechet distance of lane time series, see below    |
+| GET    | `/contexts?n=N`                        | Serves the load generator bounded `N` contexts                             |
+
+All other paths respond with a 404 for every method.
 
 ## Properties
 
@@ -143,15 +165,18 @@ These properties hold exclusively for v3:
 | Pyld58    | Origin        | OriginInfo Triples        | `len(dictOriginInfo)` is a multiple of 3                                                                   |
 | Pyld59    | Metadata      | Resources Even            | payload `Metadata.resources` has even length                                                               |
 
-### Differential context capture
+### Differential Equivalence
 
-The differential scenario uses the same intake binary for both lanes. Both take the series API the
-timeline sampled, so a lane splitting off the other's encoding is a finding:
+The differential scenario compares ADP and Datadog Agent on the same input
+stream, confirming that they are "roughly equivalent". What this means varies by
+the precise check, discussed below. The differential scenario uses the same
+intake for both lanes. Each check POSTs its parameters and the intake makes the
+Antithesis SDK calls, see below.
 
-- Datadog Agent lane: `POST /api/v2/series` or `POST /api/intake/metrics/v3/series`, plus `POST /api/beta/sketches`
-- ADP lane: the same two series routes, plus `POST /api/beta/sketches`
-- Private control API: `GET /antithesis/metrics/agent`
-- Private control API: `GET /antithesis/metrics/adp`
+Both lanes take the series API the timeline sampled, so a lane that ships the
+other's encoding is a finding rather than a configured difference.
+
+#### Contexts
 
 For context equivalence, a metric context is:
 
@@ -159,11 +184,130 @@ For context equivalence, a metric context is:
 - canonical tag list
 - metric type
 
-The intake folds each captured metric down to its canonical context and stores the
-deduplicated set per lane, but it does not compare them. The control API returns those context
-sets. The differential workload command fetches both sets and owns the Antithesis assertion for
-eventual equivalence.
+The intake exposes `/antithesis/metrics/contexts`. A POST to this endpoint
+computes the [symmetric
+difference](https://en.wikipedia.org/wiki/Symmetric_difference) of the observed
+contexts per-lane to that point. If a context C enters on lane A at time T-0 it
+will be emitted for all subsequent times, even if C never enters on lane A
+again. _Contexts do not expire and we do not tally how often contexts have
+arrived._ Call the symmetric difference `D`. Let `age` be the difference between
+the current time -- from intake's frame of reference -- and the timestamp that
+context first ingressed with. We claim that:
 
-The context oracle intentionally does not assert aggregate values, sketch values, event payloads, or
-service-check payloads. Those remain covered by the normal workload generation and payload structural
-assertions rather than by the context-equivalence check.
+* _eventually_ for every member `m` in `D` `age <= acceptable_flush_delay`
+* _finally_ `D == {}` after waiting for a period of `acceptable_flush_delay` once load is quiescent
+
+The POST body sets calculation parameters, which are:
+
+* `acceptable_flush_delay` -- number of seconds before which both lanes are allowed to diverge
+* `phase` -- `eventually` or `finally`, which check posted
+
+The `phase` picks the assertion name, either
+`differential.contexts_eventually_equivalent` or
+`differential.contexts_finally_converged`, and the predicate. The `eventually_`
+check asserts no member of `D` is delayed, so a member inside
+`acceptable_flush_delay` is in flight rather than a divergence. The `finally_`
+check asserts `D == {}` and ignores the budget, since load has stopped and a
+residual has nothing left to wait for. A report that merged them could not tell a
+lane that diverges under load from one that never converges.
+
+These are transmitted by eventually/finally checks and are a matter of scenario
+configuration, ultimately.
+
+#### Series
+
+The concern of this section is the equivalence of time series of a context,
+which we'll call 'series' for shorthand. Our goal is to demonstrate that both
+lanes, if given the same input stream, _aggregate_ to an equivalent
+aggregation. Implied in this are two concepts, first, the operations by which
+aggregation happens per kind and, second, the definition of equivalence.
+
+Points are stored raw, per lane, with a `seq` number to distinguish points that
+arrive at the same time interval. Conceptually they are stored as tuples:
+
+`(name, tagset, kind, timestamp, seq, interval, value)`
+
+`timestamp` is the time recorded from the ingress frame of reference. Recording
+from intake's frame of reference subjects stored points to network jitter
+effects, which we wish to avoid. For convenience we do not store any known self-telemetry, so for
+instance Datadog Agent lane's `datadog.*` is not stored.
+
+Queries over the point storage are done in terms of a bucketing width `w`, a
+fold operation per `kind` and a 'resubmit' rule to break ties on a timestamp:
+keep last, keep first by `seq` or summation. Queries are executed per-lane, that
+is, a query must be made over one lane's store and then the other. Queries are
+executed like so:
+
+0. Collapse points sharing a timestamp by the resubmit rule.
+1. Assign each point to a bucket `k = floor(timestamp / w)`.
+2. Fold bucket points by the kind's fold operation, which are:
+   * `count`  -- `sum`
+   * `rate`   -- `sum(value * interval) / sum(interval)`
+   * `gauge`  -- last by timestamp
+   * `sketch` -- dd-sketch merge, then projection to scalar series: count, sum, min, max, p75, p95 and p99
+   * `other`  -- none, drop
+3. Finally, buckets without values are filled like so:
+   * `count`  -- 0-valued
+   * `rate`   -- 0-valued
+   * `gauge`  -- carry forward previous value
+   * `sketch` -- count series is 0-valued, quantile series are not emitted
+
+Note, for sketches we require that both lanes maintain the same bin
+quantization. We consider this a difference if they do not, that is, a failure
+of equivalence.
+
+The equivalence comparison is then done like so. First, truncate both series to
+the range both lanes could have contributed to so far:
+
+```
+k_start = max(first bucket on A, first bucket on B) + W
+k_end   = floor(min(newest_A, newest_B) / w) - F - W
+```
+
+`F` is 1 in the `eventually_` check and 0 in the `finally_` check. The
+`eventually_` check drops a bucket to avoid reading out a bucket that is still
+filling. After load stops nothing is filling. Both ends drop a further `W` buckets because the two lanes can put the
+same input in different buckets. At the cut one lane counts a point the other
+placed outside the range. Distance `d` is:
+
+`d(a,b) = |b-a| / max(|a|,|b|)`
+
+where `a` is value of lane A for a bucket and `b` is the value of lane B for
+that same bucket, with `d(x,x) = 0` by definition. The Fréchet measure is
+defined over pairs of buckets, one from each lane. Let `k` index lane A's
+buckets and `k'` lane B's, running from `k_start` to `k_end`. Then:
+
+```
+F(k_start, k_start) = d(A_k_start, B_k_start)
+F(k, k')            = max( d(A_k, B_k'), min(F(k-1,k'), F(k-1,k'-1), F(k,k'-1)) )
+```
+
+A pair is admissible only when `|k - k'| <= W` where `W` is the 'leash width' in
+buckets. An inadmissible pair is not present in the calculation. Note that `F(k,
+k')` is not the distance between buckets `k` and `k'` it is the running
+best-so-far result, that is, of the walks that were possible to reach `k` and
+`k'` what is the smallest required 'leash'? We say that both lanes are
+equivalent if `F(k_end, k_end) < equivalence_threshold`. Both ends are fixed, so
+every bucket of both lanes is matched to something.
+
+This means then that `W` and `equivalence_threshold` have outsized influence on
+the calculation. As of this writing we hold `W=1` and
+`equivalence_threshold=0.02` until such time as empirical results suggest
+different values are warranted.
+
+The intake exposes `/antithesis/metrics/frechet_distance`. A POST to this
+endpoint runs the query described above for both lanes and makes necessary
+Antithesis SDK calls. The POST body sets distance calculation parameters, which
+are:
+
+* `bucket_width`          -- `w` from above, the bucketing width in seconds
+* `leash_width`           -- `W` from above, the 'leash' width in buckets
+* `equivalence_threshold` -- the value `F(k_end, k_end)` is compared with
+* `phase` -- `eventually` or `finally`, which check posted
+
+As with contexts, the `phase` picks the assertion name, either
+`differential.series_eventually_equivalent` or
+`differential.series_finally_converged`.
+
+These are transmitted by eventually/finally checks -- similar to how context
+above works -- and are a matter of scenario configuration, ultimately.

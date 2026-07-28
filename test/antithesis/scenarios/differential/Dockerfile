@@ -57,13 +57,15 @@ COPY . /tools
 RUN --mount=type=cache,target=/tools/target,id=antithesis-differential-tools-target \
     --mount=type=cache,target=/root/.cargo/registry,id=cargo-registry \
     --mount=type=cache,target=/root/.cargo/git,id=cargo-git \
-        cargo build --release --package antithesis-intake --bin antithesis-intake && \
+        cargo build --release --package antithesis-intake --bin antithesis-intake --features differential && \
     cargo build --release --package antithesis-scenario-differential --bins && \
     cargo build --release --package harness --bin first_sample_config --bin eventually_adp_alive && \
     cp /tools/target/release/antithesis-intake /usr/local/bin/antithesis-intake && \
     cp /tools/target/release/parallel_driver_send_dogstatsd_differential /usr/local/bin/parallel_driver_send_dogstatsd_differential && \
     cp /tools/target/release/eventually_differential_contexts /usr/local/bin/eventually_differential_contexts && \
     cp /tools/target/release/finally_differential_contexts /usr/local/bin/finally_differential_contexts && \
+    cp /tools/target/release/eventually_differential_series /usr/local/bin/eventually_differential_series && \
+    cp /tools/target/release/finally_differential_series /usr/local/bin/finally_differential_series && \
     cp /tools/target/release/eventually_adp_alive /usr/local/bin/eventually_adp_alive && \
     cp /tools/target/release/first_sample_config /usr/local/bin/first_sample_config
 
@@ -124,6 +126,8 @@ COPY --from=tools-builder --chmod=755 /usr/local/bin/first_sample_config /opt/an
 COPY --from=tools-builder --chmod=755 /usr/local/bin/parallel_driver_send_dogstatsd_differential /opt/antithesis/test/v1/main/parallel_driver_send_dogstatsd_differential
 COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_differential_contexts /opt/antithesis/test/v1/main/eventually_differential_contexts
 COPY --from=tools-builder --chmod=755 /usr/local/bin/finally_differential_contexts /opt/antithesis/test/v1/main/finally_differential_contexts
+COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_differential_series /opt/antithesis/test/v1/main/eventually_differential_series
+COPY --from=tools-builder --chmod=755 /usr/local/bin/finally_differential_series /opt/antithesis/test/v1/main/finally_differential_series
 COPY --from=tools-builder --chmod=755 /usr/local/bin/eventually_adp_alive /opt/antithesis/test/v1/main/eventually_adp_alive
 # Datadog Agent debug symbols. Antithesis scans /symbols in every pushed image and
 # matches by build-id, so this symbolizes the Core Agent running in the SUT lanes.
