@@ -59,6 +59,8 @@ const GRACE_TIME: Duration = Duration::from_secs(30);
 /// today are listed, and any new shared `DD_DATA_PLANE_*` key needs a one-line addition here.
 const LINUX_ADP_CLI_BINARY_PATH: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
 const WINDOWS_ADP_CLI_BINARY_PATH: &str = r"C:\adp\agent-data-plane.exe";
+const LINUX_CORE_AGENT_CLI_BINARY_PATH: &str = "/opt/datadog-agent/bin/agent/agent";
+const WINDOWS_CORE_AGENT_CLI_BINARY_PATH: &str = r"C:\Program Files\Datadog\Datadog Agent\bin\agent.exe";
 
 const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
     ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
@@ -96,6 +98,15 @@ fn container_adp_cli_command(target_os: ContainerOs) -> TargetCommand {
     let binary_path = match target_os {
         ContainerOs::Linux => LINUX_ADP_CLI_BINARY_PATH,
         ContainerOs::Windows => WINDOWS_ADP_CLI_BINARY_PATH,
+    };
+
+    TargetCommand::new(vec![binary_path.to_string()])
+}
+
+fn container_core_agent_cli_command(target_os: ContainerOs) -> TargetCommand {
+    let binary_path = match target_os {
+        ContainerOs::Linux => LINUX_CORE_AGENT_CLI_BINARY_PATH,
+        ContainerOs::Windows => WINDOWS_CORE_AGENT_CLI_BINARY_PATH,
     };
 
     TargetCommand::new(vec![binary_path.to_string()])
@@ -968,6 +979,7 @@ impl IntegrationRunner {
             docker_container_exit_code: Some(docker_exit_code),
             core_agent_auth_token_path: None,
             adp_cli_command: container_adp_cli_command(target_os),
+            core_agent_cli_command: container_core_agent_cli_command(target_os),
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
@@ -1259,10 +1271,32 @@ mod tests {
     }
 
     #[test]
+    fn linux_context_uses_installed_core_agent_cli_binary() {
+        let command = container_core_agent_cli_command(ContainerOs::Linux);
+
+        assert_eq!(
+            command.command_prefix(),
+            &["/opt/datadog-agent/bin/agent/agent".to_string()]
+        );
+        assert!(command.host_env().is_none());
+    }
+
+    #[test]
     fn windows_context_uses_test_image_adp_cli_binary() {
         let command = container_adp_cli_command(ContainerOs::Windows);
 
         assert_eq!(command.command_prefix(), &[r"C:\adp\agent-data-plane.exe".to_string()]);
+        assert!(command.host_env().is_none());
+    }
+
+    #[test]
+    fn windows_context_uses_installed_core_agent_cli_binary() {
+        let command = container_core_agent_cli_command(ContainerOs::Windows);
+
+        assert_eq!(
+            command.command_prefix(),
+            &[r"C:\Program Files\Datadog\Datadog Agent\bin\agent.exe".to_string()]
+        );
         assert!(command.host_env().is_none());
     }
 }

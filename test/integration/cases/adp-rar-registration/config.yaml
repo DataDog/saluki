@@ -1,6 +1,6 @@
 type: integration
 name: "adp-rar-registration"
-description: "Verify ADP successfully registers with Remote Agent Registry"
+description: "Verify registration and a real Core Agent to ADP status gRPC call over inbound mTLS"
 timeout: 120s
 runtimes: [linux, mac, windows]
 
@@ -22,6 +22,12 @@ procedure:
   # slower hosts.
   - assertion: log_contains
     pattern: "Successfully registered with the Datadog Agent."
+    timeout: 60s
+  # Registration creates a lazy client. Force the Core Agent to collect ADP's status so the test
+  # verifies a real inbound gRPC request authenticated with the shared IPC client certificate.
+  - action: core_agent_cli
+    args: ["status"]
+    output_contains: "Built Against Agent Version"
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:

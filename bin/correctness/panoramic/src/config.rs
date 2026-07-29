@@ -261,6 +261,18 @@ pub enum ActionConfig {
         timeout: HumanDuration,
     },
 
+    /// Invoke the Core Agent binary as a CLI command.
+    CoreAgentCli {
+        /// Arguments appended after the runtime-specific Core Agent binary and global configuration prefix.
+        args: Vec<String>,
+        /// Optional substring that must appear in successful command output.
+        #[serde(default)]
+        output_contains: Option<String>,
+        /// Timeout for waiting for the command to succeed.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+
     /// Run a command inside the target environment.
     TargetExec {
         /// Command and arguments to run in the target environment.
@@ -428,6 +440,16 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
                 }
             }
+            ActionConfig::CoreAgentCli {
+                args, output_contains, ..
+            } => {
+                for arg in args {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
+                if let Some(output_contains) = output_contains {
+                    crate::dynamic_vars::resolve_placeholders(output_contains, vars);
+                }
+            }
             ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
@@ -452,6 +474,16 @@ impl ActionConfig {
             ActionConfig::AdpCli { args, .. } => {
                 for arg in args {
                     crate::dynamic_vars::find_unresolved(arg, &mut out);
+                }
+            }
+            ActionConfig::CoreAgentCli {
+                args, output_contains, ..
+            } => {
+                for arg in args {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
+                }
+                if let Some(output_contains) = output_contains {
+                    crate::dynamic_vars::find_unresolved(output_contains, &mut out);
                 }
             }
             ActionConfig::TargetExec { command, .. } => {
@@ -1108,6 +1140,31 @@ timeout: 30s
     }
 
     #[test]
+    fn core_agent_cli_action_deserializes_args_output_matcher_and_timeout() {
+        let action: ActionConfig = serde_yaml::from_str(
+            r#"
+action: core_agent_cli
+args: ["status"]
+output_contains: "Built Against Agent Version"
+timeout: 60s
+"#,
+        )
+        .unwrap();
+
+        let ActionConfig::CoreAgentCli {
+            args,
+            output_contains,
+            timeout,
+        } = action
+        else {
+            panic!("expected core_agent_cli action");
+        };
+        assert_eq!(args, vec!["status"]);
+        assert_eq!(output_contains.as_deref(), Some("Built Against Agent Version"));
+        assert_eq!(timeout.0, Duration::from_secs(60));
+    }
+
+    #[test]
     fn windows_runtime_is_valid_for_integration_discovery() {
         let base_dir = create_test_case_dir(
             "windows-smoke",
@@ -1231,6 +1288,29 @@ procedure: []
             panic!("expected adp_cli action");
         };
         assert_eq!(args, vec!["debug", "set-metric-level", "INFO"]);
+    }
+
+    #[test]
+    fn core_agent_cli_resolves_placeholders_in_arguments_and_output_matcher() {
+        let vars = dynamic_vars(&[("COMMAND", "status"), ("MATCH", "Agent Version")]);
+        let mut action = ActionConfig::CoreAgentCli {
+            args: vec!["{{PANORAMIC_DYNAMIC_COMMAND}}".to_string()],
+            output_contains: Some("Built Against {{PANORAMIC_DYNAMIC_MATCH}}".to_string()),
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+
+        assert!(!action.unresolved_placeholders().is_empty());
+        action.resolve_dynamic_vars(&vars);
+        assert!(action.unresolved_placeholders().is_empty());
+
+        let ActionConfig::CoreAgentCli {
+            args, output_contains, ..
+        } = action
+        else {
+            panic!("expected core_agent_cli action");
+        };
+        assert_eq!(args, vec!["status"]);
+        assert_eq!(output_contains.as_deref(), Some("Built Against Agent Version"));
     }
 
     #[test]

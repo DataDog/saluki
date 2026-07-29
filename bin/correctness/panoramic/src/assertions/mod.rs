@@ -181,6 +181,8 @@ pub struct AssertionContext {
     pub core_agent_auth_token_path: Option<PathBuf>,
     /// Runtime-specific prefix and host environment for invoking the tested ADP binary as a CLI.
     pub adp_cli_command: TargetCommand,
+    /// Runtime-specific prefix and host environment for invoking the Core Agent binary as a CLI.
+    pub core_agent_cli_command: TargetCommand,
 }
 
 impl AssertionContext {

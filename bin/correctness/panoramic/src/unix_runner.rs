@@ -89,6 +89,17 @@ fn host_adp_cli_command(binary_path: &Path, config_path: &Path, adp_env: HashMap
     .with_host_env(adp_env)
 }
 
+fn host_core_agent_cli_command(
+    binary_path: &Path, state_dir: &Path, core_agent_env: HashMap<String, String>,
+) -> TargetCommand {
+    TargetCommand::new(vec![
+        binary_path.to_string_lossy().into_owned(),
+        "-c".to_string(),
+        state_dir.to_string_lossy().into_owned(),
+    ])
+    .with_host_env(core_agent_env)
+}
+
 /// Runner for a single Unix-process integration test case.
 pub(crate) struct UnixIntegrationRunner {
     test_case: IntegrationConfig,
@@ -183,6 +194,7 @@ impl UnixIntegrationRunner {
         //     directory so each test gets a clean slate and nothing leaks across runs.
         let agent_forced = build_core_agent_forced_env(&self.test_case.env, &state_dir, auth_token_path.clone());
         let agent_env = build_process_env(&self.test_case.env, &agent_forced);
+        let core_agent_cli_command = host_core_agent_cli_command(&agent_binary, &state_dir, agent_env.clone());
 
         let agent_config = UnixProcessConfig::new(format!("{}-core-agent", self.test_case.name), agent_binary)
             .with_args(vec![
@@ -264,6 +276,7 @@ impl UnixIntegrationRunner {
                 process.exit_code_cell(),
                 Some(core_agent_auth_token_path),
                 adp_cli_command,
+                core_agent_cli_command,
             )
             .await;
         phase_timings.push(PhaseTiming {
@@ -348,7 +361,7 @@ impl UnixIntegrationRunner {
     async fn run_assertions(
         &self, process_display_name: String, exit_token: CancellationToken,
         exit_code_cell: airlock::unix::ExitCodeCell, core_agent_auth_token_path: Option<PathBuf>,
-        adp_cli_command: TargetCommand,
+        adp_cli_command: TargetCommand, core_agent_cli_command: TargetCommand,
     ) -> Vec<AssertionResult> {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
@@ -363,6 +376,7 @@ impl UnixIntegrationRunner {
             docker_container_exit_code: None,
             core_agent_auth_token_path,
             adp_cli_command,
+            core_agent_cli_command,
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
@@ -590,5 +604,31 @@ mod tests {
             ]
         );
         assert_eq!(command.host_env(), Some(&adp_env));
+    }
+
+    #[test]
+    fn host_context_uses_resolved_core_agent_binary_config_directory_and_launch_environment() {
+        let binary_path = PathBuf::from("/tmp/panoramic/bin/agent");
+        let state_dir = PathBuf::from("/tmp/panoramic/state");
+        let core_agent_env = HashMap::from([
+            ("DD_API_KEY".to_string(), "test-key".to_string()),
+            (
+                "DD_AUTH_TOKEN_FILE_PATH".to_string(),
+                "/tmp/panoramic/state/auth_token".to_string(),
+            ),
+            ("DD_RUN_PATH".to_string(), "/tmp/panoramic/state".to_string()),
+        ]);
+
+        let command = host_core_agent_cli_command(&binary_path, &state_dir, core_agent_env.clone());
+
+        assert_eq!(
+            command.command_prefix(),
+            &[
+                binary_path.to_string_lossy().into_owned(),
+                "-c".to_string(),
+                state_dir.to_string_lossy().into_owned(),
+            ]
+        );
+        assert_eq!(command.host_env(), Some(&core_agent_env));
     }
 }
