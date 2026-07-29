@@ -63,6 +63,9 @@ pub struct DatadogConfiguration {
     pub autoscaling: Autoscaling,
 
     #[serde(default)]
+    pub basic_telemetry_add_container_tags: bool,
+
+    #[serde(default)]
     pub bind_host: String,
 
     #[serde(default)]
@@ -431,6 +434,7 @@ impl Default for DatadogConfiguration {
             api_key: Default::default(),
             apm_config: Default::default(),
             autoscaling: Default::default(),
+            basic_telemetry_add_container_tags: Default::default(),
             bind_host: Default::default(),
             cluster_agent: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),

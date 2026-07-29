@@ -467,6 +467,16 @@ inventory:
       additional_attributes:
         config_registry_filename: get_typed.rs
 
+  basic_telemetry_add_container_tags:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Add container tags to basic telemetry signals"
+    test_support:
+      used_by: [TypedConfigSystem]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
   bind_host:
     support: full
     pipelines: [dogstatsd]
@@ -2948,7 +2958,6 @@ excluded:
   azure_hostname_style: "ignored in initial audit 2026-04-23"
   azure_metadata_api_version: "ignored in initial audit 2026-04-23"
   azure_metadata_timeout: "ignored in initial audit 2026-04-23"
-  basic_telemetry_add_container_tags: "ignored in initial audit 2026-04-23"
   bosh_id: "ignored in initial audit 2026-04-23"
   c_core_dump: "ignored in initial audit 2026-04-23"
   c_stacktrace_collection: "ignored in initial audit 2026-04-23"

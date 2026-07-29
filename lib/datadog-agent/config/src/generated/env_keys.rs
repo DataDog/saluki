@@ -188,6 +188,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::StringList,
     },
     EnvKey {
+        env_vars: &["DD_BASIC_TELEMETRY_ADD_CONTAINER_TAGS"],
+        path: &["basic_telemetry_add_container_tags"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_BIND_HOST"],
         path: &["bind_host"],
         decode: EnvDecode::RawString,

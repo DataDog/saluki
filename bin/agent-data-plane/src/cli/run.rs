@@ -430,7 +430,8 @@ async fn create_topology(
     // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
     // OTLP proxy mode must not construct liveness or output paths that it does not otherwise need.
     if !dp_config.standalone_mode() {
-        add_liveness_source_to_blueprint(&mut blueprint, env_provider).await?;
+        let add_container_tags = config_system.config().shared.basic_telemetry.add_container_tags;
+        add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags).await?;
     }
 
     // Now we move on to our actual data pipelines.
@@ -455,9 +456,9 @@ async fn create_topology(
 const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
 
 async fn add_liveness_source_to_blueprint(
-    blueprint: &mut TopologyBlueprint, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, env_provider: &ADPEnvironmentProvider, add_container_tags: bool,
 ) -> Result<(), GenericError> {
-    let liveness_config = LivenessConfiguration::from_environment_provider(env_provider).await?;
+    let liveness_config = LivenessConfiguration::from_environment_provider(env_provider, add_container_tags).await?;
 
     blueprint
         .add_source("liveness_in", liveness_config)?

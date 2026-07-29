@@ -619,6 +619,7 @@ compressed wire payload bytes.
 | `apm_config.target_traces_per_second`                          | Target sampled traces per second                   |
 | `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
+| `basic_telemetry_add_container_tags`                           | Add container tags to basic telemetry signals      |
 | `bind_host`                                                    | Global listen host fallback                        |
 | `cluster_agent.auth_token`                                     | Bearer token for Cluster Agent requests            |
 | `cluster_agent.enabled`                                        | Enable Cluster Agent communication                 |
