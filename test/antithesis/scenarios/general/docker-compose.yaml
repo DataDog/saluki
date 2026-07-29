@@ -41,12 +41,14 @@ services:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
       AGENT_CONFIG_DIR: "/agent-config"
-      DD_AUTH_TOKEN_FILE_PATH: "/agent-config/auth_token"
+      DD_IPC_CERT_FILE_PATH: "/ipc-auth/ipc_cert.pem"
     volumes:
       - dogstatsd-socket:/var/run/datadog
-      # first_sample_config writes this timeline's config and the ready sentinel last. The Agent's init waits for that
-      # sentinel before startup creates auth_token and ipc_cert.pem, so the writers safely share this named volume.
-      - agent-config:/agent-config
+      # first_sample_config writes the sampled config, driver metadata, and ready sentinel last. The Agent's init waits
+      # for that sentinel before startup, so it only needs read access to this workload-owned volume.
+      - agent-config:/agent-config:ro
+      # The Agent supports ipc_cert_file_path and creates or retrieves the IPC certificate and private key at this path.
+      - ipc-auth:/ipc-auth
     depends_on:
       intake:
         condition: service_healthy
@@ -68,10 +70,13 @@ services:
       ADP_API_ADDR: "agent:5100"
       # Privileged API where /dogstatsd/stats lives, authenticated with the shared IPC mTLS identity.
       ADP_SECURE_API_ADDR: "agent:5101"
-      IPC_CERT_PATH: "/agent-config/ipc_cert.pem"
+      IPC_CERT_PATH: "/ipc-auth/ipc_cert.pem"
     volumes:
       - dogstatsd-socket:/var/run/datadog
       - agent-config:/agent-config
+      # The IPC identity can appear after setup, so polling records false readiness observations until it exists. The
+      # workload may read its certificate/private key but cannot modify it; auth_token is not stored in this volume.
+      - ipc-auth:/ipc-auth:ro
     depends_on:
       intake:
         condition: service_healthy
@@ -79,3 +84,4 @@ services:
 volumes:
   dogstatsd-socket:
   agent-config:
+  ipc-auth:

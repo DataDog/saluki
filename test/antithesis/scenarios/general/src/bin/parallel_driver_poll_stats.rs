@@ -26,7 +26,7 @@ struct Config {
     #[arg(
         long = "ipc-cert-path",
         env = "IPC_CERT_PATH",
-        default_value = "/agent-config/ipc_cert.pem"
+        default_value = "/ipc-auth/ipc_cert.pem"
     )]
     ipc_cert_path: PathBuf,
     /// Collection window each request asks the SUT to hold, in seconds.
@@ -55,6 +55,14 @@ fn build_client(ipc_cert_path: &Path, timeout: Duration) -> anyhow::Result<reqwe
         .build()?)
 }
 
+fn client_build_succeeded(client: &anyhow::Result<reqwest::blocking::Client>) -> bool {
+    client.is_ok()
+}
+
+fn completed_statuses(opener_status: Option<u16>, overlap_status: Option<u16>) -> Option<(u16, u16)> {
+    opener_status.zip(overlap_status)
+}
+
 fn main() -> anyhow::Result<()> {
     antithesis_init();
 
@@ -64,9 +72,20 @@ fn main() -> anyhow::Result<()> {
 
     let config = Config::try_parse()?;
 
-    let client = match build_client(&config.ipc_cert_path, Duration::from_secs(config.collection_secs + 10)) {
-        Ok(client) => client,
-        Err(_) => return Ok(()),
+    let client = build_client(&config.ipc_cert_path, Duration::from_secs(config.collection_secs + 10));
+    let client_ready = client_build_succeeded(&client);
+    let ipc_cert_file = config
+        .ipc_cert_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("<unknown>");
+    assert_sometimes!(
+        client_ready,
+        "workload loaded the IPC identity and built an authenticated client",
+        &json!({ "client_ready": client_ready, "ipc_cert_file": ipc_cert_file })
+    );
+    let Ok(client) = client else {
+        return Ok(());
     };
 
     let addr = config.adp_secure_api_addr;
@@ -80,10 +99,19 @@ fn main() -> anyhow::Result<()> {
     thread::sleep(Duration::from_millis(250));
     let overlap_status = poll(&client, &addr, secs);
 
-    let opener_status = opener.join().map_err(|_| anyhow::anyhow!("opener thread panicked"))?;
-
-    // No response from either request. Exit without asserting.
-    let (Some(opener_status), Some(overlap_status)) = (opener_status, overlap_status) else {
+    let opener_status = opener.join().unwrap_or(None);
+    let opener_reached_http = opener_status.is_some();
+    let overlap_reached_http = overlap_status.is_some();
+    let statuses = completed_statuses(opener_status, overlap_status);
+    assert_sometimes!(
+        statuses.is_some(),
+        "both overlapping privileged requests completed TLS and HTTP transport",
+        &json!({
+            "opener_reached_http": opener_reached_http,
+            "overlap_reached_http": overlap_reached_http,
+        })
+    );
+    let Some((opener_status, overlap_status)) = statuses else {
         return Ok(());
     };
 
@@ -116,7 +144,7 @@ mod tests {
     use clap::Parser as _;
     use rcgen::{generate_simple_self_signed, CertifiedKey};
 
-    use super::{build_client, Config};
+    use super::{build_client, client_build_succeeded, completed_statuses, Config};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -191,13 +219,35 @@ mod tests {
     }
 
     #[test]
-    fn ipc_cert_path_defaults_to_shared_agent_config() {
+    fn client_readiness_requires_a_successful_authenticated_client_build() {
+        install_crypto_provider();
+        let temp_dir = tempfile::tempdir().expect("temporary identity directory should be created");
+        let identity_path = temp_dir.path().join("ipc_cert.pem");
+        write_identity(&identity_path);
+
+        let valid_client = build_client(&identity_path, Duration::from_secs(1));
+        assert!(client_build_succeeded(&valid_client));
+
+        let missing_client = build_client(&temp_dir.path().join("missing.pem"), Duration::from_secs(1));
+        assert!(!client_build_succeeded(&missing_client));
+    }
+
+    #[test]
+    fn completed_statuses_requires_both_requests_to_reach_http() {
+        assert_eq!(completed_statuses(Some(200), Some(429)), Some((200, 429)));
+        assert_eq!(completed_statuses(Some(200), None), None);
+        assert_eq!(completed_statuses(None, Some(429)), None);
+        assert_eq!(completed_statuses(None, None), None);
+    }
+
+    #[test]
+    fn ipc_cert_path_defaults_to_read_only_ipc_auth_volume() {
         let _lock = ENV_LOCK.lock().expect("environment lock should not be poisoned");
         let _env = EnvGuard::set(None);
 
         let config = Config::try_parse_from(["parallel_driver_poll_stats"]).expect("default config should parse");
 
-        assert_eq!(config.ipc_cert_path, PathBuf::from("/agent-config/ipc_cert.pem"));
+        assert_eq!(config.ipc_cert_path, PathBuf::from("/ipc-auth/ipc_cert.pem"));
     }
 
     #[test]
