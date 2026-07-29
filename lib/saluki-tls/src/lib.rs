@@ -524,8 +524,9 @@ fn default_crypto_provider() -> CryptoProvider {
 /// ## Errors
 ///
 /// If errors occur during certificate loading and no certificates were ultimately added to the store, an error is
-/// returned. Missing files or directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and treated as
-/// "no certificates available" rather than as a load failure.
+/// returned. Missing or unreadable files and directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and
+/// treated as "no certificates available" rather than as a load failure; only certificate-content errors (such as
+/// malformed PEM) or other IO failures can fail the load.
 ///
 /// [c_rehash]: https://www.openssl.org/docs/manmaster/man1/c_rehash.html
 pub fn load_platform_root_certificates() -> Result<(), GenericError> {
@@ -558,21 +559,34 @@ pub fn load_platform_root_certificates() -> Result<(), GenericError> {
 ///
 /// If errors occur during certificate loading and no certificates were ultimately added to the store, an error is
 /// returned. Otherwise, even if some certificates failed to parse, the store is returned with whatever certificates were
-/// successfully added. Missing files or directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are tolerated and do
-/// not produce an error.
+/// successfully added. Missing or unreadable files and directories referenced by `SSL_CERT_FILE`/`SSL_CERT_DIR` are
+/// tolerated and do not produce an error.
 pub fn load_platform_root_certificates_inner() -> Result<RootCertStore, GenericError> {
     let mut root_cert_store = RootCertStore::empty();
 
     let mut result = rustls_native_certs::load_native_certs();
 
-    // Drop "not found" IO errors before evaluating success or failure: a missing `SSL_CERT_FILE` or `SSL_CERT_DIR`
-    // should look like "no certificates available" rather than a load failure, since callers may simply not have set
-    // those env vars on this host.
-    result.errors.retain(|err| {
-        !matches!(
-            &err.kind,
-            rustls_native_certs::ErrorKind::Io { inner, .. } if inner.kind() == std::io::ErrorKind::NotFound,
-        )
+    // Drop tolerable filesystem-access IO errors before evaluating success or failure. A missing (`NotFound`) or
+    // unreadable (`PermissionDenied`) `SSL_CERT_FILE`/`SSL_CERT_DIR` entry should look like "no certificates available"
+    // rather than a load failure: callers may simply not have set those env vars on this host, and a host's cert store
+    // may reference files this process can't read. This mirrors Go's TLS stack (and thus the Datadog Agent), which
+    // skips cert files it can't read. Other IO errors and all certificate-content errors (PEM parse / OS store) are
+    // retained and can still fail the load below when nothing was added.
+    result.errors.retain(|err| match &err.kind {
+        rustls_native_certs::ErrorKind::Io { inner, path }
+            if matches!(
+                inner.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            debug!(
+                error = %inner,
+                path = %path.display(),
+                "Skipping missing or unreadable certificate source while loading platform root certificates."
+            );
+            false
+        }
+        _ => true,
     });
 
     // For whatever certificates we _did_ get back, try and add them to the root certificate store.
