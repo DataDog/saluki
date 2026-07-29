@@ -1,0 +1,21 @@
+hostname: "correctness-testing"
+api_key: dummy-api-key-correctness-testing
+health_port: 5555
+
+apm_config:
+  enabled: false
+
+process_config:
+  process_collection:
+    enabled: false
+  container_collection:
+    enabled: false
+
+dd_url: "http://datadog-intake:2049"
+
+dogstatsd_port: 8125
+dogstatsd_non_local_traffic: true
+dogstatsd_socket: ""
+dogstatsd_stream_socket: ""
+dogstatsd_origin_detection: false
+dogstatsd_workers_count: 1

@@ -14,13 +14,15 @@ use airlock::{
 use rand::{distr::SampleString as _, rng};
 use rand_distr::Alphanumeric;
 use saluki_error::{generic_error, GenericError};
+use serde_json::Value;
 use tokio::{select, task::JoinHandle, time::sleep};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, Instrument as _, Span};
 
 use crate::correctness::{
-    analysis::{AnalysisMode, AnalysisRunner, CollectedData, TracesAnalysisOptions},
+    analysis::{AnalysisMode, AnalysisRunner, CollectedData, ExpvarSnapshots, TracesAnalysisOptions},
     config::{Config, Runtime},
+    expvars::capture_expvars,
     sync::Coordinator,
 };
 use crate::{
@@ -42,6 +44,15 @@ const FLUSH_WAIT: Duration = Duration::from_secs(32);
 
 /// Run a single correctness test and return a panoramic `TestResult`.
 pub async fn run_correctness_test(name: String, config: Config, tctx: TestContext) -> TestResult {
+    if config.runtime == Runtime::KubernetesInDocker && matches!(config.analysis_mode, AnalysisMode::Expvars) {
+        return make_error_result(
+            name,
+            Instant::now(),
+            "configuration",
+            generic_error!("The expvars correctness analysis mode currently supports only the Docker runtime."),
+        );
+    }
+
     match config.runtime {
         Runtime::Docker => run_docker_correctness_test(name, config, tctx).await,
         Runtime::KubernetesInDocker => crate::correctness::k8s::run_k8s_correctness_test(name, config, tctx).await,
@@ -61,7 +72,7 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
 
     // Phase 2: collect data
     let collect_start = Instant::now();
-    let (baseline_data, comparison_data) = match test_runner.run().await {
+    let run_data = match test_runner.run().await {
         Ok(data) => data,
         Err(e) => return make_error_result(name, started, "collect_data", e),
     };
@@ -74,10 +85,23 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
             otlp_direct_analysis_mode: config.otlp_direct_analysis_mode,
             additional_span_ignore_fields: config.additional_span_ignore_fields.clone(),
         }),
-        AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks => None,
+        AnalysisMode::Events | AnalysisMode::Metrics | AnalysisMode::ServiceChecks | AnalysisMode::Expvars => None,
     };
-    let analysis_runner = AnalysisRunner::new(config.analysis_mode, baseline_data, comparison_data, traces_options)
-        .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets);
+    let analysis_runner = if matches!(config.analysis_mode, AnalysisMode::Expvars) {
+        let (baseline, comparison) = run_data
+            .expvars
+            .expect("expvars correctness run must capture before and after snapshots");
+        AnalysisRunner::new_expvars(baseline, comparison)
+    } else {
+        AnalysisRunner::new(
+            config.analysis_mode.clone(),
+            run_data.baseline_data,
+            run_data.comparison_data,
+            traces_options,
+        )
+        .expect("non-expvar analysis mode must accept telemetry data")
+        .with_dogstatsd_forwarding_requirement(config.require_dogstatsd_forwarded_packets)
+    };
     let analysis_result = analysis_runner.run_analysis();
     let analysis_duration = analysis_start.elapsed();
 
@@ -98,13 +122,18 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
         },
     ];
 
+    let assertion_name = match config.analysis_mode {
+        AnalysisMode::Expvars => "expvar deltas match",
+        _ => "telemetry matches",
+    };
+
     match analysis_result {
         Ok(()) => TestResult {
             name,
             passed: true,
             duration: total_duration,
             assertion_results: vec![AssertionResult {
-                name: "telemetry matches".to_string(),
+                name: assertion_name.to_string(),
                 passed: true,
                 message: "No difference detected between baseline and comparison.".to_string(),
                 duration: analysis_duration,
@@ -121,7 +150,7 @@ async fn run_docker_correctness_test(name: String, config: Config, tctx: TestCon
                 passed: false,
                 duration: total_duration,
                 assertion_results: vec![AssertionResult {
-                    name: "telemetry matches".to_string(),
+                    name: assertion_name.to_string(),
                     passed: false,
                     message: full_message,
                     duration: analysis_duration,
@@ -177,6 +206,7 @@ pub struct CorrectnessRunner {
     baseline_coordinator: Coordinator,
     comparison_coordinator: Coordinator,
     millstone_coordinator: Coordinator,
+    capture_expvars: bool,
 }
 
 impl CorrectnessRunner {
@@ -194,6 +224,7 @@ impl CorrectnessRunner {
             baseline_coordinator: Coordinator::new(),
             comparison_coordinator: Coordinator::new(),
             millstone_coordinator: Coordinator::new(),
+            capture_expvars: matches!(config.analysis_mode, AnalysisMode::Expvars),
         })
     }
 
@@ -349,7 +380,7 @@ impl CorrectnessRunner {
         }
     }
 
-    pub async fn run(mut self) -> Result<(CollectedData, CollectedData), GenericError> {
+    async fn run(mut self) -> Result<CorrectnessRunData, GenericError> {
         let baseline_isolation_group_id = generate_isolation_group_id();
         let comparison_isolation_group_id = generate_isolation_group_id();
         let millstone_isolation_group_id = generate_isolation_group_id();
@@ -413,6 +444,29 @@ impl CorrectnessRunner {
                 return Err(e);
             }
         };
+        let expvars_before = if self.capture_expvars {
+            match self
+                .capture_expvar_pair(
+                    baseline_collector.target_container_name.clone(),
+                    comparison_collector.target_container_name.clone(),
+                )
+                .await
+            {
+                Ok(pair) => Some(pair),
+                Err(error) => {
+                    cleanup_groups(
+                        &baseline_isolation_group_id,
+                        &comparison_isolation_group_id,
+                        &millstone_isolation_group_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+
         info!("Agent containers spawned successfully. Starting shared millstone...");
 
         // Phase 4: Spawn the shared millstone container now that both agent volumes exist.
@@ -466,6 +520,29 @@ impl CorrectnessRunner {
         // on flushing like metrics does.
         sleep(FLUSH_WAIT).await;
 
+        let expvars_after = if self.capture_expvars {
+            match self
+                .capture_expvar_pair(
+                    baseline_collector.target_container_name.clone(),
+                    comparison_collector.target_container_name.clone(),
+                )
+                .await
+            {
+                Ok(pair) => Some(pair),
+                Err(error) => {
+                    cleanup_groups(
+                        &baseline_isolation_group_id,
+                        &comparison_isolation_group_id,
+                        &millstone_isolation_group_id,
+                    )
+                    .await;
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
+
         // Phase 7: Collect data from both datadog-intake containers, then shut everything down.
         info!("Collecting data from baseline and comparison intake containers...");
         let maybe_baseline_data = run_in_background(
@@ -510,8 +587,47 @@ impl CorrectnessRunner {
 
         info!("Cleanup complete.");
 
-        Ok((baseline_data, comparison_data))
+        let expvars = match (expvars_before, expvars_after) {
+            (Some((baseline_before, comparison_before)), Some((baseline_after, comparison_after))) => Some((
+                ExpvarSnapshots {
+                    before: baseline_before,
+                    after: baseline_after,
+                },
+                ExpvarSnapshots {
+                    before: comparison_before,
+                    after: comparison_after,
+                },
+            )),
+            (None, None) => None,
+            _ => unreachable!("expvar snapshots must be captured in before/after pairs"),
+        };
+
+        Ok(CorrectnessRunData {
+            baseline_data,
+            comparison_data,
+            expvars,
+        })
     }
+
+    async fn capture_expvar_pair(
+        &mut self, baseline_container_name: String, comparison_container_name: String,
+    ) -> Result<(Value, Value), GenericError> {
+        let baseline = run_in_background(&Span::current(), async move {
+            capture_expvars(&baseline_container_name).await
+        });
+        let comparison = run_in_background(&Span::current(), async move {
+            capture_expvars(&comparison_container_name).await
+        });
+
+        self.unwrap_or_shutdown("capture_expvars", baseline.await, comparison.await)
+            .await
+    }
+}
+
+struct CorrectnessRunData {
+    baseline_data: CollectedData,
+    comparison_data: CollectedData,
+    expvars: Option<(ExpvarSnapshots, ExpvarSnapshots)>,
 }
 
 fn run_in_background<F, T>(span: &Span, f: F) -> SpawnedResult<T>
@@ -666,6 +782,7 @@ impl DriverResults {
 /// port needed to collect data from `datadog-intake`.
 struct AgentGroupCollector {
     datadog_intake_port: u16,
+    target_container_name: String,
 }
 
 impl AgentGroupCollector {
@@ -675,7 +792,15 @@ impl AgentGroupCollector {
             .and_then(|details| details.try_get_exposed_port("tcp", 2049))
             .ok_or_else(|| generic_error!("Failed to get exposed port details for datadog-intake container."))?;
 
-        Ok(Self { datadog_intake_port })
+        let target_container_name = spawned_drivers
+            .get_driver_details("target")
+            .map(|details| details.container_name().to_string())
+            .ok_or_else(|| generic_error!("Failed to get target container details."))?;
+
+        Ok(Self {
+            datadog_intake_port,
+            target_container_name,
+        })
     }
 }
 
