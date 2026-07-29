@@ -1,6 +1,7 @@
 use std::{sync::LazyLock, time::Duration};
 
 use async_trait::async_trait;
+use saluki_common::time::get_unix_timestamp;
 use saluki_context::{
     tags::{Tag, TagSet},
     Context,
@@ -79,18 +80,25 @@ impl MemoryBounds for LivenessConfiguration {
 }
 
 struct Liveness {
-    metric: Event,
+    metric_context: Context,
     service_check: Event,
 }
 
 impl Liveness {
     fn new(hostname: MetaString, version: MetaString) -> Self {
-        let (metric, service_check) = create_liveness_events(hostname, version);
-        Self { metric, service_check }
+        let (metric_context, service_check) = create_liveness_payloads(hostname, version);
+        Self {
+            metric_context,
+            service_check,
+        }
     }
 
-    fn events(&self) -> (Event, Event) {
-        (self.metric.clone(), self.service_check.clone())
+    fn metric_at(&self, timestamp: u64) -> Event {
+        Event::Metric(Metric::gauge(self.metric_context.clone(), (timestamp, 1.0)))
+    }
+
+    fn service_check(&self) -> Event {
+        self.service_check.clone()
     }
 }
 
@@ -115,7 +123,8 @@ impl Source for Liveness {
                 },
                 _ = health.live() => continue,
                 _ = tick_interval.tick() => {
-                    let (metric, service_check) = self.events();
+                    let metric = self.metric_at(get_unix_timestamp());
+                    let service_check = self.service_check();
 
                     if let Err(error) = context.dispatcher().dispatch_one_named("metrics", metric).await {
                         warn!(error = %error, "Failed to dispatch liveness metric.");
@@ -133,16 +142,15 @@ impl Source for Liveness {
     }
 }
 
-fn create_liveness_events(hostname: MetaString, version: MetaString) -> (Event, Event) {
+fn create_liveness_payloads(hostname: MetaString, version: MetaString) -> (Context, Event) {
     let metric_context = Context::from_static_name(RUNNING_METRIC_NAME)
         .with_host(hostname.clone())
         .with_tags(TagSet::from_iter([Tag::from(format!("version:{version}"))]));
-    let metric = Event::Metric(Metric::gauge(metric_context, 1.0));
 
     let service_check =
         Event::ServiceCheck(ServiceCheck::new(UP_SERVICE_CHECK_NAME, CheckStatus::Ok).with_hostname(hostname));
 
-    (metric, service_check)
+    (metric_context, service_check)
 }
 
 #[cfg(test)]
@@ -178,9 +186,9 @@ mod tests {
     }
 
     #[test]
-    fn prebuilt_metric_payload_has_required_contract() {
+    fn metric_payload_has_required_contract() {
         let liveness = Liveness::new("host-a".into(), "1.2.3".into());
-        let (metric, _) = liveness.events();
+        let metric = liveness.metric_at(0);
 
         let Event::Metric(metric) = metric else {
             panic!("expected metric event");
@@ -192,9 +200,20 @@ mod tests {
     }
 
     #[test]
+    fn metric_payload_uses_emission_timestamp() {
+        let liveness = Liveness::new("host-a".into(), "1.2.3".into());
+        let emission_timestamp = 1_700_000_000;
+        let Event::Metric(metric) = liveness.metric_at(emission_timestamp) else {
+            panic!("expected metric event");
+        };
+
+        assert_eq!(metric.values(), &MetricValues::gauge((emission_timestamp, 1.0)));
+    }
+
+    #[test]
     fn prebuilt_service_check_payload_has_required_contract() {
         let liveness = Liveness::new("host-a".into(), "1.2.3".into());
-        let (_, service_check) = liveness.events();
+        let service_check = liveness.service_check();
 
         let Event::ServiceCheck(service_check) = service_check else {
             panic!("expected service check event");
