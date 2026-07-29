@@ -51,3 +51,7 @@ rustls = { workspace = true, features = ["aws_lc_rs"] }
 
 [target.'cfg(windows)'.dependencies]
 rustls-cng-crypto = { workspace = true }
+
+[dev-dependencies]
+saluki-tls = { workspace = true, features = ["test-util"] }
+tokio-rustls = { workspace = true }

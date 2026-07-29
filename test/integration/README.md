@@ -249,6 +249,16 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
   timeout: 30s
 ```
 
+#### `tls_client_certificate_required`
+
+Sends an HTTPS request without a client identity and verifies that the TLS handshake fails with the `CertificateRequired` alert. The assertion skips server-certificate verification so it can probe self-signed endpoints, but it does not accept connection failures, timeouts, or HTTP responses as proof that client authentication is required. This host-side assertion is not supported for Windows container targets.
+
+```yaml
+- assertion: tls_client_certificate_required
+  endpoint: "https://localhost:55101/config"
+  timeout: 30s
+```
+
 #### `adp_config_key_equals`
 
 Polls ADP's privileged `/config` endpoint until one key equals the expected value.

@@ -371,6 +371,14 @@ pub enum AssertionConfig {
         timeout: HumanDuration,
     },
 
+    /// Check that an HTTPS endpoint rejects anonymous clients during TLS client-certificate authentication.
+    TlsClientCertificateRequired {
+        /// The HTTPS endpoint to check without supplying a client identity.
+        endpoint: String,
+        /// Overall timeout for the anonymous HTTPS request.
+        timeout: HumanDuration,
+    },
+
     /// Check that a file exists in the container, and optionally that its contents match a pattern.
     FileContains {
         /// Absolute path to the file inside the container.
@@ -503,7 +511,8 @@ impl AssertionConfig {
             AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
                 crate::dynamic_vars::resolve_placeholders(pattern, vars);
             }
-            AssertionConfig::HttpCheck { endpoint, .. } => {
+            AssertionConfig::HttpCheck { endpoint, .. }
+            | AssertionConfig::TlsClientCertificateRequired { endpoint, .. } => {
                 crate::dynamic_vars::resolve_placeholders(endpoint, vars);
             }
             AssertionConfig::PortListening { protocol, .. } => {
@@ -530,7 +539,8 @@ impl AssertionConfig {
             AssertionConfig::LogContains { pattern, .. } | AssertionConfig::LogNotContains { pattern, .. } => {
                 crate::dynamic_vars::find_unresolved(pattern, &mut out);
             }
-            AssertionConfig::HttpCheck { endpoint, .. } => {
+            AssertionConfig::HttpCheck { endpoint, .. }
+            | AssertionConfig::TlsClientCertificateRequired { endpoint, .. } => {
                 crate::dynamic_vars::find_unresolved(endpoint, &mut out);
             }
             AssertionConfig::PortListening { protocol, .. } => {
@@ -1354,6 +1364,26 @@ procedure: []
         };
         assert_eq!(path, "/run/10.0.0.5.pid");
         assert_eq!(pattern.as_deref(), Some("addr=10.0.0.5"));
+    }
+
+    #[test]
+    fn tls_client_certificate_required_parses_and_resolves_its_endpoint() {
+        let mut assertion: AssertionConfig = serde_yaml::from_str(
+            r#"
+assertion: tls_client_certificate_required
+endpoint: "https://{{PANORAMIC_DYNAMIC_HOST}}:55101/config"
+timeout: 5s
+"#,
+        )
+        .expect("TLS client-certificate assertion should parse");
+
+        assertion.resolve_dynamic_vars(&dynamic_vars(&[("HOST", "localhost")]));
+
+        let AssertionConfig::TlsClientCertificateRequired { endpoint, timeout } = assertion else {
+            panic!("expected tls_client_certificate_required");
+        };
+        assert_eq!(endpoint, "https://localhost:55101/config");
+        assert_eq!(timeout.0, Duration::from_secs(5));
     }
 
     #[test]

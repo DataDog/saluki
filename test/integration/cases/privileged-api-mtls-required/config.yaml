@@ -1,0 +1,39 @@
+type: integration
+name: "privileged-api-mtls-required"
+description: "Verifies that the ADP privileged API accepts its authenticated CLI and rejects an anonymous HTTPS client during TLS client-certificate authentication."
+timeout: 120s
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-privileged-api-mtls-required"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
+container:
+  exposed_ports:
+    - "55101/tcp"
+
+procedure:
+  - assertion: port_listening
+    port: 55101
+    protocol: tcp
+    timeout: 60s
+
+  # Positive authenticated readiness prevents a dead listener from being interpreted as authentication success.
+  - action: adp_cli
+    args: ["config"]
+    timeout: 30s
+
+  - assertion: tls_client_certificate_required
+    endpoint: "https://localhost:55101/config"
+    timeout: 30s
+
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

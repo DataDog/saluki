@@ -24,6 +24,10 @@ mod http_check;
 mod log_contains;
 mod port_listening;
 mod process_stable;
+mod tls_client_certificate_required;
+
+#[cfg(test)]
+mod tls_client_certificate_required_tests;
 
 pub use adp_config_key_equals::{default_adp_config_endpoint, AdpConfigKeyEqualsAssertion};
 pub use adp_exits::AdpExitsWithAssertion;
@@ -32,6 +36,7 @@ pub use http_check::HttpCheckAssertion;
 pub use log_contains::{LogContainsAssertion, LogNotContainsAssertion};
 pub use port_listening::PortListeningAssertion;
 pub use process_stable::ProcessStableForAssertion;
+pub use tls_client_certificate_required::TlsClientCertificateRequiredAssertion;
 
 /// Result of running an assertion.
 #[derive(Clone, Debug)]
@@ -254,6 +259,9 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
             *insecure_skip_verify,
             timeout.0,
         ))),
+        AssertionConfig::TlsClientCertificateRequired { endpoint, timeout } => Ok(Box::new(
+            TlsClientCertificateRequiredAssertion::new(endpoint.clone(), timeout.0),
+        )),
         AssertionConfig::FileContains {
             path,
             pattern,

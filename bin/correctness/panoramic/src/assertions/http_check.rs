@@ -12,6 +12,30 @@ use tracing::trace;
 use crate::assertions::{Assertion, AssertionContext, AssertionResult};
 use crate::config::HttpStatusMatcher;
 
+/// Resolves an endpoint URL to the address reachable from the assertion's probe site.
+///
+/// Host-side probes substitute the mapped ephemeral port on `127.0.0.1`. In-container probes
+/// substitute the container's primary network IP and keep the original internal port.
+pub(super) fn resolve_endpoint(endpoint: &str, ctx: &AssertionContext) -> String {
+    let mut endpoint = endpoint.to_string();
+
+    for (internal_spec, host_port) in &ctx.port_mappings {
+        if let Some(internal_port) = internal_spec.split('/').next() {
+            let replacement = if ctx.target_is_windows() {
+                let host = ctx.container_ip.as_deref().unwrap_or("127.0.0.1");
+                format!("{}:{}", host, internal_port)
+            } else {
+                format!("127.0.0.1:{}", host_port)
+            };
+            endpoint = endpoint
+                .replace(&format!("localhost:{}", internal_port), &replacement)
+                .replace(&format!("127.0.0.1:{}", internal_port), &replacement);
+        }
+    }
+
+    endpoint
+}
+
 /// Assertion that probes an HTTP/HTTPS endpoint and checks the response status code.
 ///
 /// - Supports both `http://` and `https://` schemes. For HTTPS, callers may opt into skipping
@@ -34,32 +58,6 @@ impl HttpCheckAssertion {
             insecure_skip_verify,
             timeout,
         }
-    }
-
-    /// Resolve the endpoint URL, replacing container ports with the address reachable from the
-    /// probe site.
-    ///
-    /// Host-side probes substitute the mapped ephemeral port on `127.0.0.1`. In-container probes
-    /// (currently only the Windows runtime) substitute the container's primary network IP and
-    /// keep the original internal port.
-    fn resolve_endpoint(&self, ctx: &AssertionContext) -> String {
-        let mut endpoint = self.endpoint.clone();
-
-        for (internal_spec, host_port) in &ctx.port_mappings {
-            if let Some(internal_port) = internal_spec.split('/').next() {
-                let replacement = if ctx.target_is_windows() {
-                    let host = ctx.container_ip.as_deref().unwrap_or("127.0.0.1");
-                    format!("{}:{}", host, internal_port)
-                } else {
-                    format!("127.0.0.1:{}", host_port)
-                };
-                endpoint = endpoint
-                    .replace(&format!("localhost:{}", internal_port), &replacement)
-                    .replace(&format!("127.0.0.1:{}", internal_port), &replacement);
-            }
-        }
-
-        endpoint
     }
 
     fn status_matches(&self, actual: u16) -> bool {
@@ -94,7 +92,7 @@ impl Assertion for HttpCheckAssertion {
         let started = Instant::now();
         let deadline = started + self.timeout;
 
-        let endpoint = self.resolve_endpoint(ctx);
+        let endpoint = resolve_endpoint(&self.endpoint, ctx);
 
         // Pick a probe strategy. Linux/host targets are reachable directly from the test runner,
         // so we use a real HTTP client. Windows targets are not (the container's listener is
