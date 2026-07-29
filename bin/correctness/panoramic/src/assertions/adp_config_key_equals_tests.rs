@@ -15,6 +15,8 @@ use tracing::instrument::WithSubscriber as _;
 use super::{AdpConfigKeyEqualsAssertion, Assertion as _, AssertionContext, LogBuffer, TargetCommand};
 use crate::actions::{execute_target_command, CommandDiagnostics};
 
+const CHILD_PROCESS_TEST_TIMEOUT: Duration = Duration::from_secs(60);
+
 static NEXT_TEMP_PATH_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Default)]
@@ -105,7 +107,7 @@ async fn source_endpoint_passes_via_real_adp_config_json_child_command() {
     let result = assertion(
         "https://127.0.0.1:55101/config",
         serde_json::json!("source"),
-        Duration::from_secs(3),
+        CHILD_PROCESS_TEST_TIMEOUT,
     )
     .check(&ctx)
     .await;
@@ -124,7 +126,7 @@ async fn runtime_endpoint_passes_distinct_runtime_arguments_and_value_to_real_ch
     let result = assertion(
         "https://localhost:55101/config/internal",
         serde_json::json!("runtime"),
-        Duration::from_secs(3),
+        CHILD_PROCESS_TEST_TIMEOUT,
     )
     .check(&ctx)
     .await;
@@ -191,7 +193,7 @@ fn unsupported_endpoints_are_rejected_without_exposing_the_configured_value() {
 }
 
 #[tokio::test]
-async fn nonmatching_values_retry_until_the_assertion_budget_expires() {
+async fn completed_nonmatching_value_triggers_another_invocation() {
     let attempts_path = temp_path("adp-config-attempts");
     let _ = std::fs::remove_file(&attempts_path);
     let command = shell_target(
@@ -203,25 +205,70 @@ printf '%s' '{"feature":{"enabled":false}}'"#,
             attempts_path.to_string_lossy().into_owned(),
         )]),
     );
-    let ctx = host_context(command, CancellationToken::new());
-    let started = Instant::now();
+    let cancel_token = CancellationToken::new();
+    let ctx = host_context(command, cancel_token.clone());
+    let mut assertion_task = tokio::spawn(async move {
+        assertion(
+            "https://localhost:55101/config",
+            serde_json::json!(true),
+            CHILD_PROCESS_TEST_TIMEOUT,
+        )
+        .check(&ctx)
+        .await
+    });
 
-    let result = assertion(
-        "https://localhost:55101/config",
-        serde_json::json!(true),
-        Duration::from_secs(3),
-    )
-    .check(&ctx)
-    .await;
+    let retry_observed = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if std::fs::read(&attempts_path).unwrap_or_default().len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    if !retry_observed {
+        cancel_token.cancel();
+        if tokio::time::timeout(Duration::from_secs(2), &mut assertion_task)
+            .await
+            .is_err()
+        {
+            assertion_task.abort();
+            let _ = assertion_task.await;
+        }
+        let _ = std::fs::remove_file(&attempts_path);
+        panic!("assertion did not retry a completed nonmatching value within 30 seconds");
+    }
+
+    let attempts = std::fs::read(&attempts_path).unwrap_or_default().len();
+    let started = Instant::now();
+    cancel_token.cancel();
+    let result = match tokio::time::timeout(Duration::from_secs(2), &mut assertion_task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            let _ = std::fs::remove_file(&attempts_path);
+            panic!("assertion task failed: {error}");
+        }
+        Err(_) => {
+            assertion_task.abort();
+            let _ = assertion_task.await;
+            let _ = std::fs::remove_file(&attempts_path);
+            panic!("cancellation did not stop config retry polling within 2 seconds");
+        }
+    };
 
     let elapsed = started.elapsed();
-    let attempts = std::fs::read(&attempts_path).unwrap_or_default().len();
     let _ = std::fs::remove_file(&attempts_path);
-    assert!(!result.passed, "nonmatching value unexpectedly passed");
-    assert!(attempts >= 2, "expected at least two CLI attempts, observed {attempts}");
+    assert!(attempts >= 2, "expected a CLI retry, observed {attempts} attempt(s)");
+    assert!(!result.passed, "cancelled assertion unexpectedly passed");
     assert!(
-        elapsed < Duration::from_secs(4),
-        "assertion timeout was not bounded: {elapsed:?}"
+        result.message.contains("cancelled"),
+        "unexpected message: {}",
+        result.message
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "cancellation was not bounded: {elapsed:?}"
     );
 }
 
@@ -279,7 +326,7 @@ exec sleep 5"#,
         assertion(
             "https://localhost:55101/config",
             serde_json::json!(true),
-            Duration::from_secs(10),
+            CHILD_PROCESS_TEST_TIMEOUT,
         )
         .check(&ctx)
         .await
@@ -340,24 +387,31 @@ async fn nonzero_adp_config_cli_output_is_absent_from_description_result_and_tra
     let command_secret = "adp-config-command-output-secret";
     let environment_secret = "adp-config-environment-output-secret";
     let config_secret = "adp-config-child-config-secret";
+    let child_ran_path = temp_path("adp-config-nonzero-child-ran");
+    let _ = std::fs::remove_file(&child_ran_path);
     let command = TargetCommand::new(vec![
         "sh".to_string(),
         "-c".to_string(),
         format!(
-            "printf '%s\\n%s\\n{config_secret}\\n' \"$0\" \"$PANORAMIC_CONFIG_SECRET\"; \
+            "printf x > \"$PANORAMIC_CONFIG_CHILD_RAN_FILE\" || exit 65; \
+             printf '%s\\n%s\\n{config_secret}\\n' \"$0\" \"$PANORAMIC_CONFIG_SECRET\"; \
              printf '%s\\n%s\\n{config_secret}\\n' \"$0\" \"$PANORAMIC_CONFIG_SECRET\" >&2; exit 7"
         ),
         command_secret.to_string(),
     ])
-    .with_host_env(HashMap::from([(
-        "PANORAMIC_CONFIG_SECRET".to_string(),
-        environment_secret.to_string(),
-    )]));
-    let ctx = host_context(command, CancellationToken::new());
+    .with_host_env(HashMap::from([
+        ("PANORAMIC_CONFIG_SECRET".to_string(), environment_secret.to_string()),
+        (
+            "PANORAMIC_CONFIG_CHILD_RAN_FILE".to_string(),
+            child_ran_path.to_string_lossy().into_owned(),
+        ),
+    ]));
+    let cancel_token = CancellationToken::new();
+    let ctx = host_context(command, cancel_token.clone());
     let assertion = assertion(
         "https://localhost:55101/config",
         serde_json::json!(true),
-        Duration::from_secs(2),
+        CHILD_PROCESS_TEST_TIMEOUT,
     );
     let description = assertion.description();
     let trace_capture = TraceCapture::default();
@@ -367,17 +421,66 @@ async fn nonzero_adp_config_cli_output_is_absent_from_description_result_and_tra
         .without_time()
         .with_writer(trace_capture.clone())
         .finish();
+    let expected_trace = "Failed to read ADP config with its CLI, retrying... key=feature.enabled \
+         error=ADP configuration CLI command exited exit status: 7.";
+    let mut assertion_task = tokio::spawn(async move { assertion.check(&ctx).with_subscriber(subscriber).await });
 
-    let result = assertion.check(&ctx).with_subscriber(subscriber).await;
+    let child_and_trace_observed = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if child_ran_path.exists() && trace_capture.contents().contains(expected_trace) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok();
+    if !child_and_trace_observed {
+        cancel_token.cancel();
+        if tokio::time::timeout(Duration::from_secs(2), &mut assertion_task)
+            .await
+            .is_err()
+        {
+            assertion_task.abort();
+            let _ = assertion_task.await;
+        }
+        let trace = trace_capture.contents();
+        let _ = std::fs::remove_file(&child_ran_path);
+        panic!("nonzero child and fixed-label trace were not observed within 30 seconds: {trace}");
+    }
+
+    let started = Instant::now();
+    cancel_token.cancel();
+    let result = match tokio::time::timeout(Duration::from_secs(2), &mut assertion_task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            let _ = std::fs::remove_file(&child_ran_path);
+            panic!("assertion task failed: {error}");
+        }
+        Err(_) => {
+            assertion_task.abort();
+            let _ = assertion_task.await;
+            let _ = std::fs::remove_file(&child_ran_path);
+            panic!("cancellation did not stop config retry polling within 2 seconds");
+        }
+    };
+
+    let elapsed = started.elapsed();
     let trace = trace_capture.contents();
-
-    assert!(!result.passed, "nonzero child unexpectedly passed");
+    let _ = std::fs::remove_file(&child_ran_path);
+    assert!(!result.passed, "cancelled assertion unexpectedly passed");
     assert!(
-        trace.contains(
-            "Failed to read ADP config with its CLI, retrying... key=feature.enabled \
-             error=ADP configuration CLI command exited exit status: 7."
-        ),
+        result.message.contains("cancelled"),
+        "unexpected message: {}",
+        result.message
+    );
+    assert!(
+        trace.contains(expected_trace),
         "assertion did not trace the fixed-label child failure: {trace}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "cancellation was not bounded: {elapsed:?}"
     );
     for secret in [command_secret, environment_secret, config_secret] {
         assert!(!description.contains(secret), "description exposed {secret}");
@@ -406,7 +509,7 @@ async fn suppressed_command_diagnostics_return_a_fixed_label_without_child_outpu
         &ctx,
         &command,
         &diagnostics,
-        Duration::from_secs(5),
+        CHILD_PROCESS_TEST_TIMEOUT,
         ctx.adp_cli_command.host_env(),
     )
     .await
