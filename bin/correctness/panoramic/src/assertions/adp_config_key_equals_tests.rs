@@ -267,8 +267,7 @@ async fn cancellation_interrupts_an_in_flight_adp_config_command() {
     let command = shell_target(
         r#"test "$1" = config && test "$2" = --json || exit 64
 printf x > "$PANORAMIC_CONFIG_STARTED_FILE"
-sleep 5
-printf '%s' '{"feature":{"enabled":true}}'"#,
+exec sleep 5"#,
         HashMap::from([(
             "PANORAMIC_CONFIG_STARTED_FILE".to_string(),
             started_path.to_string_lossy().into_owned(),
@@ -276,30 +275,54 @@ printf '%s' '{"feature":{"enabled":true}}'"#,
     );
     let cancel_token = CancellationToken::new();
     let ctx = host_context(command, cancel_token.clone());
-    let marker_path = started_path.clone();
-    let cancel_task = tokio::spawn(async move {
-        let marker_deadline = Instant::now() + Duration::from_secs(3);
-        while !marker_path.exists() && Instant::now() < marker_deadline {
+    let mut assertion_task = tokio::spawn(async move {
+        assertion(
+            "https://localhost:55101/config",
+            serde_json::json!(true),
+            Duration::from_secs(10),
+        )
+        .check(&ctx)
+        .await
+    });
+
+    let child_started = tokio::time::timeout(Duration::from_secs(30), async {
+        while !started_path.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        let child_started = marker_path.exists();
+    })
+    .await
+    .is_ok();
+    if !child_started {
         cancel_token.cancel();
-        child_started
-    });
+        if tokio::time::timeout(Duration::from_secs(2), &mut assertion_task)
+            .await
+            .is_err()
+        {
+            assertion_task.abort();
+            let _ = assertion_task.await;
+        }
+        let _ = std::fs::remove_file(&started_path);
+        panic!("assertion did not invoke the configured ADP CLI child within 30 seconds");
+    }
+
     let started = Instant::now();
+    cancel_token.cancel();
+    let result = match tokio::time::timeout(Duration::from_secs(2), &mut assertion_task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => {
+            let _ = std::fs::remove_file(&started_path);
+            panic!("assertion task failed: {error}");
+        }
+        Err(_) => {
+            assertion_task.abort();
+            let _ = assertion_task.await;
+            let _ = std::fs::remove_file(&started_path);
+            panic!("cancellation did not interrupt the ADP CLI child within 2 seconds");
+        }
+    };
 
-    let result = assertion(
-        "https://localhost:55101/config",
-        serde_json::json!(true),
-        Duration::from_secs(10),
-    )
-    .check(&ctx)
-    .await;
-
-    let child_started = cancel_task.await.expect("cancellation task should finish");
     let elapsed = started.elapsed();
     let _ = std::fs::remove_file(&started_path);
-    assert!(child_started, "assertion did not invoke the configured ADP CLI child");
     assert!(!result.passed, "cancelled assertion unexpectedly passed");
     assert!(
         result.message.contains("cancelled"),
@@ -307,7 +330,7 @@ printf '%s' '{"feature":{"enabled":true}}'"#,
         result.message
     );
     assert!(
-        elapsed < Duration::from_secs(4),
+        elapsed < Duration::from_secs(2),
         "cancellation was not bounded: {elapsed:?}"
     );
 }
