@@ -571,7 +571,7 @@ mod tests {
             env_vars,
             false,
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await;
         ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize")
@@ -585,7 +585,7 @@ mod tests {
             env_vars,
             false,
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await;
         cfg
@@ -1202,7 +1202,7 @@ mod config_smoke {
             json!({ "api_key": "smoke-test-api-key" }),
             |cfg| ForwarderConfiguration::from_configuration(&cfg).expect("ForwarderConfiguration should deserialize"),
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await
     }

@@ -1096,7 +1096,7 @@ mod config_smoke {
                     .expect("DogStatsDMapperConfiguration should deserialize")
             },
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await
     }
