@@ -518,7 +518,8 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 
     let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
     let mrf_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?;
+        .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?
+        .with_metrics_endpoint_override(mrf_dd_url.clone());
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::from_configuration(config)
         .map(|config| {
@@ -571,7 +572,8 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
 
     let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
     let af_metrics_config = DatadogMetricsConfiguration::from_configuration(config)
-        .error_context("Failed to configure autoscaling failover metrics encoder.")?;
+        .error_context("Failed to configure autoscaling failover metrics encoder.")?
+        .with_v2_series_only();
     let cluster_agent_forwarder_config =
         ClusterAgentForwarderConfiguration::from_configuration(config, ca_url, ca_token)
             .error_context("Failed to configure Cluster Agent forwarder.")?;

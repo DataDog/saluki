@@ -55,6 +55,7 @@ impl ClusterAgentForwarderConfiguration {
         endpoint.set_dd_url(endpoint_url);
         endpoint.set_api_key(auth_token);
         forwarder_config.clear_opw_metrics_endpoint();
+        forwarder_config.force_v2_series();
 
         Ok(Self {
             forwarder_config,
@@ -250,12 +251,31 @@ mod tests {
                         "enabled": true,
                         "url": "https://opw.example.com"
                     }
+                },
+                "data_plane_metrics_v3_series_enabled": true,
+                "use_v3_api": {
+                    "series": {
+                        "enabled": "true"
+                    }
+                },
+                "serializer_experimental_use_v3_api": {
+                    "series": {
+                        "shadow_sites": ["example.com"]
+                    }
                 }
             })),
             None,
             false,
         )
         .await;
+
+        let unmodified_forwarder =
+            ForwarderConfiguration::from_configuration(&config).expect("forwarder configuration should parse");
+        assert!(unmodified_forwarder.data_plane_metrics_v3_series_enabled());
+        assert_eq!(
+            &["example.com".to_string()],
+            unmodified_forwarder.v3_api().series.shadow_sites.as_slice()
+        );
 
         let config = ClusterAgentForwarderConfiguration::from_configuration(
             &config,
@@ -275,5 +295,7 @@ mod tests {
             "https://cluster-agent.example.com/"
         );
         assert_eq!(endpoints[0].endpoint().cached_api_key(), "secret-token");
+        assert!(!config.forwarder_config.data_plane_metrics_v3_series_enabled());
+        assert!(config.forwarder_config.v3_api().series.shadow_sites.is_empty());
     }
 }

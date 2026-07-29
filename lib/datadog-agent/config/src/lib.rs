@@ -60,6 +60,41 @@ mod string_list_shape_tests {
 }
 
 #[cfg(test)]
+mod string_map_list_shape_tests {
+    use super::DatadogConfiguration;
+
+    #[test]
+    fn additional_endpoints_accept_scalar_values() {
+        let config: DatadogConfiguration = serde_json::from_value(serde_json::json!({
+            "additional_endpoints": {
+                "https://agent.datadoghq.com.": "ENC[vault://api-key]"
+            }
+        }))
+        .expect("scalar additional endpoint API key deserializes");
+
+        assert_eq!(
+            config.additional_endpoints["https://agent.datadoghq.com."],
+            ["ENC[vault://api-key]"]
+        );
+    }
+
+    #[test]
+    fn additional_endpoints_accept_sequence_values() {
+        let config: DatadogConfiguration = serde_json::from_value(serde_json::json!({
+            "additional_endpoints": {
+                "https://agent.datadoghq.com.": ["first", "second"]
+            }
+        }))
+        .expect("additional endpoint API key sequence deserializes");
+
+        assert_eq!(
+            config.additional_endpoints["https://agent.datadoghq.com."],
+            ["first", "second"]
+        );
+    }
+}
+
+#[cfg(test)]
 mod byte_size_shape_tests {
     use super::DatadogConfiguration;
 

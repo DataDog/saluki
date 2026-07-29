@@ -713,7 +713,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -2388,7 +2388,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Datadog site domain"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       additional_attributes:
         config_registry_filename: forwarder.rs
 

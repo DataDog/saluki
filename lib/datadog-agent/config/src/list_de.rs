@@ -5,12 +5,15 @@
 //! space-separated string (for example, `DD_DOGSTATSD_TAGS="env:prod team:core"`). A single field
 //! must accept both forms.
 //!
-//! Deserializing here keeps that difference at the boundary: every string-list field accepts either
-//! shape, while downstream consumers always receive a `Vec<String>`.
+//! Map values containing string lists have a similar compatibility shape: a single value can arrive
+//! as a scalar string, while multiple values arrive as a sequence. Deserializing here keeps those
+//! differences at the boundary, while downstream consumers always receive a `Vec<String>`.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
+use serde::Deserialize;
 
 /// Deserialize a `Vec<String>` from either a sequence or a space-separated string.
 ///
@@ -43,6 +46,36 @@ where
     }
 
     deserializer.deserialize_any(SpaceSeparatedOrSeq)
+}
+
+/// Deserialize string-list map values from either scalar strings or sequences.
+///
+/// Scalar values are normalized into one-element vectors. Unlike standalone string-list fields,
+/// scalar map values are not split on whitespace because each scalar represents one complete value.
+pub(crate) fn deserialize_string_map_scalar_or_seq<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<String, Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ScalarOrSeq {
+        Scalar(String),
+        Seq(Vec<String>),
+    }
+
+    let values = HashMap::<String, ScalarOrSeq>::deserialize(deserializer)?;
+    Ok(values
+        .into_iter()
+        .map(|(key, value)| {
+            let value = match value {
+                ScalarOrSeq::Scalar(value) => vec![value],
+                ScalarOrSeq::Seq(values) => values,
+            };
+            (key, value)
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -83,5 +116,28 @@ mod tests {
     #[test]
     fn wrong_shape_is_rejected() {
         assert!(serde_json::from_str::<Holder>(r#"{"list": 5}"#).is_err());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct MapHolder {
+        #[serde(deserialize_with = "deserialize_string_map_scalar_or_seq")]
+        map: HashMap<String, Vec<String>>,
+    }
+
+    fn parse_map(json: &str) -> HashMap<String, Vec<String>> {
+        serde_json::from_str::<MapHolder>(json).unwrap().map
+    }
+
+    #[test]
+    fn string_map_accepts_scalar_and_sequence_values() {
+        let parsed = parse_map(r#"{"map":{"one":"api-key","many":["first","second"],"none":[]}}"#);
+        assert_eq!(parsed["one"], ["api-key"]);
+        assert_eq!(parsed["many"], ["first", "second"]);
+        assert!(parsed["none"].is_empty());
+    }
+
+    #[test]
+    fn string_map_rejects_non_string_values() {
+        assert!(serde_json::from_str::<MapHolder>(r#"{"map":{"endpoint":5}}"#).is_err());
     }
 }
