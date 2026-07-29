@@ -8,6 +8,8 @@ mod core_agent_cli;
 mod core_agent_config_set;
 mod target_exec;
 
+pub(crate) use target_exec::{execute_target_command, CommandDiagnostics};
+
 const DEFAULT_CORE_AGENT_CONFIG_ENDPOINT_TEMPLATE: &str = "https://localhost:55001/agent/config/{key}";
 
 /// Trait for integration-test actions.

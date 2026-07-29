@@ -28,7 +28,7 @@ impl TargetExecAction {
     }
 }
 
-pub(super) enum CommandDiagnostics {
+pub(crate) enum CommandDiagnostics {
     FullCommand(String),
     Redacted(&'static str),
 }
@@ -96,7 +96,7 @@ impl Action for TargetExecAction {
     }
 }
 
-pub(super) async fn execute_target_command(
+pub(crate) async fn execute_target_command(
     ctx: &AssertionContext, command: &[String], diagnostics: &CommandDiagnostics, timeout: Duration,
     host_env: Option<&HashMap<String, String>>,
 ) -> Result<String, GenericError> {
