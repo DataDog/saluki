@@ -240,10 +240,12 @@ dependencies = [
  "anyhow",
  "clap",
  "harness",
+ "rcgen",
  "reqwest",
  "rustls",
  "ryu",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

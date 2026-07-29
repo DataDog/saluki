@@ -41,10 +41,12 @@ services:
       DD_DATA_PLANE_ENABLED: "true"
       DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
       AGENT_CONFIG_DIR: "/agent-config"
+      DD_AUTH_TOKEN_FILE_PATH: "/agent-config/auth_token"
     volumes:
       - dogstatsd-socket:/var/run/datadog
-      # first_sample_config (workload) writes this timeline's datadog.yaml + ready sentinel here.
-      - agent-config:/agent-config:ro
+      # first_sample_config writes this timeline's config and the ready sentinel last. The Agent's init waits for that
+      # sentinel before startup creates auth_token and ipc_cert.pem, so the writers safely share this named volume.
+      - agent-config:/agent-config
     depends_on:
       intake:
         condition: service_healthy
@@ -64,8 +66,9 @@ services:
       ADP_DOGSTATSD_SOCKET: "/var/run/datadog/dsd.socket"
       INTAKE_ADDR: "intake:2049"
       ADP_API_ADDR: "agent:5100"
-      # Privileged API where /dogstatsd/stats lives. HTTPS with no client auth.
+      # Privileged API where /dogstatsd/stats lives, authenticated with the shared IPC mTLS identity.
       ADP_SECURE_API_ADDR: "agent:5101"
+      IPC_CERT_PATH: "/agent-config/ipc_cert.pem"
     volumes:
       - dogstatsd-socket:/var/run/datadog
       - agent-config:/agent-config
