@@ -412,7 +412,7 @@ impl ConfigurationLoader {
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
         enable_dynamic_configuration: bool,
     ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>) {
-        Self::for_tests_with_provider_factory(file_values, env_vars, enable_dynamic_configuration, &[], || {
+        Self::for_tests_with_provider_factory(file_values, env_vars, enable_dynamic_configuration, &[], |_| {
             Serialized::defaults(serde_json::json!({}))
         })
         .await
@@ -422,8 +422,9 @@ impl ConfigurationLoader {
     /// `provider_factory` to build an additional provider inserted between the file provider and the
     /// environment provider.
     ///
-    /// The factory is called after test environment variables have been set, so any env var reads it performs
-    /// (for example, in `DatadogRemapper`) are consistent with the test's env setup.
+    /// The factory receives an owned copy of the explicitly configured test environment variables. Providers can use
+    /// this input instead of reading unrelated variables from the ambient process environment. The factory is called
+    /// after the test environment variables have been set for providers that still require process environment access.
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
     #[cfg(any(test, feature = "test-util"))]
@@ -433,7 +434,7 @@ impl ConfigurationLoader {
     ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>)
     where
         P: Provider + Send + Sync + 'static,
-        F: FnOnce() -> P,
+        F: FnOnce(Vec<(String, String)>) -> P,
     {
         let json_file = tempfile::NamedTempFile::new().expect("should not fail to create temp file.");
         let path = &json_file.path();
@@ -466,7 +467,8 @@ impl ConfigurationLoader {
         }
 
         // Build and insert the extra provider while env vars are set so it can snapshot them.
-        let loader = loader.add_providers([provider_factory()]);
+        let provider_env_vars = env_vars.unwrap_or_default().to_vec();
+        let loader = loader.add_providers([provider_factory(provider_env_vars)]);
 
         // Add environment provider last so it has the highest precedence.
         let loader = loader
@@ -496,11 +498,10 @@ impl ConfigurationLoader {
 /// configuration, returning the held guard.
 ///
 /// [`ConfigurationLoader::for_tests`] and [`ConfigurationLoader::for_tests_with_provider_factory`] set and unset
-/// process-wide environment variables to simulate `DD_`-prefixed configuration, and providers such as the Datadog
-/// environment-variable remapper read those same variables via [`std::env::vars`]. Because the process environment
-/// is global mutable state, any test in any crate that reads or writes environment variables relevant to
-/// configuration loading MUST hold this lock for the duration of that access, so that all such tests serialize
-/// against each other rather than racing.
+/// process-wide environment variables to simulate `DD_`-prefixed configuration. Because the process environment is
+/// global mutable state, any test in any crate that reads or writes environment variables relevant to configuration
+/// loading MUST hold this lock for the duration of that access, so that all such tests serialize against each other
+/// rather than racing.
 ///
 /// This is exposed publicly so that tests in downstream crates can serialize against the same single lock that the
 /// loader itself uses, instead of each hand-rolling an independent (and therefore non-serializing) mutex.

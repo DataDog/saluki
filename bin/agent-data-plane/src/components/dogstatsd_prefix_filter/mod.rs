@@ -744,7 +744,7 @@ mod config_smoke {
                     .expect("DogStatsDPrefixFilterConfiguration should deserialize")
             },
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await
     }

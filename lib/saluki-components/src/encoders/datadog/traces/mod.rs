@@ -865,7 +865,7 @@ mod tests {
             Some(&env_vars),
             false,
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await;
         let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
@@ -985,9 +985,14 @@ mod tests {
     async fn sampling_rate_clamps_percentage_to_unit_interval() {
         // `sampling_percentage` is a 0..100 percentage; only strictly in-range values map to a fractional rate, and
         // anything <= 0 or >= 100 collapses to 1.0 (sample everything).
-        let (cfg, _) =
-            ConfigurationLoader::for_tests_with_provider_factory(None, None, false, KEY_ALIASES, DatadogRemapper::new)
-                .await;
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
+            None,
+            None,
+            false,
+            KEY_ALIASES,
+            DatadogRemapper::from_env_vars,
+        )
+        .await;
         let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
 
         let cases = [
@@ -1161,7 +1166,7 @@ mod config_smoke {
                     .expect("DatadogTraceConfiguration should deserialize")
             },
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await
     }

@@ -208,15 +208,19 @@ impl DatadogRemapper {
     /// Constructs a `DatadogRemapper` by eagerly snapshotting env var remappings from the current process
     /// environment.
     pub fn new() -> Self {
-        Self::from_env_vars(std::env::vars())
+        Self::from_env_iter(std::env::vars())
     }
 
-    /// Constructs a `DatadogRemapper` from an explicit set of environment variable name/value pairs.
+    /// Constructs a `DatadogRemapper` from explicitly provided environment variable name/value pairs.
     ///
-    /// Names are matched case-insensitively against [`ENV_REMAPPINGS`]. When more than one name maps to the same
+    /// Names are matched case-insensitively against `ENV_REMAPPINGS`. When more than one name maps to the same
     /// canonical key (for example, both `HTTP_PROXY` and `http_proxy` map to `proxy_http`), the first matching name
     /// encountered wins and later matches are ignored.
-    fn from_env_vars<I>(env_vars: I) -> Self
+    pub fn from_env_vars(env_vars: Vec<(String, String)>) -> Self {
+        Self::from_env_iter(env_vars)
+    }
+
+    fn from_env_iter<I>(env_vars: I) -> Self
     where
         I: IntoIterator<Item = (String, String)>,
     {
@@ -295,7 +299,7 @@ mod tests {
         // guard means the first matching name encountered wins and any later match is ignored. Feeding an
         // explicitly-ordered iterator makes this deterministic, independent of `std::env::vars` ordering (and so
         // this case needs no process-env mutation or lock).
-        let remapper = DatadogRemapper::from_env_vars([
+        let remapper = DatadogRemapper::from_env_vars(vec![
             ("HTTP_PROXY".to_string(), "http://first.example.com".to_string()),
             ("http_proxy".to_string(), "http://second.example.com".to_string()),
         ]);
