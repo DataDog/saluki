@@ -1,0 +1,9 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "grpc://$GROUP:54317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+aggregation_bucket_width_secs: 10
+volume: 1
+corpus:
+  size: 1
+  payload:
+    # One gauge with the core mappings and both environment convention forms.
+    static_base64: "Cu4BCrwBChsKDHNlcnZpY2UubmFtZRILCglvdGxwLXRlc3QKJAoTc2VydmljZS5pbnN0YW5jZS5pZBINCgtpbnN0YW5jZS00MgorChtkZXBsb3ltZW50LmVudmlyb25tZW50Lm5hbWUSDAoKcHJvZHVjdGlvbgoiChZkZXBsb3ltZW50LmVudmlyb25tZW50EggKBmxlZ2FjeQomChljdXN0b20ucmVzb3VyY2UuYXR0cmlidXRlEgkKB3ByZXNlbnQSLRIrChNvdGxwcmVzb3VyY2UubWV0cmljKhQKEhkAypo7AAAAACEAAAAAAADwPw=="
