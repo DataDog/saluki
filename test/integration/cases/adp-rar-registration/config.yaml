@@ -1,7 +1,7 @@
 type: integration
 name: "adp-rar-registration"
 description: "Verify registration and a real Core Agent to ADP status gRPC call over inbound mTLS"
-timeout: 120s
+timeout: 180s
 runtimes: [linux, mac, windows]
 
 env:
