@@ -48,28 +48,82 @@ fn temp_path(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("panoramic-{label}-{}-{id}", std::process::id()))
 }
 
-fn assertion(expected: serde_json::Value, timeout: Duration) -> AdpConfigKeyEqualsAssertion {
-    AdpConfigKeyEqualsAssertion::new(
-        "feature.enabled".to_string(),
-        expected,
-        "http://127.0.0.1:9/config".to_string(),
-        timeout,
-    )
+fn assertion(endpoint: &str, expected: serde_json::Value, timeout: Duration) -> AdpConfigKeyEqualsAssertion {
+    AdpConfigKeyEqualsAssertion::new("feature.enabled".to_string(), expected, endpoint.to_string(), timeout)
+        .expect("test endpoint should be supported")
 }
 
 #[tokio::test]
-async fn matching_key_passes_via_real_adp_config_json_child_command() {
+async fn source_endpoint_passes_via_real_adp_config_json_child_command() {
     let command = shell_target(
-        r#"test "$1" = config && test "$2" = --json && printf '%s' '{"feature":{"enabled":true}}'"#,
+        r#"test "$1" = config && test "$2" = --json && test -z "$3" && printf '%s' '{"feature":{"enabled":"source"}}'"#,
         HashMap::new(),
     );
     let ctx = host_context(command, CancellationToken::new());
 
-    let result = assertion(serde_json::json!(true), Duration::from_secs(1))
-        .check(&ctx)
-        .await;
+    let result = assertion(
+        "https://localhost:55101/config",
+        serde_json::json!("source"),
+        Duration::from_secs(3),
+    )
+    .check(&ctx)
+    .await;
 
     assert!(result.passed, "unexpected assertion failure: {}", result.message);
+}
+
+#[tokio::test]
+async fn runtime_endpoint_passes_distinct_runtime_arguments_and_value_to_real_child() {
+    let command = shell_target(
+        r#"test "$1" = config && test "$2" = --json && test "$3" = --runtime && printf '%s' '{"feature":{"enabled":"runtime"}}'"#,
+        HashMap::new(),
+    );
+    let ctx = host_context(command, CancellationToken::new());
+
+    let result = assertion(
+        "https://localhost:55101/config/internal",
+        serde_json::json!("runtime"),
+        Duration::from_secs(3),
+    )
+    .check(&ctx)
+    .await;
+
+    assert!(result.passed, "unexpected assertion failure: {}", result.message);
+}
+
+#[test]
+fn unsupported_endpoints_are_rejected_without_exposing_the_configured_value() {
+    let endpoint_secret = "endpoint-secret";
+    let unsupported = [
+        "http://localhost:55101/config".to_string(),
+        "https://localhost:55101/config/".to_string(),
+        format!("https://localhost:55101/config?token={endpoint_secret}"),
+        format!("https://user:{endpoint_secret}@localhost:55101/config"),
+        format!("https://localhost:55101/config#{endpoint_secret}"),
+        "not a URL".to_string(),
+    ];
+
+    for endpoint in unsupported {
+        let error = match AdpConfigKeyEqualsAssertion::new(
+            "feature.enabled".to_string(),
+            serde_json::json!(true),
+            endpoint,
+            Duration::from_secs(1),
+        ) {
+            Ok(_) => panic!("unsupported endpoint should be rejected"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+
+        assert!(
+            message.contains("HTTPS URL") && message.contains("/config") && message.contains("/config/internal"),
+            "endpoint error was not actionable: {message}"
+        );
+        assert!(
+            !message.contains(endpoint_secret),
+            "endpoint error exposed configured secret: {message}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -88,9 +142,13 @@ printf '%s' '{"feature":{"enabled":false}}'"#,
     let ctx = host_context(command, CancellationToken::new());
     let started = Instant::now();
 
-    let result = assertion(serde_json::json!(true), Duration::from_secs(3))
-        .check(&ctx)
-        .await;
+    let result = assertion(
+        "https://localhost:55101/config",
+        serde_json::json!(true),
+        Duration::from_secs(3),
+    )
+    .check(&ctx)
+    .await;
 
     let elapsed = started.elapsed();
     let attempts = std::fs::read(&attempts_path).unwrap_or_default().len();
@@ -131,9 +189,13 @@ printf '%s' '{"feature":{"enabled":true}}'"#,
     });
     let started = Instant::now();
 
-    let result = assertion(serde_json::json!(true), Duration::from_secs(10))
-        .check(&ctx)
-        .await;
+    let result = assertion(
+        "https://localhost:55101/config",
+        serde_json::json!(true),
+        Duration::from_secs(10),
+    )
+    .check(&ctx)
+    .await;
 
     let child_started = cancel_task.await.expect("cancellation task should finish");
     let elapsed = started.elapsed();
@@ -161,7 +223,11 @@ async fn adp_config_cli_diagnostics_do_not_reveal_command_or_environment_secrets
     )]));
     let ctx = host_context(command, CancellationToken::new());
 
-    let assertion = assertion(serde_json::json!(true), Duration::from_millis(100));
+    let assertion = assertion(
+        "https://localhost:55101/config",
+        serde_json::json!(true),
+        Duration::from_millis(100),
+    );
     let description = assertion.description();
     let result = assertion.check(&ctx).await;
 

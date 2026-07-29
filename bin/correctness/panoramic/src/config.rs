@@ -393,13 +393,13 @@ pub enum AssertionConfig {
         timeout: HumanDuration,
     },
 
-    /// Poll ADP's `/config` endpoint until one key equals the expected value.
+    /// Poll an ADP configuration view through its authenticated CLI until one key equals the expected value.
     AdpConfigKeyEquals {
         /// Configuration key to compare. Dotted paths address nested objects.
         key: String,
         /// Expected value.
         value: Value,
-        /// ADP `/config` endpoint.
+        /// Configuration endpoint selecting `/config` or the translated runtime view at `/config/internal`.
         #[serde(default = "crate::assertions::default_adp_config_endpoint")]
         endpoint: String,
         /// Timeout for waiting for the value to appear.

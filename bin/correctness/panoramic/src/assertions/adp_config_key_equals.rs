@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde_json::Value;
 use tracing::trace;
 
@@ -14,20 +14,67 @@ const ADP_CONFIG_CLI_DIAGNOSTIC_LABEL: &str = "ADP configuration CLI command";
 const CONFIG_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MAX_CONFIG_COMMAND_DURATION: Duration = Duration::from_secs(10);
 
-/// Assertion that polls ADP's machine-readable config command until one key equals the expected value.
+#[derive(Clone, Copy)]
+enum AdpConfigEndpoint {
+    Source,
+    Runtime,
+}
+
+impl AdpConfigEndpoint {
+    fn parse(configured_endpoint: &str) -> Result<Self, GenericError> {
+        let endpoint = reqwest::Url::parse(configured_endpoint).map_err(|_| unsupported_endpoint_error())?;
+        if endpoint.scheme() != "https"
+            || !endpoint.has_host()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(unsupported_endpoint_error());
+        }
+
+        match endpoint.path() {
+            "/config" => Ok(Self::Source),
+            "/config/internal" => Ok(Self::Runtime),
+            _ => Err(unsupported_endpoint_error()),
+        }
+    }
+
+    fn command_args(self) -> Vec<String> {
+        match self {
+            Self::Source => vec!["config".to_string(), "--json".to_string()],
+            Self::Runtime => vec!["config".to_string(), "--json".to_string(), "--runtime".to_string()],
+        }
+    }
+}
+
+fn unsupported_endpoint_error() -> GenericError {
+    generic_error!(
+        "Unsupported ADP configuration endpoint. Expected an HTTPS URL with path exactly `/config` or \
+         `/config/internal`, without credentials, a query, or a fragment."
+    )
+}
+
+/// Assertion that polls the selected ADP configuration view until one key equals the expected value.
 pub struct AdpConfigKeyEqualsAssertion {
     key: String,
     expected: Value,
+    endpoint: AdpConfigEndpoint,
     timeout: Duration,
 }
 
 impl AdpConfigKeyEqualsAssertion {
-    pub fn new(key: String, expected: Value, _endpoint: String, timeout: Duration) -> Self {
-        Self { key, expected, timeout }
+    pub fn new(key: String, expected: Value, endpoint: String, timeout: Duration) -> Result<Self, GenericError> {
+        Ok(Self {
+            key,
+            expected,
+            endpoint: AdpConfigEndpoint::parse(&endpoint)?,
+            timeout,
+        })
     }
 
     async fn fetch_config(&self, ctx: &AssertionContext, timeout: Duration) -> Result<Value, GenericError> {
-        let args = ["config".to_string(), "--json".to_string()];
+        let args = self.endpoint.command_args();
         let command = ctx.adp_cli_command.with_args(&args);
         let diagnostics = CommandDiagnostics::Redacted(ADP_CONFIG_CLI_DIAGNOSTIC_LABEL);
         let stdout =

@@ -90,6 +90,7 @@ saluki-core = { workspace = true, features = ["test-util"] }
 saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 rcgen = { workspace = true, features = ["aws_lc_rs"] }

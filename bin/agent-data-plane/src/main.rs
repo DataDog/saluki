@@ -226,7 +226,7 @@ async fn run_inner(
             return Ok(exit_code);
         }
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
-        Action::Config(cmd) => handle_config_command(&bootstrap_config, cmd.json).await,
+        Action::Config(cmd) => handle_config_command(&bootstrap_config, cmd.json, cmd.runtime).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
         Action::Version(v) => handle_version_command(v.json).await,
     }
@@ -258,17 +258,21 @@ mod tests {
     }
 
     #[test]
-    fn json_config_action_disables_bootstrap_console_logging() {
-        let action = action_from_args(&["config", "--json"]);
+    fn json_config_action_disables_bootstrap_console_logging_for_each_view() {
+        for args in [&["config", "--json"][..], &["config", "--json", "--runtime"]] {
+            let action = action_from_args(args);
 
-        assert!(!bootstrap_logging_for(&action).log_to_console);
+            assert!(!bootstrap_logging_for(&action).log_to_console);
+        }
     }
 
     #[test]
-    fn human_config_action_preserves_bootstrap_console_logging() {
-        let action = action_from_args(&["config"]);
+    fn human_config_action_preserves_bootstrap_console_logging_for_each_view() {
+        for args in [&["config"][..], &["config", "--runtime"]] {
+            let action = action_from_args(args);
 
-        assert!(bootstrap_logging_for(&action).log_to_console);
+            assert!(bootstrap_logging_for(&action).log_to_console);
+        }
     }
 
     #[test]

@@ -15,6 +15,10 @@ pub struct ConfigCommand {
         description = "emit one compact JSON value to standard output for machine parsing"
     )]
     pub json: bool,
+
+    /// Controls whether the command selects the translated runtime configuration.
+    #[argh(switch, description = "select the translated runtime configuration view")]
+    pub runtime: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -39,7 +43,7 @@ fn format_config_value(
 }
 
 /// Entrypoint for the `config` command.
-pub async fn handle_config_command(bootstrap_config: &GenericConfiguration, json: bool) {
+pub async fn handle_config_command(bootstrap_config: &GenericConfiguration, json: bool, runtime: bool) {
     let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config).await {
         Ok(client) => client,
         Err(e) => {
@@ -48,7 +52,11 @@ pub async fn handle_config_command(bootstrap_config: &GenericConfiguration, json
         }
     };
 
-    let response_body = match api_client.config().await {
+    let response_body = match if runtime {
+        api_client.config_runtime().await
+    } else {
+        api_client.config().await
+    } {
         Ok(body) => body,
         Err(e) => {
             error!("Failed to get configuration: {:#}.", e);
@@ -56,7 +64,7 @@ pub async fn handle_config_command(bootstrap_config: &GenericConfiguration, json
         }
     };
 
-    // The privileged `/config` endpoint returns JSON (`ConfigAPIHandler`); parse as JSON after scrubbing.
+    // Both privileged configuration views return JSON; parse the selected response after scrubbing.
     let config_value = match parse_config_response(response_body.as_bytes()) {
         Ok(v) => v,
         Err(e) => {
@@ -95,13 +103,44 @@ mod tests {
     use crate::cli::{Action, Cli};
 
     #[test]
-    fn json_switch_parses_for_config_command() {
-        let cli = Cli::from_args(&["agent-data-plane"], &["config", "--json"]).expect("config --json should parse");
+    fn config_command_defaults_to_source_human_view() {
+        let cli = Cli::from_args(&["agent-data-plane"], &["config"]).expect("config should parse");
+
+        let Action::Config(command) = cli.action else {
+            panic!("expected config action");
+        };
+        assert!(!command.json);
+        assert!(!command.runtime);
+    }
+
+    #[test]
+    fn json_and_runtime_switches_parse_together_for_config_command() {
+        let cli = Cli::from_args(&["agent-data-plane"], &["config", "--json", "--runtime"])
+            .expect("config --json --runtime should parse");
 
         let Action::Config(command) = cli.action else {
             panic!("expected config action");
         };
         assert!(command.json);
+        assert!(command.runtime);
+    }
+
+    #[test]
+    fn config_help_documents_runtime_view_without_user_facing_internal_language() {
+        let help = match Cli::from_args(&["agent-data-plane"], &["config", "--help"]) {
+            Ok(_) => panic!("config --help should exit after rendering help"),
+            Err(early_exit) => early_exit.output,
+        };
+
+        assert!(help.contains("--runtime"), "runtime switch missing from help: {help}");
+        assert!(
+            help.contains("translated runtime configuration"),
+            "runtime view meaning missing from help: {help}"
+        );
+        assert!(
+            !help.contains("internal"),
+            "help exposed internal API terminology: {help}"
+        );
     }
 
     #[test]

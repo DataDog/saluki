@@ -285,7 +285,7 @@ pub fn create_assertion(config: &AssertionConfig) -> Result<Box<dyn Assertion>, 
             value.clone(),
             endpoint.clone(),
             timeout.0,
-        ))),
+        )?)),
     }
 }
 

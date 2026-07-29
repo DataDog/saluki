@@ -303,6 +303,26 @@ impl DataPlaneAPIClient {
             .and_then(body_when_success)
     }
 
+    /// Retrieves the translated runtime configuration of the process.
+    ///
+    /// This is a point-in-time snapshot of the configuration used by the runtime, which could change over time if
+    /// dynamic configuration is enabled.
+    ///
+    /// The response body is returned as a plain string with no decoding or modification performed.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
+    pub async fn config_runtime(&mut self) -> Result<String, GenericError> {
+        let uri = self.build_uri("/config/internal", None);
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_success)
+    }
+
     /// Retrieves the tags from the workload provider.
     ///
     /// The response body is returned as a plain string with no decoding or modification performed.
