@@ -5,25 +5,24 @@ use std::{
 };
 
 use pin_project::pin_project;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter, Histogram};
 
-static_metrics!(
-   name => Telemetry,
-   prefix => runtime_task,
-   labels => [task_name: String],
-   metrics => [
-       debug_counter(poll_count),
-       trace_histogram(poll_duration_seconds),
-   ],
-);
+#[static_metrics(prefix = runtime_task, labels(task_name))]
+#[derive(Clone)]
+struct Telemetry {
+    #[metric(level = debug)]
+    poll_count: Counter,
+    #[metric(level = trace)]
+    poll_duration_seconds: Histogram,
+}
 
 /// Helper trait for instrumenting futures that are run as asynchronous tasks.
 pub trait TaskInstrument {
     /// Instruments the future, tracking task-specific metrics about its execution.
     ///
-    /// Whenever the resulting future is polled, an internal metric (`runtime_task.poll_duration_seconds`) will be
-    /// updated with the duration of the poll operation, in seconds. This metric will be tagged with the task name
-    /// provided here (as `task_name:<task name>`).
+    /// Whenever the resulting future is polled, two internal metrics are updated: `runtime_task.poll_count` is
+    /// incremented by one, and `runtime_task.poll_duration_seconds` records the duration of the poll operation, in
+    /// seconds. Both metrics are tagged with the task name provided here (as `task_name:<task name>`).
     ///
     /// In general, a unique task name should be provided where possible. If multiple tasks share the same task name,
     /// they will all update the same metric, which will simply influence the resulting percentiles and make it more
@@ -69,6 +68,7 @@ where
         let result = this.inner.poll(cx);
         let poll_duration = poll_start.elapsed();
 
+        this.telemetry.poll_count.increment(1);
         this.telemetry.poll_duration_seconds.record(poll_duration.as_secs_f64());
 
         result
@@ -148,12 +148,11 @@ mod tests {
             "recorded poll durations must be non-negative"
         );
 
-        // NOTE: `poll_count` is declared in the telemetry block but is never incremented by
-        // `InstrumentedTask::poll` (only the histogram is recorded). This assertion pins that
-        // current gap; if poll counting is ever wired up, this test should be updated to match.
+        // Every poll also increments `poll_count`, tagged with the same task name, so after three
+        // polls the counter reads three.
         assert_eq!(
             recorder.counter((Telemetry::poll_count_name(), &[("task_name", "poll_duration_test")])),
-            Some(0)
+            Some(3)
         );
     }
 }

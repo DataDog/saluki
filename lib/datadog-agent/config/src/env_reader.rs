@@ -308,14 +308,9 @@ mod tests {
 
     #[test]
     fn lowercase_proxy_env_is_honored() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-
-        // The common lowercase Unix convention must fill the proxy slot, matching the legacy
-        // case-insensitive remapper.
-        std::env::set_var("http_proxy", "http://lower:3128");
+        let env = EnvSnapshot::from_vars([("http_proxy".to_string(), "http://lower:3128".to_string())]);
         let mut base = json!({});
-        apply_datadog_env(&mut base, true).unwrap();
-        std::env::remove_var("http_proxy");
+        apply_proxy_env(base.as_object_mut().unwrap(), &env, true);
 
         assert_eq!(at(&base, &["proxy", "http"]), Some(&json!("http://lower:3128")));
     }

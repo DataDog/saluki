@@ -4575,7 +4575,8 @@ name = "saluki-metrics"
 version = "0.1.0"
 dependencies = [
  "metrics",
- "pastey",
+ "papaya",
+ "saluki-metrics-macros",
  "trybuild",
 ]
 

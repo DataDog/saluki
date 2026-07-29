@@ -32,7 +32,7 @@ pub const DEFAULT_SITE: &str = "datadoghq.com";
 /// A `dd_url` equal to this constant carries no override intent and must not shadow `site`.
 const DEFAULT_PRIMARY_ENDPOINT: &str = "https://app.datadoghq.com";
 
-fn default_site() -> String {
+pub(crate) fn default_site() -> String {
     DEFAULT_SITE.to_owned()
 }
 
@@ -43,7 +43,7 @@ fn default_site() -> String {
 /// value equal to the default is treated as `None`, allowing `site` to determine the endpoint. This
 /// only affects the serde path; programmatic callers such as `set_dd_url` bypass serde and are
 /// unaffected.
-fn deserialize_dd_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+pub(crate) fn deserialize_dd_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -895,7 +895,7 @@ fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError
 ///
 /// If an override URL is provided and can't be parsed, or if a valid endpoint can't be constructed from the given
 /// site, an error will be returned.
-fn calculate_resolved_endpoint(
+pub(crate) fn calculate_resolved_endpoint(
     override_url: Option<&str>, site: &str, api_key: &str,
 ) -> Result<ResolvedEndpoint, EndpointError> {
     let raw_endpoint = match override_url {

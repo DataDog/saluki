@@ -320,7 +320,7 @@ mod config_smoke {
                     .expect("ProxyConfiguration should deserialize")
             },
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await
     }

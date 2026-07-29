@@ -299,7 +299,7 @@ mod config_smoke {
                     .expect("DatadogServiceChecksConfiguration should deserialize")
             },
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await
     }

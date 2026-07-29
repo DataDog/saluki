@@ -49,10 +49,10 @@ variables:
   # output artifacts like ADP itself.
   SALUKI_IMAGE_REPO_PREFIX: "saluki"
   SALUKI_IMAGE_REPO_BASE: "${IMAGE_REGISTRY}/${SALUKI_IMAGE_REPO_PREFIX}"
-  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:newest"
-  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:newest"
-  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:newest"
-  SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:newest"
+  SALUKI_BUILD_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/build-ci:latest"
+  SALUKI_GENERAL_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/general-ci:latest"
+  SALUKI_SMP_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/smp-ci:latest"
+  SALUKI_BUILDCACHE_CI_IMAGE: "${SALUKI_IMAGE_REPO_BASE}/buildcache-ci:latest"
   SPDX_LICENSES_IMAGE: "registry.ddbuild.io/images/spdx-license-list-data:3.28.0"
 
   # Converged Datadog Agent-specific variables, which control how we build the converged Datadog Agent image that we
@@ -93,9 +93,6 @@ variables:
 
 default:
   tags: ["arch:amd64"]
-  image:
-    name: "${SALUKI_BUILD_CI_IMAGE}"
-    pull_policy: always
 
 # Run a job on official releases (i.e. tagged).
 .on_official_release:
@@ -131,6 +128,11 @@ default:
   variables:
     BUILD_ARCH: amd64
     BUILD_TARGET: x86_64-unknown-linux-gnu
+    # The GBI DinD service defaults to a 20G loopback volume, which is too small for AMD64 release linking.
+    DOCKER_LOOPBACK_SIZE: "50G"
+    # Keep the larger loopback file on the container's root-backed filesystem instead of a potentially
+    # tmpfs-backed /tmp.
+    DOCKER_LOOPBACK_PATH: "/var"
 
 .build-arm64-variables:
   variables:

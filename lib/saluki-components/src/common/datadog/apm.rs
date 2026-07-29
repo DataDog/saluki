@@ -350,7 +350,7 @@ mod tests {
             env_vars,
             false,
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await;
         ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize")

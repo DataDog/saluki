@@ -487,7 +487,7 @@ mod config_smoke {
                     .expect("DatadogApmStatsEncoderConfiguration should deserialize")
             },
             KEY_ALIASES,
-            DatadogRemapper::new,
+            DatadogRemapper::from_env_vars,
         )
         .await
     }

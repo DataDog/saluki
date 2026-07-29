@@ -109,7 +109,7 @@ async fn make_config_from_file<P, F>(
 ) -> GenericConfiguration
 where
     P: Provider + Send + Sync + 'static,
-    F: FnOnce() -> P,
+    F: FnOnce(Vec<(String, String)>) -> P,
 {
     let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
         Some(file_values),
@@ -128,7 +128,7 @@ async fn make_config_from_env<P, F>(
 ) -> GenericConfiguration
 where
     P: Provider + Send + Sync + 'static,
-    F: FnOnce() -> P,
+    F: FnOnce(Vec<(String, String)>) -> P,
 {
     let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
         Some(base_file_values.clone()),
@@ -155,8 +155,8 @@ where
 /// **Full field coverage**: loading the struct with all supported keys set simultaneously must
 /// produce a struct where every serialized leaf field differs from the default.
 ///
-/// `key_aliases` and `provider_factory` configure the test config loader. Pass the same aliases and
-/// remapper factory used in production config loading.
+/// `key_aliases` and `provider_factory` configure the test config loader. The provider factory receives the
+/// environment pairs configured for each test case, so it can avoid reading unrelated ambient process variables.
 pub async fn run_config_smoke_tests<T, Factory, P, PF>(
     struct_name: &'static str, non_config_fields: &[&str], base_config: serde_json::Value, config_factory: Factory,
     key_aliases: &'static [(&'static str, &'static str)], provider_factory: PF,
@@ -164,7 +164,7 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
     T: PartialEq + Serialize,
     Factory: Fn(GenericConfiguration) -> T,
     P: Provider + Send + Sync + 'static,
-    PF: Fn() -> P,
+    PF: Fn(Vec<(String, String)>) -> P,
 {
     let keys: Vec<&'static SalukiAnnotation> = SUPPORTED_ANNOTATIONS
         .iter()
@@ -323,7 +323,7 @@ mod tests {
     /// Struct name that no annotation's `used_by` references, so every registered key is "foreign" to it.
     const UNREGISTERED_STRUCT: &str = "NonExistentConfiguration";
 
-    fn empty_provider() -> figment::providers::Serialized<serde_json::Value> {
+    fn empty_provider(_env_vars: Vec<(String, String)>) -> figment::providers::Serialized<serde_json::Value> {
         figment::providers::Serialized::defaults(json!({}))
     }
 

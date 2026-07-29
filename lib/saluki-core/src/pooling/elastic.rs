@@ -51,7 +51,7 @@ where
     /// Creates a new `ElasticObjectPool` with the given minimum and maximum capacity.
     pub fn with_capacity<S>(pool_name: S, min_capacity: usize, max_capacity: usize) -> (Self, impl Future<Output = ()>)
     where
-        S: Into<String>,
+        S: AsRef<str>,
     {
         Self::with_builder(pool_name, min_capacity, max_capacity, T::Data::default)
     }
@@ -68,7 +68,7 @@ where
         pool_name: S, min_capacity: usize, max_capacity: usize, builder: B,
     ) -> (Self, impl Future<Output = ()>)
     where
-        S: Into<String>,
+        S: AsRef<str>,
         B: Fn() -> T::Data + Send + Sync + 'static,
     {
         let strategy = Arc::new(ElasticStrategy::with_builder(
@@ -119,7 +119,7 @@ struct ElasticStrategy<T: Poolable> {
 impl<T: Poolable> ElasticStrategy<T> {
     fn with_builder<S, B>(pool_name: S, min_capacity: usize, max_capacity: usize, builder: B) -> Self
     where
-        S: Into<String>,
+        S: AsRef<str>,
         B: Fn() -> T::Data + Send + Sync + 'static,
     {
         let builder = Box::new(builder);
@@ -129,7 +129,7 @@ impl<T: Poolable> ElasticStrategy<T> {
         items.extend((0..min_capacity).map(|_| builder()));
         let available = Arc::new(Semaphore::new(min_capacity));
 
-        let metrics = PoolMetrics::new(pool_name.into());
+        let metrics = PoolMetrics::new(pool_name.as_ref());
         metrics.capacity().set(min_capacity as f64);
         metrics.created().increment(min_capacity as u64);
 

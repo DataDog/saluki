@@ -42,6 +42,7 @@ pub mod error {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DatadogConfiguration {
     #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
     pub additional_endpoints: HashMap<String, Vec<String>>,
 
     #[serde(default)]

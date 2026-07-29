@@ -197,6 +197,7 @@ fn build_loader(path: &Path, env: EnvPrecedence) -> Result<ConfigurationLoader, 
 
 #[cfg(test)]
 mod tests {
+    use bytesize::ByteSize;
     use serde_json::json;
 
     use super::*;
@@ -275,5 +276,23 @@ mod tests {
         std::env::remove_var("DD_DOGSTATSD_PORT");
         std::fs::remove_file(&path).ok();
         assert!(matches!(result, Err(Error::Base { .. })));
+    }
+
+    #[test]
+    fn build_base_accepts_a_human_readable_dogstatsd_interner_size() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let path = std::env::temp_dir().join(format!("adp_build_base_interner_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES", "12MiB");
+
+        let base = build_base(&path, EnvPrecedence::AfterFile).expect("human-readable byte size builds");
+        let config = translate_strict(&base, EnvOverlayMode::Fallback).expect("human-readable byte size translates");
+
+        std::env::remove_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            config.domains.dogstatsd.contexts.string_interner_size_bytes,
+            Some(ByteSize::mib(12).as_u64())
+        );
     }
 }

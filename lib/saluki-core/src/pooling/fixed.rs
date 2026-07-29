@@ -35,7 +35,7 @@ where
     /// Metrics are emitted for the pool with a tag (`pool_name`) that's set to the value of the given pool name.
     pub fn with_capacity<S>(pool_name: S, capacity: usize) -> Self
     where
-        S: Into<String>,
+        S: AsRef<str>,
     {
         Self {
             strategy: Arc::new(FixedSizeStrategy::new(pool_name, capacity)),
@@ -51,7 +51,7 @@ impl<T: Poolable> FixedSizeObjectPool<T> {
     /// Metrics are emitted for the pool with a tag (`pool_name`) that's set to the value of the given pool name.
     pub fn with_builder<S, B>(pool_name: S, capacity: usize, builder: B) -> Self
     where
-        S: Into<String>,
+        S: AsRef<str>,
         B: Fn() -> T::Data,
     {
         Self {
@@ -93,7 +93,7 @@ where
 {
     fn new<S>(pool_name: S, capacity: usize) -> Self
     where
-        S: Into<String>,
+        S: AsRef<str>,
     {
         let mut items = VecDeque::with_capacity(capacity);
         items.extend((0..capacity).map(|_| T::Data::default()));
@@ -102,7 +102,7 @@ where
         Self {
             items: Mutex::new(items),
             available,
-            metrics: PoolMetrics::new(pool_name.into()),
+            metrics: PoolMetrics::new(pool_name.as_ref()),
         }
     }
 }
@@ -110,14 +110,14 @@ where
 impl<T: Poolable> FixedSizeStrategy<T> {
     fn with_builder<S, B>(pool_name: S, capacity: usize, builder: B) -> Self
     where
-        S: Into<String>,
+        S: AsRef<str>,
         B: Fn() -> T::Data,
     {
         let mut items = VecDeque::with_capacity(capacity);
         items.extend((0..capacity).map(|_| builder()));
         let available = Arc::new(Semaphore::new(capacity));
 
-        let metrics = PoolMetrics::new(pool_name.into());
+        let metrics = PoolMetrics::new(pool_name.as_ref());
         metrics.created().increment(capacity as u64);
         metrics.capacity().set(capacity as f64);
 

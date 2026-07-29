@@ -1,0 +1,27 @@
+# OTLP correctness test configuration for the Core Agent baseline.
+# Using a fixed hostname is both required to avoid errors, and also ensures consistent tags.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+# Enable the OTLP receiver on gRPC port 4317. Hold all metrics until shutdown so asynchronous
+# Core Agent batch flushes do not make cumulative translation order nondeterministic in this
+# translator-parity test.
+otlp_config:
+  metrics:
+    batch:
+      # TODO: remove after #2160 is fixed
+      min_size: 1000000000
+      max_size: 0
+      flush_timeout: 5s
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:54317"
