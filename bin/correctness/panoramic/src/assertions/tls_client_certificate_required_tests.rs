@@ -16,6 +16,7 @@ use super::{Assertion as _, AssertionContext, LogBuffer, TargetCommand, TlsClien
 enum TlsServerMode {
     RequireClientCertificate,
     ReturnHttpResponse,
+    ReturnHttpRedirect(String),
 }
 
 fn initialize_crypto_provider() {
@@ -30,7 +31,7 @@ async fn spawn_tls_server(mode: TlsServerMode) -> (u16, tokio::task::JoinHandle<
     initialize_crypto_provider();
 
     let server_cert = SelfSignedCert::localhost();
-    let mut server_config = match mode {
+    let mut server_config = match &mode {
         TlsServerMode::RequireClientCertificate => {
             let trusted_client_cert = SelfSignedCert::new(["trusted-client"]);
             let mut client_roots = RootCertStore::empty();
@@ -48,7 +49,9 @@ async fn spawn_tls_server(mode: TlsServerMode) -> (u16, tokio::task::JoinHandle<
                 .expect("client certificate verifier should build");
             ServerConfig::builder().with_client_cert_verifier(verifier)
         }
-        TlsServerMode::ReturnHttpResponse => ServerConfig::builder().with_no_client_auth(),
+        TlsServerMode::ReturnHttpResponse | TlsServerMode::ReturnHttpRedirect(_) => {
+            ServerConfig::builder().with_no_client_auth()
+        }
     }
     .with_single_cert(server_cert.cert_chain(), server_cert.private_key())
     .expect("server TLS config should build");
@@ -72,7 +75,7 @@ async fn spawn_tls_server(mode: TlsServerMode) -> (u16, tokio::task::JoinHandle<
             TlsServerMode::RequireClientCertificate => {
                 assert!(handshake.is_err(), "anonymous TLS handshake should be rejected");
             }
-            TlsServerMode::ReturnHttpResponse => {
+            TlsServerMode::ReturnHttpResponse | TlsServerMode::ReturnHttpRedirect(_) => {
                 let mut stream = handshake.expect("anonymous TLS handshake should succeed");
                 let mut request = [0; 4096];
                 let bytes_read = stream
@@ -80,8 +83,18 @@ async fn spawn_tls_server(mode: TlsServerMode) -> (u16, tokio::task::JoinHandle<
                     .await
                     .expect("server should read HTTP request");
                 assert!(bytes_read > 0, "server should receive an HTTP request");
+                let response = match mode {
+                    TlsServerMode::ReturnHttpResponse => {
+                        "HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_string()
+                    }
+                    TlsServerMode::ReturnHttpRedirect(location) => format!(
+                        "HTTP/1.1 302 Found\r\nlocation: {}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                        location
+                    ),
+                    TlsServerMode::RequireClientCertificate => unreachable!(),
+                };
                 stream
-                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .write_all(response.as_bytes())
                     .await
                     .expect("server should write HTTP response");
             }
@@ -106,6 +119,70 @@ fn assertion_context(mapped_port: u16, target_os: ContainerOs) -> AssertionConte
         core_agent_auth_token_path: None,
         adp_cli_command: TargetCommand::new(Vec::new()),
         core_agent_cli_command: TargetCommand::new(Vec::new()),
+    }
+}
+
+#[test]
+fn description_redacts_endpoint_secrets() {
+    let assertion = TlsClientCertificateRequiredAssertion::new(
+        "https://probe-user:probe-password@localhost:55101/private/config?api_key=query-secret#fragment-secret"
+            .to_string(),
+        Duration::from_secs(3),
+    );
+
+    let description = assertion.description();
+
+    assert!(
+        description.contains("https://localhost:55101/private/config"),
+        "description should preserve safe endpoint diagnostics: {}",
+        description
+    );
+    for secret in [
+        "probe-user",
+        "probe-password",
+        "api_key",
+        "query-secret",
+        "fragment-secret",
+    ] {
+        assert!(
+            !description.contains(secret),
+            "description must redact endpoint secret '{secret}': {description}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn malformed_endpoint_uses_safe_diagnostics() {
+    initialize_crypto_provider();
+    let malformed_endpoint = "https://probe-user:malformed-password@[invalid-host/private?query-secret#fragment-secret";
+    let assertion = TlsClientCertificateRequiredAssertion::new(malformed_endpoint.to_string(), Duration::from_secs(1));
+
+    let description = assertion.description();
+    let result = assertion.check(&assertion_context(55101, ContainerOs::Linux)).await;
+
+    assert!(description.contains("<invalid endpoint>"));
+    assert!(!result.passed);
+    assert!(
+        result.message.contains("malformed"),
+        "failure should diagnose a malformed endpoint safely: {}",
+        result.message
+    );
+    for secret in [
+        malformed_endpoint,
+        "probe-user",
+        "malformed-password",
+        "query-secret",
+        "fragment-secret",
+    ] {
+        assert!(
+            !description.contains(secret),
+            "description leaked '{secret}': {description}"
+        );
+        assert!(
+            !result.message.contains(secret),
+            "failure leaked '{secret}': {}",
+            result.message
+        );
     }
 }
 
@@ -150,6 +227,86 @@ async fn anonymous_client_fails_when_server_returns_an_http_response() {
         .await
         .expect("TLS server should finish")
         .expect("TLS server task should not panic");
+}
+
+#[tokio::test]
+async fn anonymous_client_does_not_follow_a_cross_origin_redirect_to_an_mtls_endpoint() {
+    let (redirect_target_port, mut redirect_target_task) =
+        spawn_tls_server(TlsServerMode::RequireClientCertificate).await;
+    let (mapped_port, redirect_source_task) = spawn_tls_server(TlsServerMode::ReturnHttpRedirect(format!(
+        "https://localhost:{}/private",
+        redirect_target_port
+    )))
+    .await;
+    let assertion = TlsClientCertificateRequiredAssertion::new(
+        "https://localhost:55101/config".to_string(),
+        Duration::from_secs(3),
+    );
+
+    let result = assertion
+        .check(&assertion_context(mapped_port, ContainerOs::Linux))
+        .await;
+
+    timeout(Duration::from_secs(5), redirect_source_task)
+        .await
+        .expect("redirect source should finish")
+        .expect("redirect source task should not panic");
+    let redirect_target_was_contacted = timeout(Duration::from_millis(500), &mut redirect_target_task)
+        .await
+        .is_ok();
+    if !redirect_target_was_contacted {
+        redirect_target_task.abort();
+    }
+
+    assert!(!result.passed, "a redirect response must not satisfy the assertion");
+    assert!(
+        result.message.contains("HTTP status 302"),
+        "failure should identify the redirect response: {}",
+        result.message
+    );
+    assert!(
+        !redirect_target_was_contacted,
+        "the anonymous probe must not follow the redirect to the mTLS endpoint"
+    );
+}
+
+#[tokio::test]
+async fn request_failure_redacts_endpoint_secrets() {
+    initialize_crypto_provider();
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("temporary listener should bind");
+    let unused_port = listener.local_addr().expect("listener should have an address").port();
+    drop(listener);
+    let assertion = TlsClientCertificateRequiredAssertion::new(
+        "https://probe-user:probe-password@localhost:55101/private/config?api_key=query-secret#fragment-secret"
+            .to_string(),
+        Duration::from_secs(1),
+    );
+
+    let result = assertion
+        .check(&assertion_context(unused_port, ContainerOs::Linux))
+        .await;
+
+    assert!(!result.passed, "connection refusal must fail the assertion");
+    assert!(
+        result.message.contains("127.0.0.1") && result.message.contains("/private/config"),
+        "failure should preserve safe endpoint diagnostics: {}",
+        result.message
+    );
+    for secret in [
+        "probe-user",
+        "probe-password",
+        "api_key",
+        "query-secret",
+        "fragment-secret",
+    ] {
+        assert!(
+            !result.message.contains(secret),
+            "failure must redact endpoint secret '{secret}': {}",
+            result.message
+        );
+    }
 }
 
 #[tokio::test]

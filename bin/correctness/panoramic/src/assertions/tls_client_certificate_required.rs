@@ -5,6 +5,21 @@ use rustls::{AlertDescription, Error as RustlsError};
 
 use crate::assertions::{http_check::resolve_endpoint, Assertion, AssertionContext, AssertionResult};
 
+const INVALID_ENDPOINT: &str = "<invalid endpoint>";
+
+fn sanitized_endpoint(endpoint: &str) -> String {
+    let Ok(mut endpoint) = reqwest::Url::parse(endpoint) else {
+        return INVALID_ENDPOINT.to_string();
+    };
+    if endpoint.host().is_none() || endpoint.set_username("").is_err() || endpoint.set_password(None).is_err() {
+        return INVALID_ENDPOINT.to_string();
+    }
+
+    endpoint.set_query(None);
+    endpoint.set_fragment(None);
+    endpoint.to_string()
+}
+
 /// Assertion that verifies an HTTPS endpoint requires TLS client-certificate authentication.
 pub struct TlsClientCertificateRequiredAssertion {
     endpoint: String,
@@ -36,7 +51,7 @@ impl Assertion for TlsClientCertificateRequiredAssertion {
     fn description(&self) -> String {
         format!(
             "HTTPS endpoint '{}' rejects an anonymous client during TLS client-certificate authentication.",
-            self.endpoint
+            sanitized_endpoint(&self.endpoint)
         )
     }
 
@@ -52,20 +67,34 @@ impl Assertion for TlsClientCertificateRequiredAssertion {
             );
         }
 
-        if !self.endpoint.starts_with("https://") {
+        let configured_endpoint = match reqwest::Url::parse(&self.endpoint) {
+            Ok(endpoint) if endpoint.host().is_some() => endpoint,
+            _ => {
+                return self.result(
+                    started,
+                    false,
+                    "TLS client-certificate authentication cannot be checked because the configured endpoint is malformed; expected an absolute HTTPS URL."
+                        .to_string(),
+                );
+            }
+        };
+
+        if configured_endpoint.scheme() != "https" {
             return self.result(
                 started,
                 false,
                 format!(
                     "TLS client-certificate authentication can only be checked with an https:// endpoint; configured endpoint was '{}'.",
-                    self.endpoint
+                    sanitized_endpoint(&self.endpoint)
                 ),
             );
         }
 
         let endpoint = resolve_endpoint(&self.endpoint, ctx);
+        let endpoint_display = sanitized_endpoint(&endpoint);
         let client = match ClientBuilder::new()
             .danger_accept_invalid_certs(true)
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(self.timeout)
             .build()
         {
@@ -74,7 +103,10 @@ impl Assertion for TlsClientCertificateRequiredAssertion {
                 return self.result(
                     started,
                     false,
-                    format!("Failed to build anonymous HTTPS client for '{}': {}.", endpoint, error),
+                    format!(
+                        "Failed to build anonymous HTTPS client for '{}': {}.",
+                        endpoint_display, error
+                    ),
                 );
             }
         };
@@ -86,19 +118,25 @@ impl Assertion for TlsClientCertificateRequiredAssertion {
             _ = ctx.cancel_token.cancelled() => self.result(
                 started,
                 false,
-                format!("TLS client-certificate authentication check for '{}' was cancelled.", endpoint),
+                format!(
+                    "TLS client-certificate authentication check for '{}' was cancelled.",
+                    endpoint_display
+                ),
             ),
             _ = ctx.container_exit_token.cancelled() => self.result(
                 started,
                 false,
-                format!("TLS client-certificate authentication check for '{}' stopped because the target exited.", endpoint),
+                format!(
+                    "TLS client-certificate authentication check for '{}' stopped because the target exited.",
+                    endpoint_display
+                ),
             ),
             _ = tokio::time::sleep(self.timeout) => self.result(
                 started,
                 false,
                 format!(
                     "Anonymous HTTPS request to '{}' did not produce a TLS client-certificate authentication rejection within {:?}.",
-                    endpoint, self.timeout
+                    endpoint_display, self.timeout
                 ),
             ),
             result = &mut request => match result {
@@ -107,7 +145,7 @@ impl Assertion for TlsClientCertificateRequiredAssertion {
                     false,
                     format!(
                         "Anonymous HTTPS request to '{}' returned HTTP status {}; the endpoint did not require a client certificate during the TLS handshake.",
-                        endpoint,
+                        endpoint_display,
                         response.status().as_u16()
                     ),
                 ),
@@ -116,7 +154,7 @@ impl Assertion for TlsClientCertificateRequiredAssertion {
                     true,
                     format!(
                         "HTTPS endpoint '{}' rejected the anonymous client with the TLS CertificateRequired alert.",
-                        endpoint
+                        endpoint_display
                     ),
                 ),
                 Err(error) => self.result(
@@ -124,8 +162,8 @@ impl Assertion for TlsClientCertificateRequiredAssertion {
                     false,
                     format!(
                         "Anonymous HTTPS request to '{}' failed, but not because TLS client-certificate authentication was required: {}.",
-                        endpoint,
-                        error_chain(&error)
+                        endpoint_display,
+                        error_chain(error)
                     ),
                 ),
             },
@@ -133,9 +171,10 @@ impl Assertion for TlsClientCertificateRequiredAssertion {
     }
 }
 
-fn error_chain(error: &reqwest::Error) -> String {
+fn error_chain(error: reqwest::Error) -> String {
+    let error = error.without_url();
     let mut messages = Vec::new();
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     while let Some(source) = current {
         messages.push(source.to_string());
         current = source.source();

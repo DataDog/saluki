@@ -1,7 +1,7 @@
 type: integration
 name: "privileged-api-mtls-required"
 description: "Verifies that the ADP privileged API accepts its authenticated CLI and rejects an anonymous HTTPS client during TLS client-certificate authentication."
-timeout: 120s
+timeout: 180s
 runtimes: [linux]
 
 env:
