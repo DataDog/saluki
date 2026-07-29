@@ -571,7 +571,7 @@
 <a href=#571 id=571 data-nosnippet>571</a>            env_vars,
 <a href=#572 id=572 data-nosnippet>572</a>            <span class="bool-val">false</span>,
 <a href=#573 id=573 data-nosnippet>573</a>            KEY_ALIASES,
-<a href=#574 id=574 data-nosnippet>574</a>            DatadogRemapper::new,
+<a href=#574 id=574 data-nosnippet>574</a>            DatadogRemapper::from_env_vars,
 <a href=#575 id=575 data-nosnippet>575</a>        )
 <a href=#576 id=576 data-nosnippet>576</a>        .<span class="kw">await</span>;
 <a href=#577 id=577 data-nosnippet>577</a>        ForwarderConfiguration::from_configuration(<span class="kw-2">&amp;</span>cfg).expect(<span class="string">"ForwarderConfiguration should deserialize"</span>)
@@ -585,7 +585,7 @@
 <a href=#585 id=585 data-nosnippet>585</a>            env_vars,
 <a href=#586 id=586 data-nosnippet>586</a>            <span class="bool-val">false</span>,
 <a href=#587 id=587 data-nosnippet>587</a>            KEY_ALIASES,
-<a href=#588 id=588 data-nosnippet>588</a>            DatadogRemapper::new,
+<a href=#588 id=588 data-nosnippet>588</a>            DatadogRemapper::from_env_vars,
 <a href=#589 id=589 data-nosnippet>589</a>        )
 <a href=#590 id=590 data-nosnippet>590</a>        .<span class="kw">await</span>;
 <a href=#591 id=591 data-nosnippet>591</a>        cfg
@@ -1202,7 +1202,7 @@
 <a href=#1202 id=1202 data-nosnippet>1202</a>            <span class="macro">json!</span>({ <span class="string">"api_key"</span>: <span class="string">"smoke-test-api-key" </span>}),
 <a href=#1203 id=1203 data-nosnippet>1203</a>            |cfg| ForwarderConfiguration::from_configuration(<span class="kw-2">&amp;</span>cfg).expect(<span class="string">"ForwarderConfiguration should deserialize"</span>),
 <a href=#1204 id=1204 data-nosnippet>1204</a>            KEY_ALIASES,
-<a href=#1205 id=1205 data-nosnippet>1205</a>            DatadogRemapper::new,
+<a href=#1205 id=1205 data-nosnippet>1205</a>            DatadogRemapper::from_env_vars,
 <a href=#1206 id=1206 data-nosnippet>1206</a>        )
 <a href=#1207 id=1207 data-nosnippet>1207</a>        .<span class="kw">await
 <a href=#1208 id=1208 data-nosnippet>1208</a>    </span>}

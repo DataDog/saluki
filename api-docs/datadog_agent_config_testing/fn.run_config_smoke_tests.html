@@ -9,7 +9,7 @@
     T: <a class="trait" href="https://doc.rust-lang.org/nightly/core/cmp/trait.PartialEq.html" title="trait core::cmp::PartialEq">PartialEq</a> + <a class="trait" href="https://docs.rs/serde_core/1.0.228/serde_core/ser/trait.Serialize.html" title="trait serde_core::ser::Serialize">Serialize</a>,
     Factory: <a class="trait" href="https://doc.rust-lang.org/nightly/core/ops/function/trait.Fn.html" title="trait core::ops::function::Fn">Fn</a>(GenericConfiguration) -&gt; T,
     P: <a class="trait" href="https://docs.rs/figment/0.10.19/figment/provider/trait.Provider.html" title="trait figment::provider::Provider">Provider</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + <a class="trait" href="https://doc.rust-lang.org/nightly/core/marker/trait.Sync.html" title="trait core::marker::Sync">Sync</a> + 'static,
-    PF: <a class="trait" href="https://doc.rust-lang.org/nightly/core/ops/function/trait.Fn.html" title="trait core::ops::function::Fn">Fn</a>() -&gt; P,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Runs smoke tests for all annotations registered to <code>struct_name</code> against a deserialized config struct <code>T</code>.</p>
+    PF: <a class="trait" href="https://doc.rust-lang.org/nightly/core/ops/function/trait.Fn.html" title="trait core::ops::function::Fn">Fn</a>(<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;(<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>, <a class="struct" href="https://doc.rust-lang.org/nightly/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>)&gt;) -&gt; P,</div></code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Runs smoke tests for all annotations registered to <code>struct_name</code> against a deserialized config struct <code>T</code>.</p>
 <p>Verifies three properties:</p>
 <p><strong>Supported keys</strong>: loading the struct with the test value set via the annotation’s <code>yaml_path</code>
 and via each of its effective env vars must all produce identical structs, and each must differ
@@ -18,6 +18,6 @@ from the default (empty-config) struct.</p>
 default struct.</p>
 <p><strong>Full field coverage</strong>: loading the struct with all supported keys set simultaneously must
 produce a struct where every serialized leaf field differs from the default.</p>
-<p><code>key_aliases</code> and <code>provider_factory</code> configure the test config loader. Pass the same aliases and
-remapper factory used in production config loading.</p>
+<p><code>key_aliases</code> and <code>provider_factory</code> configure the test config loader. The provider factory receives the
+environment pairs configured for each test case, so it can avoid reading unrelated ambient process variables.</p>
 </div></details></section></div></main></body></html>

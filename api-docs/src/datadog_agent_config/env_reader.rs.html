@@ -308,26 +308,21 @@
 <a href=#308 id=308 data-nosnippet>308</a>
 <a href=#309 id=309 data-nosnippet>309</a>    <span class="attr">#[test]
 <a href=#310 id=310 data-nosnippet>310</a>    </span><span class="kw">fn </span>lowercase_proxy_env_is_honored() {
-<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>_guard = ENV_MUTEX.lock().unwrap();
-<a href=#312 id=312 data-nosnippet>312</a>
-<a href=#313 id=313 data-nosnippet>313</a>        <span class="comment">// The common lowercase Unix convention must fill the proxy slot, matching the legacy
-<a href=#314 id=314 data-nosnippet>314</a>        // case-insensitive remapper.
-<a href=#315 id=315 data-nosnippet>315</a>        </span>std::env::set_var(<span class="string">"http_proxy"</span>, <span class="string">"http://lower:3128"</span>);
-<a href=#316 id=316 data-nosnippet>316</a>        <span class="kw">let </span><span class="kw-2">mut </span>base = <span class="macro">json!</span>({});
-<a href=#317 id=317 data-nosnippet>317</a>        apply_datadog_env(<span class="kw-2">&amp;mut </span>base, <span class="bool-val">true</span>).unwrap();
-<a href=#318 id=318 data-nosnippet>318</a>        std::env::remove_var(<span class="string">"http_proxy"</span>);
-<a href=#319 id=319 data-nosnippet>319</a>
-<a href=#320 id=320 data-nosnippet>320</a>        <span class="macro">assert_eq!</span>(at(<span class="kw-2">&amp;</span>base, <span class="kw-2">&amp;</span>[<span class="string">"proxy"</span>, <span class="string">"http"</span>]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">json!</span>(<span class="string">"http://lower:3128"</span>)));
-<a href=#321 id=321 data-nosnippet>321</a>    }
-<a href=#322 id=322 data-nosnippet>322</a>
-<a href=#323 id=323 data-nosnippet>323</a>    <span class="attr">#[test]
-<a href=#324 id=324 data-nosnippet>324</a>    </span><span class="kw">fn </span>malformed_value_propagates() {
-<a href=#325 id=325 data-nosnippet>325</a>        <span class="kw">let </span>_guard = ENV_MUTEX.lock().unwrap();
-<a href=#326 id=326 data-nosnippet>326</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>);
-<a href=#327 id=327 data-nosnippet>327</a>        <span class="kw">let </span><span class="kw-2">mut </span>base = <span class="macro">json!</span>({});
-<a href=#328 id=328 data-nosnippet>328</a>        <span class="kw">let </span>result = apply_datadog_env(<span class="kw-2">&amp;mut </span>base, <span class="bool-val">true</span>);
-<a href=#329 id=329 data-nosnippet>329</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_PORT"</span>);
-<a href=#330 id=330 data-nosnippet>330</a>        <span class="macro">assert!</span>(result.is_err());
-<a href=#331 id=331 data-nosnippet>331</a>    }
-<a href=#332 id=332 data-nosnippet>332</a>}
+<a href=#311 id=311 data-nosnippet>311</a>        <span class="kw">let </span>env = EnvSnapshot::from_vars([(<span class="string">"http_proxy"</span>.to_string(), <span class="string">"http://lower:3128"</span>.to_string())]);
+<a href=#312 id=312 data-nosnippet>312</a>        <span class="kw">let </span><span class="kw-2">mut </span>base = <span class="macro">json!</span>({});
+<a href=#313 id=313 data-nosnippet>313</a>        apply_proxy_env(base.as_object_mut().unwrap(), <span class="kw-2">&amp;</span>env, <span class="bool-val">true</span>);
+<a href=#314 id=314 data-nosnippet>314</a>
+<a href=#315 id=315 data-nosnippet>315</a>        <span class="macro">assert_eq!</span>(at(<span class="kw-2">&amp;</span>base, <span class="kw-2">&amp;</span>[<span class="string">"proxy"</span>, <span class="string">"http"</span>]), <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="macro">json!</span>(<span class="string">"http://lower:3128"</span>)));
+<a href=#316 id=316 data-nosnippet>316</a>    }
+<a href=#317 id=317 data-nosnippet>317</a>
+<a href=#318 id=318 data-nosnippet>318</a>    <span class="attr">#[test]
+<a href=#319 id=319 data-nosnippet>319</a>    </span><span class="kw">fn </span>malformed_value_propagates() {
+<a href=#320 id=320 data-nosnippet>320</a>        <span class="kw">let </span>_guard = ENV_MUTEX.lock().unwrap();
+<a href=#321 id=321 data-nosnippet>321</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>);
+<a href=#322 id=322 data-nosnippet>322</a>        <span class="kw">let </span><span class="kw-2">mut </span>base = <span class="macro">json!</span>({});
+<a href=#323 id=323 data-nosnippet>323</a>        <span class="kw">let </span>result = apply_datadog_env(<span class="kw-2">&amp;mut </span>base, <span class="bool-val">true</span>);
+<a href=#324 id=324 data-nosnippet>324</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_PORT"</span>);
+<a href=#325 id=325 data-nosnippet>325</a>        <span class="macro">assert!</span>(result.is_err());
+<a href=#326 id=326 data-nosnippet>326</a>    }
+<a href=#327 id=327 data-nosnippet>327</a>}
 </code></pre></div></section></main></body></html>

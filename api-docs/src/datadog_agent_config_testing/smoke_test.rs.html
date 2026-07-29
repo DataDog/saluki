@@ -109,7 +109,7 @@
 <a href=#109 id=109 data-nosnippet>109</a>) -&gt; GenericConfiguration
 <a href=#110 id=110 data-nosnippet>110</a><span class="kw">where
 <a href=#111 id=111 data-nosnippet>111</a>    </span>P: Provider + Send + Sync + <span class="lifetime">'static</span>,
-<a href=#112 id=112 data-nosnippet>112</a>    F: FnOnce() -&gt; P,
+<a href=#112 id=112 data-nosnippet>112</a>    F: FnOnce(Vec&lt;(String, String)&gt;) -&gt; P,
 <a href=#113 id=113 data-nosnippet>113</a>{
 <a href=#114 id=114 data-nosnippet>114</a>    <span class="kw">let </span>(cfg, <span class="kw">_</span>) = ConfigurationLoader::for_tests_with_provider_factory(
 <a href=#115 id=115 data-nosnippet>115</a>        <span class="prelude-val">Some</span>(file_values),
@@ -128,7 +128,7 @@
 <a href=#128 id=128 data-nosnippet>128</a>) -&gt; GenericConfiguration
 <a href=#129 id=129 data-nosnippet>129</a><span class="kw">where
 <a href=#130 id=130 data-nosnippet>130</a>    </span>P: Provider + Send + Sync + <span class="lifetime">'static</span>,
-<a href=#131 id=131 data-nosnippet>131</a>    F: FnOnce() -&gt; P,
+<a href=#131 id=131 data-nosnippet>131</a>    F: FnOnce(Vec&lt;(String, String)&gt;) -&gt; P,
 <a href=#132 id=132 data-nosnippet>132</a>{
 <a href=#133 id=133 data-nosnippet>133</a>    <span class="kw">let </span>(cfg, <span class="kw">_</span>) = ConfigurationLoader::for_tests_with_provider_factory(
 <a href=#134 id=134 data-nosnippet>134</a>        <span class="prelude-val">Some</span>(base_file_values.clone()),
@@ -155,8 +155,8 @@
 <a href=#155 id=155 data-nosnippet>155</a>/// **Full field coverage**: loading the struct with all supported keys set simultaneously must
 <a href=#156 id=156 data-nosnippet>156</a>/// produce a struct where every serialized leaf field differs from the default.
 <a href=#157 id=157 data-nosnippet>157</a>///
-<a href=#158 id=158 data-nosnippet>158</a>/// `key_aliases` and `provider_factory` configure the test config loader. Pass the same aliases and
-<a href=#159 id=159 data-nosnippet>159</a>/// remapper factory used in production config loading.
+<a href=#158 id=158 data-nosnippet>158</a>/// `key_aliases` and `provider_factory` configure the test config loader. The provider factory receives the
+<a href=#159 id=159 data-nosnippet>159</a>/// environment pairs configured for each test case, so it can avoid reading unrelated ambient process variables.
 <a href=#160 id=160 data-nosnippet>160</a></span><span class="kw">pub async fn </span>run_config_smoke_tests&lt;T, Factory, P, PF&gt;(
 <a href=#161 id=161 data-nosnippet>161</a>    struct_name: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, non_config_fields: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str], base_config: serde_json::Value, config_factory: Factory,
 <a href=#162 id=162 data-nosnippet>162</a>    key_aliases: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>[(<span class="kw-2">&amp;</span><span class="lifetime">'static </span>str, <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str)], provider_factory: PF,
@@ -164,7 +164,7 @@
 <a href=#164 id=164 data-nosnippet>164</a>    </span>T: PartialEq + Serialize,
 <a href=#165 id=165 data-nosnippet>165</a>    Factory: Fn(GenericConfiguration) -&gt; T,
 <a href=#166 id=166 data-nosnippet>166</a>    P: Provider + Send + Sync + <span class="lifetime">'static</span>,
-<a href=#167 id=167 data-nosnippet>167</a>    PF: Fn() -&gt; P,
+<a href=#167 id=167 data-nosnippet>167</a>    PF: Fn(Vec&lt;(String, String)&gt;) -&gt; P,
 <a href=#168 id=168 data-nosnippet>168</a>{
 <a href=#169 id=169 data-nosnippet>169</a>    <span class="kw">let </span>keys: Vec&lt;<span class="kw-2">&amp;</span><span class="lifetime">'static </span>SalukiAnnotation&gt; = SUPPORTED_ANNOTATIONS
 <a href=#170 id=170 data-nosnippet>170</a>        .iter()
@@ -323,7 +323,7 @@
 <a href=#323 id=323 data-nosnippet>323</a>    <span class="doccomment">/// Struct name that no annotation's `used_by` references, so every registered key is "foreign" to it.
 <a href=#324 id=324 data-nosnippet>324</a>    </span><span class="kw">const </span>UNREGISTERED_STRUCT: <span class="kw-2">&amp;</span>str = <span class="string">"NonExistentConfiguration"</span>;
 <a href=#325 id=325 data-nosnippet>325</a>
-<a href=#326 id=326 data-nosnippet>326</a>    <span class="kw">fn </span>empty_provider() -&gt; figment::providers::Serialized&lt;serde_json::Value&gt; {
+<a href=#326 id=326 data-nosnippet>326</a>    <span class="kw">fn </span>empty_provider(_env_vars: Vec&lt;(String, String)&gt;) -&gt; figment::providers::Serialized&lt;serde_json::Value&gt; {
 <a href=#327 id=327 data-nosnippet>327</a>        figment::providers::Serialized::defaults(<span class="macro">json!</span>({}))
 <a href=#328 id=328 data-nosnippet>328</a>    }
 <a href=#329 id=329 data-nosnippet>329</a>
