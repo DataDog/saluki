@@ -586,6 +586,31 @@ while diagnosing payload content.
 ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not log
 compressed wire payload bytes.
 
+### Privileged API authentication
+
+`data_plane.secure_api_listen_address` configures ADP's privileged HTTP and gRPC API. The address
+must include a URL scheme, such as `tcp://`. Every client must present the Agent IPC certificate
+from the configured `ipc_cert.pem` during the TLS handshake. ADP accepts the client only when the
+presented leaf certificate's DER encoding exactly matches that certificate and the handshake proves
+possession of its private key. Authentication completes before ADP selects an HTTP route or gRPC
+service, so an unauthenticated request never reaches a route.
+
+The ADP CLI and the Core Agent use this shared IPC identity. All holders therefore act as one
+principal; ADP does not distinguish individual clients. Because the transport authenticates every
+privileged connection, routes do not need a bearer token solely to compensate for anonymous TLS
+access. A route can still enforce separate authorization when its policy requires it.
+
+Exact certificate matching does not allow an issuing CA to broaden trust, and it does not provide an
+overlap window for old and new certificates. Coordinate replacement of `ipc_cert.pem` with restarts
+so ADP and every client use the same certificate throughout a rotation.
+
+For machine-readable configuration inspection, use these commands:
+
+- `agent-data-plane config --json` prints the source/effective configuration view.
+- `agent-data-plane config --json --runtime` prints the translated runtime configuration view.
+
+Both commands scrub recognized secret values before writing JSON to standard output.
+
 | Config Key                                                     | Description                                        |
 | -------------------------------------------------------------- | -------------------------------------------------- |
 | `additional_endpoints`                                         | Dual-ship to extra endpoints                       |
@@ -643,7 +668,7 @@ compressed wire payload bytes.
 | `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`       | OTLP proxy gRPC receiver endpoint                  |
 | `data_plane.otlp.proxy.traces.enabled`                         | Proxy OTLP traces to Core Agent                    |
 | `data_plane.remote_agent_enabled`                              | Enable remote agent mode                           |
-| `data_plane.secure_api_listen_address`                         | Privileged API listen address                      |
+| `data_plane.secure_api_listen_address`                         | mTLS-authenticated privileged API address          |
 | `data_plane.use_new_config_stream_endpoint`                    | Use new config stream endpoint                     |
 | `dd_url`                                                       | Override intake endpoint URL                       |
 | `disable_file_logging`                                         | Disable writing logs to a file                     |

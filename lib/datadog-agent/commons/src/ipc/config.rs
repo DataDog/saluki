@@ -30,7 +30,7 @@ const fn default_connect_retry_backoff() -> Duration {
     Duration::from_secs(2)
 }
 
-/// Datadog Agent IPC authentication configuration.
+/// Datadog Agent IPC bearer-token and exact shared-certificate mTLS configuration.
 #[derive(Deserialize)]
 #[serde(default)]
 pub struct IpcAuthConfiguration {
@@ -42,11 +42,11 @@ pub struct IpcAuthConfiguration {
     /// configuration.
     auth_token_file_path: PathBuf,
 
-    /// Path to the Agent IPC TLS certificate file.
+    /// Path to the shared Agent IPC mTLS identity file.
     ///
-    /// The file is expected to be PEM-encoded, containing both a certificate and private key. The certificate will be
-    /// used to verify the TLS server certificate presented by the Agent, and the certificate and private key will be
-    /// used together to provide client authentication _to_ the Agent.
+    /// The PEM file contains one certificate and its private key. IPC peers require exact leaf-certificate DER equality
+    /// rather than CA-based trust, and each peer proves possession of the corresponding private key during the TLS
+    /// handshake. The same identity authenticates both the client and server, so a CA chain cannot broaden it.
     ///
     /// Defaults to `ipc_cert.pem` in the same directory as the Agent authentication token file. (for example, if
     /// `auth_token_file_path` is `/etc/datadog-agent/auth_token`, this will be `/etc/datadog-agent/ipc_cert.pem`.)
@@ -54,9 +54,9 @@ pub struct IpcAuthConfiguration {
 }
 
 impl IpcAuthConfiguration {
-    // Creates a new `IpcAuthConfiguration` from the given configuration.
+    /// Creates a new `IpcAuthConfiguration` from the given configuration.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the configuration is invalid, an error is returned.
     pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
@@ -74,7 +74,7 @@ impl IpcAuthConfiguration {
         self.auth_token_file_path.clone()
     }
 
-    /// Gets the IPC certificate file path from the configuration.
+    /// Gets the shared IPC mTLS identity file path from the configuration.
     pub fn ipc_cert_file_path(&self) -> PathBuf {
         // If the IPC cert file path is set explicitly, we always prefer that.
         if let Some(path) = self.ipc_cert_file_path.as_ref() {

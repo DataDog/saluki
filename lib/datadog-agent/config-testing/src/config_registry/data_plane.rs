@@ -144,7 +144,7 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `data_plane.secure_api_listen_address`-Privileged API listen address
+    /// `data_plane.secure_api_listen_address`-mTLS-authenticated privileged API address
     DATA_PLANE_SECURE_API_LISTEN_ADDRESS = SalukiAnnotation {
         schema: &schema::DATA_PLANE_SECURE_API_LISTEN_ADDRESS,
         support_level: SupportLevel::Full,

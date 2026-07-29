@@ -69,9 +69,9 @@ impl DataPlaneConfiguration {
         &self.api_listen_address
     }
 
-    /// Returns a reference to the secure API listen address.
+    /// Returns a reference to the secure, or privileged, API listen address.
     ///
-    /// This is also referred to as the "privileged" API.
+    /// Every HTTP and gRPC client must present the exact configured Agent IPC certificate during the TLS handshake.
     pub const fn secure_api_listen_address(&self) -> &ListenAddress {
         &self.secure_api_listen_address
     }

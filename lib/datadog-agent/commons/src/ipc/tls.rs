@@ -38,10 +38,7 @@ impl ServerCertVerifier for DatadogAgentServerCertVerifier {
         &self, end_entity: &CertificateDer<'_>, _intermediates: &[CertificateDer<'_>], _server_name: &ServerName<'_>,
         _ocsp_response: &[u8], _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        // We only care about if the server certificate matches the one we have.
-        //
-        // This explicitly ignores things like the server using a CA certificate as an end-entity certificate and all of
-        // that. We just want to verify that the server certificate is the one we expect.
+        // Exact leaf DER equality pins one server identity; certificate chains and CA semantics do not broaden trust.
         if end_entity != &self.cert {
             return Err(rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer));
         }
@@ -118,14 +115,16 @@ impl ClientCertVerifier for DatadogAgentClientCertVerifier {
     }
 }
 
-/// Builds a client TLS configuration suitable for IPC usage with the Datadog Agent.
+/// Builds an exact shared-certificate mTLS client configuration for Datadog Agent IPC.
 ///
-/// All IPC for the Datadog Agent uses mutual TLS, where both client _and_ server verify each other's certificate, but
-/// crucially, use the _same_ certificate on both sides.
+/// The client accepts only a server leaf certificate whose DER encoding exactly matches the configured IPC certificate
+/// and verifies the handshake signature as proof that the server possesses its private key. The client presents the same
+/// certificate and proves possession of its private key to satisfy mandatory server-side client authentication.
+/// Certificate chains and CA trust do not broaden the accepted server identity.
 ///
-/// ## Errors
+/// # Errors
 ///
-/// If there is an issue reading the IPC TLS certificate file, or if the file isn't a valid PEM-encoded certificate, an
+/// If the IPC TLS identity file cannot be read or does not contain a valid PEM-encoded certificate and private key, an
 /// error is returned.
 pub async fn build_ipc_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Result<ClientConfig, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
@@ -161,15 +160,16 @@ pub async fn build_ipc_client_ipc_tls_config<P: AsRef<Path>>(cert_path: P) -> Re
     Ok(config)
 }
 
-/// Builds a server TLS configuration suitable for IPC usage with the Datadog Agent.
+/// Builds an exact shared-certificate mTLS server configuration for Datadog Agent IPC.
 ///
 /// The server requires every client to present a leaf certificate whose DER encoding exactly matches the configured IPC
-/// certificate. This is exact-certificate mutual TLS rather than CA-based trust: the client and server identities must
-/// be coordinated to use the same certificate, and no overlap between different certificates is accepted.
+/// certificate and to prove possession of its private key with the handshake signature. The server presents the same
+/// certificate as its identity. Certificate chains and CA trust do not broaden the accepted client identity, and no
+/// overlap between different certificates is accepted.
 ///
-/// ## Errors
+/// # Errors
 ///
-/// If there is an issue reading the IPC TLS certificate file, or if the file isn't a valid PEM-encoded certificate, an
+/// If the IPC TLS identity file cannot be read or does not contain a valid PEM-encoded certificate and private key, an
 /// error is returned.
 pub async fn build_ipc_server_tls_config<P: AsRef<Path>>(cert_path: P) -> Result<ServerConfig, GenericError> {
     // Read the certificate file, and extract the certificate and private key from it.
