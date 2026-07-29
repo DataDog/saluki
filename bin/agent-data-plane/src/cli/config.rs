@@ -1,3 +1,5 @@
+use std::fmt;
+
 use argh::FromArgs;
 use saluki_common::scrubber;
 use saluki_config::GenericConfiguration;
@@ -27,10 +29,87 @@ enum ConfigOutputFormat {
     Json,
 }
 
-fn parse_config_response(response_body: &[u8]) -> Result<serde_json::Value, serde_json::Error> {
-    let scrubber = scrubber::default_scrubber();
-    let scrubbed_bytes = scrubber.scrub_bytes(response_body);
-    serde_json::from_slice(&scrubbed_bytes)
+#[derive(Debug)]
+enum ConfigResponseError {
+    InvalidResponse(serde_json::Error),
+    WrapperSerialization(serde_json::Error),
+    InvalidScrubbedValue(serde_json::Error),
+    UnexpectedScrubbedStructure,
+}
+
+impl fmt::Display for ConfigResponseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidResponse(error) => write!(f, "configuration response is not valid JSON: {error}"),
+            Self::WrapperSerialization(error) => {
+                write!(f, "failed to serialize a configuration string for scrubbing: {error}")
+            }
+            Self::InvalidScrubbedValue(error) => {
+                write!(
+                    f,
+                    "scrubber produced invalid JSON while redacting a configuration string: {error}"
+                )
+            }
+            Self::UnexpectedScrubbedStructure => {
+                f.write_str("scrubber changed the JSON wrapper structure while redacting a configuration string")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ConfigResponseError {}
+
+fn scrub_json_string(
+    value: &str, key_context: Option<&str>, scrubber: &scrubber::Scrubber,
+) -> Result<String, ConfigResponseError> {
+    let wrapper = match key_context {
+        Some(key) => serde_json::json!({ key: value }),
+        None => serde_json::json!([value]),
+    };
+    let wrapper_bytes = serde_json::to_vec(&wrapper).map_err(ConfigResponseError::WrapperSerialization)?;
+    let scrubbed_bytes = scrubber.scrub_bytes(&wrapper_bytes);
+    let scrubbed_wrapper =
+        serde_json::from_slice(&scrubbed_bytes).map_err(ConfigResponseError::InvalidScrubbedValue)?;
+
+    let scrubbed_value = match (key_context, scrubbed_wrapper) {
+        (Some(_), serde_json::Value::Object(values)) if values.len() == 1 => values.into_iter().next().map(|(_, v)| v),
+        (None, serde_json::Value::Array(mut values)) if values.len() == 1 => values.pop(),
+        _ => None,
+    };
+
+    match scrubbed_value {
+        Some(serde_json::Value::String(value)) => Ok(value),
+        _ => Err(ConfigResponseError::UnexpectedScrubbedStructure),
+    }
+}
+
+fn scrub_json_value(
+    value: &mut serde_json::Value, key_context: Option<&str>, scrubber: &scrubber::Scrubber,
+) -> Result<(), ConfigResponseError> {
+    match value {
+        serde_json::Value::Object(values) => {
+            for (key, value) in values {
+                scrub_json_value(value, Some(key), scrubber)?;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                scrub_json_value(value, key_context, scrubber)?;
+            }
+        }
+        serde_json::Value::String(value) => {
+            *value = scrub_json_string(value, key_context, scrubber)?;
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+
+    Ok(())
+}
+
+fn parse_config_response(response_body: &[u8]) -> Result<serde_json::Value, ConfigResponseError> {
+    let mut config_value = serde_json::from_slice(response_body).map_err(ConfigResponseError::InvalidResponse)?;
+    scrub_json_value(&mut config_value, None, scrubber::default_scrubber())?;
+    Ok(config_value)
 }
 
 fn format_config_value(
@@ -64,12 +143,13 @@ pub async fn handle_config_command(bootstrap_config: &GenericConfiguration, json
         }
     };
 
-    // Both privileged configuration views return JSON; parse the selected response after scrubbing.
+    // Both privileged configuration views return JSON. Scrub their parsed string leaves so non-string values retain
+    // their JSON types and key-sensitive rules still receive the surrounding object-key context.
     let config_value = match parse_config_response(response_body.as_bytes()) {
         Ok(v) => v,
         Err(e) => {
             error!(
-                "Failed to parse configuration response as JSON after scrubbing (malformed payload or scrubber bug): {:#}",
+                "Failed to scrub configuration response safely; refusing to emit configuration: {:#}",
                 e
             );
             std::process::exit(1);
@@ -99,7 +179,7 @@ pub async fn handle_config_command(bootstrap_config: &GenericConfiguration, json
 mod tests {
     use argh::FromArgs as _;
 
-    use super::{format_config_value, parse_config_response, ConfigOutputFormat};
+    use super::{format_config_value, parse_config_response, ConfigOutputFormat, ConfigResponseError};
     use crate::cli::{Action, Cli};
 
     #[test]
@@ -169,9 +249,48 @@ mod tests {
     }
 
     #[test]
+    fn config_response_scrubbing_preserves_json_types_and_scrubs_string_secrets() {
+        let config = parse_config_response(
+            br#"{
+                "nullable": {"auth_token": null, "password": null},
+                "non_strings": {"enabled": true, "retries": 3},
+                "secrets": {
+                    "auth_token": "token-secret",
+                    "password": "password-secret",
+                    "api_key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb",
+                    "uri": "https://user:uri-secret@example.com/path"
+                },
+                "password": ["array-password"],
+                "generic_array": [
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaabbbb",
+                    "https://user:array-uri-secret@example.com/path",
+                    "Bearer array-bearer-secret"
+                ]
+            }"#,
+        )
+        .expect("valid configuration response should remain valid after scrubbing");
+
+        assert_eq!(config["nullable"]["auth_token"], serde_json::Value::Null);
+        assert_eq!(config["nullable"]["password"], serde_json::Value::Null);
+        assert_eq!(config["non_strings"]["enabled"], true);
+        assert_eq!(config["non_strings"]["retries"], 3);
+        assert_eq!(config["secrets"]["auth_token"], "********");
+        assert_eq!(config["secrets"]["password"], "********");
+        assert_eq!(config["secrets"]["api_key"], "***************************abbbb");
+        assert_eq!(config["secrets"]["uri"], "https://user:********@example.com/path");
+        assert_eq!(config["password"][0], "********");
+        assert_eq!(config["generic_array"][0], "***************************abbbb");
+        assert_eq!(config["generic_array"][1], "https://user:********@example.com/path");
+        assert_eq!(config["generic_array"][2], "Bearer ********");
+    }
+
+    #[test]
     fn malformed_config_response_is_rejected_before_formatting() {
         let error = parse_config_response(b"not JSON").expect_err("malformed JSON should be rejected");
 
-        assert!(error.is_syntax(), "unexpected parse error: {error}");
+        assert!(
+            matches!(&error, ConfigResponseError::InvalidResponse(error) if error.is_syntax()),
+            "unexpected parse error: {error}"
+        );
     }
 }

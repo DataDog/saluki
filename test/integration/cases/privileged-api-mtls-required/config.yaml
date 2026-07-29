@@ -20,6 +20,11 @@ procedure:
     port: 55101
     protocol: tcp
     timeout: 60s
+  # Docker's host proxy can accept connections before the target ADP is ready. Wait for ADP's
+  # completed startup before invoking its CLI against the privileged API.
+  - assertion: log_contains
+    pattern: "Agent Data Plane running."
+    timeout: 60s
 
   # Positive authenticated readiness prevents a dead listener from being interpreted as authentication success.
   - action: adp_cli

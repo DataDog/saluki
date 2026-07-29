@@ -23,11 +23,12 @@ procedure:
   - assertion: log_contains
     pattern: "Successfully registered with the Datadog Agent."
     timeout: 60s
-  # Registration creates a lazy client. Force the Core Agent to collect ADP's status so the test
-  # verifies a real inbound gRPC request authenticated with the shared IPC client certificate.
+  # Registration creates a lazy client. Force the Core Agent to collect ADP's status and require a
+  # DogStatsD runtime field emitted by ADP's live response, proving a real inbound gRPC request was
+  # authenticated with the shared IPC client certificate.
   - action: core_agent_cli
     args: ["status"]
-    output_contains: "Built Against Agent Version"
+    output_contains: "Uds Packet Reading Errors"
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:

@@ -20,6 +20,11 @@ procedure:
     port: 55101
     protocol: tcp
     timeout: 60s
+  # Docker's host proxy can accept connections before the target ADP is ready. Wait for ADP's
+  # completed startup before invoking its CLI against the privileged API.
+  - assertion: log_contains
+    pattern: "Agent Data Plane running."
+    timeout: 60s
 
   # The ADP CLI loads the target's configuration and IPC certificate, so these commands
   # authenticate with mTLS and execute each privileged route instead of probing route registration.
