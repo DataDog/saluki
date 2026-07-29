@@ -171,6 +171,31 @@ Steps execute sequentially. If any assertion or action fails, subsequent steps a
 
 ### Available actions
 
+#### `adp_cli`
+
+Invokes the tested ADP target binary with the target's configuration and environment on Linux, macOS, or Windows. The required `args` list is appended as direct process arguments, without a shell, so shell syntax and metacharacters are not interpreted. The optional `timeout` uses the [duration format](#duration-format) and defaults to `30s`.
+
+The action fails if the command exits with a nonzero status or exceeds its timeout. Harness diagnostics redact the command arguments and target environment; captured child output remains visible in the action result.
+
+```yaml
+- action: adp_cli
+  args: ["config"]
+  timeout: 30s
+```
+
+#### `core_agent_cli`
+
+Invokes the tested Core Agent target binary with the target's configuration and environment on Linux, macOS, or Windows. The required `args` list is appended as direct process arguments, without a shell, so shell syntax and metacharacters are not interpreted. The optional `timeout` uses the [duration format](#duration-format) and defaults to `30s`.
+
+The optional `output_contains` value requires the successful command's captured output to contain the specified literal substring. If omitted, the action checks only command success. The action fails if the command exits with a nonzero status, exceeds its timeout, or does not contain the configured output. Harness diagnostics redact the command arguments and target environment; captured child output remains visible in the action result.
+
+```yaml
+- action: core_agent_cli
+  args: ["status"]
+  output_contains: "Uds Packet Reading Errors"
+  timeout: 60s
+```
+
 #### `core_agent_config_set`
 
 Sets a runtime configuration key through the Core Agent command API.
@@ -229,7 +254,9 @@ Verifies a pattern does NOT appear in the logs for a duration.
 
 #### `http_check`
 
-Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS is supported with optional certificate verification skipping for self-signed certs. The status matcher accepts either an "equal" or "not equal" variant; the latter is useful for asserting that a route is registered without having to know what status code the endpoint would return.
+Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS is supported with optional certificate verification skipping for self-signed certificates. The status matcher accepts either an "equal" or "not equal" variant; the latter is useful for asserting that a route is registered without having to know what status code the endpoint would return.
+
+`insecure_skip_verify` disables only verification of the server certificate; it does not supply a client certificate. As a result, `http_check` cannot probe ADP privileged routes, which require an authenticated client identity. Use [`adp_cli`](#adp_cli) for authenticated privileged operations and [`tls_client_certificate_required`](#tls_client_certificate_required) to verify the anonymous-client rejection boundary.
 
 ```yaml
 # Assert the endpoint returns a specific status code.
@@ -239,13 +266,12 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
     equal: 200
   timeout: 30s
 
-# Probe an HTTPS endpoint served with a self-signed certificate, asserting only that the route is
-# registered (i.e. the response is anything other than 404).
+# Probe a generic HTTPS service that uses a self-signed server certificate.
 - assertion: http_check
-  endpoint: "https://localhost:5101/logging/override"
+  endpoint: "https://localhost:8443/health"
   status:
-    not_equal: 404
-  insecure_skip_verify: true     # Optional: skip TLS certificate verification (default: false)
+    equal: 200
+  insecure_skip_verify: true     # Optional: skip server verification (default: false)
   timeout: 30s
 ```
 
