@@ -915,6 +915,8 @@ async fn run_request_builder(
     let mut v3_sketch_metrics = sketches_mode.needs_v3().then(Vec::<Metric>::new);
     let mut v3_series_points = 0usize;
     let mut v3_sketch_points = 0usize;
+    let mut v3_series_ratio = V3CompressionRatio::default();
+    let mut v3_sketch_ratio = V3CompressionRatio::default();
 
     let mut series_batch_id = None;
     let mut sketches_batch_id = None;
@@ -1101,6 +1103,8 @@ async fn run_request_builder(
                                 endpoint,
                                 flush_context,
                                 v3_metrics,
+                                &mut v3_series_ratio,
+                                &mut v3_sketch_ratio,
                                 &mut payloads_tx,
                                 active_batch_id,
                                 v3_payload_info,
@@ -1230,6 +1234,7 @@ async fn run_request_builder(
                         if let Err(e) = encode_and_flush_v3_series_metrics(
                             flush_context,
                             metrics,
+                            &mut v3_series_ratio,
                             &mut payloads_tx,
                             series_active_batch_id,
                             v3_series_payload_info,
@@ -1271,6 +1276,7 @@ async fn run_request_builder(
                         if let Err(e) = encode_and_flush_v3_sketch_metrics(
                             v3_flush_context,
                             metrics,
+                            &mut v3_sketch_ratio,
                             &mut payloads_tx,
                             sketches_active_batch_id,
                             v3_sketches_payload_info,
@@ -1407,23 +1413,27 @@ struct V3FlushContext<'a> {
     telemetry: &'a ComponentTelemetry,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn encode_and_flush_v3_metrics(
     endpoint: MetricsEndpoint, context: V3FlushContext<'_>, metrics: &mut Vec<Metric>,
+    series_ratio: &mut V3CompressionRatio, sketches_ratio: &mut V3CompressionRatio,
     payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     match endpoint {
         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-            encode_and_flush_v3_series_metrics(context, metrics, payloads_tx, batch_id, payload_info).await
+            encode_and_flush_v3_series_metrics(context, metrics, series_ratio, payloads_tx, batch_id, payload_info)
+                .await
         }
         MetricsEndpoint::Sketches => {
-            encode_and_flush_v3_sketch_metrics(context, metrics, payloads_tx, batch_id, payload_info).await
+            encode_and_flush_v3_sketch_metrics(context, metrics, sketches_ratio, payloads_tx, batch_id, payload_info)
+                .await
         }
     }
 }
 
 async fn encode_and_flush_v3_series_metrics(
-    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, payloads_tx: &mut mpsc::Sender<Payload>,
-    batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
         return Ok(());
@@ -1435,6 +1445,7 @@ async fn encode_and_flush_v3_series_metrics(
         &metrics_to_flush,
         context,
         "series",
+        ratio,
         payloads_tx,
         batch_id,
         payload_info,
@@ -1443,8 +1454,8 @@ async fn encode_and_flush_v3_series_metrics(
 }
 
 async fn encode_and_flush_v3_sketch_metrics(
-    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, payloads_tx: &mut mpsc::Sender<Payload>,
-    batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
         return Ok(());
@@ -1456,6 +1467,7 @@ async fn encode_and_flush_v3_sketch_metrics(
         &metrics_to_flush,
         context,
         "sketches",
+        ratio,
         payloads_tx,
         batch_id,
         payload_info,
@@ -1470,14 +1482,227 @@ async fn encode_and_flush_v3_sketch_metrics(
 /// `X-Metrics-Request-Len` header that is only known once every payload in the batch has been built; those are
 /// collected first and sent afterwards.
 #[allow(clippy::too_many_arguments)]
-async fn encode_and_flush_v3_payload_requests(
-    endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
-) -> Result<(), GenericError> {
-    // Batches that carry validation headers need the total payload count up front, so they cannot be streamed.
-    let stream_payloads = batch_id.is_none();
-    let mut pending_requests = Vec::new();
-    let mut pending_ranges = split_v3_metric_ranges_by_point_limit(metrics, context, payload_kind);
+/// Smallest compression ratio used when translating the compressed size limit into an uncompressed byte target.
+///
+/// Guards against dividing by a pathologically small ratio and producing an enormous target.
+const V3_MIN_COMPRESSION_RATIO: f64 = 0.02;
+
+/// Fraction of the derived byte target that a batch is actually cut at.
+///
+/// Leaves headroom so that ordinary variation between batches does not push the finalized payload over the real limit
+/// and force the expensive re-encode path.
+const V3_BATCH_TARGET_MARGIN: f64 = 0.9;
+
+/// Weight given to the newest observation when updating the compression ratio.
+const V3_RATIO_SMOOTHING: f64 = 0.25;
+
+/// Tracks the compression ratio observed on emitted V3 payloads, so batches can be sized against the compressed limit.
+///
+/// V3 payloads are columnar and only compressed once the whole batch is finalized, so unlike the V2 request builder
+/// there is no live compressor to consult with a [`CompressionEstimator`] while batching. Instead we remember how well
+/// recent payloads compressed and use that to turn the compressed size limit (which is the limit that actually binds
+/// for metrics intake) into an uncompressed byte target for the next batch.
+#[derive(Default)]
+struct V3CompressionRatio {
+    ratio: Option<f64>,
+}
+
+impl V3CompressionRatio {
+    /// Returns the uncompressed byte target that a batch should be cut at.
+    fn uncompressed_target(&self, limits: V3PayloadLimits) -> usize {
+        // Until a payload has been observed, assume the data will not compress at all. That errs towards batches that
+        // are too small, which costs an extra payload, rather than too large, which costs a full re-encode.
+        let ratio = self.ratio.unwrap_or(1.0).clamp(V3_MIN_COMPRESSION_RATIO, 1.0);
+        let target_from_compressed_limit = (limits.max_compressed_size as f64 / ratio) as usize;
+        let target = target_from_compressed_limit.min(limits.max_uncompressed_size);
+
+        // Always leave room for at least one metric, however small the limits are.
+        (((target as f64) * V3_BATCH_TARGET_MARGIN) as usize).max(1)
+    }
+
+    /// Records the uncompressed and compressed sizes of an emitted payload.
+    fn record(&mut self, uncompressed_len: usize, compressed_len: usize) {
+        if uncompressed_len == 0 {
+            return;
+        }
+
+        let observed = compressed_len as f64 / uncompressed_len as f64;
+        self.ratio = Some(match self.ratio {
+            Some(current) => (current * (1.0 - V3_RATIO_SMOOTHING)) + (observed * V3_RATIO_SMOOTHING),
+            None => observed,
+        });
+    }
+}
+
+/// A contiguous run of metrics encoded into a single V3 payload.
+struct V3Batch {
+    encoded: V3EncodedMetrics,
+    event_count: usize,
+    data_point_count: usize,
+}
+
+/// Encodes metrics starting at `*idx` into a single V3 payload, stopping once a payload limit or
+/// `target_uncompressed_len` is reached, and advances `*idx` past everything consumed.
+///
+/// Sizing the batch while encoding it is what keeps this to a single encode pass. The alternative (encoding a large
+/// batch and halving it whenever the result is too big) re-encodes and re-compresses the same metrics once per level of
+/// splitting, which is dominated by dictionary rebuilding on high-cardinality data
+fn build_v3_batch(
+    metrics: &[Metric], idx: &mut usize, context: V3FlushContext<'_>, payload_kind: &'static str,
+    target_uncompressed_len: usize,
+) -> Option<V3Batch> {
+    let mut writer = V3Writer::new();
+    let mut tags_deduplicator = ReusableDeduplicator::new();
+    let additional_tags = context.endpoint_config.additional_tags();
+    let mut data_point_count = 0usize;
+    let mut cut_for_size = false;
+
+    while *idx < metrics.len() {
+        let metric = &metrics[*idx];
+
+        if !metric_has_emittable_values(metric) {
+            debug!(metric_name = %metric.context().name(), "Dropping metric with no emittable values.");
+            context.telemetry.events_dropped_encoder().increment(1);
+            *idx += 1;
+            continue;
+        }
+
+        let metric_points = metric.values().len();
+        if !context.payload_limits.point_count_fits(metric_points) {
+            // This metric exceeds the point limit on its own, so it cannot fit in any payload.
+            context.serializer_telemetry.record_item_too_big();
+            context
+                .serializer_telemetry
+                .record_split_reason(V3PayloadSplitReason::ItemTooBig);
+            warn!(
+                payload_kind,
+                data_points = metric_points,
+                point_limit = context.payload_limits.max_points_per_payload,
+                "Dropping oversized V3 metric that exceeds the point-count limit."
+            );
+            context.telemetry.events_dropped_encoder().increment(1);
+            *idx += 1;
+            continue;
+        }
+
+        // Limits that have to be honoured before the metric goes in. The first metric of a batch is always admitted,
+        // since it has already been checked to fit by itself.
+        if writer.metric_count() > 0 {
+            if !context
+                .payload_limits
+                .point_count_fits(data_point_count + metric_points)
+            {
+                context
+                    .serializer_telemetry
+                    .record_split_reason(V3PayloadSplitReason::MaxPoints);
+                break;
+            }
+
+            if context.payload_limits.metric_count_reached(writer.metric_count()) {
+                break;
+            }
+        }
+
+        write_metric_to_v3(&mut writer, metric, additional_tags, &mut tags_deduplicator);
+        data_point_count += metric_points;
+        *idx += 1;
+
+        // The size contribution of a metric is only knowable once it is written, since dictionary deduplication makes
+        // it depend on what came before. Cutting after the fact can overshoot by one metric, which the target's
+        // headroom absorbs; the finalized payload is checked against the real limits regardless.
+        if writer.estimated_uncompressed_len() >= target_uncompressed_len {
+            cut_for_size = true;
+            break;
+        }
+    }
+
+    // Only count this as a payload boundary if metrics actually remain: a batch that ends on the last metric was not
+    // split by anything.
+    if cut_for_size && *idx < metrics.len() {
+        context
+            .serializer_telemetry
+            .record_split_reason(V3PayloadSplitReason::PayloadFull);
+    }
+
+    let event_count = writer.metric_count();
+    if event_count == 0 {
+        return None;
+    }
+
+    match writer.finalize() {
+        Ok(encoded) => Some(V3Batch {
+            encoded,
+            event_count,
+            data_point_count,
+        }),
+        Err(e) => {
+            error!(error = %e, payload_kind, events = event_count, "Failed to encode V3 metrics payload request.");
+            context.telemetry.events_dropped_encoder().increment(event_count as u64);
+            None
+        }
+    }
+}
+
+/// Turns an encoded batch into a payload request, returning `None` if it does not fit the payload limits.
+async fn create_v3_batch_request(
+    endpoint_uri: &str, batch: V3Batch, context: V3FlushContext<'_>, payload_kind: &'static str,
+    ratio: &mut V3CompressionRatio,
+) -> Option<V3PayloadRequest> {
+    let V3Batch {
+        encoded,
+        event_count,
+        data_point_count,
+    } = batch;
+
+    let mut encoded_request =
+        match create_v3_request(endpoint_uri, encoded, context.endpoint_config.compression_scheme()).await {
+            Ok(request) => request,
+            Err(e) => {
+                error!(error = %e, payload_kind, events = event_count, "Failed to create V3 metrics request.");
+                context.telemetry.events_dropped_encoder().increment(event_count as u64);
+                return None;
+            }
+        };
+
+    // Feed the observation back even when the request is too big: an oversized batch is exactly the case where the
+    // target needs correcting.
+    ratio.record(encoded_request.uncompressed_len, encoded_request.compressed_len);
+
+    if !context.payload_limits.request_fits(&encoded_request) {
+        return None;
+    }
+
+    // Per-column compressed sizes are measured only for requests we actually emit. Measuring them eagerly in
+    // `create_v3_request` would compress every column of every oversized attempt that gets discarded, which is pure
+    // waste.
+    if let Err(e) =
+        measure_v3_column_compressed_sizes(&mut encoded_request.stats, context.endpoint_config.compression_scheme())
+            .await
+    {
+        error!(error = %e, payload_kind, "Failed to measure V3 column compressed sizes.");
+    } else {
+        record_v3_serializer_stats(context.serializer_telemetry, &encoded_request.stats);
+    }
+
+    Some(V3PayloadRequest {
+        request: encoded_request.request,
+        event_count,
+        data_point_count,
+    })
+}
+
+/// Re-encodes an oversized range as progressively smaller ranges until each one fits.
+///
+/// This is the fallback for a batch that was sized against the byte target but still exceeded the real payload limits.
+/// It re-encodes and re-compresses at every level of splitting, so it is deliberately only reached when the target
+/// guessed wrong.
+async fn split_and_encode_oversized_v3_range(
+    endpoint_uri: &str, metrics: &[Metric], range: Range<usize>, context: V3FlushContext<'_>,
+    payload_kind: &'static str, ratio: &mut V3CompressionRatio,
+) -> Vec<V3PayloadRequest> {
+    let mut requests = Vec::new();
+    let mut pending_ranges = VecDeque::new();
+    pending_ranges.push_back(range);
 
     while let Some(range) = pending_ranges.pop_front() {
         if range.is_empty() {
@@ -1496,37 +1721,95 @@ async fn encode_and_flush_v3_payload_requests(
                 continue;
             }
         };
-        let mut encoded_request =
-            match create_v3_request(endpoint_uri, encoded, context.endpoint_config.compression_scheme()).await {
-                Ok(request) => request,
-                Err(e) => {
-                    error!(error = %e, payload_kind, events = event_count, "Failed to create V3 metrics request.");
-                    context.telemetry.events_dropped_encoder().increment(event_count as u64);
-                    continue;
-                }
-            };
+        let batch = V3Batch {
+            encoded,
+            event_count,
+            data_point_count,
+        };
 
-        if context.payload_limits.request_fits(&encoded_request) {
-            // Per-column compressed sizes are measured only for requests we actually emit. Measuring them eagerly in
-            // `create_v3_request` would compress every column of every oversized attempt that the split loop below
-            // throws away, which is pure waste on high-cardinality batches that split several times.
-            if let Err(e) = measure_v3_column_compressed_sizes(
-                &mut encoded_request.stats,
-                context.endpoint_config.compression_scheme(),
-            )
-            .await
-            {
-                error!(error = %e, payload_kind, "Failed to measure V3 column compressed sizes.");
-            } else {
-                record_v3_serializer_stats(context.serializer_telemetry, &encoded_request.stats);
+        if let Some(request) = create_v3_batch_request(endpoint_uri, batch, context, payload_kind, ratio).await {
+            requests.push(request);
+            continue;
+        }
+
+        if range.len() == 1 {
+            // The encoded request is too large and this range cannot be split any further.
+            context.serializer_telemetry.record_item_too_big();
+            context
+                .serializer_telemetry
+                .record_split_reason(V3PayloadSplitReason::ItemTooBig);
+            warn!(
+                payload_kind,
+                compressed_limit = context.payload_limits.max_compressed_size,
+                uncompressed_limit = context.payload_limits.max_uncompressed_size,
+                "Dropping oversized V3 metric that cannot be split further."
+            );
+            context.telemetry.events_dropped_encoder().increment(1);
+            continue;
+        }
+
+        // Retry this oversized range as two smaller ranges, preserving the original metric order.
+        context
+            .serializer_telemetry
+            .record_split_reason(V3PayloadSplitReason::PayloadFull);
+        let pivot = range.start + range.len() / 2;
+        pending_ranges.push_front(pivot..range.end);
+        pending_ranges.push_front(range.start..pivot);
+    }
+
+    requests
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn encode_and_flush_v3_payload_requests(
+    endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
+    ratio: &mut V3CompressionRatio, payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
+    payload_info: Option<MetricsPayloadInfo>,
+) -> Result<(), GenericError> {
+    // Batches that carry validation headers need the total payload count up front, so they cannot be streamed.
+    let stream_payloads = batch_id.is_none();
+    let mut pending_requests = Vec::new();
+    let target_uncompressed_len = ratio.uncompressed_target(context.payload_limits);
+    let mut idx = 0;
+
+    while idx < metrics.len() {
+        let batch_start = idx;
+        let Some(batch) = build_v3_batch(metrics, &mut idx, context, payload_kind, target_uncompressed_len) else {
+            // `build_v3_batch` always consumes at least one metric when one is available, but guard against spinning
+            // on a batch that somehow produced nothing.
+            if idx == batch_start {
+                error!(
+                    payload_kind,
+                    "V3 batching made no progress; dropping remaining metrics."
+                );
+                context
+                    .telemetry
+                    .events_dropped_encoder()
+                    .increment((metrics.len() - idx) as u64);
+                break;
             }
+            continue;
+        };
 
-            let payload_request = V3PayloadRequest {
-                request: encoded_request.request,
-                event_count,
-                data_point_count,
-            };
+        let requests = match create_v3_batch_request(endpoint_uri, batch, context, payload_kind, ratio).await {
+            Some(request) => vec![request],
+            // The batch we sized against the byte target still came out over the real limits, so fall back to
+            // re-encoding it as progressively smaller ranges. The target self-corrects from the ratio we record on
+            // every emitted payload, so this should be rare.
+            None => {
+                split_and_encode_oversized_v3_range(
+                    endpoint_uri,
+                    metrics,
+                    batch_start..idx,
+                    context,
+                    payload_kind,
+                    ratio,
+                )
+                .await
+            }
+        };
 
+        for payload_request in requests {
             if stream_payloads {
                 flush_payload(
                     payload_request.request,
@@ -1548,35 +1831,7 @@ async fn encode_and_flush_v3_payload_requests(
             } else {
                 pending_requests.push(payload_request);
             }
-
-            continue;
         }
-
-        if range.len() == 1 {
-            // The encoded request is too large and this range cannot be split any further.
-            context.serializer_telemetry.record_item_too_big();
-            context
-                .serializer_telemetry
-                .record_split_reason(V3PayloadSplitReason::ItemTooBig);
-            warn!(
-                payload_kind,
-                compressed_len = encoded_request.compressed_len,
-                compressed_limit = context.payload_limits.max_compressed_size,
-                uncompressed_len = encoded_request.uncompressed_len,
-                uncompressed_limit = context.payload_limits.max_uncompressed_size,
-                "Dropping oversized V3 metric that cannot be split further."
-            );
-            context.telemetry.events_dropped_encoder().increment(1);
-            continue;
-        }
-
-        // Retry this oversized range as two smaller ranges, preserving the original metric order.
-        context
-            .serializer_telemetry
-            .record_split_reason(V3PayloadSplitReason::PayloadFull);
-        let pivot = range.start + range.len() / 2;
-        pending_ranges.push_front(pivot..range.end);
-        pending_ranges.push_front(range.start..pivot);
     }
 
     let batch_len = pending_requests.len();
@@ -1650,76 +1905,6 @@ async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) 
         .error_context("Failed to shutdown V3 compressor.")?;
 
     Ok(compressor.into_inner().freeze().len())
-}
-
-fn split_v3_metric_ranges_by_point_limit(
-    metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
-) -> VecDeque<Range<usize>> {
-    let mut ranges = VecDeque::new();
-    let mut current_start = None;
-    let mut current_points = 0usize;
-
-    for (idx, metric) in metrics.iter().enumerate() {
-        if !metric_has_emittable_values(metric) {
-            if let Some(start) = current_start.take() {
-                if start < idx {
-                    ranges.push_back(start..idx);
-                }
-            }
-            debug!(metric_name = %metric.context().name(), "Dropping metric with no emittable values.");
-            context.telemetry.events_dropped_encoder().increment(1);
-            current_points = 0;
-            continue;
-        }
-        let metric_points = metric.values().len();
-
-        if !context.payload_limits.point_count_fits(metric_points) {
-            // This metric exceeds the point limit by itself, so it cannot fit in any V3 payload request.
-            // Close the current range before dropping this oversized metric.
-            context.serializer_telemetry.record_item_too_big();
-            if let Some(start) = current_start.take() {
-                if start < idx {
-                    ranges.push_back(start..idx);
-                }
-            }
-            warn!(
-                payload_kind,
-                data_points = metric_points,
-                point_limit = context.payload_limits.max_points_per_payload,
-                "Dropping oversized V3 metric that exceeds the point-count limit."
-            );
-            context.telemetry.events_dropped_encoder().increment(1);
-            current_points = 0;
-            continue;
-        }
-
-        let would_exceed_point_limit =
-            current_points > 0 && !context.payload_limits.point_count_fits(current_points + metric_points);
-        if would_exceed_point_limit {
-            // This metric fits by itself, but not together with the current range.
-            // Adding this metric would overflow the current range, so start a new range at this metric.
-            context
-                .serializer_telemetry
-                .record_split_reason(V3PayloadSplitReason::MaxPoints);
-            if let Some(start) = current_start {
-                ranges.push_back(start..idx);
-            }
-            current_start = Some(idx);
-            current_points = 0;
-        } else if current_start.is_none() {
-            current_start = Some(idx);
-        }
-
-        current_points += metric_points;
-    }
-
-    if let Some(start) = current_start {
-        if start < metrics.len() {
-            ranges.push_back(start..metrics.len());
-        }
-    }
-
-    ranges
 }
 
 /// Converts a `Uuid` to a `HeaderValue`.
@@ -2640,11 +2825,13 @@ serializer_experimental_use_v3_api:
     /// encoder's main task.
     async fn collect_v3_payload_requests(metrics: &[Metric], context: V3FlushContext<'_>) -> Vec<CollectedV3Payload> {
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(64);
+        let mut ratio = V3CompressionRatio::default();
         encode_and_flush_v3_payload_requests(
             V3_SERIES_ENDPOINT_URI,
             metrics,
             context,
             "series",
+            &mut ratio,
             &mut payloads_tx,
             None,
             None,
@@ -2767,8 +2954,26 @@ serializer_experimental_use_v3_api:
         );
     }
 
+    /// Drives `build_v3_batch` to exhaustion, returning the metric range and event count of each batch it cut.
+    fn collect_v3_batches(
+        metrics: &[Metric], context: V3FlushContext<'_>, target_uncompressed_len: usize,
+    ) -> Vec<(Range<usize>, usize)> {
+        let mut batches = Vec::new();
+        let mut idx = 0;
+        while idx < metrics.len() {
+            let start = idx;
+            match build_v3_batch(metrics, &mut idx, context, "series", target_uncompressed_len) {
+                Some(batch) => batches.push((start..idx, batch.event_count)),
+                None if idx == start => break,
+                None => {}
+            }
+        }
+
+        batches
+    }
+
     #[test]
-    fn v3_metric_ranges_split_by_point_limit() {
+    fn v3_batches_are_cut_at_the_point_limit() {
         let metrics = vec![
             Metric::counter("v3.points.split.one", [(123, 1.0), (124, 2.0)]),
             Metric::counter("v3.points.split.two", [(123, 3.0), (124, 4.0)]),
@@ -2780,11 +2985,51 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
-        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
-            .into_iter()
-            .collect::<Vec<_>>();
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
 
-        assert_eq!(vec![0..1, 1..3], ranges);
+        assert_eq!(vec![(0..1, 1), (1..3, 2)], batches);
+    }
+
+    #[test]
+    fn v3_batches_are_cut_at_the_metric_limit() {
+        let metrics = vec![
+            Metric::counter("v3.metric.limit.a", 1.0),
+            Metric::counter("v3.metric.limit.b", 2.0),
+            Metric::counter("v3.metric.limit.c", 3.0),
+            Metric::counter("v3.metric.limit.d", 4.0),
+            Metric::counter("v3.metric.limit.e", 5.0),
+        ];
+        let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 2, 10_000);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 2, usize::MAX, None);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
+
+        assert_eq!(vec![(0..2, 2), (2..4, 2), (4..5, 1)], batches);
+    }
+
+    #[test]
+    fn v3_batches_are_cut_at_the_uncompressed_byte_target() {
+        let metrics = vec![
+            Metric::counter("v3.byte.target.a", 1.0),
+            Metric::counter("v3.byte.target.b", 2.0),
+            Metric::counter("v3.byte.target.c", 3.0),
+            Metric::counter("v3.byte.target.d", 4.0),
+        ];
+        let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+
+        // A target of one byte forces a cut after every metric, since the estimate is non-zero once anything is
+        // written. This is the mechanism that keeps high-cardinality batches from being encoded and then re-split.
+        let batches = collect_v3_batches(&metrics, context, 1);
+
+        assert_eq!(4, batches.len());
+        assert!(batches.iter().all(|(_, event_count)| *event_count == 1));
     }
 
     #[test]
@@ -2801,11 +3046,9 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
-        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
-            .into_iter()
-            .collect::<Vec<_>>();
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
 
-        assert_eq!(vec![0..1, 1..2], ranges);
+        assert_eq!(vec![(0..1, 1), (1..2, 1)], batches);
         assert_eq!(
             recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "max_points")])),
             Some(1)
@@ -2813,7 +3056,7 @@ serializer_experimental_use_v3_api:
     }
 
     #[test]
-    fn v3_metric_ranges_drop_oversized_metric_after_previous_range() {
+    fn v3_batches_drop_oversized_metric_and_keep_batching() {
         let metrics = vec![
             Metric::counter("v3.points.oversized.before", [(123, 1.0), (124, 2.0)]),
             Metric::counter(
@@ -2830,16 +3073,16 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
-        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
-            .into_iter()
-            .collect::<Vec<_>>();
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
 
-        assert_eq!(vec![0..1, 2..3], ranges);
+        // Dropping the oversized metric no longer forces a payload boundary: the metrics either side of it share a
+        // batch, since together they still fit the point limit.
+        assert_eq!(vec![(0..3, 2)], batches);
         assert_eq!(recorder.counter("serializer.v3_item_too_big"), Some(1));
     }
 
     #[test]
-    fn v3_metric_ranges_skip_zero_point_metrics() {
+    fn v3_batches_skip_zero_point_metrics_without_splitting() {
         let metrics = vec![
             Metric::counter("v3.points.zero.before", 1.0),
             Metric::counter("v3.points.zero.empty", &[] as &[f64]),
@@ -2851,11 +3094,36 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
-        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
-            .into_iter()
-            .collect::<Vec<_>>();
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
 
-        assert_eq!(vec![0..1, 2..3], ranges);
+        assert_eq!(vec![(0..3, 2)], batches);
+    }
+
+    #[test]
+    fn v3_compression_ratio_targets_the_compressed_limit() {
+        let limits = V3PayloadLimits::new(500_000, 5_000_000, 10_000, 10_000);
+        let mut ratio = V3CompressionRatio::default();
+
+        // With nothing observed yet, assume no compression: the target tracks the compressed limit directly so the
+        // first batch cannot wildly overshoot.
+        let initial_target = ratio.uncompressed_target(limits);
+        assert_eq!((500_000.0 * V3_BATCH_TARGET_MARGIN) as usize, initial_target);
+
+        // After observing 4:1 compression, the target grows towards the uncompressed budget those bytes imply.
+        ratio.record(4_000_000, 1_000_000);
+        let observed_target = ratio.uncompressed_target(limits);
+        assert!(
+            observed_target > initial_target,
+            "target should grow once compression is observed: {observed_target} vs {initial_target}"
+        );
+
+        // It is still capped by the uncompressed limit, however well the data compresses.
+        ratio.record(4_000_000, 40_000);
+        ratio.record(4_000_000, 40_000);
+        ratio.record(4_000_000, 40_000);
+        ratio.record(4_000_000, 40_000);
+        ratio.record(4_000_000, 40_000);
+        assert!(ratio.uncompressed_target(limits) <= limits.max_uncompressed_size);
     }
 
     #[tokio::test]
@@ -2876,9 +3144,11 @@ serializer_experimental_use_v3_api:
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+        let mut ratio = V3CompressionRatio::default();
         encode_and_flush_v3_series_metrics(
             context,
             &mut metrics,
+            &mut ratio,
             &mut payloads_tx,
             Some(&batch_id),
             Some(MetricsPayloadInfo::v3_series()),
@@ -2942,9 +3212,11 @@ serializer_experimental_use_v3_api:
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+        let mut ratio = V3CompressionRatio::default();
         encode_and_flush_v3_sketch_metrics(
             context,
             &mut metrics,
+            &mut ratio,
             &mut payloads_tx,
             Some(&batch_id),
             Some(MetricsPayloadInfo::v3_sketches()),

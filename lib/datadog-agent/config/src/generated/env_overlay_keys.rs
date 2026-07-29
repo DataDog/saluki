@@ -188,15 +188,7 @@ pub static ENV_OVERLAY_KEYS: &[EnvOverlayKey] = &[
     },
     EnvOverlayKey {
         flats: &["data_plane_otlp_proxy_receiver_protocols_grpc_endpoint"],
-        path: &[
-            "data_plane",
-            "otlp",
-            "proxy",
-            "receiver",
-            "protocols",
-            "grpc",
-            "endpoint",
-        ],
+        path: &["data_plane", "otlp", "proxy", "receiver", "protocols", "grpc", "endpoint"],
     },
     EnvOverlayKey {
         flats: &["data_plane_otlp_proxy_traces_enabled"],
