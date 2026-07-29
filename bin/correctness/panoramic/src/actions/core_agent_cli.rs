@@ -37,7 +37,7 @@ impl Action for CoreAgentCliAction {
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
         let command = ctx.core_agent_cli_command.with_args(&self.args);
-        let diagnostics = CommandDiagnostics::Redacted(CORE_AGENT_CLI_DIAGNOSTIC_LABEL);
+        let diagnostics = CommandDiagnostics::redacted(CORE_AGENT_CLI_DIAGNOSTIC_LABEL);
         let result = execute_target_command(
             ctx,
             &command,

@@ -32,7 +32,7 @@ impl Action for AdpCliAction {
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
         let command = ctx.adp_cli_command.with_args(&self.args);
-        let diagnostics = CommandDiagnostics::Redacted(ADP_CLI_DIAGNOSTIC_LABEL);
+        let diagnostics = CommandDiagnostics::redacted(ADP_CLI_DIAGNOSTIC_LABEL);
         let result = execute_target_command(
             ctx,
             &command,

@@ -28,35 +28,67 @@ impl TargetExecAction {
     }
 }
 
-pub(crate) enum CommandDiagnostics {
+enum CommandSubject {
     FullCommand(String),
     Redacted(&'static str),
 }
 
+#[derive(Clone, Copy)]
+enum ChildOutputPolicy {
+    Include,
+    Omit,
+}
+
+pub(crate) struct CommandDiagnostics {
+    subject: CommandSubject,
+    child_output: ChildOutputPolicy,
+}
+
 impl CommandDiagnostics {
     fn full(command: &[String]) -> Self {
-        Self::FullCommand(command.join(" "))
+        Self {
+            subject: CommandSubject::FullCommand(command.join(" ")),
+            child_output: ChildOutputPolicy::Include,
+        }
+    }
+
+    pub(crate) fn redacted(label: &'static str) -> Self {
+        Self {
+            subject: CommandSubject::Redacted(label),
+            child_output: ChildOutputPolicy::Include,
+        }
+    }
+
+    pub(crate) fn redacted_without_child_output(label: &'static str) -> Self {
+        Self {
+            subject: CommandSubject::Redacted(label),
+            child_output: ChildOutputPolicy::Omit,
+        }
     }
 
     fn validation_subject(&self) -> &str {
-        match self {
-            Self::FullCommand(_) => "target_exec command",
-            Self::Redacted(label) => label,
+        match &self.subject {
+            CommandSubject::FullCommand(_) => "target_exec command",
+            CommandSubject::Redacted(label) => label,
         }
     }
 
     fn host_subject(&self) -> String {
-        match self {
-            Self::FullCommand(command) => format!("host command '{command}'"),
-            Self::Redacted(label) => label.to_string(),
+        match &self.subject {
+            CommandSubject::FullCommand(command) => format!("host command '{command}'"),
+            CommandSubject::Redacted(label) => label.to_string(),
         }
     }
 
     fn container_subject(&self, container_name: &str) -> String {
-        match self {
-            Self::FullCommand(command) => format!("command in container '{container_name}': {command}"),
-            Self::Redacted(label) => format!("{label} in container '{container_name}'"),
+        match &self.subject {
+            CommandSubject::FullCommand(command) => format!("command in container '{container_name}': {command}"),
+            CommandSubject::Redacted(label) => format!("{label} in container '{container_name}'"),
         }
+    }
+
+    fn includes_child_output(&self) -> bool {
+        matches!(self.child_output, ChildOutputPolicy::Include)
     }
 }
 
@@ -151,8 +183,9 @@ async fn exec_in_container_with_timeout(
     tokio::select! {
         _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
         _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
-        result = tokio::time::timeout(timeout, exec_in_container_collect(container_name, command.to_vec())) => match result {
-            Ok(result) => result,
+        result = tokio::time::timeout(timeout, exec_in_container_collect(container_name, command.to_vec(), diagnostics)) => match result {
+            Ok(result) if diagnostics.includes_child_output() => result,
+            Ok(result) => result.with_error_context(|| format!("Failed to run {}.", diagnostics.container_subject(container_name))),
             Err(_) => Err(generic_error!("Timed out running {}.", diagnostics.container_subject(container_name))),
         }
     }
@@ -200,7 +233,9 @@ async fn exec_on_host_with_env_timeout(
     }
 }
 
-async fn exec_in_container_collect(container_name: &str, cmd: Vec<String>) -> Result<String, GenericError> {
+async fn exec_in_container_collect(
+    container_name: &str, cmd: Vec<String>, diagnostics: &CommandDiagnostics,
+) -> Result<String, GenericError> {
     if cmd.is_empty() {
         return Err(generic_error!("target_exec command must not be empty."));
     }
@@ -241,7 +276,15 @@ async fn exec_in_container_collect(container_name: &str, cmd: Vec<String>) -> Re
         .await
         .error_context("Failed to inspect exec.")?;
     if inspect.exit_code != Some(0) {
-        return Err(generic_error!("exec exited {:?}: {}", inspect.exit_code, output_text));
+        return if diagnostics.includes_child_output() {
+            Err(generic_error!("exec exited {:?}: {}", inspect.exit_code, output_text))
+        } else {
+            Err(generic_error!(
+                "{} exited {:?}.",
+                diagnostics.container_subject(container_name),
+                inspect.exit_code
+            ))
+        };
     }
 
     Ok(output_text)
@@ -260,7 +303,7 @@ async fn exec_on_host_collect(cmd: Vec<String>, diagnostics: &CommandDiagnostics
         .await
         .with_error_context(|| format!("Failed to run {}.", diagnostics.host_subject()))?;
 
-    collect_host_output(output)
+    collect_host_output(output, diagnostics)
 }
 
 async fn exec_on_host_collect_with_env(
@@ -279,16 +322,24 @@ async fn exec_on_host_collect_with_env(
         .await
         .with_error_context(|| format!("Failed to run {}.", diagnostics.host_subject()))?;
 
-    collect_host_output(output)
+    collect_host_output(output, diagnostics)
 }
 
-fn collect_host_output(output: std::process::Output) -> Result<String, GenericError> {
+fn collect_host_output(output: std::process::Output, diagnostics: &CommandDiagnostics) -> Result<String, GenericError> {
     let mut output_text = String::new();
     output_text.push_str(&String::from_utf8_lossy(&output.stdout));
     output_text.push_str(&String::from_utf8_lossy(&output.stderr));
 
     if !output.status.success() {
-        return Err(generic_error!("host command exited {}: {}", output.status, output_text));
+        return if diagnostics.includes_child_output() {
+            Err(generic_error!("host command exited {}: {}", output.status, output_text))
+        } else {
+            Err(generic_error!(
+                "{} exited {}.",
+                diagnostics.host_subject(),
+                output.status
+            ))
+        };
     }
 
     Ok(output_text)

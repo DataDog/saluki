@@ -261,12 +261,22 @@ Sends an HTTPS request without a client identity and verifies that the TLS hands
 
 #### `adp_config_key_equals`
 
-Polls ADP's privileged `/config` endpoint until one key equals the expected value.
+Executes the authenticated `agent-data-plane config --json` command and polls its output until one key equals the expected value. The `endpoint` field selects the configuration view; the CLI still connects to the privileged endpoint in its own configuration. `/config` maps to the source configuration, while `/config/internal` maps to the translated runtime configuration by adding `--runtime` to the command.
+
+The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101` with an exact `/config` or `/config/internal` path. It rejects credentials, other hosts or ports, trailing path components, queries, and fragments.
 
 ```yaml
+# Check the source configuration through the default /config selector.
 - assertion: adp_config_key_equals
   key: log_level
   value: debug
+  timeout: 30s
+
+# Check the translated runtime configuration.
+- assertion: adp_config_key_equals
+  key: log_level
+  value: debug
+  endpoint: "https://localhost:55101/config/internal"
   timeout: 30s
 ```
 

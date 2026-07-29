@@ -12,7 +12,6 @@ use crate::{
 const DEFAULT_ADP_CONFIG_ENDPOINT: &str = "https://localhost:55101/config";
 const ADP_CONFIG_CLI_DIAGNOSTIC_LABEL: &str = "ADP configuration CLI command";
 const CONFIG_POLL_INTERVAL: Duration = Duration::from_millis(500);
-const MAX_CONFIG_COMMAND_DURATION: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy)]
 enum AdpConfigEndpoint {
@@ -22,20 +21,9 @@ enum AdpConfigEndpoint {
 
 impl AdpConfigEndpoint {
     fn parse(configured_endpoint: &str) -> Result<Self, GenericError> {
-        let endpoint = reqwest::Url::parse(configured_endpoint).map_err(|_| unsupported_endpoint_error())?;
-        if endpoint.scheme() != "https"
-            || !endpoint.has_host()
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-        {
-            return Err(unsupported_endpoint_error());
-        }
-
-        match endpoint.path() {
-            "/config" => Ok(Self::Source),
-            "/config/internal" => Ok(Self::Runtime),
+        match configured_endpoint {
+            "https://localhost:55101/config" | "https://127.0.0.1:55101/config" => Ok(Self::Source),
+            "https://localhost:55101/config/internal" | "https://127.0.0.1:55101/config/internal" => Ok(Self::Runtime),
             _ => Err(unsupported_endpoint_error()),
         }
     }
@@ -50,8 +38,8 @@ impl AdpConfigEndpoint {
 
 fn unsupported_endpoint_error() -> GenericError {
     generic_error!(
-        "Unsupported ADP configuration endpoint. Expected an HTTPS URL with path exactly `/config` or \
-         `/config/internal`, without credentials, a query, or a fragment."
+        "Unsupported ADP configuration endpoint. Expected exactly `https://localhost:55101/config`, \
+         `https://127.0.0.1:55101/config`, or the corresponding `/config/internal` URL."
     )
 }
 
@@ -76,7 +64,7 @@ impl AdpConfigKeyEqualsAssertion {
     async fn fetch_config(&self, ctx: &AssertionContext, timeout: Duration) -> Result<Value, GenericError> {
         let args = self.endpoint.command_args();
         let command = ctx.adp_cli_command.with_args(&args);
-        let diagnostics = CommandDiagnostics::Redacted(ADP_CONFIG_CLI_DIAGNOSTIC_LABEL);
+        let diagnostics = CommandDiagnostics::redacted_without_child_output(ADP_CONFIG_CLI_DIAGNOSTIC_LABEL);
         let stdout =
             execute_target_command(ctx, &command, &diagnostics, timeout, ctx.adp_cli_command.host_env()).await?;
 
@@ -134,8 +122,7 @@ impl Assertion for AdpConfigKeyEqualsAssertion {
                 return self.cancelled_result(started);
             }
 
-            let invocation_timeout = remaining.min(MAX_CONFIG_COMMAND_DURATION);
-            match self.fetch_config(ctx, invocation_timeout).await {
+            match self.fetch_config(ctx, remaining).await {
                 Ok(config) => {
                     let actual = get_config_key(&config, &self.key).cloned();
                     if actual.as_ref() == Some(&self.expected) {
