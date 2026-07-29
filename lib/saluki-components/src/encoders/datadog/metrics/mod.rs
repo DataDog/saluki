@@ -204,13 +204,14 @@ fn metrics_primary_url_can_resolve(url: &str) -> bool {
 }
 
 fn series_v3_can_be_enabled_for_config(
-    serializer_use_v3_series: bool, metrics_primary_v3_override: Option<bool>, has_additional_endpoints: bool,
-    series_config: &UseV3ApiSeriesConfig,
+    use_v2_api_series: bool, serializer_use_v3_series: bool, metrics_primary_v3_override: Option<bool>,
+    has_additional_endpoints: bool, series_config: &UseV3ApiSeriesConfig,
 ) -> bool {
-    serializer_use_v3_series
-        || metrics_primary_v3_override == Some(true)
-        || ((metrics_primary_v3_override != Some(false) || has_additional_endpoints)
-            && series_v3_config_can_enable_v3(series_config))
+    use_v2_api_series
+        && (serializer_use_v3_series
+            || metrics_primary_v3_override == Some(true)
+            || ((metrics_primary_v3_override != Some(false) || has_additional_endpoints)
+                && series_v3_config_can_enable_v3(series_config)))
 }
 
 /// Datadog Metrics encoder.
@@ -512,7 +513,7 @@ impl DatadogMetricsConfiguration {
     }
 
     fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
-        if metrics_v3_disabled_by_compressor {
+        if !self.use_v2_api_series || metrics_v3_disabled_by_compressor {
             return Ok(true);
         }
 
@@ -615,6 +616,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             self.vector_metrics_use_v3_api_series,
         );
         let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
+            self.use_v2_api_series,
             self.v3_api.use_v3_series(),
             metrics_primary_v3_override,
             !self.additional_endpoints.is_empty(),
@@ -2128,6 +2130,36 @@ serializer_experimental_use_v3_api:
     }
 
     #[test]
+    fn v1_series_configuration_takes_precedence_over_v3() {
+        let config = v3_series_config(
+            r#"
+use_v2_api_series: false
+use_v3_api_series_enabled: "true"
+"#,
+        );
+
+        let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
+            config.use_v2_api_series,
+            false,
+            None,
+            false,
+            &config.use_v3_api_series,
+        );
+
+        assert!(!series_v3_can_be_enabled);
+
+        assert_eq!(
+            MetricsEncoderMode::V2Only,
+            metrics_encoder_mode_for_config(series_v3_can_be_enabled, false, false)
+        );
+
+        assert!(
+            config.requires_v2_series(false).expect("endpoint should resolve"),
+            "V1 configuration must retain the legacy series builder even when V3 is enabled"
+        );
+    }
+
+    #[test]
     fn all_v3_serializer_endpoints_do_not_require_v2_series() {
         let config = v3_series_config(
             r#"
@@ -2200,24 +2232,28 @@ serializer_experimental_use_v3_api:
             selected_metrics_primary_v3_override(true, "http://[::1", false, true, "http://vector.example.com", false);
 
         assert!(!series_v3_can_be_enabled_for_config(
+            true,
             false,
             Some(false),
             false,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
+            true,
             false,
             Some(true),
             false,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
+            true,
             false,
             Some(false),
             true,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
+            true,
             true,
             Some(false),
             false,
@@ -2225,6 +2261,7 @@ serializer_experimental_use_v3_api:
         ));
         assert_eq!(None, invalid_metrics_primary_override);
         assert!(series_v3_can_be_enabled_for_config(
+            true,
             false,
             invalid_metrics_primary_override,
             false,
