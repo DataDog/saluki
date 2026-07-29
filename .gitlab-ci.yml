@@ -128,6 +128,11 @@ default:
   variables:
     BUILD_ARCH: amd64
     BUILD_TARGET: x86_64-unknown-linux-gnu
+    # The GBI DinD service defaults to a 20G loopback volume, which is too small for AMD64 release linking.
+    DOCKER_LOOPBACK_SIZE: "50G"
+    # Keep the larger loopback file on the container's root-backed filesystem instead of a potentially
+    # tmpfs-backed /tmp.
+    DOCKER_LOOPBACK_PATH: "/var"
 
 .build-arm64-variables:
   variables:
