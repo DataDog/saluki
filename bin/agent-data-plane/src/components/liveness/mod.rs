@@ -6,7 +6,6 @@ use std::{
 use async_trait::async_trait;
 use saluki_common::time::get_unix_timestamp;
 use saluki_context::{
-    origin::OriginTagCardinality,
     tags::{SharedTagSet, Tag, TagSet},
     Context,
 };
@@ -20,7 +19,7 @@ use saluki_core::{
     },
     topology::OutputDefinition,
 };
-use saluki_env::{workload::EntityId, EnvironmentProvider as _, HostProvider as _, WorkloadProvider};
+use saluki_env::{EnvironmentProvider as _, HostProvider as _, WorkloadProvider};
 use saluki_error::{ErrorContext as _, GenericError};
 use stringtheory::MetaString;
 use tokio::{
@@ -154,10 +153,9 @@ impl Liveness {
 
     fn container_tags(&self) -> Option<SharedTagSet> {
         self.add_container_tags.then(|| {
-            self.workload_provider.as_ref().and_then(|workload_provider| {
-                workload_provider
-                    .get_tags_for_entity(&EntityId::ContainerPid(std::process::id()), OriginTagCardinality::Low)
-            })
+            self.workload_provider
+                .as_ref()
+                .and_then(|workload_provider| workload_provider.get_self_container_tags())
         })?
     }
 }
@@ -232,19 +230,27 @@ mod tests {
 
     #[derive(Clone)]
     struct ContainerTagProvider {
+        self_container_entity: EntityId,
         tags: SharedTagSet,
     }
 
     impl WorkloadProvider for ContainerTagProvider {
         fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
-            assert_eq!(entity_id, &EntityId::ContainerPid(std::process::id()));
-            assert_eq!(cardinality, OriginTagCardinality::Low);
-            Some(self.tags.clone())
+            (entity_id == &self.self_container_entity && cardinality == OriginTagCardinality::Low)
+                .then(|| self.tags.clone())
+        }
+
+        fn get_self_container_tags(&self) -> Option<SharedTagSet> {
+            self.get_tags_for_entity(&self.self_container_entity, OriginTagCardinality::Low)
         }
 
         fn get_resolved_origin(&self, _: RawOrigin<'_>) -> Option<ResolvedOrigin> {
             None
         }
+    }
+
+    fn resolved_self_container_entity() -> EntityId {
+        EntityId::Container("06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe".into())
     }
 
     fn container_tags() -> SharedTagSet {
@@ -280,7 +286,10 @@ mod tests {
             "host-a".into(),
             "1.2.3".into(),
             true,
-            Some(Arc::new(ContainerTagProvider { tags: container_tags() })),
+            Some(Arc::new(ContainerTagProvider {
+                self_container_entity: resolved_self_container_entity(),
+                tags: container_tags(),
+            })),
         );
         let (metric, service_check) = liveness.signals_at(0);
 
@@ -302,7 +311,10 @@ mod tests {
             "host-a".into(),
             "1.2.3".into(),
             false,
-            Some(Arc::new(ContainerTagProvider { tags: container_tags() })),
+            Some(Arc::new(ContainerTagProvider {
+                self_container_entity: resolved_self_container_entity(),
+                tags: container_tags(),
+            })),
         );
         let (metric, service_check) = liveness.signals_at(0);
 

@@ -16,7 +16,7 @@ use tokio::time::sleep;
 use tracing::{debug, trace};
 
 #[cfg(target_os = "linux")]
-use crate::workload::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
+use crate::workload::helpers::cgroups::{get_self_container_id, CgroupsConfiguration, CgroupsReader};
 use crate::{features::FeatureDetector, workload::EntityId};
 
 static_metrics! {
@@ -44,6 +44,7 @@ enum Inner {
     #[cfg(target_os = "linux")]
     Linux {
         cgroups_reader: CgroupsReader,
+        interner: GenericMapInterner,
         pid_mappings_cache: PIDCache,
     },
 }
@@ -57,7 +58,17 @@ impl Inner {
             Inner::Linux {
                 pid_mappings_cache,
                 cgroups_reader,
+                ..
             } => resolve_linux_pid(process_id, pid_mappings_cache, cgroups_reader),
+        }
+    }
+
+    fn resolve_self_container(&self) -> Option<EntityId> {
+        match self {
+            Inner::Noop => None,
+
+            #[cfg(target_os = "linux")]
+            Inner::Linux { interner, .. } => get_self_container_id(interner).map(EntityId::Container),
         }
     }
 }
@@ -117,6 +128,7 @@ impl OnDemandPIDResolver {
 
         let inner = Arc::new(Inner::Linux {
             cgroups_reader,
+            interner: interner.clone(),
             pid_mappings_cache: cache_builder.build(),
         });
 
@@ -130,6 +142,13 @@ impl OnDemandPIDResolver {
     /// If the process ID isn't part of a container, or can't be found, `None` is returned.
     pub fn resolve(&self, process_id: u32) -> Option<EntityId> {
         self.inner.resolve(process_id)
+    }
+
+    /// Resolves the current process's container entity from local cgroup membership.
+    ///
+    /// On non-Linux platforms, or when the process is not in a recognizable container cgroup, this returns `None`.
+    pub fn resolve_self_container(&self) -> Option<EntityId> {
+        self.inner.resolve_self_container()
     }
 }
 

@@ -26,6 +26,7 @@ const DEFAULT_HOST_MAPPED_PROCFS_ROOT: &str = "/host/proc";
 const DEFAULT_HOST_MAPPED_CGROUPFS_ROOT: &str = "/host/sys/fs/cgroup";
 const CGROUPS_V1_BASE_CONTROLLER_NAME: &str = "memory";
 const CGROUPS_V2_CONTROLLERS_FILE: &str = "cgroup.controllers";
+const SELF_CGROUP_PATH: &str = "/proc/self/cgroup";
 
 /// Linux Control Groups-specific configuration.
 ///
@@ -457,6 +458,23 @@ where
     Ok(())
 }
 
+/// Gets the current process's container ID from its local cgroup membership.
+///
+/// This intentionally reads the process namespace's `/proc/self/cgroup` instead of a configured procfs root, which may
+/// refer to the host namespace.
+pub(crate) fn get_self_container_id(interner: &GenericMapInterner) -> Option<MetaString> {
+    let lines = read_lines(Path::new(SELF_CGROUP_PATH)).ok()?;
+    get_container_id_from_cgroup_lines(&lines, interner)
+}
+
+fn get_container_id_from_cgroup_lines(lines: &[String], interner: &GenericMapInterner) -> Option<MetaString> {
+    lines
+        .iter()
+        .filter_map(|line| CgroupControllerEntry::try_from_str(line))
+        .filter_map(|entry| entry.path.file_name().and_then(|name| name.to_str()))
+        .find_map(|cgroup_name| extract_container_id(cgroup_name, interner))
+}
+
 fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Option<MetaString> {
     // This regular expression is meant to capture:
     // - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
@@ -487,7 +505,7 @@ mod tests {
 
     use stringtheory::{interning::GenericMapInterner, MetaString};
 
-    use super::{extract_container_id, CgroupControllerEntry};
+    use super::{extract_container_id, get_container_id_from_cgroup_lines, CgroupControllerEntry};
 
     #[test]
     fn parse_controller_entry_cgroups_v1() {
@@ -520,6 +538,18 @@ mod tests {
     fn extract(raw: &str) -> Option<MetaString> {
         let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
         extract_container_id(raw, &interner)
+    }
+
+    #[test]
+    fn resolves_container_id_from_current_process_cgroup_format() {
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let cgroup_lines = vec![format!("0::/system.slice/cri-containerd-{container_id}.scope")];
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+
+        assert_eq!(
+            get_container_id_from_cgroup_lines(&cgroup_lines, &interner),
+            Some(MetaString::from(container_id))
+        );
     }
 
     #[test]
