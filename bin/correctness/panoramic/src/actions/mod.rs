@@ -3,6 +3,7 @@ use saluki_error::GenericError;
 use crate::assertions::{AssertionContext, AssertionResult};
 use crate::config::ActionConfig;
 
+mod adp_cli;
 mod core_agent_config_set;
 mod target_exec;
 
@@ -24,6 +25,7 @@ pub trait Action: Send + Sync {
 /// Creates an action from its configuration.
 pub fn create_action(config: &ActionConfig) -> Result<Box<dyn Action>, GenericError> {
     match config {
+        ActionConfig::AdpCli { args, timeout } => Ok(Box::new(adp_cli::AdpCliAction::new(args.clone(), timeout.0))),
         ActionConfig::CoreAgentConfigSet {
             key,
             value,
@@ -44,4 +46,102 @@ pub fn create_action(config: &ActionConfig) -> Result<Box<dyn Action>, GenericEr
 /// Returns the default Core Agent runtime config endpoint template.
 pub fn default_core_agent_config_endpoint_template() -> String {
     DEFAULT_CORE_AGENT_CONFIG_ENDPOINT_TEMPLATE.to_string()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{
+        collections::HashMap,
+        sync::{Arc, RwLock},
+        time::Duration,
+    };
+
+    use tokio_util::sync::CancellationToken;
+
+    use super::create_action;
+    use crate::{
+        assertions::{AssertionContext, LogBuffer, TargetCommand},
+        config::{ActionConfig, HumanDuration},
+    };
+
+    fn host_context(command_prefix: Vec<String>, env: HashMap<String, String>) -> AssertionContext {
+        AssertionContext {
+            log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
+            container_exit_token: CancellationToken::new(),
+            cancel_token: CancellationToken::new(),
+            port_mappings: HashMap::new(),
+            container_ip: None,
+            target_os: None,
+            container_name: "adp-cli-action-test".to_string(),
+            is_host_process: true,
+            host_process_exit_code: None,
+            docker_container_exit_code: None,
+            core_agent_auth_token_path: None,
+            adp_cli_command: TargetCommand::new(command_prefix).with_host_env(env),
+        }
+    }
+
+    #[tokio::test]
+    async fn adp_cli_host_action_passes_prefix_args_yaml_args_and_environment_to_real_child() {
+        let action = create_action(&ActionConfig::AdpCli {
+            args: vec!["yaml arg; printf not-interpreted".to_string()],
+            timeout: HumanDuration(Duration::from_secs(5)),
+        })
+        .expect("action should be created");
+        let ctx = host_context(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf '%s|%s|%s' \"$0\" \"$1\" \"$ADP_CLI_TEST_ENV\"".to_string(),
+                "prefix-arg".to_string(),
+            ],
+            HashMap::from([("ADP_CLI_TEST_ENV".to_string(), "environment-value".to_string())]),
+        );
+
+        let result = action.execute(&ctx).await;
+
+        assert!(result.passed, "unexpected failure: {}", result.message);
+        assert!(
+            result
+                .message
+                .contains("prefix-arg|yaml arg; printf not-interpreted|environment-value"),
+            "unexpected output: {}",
+            result.message
+        );
+    }
+
+    #[tokio::test]
+    async fn adp_cli_host_action_fails_on_nonzero_without_describing_environment_values() {
+        let action = create_action(&ActionConfig::AdpCli {
+            args: Vec::new(),
+            timeout: HumanDuration(Duration::from_secs(5)),
+        })
+        .expect("action should be created");
+        let secret = "must-not-appear-in-action-errors";
+        let ctx = host_context(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "printf child-failed >&2; exit 7".to_string(),
+            ],
+            HashMap::from([("ADP_CLI_TEST_SECRET".to_string(), secret.to_string())]),
+        );
+
+        let result = action.execute(&ctx).await;
+
+        assert!(!result.passed, "nonzero child unexpectedly passed");
+        assert!(
+            result.message.contains("child-failed"),
+            "unexpected error: {}",
+            result.message
+        );
+        assert!(
+            !result.message.contains(secret),
+            "error exposed the supplied environment"
+        );
+        assert!(
+            !action.description().contains(secret),
+            "description exposed the supplied environment"
+        );
+    }
 }

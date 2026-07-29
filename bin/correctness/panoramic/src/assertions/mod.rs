@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
@@ -102,6 +103,47 @@ impl LogBuffer {
     }
 }
 
+/// Runtime-specific command prefix for invoking the tested target's CLI.
+#[derive(Clone)]
+pub struct TargetCommand {
+    command_prefix: Vec<String>,
+    host_env: Option<HashMap<String, String>>,
+}
+
+impl TargetCommand {
+    /// Creates a target command with no explicit host-process environment.
+    pub fn new(command_prefix: Vec<String>) -> Self {
+        Self {
+            command_prefix,
+            host_env: None,
+        }
+    }
+
+    /// Supplies environment entries for host-process execution.
+    pub fn with_host_env(mut self, host_env: HashMap<String, String>) -> Self {
+        self.host_env = Some(host_env);
+        self
+    }
+
+    /// Returns the program and global arguments that precede action-specific arguments.
+    pub fn command_prefix(&self) -> &[String] {
+        &self.command_prefix
+    }
+
+    /// Returns the environment entries supplied for host-process execution.
+    pub fn host_env(&self) -> Option<&HashMap<String, String>> {
+        self.host_env.as_ref()
+    }
+
+    /// Appends action-specific arguments to the command prefix without shell interpretation.
+    pub fn with_args(&self, args: &[String]) -> Vec<String> {
+        let mut command = Vec::with_capacity(self.command_prefix().len() + args.len());
+        command.extend(self.command_prefix().iter().cloned());
+        command.extend(args.iter().cloned());
+        command
+    }
+}
+
 /// Context provided to assertions during execution.
 pub struct AssertionContext {
     /// Shared log buffer for reading container logs.
@@ -137,6 +179,8 @@ pub struct AssertionContext {
     pub docker_container_exit_code: Option<DockerExitCodeCell>,
     /// Core Agent auth token path for host-process runtimes.
     pub core_agent_auth_token_path: Option<PathBuf>,
+    /// Runtime-specific prefix and host environment for invoking the tested ADP binary as a CLI.
+    pub adp_cli_command: TargetCommand,
 }
 
 impl AssertionContext {

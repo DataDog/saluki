@@ -24,7 +24,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::test::{Test, TestContext};
 use crate::{
-    assertions::{AssertionContext, AssertionResult, LogBuffer},
+    assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
     config::{parse_file_spec, parse_port_spec, IntegrationConfig},
     events::TestEvent,
     reporter::{PhaseTiming, TestResult},
@@ -57,6 +57,9 @@ const GRACE_TIME: Duration = Duration::from_secs(30);
 /// before the env vars cross into the container. Keeping the table in the harness lets test
 /// YAML files stay portable across all three runtimes; only entries that are actually used
 /// today are listed, and any new shared `DD_DATA_PLANE_*` key needs a one-line addition here.
+const LINUX_ADP_CLI_BINARY_PATH: &str = "/opt/datadog-agent/embedded/bin/agent-data-plane";
+const WINDOWS_ADP_CLI_BINARY_PATH: &str = r"C:\adp\agent-data-plane.exe";
+
 const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
     ("DD_DATA_PLANE_ENABLED", "DD_DATA_PLANE__ENABLED"),
     ("DD_DATA_PLANE_STANDALONE_MODE", "DD_DATA_PLANE__STANDALONE_MODE"),
@@ -88,6 +91,15 @@ const WINDOWS_ENV_ALIASES: &[(&str, &str)] = &[
     ),
     ("DD_DATA_PLANE_LOG_FILE", "DD_DATA_PLANE__LOG_FILE"),
 ];
+
+fn container_adp_cli_command(target_os: ContainerOs) -> TargetCommand {
+    let binary_path = match target_os {
+        ContainerOs::Linux => LINUX_ADP_CLI_BINARY_PATH,
+        ContainerOs::Windows => WINDOWS_ADP_CLI_BINARY_PATH,
+    };
+
+    TargetCommand::new(vec![binary_path.to_string()])
+}
 
 fn build_port_mappings_for_runtime(
     runtime: &str, exposed_ports: &[String], details: &DriverDetails,
@@ -938,22 +950,24 @@ impl IntegrationRunner {
         &self, port_mappings: &HashMap<String, u16>, container_ip: Option<&str>, container_name: &str,
         exit_token: &CancellationToken, docker_exit_code: crate::assertions::DockerExitCodeCell,
     ) -> Vec<AssertionResult> {
+        let target_os = if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
+            ContainerOs::Windows
+        } else {
+            ContainerOs::Linux
+        };
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
             container_exit_token: exit_token.clone(),
             cancel_token: self.tctx.test_cancel_token(),
             port_mappings: port_mappings.clone(),
             container_ip: container_ip.map(str::to_string),
-            target_os: Some(if self.test_case.active_runtime == crate::config::WINDOWS_RUNTIME {
-                ContainerOs::Windows
-            } else {
-                ContainerOs::Linux
-            }),
+            target_os: Some(target_os),
             container_name: container_name.to_string(),
             is_host_process: false,
             host_process_exit_code: None,
             docker_container_exit_code: Some(docker_exit_code),
             core_agent_auth_token_path: None,
+            adp_cli_command: container_adp_cli_command(target_os),
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
@@ -1231,5 +1245,24 @@ mod tests {
         let normalized = normalize_env_for_runtime(env, crate::config::LINUX_RUNTIME);
 
         assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
+    }
+
+    #[test]
+    fn linux_context_uses_converged_image_adp_cli_binary() {
+        let command = container_adp_cli_command(ContainerOs::Linux);
+
+        assert_eq!(
+            command.command_prefix(),
+            &["/opt/datadog-agent/embedded/bin/agent-data-plane".to_string()]
+        );
+        assert!(command.host_env().is_none());
+    }
+
+    #[test]
+    fn windows_context_uses_test_image_adp_cli_binary() {
+        let command = container_adp_cli_command(ContainerOs::Windows);
+
+        assert_eq!(command.command_prefix(), &[r"C:\adp\agent-data-plane.exe".to_string()]);
+        assert!(command.host_env().is_none());
     }
 }

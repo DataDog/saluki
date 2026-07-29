@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -39,24 +40,7 @@ impl Action for TargetExecAction {
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let result = if ctx.is_host_process {
-            exec_on_host_with_timeout(
-                &self.command,
-                self.timeout,
-                &ctx.cancel_token,
-                &ctx.container_exit_token,
-            )
-            .await
-        } else {
-            exec_in_container_with_timeout(
-                &ctx.container_name,
-                &self.command,
-                self.timeout,
-                &ctx.cancel_token,
-                &ctx.container_exit_token,
-            )
-            .await
-        };
+        let result = execute_target_command(ctx, &self.command, self.timeout, None).await;
 
         match result {
             Ok(output) => AssertionResult {
@@ -76,6 +60,29 @@ impl Action for TargetExecAction {
                 duration: started.elapsed(),
             },
         }
+    }
+}
+
+pub(super) async fn execute_target_command(
+    ctx: &AssertionContext, command: &[String], timeout: Duration, host_env: Option<&HashMap<String, String>>,
+) -> Result<String, GenericError> {
+    if ctx.is_host_process {
+        match host_env {
+            Some(host_env) => {
+                exec_on_host_with_env_timeout(command, host_env, timeout, &ctx.cancel_token, &ctx.container_exit_token)
+                    .await
+            }
+            None => exec_on_host_with_timeout(command, timeout, &ctx.cancel_token, &ctx.container_exit_token).await,
+        }
+    } else {
+        exec_in_container_with_timeout(
+            &ctx.container_name,
+            command,
+            timeout,
+            &ctx.cancel_token,
+            &ctx.container_exit_token,
+        )
+        .await
     }
 }
 
@@ -108,6 +115,24 @@ async fn exec_on_host_with_timeout(
         _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
         _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
         result = tokio::time::timeout(timeout, exec_on_host_collect(command.to_vec())) => match result {
+            Ok(result) => result,
+            Err(_) => Err(generic_error!("Timed out running host command '{}'.", command.join(" "))),
+        }
+    }
+}
+
+async fn exec_on_host_with_env_timeout(
+    command: &[String], host_env: &HashMap<String, String>, timeout: Duration, cancel_token: &CancellationToken,
+    exit_token: &CancellationToken,
+) -> Result<String, GenericError> {
+    if command.is_empty() {
+        return Err(generic_error!("target_exec command must not be empty."));
+    }
+
+    tokio::select! {
+        _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
+        _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
+        result = tokio::time::timeout(timeout, exec_on_host_collect_with_env(command.to_vec(), host_env)) => match result {
             Ok(result) => result,
             Err(_) => Err(generic_error!("Timed out running host command '{}'.", command.join(" "))),
         }
@@ -174,6 +199,29 @@ async fn exec_on_host_collect(cmd: Vec<String>) -> Result<String, GenericError> 
         .await
         .with_error_context(|| format!("Failed to run host command '{}'.", cmd.join(" ")))?;
 
+    collect_host_output(output)
+}
+
+async fn exec_on_host_collect_with_env(
+    cmd: Vec<String>, host_env: &HashMap<String, String>,
+) -> Result<String, GenericError> {
+    let (program, args) = cmd
+        .split_first()
+        .ok_or_else(|| generic_error!("target_exec command must not be empty."))?;
+
+    let output = Command::new(program)
+        .args(args)
+        .envs(host_env)
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .with_error_context(|| format!("Failed to run host command '{}'.", cmd.join(" ")))?;
+
+    collect_host_output(output)
+}
+
+fn collect_host_output(output: std::process::Output) -> Result<String, GenericError> {
     let mut output_text = String::new();
     output_text.push_str(&String::from_utf8_lossy(&output.stdout));
     output_text.push_str(&String::from_utf8_lossy(&output.stderr));

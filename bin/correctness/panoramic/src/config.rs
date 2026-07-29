@@ -252,6 +252,15 @@ pub enum ActionConfig {
         timeout: HumanDuration,
     },
 
+    /// Invoke the tested ADP binary as a CLI command.
+    AdpCli {
+        /// Arguments appended after the runtime-specific ADP binary and global configuration prefix.
+        args: Vec<String>,
+        /// Timeout for waiting for the command to succeed.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+
     /// Run a command inside the target environment.
     TargetExec {
         /// Command and arguments to run in the target environment.
@@ -414,6 +423,11 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(s, vars);
                 }
             }
+            ActionConfig::AdpCli { args, .. } => {
+                for arg in args {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
+            }
             ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
@@ -433,6 +447,11 @@ impl ActionConfig {
                 crate::dynamic_vars::find_unresolved(endpoint, &mut out);
                 if let serde_json::Value::String(s) = value {
                     crate::dynamic_vars::find_unresolved(s, &mut out);
+                }
+            }
+            ActionConfig::AdpCli { args, .. } => {
+                for arg in args {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
                 }
             }
             ActionConfig::TargetExec { command, .. } => {
@@ -1071,6 +1090,24 @@ timeout: 12s
     }
 
     #[test]
+    fn adp_cli_action_deserializes_args_and_timeout() {
+        let action: ActionConfig = serde_yaml::from_str(
+            r#"
+action: adp_cli
+args: ["debug", "set-log-level", "--filter-directives", "INFO"]
+timeout: 30s
+"#,
+        )
+        .unwrap();
+
+        let ActionConfig::AdpCli { args, timeout } = action else {
+            panic!("expected adp_cli action");
+        };
+        assert_eq!(args, vec!["debug", "set-log-level", "--filter-directives", "INFO"]);
+        assert_eq!(timeout.0, Duration::from_secs(30));
+    }
+
+    #[test]
     fn windows_runtime_is_valid_for_integration_discovery() {
         let base_dir = create_test_case_dir(
             "windows-smoke",
@@ -1173,6 +1210,27 @@ procedure: []
             panic!("expected target_exec action");
         };
         assert_eq!(command, vec!["ping".to_string(), "10.0.0.5".to_string()]);
+    }
+
+    #[test]
+    fn adp_cli_resolves_placeholders_in_each_argument() {
+        let vars = dynamic_vars(&[("LEVEL", "INFO")]);
+        let mut action = ActionConfig::AdpCli {
+            args: vec![
+                "debug".to_string(),
+                "set-metric-level".to_string(),
+                "{{PANORAMIC_DYNAMIC_LEVEL}}".to_string(),
+            ],
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+
+        action.resolve_dynamic_vars(&vars);
+        assert!(action.unresolved_placeholders().is_empty());
+
+        let ActionConfig::AdpCli { args, .. } = action else {
+            panic!("expected adp_cli action");
+        };
+        assert_eq!(args, vec!["debug", "set-metric-level", "INFO"]);
     }
 
     #[test]

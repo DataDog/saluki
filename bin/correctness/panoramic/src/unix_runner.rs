@@ -42,7 +42,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info};
 
 use crate::{
-    assertions::{AssertionContext, AssertionResult, LogBuffer},
+    assertions::{AssertionContext, AssertionResult, LogBuffer, TargetCommand},
     config::{parse_port_spec, IntegrationConfig},
     reporter::{PhaseTiming, TestResult},
     test::{Test, TestContext},
@@ -78,6 +78,15 @@ fn build_process_env(test_env: &HashMap<String, String>, forced: &[(&str, String
         env.insert((*k).to_string(), v.clone());
     }
     env
+}
+
+fn host_adp_cli_command(binary_path: &Path, config_path: &Path, adp_env: HashMap<String, String>) -> TargetCommand {
+    TargetCommand::new(vec![
+        binary_path.to_string_lossy().into_owned(),
+        "-c".to_string(),
+        config_path.to_string_lossy().into_owned(),
+    ])
+    .with_host_env(adp_env)
 }
 
 /// Runner for a single Unix-process integration test case.
@@ -221,6 +230,7 @@ impl UnixIntegrationRunner {
         let core_agent_auth_token_path = PathBuf::from(auth_token_path.clone());
         let adp_forced = build_adp_forced_env(auth_token_path);
         let adp_env = build_process_env(&self.test_case.env, &adp_forced);
+        let adp_cli_command = host_adp_cli_command(&binary_path, &config_path, adp_env.clone());
         let process_config = UnixProcessConfig::new(self.test_case.name.clone(), binary_path)
             .with_args(vec!["-c".to_string(), config_path_str, "run".to_string()])
             .with_env_map(adp_env);
@@ -253,6 +263,7 @@ impl UnixIntegrationRunner {
                 adp_exit_token.clone(),
                 process.exit_code_cell(),
                 Some(core_agent_auth_token_path),
+                adp_cli_command,
             )
             .await;
         phase_timings.push(PhaseTiming {
@@ -337,6 +348,7 @@ impl UnixIntegrationRunner {
     async fn run_assertions(
         &self, process_display_name: String, exit_token: CancellationToken,
         exit_code_cell: airlock::unix::ExitCodeCell, core_agent_auth_token_path: Option<PathBuf>,
+        adp_cli_command: TargetCommand,
     ) -> Vec<AssertionResult> {
         let ctx = AssertionContext {
             log_buffer: self.log_buffer.clone(),
@@ -350,6 +362,7 @@ impl UnixIntegrationRunner {
             host_process_exit_code: Some(exit_code_cell),
             docker_container_exit_code: None,
             core_agent_auth_token_path,
+            adp_cli_command,
         };
         crate::assertions::run_assertion_steps(&self.test_case, &ctx).await
     }
@@ -552,5 +565,30 @@ mod tests {
             .collect();
 
         assert_eq!(env.get("DD_DATA_PLANE_FORCE_ENABLE"), Some(&"true".to_string()));
+    }
+
+    #[test]
+    fn host_context_uses_resolved_adp_binary_config_and_launch_environment() {
+        let binary_path = PathBuf::from("/tmp/panoramic/bin/agent-data-plane");
+        let config_path = PathBuf::from("/tmp/panoramic/state/datadog.yaml");
+        let adp_env = HashMap::from([
+            ("DD_API_KEY".to_string(), "test-key".to_string()),
+            (
+                "DD_AUTH_TOKEN_FILE_PATH".to_string(),
+                "/tmp/panoramic/state/auth_token".to_string(),
+            ),
+        ]);
+
+        let command = host_adp_cli_command(&binary_path, &config_path, adp_env.clone());
+
+        assert_eq!(
+            command.command_prefix(),
+            &[
+                binary_path.to_string_lossy().into_owned(),
+                "-c".to_string(),
+                config_path.to_string_lossy().into_owned(),
+            ]
+        );
+        assert_eq!(command.host_env(), Some(&adp_env));
     }
 }
