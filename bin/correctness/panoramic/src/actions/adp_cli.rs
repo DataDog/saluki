@@ -1,7 +1,12 @@
 use std::time::{Duration, Instant};
 
-use super::{target_exec::execute_target_command, Action};
+use super::{
+    target_exec::{execute_target_command, CommandDiagnostics},
+    Action,
+};
 use crate::assertions::{AssertionContext, AssertionResult};
+
+const ADP_CLI_DIAGNOSTIC_LABEL: &str = "tested ADP CLI command";
 
 pub(super) struct AdpCliAction {
     args: Vec<String>,
@@ -21,17 +26,21 @@ impl Action for AdpCliAction {
     }
 
     fn description(&self) -> String {
-        if self.args.is_empty() {
-            "Run the tested ADP binary as a CLI".to_string()
-        } else {
-            format!("Run ADP CLI command: {}", self.args.join(" "))
-        }
+        format!("Run {ADP_CLI_DIAGNOSTIC_LABEL}")
     }
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
         let command = ctx.adp_cli_command.with_args(&self.args);
-        let result = execute_target_command(ctx, &command, self.timeout, ctx.adp_cli_command.host_env()).await;
+        let diagnostics = CommandDiagnostics::Redacted(ADP_CLI_DIAGNOSTIC_LABEL);
+        let result = execute_target_command(
+            ctx,
+            &command,
+            &diagnostics,
+            self.timeout,
+            ctx.adp_cli_command.host_env(),
+        )
+        .await;
 
         match result {
             Ok(output) => AssertionResult {

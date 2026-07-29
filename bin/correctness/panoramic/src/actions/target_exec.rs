@@ -28,6 +28,38 @@ impl TargetExecAction {
     }
 }
 
+pub(super) enum CommandDiagnostics {
+    FullCommand(String),
+    Redacted(&'static str),
+}
+
+impl CommandDiagnostics {
+    fn full(command: &[String]) -> Self {
+        Self::FullCommand(command.join(" "))
+    }
+
+    fn validation_subject(&self) -> &str {
+        match self {
+            Self::FullCommand(_) => "target_exec command",
+            Self::Redacted(label) => label,
+        }
+    }
+
+    fn host_subject(&self) -> String {
+        match self {
+            Self::FullCommand(command) => format!("host command '{command}'"),
+            Self::Redacted(label) => label.to_string(),
+        }
+    }
+
+    fn container_subject(&self, container_name: &str) -> String {
+        match self {
+            Self::FullCommand(command) => format!("command in container '{container_name}': {command}"),
+            Self::Redacted(label) => format!("{label} in container '{container_name}'"),
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl Action for TargetExecAction {
     fn name(&self) -> &'static str {
@@ -40,7 +72,8 @@ impl Action for TargetExecAction {
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let result = execute_target_command(ctx, &self.command, self.timeout, None).await;
+        let diagnostics = CommandDiagnostics::full(&self.command);
+        let result = execute_target_command(ctx, &self.command, &diagnostics, self.timeout, None).await;
 
         match result {
             Ok(output) => AssertionResult {
@@ -64,20 +97,38 @@ impl Action for TargetExecAction {
 }
 
 pub(super) async fn execute_target_command(
-    ctx: &AssertionContext, command: &[String], timeout: Duration, host_env: Option<&HashMap<String, String>>,
+    ctx: &AssertionContext, command: &[String], diagnostics: &CommandDiagnostics, timeout: Duration,
+    host_env: Option<&HashMap<String, String>>,
 ) -> Result<String, GenericError> {
     if ctx.is_host_process {
         match host_env {
             Some(host_env) => {
-                exec_on_host_with_env_timeout(command, host_env, timeout, &ctx.cancel_token, &ctx.container_exit_token)
-                    .await
+                exec_on_host_with_env_timeout(
+                    command,
+                    diagnostics,
+                    host_env,
+                    timeout,
+                    &ctx.cancel_token,
+                    &ctx.container_exit_token,
+                )
+                .await
             }
-            None => exec_on_host_with_timeout(command, timeout, &ctx.cancel_token, &ctx.container_exit_token).await,
+            None => {
+                exec_on_host_with_timeout(
+                    command,
+                    diagnostics,
+                    timeout,
+                    &ctx.cancel_token,
+                    &ctx.container_exit_token,
+                )
+                .await
+            }
         }
     } else {
         exec_in_container_with_timeout(
             &ctx.container_name,
             command,
+            diagnostics,
             timeout,
             &ctx.cancel_token,
             &ctx.container_exit_token,
@@ -87,11 +138,14 @@ pub(super) async fn execute_target_command(
 }
 
 async fn exec_in_container_with_timeout(
-    container_name: &str, command: &[String], timeout: Duration, cancel_token: &CancellationToken,
-    exit_token: &CancellationToken,
+    container_name: &str, command: &[String], diagnostics: &CommandDiagnostics, timeout: Duration,
+    cancel_token: &CancellationToken, exit_token: &CancellationToken,
 ) -> Result<String, GenericError> {
     if command.is_empty() {
-        return Err(generic_error!("target_exec command must not be empty."));
+        return Err(generic_error!(
+            "{} must not be empty.",
+            diagnostics.validation_subject()
+        ));
     }
 
     tokio::select! {
@@ -99,42 +153,49 @@ async fn exec_in_container_with_timeout(
         _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
         result = tokio::time::timeout(timeout, exec_in_container_collect(container_name, command.to_vec())) => match result {
             Ok(result) => result,
-            Err(_) => Err(generic_error!("Timed out running command in container '{}': {}.", container_name, command.join(" "))),
+            Err(_) => Err(generic_error!("Timed out running {}.", diagnostics.container_subject(container_name))),
         }
     }
 }
 
 async fn exec_on_host_with_timeout(
-    command: &[String], timeout: Duration, cancel_token: &CancellationToken, exit_token: &CancellationToken,
+    command: &[String], diagnostics: &CommandDiagnostics, timeout: Duration, cancel_token: &CancellationToken,
+    exit_token: &CancellationToken,
 ) -> Result<String, GenericError> {
     if command.is_empty() {
-        return Err(generic_error!("target_exec command must not be empty."));
+        return Err(generic_error!(
+            "{} must not be empty.",
+            diagnostics.validation_subject()
+        ));
     }
 
     tokio::select! {
         _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
         _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
-        result = tokio::time::timeout(timeout, exec_on_host_collect(command.to_vec())) => match result {
+        result = tokio::time::timeout(timeout, exec_on_host_collect(command.to_vec(), diagnostics)) => match result {
             Ok(result) => result,
-            Err(_) => Err(generic_error!("Timed out running host command '{}'.", command.join(" "))),
+            Err(_) => Err(generic_error!("Timed out running {}.", diagnostics.host_subject())),
         }
     }
 }
 
 async fn exec_on_host_with_env_timeout(
-    command: &[String], host_env: &HashMap<String, String>, timeout: Duration, cancel_token: &CancellationToken,
-    exit_token: &CancellationToken,
+    command: &[String], diagnostics: &CommandDiagnostics, host_env: &HashMap<String, String>, timeout: Duration,
+    cancel_token: &CancellationToken, exit_token: &CancellationToken,
 ) -> Result<String, GenericError> {
     if command.is_empty() {
-        return Err(generic_error!("target_exec command must not be empty."));
+        return Err(generic_error!(
+            "{} must not be empty.",
+            diagnostics.validation_subject()
+        ));
     }
 
     tokio::select! {
         _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
         _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
-        result = tokio::time::timeout(timeout, exec_on_host_collect_with_env(command.to_vec(), host_env)) => match result {
+        result = tokio::time::timeout(timeout, exec_on_host_collect_with_env(command.to_vec(), diagnostics, host_env)) => match result {
             Ok(result) => result,
-            Err(_) => Err(generic_error!("Timed out running host command '{}'.", command.join(" "))),
+            Err(_) => Err(generic_error!("Timed out running {}.", diagnostics.host_subject())),
         }
     }
 }
@@ -186,10 +247,10 @@ async fn exec_in_container_collect(container_name: &str, cmd: Vec<String>) -> Re
     Ok(output_text)
 }
 
-async fn exec_on_host_collect(cmd: Vec<String>) -> Result<String, GenericError> {
+async fn exec_on_host_collect(cmd: Vec<String>, diagnostics: &CommandDiagnostics) -> Result<String, GenericError> {
     let (program, args) = cmd
         .split_first()
-        .ok_or_else(|| generic_error!("target_exec command must not be empty."))?;
+        .ok_or_else(|| generic_error!("{} must not be empty.", diagnostics.validation_subject()))?;
 
     let output = Command::new(program)
         .args(args)
@@ -197,17 +258,17 @@ async fn exec_on_host_collect(cmd: Vec<String>) -> Result<String, GenericError> 
         .kill_on_drop(true)
         .output()
         .await
-        .with_error_context(|| format!("Failed to run host command '{}'.", cmd.join(" ")))?;
+        .with_error_context(|| format!("Failed to run {}.", diagnostics.host_subject()))?;
 
     collect_host_output(output)
 }
 
 async fn exec_on_host_collect_with_env(
-    cmd: Vec<String>, host_env: &HashMap<String, String>,
+    cmd: Vec<String>, diagnostics: &CommandDiagnostics, host_env: &HashMap<String, String>,
 ) -> Result<String, GenericError> {
     let (program, args) = cmd
         .split_first()
-        .ok_or_else(|| generic_error!("target_exec command must not be empty."))?;
+        .ok_or_else(|| generic_error!("{} must not be empty.", diagnostics.validation_subject()))?;
 
     let output = Command::new(program)
         .args(args)
@@ -216,7 +277,7 @@ async fn exec_on_host_collect_with_env(
         .kill_on_drop(true)
         .output()
         .await
-        .with_error_context(|| format!("Failed to run host command '{}'.", cmd.join(" ")))?;
+        .with_error_context(|| format!("Failed to run {}.", diagnostics.host_subject()))?;
 
     collect_host_output(output)
 }
@@ -235,7 +296,7 @@ fn collect_host_output(output: std::process::Output) -> Result<String, GenericEr
 
 #[cfg(test)]
 mod tests {
-    use super::{exec_on_host_collect, exec_on_host_with_timeout, TargetExecAction};
+    use super::{exec_on_host_collect, exec_on_host_with_timeout, CommandDiagnostics, TargetExecAction};
     use crate::actions::Action as _;
 
     #[test]
@@ -253,26 +314,27 @@ mod tests {
 
     #[tokio::test]
     async fn host_exec_collects_stdout() {
-        let output = exec_on_host_collect(vec![
-            "sh".to_string(),
-            "-c".to_string(),
-            "printf target-exec".to_string(),
-        ])
-        .await
-        .expect("host command should succeed");
+        let command = vec!["sh".to_string(), "-c".to_string(), "printf target-exec".to_string()];
+        let diagnostics = CommandDiagnostics::full(&command);
+        let output = exec_on_host_collect(command, &diagnostics)
+            .await
+            .expect("host command should succeed");
 
         assert_eq!(output, "target-exec");
     }
 
     #[tokio::test]
     async fn host_exec_reports_nonzero_exit_immediately() {
+        let command = [
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf fail-message >&2; exit 7".to_string(),
+        ];
+        let diagnostics = CommandDiagnostics::full(&command);
         let started = std::time::Instant::now();
         let err = exec_on_host_with_timeout(
-            &[
-                "sh".to_string(),
-                "-c".to_string(),
-                "printf fail-message >&2; exit 7".to_string(),
-            ],
+            &command,
+            &diagnostics,
             std::time::Duration::from_secs(30),
             &tokio_util::sync::CancellationToken::new(),
             &tokio_util::sync::CancellationToken::new(),
@@ -304,8 +366,11 @@ mod tests {
 
     #[tokio::test]
     async fn host_exec_times_out() {
+        let command = slow_host_command();
+        let diagnostics = CommandDiagnostics::full(&command);
         let err = exec_on_host_with_timeout(
-            &slow_host_command(),
+            &command,
+            &diagnostics,
             std::time::Duration::from_millis(50),
             &tokio_util::sync::CancellationToken::new(),
             &tokio_util::sync::CancellationToken::new(),

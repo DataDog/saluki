@@ -110,6 +110,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn adp_cli_description_does_not_expose_secret_argument() {
+        let secret = "dynamic-credential-description-secret";
+        let action = create_action(&ActionConfig::AdpCli {
+            args: vec![secret.to_string()],
+            timeout: HumanDuration(Duration::from_secs(5)),
+        })
+        .expect("action should be created");
+
+        let description = action.description();
+
+        assert_eq!(description, "Run tested ADP CLI command");
+        assert!(!description.contains(secret), "description exposed the secret argument");
+    }
+
+    #[tokio::test]
+    async fn adp_cli_spawn_failure_does_not_expose_secret_argument() {
+        let secret = "dynamic-credential-spawn-secret";
+        let action = create_action(&ActionConfig::AdpCli {
+            args: vec![secret.to_string()],
+            timeout: HumanDuration(Duration::from_secs(5)),
+        })
+        .expect("action should be created");
+        let ctx = host_context(
+            vec!["panoramic-adp-cli-program-that-does-not-exist".to_string()],
+            HashMap::new(),
+        );
+
+        let result = action.execute(&ctx).await;
+
+        assert!(!result.passed, "missing child unexpectedly passed");
+        assert!(
+            result.message.contains("Failed to run tested ADP CLI command."),
+            "unexpected error: {}",
+            result.message
+        );
+        assert!(
+            !result.message.contains(secret),
+            "spawn error exposed the secret argument"
+        );
+    }
+
+    #[tokio::test]
+    async fn adp_cli_timeout_does_not_expose_secret_argument() {
+        let secret = "dynamic-credential-timeout-secret";
+        let action = create_action(&ActionConfig::AdpCli {
+            args: vec![secret.to_string()],
+            timeout: HumanDuration(Duration::from_millis(50)),
+        })
+        .expect("action should be created");
+        let ctx = host_context(
+            vec![
+                "sh".to_string(),
+                "-c".to_string(),
+                "sleep 5".to_string(),
+                "adp-cli-timeout".to_string(),
+            ],
+            HashMap::new(),
+        );
+        let started = std::time::Instant::now();
+
+        let result = action.execute(&ctx).await;
+
+        assert!(!result.passed, "slow child unexpectedly passed");
+        assert!(
+            result.message.contains("Timed out running tested ADP CLI command."),
+            "unexpected error: {}",
+            result.message
+        );
+        assert!(
+            !result.message.contains(secret),
+            "timeout error exposed the secret argument"
+        );
+        assert!(started.elapsed() < Duration::from_secs(2), "timeout was not bounded");
+    }
+
     #[tokio::test]
     async fn adp_cli_host_action_fails_on_nonzero_without_describing_environment_values() {
         let action = create_action(&ActionConfig::AdpCli {
