@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
-use datadog_agent_config::{apply_env_overlay, DatadogConfiguration, EnvOverlayMode, TranslateErrors};
+use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_config::{upsert, ConfigurationError, GenericConfiguration};
 use serde::Deserialize;
@@ -90,7 +90,7 @@ impl ConfigurationSystem {
     /// cannot be deserialized or translated.
     pub(crate) async fn connected(
         mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>,
-        compat_map: GenericConfiguration, base: Value, overlay: EnvOverlayMode,
+        compat_map: GenericConfiguration, base: Value,
     ) -> Result<Self> {
         // The first stream message is the authoritative initial snapshot.
         let first = agent_rx.recv().await.ok_or(Error::StreamClosed)?;
@@ -107,7 +107,7 @@ impl ConfigurationSystem {
         // check instead rejects the offending update and keeps the last-known-good configuration,
         // because a runtime update must never take the system down.
         let merged = deep_merge(base.clone(), agent.clone());
-        let config = translate_strict(&merged, overlay)?;
+        let config = translate_strict(&merged)?;
 
         let current = Arc::new(ArcSwap::from_pointee(config));
         // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
@@ -122,7 +122,6 @@ impl ConfigurationSystem {
             agent,
             Arc::clone(&current),
             Arc::clone(&tick),
-            overlay,
         ));
 
         Ok(Self {
@@ -181,7 +180,7 @@ impl ConfigurationSystem {
 /// exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
 async fn agent_loop(
     mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>, base: Value, mut agent: Value,
-    current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>, overlay: EnvOverlayMode,
+    current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>,
 ) {
     while let Some(update) = agent_rx.recv().await {
         // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
@@ -190,7 +189,7 @@ async fn agent_loop(
         let mut tentative = agent.clone();
         fold(&mut tentative, &update);
         let merged = deep_merge(base.clone(), tentative.clone());
-        match translate_strict(&merged, overlay) {
+        match translate_strict(&merged) {
             Ok(config) => {
                 agent = tentative;
                 current.store(Arc::new(config));
@@ -240,8 +239,8 @@ async fn forward(compat_tx: &mpsc::Sender<ConfigUpdate>, update: ConfigUpdate) {
 /// # Errors
 ///
 /// Returns an error if either source model cannot be deserialized or any key fails translation.
-pub(crate) fn translate_strict(merged: &Value, overlay: EnvOverlayMode) -> Result<SalukiConfiguration> {
-    let Sources { datadog, saluki } = deserialize_sources(merged, overlay)?;
+pub(crate) fn translate_strict(merged: &Value) -> Result<SalukiConfiguration> {
+    let Sources { datadog, saluki } = deserialize_sources(merged)?;
     let (config, errors) = translate(&datadog, &saluki);
     if let Some(errors) = errors {
         return Err(Error::Translate { source: errors });
@@ -321,19 +320,12 @@ struct Sources {
 /// Deserializes both source models from the merged configuration value.
 ///
 /// The source models use ordinary serde-compatible field types, so deserializing from
-/// `serde_json::Value` preserves the values.
-///
-/// Environment variables reach the merged value as flat keys (`autoscaling_failover_enabled`), which
-/// neither nested source reads. Each source has its own overlay applied before its deserialize, per
-/// `overlay`: `saluki_env_overlay::apply` for the Saluki-only keys and `apply_env_overlay` for the
-/// Datadog keys. The two cover disjoint key sets, so relocating one source's keys is inert for the
-/// other.
-fn deserialize_sources(merged: &Value, overlay: EnvOverlayMode) -> Result<Sources> {
-    let mut merged = merged.clone();
-    saluki_env_overlay::apply(&mut merged, overlay);
-    let saluki = SalukiOnly::deserialize(&merged)?;
-    apply_env_overlay(&mut merged, overlay);
-    let datadog = DatadogConfiguration::deserialize(&merged)?;
+/// `serde_json::Value` preserves the values. Both read the canonical nested shape: the local base
+/// is built that way by the schema-driven environment readers, and the Datadog Agent's stream
+/// delivers dotted keys that are nested on arrival.
+fn deserialize_sources(merged: &Value) -> Result<Sources> {
+    let saluki = SalukiOnly::deserialize(merged)?;
+    let datadog = DatadogConfiguration::deserialize(merged)?;
     Ok(Sources { datadog, saluki })
 }
 
@@ -356,7 +348,7 @@ mod tests {
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
     use agent_data_plane_config::{Live, SalukiConfiguration};
-    use datadog_agent_config::{DatadogConfiguration, EnvOverlayMode};
+    use datadog_agent_config::DatadogConfiguration;
     use saluki_config::dynamic::ConfigUpdate;
     use saluki_config::ConfigurationLoader;
     use serde_json::{json, Value};
@@ -366,25 +358,23 @@ mod tests {
 
     /// Builds a standalone system whose authority is the local sources (`file` + `env`).
     async fn standalone_system(
-        file: Option<Value>, env: Option<&[(String, String)]>, overlay: EnvOverlayMode,
+        file: Option<Value>, env: Option<&[(String, String)]>,
     ) -> Result<ConfigurationSystem, Error> {
         let (compat_map, _) = ConfigurationLoader::for_tests(file, env, false).await;
         let base = compat_map.as_typed::<Value>().expect("base extracts");
-        let config = translate_strict(&base, overlay)?;
+        let config = translate_strict(&base)?;
         Ok(ConfigurationSystem::standalone(compat_map, config))
     }
 
     /// Builds a connected system whose base is `base` and whose authority is the returned Agent
     /// stream. The initial (empty) snapshot is queued before the system blocks on it, so the caller
     /// gets back a stream ready for `Partial`/`Snapshot` updates.
-    async fn connected_system(
-        base: Value, overlay: EnvOverlayMode,
-    ) -> (ConfigurationSystem, mpsc::Sender<ConfigUpdate>) {
+    async fn connected_system(base: Value) -> (ConfigurationSystem, mpsc::Sender<ConfigUpdate>) {
         let (agent_tx, agent_rx) = mpsc::channel(100);
         let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
         let compat_tx = compat_tx.expect("dynamic sender exists");
         agent_tx.send(ConfigUpdate::Snapshot(json!({}))).await.unwrap();
-        let system = ConfigurationSystem::connected(agent_rx, compat_tx, compat_map, base, overlay)
+        let system = ConfigurationSystem::connected(agent_rx, compat_tx, compat_map, base)
             .await
             .expect("system builds");
         (system, agent_tx)
@@ -403,13 +393,9 @@ mod tests {
 
     #[tokio::test]
     async fn startup_current_reflects_translation() {
-        let system = standalone_system(
-            Some(json!({ "log_level": "warn", "dogstatsd_port": 9125 })),
-            None,
-            EnvOverlayMode::Fallback,
-        )
-        .await
-        .expect("system builds");
+        let system = standalone_system(Some(json!({ "log_level": "warn", "dogstatsd_port": 9125 })), None)
+            .await
+            .expect("system builds");
         let config = system.config();
 
         assert_eq!(config.control.logging.level, "warn");
@@ -418,20 +404,17 @@ mod tests {
 
     #[tokio::test]
     async fn connected_stream_translates_metrics_v3_routing_configuration() {
-        let (system, agent_tx) = connected_system(
-            json!({
-                "data_plane": {
-                    "metrics": {
-                        "v3": {
-                            "series": {
-                                "enabled": true
-                            }
+        let (system, agent_tx) = connected_system(json!({
+            "data_plane": {
+                "metrics": {
+                    "v3": {
+                        "series": {
+                            "enabled": true
                         }
                     }
                 }
-            }),
-            EnvOverlayMode::Fallback,
-        )
+            }
+        }))
         .await;
 
         assert_eq!(
@@ -507,17 +490,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flat_env_key_overlays_onto_nested_datadog_slot() {
-        // A flat, underscore-joined key (the shape an environment variable produces) is relocated
-        // into the nested `autoscaling.failover.*` slot the Datadog deserializer reads. The string
-        // list is split on whitespace.
+    async fn nested_datadog_key_reaches_the_model() {
+        // Sources deliver the Agent's canonical nested shape, which is what the Datadog
+        // deserializer reads. A string list supplied as one space-separated string (the form an
+        // environment variable carries) is still split on whitespace at the leaf.
         let system = standalone_system(
             Some(json!({
-                "autoscaling_failover_enabled": true,
-                "autoscaling_failover_metrics": "container.memory.usage container.cpu.usage",
+                "autoscaling": {
+                    "failover": {
+                        "enabled": true,
+                        "metrics": "container.memory.usage container.cpu.usage",
+                    }
+                }
             })),
             None,
-            EnvOverlayMode::Fallback,
         )
         .await
         .expect("system builds");
@@ -531,32 +517,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saluki_only_dotted_env_key_seeds_the_model() {
-        // A dotted Saluki-only key set only by environment variable arrives as a flat underscore-joined key
-        // `data_plane_standalone_mode`, which the nested `SalukiOnly` never reads. The overlay must
-        // relocate it so it seeds `control.standalone_mode`.
-        let system = standalone_system(
-            None,
-            Some(&[("DATA_PLANE_STANDALONE_MODE".to_string(), "true".to_string())]),
-            EnvOverlayMode::Fallback,
-        )
-        .await
-        .expect("system builds");
+    async fn nested_saluki_only_key_seeds_the_model() {
+        let system = standalone_system(Some(json!({ "data_plane": { "standalone_mode": true } })), None)
+            .await
+            .expect("system builds");
 
         assert!(system.config().control.standalone_mode);
     }
 
     #[tokio::test]
-    async fn disabled_overlay_leaves_flat_env_key_unread() {
-        // With the overlay disabled, the flat key is never relocated, so the nested deserializer
-        // does not see it and the field keeps its default.
-        let system = standalone_system(
-            Some(json!({ "autoscaling_failover_enabled": true })),
-            None,
-            EnvOverlayMode::Disabled,
-        )
-        .await
-        .expect("system builds");
+    async fn a_flattened_spelling_of_a_nested_key_is_not_read() {
+        // Nothing translates `autoscaling_failover_enabled` into the nested slot: resolving an
+        // environment variable to its canonical path is the environment readers' job, and they do it
+        // before a value ever reaches this point. A flattened key arriving from any other source is
+        // simply not a key the model knows.
+        let system = standalone_system(Some(json!({ "autoscaling_failover_enabled": true })), None)
+            .await
+            .expect("system builds");
 
         assert!(!system.config().shared.autoscaling_failover.enabled);
     }
@@ -565,12 +542,7 @@ mod tests {
     async fn load_fails_on_translation_invalid_startup_config() {
         // Startup is the strict gate: a value figment accepts but the model rejects fails the load,
         // so the process never boots on bad config.
-        let result = standalone_system(
-            Some(json!({ "dogstatsd_tag_cardinality": "bogus" })),
-            None,
-            EnvOverlayMode::Fallback,
-        )
-        .await;
+        let result = standalone_system(Some(json!({ "dogstatsd_tag_cardinality": "bogus" })), None).await;
 
         assert!(matches!(result, Err(Error::Translate { .. })));
     }
@@ -579,11 +551,8 @@ mod tests {
     fn zero_otlp_trace_interner_size_is_rejected() {
         // Component builders used to discover this after translation. Reject zero before publishing
         // an invalid typed model.
-        let error = translate_strict(
-            &json!({ "otlp_config": { "traces": { "string_interner_size": 0 } } }),
-            EnvOverlayMode::Fallback,
-        )
-        .expect_err("zero trace interner size should fail translation");
+        let error = translate_strict(&json!({ "otlp_config": { "traces": { "string_interner_size": 0 } } }))
+            .expect_err("zero trace interner size should fail translation");
 
         assert!(matches!(error, Error::Deserialize { .. }));
         assert!(error.to_string().contains("value of bytes must be greater than zero"));
@@ -591,11 +560,8 @@ mod tests {
 
     #[test]
     fn oversized_otlp_trace_interner_size_is_rejected() {
-        let error = translate_strict(
-            &json!({ "otlp_config": { "traces": { "string_interner_size": "2GiB" } } }),
-            EnvOverlayMode::Fallback,
-        )
-        .expect_err("oversized trace interner should fail translation");
+        let error = translate_strict(&json!({ "otlp_config": { "traces": { "string_interner_size": "2GiB" } } }))
+            .expect_err("oversized trace interner should fail translation");
 
         assert!(matches!(error, Error::Deserialize { .. }));
         assert!(error.to_string().contains("must not exceed 1073741824 bytes"));
@@ -603,11 +569,8 @@ mod tests {
 
     #[test]
     fn positive_otlp_trace_interner_size_is_accepted() {
-        let config = translate_strict(
-            &json!({ "otlp_config": { "traces": { "string_interner_size": "512KiB" } } }),
-            EnvOverlayMode::Fallback,
-        )
-        .expect("positive trace interner size should translate");
+        let config = translate_strict(&json!({ "otlp_config": { "traces": { "string_interner_size": "512KiB" } } }))
+            .expect("positive trace interner size should translate");
 
         assert_eq!(config.domains.otlp.traces.string_interner_size.get(), 512 * 1024);
     }
@@ -617,24 +580,17 @@ mod tests {
         // A byte-size setting documented as accepting a bare integer (`10485760`) rather than a
         // string (`"10MB"`) must not abort the strict startup gate. The typed model normalizes it,
         // and the translator resolves it to the same byte count.
-        let system = standalone_system(
-            Some(json!({ "dogstatsd_log_file_max_size": 10485760 })),
-            None,
-            EnvOverlayMode::Fallback,
-        )
-        .await
-        .expect("numeric byte size boots");
+        let system = standalone_system(Some(json!({ "dogstatsd_log_file_max_size": 10485760 })), None)
+            .await
+            .expect("numeric byte size boots");
 
         assert_eq!(system.config().domains.dogstatsd.debug_log.log_file_max_size, 10485760);
     }
 
     #[tokio::test]
     async fn translation_invalid_update_is_rejected_keeping_last_known_good() {
-        let (system, agent_tx) = connected_system(
-            json!({ "log_level": "warn", "dogstatsd_tag_cardinality": "high" }),
-            EnvOverlayMode::Fallback,
-        )
-        .await;
+        let (system, agent_tx) =
+            connected_system(json!({ "log_level": "warn", "dogstatsd_tag_cardinality": "high" })).await;
         assert_eq!(
             system.config().domains.dogstatsd.origin.tag_cardinality,
             OriginTagCardinality::High
@@ -671,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn converges_to_latest_value_under_burst() {
-        let (system, agent_tx) = connected_system(json!({ "log_level": "info" }), EnvOverlayMode::Fallback).await;
+        let (system, agent_tx) = connected_system(json!({ "log_level": "info" })).await;
 
         let burst = [
             "warn", "error", "debug", "trace", "info", "warn", "error", "debug", "trace", "info", "warn", "error",
@@ -725,11 +681,7 @@ mod tests {
 
     #[tokio::test]
     async fn live_view_observes_debug_log_update() {
-        let (system, agent_tx) = connected_system(
-            json!({ "dogstatsd_metrics_stats_enable": false }),
-            EnvOverlayMode::Fallback,
-        )
-        .await;
+        let (system, agent_tx) = connected_system(json!({ "dogstatsd_metrics_stats_enable": false })).await;
         let mut view = system.live(|c| &c.domains.dogstatsd.debug_log);
         assert!(!view.metrics_stats_enable);
 
@@ -753,11 +705,7 @@ mod tests {
     async fn field_view_wakes_on_its_field() {
         // Projecting straight to a single field needs no schema change and no central registration:
         // the granularity is chosen at the call site.
-        let (system, agent_tx) = connected_system(
-            json!({ "dogstatsd_metrics_stats_enable": false }),
-            EnvOverlayMode::Fallback,
-        )
-        .await;
+        let (system, agent_tx) = connected_system(json!({ "dogstatsd_metrics_stats_enable": false })).await;
         let mut stats = system.live(|c| &c.domains.dogstatsd.debug_log.metrics_stats_enable);
         assert!(!*stats);
 
@@ -788,13 +736,9 @@ mod tests {
 
     #[tokio::test]
     async fn live_views_reflect_startup_configuration() {
-        let system = standalone_system(
-            Some(json!({ "dogstatsd_metrics_stats_enable": true })),
-            None,
-            EnvOverlayMode::Fallback,
-        )
-        .await
-        .expect("system builds");
+        let system = standalone_system(Some(json!({ "dogstatsd_metrics_stats_enable": true })), None)
+            .await
+            .expect("system builds");
         let config = system.config();
 
         let debug_log = system.live(|c| &c.domains.dogstatsd.debug_log);

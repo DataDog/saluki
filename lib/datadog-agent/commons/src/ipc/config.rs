@@ -22,6 +22,24 @@ const fn default_connect_retry_attempts() -> usize {
     10
 }
 
+/// The Datadog Agent's `agent_ipc` configuration section.
+#[derive(Clone, Debug, Deserialize)]
+struct AgentIpcConfiguration {
+    /// Maximum message size for gRPC messages.
+    ///
+    /// Defaults to `128 * 1024 * 1024` (128 MB).
+    #[serde(default = "default_grpc_max_message_size")]
+    grpc_max_message_size: usize,
+}
+
+impl Default for AgentIpcConfiguration {
+    fn default() -> Self {
+        Self {
+            grpc_max_message_size: default_grpc_max_message_size(),
+        }
+    }
+}
+
 const fn default_grpc_max_message_size() -> usize {
     128 * 1024 * 1024
 }
@@ -130,14 +148,9 @@ pub struct RemoteAgentClientConfiguration {
     #[serde(default = "default_connect_retry_backoff")]
     connect_retry_backoff: Duration,
 
-    /// Maximum message size for gRPC messages.
-    ///
-    /// Defaults to `128 * 1024 * 1024` (128 MB).
-    #[serde(
-        rename = "agent_ipc_grpc_max_message_size",
-        default = "default_grpc_max_message_size"
-    )]
-    grpc_max_message_size: usize,
+    /// The Agent's `agent_ipc` section.
+    #[serde(default)]
+    agent_ipc: AgentIpcConfiguration,
 
     /// vsock address for connecting to the Agent IPC endpoint via AF_VSOCK.
     ///
@@ -213,7 +226,7 @@ impl RemoteAgentClientConfiguration {
 
     /// Returns the maximum message size for gRPC.
     pub fn grpc_max_message_size(&self) -> usize {
-        self.grpc_max_message_size
+        self.agent_ipc.grpc_max_message_size
     }
 
     /// Returns the vsock address to use for connecting to the IPC endpoint, if configured.

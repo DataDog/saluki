@@ -300,6 +300,14 @@ impl From<&TypedV3ApiEncoding> for V3ApiConfig {
     }
 }
 
+/// The Datadog Agent's `use_v3_api` configuration section.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Facet)]
+pub struct UseV3ApiConfig {
+    /// Agent-compatible V3 API configuration for series metrics.
+    #[serde(default)]
+    pub series: UseV3ApiSeriesConfig,
+}
+
 /// Agent-compatible `use_v3_api.series` configuration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Facet)]
 pub struct UseV3ApiSeriesConfig {
@@ -309,17 +317,12 @@ pub struct UseV3ApiSeriesConfig {
     /// the evaluator. Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
     #[serde(
         default = "default_use_v3_api_series_enabled",
-        deserialize_with = "deserialize_v3_series_mode",
-        rename = "use_v3_api_series_enabled"
+        deserialize_with = "deserialize_v3_series_mode"
     )]
     pub enabled: String,
 
     /// Per-endpoint V3 series mode overrides.
-    #[serde(
-        default,
-        deserialize_with = "deserialize_v3_series_endpoint_modes",
-        rename = "use_v3_api_series_endpoints"
-    )]
+    #[serde(default, deserialize_with = "deserialize_v3_series_endpoint_modes")]
     pub endpoints: HashMap<String, String>,
 }
 

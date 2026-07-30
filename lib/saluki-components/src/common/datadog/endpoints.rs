@@ -483,7 +483,7 @@ pub struct EndpointConfiguration {
     /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
     ///
     /// Defaults to unset.
-    #[serde(default, alias = "url", deserialize_with = "deserialize_dd_url")]
+    #[serde(default, deserialize_with = "deserialize_dd_url")]
     dd_url: Option<String>,
 
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.

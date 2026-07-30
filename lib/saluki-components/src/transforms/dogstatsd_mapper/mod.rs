@@ -1083,21 +1083,13 @@ mod config_smoke {
     use serde_json::json;
 
     use super::DogStatsDMapperConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DOGSTATSD_MAPPER_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DogStatsDMapperConfiguration>()
-                    .expect("DogStatsDMapperConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::from_env_vars,
-        )
+        run_config_smoke_tests(structs::DOGSTATSD_MAPPER_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DogStatsDMapperConfiguration>()
+                .expect("DogStatsDMapperConfiguration should deserialize")
+        })
         .await
     }
 }

@@ -267,7 +267,11 @@ mod tests {
                         "url": "https://opw.example.com"
                     }
                 },
-                "use_v3_api_series_enabled": "true",
+                "use_v3_api": {
+                    "series": {
+                        "enabled": "true"
+                    }
+                },
                 "serializer_experimental_use_v3_api": {
                     "series": {
                         "shadow_sites": ["example.com"]

@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use agent_data_plane_config::SalukiConfiguration;
-use datadog_agent_config::{apply_datadog_env, EnvOverlayMode};
+use datadog_agent_config::apply_datadog_env;
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use serde_json::Value;
@@ -30,8 +30,8 @@ const COMPAT_FORWARD_CHANNEL_SIZE: usize = 100;
 
 /// Where environment variables sit relative to the configuration file.
 ///
-/// One setting, applied identically to the Figment provider order (which flat key wins) and to the
-/// typed env-key overlay. Replaces the raw `EnvOverlayMode` at the configuration system's boundary.
+/// One setting, applied identically to the Figment provider order for the by-key view and to the
+/// order the typed base is composed in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EnvPrecedence {
     /// Environment variables are read below the file: the file wins.
@@ -45,20 +45,6 @@ pub enum EnvPrecedence {
     Disabled,
 }
 
-impl EnvPrecedence {
-    /// The overlay flag the typed deserializer consumes for the same precedence.
-    //
-    // The remote Agent layer takes precedence over local environment values, so the environment
-    // fills only a nested slot that no higher-authority source supplied. Both file precedence modes
-    // use this rule; `Disabled` suppresses environment relocation entirely.
-    fn overlay_mode(self) -> EnvOverlayMode {
-        match self {
-            EnvPrecedence::Disabled => EnvOverlayMode::Disabled,
-            EnvPrecedence::AfterFile | EnvPrecedence::BeforeFile => EnvOverlayMode::Fallback,
-        }
-    }
-}
-
 /// Local configuration prepared before a runtime authority is selected.
 ///
 /// Retains a nested base for the typed path and a loader for the legacy by-key path. Both use the
@@ -67,7 +53,6 @@ pub struct LoadedConfiguration {
     loader: ConfigurationLoader,
     // Nested local base used for typed translation and Agent-layer merges.
     base: Value,
-    env: EnvPrecedence,
     // Strictly translated local snapshot exposed before authority selection and used by standalone
     // mode.
     local: SalukiConfiguration,
@@ -82,13 +67,8 @@ impl LoadedConfiguration {
     pub async fn load(path: impl AsRef<Path>, env: EnvPrecedence) -> Result<Self, Error> {
         let loader = build_loader(path.as_ref(), env)?;
         let base = build_base(path.as_ref(), env)?;
-        let local = translate_strict(&base, env.overlay_mode())?;
-        Ok(Self {
-            loader,
-            base,
-            env,
-            local,
-        })
+        let local = translate_strict(&base)?;
+        Ok(Self { loader, base, local })
     }
 
     /// Returns the typed snapshot of the local file and environment.
@@ -119,7 +99,7 @@ impl LoadedConfiguration {
         let (compat_tx, compat_rx) = mpsc::channel(COMPAT_FORWARD_CHANNEL_SIZE);
         let compat_map = self.loader.with_dynamic_configuration(compat_rx).into_generic().await?;
 
-        ConfigurationSystem::connected(config_stream, compat_tx, compat_map, self.base, self.env.overlay_mode()).await
+        ConfigurationSystem::connected(config_stream, compat_tx, compat_map, self.base).await
     }
 
     /// Uses the translated local configuration as the runtime authority.
@@ -274,6 +254,46 @@ mod tests {
         assert!(matches!(result, Err(Error::Translate { .. })));
     }
 
+    #[tokio::test]
+    async fn a_saluki_only_environment_variable_reaches_the_model() {
+        // End to end for a key the Datadog schema does not declare: `DD_DATA_PLANE_STANDALONE_MODE`
+        // is read at its canonical path by the Saluki-only reader and seeds `control.standalone_mode`.
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_saluki_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_DATA_PLANE_STANDALONE_MODE", "true");
+
+        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)
+            .await
+            .expect("local sources load");
+
+        std::env::remove_var("DD_DATA_PLANE_STANDALONE_MODE");
+        std::fs::remove_file(&path).ok();
+        assert!(loaded.local().control.standalone_mode);
+    }
+
+    #[tokio::test]
+    async fn a_nested_datadog_environment_variable_reaches_the_by_key_view() {
+        // `DD_PROXY_HTTP` names a nested key, which Figment's prefix scan cannot place. The
+        // schema-driven provider resolves it, so the by-key view serves it at `proxy.http`.
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_bykey_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_PROXY_HTTP", "http://proxy.example.com");
+
+        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)
+            .await
+            .expect("local sources load");
+        let raw = loaded.raw_config();
+
+        std::env::remove_var("DD_PROXY_HTTP");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            raw.try_get_typed::<String>("proxy.http").expect("key reads"),
+            Some("http://proxy.example.com".to_string())
+        );
+    }
+
     #[test]
     fn build_base_rejects_a_malformed_environment_value() {
         let _guard = test_env_lock();
@@ -296,7 +316,7 @@ mod tests {
         std::env::set_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES", "12MiB");
 
         let base = build_base(&path, EnvPrecedence::AfterFile).expect("human-readable byte size builds");
-        let config = translate_strict(&base, EnvOverlayMode::Fallback).expect("human-readable byte size translates");
+        let config = translate_strict(&base).expect("human-readable byte size translates");
 
         std::env::remove_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES");
         std::fs::remove_file(&path).ok();

@@ -1,5 +1,6 @@
 pub mod apm;
 pub mod config;
+pub(crate) mod data_plane;
 pub mod endpoints;
 pub mod io;
 pub mod middleware;

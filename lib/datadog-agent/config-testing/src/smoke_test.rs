@@ -1,4 +1,4 @@
-use figment::Provider;
+use datadog_agent_config::DatadogEnvProvider;
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use serde::Serialize;
 use serde_json::json;
@@ -104,40 +104,34 @@ fn dd_env_var_to_test_key(env_var: &str) -> &str {
     env_var.strip_prefix("DD_").unwrap_or(env_var)
 }
 
-async fn make_config_from_file<P, F>(
-    file_values: serde_json::Value, key_aliases: &'static [(&'static str, &'static str)], provider_factory: F,
-) -> GenericConfiguration
-where
-    P: Provider + Send + Sync + 'static,
-    F: FnOnce(Vec<(String, String)>) -> P,
-{
-    let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
-        Some(file_values),
-        None,
-        false,
-        key_aliases,
-        provider_factory,
-    )
-    .await;
-    cfg
+async fn make_config_from_file(file_values: serde_json::Value) -> GenericConfiguration {
+    make_config(file_values, &[], Vec::new()).await
 }
 
-async fn make_config_from_env<P, F>(
-    base_file_values: &serde_json::Value, env_vars: &[(String, String)],
-    key_aliases: &'static [(&'static str, &'static str)], provider_factory: F,
-) -> GenericConfiguration
-where
-    P: Provider + Send + Sync + 'static,
-    F: FnOnce(Vec<(String, String)>) -> P,
-{
-    let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
-        Some(base_file_values.clone()),
-        Some(env_vars),
-        false,
-        key_aliases,
-        provider_factory,
-    )
-    .await;
+/// Builds a configuration from `base_file_values` plus one environment variable.
+///
+/// `env_var` is the variable's real name, as the Datadog Agent spells it. It is fed to
+/// [`DatadogEnvProvider`] under that name so the schema-driven reader can resolve it to the key's
+/// canonical path, exactly as it does in production. The same value is additionally handed to the
+/// test loader's prefix-scanning environment provider under the `DD_`-stripped name, which is the
+/// only spelling that provider can consume.
+async fn make_config_from_env(
+    base_file_values: &serde_json::Value, env_var: &str, value: &str,
+) -> GenericConfiguration {
+    let scanned = [(dd_env_var_to_test_key(env_var).to_string(), value.to_string())];
+    let modeled = vec![(env_var.to_string(), value.to_string())];
+    make_config(base_file_values.clone(), &scanned, modeled).await
+}
+
+async fn make_config(
+    file_values: serde_json::Value, scanned_env_vars: &[(String, String)], modeled_env_vars: Vec<(String, String)>,
+) -> GenericConfiguration {
+    let (cfg, _) =
+        ConfigurationLoader::for_tests_with_provider_factory(Some(file_values), Some(scanned_env_vars), false, |_| {
+            DatadogEnvProvider::from_env_vars(modeled_env_vars)
+                .expect("test environment values should decode into their declared shapes")
+        })
+        .await;
     cfg
 }
 
@@ -155,16 +149,13 @@ where
 /// **Full field coverage**: loading the struct with all supported keys set simultaneously must
 /// produce a struct where every serialized leaf field differs from the default.
 ///
-/// `key_aliases` and `provider_factory` configure the test config loader. The provider factory receives the
-/// environment pairs configured for each test case, so it can avoid reading unrelated ambient process variables.
-pub async fn run_config_smoke_tests<T, Factory, P, PF>(
+/// Environment values are supplied per test case rather than read from the ambient process
+/// environment, so an unrelated variable set by the surrounding shell cannot influence a result.
+pub async fn run_config_smoke_tests<T, Factory>(
     struct_name: &'static str, non_config_fields: &[&str], base_config: serde_json::Value, config_factory: Factory,
-    key_aliases: &'static [(&'static str, &'static str)], provider_factory: PF,
 ) where
     T: PartialEq + Serialize,
     Factory: Fn(GenericConfiguration) -> T,
-    P: Provider + Send + Sync + 'static,
-    PF: Fn(Vec<(String, String)>) -> P,
 {
     let keys: Vec<&'static SalukiAnnotation> = SUPPORTED_ANNOTATIONS
         .iter()
@@ -172,8 +163,7 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
         .filter(|a| a.used_by.contains(&struct_name))
         .collect();
 
-    let default_struct =
-        config_factory(make_config_from_file(base_config.clone(), key_aliases, &provider_factory).await);
+    let default_struct = config_factory(make_config_from_file(base_config.clone()).await);
     let mut failures: Vec<String> = Vec::new();
 
     for annotation in &keys {
@@ -183,11 +173,10 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
             None => effective_test_value(annotation),
         };
         let reference = config_factory(
-            make_config_from_file(
-                merge_over_base(&base_config, yaml_path_to_json(canonical_path, injected_value.clone())),
-                key_aliases,
-                &provider_factory,
-            )
+            make_config_from_file(merge_over_base(
+                &base_config,
+                yaml_path_to_json(canonical_path, injected_value.clone()),
+            ))
             .await,
         );
 
@@ -202,11 +191,10 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
 
         for yaml_path in annotation.additional_yaml_paths {
             let from_path = config_factory(
-                make_config_from_file(
-                    merge_over_base(&base_config, yaml_path_to_json(yaml_path, injected_value.clone())),
-                    key_aliases,
-                    &provider_factory,
-                )
+                make_config_from_file(merge_over_base(
+                    &base_config,
+                    yaml_path_to_json(yaml_path, injected_value.clone()),
+                ))
                 .await,
             );
             if from_path != reference {
@@ -218,12 +206,8 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
         }
 
         for env_var in annotation.effective_env_vars() {
-            let env_pairs = [(
-                dd_env_var_to_test_key(env_var).to_string(),
-                json_value_to_env_string(&injected_value, annotation.value_type()),
-            )];
-            let from_env =
-                config_factory(make_config_from_env(&base_config, &env_pairs, key_aliases, &provider_factory).await);
+            let value = json_value_to_env_string(&injected_value, annotation.value_type());
+            let from_env = config_factory(make_config_from_env(&base_config, env_var, &value).await);
             if from_env != reference {
                 failures.push(format!(
                     "env var '{}' produced a different struct than yaml_path '{}'",
@@ -239,14 +223,10 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
     {
         for yaml_path in annotation.all_yaml_paths() {
             let with_foreign = config_factory(
-                make_config_from_file(
-                    merge_over_base(
-                        &base_config,
-                        yaml_path_to_json(yaml_path, test_json_value(annotation.value_type())),
-                    ),
-                    key_aliases,
-                    &provider_factory,
-                )
+                make_config_from_file(merge_over_base(
+                    &base_config,
+                    yaml_path_to_json(yaml_path, test_json_value(annotation.value_type())),
+                ))
                 .await,
             );
             if with_foreign != default_struct {
@@ -266,7 +246,7 @@ pub async fn run_config_smoke_tests<T, Factory, P, PF>(
         };
         saluki_config::upsert(&mut all_vals, annotation.yaml_path(), val);
     }
-    let all_keys_struct = config_factory(make_config_from_file(all_vals, key_aliases, &provider_factory).await);
+    let all_keys_struct = config_factory(make_config_from_file(all_vals).await);
     let full_map = serde_json::to_value(&all_keys_struct).expect("failed to serialize struct with all keys set");
     let default_map = serde_json::to_value(&default_struct).expect("failed to serialize default struct");
     let mut unchanged = Vec::new();
@@ -323,10 +303,6 @@ mod tests {
     /// Struct name that no annotation's `used_by` references, so every registered key is "foreign" to it.
     const UNREGISTERED_STRUCT: &str = "NonExistentConfiguration";
 
-    fn empty_provider(_env_vars: Vec<(String, String)>) -> figment::providers::Serialized<serde_json::Value> {
-        figment::providers::Serialized::defaults(json!({}))
-    }
-
     fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         payload
             .downcast_ref::<String>()
@@ -346,8 +322,6 @@ mod tests {
                 &[],
                 json!({}),
                 |_cfg: GenericConfiguration| json!({}),
-                &[],
-                empty_provider,
             )
             .await
         })
@@ -367,14 +341,9 @@ mod tests {
         // default. A factory that reflects the entire merged config changes for any foreign key, violating
         // the unsupported-key guarantee.
         let outcome = tokio::spawn(async {
-            run_config_smoke_tests(
-                UNREGISTERED_STRUCT,
-                &[],
-                json!({}),
-                |cfg: GenericConfiguration| cfg.as_typed::<serde_json::Value>().unwrap_or(serde_json::Value::Null),
-                &[],
-                empty_provider,
-            )
+            run_config_smoke_tests(UNREGISTERED_STRUCT, &[], json!({}), |cfg: GenericConfiguration| {
+                cfg.as_typed::<serde_json::Value>().unwrap_or(serde_json::Value::Null)
+            })
             .await
         })
         .await;
@@ -397,8 +366,6 @@ mod tests {
                 &[],
                 json!({}),
                 |_cfg: GenericConfiguration| json!({ "phantom": "constant" }),
-                &[],
-                empty_provider,
             )
             .await
         })
@@ -417,14 +384,9 @@ mod tests {
         // A factory that ignores every (foreign) key and serializes no fields satisfies both the
         // unsupported-key and full-field-coverage guarantees for a struct with no registered keys, so the
         // harness returns without panicking.
-        run_config_smoke_tests(
-            UNREGISTERED_STRUCT,
-            &[],
-            json!({}),
-            |_cfg: GenericConfiguration| json!({}),
-            &[],
-            empty_provider,
-        )
+        run_config_smoke_tests(UNREGISTERED_STRUCT, &[], json!({}), |_cfg: GenericConfiguration| {
+            json!({})
+        })
         .await;
     }
 }
