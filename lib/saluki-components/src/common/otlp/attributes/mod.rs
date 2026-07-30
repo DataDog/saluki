@@ -29,6 +29,7 @@ static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLoc
     m.insert(DEPLOYMENT_ENVIRONMENT_NAME, "env");
     m.insert(SERVICE_NAME, "service");
     m.insert(SERVICE_VERSION, "version");
+    m.insert(SERVICE_INSTANCE_ID, "service.instance.id");
     m
 });
 
@@ -342,6 +343,38 @@ mod tests {
         assert!(has(&tags, "service:api"));
         assert!(!has(&tags, "service.name:api"));
         assert!(!has(&tags, "custom.resource.attribute:present"));
+    }
+
+    #[test]
+    fn mapped_mode_maps_service_instance_id_and_environment_aliases() {
+        let attributes = vec![
+            attr("service.version", Value::StringValue("1.2.3".into())),
+            attr("service.instance.id", Value::StringValue("instance-42".into())),
+            attr("deployment.environment.name", Value::StringValue("production".into())),
+            attr("deployment.environment", Value::StringValue("legacy".into())),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(has(&tags, "version:1.2.3"));
+        assert!(has(&tags, "service.instance.id:instance-42"));
+        assert!(has(&tags, "env:production"));
+        assert!(has(&tags, "env:legacy"));
+    }
+
+    #[test]
+    fn mapped_mode_skips_empty_core_mapping_values() {
+        let attributes = vec![
+            attr("service.name", Value::StringValue(String::new())),
+            attr("service.version", Value::StringValue(String::new())),
+            attr("service.instance.id", Value::StringValue(String::new())),
+            attr("deployment.environment.name", Value::StringValue(String::new())),
+            attr("deployment.environment", Value::StringValue(String::new())),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(tags.is_empty());
     }
 
     #[test]

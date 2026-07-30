@@ -1,0 +1,21 @@
+# OTLP correctness test configuration for semantic core resource attributes.
+hostname: "correctness-testing"
+
+# Dummy API key.
+api_key: dummy-api-key-correctness-testing
+
+# We have to specifically configure the health port to use.
+health_port: 5555
+
+# Point ourselves at the datadog-intake service.
+dd_url: "http://datadog-intake:2049"
+
+otlp_config:
+  metrics:
+    # Exercise only recognized semantic mappings, not raw resource attributes.
+    resource_attributes_as_tags: false
+  receiver:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:54317"
+        max_recv_msg_size_mib: 4
