@@ -15,6 +15,9 @@ pub struct SharedConfiguration {
     /// Global and host-level tagging.
     pub tags: GlobalTags,
 
+    /// Tags attached to basic liveness telemetry.
+    pub basic_telemetry: BasicTelemetry,
+
     /// Metrics-encoder settings reused across the metrics-emitting pipelines.
     pub metrics_encoding: MetricsEncoding,
 
@@ -207,6 +210,17 @@ pub struct Forwarder {
 pub struct GlobalTags {
     /// How long, after startup, host tags remain attached to emitted data.
     pub expected_tags_duration: Duration,
+}
+
+/// Tagging options for basic liveness telemetry.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct BasicTelemetry {
+    /// Whether liveness signals include the process container's low-cardinality tags.
+    ///
+    /// Defaults to `false`. Enable this for containerized deployments that need to associate basic
+    /// telemetry with the running container. If the container cannot be resolved, liveness signals
+    /// are emitted without these tags.
+    pub add_container_tags: bool,
 }
 
 /// Metrics-encoder settings reused across the metrics-emitting pipelines (DogStatsD, checks, and

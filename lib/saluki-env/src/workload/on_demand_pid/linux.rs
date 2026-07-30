@@ -8,7 +8,7 @@ use stringtheory::interning::{GenericMapInterner, Interner as _};
 use tokio::time::sleep;
 use tracing::{debug, trace};
 
-use crate::workload::helpers::cgroups::{CgroupsConfiguration, CgroupsReader};
+use crate::workload::helpers::cgroups::{get_self_container_id, CgroupsConfiguration, CgroupsReader};
 use crate::{features::FeatureDetector, workload::EntityId};
 
 #[static_metrics(prefix = pid_resolver)]
@@ -25,6 +25,7 @@ const DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION: Duration = Duration::from_secs(30);
 
 pub struct ResolverImpl {
     cgroups_reader: CgroupsReader,
+    interner: GenericMapInterner,
     pid_mappings_cache: PIDCache,
 }
 
@@ -58,6 +59,7 @@ impl ResolverImpl {
 
         Ok(Self {
             cgroups_reader,
+            interner,
             pid_mappings_cache: cache_builder.build(),
         })
     }
@@ -94,6 +96,11 @@ impl ResolverImpl {
                 None
             }
         }
+    }
+
+    /// Resolves the current process's container entity from local cgroup membership.
+    pub fn resolve_self_container(&self) -> Option<EntityId> {
+        get_self_container_id(&self.interner).map(EntityId::Container)
     }
 }
 

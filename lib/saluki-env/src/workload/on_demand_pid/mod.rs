@@ -70,4 +70,17 @@ impl OnDemandPIDResolver {
 
         resolved
     }
+
+    /// Resolves the current process's container entity from local cgroup membership.
+    ///
+    /// On non-Linux platforms, or when the process is not in a recognizable container cgroup, this returns `None`.
+    pub fn resolve_self_container(&self) -> Option<EntityId> {
+        #[cfg(target_os = "linux")]
+        let resolved = self.inner.resolve_self_container();
+
+        #[cfg(not(target_os = "linux"))]
+        let resolved = None;
+
+        resolved
+    }
 }

@@ -45,8 +45,8 @@ use crate::{
         apm_onboarding::ApmOnboardingConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
-        ottl_filter_processor::OttlFilterConfiguration, ottl_transform_processor::OttlTransformConfiguration,
-        tag_filterlist::TagFilterlistConfiguration,
+        liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
     },
     internal::{
         create_internal_supervisor, logging::LoggingConfigurationTranslator, remote_agent::RemoteAgentBootstrap,
@@ -393,7 +393,8 @@ async fn create_topology(
     // the baseline pipelines are required.
     //
     // Notably, we _don't_ need either of these if all we're doing is running the OTLP pipeline in proxy mode, which
-    // is the only reason we're differentiating here.
+    // is the only reason we're differentiating here. Connected mode is the exception: liveness deliberately
+    // provisions metric and service-check output paths even for proxy-only topologies.
     if dp_config.metrics_pipeline_required()
         || dp_config.logs_pipeline_required()
         || dp_config.events_pipeline_required()
@@ -426,6 +427,13 @@ async fn create_topology(
         add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
     }
 
+    // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
+    // OTLP proxy mode must not construct liveness or output paths that it does not otherwise need.
+    if !dp_config.standalone_mode() {
+        let add_container_tags = config_system.config().shared.basic_telemetry.add_container_tags;
+        add_liveness_source_to_blueprint(&mut blueprint, env_provider, add_container_tags).await?;
+    }
+
     // Now we move on to our actual data pipelines.
     if dp_config.checks().enabled() {
         add_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
@@ -443,6 +451,21 @@ async fn create_topology(
     }
 
     Ok((blueprint, control_surfaces))
+}
+
+const LIVENESS_METRICS_DESTINATION: &str = "metrics_enrich";
+
+async fn add_liveness_source_to_blueprint(
+    blueprint: &mut TopologyBlueprint, env_provider: &ADPEnvironmentProvider, add_container_tags: bool,
+) -> Result<(), GenericError> {
+    let liveness_config = LivenessConfiguration::from_environment_provider(env_provider, add_container_tags).await?;
+
+    blueprint
+        .add_source("liveness_in", liveness_config)?
+        .connect_components("liveness_in.metrics", LIVENESS_METRICS_DESTINATION)?
+        .connect_components("liveness_in.service_checks", "dd_service_checks_encode")?;
+
+    Ok(())
 }
 
 async fn add_checks_pipeline_to_blueprint(

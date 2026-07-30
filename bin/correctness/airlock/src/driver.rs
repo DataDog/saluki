@@ -11,7 +11,7 @@ use bollard::{
     exec::{CreateExecOptions, StartExecResults},
     models::{
         ContainerCreateBody, ContainerStateStatusEnum, EndpointSettings, HealthConfig, HealthStatusEnum, HostConfig,
-        Ipam, NetworkConnectRequest, NetworkCreateRequest, VolumeCreateRequest,
+        HostConfigCgroupnsModeEnum, Ipam, NetworkConnectRequest, NetworkCreateRequest, VolumeCreateRequest,
     },
     query_parameters::{CreateContainerOptionsBuilder, CreateImageOptions, ListContainersOptionsBuilder, LogsOptions},
     Docker,
@@ -75,6 +75,7 @@ pub struct DriverConfig {
     healthcheck: Option<HealthConfig>,
     exposed_ports: Vec<(&'static str, u16)>,
     container_os: ContainerOs,
+    host_cgroup_namespace: bool,
     /// Additional named Docker volume mounts, in `volume_name:/container/path` format.
     ///
     /// Unlike bind mounts specified via [`with_bind_mount`][Self::with_bind_mount], these reference
@@ -164,7 +165,8 @@ impl DriverConfig {
             .with_entrypoint(config.entrypoint)
             .with_command(config.command)
             .with_env_vars(config.additional_env_vars)
-            .with_container_os(config.container_os);
+            .with_container_os(config.container_os)
+            .with_host_cgroup_namespace(config.host_cgroup_namespace);
 
         Ok(driver_config)
     }
@@ -181,6 +183,7 @@ impl DriverConfig {
             healthcheck: None,
             exposed_ports: vec![],
             container_os: ContainerOs::Linux,
+            host_cgroup_namespace: false,
             additional_volume_mounts: vec![],
             network_aliases: vec![],
             additional_networks: vec![],
@@ -324,6 +327,12 @@ impl DriverConfig {
     /// health checks are added so OS-specific defaults are appended consistently.
     pub fn with_container_os(mut self, container_os: ContainerOs) -> Self {
         self.container_os = container_os;
+        self
+    }
+
+    /// Configures whether a Linux target joins the Docker host's cgroup namespace.
+    pub fn with_host_cgroup_namespace(mut self, host_cgroup_namespace: bool) -> Self {
+        self.host_cgroup_namespace = host_cgroup_namespace;
         self
     }
 
@@ -763,6 +772,8 @@ impl Driver {
             ContainerOs::Linux => Some("host".to_string()),
             ContainerOs::Windows => None,
         };
+        let cgroupns_mode = (self.config.container_os == ContainerOs::Linux && self.config.host_cgroup_namespace)
+            .then_some(HostConfigCgroupnsModeEnum::HOST);
 
         let container_config = ContainerCreateBody {
             hostname: Some(self.config.driver_id.to_string()),
@@ -775,6 +786,7 @@ impl Driver {
                 network_mode: Some(self.isolation_group_name.clone()),
                 publish_all_ports,
                 pid_mode,
+                cgroupns_mode,
                 ..Default::default()
             }),
             healthcheck: self.config.healthcheck.clone(),
@@ -1317,11 +1329,29 @@ mod tests {
             command: vec![],
             additional_env_vars: vec![],
             container_os: ContainerOs::Windows,
+            host_cgroup_namespace: false,
         };
 
         let config = DriverConfig::target("target", target).await.unwrap();
 
         assert_eq!(config.container_os, ContainerOs::Windows);
+        assert!(!config.host_cgroup_namespace);
+    }
+
+    #[tokio::test]
+    async fn target_config_preserves_host_cgroup_namespace() {
+        let target = TargetConfig {
+            image: "example:latest".to_string(),
+            entrypoint: vec![],
+            command: vec![],
+            additional_env_vars: vec![],
+            container_os: ContainerOs::Linux,
+            host_cgroup_namespace: true,
+        };
+
+        let config = DriverConfig::target("target", target).await.unwrap();
+
+        assert!(config.host_cgroup_namespace);
     }
 
     #[test]

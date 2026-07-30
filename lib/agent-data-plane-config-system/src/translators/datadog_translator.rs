@@ -368,6 +368,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.autoscaling_failover.metrics = value;
     }
 
+    fn consume_basic_telemetry_add_container_tags(&mut self, value: bool) {
+        self.config.shared.basic_telemetry.add_container_tags = value;
+    }
+
     fn consume_bind_host(&mut self, value: String) {
         self.config.domains.dogstatsd.listeners.bind_host = non_empty(value);
     }
@@ -1201,6 +1205,35 @@ mod tests {
         );
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
+    }
+
+    #[test]
+    fn basic_telemetry_container_tags_default_and_translation() {
+        let defaulted: DatadogConfiguration = serde_json::from_value(json!({})).expect("datadog source deserializes");
+        assert_eq!(
+            serde_json::to_value(&defaulted).expect("source serializes")["basic_telemetry_add_container_tags"],
+            false
+        );
+
+        let (config, errors) = DatadogTranslator::new(&defaulted).translate();
+        assert!(errors.is_none());
+        assert_eq!(
+            serde_json::to_value(&config).expect("typed configuration serializes")["shared"]["basic_telemetry"]
+                ["add_container_tags"],
+            false
+        );
+
+        let enabled: DatadogConfiguration = serde_json::from_value(json!({
+            "basic_telemetry_add_container_tags": true,
+        }))
+        .expect("datadog source deserializes");
+        let (config, errors) = DatadogTranslator::new(&enabled).translate();
+        assert!(errors.is_none());
+        assert_eq!(
+            serde_json::to_value(&config).expect("typed configuration serializes")["shared"]["basic_telemetry"]
+                ["add_container_tags"],
+            true
+        );
     }
 
     #[test]
