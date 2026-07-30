@@ -22,8 +22,14 @@ container:
   host_cgroup_namespace: true
   files:
     - "run_liveness_test.py:/liveness-container-tags/run_liveness_test.py"
+    - "test_run_liveness_test.py:/liveness-container-tags/test_run_liveness_test.py"
 
 procedure:
+  - action: target_exec
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/liveness-container-tags/test_run_liveness_test.py"
+    timeout: 30s
   - assertion: file_contains
     path: "/tmp/adp-liveness-running-validated"
     pattern: "validated"
