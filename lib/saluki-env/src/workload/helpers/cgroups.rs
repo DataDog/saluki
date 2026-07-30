@@ -553,6 +553,17 @@ mod tests {
     }
 
     #[test]
+    fn does_not_resolve_self_container_from_non_container_cgroup_fixture() {
+        let cgroup_lines = include_str!("testdata/non-container-proc-self-cgroup")
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+
+        assert_eq!(get_container_id_from_cgroup_lines(&cgroup_lines, &interner), None);
+    }
+
+    #[test]
     fn extract_container_id_cri_containerd() {
         let expected_container_id =
             MetaString::from("06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe");

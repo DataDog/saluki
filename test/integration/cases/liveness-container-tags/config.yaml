@@ -1,0 +1,39 @@
+type: integration
+name: "liveness-container-tags"
+description: "Verifies connected ADP forwards container-tagged liveness telemetry to intake"
+timeout: 120s
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-liveness-container-tags"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_BASIC_TELEMETRY_ADD_CONTAINER_TAGS: "true"
+  DD_DD_URL: "http://127.0.0.1:18080"
+  DD_USE_V2_API_SERIES: "false"
+  DD_SERIALIZER_COMPRESSOR_KIND: "gzip"
+
+container:
+  entrypoint:
+    - "/opt/datadog-agent/embedded/bin/python3"
+    - "/liveness-container-tags/run_liveness_test.py"
+  files:
+    - "run_liveness_test.py:/liveness-container-tags/run_liveness_test.py"
+
+procedure:
+  - assertion: file_contains
+    path: "/tmp/adp-liveness-running-validated"
+    pattern: "validated"
+    timeout: 60s
+  - assertion: file_contains
+    path: "/tmp/adp-liveness-up-validated"
+    pattern: "validated"
+    timeout: 60s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s
