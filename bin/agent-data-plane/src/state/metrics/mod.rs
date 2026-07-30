@@ -568,4 +568,104 @@ mod tests {
         assert_eq!(find("transactions.retries"), Some("Transaction retry count"));
         assert_eq!(find("transactions.requeued"), Some("Transaction requeue count"));
     }
+
+    #[test]
+    fn rar_telemetry_remaps_supported_dogstatsd_client_telemetry_metrics_as_gauges() {
+        let metrics = [
+            (
+                "adp.dogstatsd_client_telemetry_metrics",
+                "datadog.dogstatsd.client.metrics",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_metrics_by_type",
+                "datadog.dogstatsd.client.metrics_by_type",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_events",
+                "datadog.dogstatsd.client.events",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_service_checks",
+                "datadog.dogstatsd.client.service_checks",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_metric_dropped_on_receive",
+                "datadog.dogstatsd.client.metric_dropped_on_receive",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_bytes_sent",
+                "datadog.dogstatsd.client.bytes_sent",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_bytes_dropped",
+                "datadog.dogstatsd.client.bytes_dropped",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_bytes_dropped_queue",
+                "datadog.dogstatsd.client.bytes_dropped_queue",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_bytes_dropped_writer",
+                "datadog.dogstatsd.client.bytes_dropped_writer",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_packets_sent",
+                "datadog.dogstatsd.client.packets_sent",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_packets_dropped",
+                "datadog.dogstatsd.client.packets_dropped",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_packets_dropped_queue",
+                "datadog.dogstatsd.client.packets_dropped_queue",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_packets_dropped_writer",
+                "datadog.dogstatsd.client.packets_dropped_writer",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_aggregated_context",
+                "datadog.dogstatsd.client.aggregated_context",
+            ),
+            (
+                "adp.dogstatsd_client_telemetry_aggregated_context_by_type",
+                "datadog.dogstatsd.client.aggregated_context_by_type",
+            ),
+        ]
+        .into_iter()
+        .map(|(internal_name, _)| {
+            Event::Metric(Metric::gauge(
+                Context::from_static_parts(
+                    internal_name,
+                    &["component_id:dsd_client_telemetry_out", "component_type:destination"],
+                ),
+                7.0,
+            ))
+        })
+        .collect();
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        for exported_name in [
+            "datadog__dogstatsd__client__metrics",
+            "datadog__dogstatsd__client__metrics_by_type",
+            "datadog__dogstatsd__client__events",
+            "datadog__dogstatsd__client__service_checks",
+            "datadog__dogstatsd__client__metric_dropped_on_receive",
+            "datadog__dogstatsd__client__bytes_sent",
+            "datadog__dogstatsd__client__bytes_dropped",
+            "datadog__dogstatsd__client__bytes_dropped_queue",
+            "datadog__dogstatsd__client__bytes_dropped_writer",
+            "datadog__dogstatsd__client__packets_sent",
+            "datadog__dogstatsd__client__packets_dropped",
+            "datadog__dogstatsd__client__packets_dropped_queue",
+            "datadog__dogstatsd__client__packets_dropped_writer",
+            "datadog__dogstatsd__client__aggregated_context",
+            "datadog__dogstatsd__client__aggregated_context_by_type",
+        ] {
+            assert!(output.contains(&format!("# TYPE {exported_name} gauge")), "{output}");
+            assert!(output.contains(&format!("{exported_name} 7")), "{output}");
+        }
+    }
 }

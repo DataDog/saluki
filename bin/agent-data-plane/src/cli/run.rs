@@ -16,7 +16,9 @@ use saluki_app::{
 use saluki_components::{
     config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
     decoders::otlp::OtlpDecoderConfiguration,
-    destinations::{DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration},
+    destinations::{
+        DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
+    },
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
         DatadogLogsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration,
@@ -771,6 +773,7 @@ async fn add_dsd_pipeline_to_blueprint(
         .add_transform("events_enrich", events_enrich_config)?
         .add_transform("service_checks_enrich", service_checks_enrich_config)?
         .add_destination("dsd_stats_out", dsd_stats_config)?
+        .add_destination("dsd_client_telemetry_out", DogStatsDClientTelemetryConfiguration)?
         // Metrics.
         .connect_components_in_order([
             "dsd_in.metrics",
@@ -790,7 +793,9 @@ async fn add_dsd_pipeline_to_blueprint(
             "dd_service_checks_encode",
         ])?
         // DogStatsD Stats.
-        .connect_components("dsd_in.metrics", "dsd_stats_out")?;
+        .connect_components("dsd_in.metrics", "dsd_stats_out")?
+        // Post-aggregation client telemetry for RAR/COAT.
+        .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
 
     if dsd_debug_log_config.enabled() {
         blueprint

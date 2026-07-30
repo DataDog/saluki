@@ -140,5 +140,68 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         .with_original_tags(["message_type", "origin"])
         .with_additional_tags(["state:error"])
         .with_help_text("Count of service checks/events/metrics processed by dogstatsd"),
+        // DogStatsD client telemetry. These gauges mirror the post-aggregation metric stream without client-provided
+        // dimensions, so COAT receives the same values that ADP sends to customer intake while retaining bounded
+        // cardinality.
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_metrics",
+            "datadog.dogstatsd.client.metrics",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_metrics_by_type",
+            "datadog.dogstatsd.client.metrics_by_type",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_events",
+            "datadog.dogstatsd.client.events",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_service_checks",
+            "datadog.dogstatsd.client.service_checks",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_metric_dropped_on_receive",
+            "datadog.dogstatsd.client.metric_dropped_on_receive",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_bytes_sent",
+            "datadog.dogstatsd.client.bytes_sent",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_bytes_dropped",
+            "datadog.dogstatsd.client.bytes_dropped",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_bytes_dropped_queue",
+            "datadog.dogstatsd.client.bytes_dropped_queue",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_bytes_dropped_writer",
+            "datadog.dogstatsd.client.bytes_dropped_writer",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_packets_sent",
+            "datadog.dogstatsd.client.packets_sent",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_packets_dropped",
+            "datadog.dogstatsd.client.packets_dropped",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_packets_dropped_queue",
+            "datadog.dogstatsd.client.packets_dropped_queue",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_packets_dropped_writer",
+            "datadog.dogstatsd.client.packets_dropped_writer",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_aggregated_context",
+            "datadog.dogstatsd.client.aggregated_context",
+        ),
+        RemapperRule::by_name(
+            "adp.dogstatsd_client_telemetry_aggregated_context_by_type",
+            "datadog.dogstatsd.client.aggregated_context_by_type",
+        ),
     ]
 }
