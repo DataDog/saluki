@@ -92,6 +92,7 @@ dependencies = [
  "arc-swap",
  "bytesize",
  "datadog-agent-config",
+ "figment",
  "saluki-config",
  "serde",
  "serde_json",

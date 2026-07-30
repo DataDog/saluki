@@ -8,14 +8,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use agent_data_plane_config_system::EnvironmentProvider;
 // Pull in the Antithesis coverage-instrumentation runtime shim only when
 // building for antithesis. Load-baring: equired to avoid the shim being dropped
 // as unused.
 #[cfg(feature = "antithesis")]
 use antithesis_instrumentation as _;
 use datadog_agent_commons::platform::PlatformSettings;
-// TODO: remove after migration to typed config; bootstrap still feeds legacy flat-key consumers.
-use datadog_agent_config::{DatadogRemapper, KEY_ALIASES};
 use metrics::Level;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
@@ -143,14 +142,20 @@ fn initialize_antithesis() {
 /// variables.
 fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<ConfigurationLoader, GenericError> {
     let loaded = ConfigurationLoader::default()
-        .with_key_aliases(KEY_ALIASES)
         .from_yaml(bootstrap_config_path)
         .error_context("Failed to load Datadog Agent configuration file during bootstrap.")
         .and_then(|loader| {
             loader
-                .add_providers([DatadogRemapper::new()])
                 .from_environment(PlatformSettings::get_env_var_prefix())
                 .error_context("Environment variable prefix should not be empty.")
+        })
+        .and_then(|loader| {
+            // Modeled keys are also contributed at their canonical (potentially nested) paths, so a
+            // consumer reading the Datadog Agent's own configuration shape sees environment values
+            // where it expects them.
+            let provider = EnvironmentProvider::new()
+                .map_err(|message| generic_error!("Failed to read configuration from the environment: {}", message))?;
+            Ok(loader.add_providers([provider]))
         });
     // A graceful config rejection exits 1 rather than crashing; classify that against a clean boot.
     saluki_antithesis::always_or_unreachable!(

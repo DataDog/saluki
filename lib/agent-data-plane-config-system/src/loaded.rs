@@ -9,14 +9,13 @@
 use std::path::Path;
 
 use agent_data_plane_config::SalukiConfiguration;
-use datadog_agent_config::apply_datadog_env;
-// TODO: remove after migration to typed config; these support the legacy flat-key loader.
-use datadog_agent_config::{DatadogRemapper, EnvOverlayMode, KEY_ALIASES};
+use datadog_agent_config::{apply_datadog_env, EnvOverlayMode};
 use saluki_config::dynamic::ConfigUpdate;
 use saluki_config::{ConfigurationLoader, GenericConfiguration};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
+use crate::env_provider::EnvironmentProvider;
 use crate::saluki_env_overlay;
 use crate::system::{translate_strict, ConfigurationSystem, Error};
 
@@ -177,37 +176,48 @@ fn drop_nulls(value: &mut Value) {
     }
 }
 
-/// Builds the by-key configuration view at the given precedence. File keys are normalized to the
-/// names used by environment variables, and later sources override earlier ones.
+/// Builds the by-key configuration view at the given precedence, with later sources overriding
+/// earlier ones.
+///
+/// Two environment providers are used together. [`ConfigurationLoader::from_environment`] scans the
+/// `DD_` prefix and contributes every variable as a flat key, which is what a key not covered by
+/// either source model needs. [`EnvironmentProvider`] then contributes the modeled keys at their
+/// canonical paths, so a nested key such as `proxy.http` is reachable in the shape the Datadog Agent
+/// itself uses. It sits at the higher precedence of the two because it knows a key's real shape,
+/// while the scanning provider can only guess from the variable's name.
 fn build_loader(path: &Path, env: EnvPrecedence) -> Result<ConfigurationLoader, Error> {
-    let loader = ConfigurationLoader::default().with_key_aliases(KEY_ALIASES);
+    let loader = ConfigurationLoader::default();
     let loader = match env {
         EnvPrecedence::AfterFile => loader
             .from_yaml(path)?
-            .add_providers([DatadogRemapper::new()])
-            .from_environment(ENV_VAR_PREFIX)?,
-        EnvPrecedence::BeforeFile => loader
-            .add_providers([DatadogRemapper::new()])
             .from_environment(ENV_VAR_PREFIX)?
+            .add_providers([schema_env_provider()?]),
+        EnvPrecedence::BeforeFile => loader
+            .from_environment(ENV_VAR_PREFIX)?
+            .add_providers([schema_env_provider()?])
             .from_yaml(path)?,
         EnvPrecedence::Disabled => loader.from_yaml(path)?,
     };
     Ok(loader)
 }
 
+/// Builds the schema-driven environment provider, reporting a malformed value the same way the typed
+/// base does.
+fn schema_env_provider() -> Result<EnvironmentProvider, Error> {
+    EnvironmentProvider::new().map_err(|message| Error::Base { message })
+}
+
 #[cfg(test)]
 mod tests {
     use bytesize::ByteSize;
+    use saluki_config::test_env_lock;
     use serde_json::json;
 
     use super::*;
 
-    // The environment is process-global; serialize the tests that mutate it.
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn build_base_composes_file_and_environment_by_precedence() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_build_base_{}.yaml", std::process::id()));
         std::fs::write(
             &path,
@@ -266,7 +276,7 @@ mod tests {
 
     #[test]
     fn build_base_rejects_a_malformed_environment_value() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_build_base_bad_{}.yaml", std::process::id()));
         std::fs::write(&path, "dogstatsd_port: 8125\n").unwrap();
         std::env::set_var("DD_DOGSTATSD_PORT", "not-a-number");
@@ -280,7 +290,7 @@ mod tests {
 
     #[test]
     fn build_base_accepts_a_human_readable_dogstatsd_interner_size() {
-        let _guard = ENV_MUTEX.lock().unwrap();
+        let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_build_base_interner_{}.yaml", std::process::id()));
         std::fs::write(&path, "{}\n").unwrap();
         std::env::set_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES", "12MiB");
