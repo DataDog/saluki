@@ -1,3 +1,27 @@
+"""Exercise container-tagged ADP liveness telemetry against local test doubles.
+
+The target container runs the real Core Agent and Agent Data Plane processes. It enables
+`basic_telemetry_add_container_tags` and shares the Docker host cgroup namespace so ADP can resolve
+its own container ID from `/proc/self/cgroup`.
+
+This fixture mocks two external services before starting `/bin/entrypoint.sh`:
+
+* A minimal Docker API on `DOCKER_HOST`. It exposes deterministic metadata only for the target's
+  cgroup-derived container ID. The Core Agent uses this API to populate its tagger; ADP receives
+  those tags through the normal remote-tagger stream. Inspect requests for any other container ID
+  return `404` so the fixture cannot hide an incorrect self-container lookup.
+* A local Datadog intake. It captures the real metric and service-check payloads forwarded by ADP.
+
+The test writes marker files only after it observes both ADP-specific liveness payloads. The running
+gauge must have the expected hostname, gauge value, current timestamp, version tag, and deterministic
+container/image and label-derived tags. The `up` service check must have the expected hostname, OK
+status, and the same container tags.
+
+This fixture does not emulate a complete Docker daemon or Datadog intake. It implements only the
+Docker routes currently needed for Core Agent self-container discovery and checks representative
+container tags rather than the full tag set, so unrelated runtime tags do not make the test brittle.
+"""
+
 import gzip
 import json
 import os
