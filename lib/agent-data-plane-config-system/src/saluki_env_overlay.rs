@@ -2,8 +2,8 @@
 //!
 //! This is the Saluki-only counterpart to `datadog_agent_config::apply_datadog_env`. The Datadog
 //! side drives a generated table of declared variable names; here there is no table and no alias. A
-//! Saluki-only key's environment name is its canonical path uppercased with the segments joined by
-//! underscores and a `DD_` prefix, so the nested slot and its environment form stay in lockstep with
+//! Saluki-only key's environment name is its canonical path in upper case, with the segments joined
+//! by underscores and a `DD_` prefix, so the nested slot and its environment form stay in lockstep with
 //! the struct by construction. The set of canonical paths is read straight off `SalukiOnly` (see the
 //! discovery section below), so it cannot drift from the fields the deserializer actually reads.
 

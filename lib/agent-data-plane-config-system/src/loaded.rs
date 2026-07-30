@@ -254,8 +254,18 @@ mod tests {
         assert!(matches!(result, Err(Error::Translate { .. })));
     }
 
-    #[tokio::test]
-    async fn a_saluki_only_environment_variable_reaches_the_model() {
+    // `LoadedConfiguration::load` is `async` only for symmetry with the rest of the API; it awaits
+    // nothing. The environment tests below drive it on a local runtime rather than with
+    // `#[tokio::test]`, so the blocking environment guard is never held across an await point.
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime builds")
+            .block_on(future)
+    }
+
+    #[test]
+    fn a_saluki_only_environment_variable_reaches_the_model() {
         // End to end for a key the Datadog schema does not declare: `DD_DATA_PLANE_STANDALONE_MODE`
         // is read at its canonical path by the Saluki-only reader and seeds `control.standalone_mode`.
         let _guard = test_env_lock();
@@ -263,17 +273,15 @@ mod tests {
         std::fs::write(&path, "{}\n").unwrap();
         std::env::set_var("DD_DATA_PLANE_STANDALONE_MODE", "true");
 
-        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)
-            .await
-            .expect("local sources load");
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
 
         std::env::remove_var("DD_DATA_PLANE_STANDALONE_MODE");
         std::fs::remove_file(&path).ok();
         assert!(loaded.local().control.standalone_mode);
     }
 
-    #[tokio::test]
-    async fn a_nested_datadog_environment_variable_reaches_the_by_key_view() {
+    #[test]
+    fn a_nested_datadog_environment_variable_reaches_the_by_key_view() {
         // `DD_PROXY_HTTP` names a nested key, which Figment's prefix scan cannot place. The
         // schema-driven provider resolves it, so the by-key view serves it at `proxy.http`.
         let _guard = test_env_lock();
@@ -281,9 +289,7 @@ mod tests {
         std::fs::write(&path, "{}\n").unwrap();
         std::env::set_var("DD_PROXY_HTTP", "http://proxy.example.com");
 
-        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)
-            .await
-            .expect("local sources load");
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
         let raw = loaded.raw_config();
 
         std::env::remove_var("DD_PROXY_HTTP");

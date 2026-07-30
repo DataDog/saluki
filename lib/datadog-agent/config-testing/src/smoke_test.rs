@@ -290,7 +290,7 @@ mod tests {
     //!
     //! We drive the negative cases against a struct name with no registered keys (so every registered key
     //! is "foreign") or an ignore-everything factory, rather than a real config type. Faithfully
-    //! reproducing a *passing* struct here would require the production env-var remapper, which lives in
+    //! reproducing a *passing* struct here would require a real component config type, which lives in
     //! `saluki-components` and isn't a dependency of this crate; the guarantee-1 passing path is therefore
     //! left to the real per-component smoke tests that call this harness.
 

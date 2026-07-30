@@ -1264,7 +1264,6 @@ version = "0.1.0"
 dependencies = [
  "datadog-agent-config",
  "datadog-agent-config-overlay-model",
- "figment",
  "indexmap",
  "saluki-config",
  "serde",
