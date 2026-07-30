@@ -2,7 +2,7 @@ use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
 use saluki_context::tags::TagSet;
 
 use super::{origin_id_from_attributes, tags_from_attributes, ResourceAttributeTagMode};
-use crate::common::otlp::util::{resource_to_source, Source};
+use crate::common::otlp::util::{resource_to_metric_source, Source};
 
 pub struct AttributeTranslator {}
 
@@ -21,9 +21,9 @@ impl AttributeTranslator {
         origin_id_from_attributes(attributes)
     }
 
-    pub fn resource_to_source(
+    pub fn resource_to_metric_source(
         &self, resource: &otlp_protos::opentelemetry::proto::resource::v1::Resource,
     ) -> Option<Source> {
-        resource_to_source(resource)
+        resource_to_metric_source(resource)
     }
 }
