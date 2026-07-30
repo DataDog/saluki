@@ -63,6 +63,13 @@ static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(||
     m
 });
 
+const APM_STATS_PAYLOAD_METRIC_NAME: &str = "dd.internal.stats.payload";
+
+fn is_non_apm_metric(metric: &OtlpMetric) -> bool {
+    !(RUNTIME_METRICS_MAPPINGS.contains_key(metric.name.as_str())
+        || metric.name == APM_STATS_PAYLOAD_METRIC_NAME && matches!(&metric.data, Some(OtlpMetricData::Sum(_))))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum DataType {
     Gauge,
@@ -467,6 +474,27 @@ impl OtlpMetricsTranslator {
         let mut resource_tags = self.metric_tags.clone();
         resource_tags.extend_from_shared(&resource_attribute_tags);
 
+        // Only consumes a source after seeing a metric that is neither an APM stats payload nor a
+        // runtime metric.
+        let seen_non_apm_metric = resource_metrics
+            .scope_metrics
+            .iter()
+            .flat_map(|scope_metrics| &scope_metrics.metrics)
+            .any(is_non_apm_metric);
+
+        // Fargate task ARNs are extracted as resource tags. Keep that tag only when the resource contains genuine
+        // telemetry metrics
+        if !seen_non_apm_metric
+            && matches!(
+                source.as_ref().map(|source| &source.kind),
+                Some(SourceKind::AwsEcsFargateKind)
+            )
+        {
+            let mut mutable_resource_tags = resource_tags.to_mutable();
+            mutable_resource_tags.remove_tags("task_arn");
+            resource_tags = mutable_resource_tags.into_shared();
+        }
+
         let host = match source {
             Some(Source {
                 kind: SourceKind::HostnameKind,
@@ -554,15 +582,6 @@ impl OtlpMetricsTranslator {
                 events.append(&mut translated_events);
             }
         }
-
-        // TODO: Handle source
-        // if let Some(source) = source {
-        //     if let SourceKind::AwsEcsFargateKind = source.kind {
-        //         let mut tag_set = TagSet::default();
-        //         tag_set.insert_tag(source.tag());
-        //         events.push(Event::new_with_kind(None, EventKind::Tags(tag_set.into_shared())));
-        //     }
-        // }
 
         metrics.metrics_received().increment(events.len() as u64);
 
@@ -1937,6 +1956,59 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), None);
+        assert_eq!(
+            metric
+                .context()
+                .tags()
+                .get_single_tag("task_arn")
+                .map(|tag| tag.value()),
+            Some(Some("arn:aws:ecs:region:account:task/task-id"))
+        );
+    }
+
+    #[test]
+    fn translate_metrics_omits_fargate_task_arn_for_runtime_metrics_and_apm_stats_payloads() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut resource_metrics = single_gauge_resource_metrics(None);
+        resource_metrics.resource = Some(otlp_protos::opentelemetry::proto::resource::v1::Resource {
+            attributes: [
+                ("aws.ecs.launchtype", "fargate"),
+                ("aws.ecs.task.arn", "arn:aws:ecs:region:account:task/task-id"),
+            ]
+            .into_iter()
+            .map(|(key, value)| OtlpKeyValue {
+                key: key.to_string(),
+                value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                    value: Some(
+                        otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value.to_string()),
+                    ),
+                }),
+            })
+            .collect(),
+            ..Default::default()
+        });
+        resource_metrics.scope_metrics[0].metrics[0].name = "process.runtime.go.goroutines".to_string();
+        resource_metrics.scope_metrics[0].metrics.push(OtlpMetric {
+            name: APM_STATS_PAYLOAD_METRIC_NAME.to_string(),
+            data: Some(OtlpMetricData::Sum(Sum::default())),
+            ..Default::default()
+        });
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        assert!(events.iter().all(|event| {
+            event
+                .try_as_metric()
+                .expect("metric event")
+                .context()
+                .tags()
+                .get_single_tag("task_arn")
+                .is_none()
+        }));
     }
 
     #[test]
