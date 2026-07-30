@@ -250,7 +250,7 @@ fn kubernetes_hostname(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     })
 }
 
-/// Resolves an unsanitized hostname from resource attributes.
+/// Resolves an unfiltered hostname from resource attributes.
 fn unsanitized_hostname_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     if let Some(hostname) = get_string_attribute(attributes, ATTRIBUTE_HOST) {
         return Some(hostname.to_string());
