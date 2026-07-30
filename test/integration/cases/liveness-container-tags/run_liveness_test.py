@@ -39,6 +39,7 @@ def remove_artifacts():
         try:
             os.remove(path)
         except FileNotFoundError:
+            # These marker and request artifacts are absent before the fixture starts.
             pass
 
 
@@ -244,6 +245,7 @@ def main():
     try:
         os.remove(DOCKER_SOCKET_PATH)
     except FileNotFoundError:
+        # The fake socket does not exist before the fixture binds it.
         pass
     expected_container_id = get_self_container_id()
     docker_server = ThreadingUnixHTTPServer(DOCKER_SOCKET_PATH, DockerDiscoveryHandler)
@@ -261,6 +263,7 @@ def main():
         try:
             os.remove(DOCKER_SOCKET_PATH)
         except FileNotFoundError:
+            # The fake socket may already be absent after server teardown.
             pass
         server.shutdown()
         server.server_close()
