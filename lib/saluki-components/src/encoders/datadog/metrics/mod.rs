@@ -1700,20 +1700,32 @@ async fn split_and_encode_oversized_v3_range(
     endpoint_uri: &str, metrics: &[Metric], range: Range<usize>, context: V3FlushContext<'_>,
     payload_kind: &'static str, ratio: &mut V3CompressionRatio,
 ) -> Vec<V3PayloadRequest> {
+    // `build_v3_batch` advances past metrics it drops. Preserve that decision when the accepted batch has to be
+    // re-encoded: retrying the raw source range would otherwise resurrect those metrics.
+    let accepted_metrics = metrics[range]
+        .iter()
+        .filter(|metric| {
+            metric_has_emittable_values(metric) && context.payload_limits.point_count_fits(metric.values().len())
+        })
+        .collect::<Vec<_>>();
+
     let mut requests = Vec::new();
     let mut pending_ranges = VecDeque::new();
-    pending_ranges.push_back(range);
+    pending_ranges.push_back(0..accepted_metrics.len());
 
     while let Some(range) = pending_ranges.pop_front() {
         if range.is_empty() {
             continue;
         }
 
-        let metrics_in_range = &metrics[range.clone()];
+        let metrics_in_range = &accepted_metrics[range.clone()];
         let event_count = metrics_in_range.len();
         let data_point_count = metrics_in_range.iter().map(|metric| metric.values().len()).sum();
 
-        let encoded = match encode_v3_metrics_batch(metrics_in_range, context.endpoint_config.additional_tags()) {
+        let encoded = match encode_v3_metrics_batch(
+            metrics_in_range.iter().copied(),
+            context.endpoint_config.additional_tags(),
+        ) {
             Ok(encoded) => encoded,
             Err(e) => {
                 error!(error = %e, payload_kind, events = event_count, "Failed to encode V3 metrics payload request.");
@@ -1948,8 +1960,8 @@ async fn flush_payload(
 }
 
 // Encodes a batch of metrics to V3 columnar format.
-fn encode_v3_metrics_batch(
-    metrics: &[Metric], additional_tags: &SharedTagSet,
+fn encode_v3_metrics_batch<'a>(
+    metrics: impl IntoIterator<Item = &'a Metric>, additional_tags: &SharedTagSet,
 ) -> Result<V3EncodedMetrics, GenericError> {
     let mut writer = V3Writer::new();
     let mut tags_deduplicator = ReusableDeduplicator::new();
@@ -2816,6 +2828,7 @@ serializer_experimental_use_v3_api:
     /// Collected form of a payload emitted by `encode_and_flush_v3_payload_requests`.
     struct CollectedV3Payload {
         event_count: usize,
+        data_point_count: usize,
         request: Request<FrozenChunkedBytesBuffer>,
     }
 
@@ -2848,6 +2861,7 @@ serializer_experimental_use_v3_api:
             let (metadata, request) = http_payload.into_parts();
             collected.push(CollectedV3Payload {
                 event_count: metadata.event_count(),
+                data_point_count: metadata.data_point_count(),
                 request,
             });
         }
@@ -2881,6 +2895,49 @@ serializer_experimental_use_v3_api:
         assert!(requests
             .iter()
             .all(|request| request.request.body().len() <= limits.max_compressed_size));
+    }
+
+    #[tokio::test]
+    async fn v3_byte_fallback_does_not_resurrect_metric_over_point_limit() {
+        let point_oversized_metric = Metric::counter("v3.fallback.over.point.limit", [(123, 1.0), (124, 2.0)]);
+
+        let byte_oversized_metric = Metric::counter(
+            concat!(
+                "v3.fallback.over.byte.limit.",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ),
+            3.0,
+        );
+
+        let point_oversized_request = create_v3_test_request(std::slice::from_ref(&point_oversized_metric)).await;
+        let byte_oversized_request = create_v3_test_request(std::slice::from_ref(&byte_oversized_metric)).await;
+
+        assert!(byte_oversized_request.compressed_len > point_oversized_request.compressed_len);
+
+        let limits = V3PayloadLimits::new(point_oversized_request.compressed_len, usize::MAX, 10_000, 1);
+
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+
+        let requests = collect_v3_payload_requests(&[point_oversized_metric, byte_oversized_metric], context).await;
+
+        let emitted_point_counts = requests
+            .iter()
+            .map(|request| request.data_point_count)
+            .collect::<Vec<_>>();
+
+        assert!(
+            emitted_point_counts
+                .iter()
+                .all(|point_count| *point_count <= limits.max_points_per_payload),
+            "fallback emitted request point counts {emitted_point_counts:?} above limit {}",
+            limits.max_points_per_payload
+        );
     }
 
     #[tokio::test]
