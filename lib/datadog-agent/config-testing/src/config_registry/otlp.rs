@@ -68,6 +68,70 @@ static OTLP_STRING_INTERNER_SIZE_SCHEMA: SchemaEntry = SchemaEntry {
     default: None,
 };
 
+static OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "otlp_config.receiver.protocols.grpc.tls.ca_file",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
+static OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "otlp_config.receiver.protocols.grpc.tls.cert_file",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
+static OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CLIENT_CA_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "otlp_config.receiver.protocols.grpc.tls.client_ca_file",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
+static OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "otlp_config.receiver.protocols.grpc.tls.key_file",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
+static OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "otlp_config.receiver.protocols.http.tls.ca_file",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
+static OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "otlp_config.receiver.protocols.http.tls.cert_file",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
+static OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CLIENT_CA_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "otlp_config.receiver.protocols.http.tls.client_ca_file",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
+static OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "otlp_config.receiver.protocols.http.tls.key_file",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
 crate::declare_annotations! {
     /// `otlp_config.receiver.protocols.grpc.endpoint`-otlp_config.receiver.protocols.grpc.endpoint
     OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT = SalukiAnnotation {
@@ -325,6 +389,94 @@ crate::declare_annotations! {
     /// `otlp_config.metrics.tags`-Comma-separated tags for all OTLP metrics.
     OTLP_CONFIG_METRICS_TAGS = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_TAGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.ca_file`
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE = SalukiAnnotation {
+        schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.cert_file`
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE = SalukiAnnotation {
+        schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.client_ca_file`
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CLIENT_CA_FILE = SalukiAnnotation {
+        schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CLIENT_CA_FILE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.key_file`
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE = SalukiAnnotation {
+        schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.ca_file`
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE = SalukiAnnotation {
+        schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.cert_file`
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE = SalukiAnnotation {
+        schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.client_ca_file`
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CLIENT_CA_FILE = SalukiAnnotation {
+        schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CLIENT_CA_FILE_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.key_file`
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE = SalukiAnnotation {
+        schema: &OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
