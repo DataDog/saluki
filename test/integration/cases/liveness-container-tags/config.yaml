@@ -10,6 +10,7 @@ env:
   DD_DATA_PLANE_ENABLED: "true"
   DD_DATA_PLANE_STANDALONE_MODE: "false"
   DD_BASIC_TELEMETRY_ADD_CONTAINER_TAGS: "true"
+  DOCKER_HOST: "unix:///tmp/adp-liveness-docker.sock"
   DD_DD_URL: "http://127.0.0.1:18080"
   DD_USE_V2_API_SERIES: "false"
   DD_SERIALIZER_COMPRESSOR_KIND: "gzip"
@@ -18,6 +19,7 @@ container:
   entrypoint:
     - "/opt/datadog-agent/embedded/bin/python3"
     - "/liveness-container-tags/run_liveness_test.py"
+  host_cgroup_namespace: true
   files:
     - "run_liveness_test.py:/liveness-container-tags/run_liveness_test.py"
 

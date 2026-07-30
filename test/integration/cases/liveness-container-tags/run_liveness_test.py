@@ -1,7 +1,9 @@
 import gzip
 import json
 import os
+import re
 import signal
+import socketserver
 import subprocess
 import sys
 import threading
@@ -16,14 +18,10 @@ RUNNING_MARKER = "/tmp/adp-liveness-running-validated"
 UP_MARKER = "/tmp/adp-liveness-up-validated"
 REQUESTS_PATH = "/tmp/adp-liveness-intake-requests.jsonl"
 ERROR_PATH = "/tmp/adp-liveness-intake-error"
-CONTAINER_TAG_PREFIXES = (
-    "container_id:",
-    "container_name:",
-    "container_image:",
-    "docker_image:",
-    "image_id:",
-    "image_name:",
-    "image_tag:",
+DOCKER_SOCKET_PATH = "/tmp/adp-liveness-docker.sock"
+EXPECTED_CONTAINER_TAGS = (
+    "docker_image:example/adp-liveness:1.0",
+    "env:liveness-fake",
 )
 CURRENT_TIMESTAMP_TOLERANCE_SECS = 30
 
@@ -40,7 +38,7 @@ def remove_artifacts():
 
 
 def has_container_tag(tags):
-    return any(isinstance(tag, str) and tag.startswith(CONTAINER_TAG_PREFIXES) for tag in tags)
+    return all(expected_tag in tags for expected_tag in EXPECTED_CONTAINER_TAGS)
 
 
 def has_version_tag(tags):
@@ -98,6 +96,16 @@ def validate_service_checks(payload):
             return
 
 
+def get_self_container_id():
+    with open("/proc/self/cgroup", encoding="utf-8") as cgroup_file:
+        for line in cgroup_file:
+            cgroup_name = line.rstrip().rsplit("/", 1)[-1]
+            match = re.search(r"[0-9a-f]{64}", cgroup_name)
+            if match:
+                return match.group(0)
+    raise RuntimeError("could not resolve the target container ID from /proc/self/cgroup")
+
+
 def decode_request_body(headers, body):
     content_encoding = headers.get("Content-Encoding", "").lower()
     if content_encoding == "gzip":
@@ -136,6 +144,80 @@ class ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
+class ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+class DockerDiscoveryHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def send_json(self, payload):
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if path in ("/_ping", "/ping"):
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"OK")
+        elif path.endswith("/images/json"):
+            self.send_json([])
+        elif path.endswith("/containers/json"):
+            container_id = get_self_container_id()
+            self.send_json(
+                [
+                    {
+                        "Id": container_id,
+                        "Names": ["/adp-liveness-fake"],
+                        "Image": "example/adp-liveness:1.0",
+                        "ImageID": "sha256:" + "a" * 64,
+                        "Labels": {"com.datadoghq.tags.env": "liveness-fake"},
+                        "State": "running",
+                        "Status": "Up",
+                    }
+                ]
+            )
+        elif path.endswith("/json") and "/containers/" in path:
+            container_id = path.rsplit("/", 2)[-2]
+            self.send_json(
+                {
+                    "Id": container_id,
+                    "Name": "/adp-liveness-fake",
+                    "Created": "2026-01-01T00:00:00.000000000Z",
+                    "Image": "sha256:" + "a" * 64,
+                    "Config": {
+                        "Hostname": "adp-liveness-fake",
+                        "Image": "example/adp-liveness:1.0",
+                        "Labels": {"com.datadoghq.tags.env": "liveness-fake"},
+                    },
+                    "State": {"Status": "running", "Running": True, "Pid": 1},
+                    "HostConfig": {"NetworkMode": "default"},
+                    "NetworkSettings": {"Networks": {}},
+                }
+            )
+        elif path.endswith("/info"):
+            self.send_json({})
+        elif path.endswith("/events"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            while agent_process is not None and agent_process.poll() is None:
+                time.sleep(0.1)
+        else:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    def log_message(self, _format, *_args):
+        pass
+
+
 def handle_signal(_signum, _frame):
     if agent_process is not None and agent_process.poll() is None:
         agent_process.terminate()
@@ -153,9 +235,24 @@ def main():
     server_thread.start()
 
     try:
+        os.remove(DOCKER_SOCKET_PATH)
+    except FileNotFoundError:
+        pass
+    docker_server = ThreadingUnixHTTPServer(DOCKER_SOCKET_PATH, DockerDiscoveryHandler)
+    docker_thread = threading.Thread(target=docker_server.serve_forever, daemon=True)
+    docker_thread.start()
+
+    try:
         agent_process = subprocess.Popen(["/bin/entrypoint.sh"])
         return agent_process.wait()
     finally:
+        docker_server.shutdown()
+        docker_server.server_close()
+        docker_thread.join(timeout=1)
+        try:
+            os.remove(DOCKER_SOCKET_PATH)
+        except FileNotFoundError:
+            pass
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=1)
