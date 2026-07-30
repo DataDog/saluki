@@ -19,6 +19,11 @@ UP_MARKER = "/tmp/adp-liveness-up-validated"
 REQUESTS_PATH = "/tmp/adp-liveness-intake-requests.jsonl"
 ERROR_PATH = "/tmp/adp-liveness-intake-error"
 DOCKER_SOCKET_PATH = "/tmp/adp-liveness-docker.sock"
+DOCKER_API_PREFIX = "/v1.54"
+DOCKER_IMAGES_PATH = DOCKER_API_PREFIX + "/images/json"
+DOCKER_CONTAINERS_PATH = DOCKER_API_PREFIX + "/containers/json"
+DOCKER_EVENTS_PATH = DOCKER_API_PREFIX + "/events"
+DOCKER_INFO_PATH = DOCKER_API_PREFIX + "/info"
 EXPECTED_CONTAINER_TAGS = (
     "docker_image:example/adp-liveness:1.0",
     "env:liveness-fake",
@@ -159,21 +164,26 @@ class DockerDiscoveryHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_not_found(self):
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
-        if path in ("/_ping", "/ping"):
+        expected_container_id = self.server.expected_container_id
+        if path == "/_ping":
             self.send_response(200)
             self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"OK")
-        elif path.endswith("/images/json"):
+        elif path == DOCKER_IMAGES_PATH:
             self.send_json([])
-        elif path.endswith("/containers/json"):
-            container_id = get_self_container_id()
+        elif path == DOCKER_CONTAINERS_PATH:
             self.send_json(
                 [
                     {
-                        "Id": container_id,
+                        "Id": expected_container_id,
                         "Names": ["/adp-liveness-fake"],
                         "Image": "example/adp-liveness:1.0",
                         "ImageID": "sha256:" + "a" * 64,
@@ -183,11 +193,10 @@ class DockerDiscoveryHandler(BaseHTTPRequestHandler):
                     }
                 ]
             )
-        elif path.endswith("/json") and "/containers/" in path:
-            container_id = path.rsplit("/", 2)[-2]
+        elif path == DOCKER_API_PREFIX + "/containers/" + expected_container_id + "/json":
             self.send_json(
                 {
-                    "Id": container_id,
+                    "Id": expected_container_id,
                     "Name": "/adp-liveness-fake",
                     "Created": "2026-01-01T00:00:00.000000000Z",
                     "Image": "sha256:" + "a" * 64,
@@ -201,18 +210,16 @@ class DockerDiscoveryHandler(BaseHTTPRequestHandler):
                     "NetworkSettings": {"Networks": {}},
                 }
             )
-        elif path.endswith("/info"):
+        elif path == DOCKER_INFO_PATH:
             self.send_json({})
-        elif path.endswith("/events"):
+        elif path == DOCKER_EVENTS_PATH:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             while agent_process is not None and agent_process.poll() is None:
                 time.sleep(0.1)
         else:
-            self.send_response(404)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            self.send_not_found()
 
     def log_message(self, _format, *_args):
         pass
@@ -238,7 +245,9 @@ def main():
         os.remove(DOCKER_SOCKET_PATH)
     except FileNotFoundError:
         pass
+    expected_container_id = get_self_container_id()
     docker_server = ThreadingUnixHTTPServer(DOCKER_SOCKET_PATH, DockerDiscoveryHandler)
+    docker_server.expected_container_id = expected_container_id
     docker_thread = threading.Thread(target=docker_server.serve_forever, daemon=True)
     docker_thread.start()
 
