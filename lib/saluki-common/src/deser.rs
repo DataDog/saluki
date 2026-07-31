@@ -121,7 +121,7 @@ where
                 return Ok(None);
             }
 
-            Ok(Some(value.to_string()));
+            Ok(Some(value.to_string()))
         }
     }
 
