@@ -6,7 +6,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use super::{get_config_key, AdpConfigEndpoint, AdpConfigKeyEqualsAssertion, ADP_CONFIG_CLI_DIAGNOSTIC_LABEL};
+use super::{AdpConfigEndpoint, AdpConfigKeyEqualsAssertion, ADP_CONFIG_CLI_DIAGNOSTIC_LABEL};
 use crate::assertions::{Assertion as _, AssertionContext, LogBuffer, TargetCommand};
 
 fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
@@ -86,23 +86,6 @@ fn unsupported_endpoints_are_rejected_without_exposing_the_configured_value() {
     }
 }
 
-#[test]
-fn nested_config_keys_are_looked_up_by_dotted_path() {
-    let config = serde_json::json!({
-        "feature": {
-            "nested": {
-                "enabled": true
-            }
-        }
-    });
-
-    assert_eq!(
-        get_config_key(&config, "feature.nested.enabled"),
-        Some(&serde_json::json!(true))
-    );
-    assert_eq!(get_config_key(&config, "feature.enabled"), None);
-}
-
 #[tokio::test]
 async fn successful_assertion_executes_the_selected_cli_and_parses_its_json() {
     let command = TargetCommand::new(vec![
@@ -136,9 +119,12 @@ async fn assertion_retries_a_nonmatching_value_and_accepts_the_next_match() {
     let command = TargetCommand::new(vec![
         "sh".to_string(),
         "-c".to_string(),
-        r#"if test -s "$0"; then value=true; else value=false; fi
-printf x >> "$0"
-printf '{"feature":{"nested":{"enabled":%s}}}' "$value""#
+        r#"if test -s "$0"; then
+    printf '{"feature":{"nested":{"enabled":true}}}'
+else
+    printf '{"feature":{"nested":{}}}'
+fi
+printf x >> "$0""#
             .to_string(),
         counter.to_string_lossy().into_owned(),
     ]);

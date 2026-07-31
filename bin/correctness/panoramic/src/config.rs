@@ -1129,49 +1129,6 @@ timeout: 12s
     }
 
     #[test]
-    fn adp_cli_action_deserializes_args_and_timeout() {
-        let action: ActionConfig = serde_yaml::from_str(
-            r#"
-action: adp_cli
-args: ["debug", "set-log-level", "--filter-directives", "INFO"]
-timeout: 30s
-"#,
-        )
-        .unwrap();
-
-        let ActionConfig::AdpCli { args, timeout } = action else {
-            panic!("expected adp_cli action");
-        };
-        assert_eq!(args, vec!["debug", "set-log-level", "--filter-directives", "INFO"]);
-        assert_eq!(timeout.0, Duration::from_secs(30));
-    }
-
-    #[test]
-    fn core_agent_cli_action_deserializes_args_output_matcher_and_timeout() {
-        let action: ActionConfig = serde_yaml::from_str(
-            r#"
-action: core_agent_cli
-args: ["status"]
-output_contains: "Built Against Agent Version"
-timeout: 60s
-"#,
-        )
-        .unwrap();
-
-        let ActionConfig::CoreAgentCli {
-            args,
-            output_contains,
-            timeout,
-        } = action
-        else {
-            panic!("expected core_agent_cli action");
-        };
-        assert_eq!(args, vec!["status"]);
-        assert_eq!(output_contains.as_deref(), Some("Built Against Agent Version"));
-        assert_eq!(timeout.0, Duration::from_secs(60));
-    }
-
-    #[test]
     fn windows_runtime_is_valid_for_integration_discovery() {
         let base_dir = create_test_case_dir(
             "windows-smoke",

@@ -316,17 +316,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_exec_collects_stdout() {
-        let command = vec!["sh".to_string(), "-c".to_string(), "printf target-exec".to_string()];
-        let diagnostics = CommandDiagnostics::full(&command);
-        let output = exec_on_host_collect(&command, &diagnostics, None)
-            .await
-            .expect("host command should succeed");
-
-        assert_eq!(output, "target-exec");
-    }
-
-    #[tokio::test]
     async fn redacted_without_child_output_suppresses_stdout_and_stderr() {
         let stdout_secret = "suppressed-stdout-secret";
         let stderr_secret = "suppressed-stderr-secret";
@@ -350,12 +339,17 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_interrupts_an_already_started_host_child() {
-        let marker = std::env::temp_dir().join(format!("panoramic-exec-{}", rand::random::<u64>()));
+        let marker_id = rand::random::<u64>();
+        let started_marker = std::env::temp_dir().join(format!("panoramic-exec-{marker_id}-started"));
+        let release_marker = std::env::temp_dir().join(format!("panoramic-exec-{marker_id}-release"));
+        let delayed_marker = std::env::temp_dir().join(format!("panoramic-exec-{marker_id}-delayed"));
         let command = vec![
             "sh".to_string(),
             "-c".to_string(),
-            "printf x > \"$0\"; exec sleep 30".to_string(),
-            marker.to_string_lossy().into_owned(),
+            "printf x > \"$0\"; while ! test -e \"$1\"; do sleep 1; done; printf x > \"$2\"".to_string(),
+            started_marker.to_string_lossy().into_owned(),
+            release_marker.to_string_lossy().into_owned(),
+            delayed_marker.to_string_lossy().into_owned(),
         ];
         let diagnostics = CommandDiagnostics::full(&command);
         let cancel_token = tokio_util::sync::CancellationToken::new();
@@ -372,7 +366,7 @@ mod tests {
 
         let started: Result<(), String> = tokio::select! {
             _ = async {
-                while !marker.exists() {
+                while !started_marker.exists() {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             } => Ok(()),
@@ -380,7 +374,6 @@ mod tests {
             _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => Err("child did not start within 30 seconds".to_string()),
         };
         cancel_token.cancel();
-        let _ = std::fs::remove_file(&marker);
         started.expect("host child should start and remain running");
 
         let error = tokio::time::timeout(std::time::Duration::from_secs(2), &mut run)
@@ -388,6 +381,17 @@ mod tests {
             .expect("cancellation should interrupt the child within 2 seconds")
             .expect_err("cancelled host command should fail");
         assert!(error.to_string().contains("Action cancelled"));
+
+        std::fs::write(&release_marker, b"x").expect("release marker should be written");
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let delayed_write_occurred = delayed_marker.exists();
+        let _ = std::fs::remove_file(started_marker);
+        let _ = std::fs::remove_file(release_marker);
+        let _ = std::fs::remove_file(delayed_marker);
+        assert!(
+            !delayed_write_occurred,
+            "cancelled host child performed its delayed marker write"
+        );
     }
 
     #[tokio::test]

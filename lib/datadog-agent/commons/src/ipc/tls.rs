@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_client_certificate_makes_server_accept_fail() {
+    async fn missing_or_mismatched_client_certificate_makes_server_accept_fail() {
         initialize_crypto_provider();
         let identity_a = TestIdentity::localhost();
         let server_config = build_ipc_server_tls_config(&identity_a.cert_path)
@@ -387,12 +387,7 @@ mod tests {
         accept_client(server_config, client_config)
             .await
             .expect_err("server accept should reject a missing client certificate");
-    }
 
-    #[tokio::test]
-    async fn mismatched_client_certificate_makes_server_accept_fail() {
-        initialize_crypto_provider();
-        let identity_a = TestIdentity::localhost();
         let identity_b = TestIdentity::localhost();
         let server_config = build_ipc_server_tls_config(&identity_a.cert_path)
             .await
