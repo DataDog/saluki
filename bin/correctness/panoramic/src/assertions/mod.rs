@@ -18,8 +18,6 @@ use tracing::{debug, error};
 use crate::config::{AssertionConfig, AssertionStep, IntegrationConfig, LogStream};
 
 mod adp_config_key_equals;
-#[cfg(all(test, unix))]
-mod adp_config_key_equals_tests;
 mod adp_exits;
 mod file_contains;
 mod http_check;

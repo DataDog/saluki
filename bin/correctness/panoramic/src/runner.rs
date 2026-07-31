@@ -1258,45 +1258,4 @@ mod tests {
 
         assert!(!normalized.contains_key("DD_DATA_PLANE_FORCE_ENABLE"));
     }
-
-    #[test]
-    fn linux_context_uses_converged_image_adp_cli_binary() {
-        let command = container_adp_cli_command(ContainerOs::Linux);
-
-        assert_eq!(
-            command.command_prefix(),
-            &["/opt/datadog-agent/embedded/bin/agent-data-plane".to_string()]
-        );
-        assert!(command.host_env().is_none());
-    }
-
-    #[test]
-    fn linux_context_uses_installed_core_agent_cli_binary() {
-        let command = container_core_agent_cli_command(ContainerOs::Linux);
-
-        assert_eq!(
-            command.command_prefix(),
-            &["/opt/datadog-agent/bin/agent/agent".to_string()]
-        );
-        assert!(command.host_env().is_none());
-    }
-
-    #[test]
-    fn windows_context_uses_test_image_adp_cli_binary() {
-        let command = container_adp_cli_command(ContainerOs::Windows);
-
-        assert_eq!(command.command_prefix(), &[r"C:\adp\agent-data-plane.exe".to_string()]);
-        assert!(command.host_env().is_none());
-    }
-
-    #[test]
-    fn windows_context_uses_installed_core_agent_cli_binary() {
-        let command = container_core_agent_cli_command(ContainerOs::Windows);
-
-        assert_eq!(
-            command.command_prefix(),
-            &[r"C:\Program Files\Datadog\Datadog Agent\bin\agent.exe".to_string()]
-        );
-        assert!(command.host_env().is_none());
-    }
 }

@@ -167,3 +167,7 @@ fn get_config_key<'a>(config: &'a Value, key: &str) -> Option<&'a Value> {
 pub fn default_adp_config_endpoint() -> String {
     DEFAULT_ADP_CONFIG_ENDPOINT.to_string()
 }
+
+#[cfg(all(test, unix))]
+#[path = "adp_config_key_equals_tests.rs"]
+mod tests;

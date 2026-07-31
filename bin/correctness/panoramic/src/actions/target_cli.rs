@@ -4,19 +4,50 @@ use super::{
     target_exec::{execute_target_command, CommandDiagnostics},
     Action,
 };
-use crate::assertions::{AssertionContext, AssertionResult};
+use crate::assertions::{AssertionContext, AssertionResult, TargetCommand};
 
-const CORE_AGENT_CLI_DIAGNOSTIC_LABEL: &str = "Core Agent CLI command";
+#[derive(Clone, Copy)]
+pub(super) enum TargetCli {
+    Adp,
+    CoreAgent,
+}
 
-pub(super) struct CoreAgentCliAction {
+impl TargetCli {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Adp => "adp_cli",
+            Self::CoreAgent => "core_agent_cli",
+        }
+    }
+
+    fn diagnostic_label(self) -> &'static str {
+        match self {
+            Self::Adp => "tested ADP CLI command",
+            Self::CoreAgent => "Core Agent CLI command",
+        }
+    }
+
+    fn command(self, ctx: &AssertionContext) -> &TargetCommand {
+        match self {
+            Self::Adp => &ctx.adp_cli_command,
+            Self::CoreAgent => &ctx.core_agent_cli_command,
+        }
+    }
+}
+
+pub(super) struct TargetCliAction {
+    target: TargetCli,
     args: Vec<String>,
     output_contains: Option<String>,
     timeout: Duration,
 }
 
-impl CoreAgentCliAction {
-    pub(super) fn new(args: Vec<String>, output_contains: Option<String>, timeout: Duration) -> Self {
+impl TargetCliAction {
+    pub(super) fn new(
+        target: TargetCli, args: Vec<String>, output_contains: Option<String>, timeout: Duration,
+    ) -> Self {
         Self {
+            target,
             args,
             output_contains,
             timeout,
@@ -25,27 +56,21 @@ impl CoreAgentCliAction {
 }
 
 #[async_trait::async_trait]
-impl Action for CoreAgentCliAction {
+impl Action for TargetCliAction {
     fn name(&self) -> &'static str {
-        "core_agent_cli"
+        self.target.name()
     }
 
     fn description(&self) -> String {
-        format!("Run {CORE_AGENT_CLI_DIAGNOSTIC_LABEL}")
+        format!("Run {}", self.target.diagnostic_label())
     }
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let command = ctx.core_agent_cli_command.with_args(&self.args);
-        let diagnostics = CommandDiagnostics::redacted(CORE_AGENT_CLI_DIAGNOSTIC_LABEL);
-        let result = execute_target_command(
-            ctx,
-            &command,
-            &diagnostics,
-            self.timeout,
-            ctx.core_agent_cli_command.host_env(),
-        )
-        .await;
+        let target_command = self.target.command(ctx);
+        let command = target_command.with_args(&self.args);
+        let diagnostics = CommandDiagnostics::redacted(self.target.diagnostic_label());
+        let result = execute_target_command(ctx, &command, &diagnostics, self.timeout, target_command.host_env()).await;
 
         match result {
             Ok(output)
@@ -58,10 +83,14 @@ impl Action for CoreAgentCliAction {
                     name: self.name().to_string(),
                     passed: false,
                     message: if output.trim().is_empty() {
-                        format!("{CORE_AGENT_CLI_DIAGNOSTIC_LABEL} output did not contain the configured value.")
+                        format!(
+                            "{} output did not contain the configured value.",
+                            self.target.diagnostic_label()
+                        )
                     } else {
                         format!(
-                            "{CORE_AGENT_CLI_DIAGNOSTIC_LABEL} output did not contain the configured value. Output: {}",
+                            "{} output did not contain the configured value. Output: {}",
+                            self.target.diagnostic_label(),
                             output.trim()
                         )
                     },
