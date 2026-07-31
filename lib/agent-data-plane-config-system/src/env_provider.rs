@@ -119,6 +119,24 @@ mod tests {
         );
     }
 
+    /// The five payload encoders read `data_plane.serializer_zstd_compressor_level` from the by-key
+    /// view, and the prefix-scanning provider cannot reach it: splitting `DD_` names on `__` yields
+    /// the flat `data_plane_serializer_zstd_compressor_level`, not the nested path. This provider is
+    /// the only source that delivers the documented variable, so pin it.
+    #[test]
+    fn adp_zstd_override_reaches_its_nested_path() {
+        let _guard = test_env_lock();
+        std::env::set_var("DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL", "7");
+
+        let provider = EnvironmentProvider::new().expect("environment reads");
+
+        std::env::remove_var("DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL");
+        assert_eq!(
+            values_of(&provider).pointer("/data_plane/serializer_zstd_compressor_level"),
+            Some(&Value::Number(7.into()))
+        );
+    }
+
     #[test]
     fn unset_keys_contribute_nothing() {
         let _guard = test_env_lock();

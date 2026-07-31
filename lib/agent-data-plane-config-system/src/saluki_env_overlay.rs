@@ -404,4 +404,28 @@ mod tests {
         assert_eq!(parsed.data_plane.standalone_mode, Some(true));
         assert_eq!(parsed.data_plane.checks.enabled, Some(true));
     }
+
+    /// Every nested Saluki-only key in the canonical inventory must exist as a `SalukiOnly` leaf.
+    ///
+    /// A flat key survives without one: Figment's prefix scan turns `DD_FOO_BAR` into the key
+    /// `foo_bar`, which is already the canonical spelling. A *nested* key has no such fallback. The
+    /// scan would produce the flat `foo_bar` and nothing places it at `foo.bar`, so discovery off
+    /// `SalukiOnly` is the only thing that makes `DD_FOO_BAR` reach it. An inventory key with no
+    /// field here is therefore unreachable from the environment, and silently so. That is exactly how
+    /// `data_plane.serializer_zstd_compressor_level` lost its documented override.
+    #[test]
+    fn every_nested_inventory_key_is_a_leaf() {
+        let missing: Vec<&str> = datadog_agent_config_overlay_model::saluki_keys::SALUKI_KEYS
+            .iter()
+            .map(|key| key.yaml_path)
+            .filter(|path| path.contains('.'))
+            .filter(|path| !has_path(&path.split('.').collect::<Vec<_>>()))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "nested Saluki-only key(s) have no `SalukiOnly` field, so no environment variable \
+             reaches them: {missing:?}",
+        );
+    }
 }

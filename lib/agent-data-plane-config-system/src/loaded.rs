@@ -301,6 +301,34 @@ mod tests {
     }
 
     #[test]
+    fn the_adp_zstd_override_reaches_both_views_from_the_environment() {
+        // `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` names a nested Saluki-only key that the
+        // prefix scan flattens to `data_plane_serializer_zstd_compressor_level`. The five payload
+        // encoders read it from the by-key view, so cover that view alongside the typed model.
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_zstd_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL", "7");
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+        let from_by_key = loaded
+            .raw_config()
+            .try_get_typed::<i32>("data_plane.serializer_zstd_compressor_level")
+            .expect("key reads");
+        let from_typed = loaded
+            .local()
+            .shared
+            .endpoints
+            .compression
+            .zstd_compressor_level_override;
+
+        std::env::remove_var("DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(from_by_key, Some(7));
+        assert_eq!(from_typed, Some(7));
+    }
+
+    #[test]
     fn build_base_rejects_a_malformed_environment_value() {
         let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_build_base_bad_{}.yaml", std::process::id()));

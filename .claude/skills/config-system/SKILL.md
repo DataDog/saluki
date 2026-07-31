@@ -185,7 +185,10 @@ the witnessed model.
 2. Add its destination to the correct `SalukiConfiguration` slice.
 3. If it has a default, define it once in `agent-data-plane-config/src/defaults.rs` and reference it
    from the model and source defaults.
-4. Add the exact source hierarchy and a reliable parsing type to `SalukiOnly`.
+4. Add the exact source hierarchy and a reliable parsing type to `SalukiOnly`. A **nested** key
+   *requires* this even when its only consumer reads the by-key view: the Saluki-only environment
+   reader discovers its paths from `SalukiOnly`, and it is the sole source that places `DD_FOO_BAR`
+   at `foo.bar`. Without a field, the key is silently unreachable from the environment.
 5. Add one `seed` assignment to the destination.
 6. (legacy): Keep `SALUKI_KEYS` consistent with the source key, type, and default.
 

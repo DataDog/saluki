@@ -92,6 +92,7 @@ dependencies = [
  "arc-swap",
  "bytesize",
  "datadog-agent-config",
+ "datadog-agent-config-overlay-model",
  "figment",
  "saluki-config",
  "serde",
