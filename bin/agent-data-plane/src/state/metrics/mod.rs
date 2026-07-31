@@ -570,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn rar_telemetry_remaps_supported_dogstatsd_client_byte_telemetry_as_gauges() {
+    fn rar_telemetry_remaps_supported_dogstatsd_client_byte_telemetry_as_counters() {
         let metrics = [
             "adp.dogstatsd_client_telemetry_bytes_sent",
             "adp.dogstatsd_client_telemetry_bytes_dropped",
@@ -579,7 +579,7 @@ mod tests {
         ]
         .into_iter()
         .map(|internal_name| {
-            Event::Metric(Metric::gauge(
+            Event::Metric(Metric::counter(
                 Context::from_static_parts(
                     internal_name,
                     &["component_id:dsd_client_telemetry_out", "component_type:destination"],
@@ -597,7 +597,7 @@ mod tests {
             "dogstatsd_client__bytes_dropped_queue",
             "dogstatsd_client__bytes_dropped_writer",
         ] {
-            assert!(output.contains(&format!("# TYPE {exported_name} gauge")), "{output}");
+            assert!(output.contains(&format!("# TYPE {exported_name} counter")), "{output}");
             assert!(output.contains(&format!("{exported_name} 7")), "{output}");
         }
     }

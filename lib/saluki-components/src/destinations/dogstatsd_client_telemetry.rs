@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use metrics::Gauge;
+use metrics::Counter;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
     components::{destinations::*, ComponentContext},
@@ -41,24 +41,24 @@ impl MemoryBounds for DogStatsDClientTelemetryConfiguration {
 
 /// Mirrors supported DogStatsD client telemetry metrics into ADP internal telemetry.
 pub struct DogStatsDClientTelemetry {
-    bytes_sent: Gauge,
-    bytes_dropped: Gauge,
-    bytes_dropped_queue: Gauge,
-    bytes_dropped_writer: Gauge,
+    bytes_sent: Counter,
+    bytes_dropped: Counter,
+    bytes_dropped_queue: Counter,
+    bytes_dropped_writer: Counter,
 }
 
 impl DogStatsDClientTelemetry {
     pub(super) fn new(metrics_builder: MetricsBuilder) -> Self {
         Self {
-            bytes_sent: metrics_builder.register_gauge("dogstatsd_client_telemetry_bytes_sent"),
-            bytes_dropped: metrics_builder.register_gauge("dogstatsd_client_telemetry_bytes_dropped"),
-            bytes_dropped_queue: metrics_builder.register_gauge("dogstatsd_client_telemetry_bytes_dropped_queue"),
-            bytes_dropped_writer: metrics_builder.register_gauge("dogstatsd_client_telemetry_bytes_dropped_writer"),
+            bytes_sent: metrics_builder.register_counter("dogstatsd_client_telemetry_bytes_sent"),
+            bytes_dropped: metrics_builder.register_counter("dogstatsd_client_telemetry_bytes_dropped"),
+            bytes_dropped_queue: metrics_builder.register_counter("dogstatsd_client_telemetry_bytes_dropped_queue"),
+            bytes_dropped_writer: metrics_builder.register_counter("dogstatsd_client_telemetry_bytes_dropped_writer"),
         }
     }
 
     pub(super) fn record_metric(&self, metric: &Metric) {
-        let gauge = match metric.context().name().as_ref() {
+        let counter = match metric.context().name().as_ref() {
             "datadog.dogstatsd.client.bytes_sent" => &self.bytes_sent,
             "datadog.dogstatsd.client.bytes_dropped" => &self.bytes_dropped,
             "datadog.dogstatsd.client.bytes_dropped_queue" => &self.bytes_dropped_queue,
@@ -68,9 +68,11 @@ impl DogStatsDClientTelemetry {
 
         if let MetricValues::Rate(values, _) = metric.values() {
             // A delayed aggregate flush can contain several closed time buckets in one metric. Separate tag contexts
-            // arrive as separate metrics and intentionally accumulate into this dimensionless COAT gauge.
+            // arrive as separate metrics and intentionally accumulate into this dimensionless COAT counter.
             for (_, value) in values {
-                gauge.increment(value);
+                if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u64::MAX as f64 {
+                    counter.increment(value as u64);
+                }
             }
         }
     }

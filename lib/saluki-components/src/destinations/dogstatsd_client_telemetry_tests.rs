@@ -33,7 +33,7 @@ fn records_all_supported_client_telemetry_rates_without_client_dimensions() {
         let metric = Metric::rate(metric_name, [(100, 7.0)], Duration::from_secs(10));
         telemetry.record_metric(&metric);
 
-        assert_eq!(recorder.gauge(telemetry_name), Some(7.0), "{metric_name}");
+        assert_eq!(recorder.counter(telemetry_name), Some(7), "{metric_name}");
     }
 }
 
@@ -50,11 +50,31 @@ fn ignores_unknown_client_telemetry_names_and_non_rate_values() {
     ));
     telemetry.record_metric(&Metric::counter("datadog.dogstatsd.client.bytes_sent", 11.0));
     telemetry.record_metric(&Metric::rate(
+        "datadog.dogstatsd.client.bytes_sent",
+        [(100, 1.5)],
+        Duration::from_secs(10),
+    ));
+    telemetry.record_metric(&Metric::rate(
         "datadog.dogstatsd.client.metrics",
         [(100, 11.0)],
         Duration::from_secs(10),
     ));
 
-    assert_eq!(recorder.gauge("dogstatsd_client_telemetry_bytes_sent"), Some(0.0));
-    assert_eq!(recorder.gauge("dogstatsd_client_telemetry_metrics"), None);
+    assert_eq!(recorder.counter("dogstatsd_client_telemetry_bytes_sent"), Some(0));
+    assert_eq!(recorder.counter("dogstatsd_client_telemetry_metrics"), None);
+}
+
+#[test]
+fn accumulates_client_telemetry_rate_buckets_as_counter_deltas() {
+    let recorder = TestRecorder::default();
+    let _recorder_guard = set_default_local_recorder(&recorder);
+    let telemetry = DogStatsDClientTelemetry::new(MetricsBuilder::default());
+
+    telemetry.record_metric(&Metric::rate(
+        "datadog.dogstatsd.client.bytes_sent",
+        [(100, 7.0), (110, 3.0)],
+        Duration::from_secs(10),
+    ));
+
+    assert_eq!(recorder.counter("dogstatsd_client_telemetry_bytes_sent"), Some(10));
 }

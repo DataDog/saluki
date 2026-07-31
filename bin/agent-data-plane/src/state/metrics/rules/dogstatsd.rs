@@ -140,8 +140,8 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         .with_original_tags(["message_type", "origin"])
         .with_additional_tags(["state:error"])
         .with_help_text("Count of service checks/events/metrics processed by dogstatsd"),
-        // DogStatsD client byte telemetry. These gauges mirror the post-aggregation metric stream without
-        // client-provided dimensions, so COAT receives the same values that ADP sends to customer intake while
+        // DogStatsD client byte telemetry. These counters mirror the post-aggregation metric stream without
+        // client-provided dimensions, so COAT receives the same byte totals that ADP sends to customer intake while
         // retaining bounded cardinality.
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_sent",
