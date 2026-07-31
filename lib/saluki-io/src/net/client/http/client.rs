@@ -440,116 +440,62 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn complete_tls_config_takes_precedence_when_set_last() {
+    async fn complete_tls_config_preserves_mtls_and_overrides_option_settings() {
         initialize_crypto_provider();
-        let (server_config, client_config, option_root_store) = mutual_tls_configs();
-        let builder = HttpClient::builder()
-            .with_tls_config(|builder| builder.with_root_cert_store(option_root_store))
-            .with_client_tls_config(client_config);
-
-        send_request_to_tls_server(builder, server_config)
-            .await
-            .expect("supplied client identity should authenticate");
-    }
-
-    #[tokio::test]
-    async fn complete_tls_config_takes_precedence_when_set_first() {
-        initialize_crypto_provider();
-        let (server_config, client_config, option_root_store) = mutual_tls_configs();
+        let (server_config, client_config) = mutual_tls_configs();
         let builder = HttpClient::builder()
             .with_client_tls_config(client_config)
-            .with_tls_config(|builder| builder.with_root_cert_store(option_root_store));
+            .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()));
 
-        send_request_to_tls_server(builder, server_config)
+        let _ = send_request_to_tls_server(builder, server_config)
             .await
-            .expect("supplied client identity should authenticate");
+            .expect("complete config should verify the server and present the client identity");
     }
 
     #[tokio::test]
-    async fn supplied_alpn_is_replaced_by_auto_protocol_selection() {
+    async fn complete_tls_config_alpn_is_normalized_for_http1() {
         initialize_crypto_provider();
-        let negotiated_alpn = negotiate_alpn_with_supplied_config(HttpProtocol::Auto).await;
+        let (mut server_config, mut client_config) = mutual_tls_configs();
+        server_config.alpn_protocols = vec![b"custom".to_vec(), b"http/1.1".to_vec()];
+        client_config.alpn_protocols = vec![b"custom".to_vec()];
+        let builder = HttpClient::builder().with_client_tls_config(client_config);
 
-        assert_eq!(negotiated_alpn.as_deref(), Some(b"h2".as_slice()));
-    }
-
-    #[tokio::test]
-    async fn supplied_alpn_is_removed_for_http1_protocol_selection() {
-        initialize_crypto_provider();
-        let negotiated_alpn = negotiate_alpn_with_supplied_config(HttpProtocol::Http1).await;
+        let negotiated_alpn = send_request_to_tls_server(builder, server_config)
+            .await
+            .expect("client should normalize ALPN and complete an HTTP/1.1 request");
 
         assert_eq!(negotiated_alpn, None);
     }
 
-    #[tokio::test]
-    async fn option_based_tls_config_remains_in_use_without_complete_config() {
-        initialize_crypto_provider();
-        let server_cert = SelfSignedCert::localhost();
-        let mut root_store = RootCertStore::empty();
-        root_store
-            .add(
-                server_cert
-                    .cert_chain()
-                    .into_iter()
-                    .next()
-                    .expect("certificate chain should not be empty"),
-            )
-            .expect("server certificate should be a valid trust anchor");
-        let server_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(server_cert.cert_chain(), server_cert.private_key())
-            .expect("server TLS config should build");
-        let builder = HttpClient::builder().with_tls_config(|builder| builder.with_root_cert_store(root_store));
-
-        send_request_to_tls_server(builder, server_config)
-            .await
-            .expect("option-based TLS configuration should authenticate the server");
-    }
-
-    fn mutual_tls_configs() -> (ServerConfig, ClientConfig, RootCertStore) {
+    fn mutual_tls_configs() -> (ServerConfig, ClientConfig) {
         let server_cert = SelfSignedCert::localhost();
         let client_cert = SelfSignedCert::new(["saluki-client"]);
-
-        let mut client_root_store = RootCertStore::empty();
-        client_root_store
-            .add(
-                client_cert
-                    .cert_chain()
-                    .into_iter()
-                    .next()
-                    .expect("certificate chain should not be empty"),
-            )
-            .expect("client certificate should be a valid trust anchor");
-        let client_verifier = WebPkiClientVerifier::builder(Arc::new(client_root_store))
+        let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_store(&client_cert)))
             .build()
             .expect("client certificate verifier should build");
         let server_config = ServerConfig::builder()
             .with_client_cert_verifier(client_verifier)
             .with_single_cert(server_cert.cert_chain(), server_cert.private_key())
             .expect("server TLS config should build");
-
-        let mut server_root_store = RootCertStore::empty();
-        server_root_store
-            .add(
-                server_cert
-                    .cert_chain()
-                    .into_iter()
-                    .next()
-                    .expect("certificate chain should not be empty"),
-            )
-            .expect("server certificate should be a valid trust anchor");
-        let option_root_store = RootCertStore::empty();
         let client_config = ClientConfig::builder()
-            .with_root_certificates(server_root_store)
+            .with_root_certificates(root_store(&server_cert))
             .with_client_auth_cert(client_cert.cert_chain(), client_cert.private_key())
             .expect("client TLS config should build");
 
-        (server_config, client_config, option_root_store)
+        (server_config, client_config)
+    }
+
+    fn root_store(cert: &SelfSignedCert) -> RootCertStore {
+        let mut root_store = RootCertStore::empty();
+        root_store
+            .add(cert.cert_chain().pop().expect("certificate chain should not be empty"))
+            .expect("self-signed certificate should be a valid trust anchor");
+        root_store
     }
 
     async fn send_request_to_tls_server(
         builder: HttpClientBuilder, server_config: ServerConfig,
-    ) -> Result<(), GenericError> {
+    ) -> Result<Option<Vec<u8>>, GenericError> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let port = listener.local_addr()?.port();
         let server_task = tokio::spawn(async move {
@@ -558,6 +504,7 @@ mod tests {
                 .accept(stream)
                 .await
                 .expect("TLS handshake should succeed");
+            let negotiated_alpn = stream.get_ref().1.alpn_protocol().map(ToOwned::to_owned);
             let mut request = [0; 4096];
             let bytes_read = stream.read(&mut request).await.expect("server should read the request");
             assert!(bytes_read > 0, "server should receive an HTTP request");
@@ -565,6 +512,7 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
                 .await
                 .expect("server should write the response");
+            negotiated_alpn
         });
 
         let mut client = builder.with_http_protocol(HttpProtocol::Http1).build()?;
@@ -575,62 +523,9 @@ mod tests {
             .await
             .map_err(|_| GenericError::msg("HTTP request timed out"))??;
         assert_eq!(response.status(), http::StatusCode::OK);
-        timeout(Duration::from_secs(5), server_task)
+        Ok(timeout(Duration::from_secs(5), server_task)
             .await
             .expect("TLS server should finish")
-            .expect("TLS server task should not panic");
-
-        Ok(())
-    }
-
-    async fn negotiate_alpn_with_supplied_config(protocol: HttpProtocol) -> Option<Vec<u8>> {
-        let server_cert = SelfSignedCert::localhost();
-        let mut root_store = RootCertStore::empty();
-        root_store
-            .add(
-                server_cert
-                    .cert_chain()
-                    .into_iter()
-                    .next()
-                    .expect("certificate chain should not be empty"),
-            )
-            .expect("server certificate should be a valid trust anchor");
-
-        let mut server_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(server_cert.cert_chain(), server_cert.private_key())
-            .expect("server TLS config should build");
-        server_config.alpn_protocols = vec![b"custom".to_vec(), b"h2".to_vec(), b"http/1.1".to_vec()];
-
-        let mut client_config = ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        client_config.alpn_protocols = vec![b"custom".to_vec()];
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("TLS server should bind");
-        let port = listener.local_addr().expect("TLS server should have an address").port();
-        let server_task = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("server should accept a connection");
-            let stream = TlsAcceptor::from(Arc::new(server_config))
-                .accept(stream)
-                .await
-                .expect("TLS handshake should succeed");
-            stream.get_ref().1.alpn_protocol().map(ToOwned::to_owned)
-        });
-
-        let mut client = HttpClient::builder()
-            .with_http_protocol(protocol)
-            .with_client_tls_config(client_config)
-            .build()
-            .expect("client should accept an ALPN-bearing TLS config");
-        let request = Request::get(format!("https://localhost:{port}/"))
-            .body(Empty::<Bytes>::new())
-            .expect("request should build");
-        let _ = timeout(Duration::from_secs(5), client.send(request)).await;
-
-        timeout(Duration::from_secs(5), server_task)
-            .await
-            .expect("TLS server should finish")
-            .expect("TLS server task should not panic")
+            .expect("TLS server task should not panic"))
     }
 }

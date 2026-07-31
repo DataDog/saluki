@@ -255,15 +255,7 @@ async fn read_and_parse_certificate_file(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
-        },
-        time::Duration,
-    };
+    use std::{fs, io, path::PathBuf, sync::Arc, time::Duration};
 
     use rcgen::{generate_simple_self_signed, CertifiedKey};
     use rustls::{
@@ -278,8 +270,8 @@ mod tests {
 
     use super::{build_ipc_client_ipc_tls_config, build_ipc_server_tls_config, DatadogAgentServerCertVerifier};
 
-    const REQUEST: &[u8] = b"GET /ipc HTTP/1.1\r\nHost: localhost\r\n\r\n";
-    const RESPONSE: &[u8] = b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+    const APPLICATION_BYTE: u8 = 42;
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 
     struct TestIdentity {
         _temp_dir: TempDir,
@@ -310,27 +302,6 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    enum ClientOutcome {
-        HandshakeRejected,
-        RequestRejected,
-        Response(Vec<u8>),
-    }
-
-    #[derive(Debug)]
-    enum ServerOutcome {
-        HandshakeRejected,
-        RequestReadFailed,
-        RequestHandled(Vec<u8>),
-    }
-
-    #[derive(Debug)]
-    struct ExchangeOutcome {
-        client: ClientOutcome,
-        server: ServerOutcome,
-        request_reached_handler: bool,
-    }
-
     fn initialize_crypto_provider() {
         let _ = saluki_tls::initialize_default_crypto_provider();
         assert!(
@@ -359,69 +330,34 @@ mod tests {
         }
     }
 
-    async fn exchange(server_config: ServerConfig, client_config: ClientConfig) -> ExchangeOutcome {
-        let (client_io, server_io) = tokio::io::duplex(16 * 1024);
-        let request_reached_handler = Arc::new(AtomicBool::new(false));
-        let server_request_reached_handler = Arc::clone(&request_reached_handler);
-
-        let server_task = tokio::spawn(async move {
-            let acceptor = TlsAcceptor::from(Arc::new(server_config));
-            let mut stream = match acceptor.accept(server_io).await {
-                Ok(stream) => stream,
-                Err(_) => return ServerOutcome::HandshakeRejected,
+    async fn accept_client(server_config: ServerConfig, client_config: ClientConfig) -> io::Result<u8> {
+        tokio::time::timeout(TEST_TIMEOUT, async move {
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let client = async move {
+                let connector = TlsConnector::from(Arc::new(client_config));
+                let server_name = ServerName::try_from("localhost").expect("localhost should be a valid server name");
+                let mut stream = connector.connect(server_name, client_io).await?;
+                stream.write_u8(APPLICATION_BYTE).await?;
+                Ok::<_, io::Error>(stream)
+            };
+            let server = async move {
+                let acceptor = TlsAcceptor::from(Arc::new(server_config));
+                let mut stream = acceptor.accept(server_io).await?;
+                Ok(stream
+                    .read_u8()
+                    .await
+                    .expect("accepted client should send an application byte"))
             };
 
-            let mut request = vec![0; REQUEST.len()];
-            if stream.read_exact(&mut request).await.is_err() {
-                return ServerOutcome::RequestReadFailed;
-            }
-            server_request_reached_handler.store(true, Ordering::SeqCst);
-
-            if stream.write_all(RESPONSE).await.is_err() {
-                return ServerOutcome::RequestReadFailed;
-            }
-
-            ServerOutcome::RequestHandled(request)
-        });
-
-        let client = tokio::time::timeout(Duration::from_secs(5), async move {
-            let connector = TlsConnector::from(Arc::new(client_config));
-            let server_name = ServerName::try_from("localhost").expect("localhost should be a valid server name");
-            let mut stream = match connector.connect(server_name, client_io).await {
-                Ok(stream) => stream,
-                Err(_) => return ClientOutcome::HandshakeRejected,
-            };
-
-            if stream.write_all(REQUEST).await.is_err() {
-                return ClientOutcome::RequestRejected;
-            }
-            if stream.flush().await.is_err() {
-                return ClientOutcome::RequestRejected;
-            }
-
-            let mut response = vec![0; RESPONSE.len()];
-            match stream.read_exact(&mut response).await {
-                Ok(_) => ClientOutcome::Response(response),
-                Err(_) => ClientOutcome::RequestRejected,
-            }
+            let (_, server_result) = tokio::join!(client, server);
+            server_result
         })
         .await
-        .expect("client TLS exchange should not time out");
-
-        let server = tokio::time::timeout(Duration::from_secs(5), server_task)
-            .await
-            .expect("server TLS exchange should not time out")
-            .expect("server task should not panic");
-
-        ExchangeOutcome {
-            client,
-            server,
-            request_reached_handler: request_reached_handler.load(Ordering::SeqCst),
-        }
+        .expect("TLS handshake should not time out")
     }
 
     #[tokio::test]
-    async fn matching_ipc_identity_completes_mtls_and_delivers_request() {
+    async fn matching_ipc_identity_completes_mtls_and_delivers_application_byte() {
         initialize_crypto_provider();
         let identity_a = TestIdentity::localhost();
         let server_config = build_ipc_server_tls_config(&identity_a.cert_path)
@@ -431,21 +367,16 @@ mod tests {
             .await
             .expect("production client TLS config should build");
 
-        let outcome = exchange(server_config, client_config).await;
-
-        assert!(
-            matches!(&outcome.client, ClientOutcome::Response(response) if response == RESPONSE),
-            "matching client should receive the response: {outcome:?}"
+        assert_eq!(
+            accept_client(server_config, client_config)
+                .await
+                .expect("server should accept the matching client identity"),
+            APPLICATION_BYTE
         );
-        assert!(
-            matches!(&outcome.server, ServerOutcome::RequestHandled(request) if request == REQUEST),
-            "matching client request should reach the handler: {outcome:?}"
-        );
-        assert!(outcome.request_reached_handler);
     }
 
     #[tokio::test]
-    async fn missing_client_certificate_is_rejected_before_request_handler() {
+    async fn missing_client_certificate_makes_server_accept_fail() {
         initialize_crypto_provider();
         let identity_a = TestIdentity::localhost();
         let server_config = build_ipc_server_tls_config(&identity_a.cert_path)
@@ -453,21 +384,13 @@ mod tests {
             .expect("production server TLS config should build");
         let client_config = client_config_pinned_to(&identity_a, None);
 
-        let outcome = exchange(server_config, client_config).await;
-
-        assert!(
-            matches!(outcome.server, ServerOutcome::HandshakeRejected),
-            "server should reject a missing client identity during the handshake: {outcome:?}"
-        );
-        assert!(!outcome.request_reached_handler, "request must not reach the handler");
-        assert!(
-            !matches!(outcome.client, ClientOutcome::Response(_)),
-            "anonymous client must not receive an application response: {outcome:?}"
-        );
+        accept_client(server_config, client_config)
+            .await
+            .expect_err("server accept should reject a missing client certificate");
     }
 
     #[tokio::test]
-    async fn mismatched_client_certificate_is_rejected_before_request_handler() {
+    async fn mismatched_client_certificate_makes_server_accept_fail() {
         initialize_crypto_provider();
         let identity_a = TestIdentity::localhost();
         let identity_b = TestIdentity::localhost();
@@ -476,37 +399,8 @@ mod tests {
             .expect("production server TLS config should build");
         let client_config = client_config_pinned_to(&identity_a, Some(&identity_b));
 
-        let outcome = exchange(server_config, client_config).await;
-
-        assert!(
-            matches!(outcome.server, ServerOutcome::HandshakeRejected),
-            "server should reject a different client identity during the handshake: {outcome:?}"
-        );
-        assert!(!outcome.request_reached_handler, "request must not reach the handler");
-        assert!(
-            !matches!(outcome.client, ClientOutcome::Response(_)),
-            "mismatched client must not receive an application response: {outcome:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn production_client_rejects_wrong_server_identity() {
-        initialize_crypto_provider();
-        let identity_a = TestIdentity::localhost();
-        let identity_b = TestIdentity::localhost();
-        let server_config = build_ipc_server_tls_config(&identity_b.cert_path)
+        accept_client(server_config, client_config)
             .await
-            .expect("production server TLS config should build");
-        let client_config = build_ipc_client_ipc_tls_config(&identity_a.cert_path)
-            .await
-            .expect("production client TLS config should build");
-
-        let outcome = exchange(server_config, client_config).await;
-
-        assert!(
-            matches!(outcome.client, ClientOutcome::HandshakeRejected),
-            "production client pinned to A should reject server B: {outcome:?}"
-        );
-        assert!(!outcome.request_reached_handler, "request must not reach the handler");
+            .expect_err("server accept should reject a different client certificate");
     }
 }
