@@ -256,7 +256,7 @@ Verifies a pattern does NOT appear in the logs for a duration.
 
 Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS is supported with optional certificate verification skipping for self-signed certificates. The status matcher accepts either an "equal" or "not equal" variant; the latter is useful for asserting that a route is registered without having to know what status code the endpoint would return.
 
-`insecure_skip_verify` disables only verification of the server certificate; it does not supply a client certificate. As a result, `http_check` cannot probe ADP privileged routes, which require an authenticated client identity. Use [`adp_cli`](#adp_cli) for authenticated privileged operations and [`tls_client_certificate_required`](#tls_client_certificate_required) to verify the anonymous-client rejection boundary.
+`insecure_skip_verify` disables only verification of the server certificate; it does not supply a client certificate. As a result, `http_check` cannot probe ADP privileged routes, which require an authenticated client identity. Direct authenticated CLI operations through [`adp_cli`](#adp_cli) are the supported integration path for privileged operations.
 
 ```yaml
 # Assert the endpoint returns a specific status code.
@@ -272,16 +272,6 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
   status:
     equal: 200
   insecure_skip_verify: true     # Optional: skip server verification (default: false)
-  timeout: 30s
-```
-
-#### `tls_client_certificate_required`
-
-Sends an HTTPS request without a client identity and verifies that the TLS handshake fails with the `CertificateRequired` alert. The assertion skips server-certificate verification so it can probe self-signed endpoints, but it does not accept connection failures, timeouts, or HTTP responses as proof that client authentication is required. This host-side assertion is not supported for Windows container targets.
-
-```yaml
-- assertion: tls_client_certificate_required
-  endpoint: "https://localhost:55101/config"
   timeout: 30s
 ```
 
