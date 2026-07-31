@@ -18,8 +18,9 @@ use url::Url;
 
 use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
 
-static DD_URL_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
+static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^app(\.mrf)?\.([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
+});
 static DD_SITE_FROM_HOSTNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|\.)([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)\.?$").unwrap()
 });
@@ -82,8 +83,6 @@ pub(crate) struct V3EndpointConfig<'a> {
     pub(crate) resolved_endpoint: &'a Url,
     /// Optional primary endpoint name used by serializer V3 endpoint-list matching.
     pub(crate) serializer_v3_configured_endpoint: Option<&'a str>,
-    /// Whether the ADP V3 series safety gate is enabled.
-    pub(crate) data_plane_v3_series_enabled: bool,
     /// Agent-compatible V3 series config.
     pub(crate) series_config: &'a UseV3ApiSeriesConfig,
     /// OPW/Vector route-specific V3 override.
@@ -137,7 +136,7 @@ impl EndpointV3Settings {
         }
     }
 
-    /// Creates V3 settings using Agent-compatible series V3 configuration plus the ADP safety gate.
+    /// Creates V3 settings using Agent-compatible series V3 configuration.
     ///
     /// `V3EndpointConfig::serializer_v3_configured_endpoint` lets metrics-primary OPW/Vector routes match
     /// `serializer_experimental_use_v3_api.series.endpoints` against the normal primary endpoint name, matching the
@@ -148,26 +147,23 @@ impl EndpointV3Settings {
                 || config.serializer_v3_configured_endpoint.is_some_and(|endpoint| {
                     serializer_v3_config_matches_endpoint(endpoint, config.serializer_v3_series_endpoints)
                 });
-        let use_v3_series = config.data_plane_v3_series_enabled
-            && if serializer_use_v3_series {
-                true
-            } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
-                metrics_primary_use_v3
-            } else if let Some(endpoint_value) = config.series_config.endpoints.get(config.configured_endpoint) {
-                evaluate_series_v3_mode(
-                    "use_v3_api.series.endpoints",
-                    endpoint_value,
-                    config.configured_endpoint,
-                    Some(config.resolved_endpoint),
-                )
-            } else {
-                evaluate_series_v3_mode(
-                    "use_v3_api.series.enabled",
-                    &config.series_config.enabled,
-                    config.configured_endpoint,
-                    Some(config.resolved_endpoint),
-                )
-            };
+        let use_v3_series = if serializer_use_v3_series {
+            true
+        } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
+            metrics_primary_use_v3
+        } else if let Some(endpoint_value) = config.series_config.endpoints.get(config.configured_endpoint) {
+            evaluate_series_v3_mode(
+                "use_v3_api.series.endpoints",
+                endpoint_value,
+                config.configured_endpoint,
+            )
+        } else {
+            evaluate_series_v3_mode(
+                "use_v3_api.series.enabled",
+                &config.series_config.enabled,
+                config.configured_endpoint,
+            )
+        };
 
         let use_v3_sketches = config
             .serializer_v3_sketches_endpoints
@@ -292,27 +288,14 @@ fn parse_series_v3_mode(value: &str) -> SeriesV3Mode {
 }
 
 fn configured_endpoint_is_datadog_url(configured_endpoint: &str) -> bool {
-    let endpoint = configured_endpoint.trim();
-    if endpoint.is_empty() {
-        return false;
-    }
-
-    if Url::parse(endpoint).is_ok_and(|url| is_datadog_url(&url)) {
-        return true;
-    }
-
-    Authority::from_str(endpoint).is_ok_and(|authority| is_datadog_host(authority.host()))
+    Url::parse(configured_endpoint.trim()).is_ok_and(|url| is_datadog_url(&url))
 }
 
-pub(crate) fn evaluate_series_v3_mode(
-    config_key: &'static str, value: &str, configured_endpoint: &str, resolved_endpoint: Option<&Url>,
-) -> bool {
+pub(crate) fn evaluate_series_v3_mode(config_key: &'static str, value: &str, configured_endpoint: &str) -> bool {
     match parse_series_v3_mode(value) {
         SeriesV3Mode::Enabled => true,
         SeriesV3Mode::Disabled => false,
-        SeriesV3Mode::DatadogOnly => {
-            configured_endpoint_is_datadog_url(configured_endpoint) || resolved_endpoint.is_some_and(is_datadog_url)
-        }
+        SeriesV3Mode::DatadogOnly => configured_endpoint_is_datadog_url(configured_endpoint),
         SeriesV3Mode::Invalid => {
             warn!(
                 config_key,
@@ -327,7 +310,7 @@ pub(crate) fn series_v3_config_can_enable_v3(series_config: &UseV3ApiSeriesConfi
     if series_config
         .endpoints
         .iter()
-        .any(|(endpoint, value)| evaluate_series_v3_mode("use_v3_api.series.endpoints", value, endpoint, None))
+        .any(|(endpoint, value)| evaluate_series_v3_mode("use_v3_api.series.endpoints", value, endpoint))
     {
         return true;
     }
@@ -1435,7 +1418,6 @@ mod tests {
             configured_endpoint: endpoint.configured_endpoint(),
             resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint: None,
-            data_plane_v3_series_enabled: true,
             series_config,
             metrics_primary_v3_override: None,
             serializer_v3_series_endpoints: &[],
@@ -1447,20 +1429,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_v3_default_requires_data_plane_gate() {
+    fn agent_v3_default_enables_authoritative_v3() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
             .expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig::default();
-
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            data_plane_v3_series_enabled: false,
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
-        assert!(!settings.use_v3_series);
-        assert!(settings.series_shadow_mode);
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_series())));
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
             series_shadow_sites: &["datadoghq.com".to_string()],
@@ -1519,41 +1491,30 @@ mod tests {
     }
 
     #[test]
-    fn agent_v3_datadog_only_config_viability_accepts_schemeless_datadog_endpoints() {
+    fn agent_v3_datadog_only_config_viability_matches_core_agent_url_rules() {
         let mut series_config = UseV3ApiSeriesConfig {
             enabled: "false".to_string(),
             endpoints: HashMap::new(),
         };
-        series_config
-            .endpoints
-            .insert("app.datadoghq.com".to_string(), "datadog_only".to_string());
+        for endpoint in [
+            "https://app.datadoghq.com",
+            "https://APP.DATADOGHQ.COM",
+            "https://app.datadoghq.com.:443",
+            "https://app.us12.datadoghq.com",
+            "https://app.apne1.datadoghq.com",
+        ] {
+            series_config.endpoints = HashMap::from([(endpoint.to_string(), "datadog_only".to_string())]);
+            assert!(series_v3_config_can_enable_v3(&series_config), "{endpoint}");
+        }
 
-        assert!(series_v3_config_can_enable_v3(&series_config));
-
-        series_config.endpoints.clear();
-        series_config
-            .endpoints
-            .insert("app.datadoghq.com:443".to_string(), "datadog_only".to_string());
-
-        assert!(series_v3_config_can_enable_v3(&series_config));
-
-        series_config.endpoints.clear();
-        series_config
-            .endpoints
-            .insert("APP.DATADOGHQ.COM".to_string(), "datadog_only".to_string());
-
-        assert!(series_v3_config_can_enable_v3(&series_config));
-
-        series_config.endpoints.clear();
-        series_config
-            .endpoints
-            .insert("example.com".to_string(), "datadog_only".to_string());
-
-        assert!(!series_v3_config_can_enable_v3(&series_config));
+        for endpoint in ["app.datadoghq.com", "app.datadoghq.com:443", "example.com"] {
+            series_config.endpoints = HashMap::from([(endpoint.to_string(), "datadog_only".to_string())]);
+            assert!(!series_v3_config_can_enable_v3(&series_config), "{endpoint}");
+        }
     }
 
     #[test]
-    fn agent_v3_datadog_only_endpoint_override_matches_schemeless_host_port() {
+    fn agent_v3_datadog_only_endpoint_override_rejects_schemeless_host_port() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("app.datadoghq.com:443", "fake-api-key")
             .expect("endpoint should resolve");
         let mut series_config = UseV3ApiSeriesConfig {
@@ -1566,7 +1527,7 @@ mod tests {
 
         let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
 
-        assert!(settings.use_v3_series);
+        assert!(!settings.use_v3_series);
     }
 
     #[test]
@@ -1606,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn serializer_v3_endpoint_list_wins_when_data_plane_gate_enabled() {
+    fn serializer_v3_endpoint_list_wins_over_other_agent_settings() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
             .expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig {

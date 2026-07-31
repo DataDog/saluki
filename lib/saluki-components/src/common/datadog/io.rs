@@ -604,7 +604,6 @@ async fn run_endpoint_io_loop<B>(
             configured_endpoint: &configured_endpoint,
             resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint: serializer_v3_configured_endpoint.as_deref(),
-            data_plane_v3_series_enabled: config.data_plane_metrics_v3_series_enabled(),
             series_config: config.use_v3_api_series(),
             metrics_primary_v3_override,
             serializer_v3_series_endpoints: &v3_api.series.endpoints,

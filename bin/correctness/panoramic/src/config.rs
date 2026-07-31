@@ -215,6 +215,13 @@ pub struct ContainerConfig {
     /// Ports to expose (port/protocol format, for example, "8125/udp").
     #[serde(default)]
     pub exposed_ports: Vec<String>,
+
+    /// Whether the Linux target joins the Docker host's cgroup namespace.
+    ///
+    /// Defaults to `false` to preserve cgroup namespace isolation. Enable this only when a test
+    /// needs the target's local cgroup path to expose its Docker container ID.
+    #[serde(default)]
+    pub host_cgroup_namespace: bool,
 }
 
 /// A single step in the assertion pipeline.

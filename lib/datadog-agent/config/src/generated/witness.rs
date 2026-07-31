@@ -49,6 +49,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
     fn consume_autoscaling_failover_enabled(&mut self, value: bool);
     fn consume_autoscaling_failover_metrics(&mut self, value: Vec<String>);
+    fn consume_basic_telemetry_add_container_tags(&mut self, value: bool);
     fn consume_bind_host(&mut self, value: String);
     fn consume_cluster_agent_auth_token(&mut self, value: String);
     fn consume_cluster_agent_enabled(&mut self, value: bool);
@@ -296,6 +297,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
     consumer.consume_autoscaling_failover_enabled(config.autoscaling.failover.enabled.clone());
     consumer.consume_autoscaling_failover_metrics(config.autoscaling.failover.metrics.clone());
+    consumer.consume_basic_telemetry_add_container_tags(config.basic_telemetry_add_container_tags.clone());
     consumer.consume_bind_host(config.bind_host.clone());
     consumer.consume_cluster_agent_auth_token(config.cluster_agent.auth_token.clone());
     consumer.consume_cluster_agent_enabled(config.cluster_agent.enabled.clone());

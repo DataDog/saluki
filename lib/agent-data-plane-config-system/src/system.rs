@@ -417,6 +417,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_stream_translates_metrics_v3_routing_configuration() {
+        let (system, agent_tx) = connected_system(
+            json!({
+                "data_plane": {
+                    "metrics": {
+                        "v3": {
+                            "series": {
+                                "enabled": true
+                            }
+                        }
+                    }
+                }
+            }),
+            EnvOverlayMode::Fallback,
+        )
+        .await;
+
+        assert_eq!(
+            system.config().shared.metrics_encoding.v3_series_mode.mode,
+            "datadog_only"
+        );
+
+        agent_tx
+            .send(ConfigUpdate::Snapshot(json!({
+                "serializer_compressor_kind": "zstd",
+                "serializer_experimental_use_v3_api": {
+                    "compression_level": 7,
+                    "series": {
+                        "endpoints": ["https://app.us3.datadoghq.com"],
+                        "validate": true,
+                        "use_beta": true,
+                        "beta_route": "/api/intake/metrics/custom/series",
+                        "shadow_sample_rate": 0.25,
+                        "shadow_sites": ["us3.datadoghq.com"]
+                    }
+                },
+                "use_v2_api": {
+                    "series": false
+                },
+                "use_v3_api": {
+                    "series": {
+                        "enabled": "false",
+                        "endpoints": {
+                            "https://app.datadoghq.com": "true"
+                        }
+                    }
+                },
+                "observability_pipelines_worker": {
+                    "metrics": {
+                        "enabled": true,
+                        "url": "https://opw.example.com",
+                        "use_v3_api": {
+                            "series": true
+                        }
+                    }
+                }
+            })))
+            .await
+            .unwrap();
+
+        await_config(&system, "the streamed metrics V3 routing configuration", |config| {
+            config.shared.metrics_encoding.v3_series_mode.mode == "false"
+                && config
+                    .shared
+                    .metrics_encoding
+                    .v3_series_mode
+                    .endpoint_modes
+                    .get("https://app.datadoghq.com")
+                    .is_some_and(|mode| mode == "true")
+        })
+        .await;
+
+        let config = system.config();
+        let metrics = &config.shared.metrics_encoding;
+        assert!(!metrics.use_v2_series_api);
+        assert_eq!(metrics.v3_api.compression_level, 7);
+        assert_eq!(metrics.v3_api.series.endpoints, vec!["https://app.us3.datadoghq.com"]);
+        assert!(metrics.v3_api.series.validate);
+        assert!(metrics.v3_api.series.use_beta);
+        assert_eq!(metrics.v3_api.series.beta_route, "/api/intake/metrics/custom/series");
+        assert_eq!(metrics.v3_api.series.shadow_sample_rate, 0.25);
+        assert_eq!(metrics.v3_api.series.shadow_sites, vec!["us3.datadoghq.com"]);
+
+        let opw = &config.shared.endpoints.opw_intake;
+        assert!(opw.enabled);
+        assert_eq!(opw.url, "https://opw.example.com");
+        assert!(opw.use_v3_series);
+    }
+
+    #[tokio::test]
     async fn flat_env_key_overlays_onto_nested_datadog_slot() {
         // A flat, underscore-joined key (the shape an environment variable produces) is relocated
         // into the nested `autoscaling.failover.*` slot the Datadog deserializer reads. The string

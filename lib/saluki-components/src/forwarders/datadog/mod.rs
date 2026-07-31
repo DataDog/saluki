@@ -1,3 +1,4 @@
+use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
@@ -47,6 +48,17 @@ impl DatadogForwarderConfiguration {
             forwarder_config,
             configuration: Some(config.clone()),
         })
+    }
+
+    /// Creates a forwarder using authoritative typed metrics-routing configuration.
+    pub fn from_configuration_with_metrics_routing(
+        config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints,
+    ) -> Result<Self, GenericError> {
+        let mut config = Self::from_configuration(config)?;
+        config
+            .forwarder_config
+            .apply_typed_metrics_configuration(metrics, endpoints);
+        Ok(config)
     }
 
     /// Overrides the default endpoint and refreshes its API key from the given config path.

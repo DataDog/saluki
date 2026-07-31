@@ -15,6 +15,9 @@ pub struct SharedConfiguration {
     /// Global and host-level tagging.
     pub tags: GlobalTags,
 
+    /// Tags attached to basic liveness telemetry.
+    pub basic_telemetry: BasicTelemetry,
+
     /// Metrics-encoder settings reused across the metrics-emitting pipelines.
     pub metrics_encoding: MetricsEncoding,
 
@@ -209,6 +212,17 @@ pub struct GlobalTags {
     pub expected_tags_duration: Duration,
 }
 
+/// Tagging options for basic liveness telemetry.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct BasicTelemetry {
+    /// Whether liveness signals include the process container's low-cardinality tags.
+    ///
+    /// Defaults to `false`. Enable this for containerized deployments that need to associate basic
+    /// telemetry with the running container. If the container cannot be resolved, liveness signals
+    /// are emitted without these tags.
+    pub add_container_tags: bool,
+}
+
 /// Metrics-encoder settings reused across the metrics-emitting pipelines (DogStatsD, checks, and
 /// OTLP): histogram settings, payload limits, and the encoder flush timeout.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -249,10 +263,6 @@ pub struct MetricsEncoding {
 
     /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
     pub v3_series_mode: V3SeriesMode,
-
-    /// ADP-only safety gate that authorizes V3 series (`data_plane.metrics.v3.series.enabled`, not
-    /// in the Datadog Agent config schema).
-    pub v3_series_enabled: bool,
 }
 
 /// V3 metrics-intake protocol settings for the series and sketches payloads
@@ -308,7 +318,10 @@ impl Default for V3ApiSettings {
 /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct V3SeriesMode {
-    /// Global V3 series mode. TODO: consider modeling as an enum.
+    /// Global V3 series mode.
+    ///
+    /// Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
+    /// TODO: consider modeling as an enum.
     pub mode: String,
 
     /// Per-endpoint V3 series mode overrides, keyed by endpoint URL.
@@ -318,7 +331,7 @@ pub struct V3SeriesMode {
 impl Default for V3SeriesMode {
     fn default() -> Self {
         Self {
-            mode: "true".to_string(),
+            mode: "datadog_only".to_string(),
             endpoint_modes: HashMap::new(),
         }
     }

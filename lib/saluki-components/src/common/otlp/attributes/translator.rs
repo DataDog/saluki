@@ -16,7 +16,6 @@ impl AttributeTranslator {
         tags_from_attributes(attributes, mode)
     }
 
-    #[allow(dead_code)]
     pub fn origin_id_from_attributes(&self, attributes: &[otlp_common::KeyValue]) -> Option<String> {
         origin_id_from_attributes(attributes)
     }
