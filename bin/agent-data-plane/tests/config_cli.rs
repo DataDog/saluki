@@ -92,43 +92,37 @@ async fn json_config_views_use_the_expected_mtls_routes_and_emit_only_compact_sc
     )
     .expect("test config should be written");
 
-    let source_output = run_config_command(&config_path, &[]).await;
-    assert!(
-        source_output.status.success(),
-        "source config command failed: {}",
-        String::from_utf8_lossy(&source_output.stderr)
-    );
-    assert_eq!(
-        source_output.stdout,
-        b"{\"password\":\"********\",\"view\":\"source\"}\n"
-    );
-    assert!(source_output.stderr.is_empty(), "source stderr was not empty");
-    assert_eq!(
-        timeout(SERVER_TIMEOUT, request_rx.recv())
-            .await
-            .expect("source request should arrive before timeout")
-            .expect("server should report source request"),
-        "/config"
-    );
-
-    let runtime_output = run_config_command(&config_path, &["--runtime"]).await;
-    assert!(
-        runtime_output.status.success(),
-        "runtime config command failed: {}",
-        String::from_utf8_lossy(&runtime_output.stderr)
-    );
-    assert_eq!(
-        runtime_output.stdout,
-        b"{\"password\":\"********\",\"view\":\"runtime\"}\n"
-    );
-    assert!(runtime_output.stderr.is_empty(), "runtime stderr was not empty");
-    assert_eq!(
-        timeout(SERVER_TIMEOUT, request_rx.recv())
-            .await
-            .expect("runtime request should arrive before timeout")
-            .expect("server should report runtime request"),
-        "/config/internal"
-    );
+    let cases: &[(&str, &[&str], &str, &[u8])] = &[
+        (
+            "source",
+            &[],
+            "/config",
+            b"{\"password\":\"********\",\"view\":\"source\"}\n",
+        ),
+        (
+            "runtime",
+            &["--runtime"],
+            "/config/internal",
+            b"{\"password\":\"********\",\"view\":\"runtime\"}\n",
+        ),
+    ];
+    for &(view, args, expected_path, expected_stdout) in cases {
+        let output = run_config_command(&config_path, args).await;
+        assert!(
+            output.status.success(),
+            "{view} config command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, expected_stdout, "unexpected {view} stdout");
+        assert!(output.stderr.is_empty(), "{view} stderr was not empty");
+        assert_eq!(
+            timeout(SERVER_TIMEOUT, request_rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("{view} request should arrive before timeout"))
+                .unwrap_or_else(|| panic!("server should report {view} request")),
+            expected_path
+        );
+    }
 
     timeout(SERVER_TIMEOUT, server_shutdown.shutdown_and_wait())
         .await

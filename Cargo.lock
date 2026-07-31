@@ -48,7 +48,6 @@ dependencies = [
  "prost",
  "prost-types",
  "rcgen",
- "rustls",
  "saluki-antithesis",
  "saluki-api",
  "saluki-app",

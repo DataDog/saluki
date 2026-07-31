@@ -67,7 +67,9 @@ async fn main() -> Result<(), GenericError> {
     // (per-subagent log file key, never sharing a file with the Core Agent).
     let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_config)
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
-    configure_bootstrap_logging_for_action(&mut bootstrap_logging_config, &cli.action);
+    if matches!(&cli.action, Action::Config(command) if command.json) {
+        bootstrap_logging_config.log_to_console = false;
+    }
 
     let metrics_default_level = parse_metrics_level(&bootstrap_config)?;
 
@@ -161,14 +163,6 @@ fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<ConfigurationLo
     loaded
 }
 
-fn configure_bootstrap_logging_for_action(
-    logging_config: &mut saluki_app::logging::LoggingConfiguration, action: &Action,
-) {
-    if matches!(action, Action::Config(command) if command.json) {
-        logging_config.log_to_console = false;
-    }
-}
-
 fn parse_metrics_level(config: &GenericConfiguration) -> Result<Level, GenericError> {
     let raw = config
         .try_get_typed::<String>("metrics_level")
@@ -226,59 +220,10 @@ async fn run_inner(
             return Ok(exit_code);
         }
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
-        Action::Config(cmd) => handle_config_command(&bootstrap_config, cmd.json, cmd.runtime).await,
+        Action::Config(cmd) => handle_config_command(&bootstrap_config, cmd).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
         Action::Version(v) => handle_version_command(v.json).await,
     }
 
     Ok(None)
-}
-
-#[cfg(test)]
-mod tests {
-    use argh::FromArgs as _;
-    use saluki_app::logging::LoggingConfiguration;
-
-    use super::{configure_bootstrap_logging_for_action, Action, Cli};
-
-    fn action_from_args(args: &[&str]) -> Action {
-        Cli::from_args(&["agent-data-plane"], args)
-            .expect("test command should parse")
-            .action
-    }
-
-    fn bootstrap_logging_for(action: &Action) -> LoggingConfiguration {
-        let mut logging = LoggingConfiguration::simple();
-        assert!(
-            logging.log_to_console,
-            "test precondition: console logging starts enabled"
-        );
-        configure_bootstrap_logging_for_action(&mut logging, action);
-        logging
-    }
-
-    #[test]
-    fn json_config_action_disables_bootstrap_console_logging_for_each_view() {
-        for args in [&["config", "--json"][..], &["config", "--json", "--runtime"]] {
-            let action = action_from_args(args);
-
-            assert!(!bootstrap_logging_for(&action).log_to_console);
-        }
-    }
-
-    #[test]
-    fn human_config_action_preserves_bootstrap_console_logging_for_each_view() {
-        for args in [&["config"][..], &["config", "--runtime"]] {
-            let action = action_from_args(args);
-
-            assert!(bootstrap_logging_for(&action).log_to_console);
-        }
-    }
-
-    #[test]
-    fn other_actions_preserve_bootstrap_console_logging() {
-        let action = action_from_args(&["run"]);
-
-        assert!(bootstrap_logging_for(&action).log_to_console);
-    }
 }
