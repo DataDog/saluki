@@ -67,6 +67,8 @@ impl DogStatsDClientTelemetry {
         };
 
         if let MetricValues::Rate(values, _) = metric.values() {
+            // A delayed aggregate flush can contain several closed time buckets in one metric. Separate tag contexts
+            // arrive as separate metrics and intentionally accumulate into this dimensionless COAT gauge.
             for (_, value) in values {
                 gauge.increment(value);
             }

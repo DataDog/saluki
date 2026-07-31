@@ -576,7 +576,6 @@ mod tests {
             "adp.dogstatsd_client_telemetry_bytes_dropped",
             "adp.dogstatsd_client_telemetry_bytes_dropped_queue",
             "adp.dogstatsd_client_telemetry_bytes_dropped_writer",
-            "adp.dogstatsd_client_telemetry_metrics",
         ]
         .into_iter()
         .map(|internal_name| {
@@ -601,6 +600,20 @@ mod tests {
             assert!(output.contains(&format!("# TYPE {exported_name} gauge")), "{output}");
             assert!(output.contains(&format!("{exported_name} 7")), "{output}");
         }
+    }
+
+    #[test]
+    fn rar_telemetry_omits_unsupported_dogstatsd_client_metrics() {
+        let metrics = vec![Event::Metric(Metric::gauge(
+            Context::from_static_parts(
+                "adp.dogstatsd_client_telemetry_metrics",
+                &["component_id:dsd_client_telemetry_out", "component_type:destination"],
+            ),
+            7.0,
+        ))];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
         assert!(!output.contains("dogstatsd_client__metrics"), "{output}");
     }
 }
