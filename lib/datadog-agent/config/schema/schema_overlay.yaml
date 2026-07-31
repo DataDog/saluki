@@ -682,9 +682,9 @@ inventory:
     documentation: |-
       ### `data_plane.secure_api_listen_address`
 
-      This key configures the mTLS-authenticated privileged API for both HTTP and gRPC.
-      Addresses must include a URL scheme (for example, `tcp://`). See
-      `data_plane.api_listen_address` for the unprivileged endpoint.
+      This key configures the listener for the mTLS-authenticated privileged HTTP and gRPC API.
+      Addresses use a transport scheme (for example, `tcp://`) to select the underlying socket
+      type. See `data_plane.api_listen_address` for the unprivileged endpoint.
 
       Before ADP routes a request, every client must present a certificate during the TLS
       handshake. The presented leaf certificate's DER encoding must exactly equal the Agent IPC

@@ -135,8 +135,8 @@ compressed wire payload bytes.
 
 ### Privileged API authentication
 
-`data_plane.secure_api_listen_address` configures ADP's privileged HTTP and gRPC API. The address
-must include a URL scheme, such as `tcp://`. Every client must present the Agent IPC certificate
+`data_plane.secure_api_listen_address` configures the listener for ADP's privileged HTTP and gRPC API. The address
+uses a transport scheme, such as `tcp://`, to select the underlying socket type. Every client must present the Agent IPC certificate
 from the configured `ipc_cert.pem` during the TLS handshake. ADP accepts the client only when the
 presented leaf certificate's DER encoding exactly matches that certificate and the handshake proves
 possession of its private key. Authentication completes before ADP selects an HTTP route or gRPC
