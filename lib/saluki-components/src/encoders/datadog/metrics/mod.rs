@@ -843,10 +843,13 @@ impl Encoder for DatadogMetrics {
 
                                 permit = events_tx.reserve() => break permit
                                     .error_context("Failed to reserve capacity for event buffer.")?,
-                                Some(payload) = payloads_rx.recv() => {
-                                    if let Err(e) = context.dispatcher().dispatch(payload).await {
+                                maybe_payload = payloads_rx.recv() => match maybe_payload {
+                                    Some(payload) => if let Err(e) = context.dispatcher().dispatch(payload).await {
                                         error!("Failed to dispatch payload: {}", e);
-                                    }
+                                    },
+
+                                    // Our payloads channel is gone, which means our request builder task went away unexpectedly.
+                                    None => return Err(generic_error!("Request builder task stopped before accepting event buffer.")),
                                 }
                             }
                         };
