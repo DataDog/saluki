@@ -99,6 +99,35 @@ impl<'de> DeserializeAs<'de, bool> for PermissiveBool {
     }
 }
 
+/// Deserializes an optional string field, returning `None` if a string is found but is empty.
+pub fn empty_string_as_none<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct Visitor;
+
+    impl<'vde> serde::de::Visitor<'vde> for Visitor {
+        type Value = Option<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            if value.is_empty() {
+                return Ok(None);
+            }
+
+            return Ok(Some(value.to_string()));
+        }
+    }
+
+    deserializer.deserialize_any(Visitor)
+}
+
 #[cfg(test)]
 mod tests {
     use serde::de::{value::StrDeserializer, IntoDeserializer};

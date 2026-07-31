@@ -4,6 +4,7 @@ use std::sync::Arc;
 use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
+use saluki_common::deser::empty_string_as_none;
 use saluki_config::deserialize_space_separated_or_seq;
 use saluki_error::GenericError;
 use serde::Deserialize;
@@ -42,13 +43,13 @@ struct ProxyServers {
     /// The proxy server for HTTP requests.
     ///
     /// Defaults to unset, meaning HTTP requests are not proxied.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_string_as_none")]
     http: Option<String>,
 
     /// The proxy server for HTTPS requests.
     ///
     /// Defaults to unset, meaning HTTPS requests are not proxied.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "empty_string_as_none")]
     https: Option<String>,
 
     /// List of hosts that should bypass the proxy.
@@ -338,6 +339,12 @@ mod tests {
 
     use super::*;
 
+    fn deserialize_proxy_servers(json: serde_json::Value) -> ProxyServers {
+        serde_json::from_value::<ProxyConfiguration>(json)
+            .expect("should deserialize")
+            .proxy
+    }
+
     fn deserialize_no_proxy(json: serde_json::Value) -> Vec<String> {
         serde_json::from_value::<ProxyConfiguration>(json)
             .expect("should deserialize")
@@ -394,6 +401,20 @@ mod tests {
             deserialize_no_proxy(config),
             vec!["host1.example.com", "host2.example.com"]
         );
+    }
+
+    #[test]
+    fn empty_proxy_http_deserializes_to_none() {
+        let config = serde_json::json!({ "proxy": { "http": "" } });
+        let servers = deserialize_proxy_servers(config);
+        assert_eq!(servers.http, None);
+    }
+
+    #[test]
+    fn empty_proxy_https_deserializes_to_none() {
+        let config = serde_json::json!({ "proxy": { "https": "" } });
+        let servers = deserialize_proxy_servers(config);
+        assert_eq!(servers.https, None);
     }
 
     // --- wildcard ---
