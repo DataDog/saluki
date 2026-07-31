@@ -6,7 +6,7 @@ use std::{
 
 use tokio_util::sync::CancellationToken;
 
-use super::{get_config_key, AdpConfigEndpoint, AdpConfigKeyEqualsAssertion};
+use super::{get_config_key, AdpConfigEndpoint, AdpConfigKeyEqualsAssertion, ADP_CONFIG_CLI_DIAGNOSTIC_LABEL};
 use crate::assertions::{Assertion as _, AssertionContext, LogBuffer, TargetCommand};
 
 fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
@@ -25,6 +25,16 @@ fn host_context(adp_cli_command: TargetCommand) -> AssertionContext {
         adp_cli_command,
         core_agent_cli_command: TargetCommand::new(vec!["panoramic-wrong-cli-program".to_string()]),
     }
+}
+
+fn source_assertion(key: &str, timeout: Duration) -> AdpConfigKeyEqualsAssertion {
+    AdpConfigKeyEqualsAssertion::new(
+        key.into(),
+        serde_json::json!(true),
+        "https://localhost:55101/config".into(),
+        timeout,
+    )
+    .expect("source endpoint should be supported")
 }
 
 #[test]
@@ -118,4 +128,50 @@ printf '%s' '{"feature":{"nested":{"enabled":true}}}'"#
     let result = assertion.check(&ctx).await;
 
     assert!(result.passed, "unexpected assertion failure: {}", result.message);
+}
+
+#[tokio::test]
+async fn assertion_retries_a_nonmatching_value_and_accepts_the_next_match() {
+    let counter = std::env::temp_dir().join(format!("panoramic-config-{}", rand::random::<u64>()));
+    let command = TargetCommand::new(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        r#"if test -s "$0"; then value=true; else value=false; fi
+printf x >> "$0"
+printf '{"feature":{"nested":{"enabled":%s}}}' "$value""#
+            .to_string(),
+        counter.to_string_lossy().into_owned(),
+    ]);
+    let ctx = host_context(command);
+    let assertion = source_assertion("feature.nested.enabled", Duration::from_secs(20));
+
+    let result = tokio::time::timeout(Duration::from_secs(30), assertion.check(&ctx)).await;
+    let calls = std::fs::read(&counter).unwrap_or_default().len();
+    let _ = std::fs::remove_file(counter);
+    let result = result.expect("assertion should finish within 30 seconds");
+
+    assert!(result.passed, "unexpected assertion failure: {}", result.message);
+    assert!(calls >= 2, "expected at least two CLI calls, observed {calls}");
+}
+
+#[tokio::test]
+async fn fetch_config_redacts_nonzero_child_output() {
+    let stdout_secret = "config-stdout-secret";
+    let stderr_secret = "config-stderr-secret";
+    let command = TargetCommand::new(vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        format!("printf '{stdout_secret}'; printf '{stderr_secret}' >&2; exit 9"),
+    ]);
+    let ctx = host_context(command);
+    let assertion = source_assertion("feature.enabled", Duration::from_secs(10));
+
+    let error = assertion
+        .fetch_config(&ctx, Duration::from_secs(10))
+        .await
+        .expect_err("nonzero CLI child should fail");
+    let message = error.to_string();
+    assert!(message.contains(ADP_CONFIG_CLI_DIAGNOSTIC_LABEL));
+    assert!(!message.contains(stdout_secret), "error exposed stdout: {message}");
+    assert!(!message.contains(stderr_secret), "error exposed stderr: {message}");
 }

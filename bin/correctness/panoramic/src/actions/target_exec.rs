@@ -347,6 +347,49 @@ mod tests {
         assert!(!message.contains(stderr_secret), "diagnostic exposed stderr: {message}");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_interrupts_an_already_started_host_child() {
+        let marker = std::env::temp_dir().join(format!("panoramic-exec-{}", rand::random::<u64>()));
+        let command = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf x > \"$0\"; exec sleep 30".to_string(),
+            marker.to_string_lossy().into_owned(),
+        ];
+        let diagnostics = CommandDiagnostics::full(&command);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let exit_token = tokio_util::sync::CancellationToken::new();
+        let run = exec_on_host_with_timeout(
+            &command,
+            &diagnostics,
+            None,
+            std::time::Duration::from_secs(60),
+            &cancel_token,
+            &exit_token,
+        );
+        tokio::pin!(run);
+
+        let started: Result<(), String> = tokio::select! {
+            _ = async {
+                while !marker.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            } => Ok(()),
+            result = &mut run => Err(format!("child exited before its marker: {result:?}")),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => Err("child did not start within 30 seconds".to_string()),
+        };
+        cancel_token.cancel();
+        let _ = std::fs::remove_file(&marker);
+        started.expect("host child should start and remain running");
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), &mut run)
+            .await
+            .expect("cancellation should interrupt the child within 2 seconds")
+            .expect_err("cancelled host command should fail");
+        assert!(error.to_string().contains("Action cancelled"));
+    }
+
     #[tokio::test]
     async fn host_exec_reports_nonzero_exit_immediately() {
         let command = [
