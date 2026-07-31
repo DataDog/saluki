@@ -15,12 +15,13 @@ use ddsketch::canonical::store::DenseStore;
 use ddsketch::canonical::DDSketch as CanonicalDDSketch;
 use ddsketch::canonical::Store as DdStore;
 use ddsketch::{Bucket, DDSketch};
-use otlp_protos::opentelemetry::proto::common::v1::KeyValue as OtlpKeyValue;
+use otlp_protos::opentelemetry::proto::common::v1::{any_value::Value as OtlpAnyValueValue, KeyValue as OtlpKeyValue};
 use otlp_protos::opentelemetry::proto::metrics::v1::{
     exponential_histogram_data_point::Buckets as OtlpExponentialHistogramBuckets, metric::Data as OtlpMetricData,
     AggregationTemporality, DataPointFlags, ExponentialHistogramDataPoint as OtlpExponentialHistogramDataPoint,
-    HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric, NumberDataPoint as OtlpNumberDataPoint,
-    ResourceMetrics as OtlpResourceMetrics, SummaryDataPoint as OtlpSummaryDataPoint,
+    Histogram as OtlpHistogram, HistogramDataPoint as OtlpHistogramDataPoint, Metric as OtlpMetric,
+    NumberDataPoint as OtlpNumberDataPoint, ResourceMetrics as OtlpResourceMetrics,
+    SummaryDataPoint as OtlpSummaryDataPoint,
 };
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::{ContextResolver, ContextResolverBuilder};
@@ -1461,10 +1462,51 @@ fn map_gauge_runtime_metric_with_attributes(
 }
 
 fn map_histogram_runtime_metric_with_attributes(
-    _metric: &OtlpMetric, _new_metrics: &mut [OtlpMetric], _mapping: &RuntimeMetricMapping,
+    metric: &OtlpMetric, new_metrics: &mut Vec<OtlpMetric>, mapping: &RuntimeMetricMapping,
 ) {
-    // TODO: Implement attribute matching and metric duplication for histograms.
-    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L698-L727
+    if let Some(OtlpMetricData::Histogram(histogram)) = &metric.data {
+        for dp in &histogram.data_points {
+            // Check if the data point's attributes match all the required attributes from the mapping.
+            let mut matches_attributes = true;
+            for required_attr in mapping.attributes {
+                let has_matching_attribute = dp.attributes.iter().any(|kv| {
+                    kv.key == required_attr.key
+                        && matches!(
+                            kv.value.as_ref().and_then(|any_value| any_value.value.as_ref()),
+                            Some(
+                                OtlpAnyValueValue::StringValue(value)
+                            ) if required_attr.values.contains(&value.as_str())
+                        )
+                });
+
+                if !has_matching_attribute {
+                    matches_attributes = false;
+                    break;
+                }
+            }
+
+            if matches_attributes {
+                // Create a new metric with a single data point.
+                let mut new_metric = OtlpMetric::default();
+                let mut new_histogram = OtlpHistogram {
+                    aggregation_temporality: histogram.aggregation_temporality,
+                    data_points: vec![],
+                };
+                let mut new_dp = dp.clone();
+
+                // Remove the attributes that were used for matching.
+                let keys_to_remove: HashSet<&str> = mapping.attributes.iter().map(|attribute| attribute.key).collect();
+                new_dp.attributes.retain(|kv| !keys_to_remove.contains(kv.key.as_str()));
+
+                new_histogram.data_points.push(new_dp);
+                new_metric.data = Some(OtlpMetricData::Histogram(new_histogram));
+                new_metric.name = mapping.mapped_name.to_string();
+                new_metrics.push(new_metric);
+
+                break;
+            }
+        }
+    }
 }
 
 /// Extracts the f64 value from an OTLP `NumberDataPoint`.
@@ -4315,5 +4357,70 @@ mod tests {
             sum.data_points[0].attributes.is_empty(),
             "the matched `generation` attribute should be stripped"
         );
+    }
+
+    #[test]
+    fn histogram_runtime_metric_maps_first_matching_attribute_and_strips_it() {
+        let mapping_set = RUNTIME_METRICS_MAPPINGS
+            .get("process.runtime.dotnet.gc.heap.size")
+            .expect("runtime mapping should exist");
+        let gen0_mapping = mapping_set
+            .iter()
+            .find(|mapping| mapping.mapped_name == "runtime.dotnet.gc.size.gen0")
+            .expect("gen0 mapping should exist");
+        let string_attribute = |key: &str, value: &str| OtlpKeyValue {
+            key: key.to_string(),
+            value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                value: Some(
+                    otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value.to_string()),
+                ),
+            }),
+        };
+        let histogram_data_point = |count, attributes| OtlpHistogramDataPoint {
+            count,
+            sum: Some(count as f64),
+            bucket_counts: vec![count],
+            attributes,
+            ..Default::default()
+        };
+        let metric = OtlpMetric {
+            name: "process.runtime.dotnet.gc.heap.size".to_string(),
+            data: Some(OtlpMetricData::Histogram(OtlpHistogram {
+                aggregation_temporality: AggregationTemporality::Delta as i32,
+                data_points: vec![
+                    histogram_data_point(1, vec![string_attribute("generation", "gen1")]),
+                    histogram_data_point(
+                        2,
+                        vec![
+                            string_attribute("generation", "gen0"),
+                            string_attribute("region", "us-east"),
+                        ],
+                    ),
+                    histogram_data_point(3, vec![string_attribute("generation", "gen0")]),
+                ],
+            })),
+            ..Default::default()
+        };
+
+        let mut new_metrics = Vec::new();
+        map_histogram_runtime_metric_with_attributes(&metric, &mut new_metrics, gen0_mapping);
+
+        assert_eq!(
+            new_metrics.len(),
+            1,
+            "only the first matching data point should be copied"
+        );
+        assert_eq!(new_metrics[0].name, "runtime.dotnet.gc.size.gen0");
+        let Some(OtlpMetricData::Histogram(histogram)) = &new_metrics[0].data else {
+            panic!("expected a histogram metric");
+        };
+        assert_eq!(histogram.aggregation_temporality, AggregationTemporality::Delta as i32);
+        assert_eq!(histogram.data_points.len(), 1);
+        assert_eq!(
+            histogram.data_points[0].count, 2,
+            "the first matching data point should be preserved"
+        );
+        assert_eq!(histogram.data_points[0].attributes.len(), 1);
+        assert_eq!(histogram.data_points[0].attributes[0].key, "region");
     }
 }
