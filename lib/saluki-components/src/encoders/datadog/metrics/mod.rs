@@ -830,8 +830,32 @@ impl Encoder for DatadogMetrics {
                     None => break,
                 },
                 maybe_event_buffer = context.events().next() => match maybe_event_buffer {
-                    Some(event_buffer) => events_tx.send(event_buffer).await
-                        .error_context("Failed to send event buffer to request builder task.")?,
+                    Some(event_buffer) => {
+                        // Both channels between this task and the request builder task are bounded, and each task is
+                        // the producer on one and the consumer on the other. Blocking outright on `events_tx` would
+                        // stop us draining `payloads_rx`, which can deadlock: the builder task blocks sending a
+                        // payload once `payloads_tx` is full, so it never returns to receive from `events_rx`, so
+                        // capacity never frees up here. Keep draining payloads while we wait for capacity so that at
+                        // least one of the two channels is always making progress.
+                        let permit = loop {
+                            select! {
+                                biased;
+
+                                permit = events_tx.reserve() => break permit
+                                    .error_context("Failed to reserve capacity for event buffer.")?,
+                                maybe_payload = payloads_rx.recv() => match maybe_payload {
+                                    Some(payload) => if let Err(e) = context.dispatcher().dispatch(payload).await {
+                                        error!("Failed to dispatch payload: {}", e);
+                                    },
+
+                                    // Our payloads channel is gone, which means our request builder task went away unexpectedly.
+                                    None => return Err(generic_error!("Request builder task stopped before accepting event buffer.")),
+                                }
+                            }
+                        };
+
+                        permit.send(event_buffer);
+                    }
                     None => break,
                 },
             }
@@ -1406,28 +1430,16 @@ async fn encode_and_flush_v3_series_metrics(
     }
     let metrics_to_flush = std::mem::take(metrics);
 
-    let requests = encode_v3_payload_requests(context.series_endpoint_uri, &metrics_to_flush, context, "series").await;
-    let batch_len = requests.len();
-    for (batch_seq, payload_request) in requests.into_iter().enumerate() {
-        flush_payload(
-            payload_request.request,
-            payload_request.event_count,
-            payload_request.data_point_count,
-            payloads_tx,
-            batch_id,
-            batch_seq,
-            batch_len,
-            payload_info,
-        )
-        .await?;
-        debug!(
-            events = payload_request.event_count,
-            data_points = payload_request.data_point_count,
-            "Sent V3 series payload."
-        );
-    }
-
-    Ok(())
+    encode_and_flush_v3_payload_requests(
+        context.series_endpoint_uri,
+        &metrics_to_flush,
+        context,
+        "series",
+        payloads_tx,
+        batch_id,
+        payload_info,
+    )
+    .await
 }
 
 async fn encode_and_flush_v3_sketch_metrics(
@@ -1439,34 +1451,32 @@ async fn encode_and_flush_v3_sketch_metrics(
     }
     let metrics_to_flush = std::mem::take(metrics);
 
-    let requests = encode_v3_payload_requests(V3_SKETCHES_ENDPOINT_URI, &metrics_to_flush, context, "sketches").await;
-    let batch_len = requests.len();
-    for (batch_seq, payload_request) in requests.into_iter().enumerate() {
-        flush_payload(
-            payload_request.request,
-            payload_request.event_count,
-            payload_request.data_point_count,
-            payloads_tx,
-            batch_id,
-            batch_seq,
-            batch_len,
-            payload_info,
-        )
-        .await?;
-        debug!(
-            events = payload_request.event_count,
-            data_points = payload_request.data_point_count,
-            "Sent V3 sketches payload."
-        );
-    }
-
-    Ok(())
+    encode_and_flush_v3_payload_requests(
+        V3_SKETCHES_ENDPOINT_URI,
+        &metrics_to_flush,
+        context,
+        "sketches",
+        payloads_tx,
+        batch_id,
+        payload_info,
+    )
+    .await
 }
 
-async fn encode_v3_payload_requests(
+/// Encodes `metrics` into one or more V3 payload requests, forwarding each one to the I/O task.
+///
+/// Requests are sent as they are built rather than accumulated, so a batch that splits into many payloads does not
+/// hold all of them in memory at once. The exception is validation/shadow batches, which carry an
+/// `X-Metrics-Request-Len` header that is only known once every payload in the batch has been built; those are
+/// collected first and sent afterwards.
+#[allow(clippy::too_many_arguments)]
+async fn encode_and_flush_v3_payload_requests(
     endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
-) -> Vec<V3PayloadRequest> {
-    let mut requests = Vec::new();
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+) -> Result<(), GenericError> {
+    // Batches that carry validation headers need the total payload count up front, so they cannot be streamed.
+    let stream_payloads = batch_id.is_none();
+    let mut pending_requests = Vec::new();
     let mut pending_ranges = split_v3_metric_ranges_by_point_limit(metrics, context, payload_kind);
 
     while let Some(range) = pending_ranges.pop_front() {
@@ -1486,7 +1496,7 @@ async fn encode_v3_payload_requests(
                 continue;
             }
         };
-        let encoded_request =
+        let mut encoded_request =
             match create_v3_request(endpoint_uri, encoded, context.endpoint_config.compression_scheme()).await {
                 Ok(request) => request,
                 Err(e) => {
@@ -1497,12 +1507,48 @@ async fn encode_v3_payload_requests(
             };
 
         if context.payload_limits.request_fits(&encoded_request) {
-            record_v3_serializer_stats(context.serializer_telemetry, &encoded_request.stats);
-            requests.push(V3PayloadRequest {
+            // Per-column compressed sizes are measured only for requests we actually emit. Measuring them eagerly in
+            // `create_v3_request` would compress every column of every oversized attempt that the split loop below
+            // throws away, which is pure waste on high-cardinality batches that split several times.
+            if let Err(e) = measure_v3_column_compressed_sizes(
+                &mut encoded_request.stats,
+                context.endpoint_config.compression_scheme(),
+            )
+            .await
+            {
+                error!(error = %e, payload_kind, "Failed to measure V3 column compressed sizes.");
+            } else {
+                record_v3_serializer_stats(context.serializer_telemetry, &encoded_request.stats);
+            }
+
+            let payload_request = V3PayloadRequest {
                 request: encoded_request.request,
                 event_count,
                 data_point_count,
-            });
+            };
+
+            if stream_payloads {
+                flush_payload(
+                    payload_request.request,
+                    payload_request.event_count,
+                    payload_request.data_point_count,
+                    payloads_tx,
+                    None,
+                    0,
+                    0,
+                    payload_info,
+                )
+                .await?;
+                debug!(
+                    payload_kind,
+                    events = payload_request.event_count,
+                    data_points = payload_request.data_point_count,
+                    "Sent V3 payload."
+                );
+            } else {
+                pending_requests.push(payload_request);
+            }
+
             continue;
         }
 
@@ -1533,7 +1579,28 @@ async fn encode_v3_payload_requests(
         pending_ranges.push_front(range.start..pivot);
     }
 
-    requests
+    let batch_len = pending_requests.len();
+    for (batch_seq, payload_request) in pending_requests.into_iter().enumerate() {
+        flush_payload(
+            payload_request.request,
+            payload_request.event_count,
+            payload_request.data_point_count,
+            payloads_tx,
+            batch_id,
+            batch_seq,
+            batch_len,
+            payload_info,
+        )
+        .await?;
+        debug!(
+            payload_kind,
+            events = payload_request.event_count,
+            data_points = payload_request.data_point_count,
+            "Sent V3 payload."
+        );
+    }
+
+    Ok(())
 }
 
 fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3EncoderStats) {
@@ -1544,6 +1611,22 @@ fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3Encod
         let compressed_size = column.compressed_len as u64;
         telemetry.record_column_size(column.field_number, uncompressed_size, compressed_size);
     }
+}
+
+/// Measures the compressed size of each V3 column, for telemetry purposes.
+///
+/// This is deliberately separate from building the request: it is only worth paying for columns belonging to a request
+/// that will actually be sent, since oversized requests are discarded and re-encoded as smaller ranges.
+async fn measure_v3_column_compressed_sizes(
+    stats: &mut V3EncoderStats, compression_scheme: CompressionScheme,
+) -> Result<(), GenericError> {
+    for column in &mut stats.columns {
+        column.compressed_len = compressed_v3_len(&column.bytes, compression_scheme)
+            .await
+            .error_context("Failed to measure V3 column compressed size.")?;
+    }
+
+    Ok(())
 }
 
 async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) -> Result<usize, GenericError> {
@@ -1892,7 +1975,7 @@ fn is_v3_series_resource_tag(tag: &Tag) -> bool {
 
 /// Creates a V3 HTTP request from encoded payload data.
 async fn create_v3_request(
-    endpoint_uri: &str, mut encoded: V3EncodedMetrics, compression_scheme: CompressionScheme,
+    endpoint_uri: &str, encoded: V3EncodedMetrics, compression_scheme: CompressionScheme,
 ) -> Result<V3EncodedRequest, GenericError> {
     // Keep the wire payload as one continuous compressed stream. Per-column compressed sizes are measured
     // independently for telemetry.
@@ -1906,11 +1989,6 @@ async fn create_v3_request(
     };
 
     let uncompressed_len = header_len + encoded.payload.len();
-    for column in &mut encoded.stats.columns {
-        column.compressed_len = compressed_v3_len(&column.bytes, compression_scheme)
-            .await
-            .error_context("Failed to measure V3 column compressed size.")?;
-    }
 
     let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
     let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
@@ -2365,9 +2443,12 @@ serializer_experimental_use_v3_api:
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::noop())
+            .await
+            .expect("column compressed sizes should be measured");
 
         for column in &request.stats.columns {
             assert_eq!(column.compressed_len, column.bytes.len());
@@ -2391,9 +2472,12 @@ serializer_experimental_use_v3_api:
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::zstd_default())
+        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::zstd_default())
             .await
             .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::zstd_default())
+            .await
+            .expect("column compressed sizes should be measured");
 
         for column in &request.stats.columns {
             let expected_compressed_len = compressed_v3_len(&column.bytes, CompressionScheme::zstd_default())
@@ -2474,9 +2558,12 @@ serializer_experimental_use_v3_api:
             Metric::gauge("v3.telemetry.float64", [(123, (1i64 << 30) as f64), (124, 1.5)]),
         ];
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
-        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::noop())
+            .await
+            .expect("column compressed sizes should be measured");
 
         let value_sint64_column = request
             .stats
@@ -2541,6 +2628,46 @@ serializer_experimental_use_v3_api:
         }
     }
 
+    /// Collected form of a payload emitted by `encode_and_flush_v3_payload_requests`.
+    struct CollectedV3Payload {
+        event_count: usize,
+        request: Request<FrozenChunkedBytesBuffer>,
+    }
+
+    /// Drives `encode_and_flush_v3_payload_requests` and collects the payloads it emits.
+    ///
+    /// The channel is sized generously because nothing drains it concurrently here; production drains it from the
+    /// encoder's main task.
+    async fn collect_v3_payload_requests(metrics: &[Metric], context: V3FlushContext<'_>) -> Vec<CollectedV3Payload> {
+        let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(64);
+        encode_and_flush_v3_payload_requests(
+            V3_SERIES_ENDPOINT_URI,
+            metrics,
+            context,
+            "series",
+            &mut payloads_tx,
+            None,
+            None,
+        )
+        .await
+        .expect("payload requests should encode and flush");
+        drop(payloads_tx);
+
+        let mut collected = Vec::new();
+        while let Some(payload) = payloads_rx.recv().await {
+            let Payload::Http(http_payload) = payload else {
+                panic!("expected HTTP payload");
+            };
+            let (metadata, request) = http_payload.into_parts();
+            collected.push(CollectedV3Payload {
+                event_count: metadata.event_count(),
+                request,
+            });
+        }
+
+        collected
+    }
+
     #[tokio::test]
     async fn v3_payload_requests_split_by_compressed_size_limit() {
         let metrics = vec![
@@ -2557,7 +2684,7 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+        let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert_eq!(2, requests.len());
         assert_eq!(
@@ -2584,7 +2711,7 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+        let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert_eq!(2, requests.len());
         assert_eq!(
@@ -2605,7 +2732,7 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+        let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert!(requests.is_empty());
         assert_eq!(recorder.counter("serializer.v3_item_too_big"), Some(1));
@@ -2631,7 +2758,7 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+        let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert_eq!(2, requests.len());
         assert_eq!(
