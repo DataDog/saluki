@@ -6,6 +6,7 @@ use serde::Serialize;
 
 pub mod checks;
 pub mod dogstatsd;
+pub mod logs;
 pub mod multi_region_failover;
 pub mod otlp;
 pub mod traces;
@@ -14,6 +15,7 @@ pub mod traces;
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DomainConfiguration {
     pub dogstatsd: dogstatsd::Domain,
+    pub logs: logs::Domain,
     pub otlp: otlp::Domain,
     pub traces: traces::Domain,
     pub checks: checks::Domain,

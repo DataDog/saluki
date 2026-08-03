@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use agent_data_plane_config::domains::logs::StatefulEncoding;
 use bytes::Buf;
 use futures::FutureExt as _;
 use http::{Request, StatusCode, Uri};
@@ -49,6 +50,7 @@ use super::{
     endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
+    stateful_logs::{StatefulEvent, StatefulLogsSender},
     telemetry::{
         ComponentTelemetry, SharedTransactionQueueTelemetry, TransactionInputTelemetry, TransactionQueueTelemetry,
         TransactionRetryCounters, TransactionRetryTelemetry,
@@ -238,6 +240,7 @@ pub struct TransactionForwarder<B> {
     endpoints: Vec<RoutableEndpoint>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     emitter: DiagnosticsEmitter,
+    stateful_logs: StatefulEncoding,
     _marker: PhantomData<B>,
 }
 
@@ -366,8 +369,15 @@ where
             endpoints,
             endpoint_request_mapper_factory,
             emitter,
+            stateful_logs: StatefulEncoding::default(),
             _marker: PhantomData,
         })
+    }
+
+    /// Configures stateful logs transport for endpoint workers.
+    pub fn with_stateful_logs(mut self, stateful_logs: StatefulEncoding) -> Self {
+        self.stateful_logs = stateful_logs;
+        self
     }
 
     /// Spawns the I/O task for the forwarder, and any associated endpoint I/O tasks.
@@ -390,6 +400,7 @@ where
             endpoints,
             endpoint_request_mapper_factory,
             emitter,
+            stateful_logs,
             _marker,
         } = self;
 
@@ -408,6 +419,7 @@ where
                 endpoints,
                 endpoint_request_mapper_factory,
                 emitter,
+                stateful_logs,
             ),
         );
 
@@ -440,6 +452,7 @@ async fn run_io_loop<B>(
     service: HttpClient, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     endpoint_name: Arc<EndpointNameFn>, resolved_endpoints: Vec<RoutableEndpoint>,
     endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>, emitter: DiagnosticsEmitter,
+    stateful_logs: StatefulEncoding,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -476,6 +489,7 @@ async fn run_io_loop<B>(
                 live_config.clone(),
                 service.clone(),
                 telemetry.clone(),
+                metrics_builder.clone(),
                 txnq_telemetry,
                 retry_telemetry,
                 Arc::clone(&endpoint_name),
@@ -483,6 +497,7 @@ async fn run_io_loop<B>(
                 resolved_endpoint,
                 endpoint_request_mapper_factory.clone(),
                 emitter.clone(),
+                stateful_logs.clone(),
             ),
         );
 
@@ -576,10 +591,10 @@ fn track_transaction_input_for_endpoint(
 async fn run_endpoint_io_loop<B>(
     mut txns_rx: mpsc::Receiver<Transaction<B>>, task_barrier: Arc<Barrier>, context: ComponentContext,
     config: ForwarderConfiguration, live_config: Option<GenericConfiguration>, service: HttpClient,
-    telemetry: ComponentTelemetry, txnq_telemetry: TransactionQueueTelemetry,
+    telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder, txnq_telemetry: TransactionQueueTelemetry,
     mut retry_telemetry: TransactionRetryTelemetry, endpoint_name: Arc<EndpointNameFn>, route: EndpointRoute,
     endpoint: ResolvedEndpoint, endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
-    emitter: DiagnosticsEmitter,
+    emitter: DiagnosticsEmitter, stateful_logs: StatefulEncoding,
 ) where
     B: Body + Buf + Clone + Send + Sync + 'static,
     B::Data: Send,
@@ -620,6 +635,23 @@ async fn run_endpoint_io_loop<B>(
         ?endpoint_v3_settings,
         "Starting endpoint I/O task."
     );
+
+    let mut stateful_sender = if stateful_logs.enabled && route != EndpointRoute::MetricsPrimary {
+        match StatefulLogsSender::new(
+            endpoint.clone(),
+            &metrics_builder,
+            &endpoint_domain,
+            config.request_timeout(),
+        ) {
+            Ok(sender) => Some(sender),
+            Err(error) => {
+                error!(endpoint_url, %error, "Failed to initialize stateful logs; using stateless transport.");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let endpoint_request_mapper = Arc::new(Mutex::new((endpoint_request_mapper_factory)(endpoint)));
 
     // Build our endpoint service.
@@ -687,6 +719,9 @@ async fn run_endpoint_io_loop<B>(
         MetaString::from(endpoint_domain.as_str()),
         config.retry().capacity_time_interval_secs(),
     );
+    if let Some(sender) = stateful_sender.as_mut() {
+        sender.start().await;
+    }
 
     let mut in_flight = JoinSet::new();
     let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
@@ -722,6 +757,17 @@ async fn run_endpoint_io_loop<B>(
                         logical,
                         transaction_size,
                     );
+
+                    let txn = match stateful_sender.as_mut() {
+                        Some(sender) => match sender
+                            .try_send_transaction(txn, &mut pending_txns, &telemetry, &endpoint_domain)
+                            .await
+                        {
+                            Ok(()) => continue,
+                            Err(txn) => txn,
+                        },
+                        None => txn,
+                    };
 
                     match pending_txns.push_high_priority(txn).await {
                         Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
@@ -777,8 +823,27 @@ async fn run_endpoint_io_loop<B>(
                 ).await;
             },
 
+            maybe_event = async {
+                match stateful_sender.as_mut() {
+                    Some(sender) => sender.next_event().await,
+                    None => std::future::pending::<Option<StatefulEvent>>().await,
+                }
+            }, if !done => {
+                if let Some(event) = maybe_event {
+                    if let Some(sender) = stateful_sender.as_mut() {
+                        sender
+                            .handle_event(event, &mut pending_txns, &telemetry, &endpoint_domain)
+                            .await;
+                    }
+                }
+            },
+
             else => break,
         }
+    }
+
+    if let Some(sender) = stateful_sender.as_mut() {
+        sender.shutdown(&mut pending_txns, &telemetry, &endpoint_domain).await;
     }
 
     // Flush any outstanding transactions in the pending transactions queue, which will potentially enqueue them to disk
@@ -840,7 +905,7 @@ fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoin
     format!("{}/{}/{:x}", context.component_id(), endpoint_host, hash)
 }
 
-fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
+pub(super) fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
     if push_result.had_drops() {
         saluki_antithesis::sometimes!(
             true,
@@ -917,7 +982,7 @@ fn build_diagnostics_layer(emitter: DiagnosticsEmitter, endpoint_url: String) ->
     HttpInspectionLayer::new().with_inspector(StatusCode::FORBIDDEN, forbidden_inspector)
 }
 
-enum PendingTransaction<T> {
+pub(super) enum PendingTransaction<T> {
     HighPriority(T),
     LowPriority(T),
 }
@@ -932,8 +997,9 @@ enum PendingTransaction<T> {
 /// Ultimately, we use this construction to provide a fast path for new transactions, while limiting the overall number
 /// of outstanding transactions that are waiting to be processed, with a bias towards preserving the most recent
 /// transactions so that fresh data can be sent as soon as any temporary networking issues are resolved.
-struct PendingTransactions<T> {
+pub(super) struct PendingTransactions<T> {
     high_priority: VecDeque<T>,
+    max_high_priority: usize,
     low_priority: RetryQueue<T>,
     telemetry: TransactionQueueTelemetry,
     domain: MetaString,
@@ -951,6 +1017,7 @@ impl<T: Retryable> PendingTransactions<T> {
     ) -> Self {
         Self {
             high_priority: VecDeque::with_capacity(max_enqueued),
+            max_high_priority: max_enqueued,
             low_priority: retry_queue,
             telemetry,
             domain,
@@ -968,13 +1035,17 @@ impl<T: Retryable> PendingTransactions<T> {
         self.high_priority.is_empty() && self.low_priority.is_empty()
     }
 
+    pub(super) fn high_priority_is_full_with(&self, externally_pending: usize) -> bool {
+        self.high_priority.len().saturating_add(externally_pending) > self.max_high_priority
+    }
+
     /// Pushes a high-priority transaction into the queue.
     ///
     /// If the high-priority queue is full, the transaction will be pushed into the low-priority queue.
     pub async fn push_high_priority(&mut self, transaction: T) -> Result<PushResult, GenericError> {
         self.record_incoming_transaction_size(transaction.size_bytes()).await;
 
-        if self.high_priority.len() < self.high_priority.capacity() {
+        if self.high_priority.len() < self.max_high_priority {
             self.high_priority.push_back(transaction);
             self.telemetry.high_prio_queue_insertions().increment(1);
 

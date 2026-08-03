@@ -9,6 +9,7 @@ mod proxy;
 pub mod request_builder;
 mod retry;
 mod retry_capacity;
+mod stateful_logs;
 pub mod telemetry;
 pub mod transaction;
 pub mod validation;

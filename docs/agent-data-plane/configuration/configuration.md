@@ -458,6 +458,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
 | `dogstatsd_tcp_port`                                            | TCP listen port for DSD                    |                |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
+| `logs_config.use_grpc`                                          | Use stateful Foldspace transport for logs  | false          |
 | `memory_limit`                                                  | Process memory limit                       |                |
 | `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
 | `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts   |                |
@@ -469,6 +470,10 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity        |                |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity             |                |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                    |                |
+
+### `logs_config.use_grpc`
+
+Enables the initial stateful logs transport. Failed or queued stateful payloads are reconstructed and stored as complete stateless HTTP transactions before entering the normal retry or persisted queues. This does not provide full crash durability: a process crash before conversion can lose unacknowledged stateful payloads, and the persisted queue retains its existing dequeue crash window.
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 

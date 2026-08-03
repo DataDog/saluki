@@ -22,6 +22,27 @@ pub struct SalukiKey {
 }
 
 pub static SALUKI_KEYS: &[SalukiKey] = &[
+    // ── logs.rs ─────────────────────────────────────────────────────────────
+    SalukiKey {
+        yaml_path: "logs_config.use_grpc",
+        description: "Use stateful Foldspace transport for logs",
+        default: "false",
+        documentation: Some(
+            "Enables the initial stateful logs transport. Failed or queued stateful payloads are reconstructed and \
+             stored as complete stateless HTTP transactions before entering the normal retry or persisted queues. \
+             This does not provide full crash durability: a process crash before conversion can lose unacknowledged \
+             stateful payloads, and the persisted queue retains its existing dequeue crash window.",
+        ),
+        value_type: "ValueType::Bool",
+        schema_default: Some("false"),
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::Otlp])",
+        filename: "logs.rs",
+    },
     // ── data_plane.rs ────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",

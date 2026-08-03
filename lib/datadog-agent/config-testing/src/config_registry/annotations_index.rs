@@ -18,6 +18,7 @@ mod dogstatsd_prefix_filter;
 mod encoders;
 mod forwarder;
 mod get_typed;
+mod logs;
 mod mrf;
 mod otlp;
 mod proxy;
@@ -40,6 +41,7 @@ pub static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = Laz
     v.extend_from_slice(encoders::ALL);
     v.extend_from_slice(forwarder::ALL);
     v.extend_from_slice(get_typed::ALL);
+    v.extend_from_slice(logs::ALL);
     v.extend_from_slice(mrf::ALL);
     v.extend_from_slice(otlp::ALL);
     v.extend_from_slice(proxy::ALL);

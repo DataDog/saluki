@@ -18,6 +18,7 @@ newtype
 boolean(s?)
 ddsketch
 datadog
+foldspace
 otel
 serde
 stdin
@@ -95,6 +96,7 @@ inlining
 cloneable
 callsite
 enqueue(s|d|ing)?
+dequeue(s|d|ing)?
 hostname
 backpressure
 misconfiguration

@@ -31,9 +31,13 @@ ddsketch = { workspace = true }
 facet = { workspace = true }
 faster-hex = { workspace = true }
 figment = { workspace = true }
+flate2 = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 fnv = { workspace = true }
 foldhash = { workspace = true }
+foldspace-core = { workspace = true }
+foldspace-patterns = { workspace = true }
+foldspace-server = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
 headers = { workspace = true }
@@ -84,7 +88,8 @@ tokio = { workspace = true, features = [
   "signal",
   "sync",
 ] }
-tonic = { workspace = true, features = ["router", "server"] }
+tokio-stream = { workspace = true }
+tonic = { workspace = true, features = ["channel", "router", "server", "tls-native-roots"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }

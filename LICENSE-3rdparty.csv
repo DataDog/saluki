@@ -127,6 +127,11 @@ flate2,https://github.com/rust-lang/flate2-rs,MIT OR Apache-2.0,"Alex Crichton <
 float-cmp,https://github.com/mikedilger/float-cmp,MIT,Mike Dilger <mike@mikedilger.com>
 fnv,https://github.com/servo/rust-fnv,Apache-2.0  OR  MIT,Alex Crichton <alex@alexcrichton.com>
 foldhash,https://github.com/orlp/foldhash,Zlib,Orson Peters <orsonpeters@gmail.com>
+foldspace-core,https://github.com/DataDog/foldspace,Apache-2.0,The foldspace-core Authors
+foldspace-eviction,https://github.com/DataDog/foldspace,Apache-2.0,The foldspace-eviction Authors
+foldspace-patterns,https://github.com/DataDog/foldspace,Apache-2.0,The foldspace-patterns Authors
+foldspace-patterns-tokenizer,https://github.com/DataDog/foldspace,Apache-2.0,The foldspace-patterns-tokenizer Authors
+foldspace-server,https://github.com/DataDog/foldspace,Apache-2.0,The foldspace-server Authors
 form_urlencoded,https://github.com/servo/rust-url,MIT OR Apache-2.0,The rust-url developers
 fs4,https://github.com/al8n/fs4-rs,MIT OR Apache-2.0,"Dan Burkert <dan@danburkert.com>, Al Liu <scygliu1@gmail.com>"
 futures,https://github.com/rust-lang/futures-rs,MIT OR Apache-2.0,The futures Authors
@@ -301,6 +306,8 @@ prost-types,https://github.com/tokio-rs/prost,Apache-2.0,"Dan Burkert <dan@danbu
 protobuf,https://github.com/stepancheg/rust-protobuf,MIT,Stepan Koltsov <stepan.koltsov@gmail.com>
 protobuf-parse,https://github.com/stepancheg/rust-protobuf/tree/master/protobuf-parse,MIT,Stepan Koltsov <stepan.koltsov@gmail.com>
 protobuf-support,https://github.com/stepancheg/rust-protobuf,MIT,Stepan Koltsov <stepan.koltsov@gmail.com>
+pulldown-cmark,https://github.com/raphlinus/pulldown-cmark,MIT,"Raph Levien <raph.levien@gmail.com>, Marcus Klaas de Vries <mail@marcusklaas.nl>"
+pulldown-cmark-to-cmark,https://github.com/Byron/pulldown-cmark-to-cmark,Apache-2.0,"Sebastian Thiel <byronimo@gmail.com>, Dylan Owen <dyltotheo@gmail.com>, Alessandro Ogier <alessandro.ogier@gmail.com>, Zixian Cai <2891235+caizixian@users.noreply.github.com>, Andrew Lyjak <andrew.lyjak@gmail.com>"
 quanta,https://github.com/metrics-rs/quanta,MIT,Toby Lawrence <toby@nuclearfurnace.com>
 quick_cache,https://github.com/arthurprs/quick-cache,MIT,Arthur Silva <arthurprs@gmail.com>
 quote,https://github.com/dtolnay/quote,MIT OR Apache-2.0,David Tolnay <dtolnay@gmail.com>
@@ -455,6 +462,7 @@ typify-impl,https://github.com/oxidecomputer/typify,Apache-2.0,The typify-impl A
 ucd-trie,https://github.com/BurntSushi/ucd-generate,MIT OR Apache-2.0,Andrew Gallant <jamslam@gmail.com>
 unarray,https://github.com/cameron1024/unarray,MIT OR Apache-2.0,The unarray Authors
 uncased,https://github.com/SergioBenitez/uncased,MIT OR Apache-2.0,Sergio Benitez <sb@sergio.bz>
+unicase,https://github.com/seanmonstar/unicase,MIT OR Apache-2.0,Sean McArthur <sean@seanmonstar.com>
 unicode-ident,https://github.com/dtolnay/unicode-ident,(MIT OR Apache-2.0) AND Unicode-3.0,David Tolnay <dtolnay@gmail.com>
 unicode-segmentation,https://github.com/unicode-rs/unicode-segmentation,MIT OR Apache-2.0,"kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>"
 unicode-width,https://github.com/unicode-rs/unicode-width,MIT OR Apache-2.0,"kwantam <kwantam@gmail.com>, Manish Goregaokar <manishsmail@gmail.com>"
