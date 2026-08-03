@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a><span class="kw">use </span>saluki_context::tags::TagSet;
 <a href=#3 id=3 data-nosnippet>3</a>
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>super::{origin_id_from_attributes, tags_from_attributes, ResourceAttributeTagMode};
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">crate</span>::common::otlp::util::{resource_to_source, Source};
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">crate</span>::common::otlp::util::{resource_to_metric_source, Source};
 <a href=#6 id=6 data-nosnippet>6</a>
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">pub struct </span>AttributeTranslator {}
 <a href=#8 id=8 data-nosnippet>8</a>
@@ -20,10 +20,10 @@
 <a href=#20 id=20 data-nosnippet>20</a>        origin_id_from_attributes(attributes)
 <a href=#21 id=21 data-nosnippet>21</a>    }
 <a href=#22 id=22 data-nosnippet>22</a>
-<a href=#23 id=23 data-nosnippet>23</a>    <span class="kw">pub fn </span>resource_to_source(
+<a href=#23 id=23 data-nosnippet>23</a>    <span class="kw">pub fn </span>resource_to_metric_source(
 <a href=#24 id=24 data-nosnippet>24</a>        <span class="kw-2">&amp;</span><span class="self">self</span>, resource: <span class="kw-2">&amp;</span>otlp_protos::opentelemetry::proto::resource::v1::Resource,
 <a href=#25 id=25 data-nosnippet>25</a>    ) -&gt; <span class="prelude-ty">Option</span>&lt;Source&gt; {
-<a href=#26 id=26 data-nosnippet>26</a>        resource_to_source(resource)
+<a href=#26 id=26 data-nosnippet>26</a>        resource_to_metric_source(resource)
 <a href=#27 id=27 data-nosnippet>27</a>    }
 <a href=#28 id=28 data-nosnippet>28</a>}
 </code></pre></div></section></main></body></html>
