@@ -905,8 +905,12 @@ async fn add_otlp_pipeline_to_blueprint(
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
         let config = config_system.config();
-        let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
-            .with_default_hostname(default_hostname);
+        let otlp_config = OtlpConfiguration::from_configuration(
+            &config.domains.otlp,
+            &config.shared,
+            env_provider.workload().clone(),
+        )
+        .with_default_hostname(default_hostname);
 
         blueprint
             // Components.

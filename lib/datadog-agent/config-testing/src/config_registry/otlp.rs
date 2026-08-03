@@ -256,6 +256,50 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `cluster_name`-Kubernetes cluster name for EKS Fargate OTLP tags
+    CLUSTER_NAME = SalukiAnnotation {
+        schema: &schema::CLUSTER_NAME,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `eks_fargate`-Enable EKS Fargate static tags for OTLP metrics
+    EKS_FARGATE = SalukiAnnotation {
+        schema: &schema::EKS_FARGATE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `extra_tags`-Additional EKS Fargate OTLP metric tags
+    EXTRA_TAGS = SalukiAnnotation {
+        schema: &schema::EXTRA_TAGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_EXTRA_TAGS"]),
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `kubernetes_kubelet_nodename`-Kubernetes node name for EKS Fargate metric tags
+    KUBERNETES_KUBELET_NODENAME = SalukiAnnotation {
+        schema: &schema::KUBERNETES_KUBELET_NODENAME,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `otlp_config.metrics.histograms.mode`-OTLP histogram bucket reporting mode
     OTLP_CONFIG_METRICS_HISTOGRAMS_MODE = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_HISTOGRAMS_MODE,
@@ -336,6 +380,28 @@ crate::declare_annotations! {
     /// `otlp_config.metrics.tags`-Comma-separated tags for all OTLP metrics.
     OTLP_CONFIG_METRICS_TAGS = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_METRICS_TAGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `provider_kind`-Provider kind static tag
+    PROVIDER_KIND = SalukiAnnotation {
+        schema: &schema::PROVIDER_KIND,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_PROVIDER_KIND"]),
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
+    /// `tags`-Global tags for EKS Fargate OTLP metrics
+    TAGS = SalukiAnnotation {
+        schema: &schema::TAGS,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
