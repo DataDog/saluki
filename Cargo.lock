@@ -71,8 +71,10 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tonic",
+ "tower",
  "tracing",
  "uuid",
+ "zstd",
 ]
 
 [[package]]

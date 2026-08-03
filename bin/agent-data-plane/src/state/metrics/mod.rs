@@ -568,4 +568,52 @@ mod tests {
         assert_eq!(find("transactions.retries"), Some("Transaction retry count"));
         assert_eq!(find("transactions.requeued"), Some("Transaction requeue count"));
     }
+
+    #[test]
+    fn rar_telemetry_remaps_supported_dogstatsd_client_byte_telemetry_as_counters() {
+        let metrics = [
+            "adp.dogstatsd_client_telemetry_bytes_sent",
+            "adp.dogstatsd_client_telemetry_bytes_dropped",
+            "adp.dogstatsd_client_telemetry_bytes_dropped_queue",
+            "adp.dogstatsd_client_telemetry_bytes_dropped_writer",
+        ]
+        .into_iter()
+        .map(|internal_name| {
+            Event::Metric(Metric::counter(
+                Context::from_static_parts(
+                    internal_name,
+                    &["component_id:dsd_client_telemetry_out", "component_type:destination"],
+                ),
+                7.0,
+            ))
+        })
+        .collect();
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        for exported_name in [
+            "dogstatsd_client__bytes_sent",
+            "dogstatsd_client__bytes_dropped",
+            "dogstatsd_client__bytes_dropped_queue",
+            "dogstatsd_client__bytes_dropped_writer",
+        ] {
+            assert!(output.contains(&format!("# TYPE {exported_name} counter")), "{output}");
+            assert!(output.contains(&format!("{exported_name} 7")), "{output}");
+        }
+    }
+
+    #[test]
+    fn rar_telemetry_omits_unsupported_dogstatsd_client_metrics() {
+        let metrics = vec![Event::Metric(Metric::gauge(
+            Context::from_static_parts(
+                "adp.dogstatsd_client_telemetry_metrics",
+                &["component_id:dsd_client_telemetry_out", "component_type:destination"],
+            ),
+            7.0,
+        ))];
+
+        let output = render_with(get_datadog_agent_remappings(), metrics);
+
+        assert!(!output.contains("dogstatsd_client__metrics"), "{output}");
+    }
 }
