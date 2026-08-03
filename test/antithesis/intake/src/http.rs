@@ -33,12 +33,15 @@ const MAX_COMPRESSED_BODY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DECOMPRESSED_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Build the intake router. `/api/v2/series` fires payload assertions. Datadog endpoints answer
-/// 202. A malformed body gets 400. An oversized body gets 413. Unmatched paths answer 200.
+/// 202. A malformed body gets 400. An oversized body gets 413.
+///
+/// Unmatched paths answer 404, per the README's endpoint table. A 200 there would let an endpoint
+/// nothing reaches look alive, and hide a producer posting somewhere the rig does not model.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .merge(datadog::routes())
         .merge(antithesis::routes())
-        .fallback(|| async { StatusCode::OK })
+        .fallback(|| async { StatusCode::NOT_FOUND })
         .with_state(state)
 }
 

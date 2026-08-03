@@ -6,7 +6,6 @@ use datadog_protos::metrics::sketch_payload::sketch::{Distribution, Dogsketch};
 use datadog_protos::metrics::sketch_payload::Sketch;
 use datadog_protos::metrics::v3;
 use protobuf::Message;
-use serde_json::json;
 
 use super::*;
 use crate::lenient_decode::decode_series_v3;
@@ -23,24 +22,12 @@ fn context(name: &str, tags: &[&str], kind: MetricKind) -> Context {
     }
 }
 
-// A recorded context serializes to the flat wire shape the scenario drivers deserialize: name, tagset
-// as a sorted set, kind as a snake_case token, and first_seen as a bare number.
-#[test]
-fn contexts_serialize_to_the_flat_wire_shape() {
-    let mut lanes = Lanes::default();
-    let ctx = context("requests", &["host:agent-host", "env:test"], MetricKind::Count);
-    lanes.record(Target::Adp, &[ctx], EpochSeconds::from_epoch_secs(2_000));
-
-    let wire = serde_json::to_value(lanes.contexts(Target::Adp)).expect("serialize");
-    assert_eq!(
-        wire,
-        json!([{
-            "name": "requests",
-            "tagset": ["env:test", "host:agent-host"],
-            "kind": "count",
-            "first_seen": 2_000,
-        }])
-    );
+/// A context carrying one point, for tests that exercise context recording rather than the columns.
+fn bare(context: Context) -> Observation {
+    Observation {
+        context,
+        points: vec![observed(1.0, 100, 10)],
+    }
 }
 
 // `record` returns exactly how many contexts the batch newly added on the given lane. A known context
@@ -53,9 +40,9 @@ fn record_returns_the_count_of_newly_added_contexts() {
     let c = context("adp.c", &["env:test"], MetricKind::Rate);
     let mut lanes = Lanes::default();
 
-    assert_eq!(lanes.record(Target::Adp, &[a.clone(), b], now), 2);
-    assert_eq!(lanes.record(Target::Adp, &[a.clone(), c], now), 1);
-    assert_eq!(lanes.record(Target::Agent, &[a], now), 1);
+    assert_eq!(lanes.record(Target::Adp, [bare(a.clone()), bare(b)], now), 2);
+    assert_eq!(lanes.record(Target::Adp, [bare(a.clone()), bare(c)], now), 1);
+    assert_eq!(lanes.record(Target::Agent, [bare(a)], now), 1);
 }
 
 // Self-telemetry contexts are skipped: they never count as added and never appear in the served view.
@@ -66,12 +53,14 @@ fn self_telemetry_contexts_are_skipped() {
     let kept = context("adp.req", &["env:test"], MetricKind::Count);
     let mut lanes = Lanes::default();
 
-    let added = lanes.record(Target::Adp, &[telemetry, kept], now);
+    let added = lanes.record(Target::Adp, [bare(telemetry.clone()), bare(kept)], now);
 
     assert_eq!(added, 1);
-    let served = lanes.contexts(Target::Adp);
-    assert_eq!(served.len(), 1);
-    assert_eq!(served[0].context.name, "adp.req");
+    let view: Vec<_> = lanes.contexts(Target::Adp).collect();
+    assert_eq!(view.len(), 1);
+    assert_eq!(view[0].0.name, "adp.req");
+    // The exclusion covers the columns too, not just the context set.
+    assert_eq!(lanes.scalar_points(Target::Adp, &telemetry).count(), 0);
 }
 
 // --- production-parity per-series drops ---
@@ -122,7 +111,7 @@ fn observe_series_drops_what_propjoe_drops() {
     payload.series.push(built_series("adp.toomanytags", 101, 1)); // tag flood
 
     let contexts = observe_series(payload, NOW_SECS);
-    let names: BTreeSet<&str> = contexts.iter().map(|c| c.name.as_str()).collect();
+    let names: BTreeSet<&str> = contexts.iter().map(|c| c.context.name.as_str()).collect();
     assert_eq!(names, BTreeSet::from(["adp.requests"]));
 }
 
@@ -196,10 +185,10 @@ fn observe_sketches_emits_sketch_context_and_folds_host() {
 
     let contexts = observe_sketches(payload);
     assert_eq!(contexts.len(), 1);
-    assert_eq!(contexts[0].name, "latency");
-    assert_eq!(contexts[0].kind, MetricKind::Sketch);
+    assert_eq!(contexts[0].context.name, "latency");
+    assert_eq!(contexts[0].context.kind, MetricKind::Sketch);
     assert_eq!(
-        contexts[0].tagset,
+        contexts[0].context.tagset,
         ["env:prod".to_string(), "host:web-1".to_string()].into_iter().collect()
     );
 }
@@ -218,8 +207,8 @@ fn observe_sketches_keeps_a_distribution_only_sketch() {
 
     let contexts = observe_sketches(payload);
     assert_eq!(contexts.len(), 1);
-    assert_eq!(contexts[0].name, "legacy.dist");
-    assert_eq!(contexts[0].kind, MetricKind::Sketch);
+    assert_eq!(contexts[0].context.name, "legacy.dist");
+    assert_eq!(contexts[0].context.kind, MetricKind::Sketch);
 }
 
 // The backend's NormalizeDistributionReq drops a distribution with an invalid metric name, more than
@@ -250,7 +239,7 @@ fn observe_sketches_drops_invalid_name_tag_flood_and_long_host() {
         .push(sketch("longhost", 1, &"h".repeat(MAX_HOST_NAME_LEN + 1))); // host too long, dropped
 
     let contexts = observe_sketches(payload);
-    let names: BTreeSet<&str> = contexts.iter().map(|c| c.name.as_str()).collect();
+    let names: BTreeSet<&str> = contexts.iter().map(|c| c.context.name.as_str()).collect();
     assert_eq!(names, BTreeSet::from(["latency"]));
 }
 
@@ -292,6 +281,9 @@ fn v3_contexts(payload: &v3::Payload) -> Vec<Context> {
     let bytes = payload.write_to_bytes().expect("serialize v3 payload");
     let series = decode_series_v3(Target::Agent, &OnceLock::new(), NOW_SECS, &bytes).expect("decode v3 payload");
     observe_series_v3(series, NOW_SECS)
+        .into_iter()
+        .map(|o| o.context)
+        .collect()
 }
 
 // A valid v3 payload decodes to exactly the expected contexts. Two scalar series
@@ -345,7 +337,7 @@ fn v3_lane_parity_matches_v2() {
     series.points.push(point);
     let mut v2 = MetricPayload::new();
     v2.series.push(series);
-    let v2_set: BTreeSet<Context> = observe_series(v2, NOW_SECS).into_iter().collect();
+    let v2_set: BTreeSet<Context> = observe_series(v2, NOW_SECS).into_iter().map(|o| o.context).collect();
 
     // v3 side: the same logical metric, dictionary + delta encoded, host carried as a resource.
     let mut data = v3::MetricData::new();
@@ -503,6 +495,7 @@ fn observe_series_v3_all_points_dropped_emits_no_context() {
         name: "app.count".to_string(),
         tags: vec!["env:prod".to_string()],
         kind: MetricKind::Count,
+        interval: 10,
         points: vec![
             (110, BucketValue::Scalar(f64::NAN)),
             (far_future, BucketValue::Scalar(2.0)),
@@ -510,4 +503,252 @@ fn observe_series_v3_all_points_dropped_emits_no_context() {
     }];
 
     assert!(observe_series_v3(series, NOW_SECS).is_empty());
+}
+
+fn observed(value: f64, ts: i64, interval: u32) -> Observed {
+    Observed {
+        timestamp: EpochSeconds::from_epoch_secs(ts),
+        interval,
+        value: BucketValue::Scalar(value),
+    }
+}
+
+// Two points sharing a timestamp get distinct ascending seqs, so the resubmit rule breaks the tie
+// without consulting insertion order. seq is the arrival ordinal within the series, not a per-timestamp
+// counter, which keeps assignment O(1) instead of rescanning the column on every push.
+#[test]
+fn seq_distinguishes_points_sharing_a_timestamp() {
+    let mut lanes = Lanes::default();
+    let ctx = context("adp.requests", &["env:test"], MetricKind::Count);
+    lanes.record(
+        Target::Adp,
+        [Observation {
+            context: ctx.clone(),
+            points: vec![observed(1.0, 100, 10), observed(2.0, 100, 10), observed(3.0, 110, 10)],
+        }],
+        EpochSeconds::from_epoch_secs(200),
+    );
+
+    let points: Vec<_> = lanes
+        .scalar_points(Target::Adp, &ctx)
+        .map(|p| (p.timestamp.secs(), p.seq, p.interval))
+        .collect();
+
+    assert_eq!(points, vec![(100, 0, 10), (100, 1, 10), (110, 2, 10)]);
+}
+
+// `compared` is the union of the two lanes, so a context on both is counted once. A wrong count here
+// would let a run that saw almost nothing look like a healthy population.
+#[test]
+fn compared_counts_the_union_of_both_lanes() {
+    let state = State::new();
+    let now = EpochSeconds::from_epoch_secs(1_000);
+    let shared = context("shared", &["env:test"], MetricKind::Count);
+    let agent_only = context("agent.only", &[], MetricKind::Gauge);
+    let adp_only = context("adp.only", &[], MetricKind::Rate);
+
+    state.with_lanes(|lanes| {
+        lanes.record(Target::Agent, [bare(shared.clone()), bare(agent_only)], now);
+        lanes.record(Target::Adp, [bare(shared), bare(adp_only)], now);
+    });
+
+    let report = state.compare_contexts(now, 60);
+
+    // Three distinct contexts, two of which diverge.
+    assert_eq!(report.compared, 3);
+    assert_eq!(report.diverged, 2);
+}
+
+// The lane split says which side holds the members, and the distinct-name counts say whether one
+// metric diverged repeatedly or many metrics diverged once. Both count the whole difference, not the
+// sample. Here the ADP lane holds three members under two names, so the two counts differ.
+#[test]
+fn diverged_splits_by_lane_and_by_distinct_name() {
+    let state = State::new();
+    let now = EpochSeconds::from_epoch_secs(1_000);
+    let shared = context("shared", &["env:test"], MetricKind::Count);
+
+    state.with_lanes(|lanes| {
+        lanes.record(
+            Target::Agent,
+            [bare(shared.clone()), bare(context("agent.one", &[], MetricKind::Gauge))],
+            now,
+        );
+        lanes.record(
+            Target::Adp,
+            [
+                bare(shared),
+                bare(context("adp.one", &["env:a"], MetricKind::Rate)),
+                bare(context("adp.one", &["env:b"], MetricKind::Rate)),
+                bare(context("adp.two", &[], MetricKind::Rate)),
+            ],
+            now,
+        );
+    });
+
+    let report = state.compare_contexts(now, 60);
+
+    assert_eq!(report.diverged, 4);
+    assert_eq!(report.adp_only, 3);
+    assert_eq!(report.agent_only, 1);
+    assert_eq!(report.adp_only_names, 2);
+    assert_eq!(report.agent_only_names, 1);
+}
+
+// The difference arrives ordered by context, so a plain truncation samples the names that sort
+// earliest rather than the worst offenders. The sample lists the oldest members, ties broken by
+// context so a replay lists the same ones.
+#[test]
+fn sample_lists_the_oldest_members_first() {
+    let state = State::new();
+    let now = EpochSeconds::from_epoch_secs(1_000);
+    // Age rises with the name, so the oldest members are the ones whose names sort last and an
+    // unsorted truncation would drop them. `ctx.10` is aged up to tie with `ctx.11` at the top, which
+    // the context tie-break then orders.
+    let age = |i: i64| if i == 10 { 100 } else { 89 + i };
+
+    state.with_lanes(|lanes| {
+        for i in 0..12i64 {
+            let seen = EpochSeconds::from_epoch_secs(now.secs() - age(i));
+            lanes.record(
+                Target::Adp,
+                [bare(context(&format!("ctx.{i:02}"), &[], MetricKind::Count))],
+                seen,
+            );
+        }
+    });
+
+    let report = state.compare_contexts(now, 60);
+
+    assert_eq!(report.diverged, 12);
+    assert_eq!(report.listed, SAMPLE_LIMIT);
+    let listed: Vec<_> = report.sample.iter().map(|d| (d.name.as_str(), d.age_secs)).collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("ctx.10", 100),
+            ("ctx.11", 100),
+            ("ctx.09", 98),
+            ("ctx.08", 97),
+            ("ctx.07", 96),
+            ("ctx.06", 95),
+            ("ctx.05", 94),
+            ("ctx.04", 93),
+            ("ctx.03", 92),
+            ("ctx.02", 91),
+        ]
+    );
+}
+
+// Two lanes holding nothing compare nothing. `compared` of zero is what tells the harness an empty
+// difference means silence rather than agreement.
+#[test]
+fn empty_lanes_compare_nothing() {
+    let state = State::new();
+    let now = EpochSeconds::from_epoch_secs(1_000);
+
+    let report = state.compare_contexts(now, 60);
+
+    assert_eq!(report.compared, 0);
+    assert_eq!(report.diverged, 0);
+}
+
+// A series the intake would drop contributes no points, not just no context. The columns and the
+// context set see one population, so the two oracles cannot disagree about what the intake observed.
+#[test]
+fn keep_filters_gate_the_columns_too() {
+    let mut payload = MetricPayload::new();
+    payload.series.push(built_series("adp.requests", 1, 1));
+    payload.series.push(built_series("adp.toomanytags", 101, 1));
+    let dropped = context("adp.toomanytags", &["k0:v", "host:h0"], MetricKind::Count);
+
+    let mut lanes = Lanes::default();
+    lanes.record(
+        Target::Adp,
+        observe_series(payload, NOW_SECS),
+        EpochSeconds::from_epoch_secs(NOW_SECS),
+    );
+
+    assert_eq!(lanes.seen.len(), 1);
+    assert_eq!(lanes.scalar_points(Target::Adp, &dropped).count(), 0);
+}
+
+// A point the backend drops leaves no column entry, so a kept series carries only its surviving points
+// and the rate fold never weights a dropped one.
+#[test]
+fn dropped_points_leave_no_column_entry() {
+    let mut series = MetricSeries::new();
+    series.set_metric("adp.count".to_string());
+    series.set_type(MetricType::COUNT);
+    series.set_interval(10);
+    for (value, ts) in [(1.0, 100_i64), (f64::NAN, 110), (3.0, 120)] {
+        let mut point = MetricPoint::new();
+        point.value = value;
+        point.timestamp = ts;
+        series.points.push(point);
+    }
+    let mut payload = MetricPayload::new();
+    payload.series.push(series);
+    let ctx = context("adp.count", &[], MetricKind::Count);
+
+    let mut lanes = Lanes::default();
+    lanes.record(
+        Target::Adp,
+        observe_series(payload, NOW_SECS),
+        EpochSeconds::from_epoch_secs(NOW_SECS),
+    );
+
+    let stored: Vec<_> = lanes
+        .scalar_points(Target::Adp, &ctx)
+        .map(|p| (p.timestamp.secs(), p.interval))
+        .collect();
+
+    assert_eq!(stored, vec![(100, 10), (120, 10)]);
+}
+
+// A context reaching both the context set and the columns lives in one allocation. The two maps hold
+// handles onto it, so a wide differential does not pay for the name and tagset twice.
+#[test]
+fn a_context_in_both_maps_is_stored_once() {
+    let mut lanes = Lanes::default();
+    let ctx = context("shared.metric", &["env:test"], MetricKind::Gauge);
+    lanes.record(
+        Target::Adp,
+        [Observation {
+            context: ctx.clone(),
+            points: vec![observed(1.0, 100, 10)],
+        }],
+        EpochSeconds::from_epoch_secs(200),
+    );
+
+    let (seen, _) = lanes.contexts(Target::Adp).next().expect("recorded");
+    let stored = lanes
+        .scalars
+        .keys()
+        .find(|(lane, _)| *lane == Target::Adp)
+        .map(|(_, context)| context)
+        .expect("columns");
+
+    assert!(Arc::ptr_eq(seen, stored));
+}
+
+// A context only one lane ever shipped yields no overlap to compare. While load runs that is a context in
+// flight, so it is set aside. Once load has stopped there is nothing left to wait for and it is a
+// divergence, since a context the other lane never produced is exactly what the oracle exists to catch.
+#[test]
+fn a_context_on_one_lane_only_fails_in_the_finally_phase() {
+    let state = State::new();
+    let now = EpochSeconds::from_epoch_secs(1_000);
+    let agent_only = context("agent.only", &[], MetricKind::Count);
+
+    state.with_lanes(|lanes| {
+        lanes.record(Target::Agent, [bare(agent_only)], now);
+    });
+
+    let running = state.compare_series(10, 1, 0.02, Phase::Eventually);
+    assert_eq!(running.failed, 0, "a context in flight failed while load was running");
+    assert_eq!(running.skipped.no_overlap, 1);
+
+    let stopped = state.compare_series(10, 1, 0.02, Phase::Finally);
+    assert_eq!(stopped.failed, 1, "a one-lane context passed after load stopped");
 }
