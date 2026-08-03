@@ -63,7 +63,7 @@ fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
     tags.into_shared()
 }
 
-/// Resolves static tags that the Core Agent adds to OTLP metrics.
+/// Resolves static tags that the streamed configuration or server process adds to OTLP metrics.
 fn resolve_static_metric_tags<E>(
     otlp: &domains::otlp::Domain, global_tags: &shared::GlobalTags, environment: E,
 ) -> Vec<String>
@@ -107,6 +107,13 @@ where
     tags
 }
 
+/// Applies resolved static tags using the Core Agent's OTLP replacement semantics.
+fn apply_static_metric_tags(otlp: &mut domains::otlp::Domain, static_tags: Vec<String>) {
+    if !static_tags.is_empty() {
+        otlp.metrics.tags = static_tags.join(",");
+    }
+}
+
 /// Configuration for the OTLP source.
 #[derive(Default)]
 pub struct OtlpConfiguration {
@@ -124,9 +131,7 @@ impl OtlpConfiguration {
     pub fn from_configuration(otlp: &domains::otlp::Domain, shared: &shared::SharedConfiguration) -> Self {
         let mut otlp = otlp.clone();
         let static_tags = resolve_static_metric_tags(&otlp, &shared.tags, |key| std::env::var(key).ok());
-        if !static_tags.is_empty() {
-            otlp.metrics.tags = static_tags.join(",");
-        }
+        apply_static_metric_tags(&mut otlp, static_tags);
 
         Self {
             default_hostname: MetaString::default(),
@@ -522,7 +527,9 @@ mod tests {
     };
     use agent_data_plane_config::{domains, shared};
 
-    use super::{parse_configured_metric_tags, resolve_static_metric_tags, OtlpConfiguration};
+    use super::{
+        apply_static_metric_tags, parse_configured_metric_tags, resolve_static_metric_tags, OtlpConfiguration,
+    };
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -537,6 +544,26 @@ mod tests {
             ..Default::default()
         };
         OtlpConfiguration::from_configuration(&otlp, &shared::SharedConfiguration::default())
+    }
+
+    #[test]
+    fn empty_static_tags_preserve_explicit_otlp_metric_tags() {
+        let mut otlp = domains::otlp::Domain::default();
+        otlp.metrics.tags = "configured:true".to_string();
+
+        apply_static_metric_tags(&mut otlp, Vec::new());
+
+        assert_eq!(otlp.metrics.tags, "configured:true");
+    }
+
+    #[test]
+    fn static_metric_tags_replace_explicit_otlp_metric_tags() {
+        let mut otlp = domains::otlp::Domain::default();
+        otlp.metrics.tags = "configured:true".to_string();
+
+        apply_static_metric_tags(&mut otlp, vec!["provider_kind:autopilot".to_string()]);
+
+        assert_eq!(otlp.metrics.tags, "provider_kind:autopilot");
     }
 
     #[test]
