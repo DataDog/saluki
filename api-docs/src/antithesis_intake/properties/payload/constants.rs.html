@@ -4,9 +4,11 @@
 <a href=#4 id=4 data-nosnippet>4</a>/// `serializer_max_series_points_per_payload` default (Pyld08 / Pyld15).
 <a href=#5 id=5 data-nosnippet>5</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>MAX_POINTS_PER_PAYLOAD: usize = <span class="number">10_000</span>;
 <a href=#6 id=6 data-nosnippet>6</a>
-<a href=#7 id=7 data-nosnippet>7</a><span class="doccomment">/// `MaxTagLength` default (Pyld23). Per-tag byte cap.
-<a href=#8 id=8 data-nosnippet>8</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>MAX_TAG_LENGTH_BYTES: usize = <span class="number">200</span>;
-<a href=#9 id=9 data-nosnippet>9</a>
-<a href=#10 id=10 data-nosnippet>10</a><span class="doccomment">/// `MaxTagSetSize` default (Pyld24). Per-series total tag-set byte cap.
-<a href=#11 id=11 data-nosnippet>11</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>MAX_TAG_SET_SIZE_BYTES: usize = <span class="number">100 </span>* <span class="number">1024</span>;
+<a href=#7 id=7 data-nosnippet>7</a><span class="doccomment">/// `MaxTagLength` default (Pyld23). Per-tag byte cap. The intake clips longer tags, so a non-lax Agent
+<a href=#8 id=8 data-nosnippet>8</a>/// must not emit one. `AllowLongTag` raises the cap to 5120 only for `SourceDDGO`, which neither the
+<a href=#9 id=9 data-nosnippet>9</a>/// Datadog Agent nor ADP is, so 200 is the operative threshold on both lanes.
+<a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>MAX_TAG_LENGTH_BYTES: usize = <span class="number">200</span>;
+<a href=#11 id=11 data-nosnippet>11</a>
+<a href=#12 id=12 data-nosnippet>12</a><span class="doccomment">/// `MaxTagSetSize` default (Pyld24). Per-series total tag-set byte cap.
+<a href=#13 id=13 data-nosnippet>13</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>MAX_TAG_SET_SIZE_BYTES: usize = <span class="number">100 </span>* <span class="number">1024</span>;
 </code></pre></div></section></main></body></html>

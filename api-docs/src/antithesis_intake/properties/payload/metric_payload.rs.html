@@ -7,27 +7,39 @@
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">super</span>::constants::MAX_POINTS_PER_PAYLOAD;
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span><span class="kw">crate</span>::capture::Target;
 <a href=#9 id=9 data-nosnippet>9</a>
-<a href=#10 id=10 data-nosnippet>10</a><span class="doccomment">/// Pyld07 -- the intake's decode decision matches production. Production accepts a payload,
-<a href=#11 id=11 data-nosnippet>11</a>/// or rejects it for a non-UTF-8 non-tag string field. Either is production-faithful. Only
-<a href=#12 id=12 data-nosnippet>12</a>/// genuinely malformed protobuf wire, which no real producer emits, fails this.
-<a href=#13 id=13 data-nosnippet>13</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>decode_production_faithful(
-<a href=#14 id=14 data-nosnippet>14</a>    target: Target, production_faithful: bool, outcome: <span class="kw-2">&amp;</span>str, body_len: usize, decompression_applied: bool,
-<a href=#15 id=15 data-nosnippet>15</a>) {
-<a href=#16 id=16 data-nosnippet>16</a>    <span class="macro">assert_always!</span>(
-<a href=#17 id=17 data-nosnippet>17</a>        production_faithful,
-<a href=#18 id=18 data-nosnippet>18</a>        <span class="string">"Pyld07.decode_success"</span>,
-<a href=#19 id=19 data-nosnippet>19</a>        <span class="kw-2">&amp;</span><span class="macro">json!</span>({ <span class="string">"lane"</span>: target, <span class="string">"outcome"</span>: outcome, <span class="string">"body_len"</span>: body_len, <span class="string">"decompression_applied"</span>: decompression_applied })
-<a href=#20 id=20 data-nosnippet>20</a>    );
-<a href=#21 id=21 data-nosnippet>21</a>}
-<a href=#22 id=22 data-nosnippet>22</a>
-<a href=#23 id=23 data-nosnippet>23</a><span class="doccomment">/// Pyld08 -- total points across the payload at or below the cap.
-<a href=#24 id=24 data-nosnippet>24</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>point_count(target: Target, payload: <span class="kw-2">&amp;</span>MetricPayload) {
-<a href=#25 id=25 data-nosnippet>25</a>    <span class="kw">let </span>total: usize = payload.series.iter().map(|s| s.points.len()).sum();
-<a href=#26 id=26 data-nosnippet>26</a>    <span class="kw">let </span>over = (total &gt; MAX_POINTS_PER_PAYLOAD).then_some(total);
-<a href=#27 id=27 data-nosnippet>27</a>    <span class="macro">assert_always!</span>(
-<a href=#28 id=28 data-nosnippet>28</a>        over.is_none(),
-<a href=#29 id=29 data-nosnippet>29</a>        <span class="string">"Pyld08.payload_point_count"</span>,
-<a href=#30 id=30 data-nosnippet>30</a>        <span class="kw-2">&amp;</span><span class="macro">json!</span>({ <span class="string">"lane"</span>: target, <span class="string">"max_points"</span>: MAX_POINTS_PER_PAYLOAD, <span class="string">"observed"</span>: over })
-<a href=#31 id=31 data-nosnippet>31</a>    );
-<a href=#32 id=32 data-nosnippet>32</a>}
+<a href=#10 id=10 data-nosnippet>10</a><span class="doccomment">/// Pyld07-v2 -- the body cleanly decodes. A correct Agent produces a payload the intake accepts, so any
+<a href=#11 id=11 data-nosnippet>11</a>/// reject fails: malformed wire, a non-UTF-8 non-tag field, or a non-UTF-8 tag from a non-`datadog-agent`
+<a href=#12 id=12 data-nosnippet>12</a>/// source. A feral tag from the `datadog-agent` source is coerced and decodes to `Ok`, so it never
+<a href=#13 id=13 data-nosnippet>13</a>/// reaches this as a rejection.
+<a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>decode_production_faithful(
+<a href=#15 id=15 data-nosnippet>15</a>    target: Target, production_faithful: bool, outcome: <span class="kw-2">&amp;</span>str, body_len: usize, decompression_applied: bool,
+<a href=#16 id=16 data-nosnippet>16</a>) {
+<a href=#17 id=17 data-nosnippet>17</a>    <span class="macro">assert_always!</span>(
+<a href=#18 id=18 data-nosnippet>18</a>        production_faithful,
+<a href=#19 id=19 data-nosnippet>19</a>        <span class="string">"Pyld07.decode_success"</span>,
+<a href=#20 id=20 data-nosnippet>20</a>        <span class="kw-2">&amp;</span><span class="macro">json!</span>({ <span class="string">"lane"</span>: target, <span class="string">"outcome"</span>: outcome, <span class="string">"body_len"</span>: body_len, <span class="string">"decompression_applied"</span>: decompression_applied })
+<a href=#21 id=21 data-nosnippet>21</a>    );
+<a href=#22 id=22 data-nosnippet>22</a>}
+<a href=#23 id=23 data-nosnippet>23</a>
+<a href=#24 id=24 data-nosnippet>24</a><span class="doccomment">/// Pyld07-v3 -- the v3 body cleanly decodes. Same doctrine as Pyld07-v2: any reject fails, since a
+<a href=#25 id=25 data-nosnippet>25</a>/// correct Agent produces a payload the intake accepts. v3 tags are universally coerced, so a feral tag
+<a href=#26 id=26 data-nosnippet>26</a>/// decodes to `Ok` and only a non-UTF-8 non-tag field or malformed wire reaches this as a rejection.
+<a href=#27 id=27 data-nosnippet>27</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>decode_v3(target: Target, cleanly_decoded: bool, outcome: <span class="kw-2">&amp;</span>str, body_len: usize) {
+<a href=#28 id=28 data-nosnippet>28</a>    <span class="macro">assert_always!</span>(
+<a href=#29 id=29 data-nosnippet>29</a>        cleanly_decoded,
+<a href=#30 id=30 data-nosnippet>30</a>        <span class="string">"Pyld07-v3.decode_success"</span>,
+<a href=#31 id=31 data-nosnippet>31</a>        <span class="kw-2">&amp;</span><span class="macro">json!</span>({ <span class="string">"lane"</span>: target, <span class="string">"outcome"</span>: outcome, <span class="string">"body_len"</span>: body_len })
+<a href=#32 id=32 data-nosnippet>32</a>    );
+<a href=#33 id=33 data-nosnippet>33</a>}
+<a href=#34 id=34 data-nosnippet>34</a>
+<a href=#35 id=35 data-nosnippet>35</a><span class="doccomment">/// Pyld08 -- total points across the payload at or below the cap.
+<a href=#36 id=36 data-nosnippet>36</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>point_count(target: Target, payload: <span class="kw-2">&amp;</span>MetricPayload) {
+<a href=#37 id=37 data-nosnippet>37</a>    <span class="kw">let </span>total: usize = payload.series.iter().map(|s| s.points.len()).sum();
+<a href=#38 id=38 data-nosnippet>38</a>    <span class="kw">let </span>over = (total &gt; MAX_POINTS_PER_PAYLOAD).then_some(total);
+<a href=#39 id=39 data-nosnippet>39</a>    <span class="macro">assert_always!</span>(
+<a href=#40 id=40 data-nosnippet>40</a>        over.is_none(),
+<a href=#41 id=41 data-nosnippet>41</a>        <span class="string">"Pyld08.payload_point_count"</span>,
+<a href=#42 id=42 data-nosnippet>42</a>        <span class="kw-2">&amp;</span><span class="macro">json!</span>({ <span class="string">"lane"</span>: target, <span class="string">"max_points"</span>: MAX_POINTS_PER_PAYLOAD, <span class="string">"observed"</span>: over })
+<a href=#43 id=43 data-nosnippet>43</a>    );
+<a href=#44 id=44 data-nosnippet>44</a>}
 </code></pre></div></section></main></body></html>

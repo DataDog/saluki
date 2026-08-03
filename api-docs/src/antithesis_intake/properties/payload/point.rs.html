@@ -4,7 +4,7 @@
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>datadog_protos::metrics::metric_payload::MetricSeries;
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>serde_json::json;
 <a href=#6 id=6 data-nosnippet>6</a>
-<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">crate</span>::capture::Target;
+<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">crate</span>::capture::{BucketValue, Target};
 <a href=#8 id=8 data-nosnippet>8</a>
 <a href=#9 id=9 data-nosnippet>9</a><span class="doccomment">/// Pyld21 -- max seconds a point timestamp may exceed intake wall clock.
 <a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">const </span>MAX_SECONDS_IN_FUTURE: i64 = <span class="number">600</span>;
@@ -49,4 +49,18 @@
 <a href=#49 id=49 data-nosnippet>49</a>        <span class="kw-2">&amp;</span><span class="macro">json!</span>({ <span class="string">"lane"</span>: target, <span class="string">"metric"</span>: ms.metric(), <span class="string">"observed"</span>: violation })
 <a href=#50 id=50 data-nosnippet>50</a>    );
 <a href=#51 id=51 data-nosnippet>51</a>}
+<a href=#52 id=52 data-nosnippet>52</a>
+<a href=#53 id=53 data-nosnippet>53</a><span class="doccomment">/// Pyld21 for v3 -- no v3 point bucket-start exceeds `intake_now` + 600s. Same property as
+<a href=#54 id=54 data-nosnippet>54</a>/// `future_bound`, applied to the natively decoded v3 points, which carry an absolute `u64` bucket-start.
+<a href=#55 id=55 data-nosnippet>55</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>future_bound_v3(target: Target, metric: <span class="kw-2">&amp;</span>str, points: <span class="kw-2">&amp;</span>[(u64, BucketValue)], now_secs: i64) {
+<a href=#56 id=56 data-nosnippet>56</a>    <span class="kw">let </span>bound = now_secs.saturating_add(MAX_SECONDS_IN_FUTURE);
+<a href=#57 id=57 data-nosnippet>57</a>    <span class="kw">let </span>first_over = points
+<a href=#58 id=58 data-nosnippet>58</a>        .iter()
+<a href=#59 id=59 data-nosnippet>59</a>        .position(|<span class="kw-2">&amp;</span>(bucket_start, <span class="kw">_</span>)| i128::from(bucket_start) &gt; i128::from(bound));
+<a href=#60 id=60 data-nosnippet>60</a>    <span class="macro">assert_always!</span>(
+<a href=#61 id=61 data-nosnippet>61</a>        first_over.is_none(),
+<a href=#62 id=62 data-nosnippet>62</a>        <span class="string">"Pyld21.timestamp_future_bound"</span>,
+<a href=#63 id=63 data-nosnippet>63</a>        <span class="kw-2">&amp;</span><span class="macro">json!</span>({ <span class="string">"lane"</span>: target, <span class="string">"metric"</span>: metric, <span class="string">"first_over"</span>: first_over })
+<a href=#64 id=64 data-nosnippet>64</a>    );
+<a href=#65 id=65 data-nosnippet>65</a>}
 </code></pre></div></section></main></body></html>
