@@ -20,12 +20,14 @@ axum = { workspace = true, features = ["http1", "json", "tokio", "tracing"] }
 clap = { workspace = true, features = ["derive", "env", "error-context", "help", "std", "usage"] }
 datadog-protos = { workspace = true }
 headers = { workspace = true }
+http-body-util = { workspace = true }
 mime = { workspace = true }
 protobuf = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-stele = { workspace = true }
+serde_yaml = { workspace = true }
 tokio = { workspace = true, features = [
+  "io-util",
   "macros",
   "net",
   "rt",

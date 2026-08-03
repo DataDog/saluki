@@ -22,6 +22,7 @@ pub(crate) mod middleware;
 pub mod state;
 
 use axum::{http::StatusCode, Router};
+use http_body_util::LengthLimitError;
 
 use self::state::AppState;
 
@@ -39,4 +40,29 @@ pub fn build_router(state: AppState) -> Router {
         .merge(antithesis::routes())
         .fallback(|| async { StatusCode::OK })
         .with_state(state)
+}
+
+/// Whether a body read failed because it overran the byte cap rather than because the read itself
+/// failed. Only the cap is the producer's fault: a mid-body read failure is what an injected network
+/// fault looks like, and blaming a size property for that would redden a lane the fault broke.
+pub(crate) fn body_over_cap(e: axum::Error) -> bool {
+    e.into_inner().downcast_ref::<LengthLimitError>().is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::{to_bytes, Body};
+
+    use super::body_over_cap;
+
+    // The cap error comes from axum's own read path rather than a hand-built one, so this pins how
+    // axum wraps it. A read failure must not be mistaken for it.
+    #[tokio::test]
+    async fn body_over_cap_separates_the_cap_from_a_read_failure() {
+        let over_cap = to_bytes(Body::from("ab"), 1).await.expect_err("body exceeds the cap");
+        assert!(body_over_cap(over_cap));
+        assert!(!body_over_cap(axum::Error::new(std::io::Error::other(
+            "connection reset by peer"
+        ))));
+    }
 }
