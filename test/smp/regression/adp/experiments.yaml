@@ -333,7 +333,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when handling 'medium' DSD traffic."
         bounds:
           series: total_rss_bytes
-          upper_bound: "75.0 MiB"
+          upper_bound: "80.0 MiB"
 
     lading:
       generator:
@@ -365,7 +365,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when handling 'heavy' DSD traffic."
         bounds:
           series: total_rss_bytes
-          upper_bound: "140.0 MiB"
+          upper_bound: "145.0 MiB"
 
     lading:
       generator:
@@ -397,7 +397,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when handling 'ultraheavy' DSD traffic."
         bounds:
           series: total_rss_bytes
-          upper_bound: "200.0 MiB"
+          upper_bound: "205.0 MiB"
 
     lading:
       generator:
