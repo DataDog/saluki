@@ -316,6 +316,17 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `provider_kind`-Provider kind static tag
+    PROVIDER_KIND = SalukiAnnotation {
+        schema: &schema::PROVIDER_KIND,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: Some(&["DD_PROVIDER_KIND"]),
+        used_by: &[structs::DOGSTATSD_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Otlp]),
+    };
     /// `origin_detection_unified`-Unified origin detection mode
     ORIGIN_DETECTION_UNIFIED = SalukiAnnotation {
         schema: &schema::ORIGIN_DETECTION_UNIFIED,

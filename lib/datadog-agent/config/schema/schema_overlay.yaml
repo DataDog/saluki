@@ -2263,10 +2263,10 @@ inventory:
     pipelines: [dogstatsd, otlp]
     description: "Provider kind static tag"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration, TypedConfigSystem]
       env_var_override: [DD_PROVIDER_KIND]
       additional_attributes:
-        config_registry_filename: otlp.rs
+        config_registry_filename: dogstatsd.rs
 
   proxy.http:
     support: full
