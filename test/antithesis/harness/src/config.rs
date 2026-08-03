@@ -162,6 +162,9 @@ pub(crate) struct V3SeriesConfig {
     enabled: &'static str,
 }
 
+/// Cloud provider kinds sampled into `provider_kind`. The empty string emits no tag.
+const PROVIDER_KINDS: &[&str] = &["", "gke-autopilot", "gke-gdc"];
+
 /// Agent-facing config. `hostname`, `api_key`, `dd_url`, and the socket are
 /// supplied by the environment; `log_level`, the series intake API, and the
 /// `DogStatsD` options are sampled per branch. The static flags are appended by
@@ -184,6 +187,21 @@ pub struct DatadogConfig {
     /// ADP's safety gate for authoritative v3 series, which the Agent has no counterpart for.
     /// Sampled with [`Self::use_v3_api`] so ADP and the Agent never split encodings in a timeline.
     data_plane_metrics_v3_series_enabled: bool,
+    /// Cloud provider kind, sampled per timeline from [`PROVIDER_KINDS`].
+    ///
+    /// A non-empty value makes the Agent append `provider_kind:<value>` to every `DogStatsD` metric as a
+    /// static tag, `comp/dogstatsd/server/impl/server.go:263` and `pkg/util/tags/static_tags.go:84`. In a
+    /// v3 payload that tag becomes a shared prefix tagset, and a metric carrying both a prefix tagset and
+    /// its own tags is the only thing that makes the Agent emit the tagset back-reference Pyld54 asserts
+    /// on. Without it the rig never reaches that assertion.
+    ///
+    /// The empty string is one of the three sampled values and emits no tag, matching the Agent's own
+    /// default. So one timeline in three carries no prefix and exercises the back-reference-free path.
+    ///
+    /// This is a test input rather than an operator knob. Widen [`PROVIDER_KINDS`] to cover more prefix
+    /// tagsets.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    provider_kind: String,
     /// `DogStatsD` options, flattened to top-level `dogstatsd_*` keys.
     #[serde(flatten)]
     dogstatsd: DogStatsdConfig,
@@ -210,6 +228,7 @@ impl DatadogConfig {
             },
             serializer_compressor_kind: rng.random(),
             data_plane_metrics_v3_series_enabled: series_v3,
+            provider_kind: PROVIDER_KINDS[rng.random_range(0..PROVIDER_KINDS.len())].to_owned(),
             dogstatsd: DogStatsdConfig::sample(rng, dogstatsd_socket),
         }
     }
