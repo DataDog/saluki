@@ -57,7 +57,9 @@ impl EnvironmentProvider {
 
 impl Provider for EnvironmentProvider {
     fn metadata(&self) -> Metadata {
-        Metadata::named("Datadog schema environment variables")
+        // Names both key classes, because this provider carries both. `DatadogEnvProvider` reads
+        // only the schema-declared keys and names itself accordingly.
+        Metadata::named("Datadog and Saluki-only environment variables")
     }
 
     fn data(&self) -> Result<Map<Profile, Dict>, Error> {
