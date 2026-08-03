@@ -29,6 +29,7 @@ use crate::internal::logging::LoggingConfigurationTranslator;
 
 mod components;
 mod config;
+mod dogstatsd_contexts;
 mod internal;
 
 pub(crate) mod state;

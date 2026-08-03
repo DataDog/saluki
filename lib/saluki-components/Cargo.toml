@@ -11,6 +11,7 @@ workspace = true
 [features]
 default = []
 fips = ["saluki-io/fips"]
+test-util = []
 
 [dependencies]
 agent-data-plane-config = { workspace = true }

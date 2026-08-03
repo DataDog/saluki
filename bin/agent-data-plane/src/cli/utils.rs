@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
@@ -10,10 +12,13 @@ use hyper::body::Incoming;
 use prost::Message as _;
 use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::{client::http::HttpClient, ListenAddress};
+use saluki_io::net::{
+    client::http::{HttpClient, HttpClientBuilder},
+    ListenAddress,
+};
 use serde::{Deserialize, Serialize};
 
-use crate::config::DataPlaneConfiguration;
+use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROUTE};
 
 /// Typed API client for interacting with the APIs exposed by ADP.
 pub struct DataPlaneAPIClient {
@@ -50,10 +55,11 @@ impl DataPlaneAPIClient {
     pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
         let dp_config = DataPlaneConfiguration::from_configuration(config)?;
 
-        let listen_address = dp_config.secure_api_listen_address();
-
         let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
+        Self::from_builder(builder, dp_config.secure_api_listen_address())
+    }
 
+    fn from_builder(builder: HttpClientBuilder, listen_address: &ListenAddress) -> Result<Self, GenericError> {
         let (builder, authority) = match listen_address {
             ListenAddress::Tcp(_) => {
                 let local_address = listen_address
@@ -191,6 +197,26 @@ impl DataPlaneAPIClient {
             .and_then(process_response_body)
             .await
             .and_then(body_when_success)
+    }
+
+    /// Requests a DogStatsD context dump and returns its path on the server.
+    ///
+    /// The response contains only the server-local artifact path; this method does not download the dump contents.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, the server rejects it, or the successful response does not contain a JSON string path, an
+    /// error is returned.
+    pub async fn dogstatsd_contexts_dump(&mut self) -> Result<PathBuf, GenericError> {
+        let uri = self.build_uri(CONTEXT_DUMP_ROUTE, None);
+        let request = build_dogstatsd_contexts_dump_request(uri);
+        let response = self
+            .client
+            .send(request)
+            .await
+            .error_context("Failed to request a DogStatsD context dump from the privileged API endpoint.")?;
+        let response = process_response_body(response).await?;
+        path_when_context_dump_success(response)
     }
 
     /// Starts a DogStatsD traffic capture.
@@ -331,6 +357,24 @@ impl DataPlaneAPIClient {
     }
 }
 
+fn build_dogstatsd_contexts_dump_request(uri: Uri) -> Request<String> {
+    Request::post(uri)
+        .body(String::new())
+        .expect("valid DogStatsD context dump request")
+}
+
+fn path_when_context_dump_success(resp: Response<String>) -> Result<PathBuf, GenericError> {
+    match resp.status() {
+        status if status.is_success() => serde_json::from_str::<PathBuf>(resp.body())
+            .error_context("Failed to decode DogStatsD context dump path from response JSON."),
+        status => Err(generic_error!(
+            "Failed to create DogStatsD context dump ({}): {}.",
+            status,
+            resp.into_body()
+        )),
+    }
+}
+
 async fn collect_body(body: Incoming) -> Option<String> {
     // `Collected::to_bytes()` merges all frames. Do not use `Buf::chunk().to_vec()` on an aggregated body: `chunk()`
     // is only the first contiguous slice (often ~16 KiB), which truncates large JSON such as `/config` responses.
@@ -416,11 +460,14 @@ fn empty_when_replay_session_success(resp: Response<String>) -> Result<(), Gener
 
 #[cfg(test)]
 mod tests {
-    use http::{Response, StatusCode};
+    use std::path::PathBuf;
 
-    use super::body_when_capture_success;
+    use http::{Method, Response, StatusCode, Uri};
+
+    use super::{body_when_capture_success, build_dogstatsd_contexts_dump_request, path_when_context_dump_success};
     #[cfg(target_os = "linux")]
     use super::{body_when_replay_session_success, empty_when_replay_session_success};
+    use crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
     #[test]
     fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
@@ -479,5 +526,64 @@ mod tests {
         let error = empty_when_replay_session_success(response).expect_err("conflict should be an error");
 
         assert_eq!(error.to_string(), "session does not own active replay");
+    }
+
+    #[test]
+    fn dogstatsd_contexts_request_is_empty_post() {
+        let uri = Uri::from_static("https://127.0.0.1:5101/agent/dogstatsd-contexts-dump");
+
+        let request = build_dogstatsd_contexts_dump_request(uri);
+
+        assert_eq!(request.method(), Method::POST);
+        assert_eq!(request.uri().path(), CONTEXT_DUMP_ROUTE);
+        assert!(request.body().is_empty());
+        assert!(request.headers().is_empty());
+    }
+
+    #[test]
+    fn dogstatsd_contexts_success_decodes_json_path() {
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body(r#""/var/run/datadog/dogstatsd_contexts.json.zstd""#.to_string())
+            .expect("valid response");
+
+        let path = path_when_context_dump_success(response).expect("successful response should decode");
+
+        assert_eq!(path, PathBuf::from("/var/run/datadog/dogstatsd_contexts.json.zstd"));
+    }
+
+    #[test]
+    fn dogstatsd_contexts_malformed_success_is_actionable() {
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body("not-json".to_string())
+            .expect("valid response");
+
+        let error = path_when_context_dump_success(response).expect_err("malformed JSON should fail");
+
+        assert!(error.to_string().contains("DogStatsD context dump path"));
+    }
+
+    #[test]
+    fn dogstatsd_contexts_server_errors_include_status_and_body() {
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            let response = Response::builder()
+                .status(status)
+                .body("dump unavailable".to_string())
+                .expect("valid response");
+
+            let error = path_when_context_dump_success(response).expect_err("server error should fail");
+            let message = error.to_string();
+
+            assert!(message.contains(status.as_str()), "missing status in: {message}");
+            assert!(
+                message.contains("dump unavailable"),
+                "missing response body in: {message}"
+            );
+        }
     }
 }
