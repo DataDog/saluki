@@ -52,12 +52,26 @@ pub struct Metrics {
     pub sums: Sums,
 
     /// Comma-separated list of tags to add to every emitted metric.
+    ///
+    /// Defaults to empty. When the static-tag resolver produces no tags, this value is preserved.
+    /// When it produces one or more tags, those tags replace this value to match the Core Agent;
+    /// the two sets are not merged.
     pub tags: String,
 
     /// Static provider classification added to every OTLP metric when non-empty.
+    ///
+    /// Defaults to empty, which emits no `provider_kind` tag. A non-empty value emits
+    /// `provider_kind:<value>` for every OTLP metric, regardless of whether the Agent runs in a
+    /// Fargate sidecar. This value classifies the deployment; it does not affect provider
+    /// detection, metric routing, or hostname resolution.
     pub provider_kind: String,
 
-    /// Whether the Agent runs as an EKS Fargate sidecar.
+    /// Whether to resolve EKS Fargate static tags for OTLP metrics.
+    ///
+    /// Defaults to `false`. When enabled, the OTLP source treats the deployment as an EKS Fargate
+    /// sidecar and adds the configured global tags plus EKS-specific static tags. This setting does
+    /// not enable OTLP ingestion, alter resource-derived source resolution, or contact the Cluster
+    /// Agent.
     pub eks_fargate: bool,
 
     /// Kubernetes node name used for the EKS Fargate static tag.
