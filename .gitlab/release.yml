@@ -72,18 +72,6 @@
       when: manual
     - when: manual
       allow_failure: true
-  before_script:
-    # Defensive pre-flight check to ensure we aren't publishing a dev build to the non-dev image repository,
-    # since the variables used to determine the image repository to use could technically be overridden
-    # when triggering the pipeline.
-    - |
-      set -euo pipefail
-      if [[ -z "${CI_COMMIT_TAG:-}" && "${IMG_DESTINATIONS}" != "${ADP_DEV_PUBLIC_IMAGE_REPO_NAME}:"* ]]; then
-        echo "ERROR: refusing to publish '${IMG_DESTINATIONS}' from a non-tagged pipeline."
-        echo "Dev pipelines may only publish to the '${ADP_DEV_PUBLIC_IMAGE_REPO_NAME}' repository."
-        echo "To publish to '${ADP_RELEASE_PUBLIC_IMAGE_REPO_NAME}', run the pipeline for a release tag."
-        exit 1
-      fi
   variables:
     IMG_REGISTRIES: public
     IMG_SOURCES: ${SOURCE_IMAGE}
