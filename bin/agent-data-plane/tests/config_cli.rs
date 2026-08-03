@@ -63,7 +63,7 @@ async fn json_config_views_use_the_expected_mtls_routes_and_emit_only_compact_sc
                 .expect("test should receive the request path");
             let (status, body) = match path.as_str() {
                 "/config" => (StatusCode::OK, r#"{"view":"source","password":"source-secret"}"#),
-                "/config/internal" => (StatusCode::OK, r#"{"view":"runtime","password":"runtime-secret"}"#),
+                "/config/runtime" => (StatusCode::OK, r#"{"view":"runtime","password":"runtime-secret"}"#),
                 _ => (StatusCode::NOT_FOUND, r#"{"error":"unexpected path"}"#),
             };
             Ok::<_, Infallible>(
@@ -102,7 +102,7 @@ async fn json_config_views_use_the_expected_mtls_routes_and_emit_only_compact_sc
         (
             "runtime",
             &["--runtime"],
-            "/config/internal",
+            "/config/runtime",
             b"{\"password\":\"********\",\"view\":\"runtime\"}\n",
         ),
     ];

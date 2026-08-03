@@ -43,11 +43,11 @@ fn canonical_endpoints_select_source_or_runtime_arguments() {
         ("https://localhost:55101/config", &["config", "--json"]),
         ("https://127.0.0.1:55101/config", &["config", "--json"]),
         (
-            "https://localhost:55101/config/internal",
+            "https://localhost:55101/config/runtime",
             &["config", "--json", "--runtime"],
         ),
         (
-            "https://127.0.0.1:55101/config/internal",
+            "https://127.0.0.1:55101/config/runtime",
             &["config", "--json", "--runtime"],
         ),
     ];
@@ -67,6 +67,7 @@ fn unsupported_endpoints_are_rejected_without_exposing_the_configured_value() {
     let secret = "endpoint-secret-that-must-not-appear";
     let endpoints = [
         "http://localhost:55101/config".to_string(),
+        format!("https://localhost:55101/{}/{}", "config", "internal"),
         "https://localhost:55101/config/".to_string(),
         format!("https://localhost:55101/config?token={secret}"),
         format!("https://user:{secret}@localhost:55101/config"),
@@ -103,7 +104,7 @@ printf '%s' '{"feature":{"nested":{"enabled":true}}}'"#
     let assertion = AdpConfigKeyEqualsAssertion::new(
         "feature.nested.enabled".to_string(),
         serde_json::json!(true),
-        "https://127.0.0.1:55101/config/internal".to_string(),
+        "https://127.0.0.1:55101/config/runtime".to_string(),
         Duration::from_secs(5),
     )
     .expect("runtime endpoint should be supported");

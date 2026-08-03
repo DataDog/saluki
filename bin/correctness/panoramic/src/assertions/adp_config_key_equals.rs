@@ -23,7 +23,7 @@ impl AdpConfigEndpoint {
     fn parse(configured_endpoint: &str) -> Result<Self, GenericError> {
         match configured_endpoint {
             "https://localhost:55101/config" | "https://127.0.0.1:55101/config" => Ok(Self::Source),
-            "https://localhost:55101/config/internal" | "https://127.0.0.1:55101/config/internal" => Ok(Self::Runtime),
+            "https://localhost:55101/config/runtime" | "https://127.0.0.1:55101/config/runtime" => Ok(Self::Runtime),
             _ => Err(unsupported_endpoint_error()),
         }
     }
@@ -39,7 +39,7 @@ impl AdpConfigEndpoint {
 fn unsupported_endpoint_error() -> GenericError {
     generic_error!(
         "Unsupported ADP configuration endpoint. Expected exactly `https://localhost:55101/config`, \
-         `https://127.0.0.1:55101/config`, or the corresponding `/config/internal` URL."
+         `https://127.0.0.1:55101/config`, or the corresponding `/config/runtime` URL."
     )
 }
 

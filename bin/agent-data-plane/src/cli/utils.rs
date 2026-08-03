@@ -314,7 +314,7 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn config_runtime(&mut self) -> Result<String, GenericError> {
-        let uri = self.build_uri("/config/internal", None);
+        let uri = self.build_uri("/config/runtime", None);
         let req = Request::get(uri).body(String::new()).expect("valid request");
         self.client
             .send(req)

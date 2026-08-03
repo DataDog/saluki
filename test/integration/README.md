@@ -277,9 +277,9 @@ Probes an HTTP or HTTPS endpoint and asserts on the response status code. HTTPS 
 
 #### `adp_config_key_equals`
 
-Executes the authenticated `agent-data-plane config --json` command and polls its output until one key equals the expected value. The `endpoint` field selects the configuration view; the CLI still connects to the privileged endpoint in its own configuration. `/config` maps to the source configuration, while `/config/internal` maps to the translated runtime configuration by adding `--runtime` to the command.
+Executes the authenticated `agent-data-plane config --json` command and polls its output until one key equals the expected value. The `endpoint` field selects the configuration view; the CLI still connects to the privileged endpoint in its own configuration. `/config` maps to the source configuration, while `/config/runtime` maps to the translated runtime configuration by adding `--runtime` to the command.
 
-The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101` with an exact `/config` or `/config/internal` path. It rejects credentials, other hosts or ports, trailing path components, queries, and fragments.
+The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101` with an exact `/config` or `/config/runtime` path. It rejects credentials, other hosts or ports, trailing path components, queries, and fragments.
 
 ```yaml
 # Check the source configuration through the default /config selector.
@@ -292,7 +292,7 @@ The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101
 - assertion: adp_config_key_equals
   key: log_level
   value: debug
-  endpoint: "https://localhost:55101/config/internal"
+  endpoint: "https://localhost:55101/config/runtime"
   timeout: 30s
 ```
 

@@ -1,12 +1,12 @@
 type: integration
-name: "adp-config-dynamic-internal"
-description: "Verifies a Core Agent runtime config mutation propagates through translation to ADP's /config/internal endpoint."
+name: "adp-config-dynamic-runtime"
+description: "Verifies a Core Agent runtime config mutation propagates through translation to ADP's /config/runtime endpoint."
 timeout: 120s
 runtimes: [linux, mac, windows]
 
 env:
   DD_API_KEY: "00000000000000000000000000000000"
-  DD_HOSTNAME: "integration-test-dynamic-config-internal"
+  DD_HOSTNAME: "integration-test-dynamic-config-runtime"
   DD_DATA_PLANE_ENABLED: "true"
   DD_DATA_PLANE_STANDALONE_MODE: "false"
   DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
@@ -19,7 +19,7 @@ container:
 
 procedure:
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: control.logging.level
     value: info
     timeout: 60s
@@ -27,7 +27,7 @@ procedure:
     key: log_level
     value: debug
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: control.logging.level
     value: debug
     timeout: 60s

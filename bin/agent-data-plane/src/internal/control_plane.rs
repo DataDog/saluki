@@ -19,7 +19,7 @@ use saluki_error::GenericError;
 use crate::{
     config::DataPlaneConfiguration,
     internal::{
-        config_internal::ConfigInternalWorker, logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap,
+        config_runtime::ConfigRuntimeWorker, logging::DynamicLogLevelWorker, remote_agent::RemoteAgentBootstrap,
         telemetry::InternalTelemetryAPIWorker, TopologyControlSurfaces,
     },
 };
@@ -49,7 +49,7 @@ pub async fn create_control_plane_supervisor(
     supervisor.add_worker(InternalTelemetryAPIWorker::new());
     supervisor.add_worker(DynamicLogLevelWorker::new(&config.raw_map(), logging_controller));
     supervisor.add_worker(ConfigWorker::new(config.raw_map()));
-    supervisor.add_worker(ConfigInternalWorker::new(current_config));
+    supervisor.add_worker(ConfigRuntimeWorker::new(current_config));
 
     supervisor.add_worker(DynamicAPIBuilder::new(
         EndpointType::Unprivileged,

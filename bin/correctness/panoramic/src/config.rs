@@ -398,7 +398,7 @@ pub enum AssertionConfig {
         key: String,
         /// Expected value.
         value: Value,
-        /// Configuration endpoint selecting `/config` or the translated runtime view at `/config/internal`.
+        /// Configuration endpoint selecting `/config` or the translated runtime view at `/config/runtime`.
         #[serde(default = "crate::assertions::default_adp_config_endpoint")]
         endpoint: String,
         /// Timeout for waiting for the value to appear.
