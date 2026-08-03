@@ -473,16 +473,36 @@ mod tests {
             "password": null,
             "database_password": true,
             "PWD": 42,
-            "auth_token": null,
-            "refresh_token": false,
-            "JWT": -1.5,
+            "auth_token": [
+                { "nested_password": "array-secret" },
+                "ordinary array value",
+            ],
+            "refresh_token": {
+                "nested_jwt": "object-secret",
+                "ordinary": "ordinary object value",
+            },
+            "ordinary_string": "ordinary root value",
+        });
+        let expected = serde_json::json!({
+            "password": null,
+            "database_password": true,
+            "PWD": 42,
+            "auth_token": [
+                { "nested_password": "********" },
+                "ordinary array value",
+            ],
+            "refresh_token": {
+                "nested_jwt": "********",
+                "ordinary": "ordinary object value",
+            },
+            "ordinary_string": "ordinary root value",
         });
         let encoded = serde_json::to_vec(&input).unwrap();
         let cleaned = default_scrubber().scrub_bytes(&encoded);
         let parsed: serde_json::Value =
             serde_json::from_slice(&cleaned).expect("scrubbing non-string values must preserve valid JSON");
 
-        assert_eq!(parsed, input);
+        assert_eq!(parsed, expected);
     }
 
     #[test]
