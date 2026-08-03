@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["PermissiveBool"]};
+window.SIDEBAR_ITEMS = {"fn":["empty_string_as_none"],"struct":["PermissiveBool"]};

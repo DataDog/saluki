@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["EnvPrecedence","Error"],"struct":["ConfigurationSystem","LoadedConfiguration"]};
+window.SIDEBAR_ITEMS = {"enum":["EnvPrecedence","Error"],"struct":["ConfigurationSystem","EnvironmentProvider","LoadedConfiguration"]};

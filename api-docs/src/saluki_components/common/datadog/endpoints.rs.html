@@ -483,7 +483,7 @@
 <a href=#483 id=483 data-nosnippet>483</a>    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
 <a href=#484 id=484 data-nosnippet>484</a>    ///
 <a href=#485 id=485 data-nosnippet>485</a>    /// Defaults to unset.
-<a href=#486 id=486 data-nosnippet>486</a>    </span><span class="attr">#[serde(default, alias = <span class="string">"url"</span>, deserialize_with = <span class="string">"deserialize_dd_url"</span>)]
+<a href=#486 id=486 data-nosnippet>486</a>    </span><span class="attr">#[serde(default, deserialize_with = <span class="string">"deserialize_dd_url"</span>)]
 <a href=#487 id=487 data-nosnippet>487</a>    </span>dd_url: <span class="prelude-ty">Option</span>&lt;String&gt;,
 <a href=#488 id=488 data-nosnippet>488</a>
 <a href=#489 id=489 data-nosnippet>489</a>    <span class="doccomment">/// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.

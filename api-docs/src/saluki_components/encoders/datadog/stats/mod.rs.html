@@ -474,22 +474,19 @@
 <a href=#474 id=474 data-nosnippet>474</a>    <span class="kw">use </span>serde_json::json;
 <a href=#475 id=475 data-nosnippet>475</a>
 <a href=#476 id=476 data-nosnippet>476</a>    <span class="kw">use </span><span class="kw">super</span>::DatadogApmStatsEncoderConfiguration;
-<a href=#477 id=477 data-nosnippet>477</a>    <span class="kw">use </span><span class="kw">crate</span>::config::{DatadogRemapper, KEY_ALIASES};
-<a href=#478 id=478 data-nosnippet>478</a>
-<a href=#479 id=479 data-nosnippet>479</a>    <span class="attr">#[tokio::test]
-<a href=#480 id=480 data-nosnippet>480</a>    </span><span class="kw">async fn </span>smoke_test() {
-<a href=#481 id=481 data-nosnippet>481</a>        run_config_smoke_tests(
-<a href=#482 id=482 data-nosnippet>482</a>            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
-<a href=#483 id=483 data-nosnippet>483</a>            <span class="kw-2">&amp;</span>[],
-<a href=#484 id=484 data-nosnippet>484</a>            <span class="macro">json!</span>({}),
-<a href=#485 id=485 data-nosnippet>485</a>            |cfg| {
-<a href=#486 id=486 data-nosnippet>486</a>                cfg.as_typed::&lt;DatadogApmStatsEncoderConfiguration&gt;()
-<a href=#487 id=487 data-nosnippet>487</a>                    .expect(<span class="string">"DatadogApmStatsEncoderConfiguration should deserialize"</span>)
-<a href=#488 id=488 data-nosnippet>488</a>            },
-<a href=#489 id=489 data-nosnippet>489</a>            KEY_ALIASES,
-<a href=#490 id=490 data-nosnippet>490</a>            DatadogRemapper::from_env_vars,
-<a href=#491 id=491 data-nosnippet>491</a>        )
-<a href=#492 id=492 data-nosnippet>492</a>        .<span class="kw">await
-<a href=#493 id=493 data-nosnippet>493</a>    </span>}
-<a href=#494 id=494 data-nosnippet>494</a>}
+<a href=#477 id=477 data-nosnippet>477</a>
+<a href=#478 id=478 data-nosnippet>478</a>    <span class="attr">#[tokio::test]
+<a href=#479 id=479 data-nosnippet>479</a>    </span><span class="kw">async fn </span>smoke_test() {
+<a href=#480 id=480 data-nosnippet>480</a>        run_config_smoke_tests(
+<a href=#481 id=481 data-nosnippet>481</a>            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
+<a href=#482 id=482 data-nosnippet>482</a>            <span class="kw-2">&amp;</span>[],
+<a href=#483 id=483 data-nosnippet>483</a>            <span class="macro">json!</span>({}),
+<a href=#484 id=484 data-nosnippet>484</a>            |cfg| {
+<a href=#485 id=485 data-nosnippet>485</a>                cfg.as_typed::&lt;DatadogApmStatsEncoderConfiguration&gt;()
+<a href=#486 id=486 data-nosnippet>486</a>                    .expect(<span class="string">"DatadogApmStatsEncoderConfiguration should deserialize"</span>)
+<a href=#487 id=487 data-nosnippet>487</a>            },
+<a href=#488 id=488 data-nosnippet>488</a>        )
+<a href=#489 id=489 data-nosnippet>489</a>        .<span class="kw">await
+<a href=#490 id=490 data-nosnippet>490</a>    </span>}
+<a href=#491 id=491 data-nosnippet>491</a>}
 </code></pre></div></section></main></body></html>

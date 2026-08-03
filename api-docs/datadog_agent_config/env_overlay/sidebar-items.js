@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["EnvOverlayMode"],"fn":["apply_env_overlay"],"struct":["EnvOverlayKey"]};

@@ -2333,27 +2333,24 @@
 <a href=#2333 id=2333 data-nosnippet>2333</a>    <span class="kw">use </span>serde_json::json;
 <a href=#2334 id=2334 data-nosnippet>2334</a>
 <a href=#2335 id=2335 data-nosnippet>2335</a>    <span class="kw">use </span><span class="kw">super</span>::AggregateConfiguration;
-<a href=#2336 id=2336 data-nosnippet>2336</a>    <span class="kw">use </span><span class="kw">crate</span>::config::{DatadogRemapper, KEY_ALIASES};
-<a href=#2337 id=2337 data-nosnippet>2337</a>
-<a href=#2338 id=2338 data-nosnippet>2338</a>    <span class="attr">#[tokio::test]
-<a href=#2339 id=2339 data-nosnippet>2339</a>    </span><span class="kw">async fn </span>smoke_test() {
-<a href=#2340 id=2340 data-nosnippet>2340</a>        <span class="comment">// Duration fields serialize as {secs, nanos}. We inject whole-second values so the nanos
-<a href=#2341 id=2341 data-nosnippet>2341</a>        // sub-fields are always 0 — they are not independently configurable.
-<a href=#2342 id=2342 data-nosnippet>2342</a>        </span>run_config_smoke_tests(
-<a href=#2343 id=2343 data-nosnippet>2343</a>            structs::AGGREGATE_CONFIGURATION,
-<a href=#2344 id=2344 data-nosnippet>2344</a>            <span class="kw-2">&amp;</span>[
-<a href=#2345 id=2345 data-nosnippet>2345</a>                <span class="string">"aggregate_flush_interval.nanos"</span>,
-<a href=#2346 id=2346 data-nosnippet>2346</a>                <span class="string">"aggregate_passthrough_idle_flush_timeout.nanos"</span>,
-<a href=#2347 id=2347 data-nosnippet>2347</a>            ],
-<a href=#2348 id=2348 data-nosnippet>2348</a>            <span class="macro">json!</span>({}),
-<a href=#2349 id=2349 data-nosnippet>2349</a>            |cfg| {
-<a href=#2350 id=2350 data-nosnippet>2350</a>                cfg.as_typed::&lt;AggregateConfiguration&gt;()
-<a href=#2351 id=2351 data-nosnippet>2351</a>                    .expect(<span class="string">"AggregateConfiguration should deserialize"</span>)
-<a href=#2352 id=2352 data-nosnippet>2352</a>            },
-<a href=#2353 id=2353 data-nosnippet>2353</a>            KEY_ALIASES,
-<a href=#2354 id=2354 data-nosnippet>2354</a>            DatadogRemapper::from_env_vars,
-<a href=#2355 id=2355 data-nosnippet>2355</a>        )
-<a href=#2356 id=2356 data-nosnippet>2356</a>        .<span class="kw">await
-<a href=#2357 id=2357 data-nosnippet>2357</a>    </span>}
-<a href=#2358 id=2358 data-nosnippet>2358</a>}
+<a href=#2336 id=2336 data-nosnippet>2336</a>
+<a href=#2337 id=2337 data-nosnippet>2337</a>    <span class="attr">#[tokio::test]
+<a href=#2338 id=2338 data-nosnippet>2338</a>    </span><span class="kw">async fn </span>smoke_test() {
+<a href=#2339 id=2339 data-nosnippet>2339</a>        <span class="comment">// Duration fields serialize as {secs, nanos}. We inject whole-second values so the nanos
+<a href=#2340 id=2340 data-nosnippet>2340</a>        // sub-fields are always 0 — they are not independently configurable.
+<a href=#2341 id=2341 data-nosnippet>2341</a>        </span>run_config_smoke_tests(
+<a href=#2342 id=2342 data-nosnippet>2342</a>            structs::AGGREGATE_CONFIGURATION,
+<a href=#2343 id=2343 data-nosnippet>2343</a>            <span class="kw-2">&amp;</span>[
+<a href=#2344 id=2344 data-nosnippet>2344</a>                <span class="string">"aggregate_flush_interval.nanos"</span>,
+<a href=#2345 id=2345 data-nosnippet>2345</a>                <span class="string">"aggregate_passthrough_idle_flush_timeout.nanos"</span>,
+<a href=#2346 id=2346 data-nosnippet>2346</a>            ],
+<a href=#2347 id=2347 data-nosnippet>2347</a>            <span class="macro">json!</span>({}),
+<a href=#2348 id=2348 data-nosnippet>2348</a>            |cfg| {
+<a href=#2349 id=2349 data-nosnippet>2349</a>                cfg.as_typed::&lt;AggregateConfiguration&gt;()
+<a href=#2350 id=2350 data-nosnippet>2350</a>                    .expect(<span class="string">"AggregateConfiguration should deserialize"</span>)
+<a href=#2351 id=2351 data-nosnippet>2351</a>            },
+<a href=#2352 id=2352 data-nosnippet>2352</a>        )
+<a href=#2353 id=2353 data-nosnippet>2353</a>        .<span class="kw">await
+<a href=#2354 id=2354 data-nosnippet>2354</a>    </span>}
+<a href=#2355 id=2355 data-nosnippet>2355</a>}
 </code></pre></div></section></main></body></html>

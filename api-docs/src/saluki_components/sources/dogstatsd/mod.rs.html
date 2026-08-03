@@ -3254,22 +3254,14 @@
 <a href=#3254 id=3254 data-nosnippet>3254</a>    <span class="kw">use </span>serde_json::json;
 <a href=#3255 id=3255 data-nosnippet>3255</a>
 <a href=#3256 id=3256 data-nosnippet>3256</a>    <span class="kw">use </span><span class="kw">super</span>::DogStatsDConfiguration;
-<a href=#3257 id=3257 data-nosnippet>3257</a>    <span class="kw">use </span><span class="kw">crate</span>::config::{DatadogRemapper, KEY_ALIASES};
-<a href=#3258 id=3258 data-nosnippet>3258</a>
-<a href=#3259 id=3259 data-nosnippet>3259</a>    <span class="attr">#[tokio::test]
-<a href=#3260 id=3260 data-nosnippet>3260</a>    </span><span class="kw">async fn </span>smoke_test() {
-<a href=#3261 id=3261 data-nosnippet>3261</a>        run_config_smoke_tests(
-<a href=#3262 id=3262 data-nosnippet>3262</a>            structs::DOGSTATSD_CONFIGURATION,
-<a href=#3263 id=3263 data-nosnippet>3263</a>            <span class="kw-2">&amp;</span>[],
-<a href=#3264 id=3264 data-nosnippet>3264</a>            <span class="macro">json!</span>({}),
-<a href=#3265 id=3265 data-nosnippet>3265</a>            |cfg| {
-<a href=#3266 id=3266 data-nosnippet>3266</a>                cfg.as_typed::&lt;DogStatsDConfiguration&gt;()
-<a href=#3267 id=3267 data-nosnippet>3267</a>                    .expect(<span class="string">"DogStatsDConfiguration should deserialize"</span>)
-<a href=#3268 id=3268 data-nosnippet>3268</a>            },
-<a href=#3269 id=3269 data-nosnippet>3269</a>            KEY_ALIASES,
-<a href=#3270 id=3270 data-nosnippet>3270</a>            DatadogRemapper::from_env_vars,
-<a href=#3271 id=3271 data-nosnippet>3271</a>        )
-<a href=#3272 id=3272 data-nosnippet>3272</a>        .<span class="kw">await
-<a href=#3273 id=3273 data-nosnippet>3273</a>    </span>}
-<a href=#3274 id=3274 data-nosnippet>3274</a>}
+<a href=#3257 id=3257 data-nosnippet>3257</a>
+<a href=#3258 id=3258 data-nosnippet>3258</a>    <span class="attr">#[tokio::test]
+<a href=#3259 id=3259 data-nosnippet>3259</a>    </span><span class="kw">async fn </span>smoke_test() {
+<a href=#3260 id=3260 data-nosnippet>3260</a>        run_config_smoke_tests(structs::DOGSTATSD_CONFIGURATION, <span class="kw-2">&amp;</span>[], <span class="macro">json!</span>({}), |cfg| {
+<a href=#3261 id=3261 data-nosnippet>3261</a>            cfg.as_typed::&lt;DogStatsDConfiguration&gt;()
+<a href=#3262 id=3262 data-nosnippet>3262</a>                .expect(<span class="string">"DogStatsDConfiguration should deserialize"</span>)
+<a href=#3263 id=3263 data-nosnippet>3263</a>        })
+<a href=#3264 id=3264 data-nosnippet>3264</a>        .<span class="kw">await
+<a href=#3265 id=3265 data-nosnippet>3265</a>    </span>}
+<a href=#3266 id=3266 data-nosnippet>3266</a>}
 </code></pre></div></section></main></body></html>
