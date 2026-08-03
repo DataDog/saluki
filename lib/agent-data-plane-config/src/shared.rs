@@ -126,8 +126,23 @@ pub struct Compression {
     /// Which compression algorithm the encoder uses.
     pub compressor_kind: String,
 
-    /// Compression level used when the algorithm is zstd.
+    /// Compression level used when the algorithm is zstd, as the Core Agent configures it.
+    ///
+    /// Defaults to the Agent's own default of `1`. ADP does not use this value directly: an encoder
+    /// resolves the effective level from this and [`zstd_compressor_level_override`], preferring the
+    /// override and otherwise honoring this value only when it differs from the Agent default.
+    ///
+    /// [`zstd_compressor_level_override`]: Compression::zstd_compressor_level_override
     pub zstd_compressor_level: i32,
+
+    /// ADP-specific zstd compression level, taking precedence over [`zstd_compressor_level`].
+    ///
+    /// Defaults to unset, in which case the encoder falls back to [`zstd_compressor_level`] (when
+    /// changed from the Agent default) and otherwise to its own default of `3`. ADP compresses more
+    /// cheaply than the Agent, so it can afford a higher level; operators rarely need to set this.
+    ///
+    /// [`zstd_compressor_level`]: Compression::zstd_compressor_level
+    pub zstd_compressor_level_override: Option<i32>,
 }
 
 /// HTTP protocol the forwarder negotiates with the intake.

@@ -52,6 +52,9 @@ into `SalukiConfiguration`.
 | Saluki-only defaults                                            | `lib/agent-data-plane-config/src/defaults.rs`                              |
 | Runtime loading and authority selection                         | `lib/agent-data-plane-config-system/src/loaded.rs`                         |
 | Translation gate and update loop                                | `lib/agent-data-plane-config-system/src/system.rs`                         |
+| Schema-driven environment reader (Datadog keys)                 | `lib/datadog-agent/config/src/env_reader.rs`                               |
+| Figment provider wrapping that reader                           | `lib/datadog-agent/config/src/env_provider.rs`                             |
+| Same provider, plus Saluki-only keys                            | `lib/agent-data-plane-config-system/src/env_provider.rs`                   |
 
 Paths and type names can move. Notify the user when this skill needs an update.
 
@@ -93,6 +96,27 @@ Use the following command to regenerate it:
 ```bash
 make build-schema-overlay
 ```
+
+## Environment variables and key shape
+
+The Datadog Agent does not derive a variable's name from its key path: it looks up each known key's
+declared variable names. `DD_PROXY_HTTP` reaches `proxy.http` while `DD_DOGSTATSD_PORT` reaches the
+flat `dogstatsd_port`, and nothing in either name marks the nesting boundary. No separator
+convention can reproduce this, so both configuration paths read the environment through the
+generated tables instead:
+
+- the typed path via `apply_datadog_env` plus the Saluki-only reader, and
+- the by-key path via `EnvironmentProvider`, a Figment provider wrapping those same readers.
+
+**Every source therefore delivers the Agent's canonical shape.** A struct deserialized from
+`GenericConfiguration` **MUST** read that shape. Do not add a `#[serde(rename)]` or `#[serde(alias)]`
+that maps a nested key onto a flattened spelling, and do not reintroduce a key-alias or
+environment-remapping table. Those existed once, only ran on file load, and so never applied to the
+Datadog Agent's configuration stream — which is the authority in the Core Agent deployment.
+
+Reserve `#[serde(flatten)]` for a struct that genuinely groups several *top-level* Agent keys (for
+example, the forwarder's `forwarder_*` retry settings). Name a Rust field after its canonical
+section rather than renaming it onto one.
 
 ## Saluki-only values
 
@@ -161,7 +185,10 @@ the witnessed model.
 2. Add its destination to the correct `SalukiConfiguration` slice.
 3. If it has a default, define it once in `agent-data-plane-config/src/defaults.rs` and reference it
    from the model and source defaults.
-4. Add the exact source hierarchy and a reliable parsing type to `SalukiOnly`.
+4. Add the exact source hierarchy and a reliable parsing type to `SalukiOnly`. A **nested** key
+   *requires* this even when its only consumer reads the by-key view: the Saluki-only environment
+   reader discovers its paths from `SalukiOnly`, and it is the sole source that places `DD_FOO_BAR`
+   at `foo.bar`. Without a field, the key is silently unreachable from the environment.
 5. Add one `seed` assignment to the destination.
 6. (legacy): Keep `SALUKI_KEYS` consistent with the source key, type, and default.
 

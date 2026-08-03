@@ -44,30 +44,30 @@ impl Obfuscator {
             None
         };
 
-        let es_obfuscator = if config.es.enabled {
+        let es_obfuscator = if config.elasticsearch.enabled {
             Some(JsonObfuscator::new(
-                &config.es.keep_values,
-                &config.es.obfuscate_sql_values,
+                &config.elasticsearch.keep_values,
+                &config.elasticsearch.obfuscate_sql_values,
                 &config.sql,
             ))
         } else {
             None
         };
 
-        let open_search_obfuscator = if config.open_search.enabled {
+        let open_search_obfuscator = if config.opensearch.enabled {
             Some(JsonObfuscator::new(
-                &config.open_search.keep_values,
-                &config.open_search.obfuscate_sql_values,
+                &config.opensearch.keep_values,
+                &config.opensearch.obfuscate_sql_values,
                 &config.sql,
             ))
         } else {
             None
         };
 
-        let mongo_obfuscator = if config.mongo.enabled {
+        let mongo_obfuscator = if config.mongodb.enabled {
             Some(JsonObfuscator::new(
-                &config.mongo.keep_values,
-                &config.mongo.obfuscate_sql_values,
+                &config.mongodb.keep_values,
+                &config.mongodb.obfuscate_sql_values,
                 &config.sql,
             ))
         } else {

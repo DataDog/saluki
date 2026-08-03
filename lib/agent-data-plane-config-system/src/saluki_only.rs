@@ -174,6 +174,9 @@ pub struct DataPlane {
     pub stop_timeout: Option<u64>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
+    /// ADP-specific zstd compression level (`data_plane.serializer_zstd_compressor_level`), which
+    /// takes precedence over the Core Agent's `serializer_zstd_compressor_level`.
+    pub serializer_zstd_compressor_level: Option<i32>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
     /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
@@ -417,6 +420,11 @@ impl SalukiOnly {
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
+        // Carried as a separate field rather than folded into `zstd_compressor_level`: the encoders
+        // still resolve the two against each other, and keeping one copy of that precedence rule
+        // matters more than collapsing the fields early.
+        config.shared.endpoints.compression.zstd_compressor_level_override =
+            self.data_plane.serializer_zstd_compressor_level;
 
         // domains.dogstatsd
         let dsd = &mut config.domains.dogstatsd;
@@ -609,6 +617,7 @@ mod tests {
             "data_plane": {
                 "stop_timeout": 45,
                 "standalone_mode": true,
+                "serializer_zstd_compressor_level": 9,
                 "checks": { "enabled": true },
                 // TODO(#2177): Remove this block and its endpoint assertions when ADP uses the
                 // canonical schema-provided endpoint keys.
@@ -662,6 +671,10 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
+        assert_eq!(
+            config.shared.endpoints.compression.zstd_compressor_level_override,
+            Some(9)
+        );
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;
