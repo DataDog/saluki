@@ -48,6 +48,18 @@ pub struct Metrics {
     /// Comma-separated list of tags to add to every emitted metric.
     pub tags: String,
 
+    /// Static provider classification added to every OTLP metric when non-empty.
+    pub provider_kind: String,
+
+    /// Whether the Agent runs as an EKS Fargate sidecar.
+    pub eks_fargate: bool,
+
+    /// Kubernetes node name used for the EKS Fargate static tag.
+    pub kubernetes_kubelet_nodename: String,
+
+    /// Kubernetes cluster name used for the EKS Fargate static tag.
+    pub cluster_name: String,
+
     /// OTLP summary translation settings.
     pub summaries: Summaries,
 }

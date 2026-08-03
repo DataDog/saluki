@@ -218,6 +218,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_CLUSTER_NAME"],
+        path: &["cluster_name"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_CMD_PORT"],
         path: &["cmd_port"],
         decode: EnvDecode::Integer,
@@ -481,6 +486,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
+        env_vars: &["DD_EKS_FARGATE"],
+        path: &["eks_fargate"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_ENABLE_PAYLOADS_EVENTS"],
         path: &["enable_payloads", "events"],
         decode: EnvDecode::Bool,
@@ -509,6 +519,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_EXPECTED_TAGS_DURATION"],
         path: &["expected_tags_duration"],
         decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_EXTRA_TAGS"],
+        path: &["extra_tags"],
+        decode: EnvDecode::StringList,
     },
     EnvKey {
         env_vars: &["DD_FORWARDER_APIKEY_VALIDATION_INTERVAL"],
@@ -634,6 +649,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_HISTOGRAM_PERCENTILES"],
         path: &["histogram_percentiles"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_KUBERNETES_KUBELET_NODENAME"],
+        path: &["kubernetes_kubelet_nodename"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_LOG_FILE_MAX_ROLLS"],
@@ -984,6 +1004,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_SYSLOG_URI"],
         path: &["syslog_uri"],
         decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_TAGS"],
+        path: &["tags"],
+        decode: EnvDecode::StringList,
     },
     EnvKey {
         env_vars: &["DD_TELEMETRY_DOGSTATSD_ORIGIN"],

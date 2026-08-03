@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use agent_data_plane_config::domains;
+use agent_data_plane_config::{domains, shared};
 use async_trait::async_trait;
 use axum::body::Bytes;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
@@ -36,7 +36,7 @@ use tokio::pin;
 use tokio::select;
 use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
 
@@ -63,6 +63,50 @@ fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
     tags.into_shared()
 }
 
+/// Resolves static tags that the Core Agent adds to OTLP metrics.
+fn resolve_static_metric_tags<E>(
+    otlp: &domains::otlp::Domain, global_tags: &shared::GlobalTags, environment: E,
+) -> Vec<String>
+where
+    E: Fn(&str) -> Option<String>,
+{
+    let mut tags = Vec::new();
+
+    if !otlp.metrics.provider_kind.is_empty() {
+        tags.push(format!("provider_kind:{}", otlp.metrics.provider_kind));
+    }
+
+    let ecs_fargate =
+        environment("AWS_EXECUTION_ENV").as_deref() == Some("AWS_ECS_FARGATE") || environment("ECS_FARGATE").is_some();
+    if !ecs_fargate && !otlp.metrics.eks_fargate {
+        return tags;
+    }
+
+    tags.extend(global_tags.tags.iter().cloned());
+    tags.extend(global_tags.extra_tags.iter().cloned());
+
+    if !otlp.metrics.eks_fargate {
+        return tags;
+    }
+
+    if !otlp.metrics.kubernetes_kubelet_nodename.is_empty() {
+        tags.push(format!("eks_fargate_node:{}", otlp.metrics.kubernetes_kubelet_nodename));
+    } else {
+        warn!("Couldn't build the 'eks_fargate_node' tag: kubernetes_kubelet_nodename is not configured.");
+    }
+
+    if !tags.iter().any(|tag| tag.starts_with("kube_cluster_name:")) {
+        if otlp.metrics.cluster_name.is_empty() {
+            warn!("Couldn't build the 'kube_cluster_name' tag: cluster_name is not configured.");
+        } else {
+            tags.push(format!("kube_cluster_name:{}", otlp.metrics.cluster_name));
+        }
+    }
+
+    tags.push("kube_distribution:eks".to_string());
+    tags
+}
+
 /// Configuration for the OTLP source.
 #[derive(Default)]
 pub struct OtlpConfiguration {
@@ -76,11 +120,17 @@ pub struct OtlpConfiguration {
 }
 
 impl OtlpConfiguration {
-    /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration.
-    pub fn from_configuration(otlp: &domains::otlp::Domain) -> Self {
+    /// Creates a new `OtlpConfiguration` from the resolved OTLP and shared configuration.
+    pub fn from_configuration(otlp: &domains::otlp::Domain, shared: &shared::SharedConfiguration) -> Self {
+        let mut otlp = otlp.clone();
+        let static_tags = resolve_static_metric_tags(&otlp, &shared.tags, |key| std::env::var(key).ok());
+        if !static_tags.is_empty() {
+            otlp.metrics.tags = static_tags.join(",");
+        }
+
         Self {
             default_hostname: MetaString::default(),
-            otlp: otlp.clone(),
+            otlp,
             workload_provider: None,
         }
     }
@@ -467,12 +517,12 @@ async fn run_converter(
 
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::domains;
     use agent_data_plane_config::domains::otlp::{
         CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     };
+    use agent_data_plane_config::{domains, shared};
 
-    use super::{parse_configured_metric_tags, OtlpConfiguration};
+    use super::{parse_configured_metric_tags, resolve_static_metric_tags, OtlpConfiguration};
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -486,7 +536,35 @@ mod tests {
             metrics,
             ..Default::default()
         };
-        OtlpConfiguration::from_configuration(&otlp)
+        OtlpConfiguration::from_configuration(&otlp, &shared::SharedConfiguration::default())
+    }
+
+    #[test]
+    fn static_metric_tags_match_provider_and_eks_fargate_order() {
+        let mut otlp = domains::otlp::Domain::default();
+        otlp.metrics.provider_kind = "autopilot".to_string();
+        otlp.metrics.eks_fargate = true;
+        otlp.metrics.kubernetes_kubelet_nodename = "node-a".to_string();
+        otlp.metrics.cluster_name = "configured-cluster".to_string();
+        let global_tags = shared::GlobalTags {
+            tags: vec!["kube_cluster_name:manual-cluster".to_string(), "env:prod".to_string()],
+            extra_tags: vec!["team:metrics".to_string()],
+            ..Default::default()
+        };
+
+        let tags = resolve_static_metric_tags(&otlp, &global_tags, |_| None);
+
+        assert_eq!(
+            tags,
+            [
+                "provider_kind:autopilot",
+                "kube_cluster_name:manual-cluster",
+                "env:prod",
+                "team:metrics",
+                "eks_fargate_node:node-a",
+                "kube_distribution:eks",
+            ]
+        );
     }
 
     #[test]

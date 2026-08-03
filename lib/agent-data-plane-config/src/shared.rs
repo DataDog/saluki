@@ -225,6 +225,12 @@ pub struct Forwarder {
 /// Global / host tagging.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct GlobalTags {
+    /// Tags configured through `tags` / `DD_TAGS`.
+    pub tags: Vec<String>,
+
+    /// Tags configured through `extra_tags` / `DD_EXTRA_TAGS`.
+    pub extra_tags: Vec<String>,
+
     /// How long, after startup, host tags remain attached to emitted data.
     pub expected_tags_duration: Duration,
 }

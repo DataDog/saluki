@@ -526,6 +526,15 @@ inventory:
       additional_attributes:
         config_registry_filename: get_typed.rs
 
+  cluster_name:
+    support: full
+    pipelines: [otlp]
+    description: "Kubernetes cluster name for EKS Fargate OTLP tags"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   cmd_port:
     support: full
     pipelines: [cross_cutting]
@@ -1336,6 +1345,15 @@ inventory:
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
+  eks_fargate:
+    support: full
+    pipelines: [otlp]
+    description: "Enable EKS Fargate static tags for OTLP metrics"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   enable_json_stream_shared_compressor_buffers:
     support: none
     severity: low
@@ -1405,6 +1423,16 @@ inventory:
     description: "How long startup host tags are attached"
     test_support:
       used_by: [NO_SMOKE]
+
+  extra_tags:
+    support: full
+    pipelines: [otlp]
+    description: "Additional EKS Fargate OTLP metric tags"
+    test_support:
+      used_by: [TypedConfigSystem]
+      env_var_override: [DD_EXTRA_TAGS]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   forwarder_apikey_validation_interval:
     support: partial
@@ -1729,6 +1757,15 @@ inventory:
     description: "Histogram percentile aggregates"
     test_support:
       used_by: [NO_SMOKE]
+
+  kubernetes_kubelet_nodename:
+    support: full
+    pipelines: [otlp]
+    description: "Kubernetes node name for EKS Fargate metric tags"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   log_file_max_rolls:
     support: full
@@ -2209,13 +2246,13 @@ inventory:
 
   provider_kind:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [dogstatsd, otlp]
     description: "Provider kind static tag"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_PROVIDER_KIND]
       additional_attributes:
-        config_registry_filename: dogstatsd.rs
+        config_registry_filename: otlp.rs
 
   proxy.http:
     support: full
@@ -2541,6 +2578,15 @@ inventory:
       used_by: [get_typed]
       additional_attributes:
         config_registry_filename: get_typed.rs
+
+  tags:
+    support: full
+    pipelines: [otlp]
+    description: "Global tags for EKS Fargate OTLP metrics"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   telemetry.dogstatsd.aggregator_channel_latency_buckets:
     support: none
@@ -3084,7 +3130,6 @@ excluded:
   cluster_checks.support_hybrid_ignore_ad_tags: "ignored in initial audit 2026-04-23"
   cluster_checks.unscheduled_check_threshold: "ignored in initial audit 2026-04-23"
   cluster_checks.warmup_duration: "ignored in initial audit 2026-04-23"
-  cluster_name: "ignored in initial audit 2026-04-23"
   cluster_trust_chain.ca_cert_file_path: "ignored in initial audit 2026-04-23"
   cluster_trust_chain.ca_key_file_path: "ignored in initial audit 2026-04-23"
   cluster_trust_chain.enable_tls_verification: "ignored in initial audit 2026-04-23"
@@ -3352,7 +3397,6 @@ excluded:
   ecs_task_collection_burst: "ignored in initial audit 2026-04-23"
   ecs_task_collection_enabled: "ignored in initial audit 2026-04-23"
   ecs_task_collection_rate: "ignored in initial audit 2026-04-23"
-  eks_fargate: "ignored in initial audit 2026-04-23"
   enable_cluster_agent_metadata_collection: "ignored in initial audit 2026-04-23"
   enable_gohai: "ignored in initial audit 2026-04-23"
   enable_metadata_collection: "ignored in initial audit 2026-04-23"
@@ -3421,7 +3465,6 @@ excluded:
   external_metrics_provider.wpa_controller: "ignored in initial audit 2026-04-23"
   extra_config_providers: "ignored in initial audit 2026-04-23"
   extra_listeners: "ignored in initial audit 2026-04-23"
-  extra_tags: "ignored in second bulk edit 2026-05-06"
   fips.enabled: "ignored in initial audit 2026-04-23"
   fips.https: "ignored in initial audit 2026-04-23"
   fips.local_address: "ignored in initial audit 2026-04-23"
@@ -3617,7 +3660,6 @@ excluded:
   kubernetes_kubelet_deviceplugins_cache_duration: "ignored in initial audit 2026-04-23"
   kubernetes_kubelet_deviceplugins_socketdir: "ignored in initial audit 2026-04-23"
   kubernetes_kubelet_host: "ignored in initial audit 2026-04-23"
-  kubernetes_kubelet_nodename: "ignored in initial audit 2026-04-23"
   kubernetes_kubelet_podresources_socket: "ignored in initial audit 2026-04-23"
   kubernetes_map_services_on_ip: "ignored in initial audit 2026-04-23"
   kubernetes_metadata_streaming: "ignored in initial audit 2026-04-23"
@@ -4379,7 +4421,6 @@ excluded:
   synthetics.forwarder.zstd_compression_level: "ignored in initial audit 2026-04-23"
   system_tray.log_file: "ignored in initial audit 2026-04-23"
   tag_value_split_separator: "ignored in initial audit 2026-04-23"
-  tags: "ignored in second bulk edit 2026-05-06"
   telemetry.checks: "ignored in initial audit 2026-04-23"
   telemetry.enabled: "ignored in second bulk edit 2026-05-06"
   telemetry.offlinereporter.enabled: "2026-06-10 Agent lifecycle heartbeat/gap reporter (comp/offlinereporter); no ADP equivalent."
