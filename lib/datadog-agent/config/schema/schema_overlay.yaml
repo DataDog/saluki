@@ -580,7 +580,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Tag-filter deduplication cache size"
     test_support:
-      used_by: [TagFilterlistConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
@@ -1840,7 +1840,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Per-metric tag allow/deny filter list"
     test_support:
-      used_by: [TagFilterlistConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
 

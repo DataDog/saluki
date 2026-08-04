@@ -35,6 +35,9 @@ pub struct Domain {
     /// Per-metric tag include/exclude rules.
     pub tag_filterlist: Vec<MetricTagFilterEntry>,
 
+    /// Per-metric tag value allow-list rules.
+    pub tag_value_allowlist: Vec<MetricTagValueAllowlistEntry>,
+
     /// Extra tags added to every metric.
     pub tags: Vec<String>,
 
@@ -328,6 +331,64 @@ pub struct MetricTagFilterEntry {
 
     /// Tags the action applies to.
     pub tags: Vec<String>,
+}
+
+/// One tag value allow-list entry.
+///
+/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing. Prefixes
+/// for the same tag must not overlap, including duplicate prefixes.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MetricTagValueAllowlistEntry {
+    /// Non-empty metric-name prefix the entry applies to.
+    ///
+    /// Matching is case-sensitive. An empty prefix, surrounding whitespace, or a prefix that overlaps another rule
+    /// for the same tag is invalid.
+    pub metric_prefix: String,
+
+    /// Non-empty tag key whose values are constrained.
+    ///
+    /// Bare tags have no value and are not changed. Key/value tags with an empty value are processed normally. Empty
+    /// names, surrounding whitespace, and names containing `:` are invalid.
+    pub tag_name: String,
+
+    /// Tag values retained unchanged.
+    ///
+    /// The default is an empty list, which treats every key/value tag as a mismatch. The empty string is a valid list
+    /// member and retains tags with an empty value. Non-empty values with surrounding whitespace are invalid.
+    pub values: Vec<String>,
+
+    /// Action applied when a tag value is absent from [`values`][Self::values].
+    ///
+    /// The default is [`Remove`][TagValueMismatchAction::Remove].
+    pub on_miss: TagValueMismatchAction,
+
+    /// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace].
+    ///
+    /// The default is `other`. This field has no effect when `on_miss` is
+    /// [`Remove`][TagValueMismatchAction::Remove]. Leading or trailing whitespace is invalid.
+    pub replacement: String,
+}
+
+impl Default for MetricTagValueAllowlistEntry {
+    fn default() -> Self {
+        Self {
+            metric_prefix: String::new(),
+            tag_name: String::new(),
+            values: Vec::new(),
+            on_miss: TagValueMismatchAction::Remove,
+            replacement: "other".to_string(),
+        }
+    }
+}
+
+/// Action applied when a tag value is absent from its allow-list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum TagValueMismatchAction {
+    /// Removes the tag.
+    #[default]
+    Remove,
+    /// Replaces the tag value with the configured sentinel.
+    Replace,
 }
 
 /// Whether a tag-filterlist entry includes or excludes the listed tags.

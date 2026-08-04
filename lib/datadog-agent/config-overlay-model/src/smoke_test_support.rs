@@ -25,7 +25,6 @@ pub enum ConfigurationStruct {
     MrfConfiguration,
     ProxyConfiguration,
     RemoteAgentClientConfiguration,
-    TagFilterlistConfiguration,
     TraceObfuscationConfiguration,
 
     /// Keys consumed through the typed configuration translation system.
@@ -65,7 +64,6 @@ impl ConfigurationStruct {
             ConfigurationStruct::MrfConfiguration => "MRF_CONFIGURATION",
             ConfigurationStruct::ProxyConfiguration => "PROXY_CONFIGURATION",
             ConfigurationStruct::RemoteAgentClientConfiguration => "REMOTE_AGENT_CLIENT_CONFIGURATION",
-            ConfigurationStruct::TagFilterlistConfiguration => "TAG_FILTERLIST_CONFIGURATION",
             ConfigurationStruct::TraceObfuscationConfiguration => "TRACE_OBFUSCATION_CONFIGURATION",
             ConfigurationStruct::TypedConfigSystem => "TYPED_CONFIG_SYSTEM",
             ConfigurationStruct::GetTyped => "GET_TYPED",

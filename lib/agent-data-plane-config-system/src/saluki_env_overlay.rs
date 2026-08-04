@@ -11,12 +11,12 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use datadog_agent_config::{apply_env_at_path, EnvDecode};
-use serde::de::value::{Error as ValueError, StrDeserializer};
+use serde::de::value::{Error as ValueError, SeqDeserializer, StrDeserializer, UnitDeserializer};
 use serde::de::{DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::saluki_only::SalukiOnly;
+use crate::saluki_only::{SalukiOnly, JSON_SEQUENCE_MARKER};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Path discovery: the canonical leaf paths, read off `SalukiOnly` itself.
@@ -182,11 +182,17 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
         visitor.visit_some(self)
     }
 
-    fn deserialize_newtype_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_newtype_struct<V>(mut self, name: &'static str, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_newtype_struct(self)
+        if name == JSON_SEQUENCE_MARKER {
+            self.record_leaf(EnvDecode::JsonValue);
+            let empty = SeqDeserializer::<_, ValueError>::new(std::iter::empty::<UnitDeserializer<ValueError>>());
+            visitor.visit_newtype_struct(empty)
+        } else {
+            visitor.visit_newtype_struct(self)
+        }
     }
 
     fn deserialize_unit_struct<V>(mut self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error>

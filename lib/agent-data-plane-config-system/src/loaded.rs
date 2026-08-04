@@ -281,6 +281,32 @@ mod tests {
     }
 
     #[test]
+    fn a_structured_saluki_only_environment_variable_reaches_the_model() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_saluki_structured_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var(
+            "DD_METRIC_TAG_VALUE_ALLOWLIST",
+            r#"[{"metric_prefix":"requests.","tag_name":"customer_id","values":["customer-1"],"on_miss":"replace","replacement":"other"}]"#,
+        );
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+
+        std::env::remove_var("DD_METRIC_TAG_VALUE_ALLOWLIST");
+        std::fs::remove_file(&path).ok();
+        let entries = &loaded.local().domains.dogstatsd.tag_value_allowlist;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].metric_prefix, "requests.");
+        assert_eq!(entries[0].tag_name, "customer_id");
+        assert_eq!(entries[0].values, ["customer-1"]);
+        assert_eq!(
+            entries[0].on_miss,
+            agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction::Replace
+        );
+        assert_eq!(entries[0].replacement, "other");
+    }
+
+    #[test]
     fn a_nested_datadog_environment_variable_reaches_the_by_key_view() {
         // `DD_PROXY_HTTP` names a nested key, which Figment's prefix scan cannot place. The
         // schema-driven provider resolves it, so the by-key view serves it at `proxy.http`.

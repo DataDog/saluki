@@ -460,6 +460,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
 | `memory_limit`                                                  | Process memory limit                       |                |
 | `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
+| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list            | []             |
 | `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts   |                |
 | `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts            |                |
 | `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                    |                |
@@ -489,6 +490,25 @@ ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeou
 ### `dogstatsd_minimum_sample_rate`
 
 ADP enforces a minimum sample rate on incoming metrics to prevent memory exhaustion from extremely low sample rates on histograms and sketches. Sending metrics with a very high inverse sample rate (for example `@0.0000001`) can cause unbounded memory growth in a sketch; this setting prevents that. The default is conservative enough that normal clients are unaffected.
+
+### `metric_tag_value_allowlist`
+
+Use `metric_tag_value_allowlist` to bound metric cardinality by retaining selected values for a tag. Configure each list item with a `metric_prefix`, a `tag_name`, and the `values` to retain. The rule applies to every metric whose name starts with the prefix. Values not in the list lose the tag by default. To aggregate them under a sentinel instead, set `on_miss: replace` and configure `replacement`; the replacement defaults to `other`.
+
+```yaml
+metric_tag_value_allowlist:
+  - metric_prefix: requests.
+    tag_name: customer_id
+    values: [customer-1, customer-2]
+    on_miss: replace
+    replacement: other
+```
+
+This ADP-only key is independent from `metric_tag_filterlist`. Remote Config updates to `metric_tag_filterlist` therefore do not replace locally configured value allow-lists. Value allow-list changes require an ADP restart in this initial implementation. Rules apply to counters and sketch-backed metrics before aggregation, including instrumented and origin tags. ADP matches `metric_prefix` after DogStatsD mapper rewrites and `statsd_metric_namespace` prefixing, so configure the final metric name produced by those steps.
+
+Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value tag such as `customer_id:` is a value and is subject to the allow-list; include `""` in `values` to retain it. An empty `values` list treats every key/value tag as a mismatch.
+
+Metric prefixes for the same tag must not overlap, including duplicate prefixes. ADP rejects overlapping rules at startup so each metric and tag matches at most one rule. Rules for different tags may use the same prefix. ADP also rejects empty metric prefixes and tag names, tag names containing `:`, and leading or trailing whitespace in prefixes, tag names, values, and replacements. Configure a replacement that cannot collide with a real tag value.
 
 ### `dogstatsd_permissive_decoding`
 
