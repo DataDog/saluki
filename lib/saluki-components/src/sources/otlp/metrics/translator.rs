@@ -555,15 +555,6 @@ impl OtlpMetricsTranslator {
             }
         }
 
-        // TODO: Handle source
-        // if let Some(source) = source {
-        //     if let SourceKind::AwsEcsFargateKind = source.kind {
-        //         let mut tag_set = TagSet::default();
-        //         tag_set.insert_tag(source.tag());
-        //         events.push(Event::new_with_kind(None, EventKind::Tags(tag_set.into_shared())));
-        //     }
-        // }
-
         metrics.metrics_received().increment(events.len() as u64);
 
         Ok(events.into_iter())
@@ -1937,6 +1928,76 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), None);
+        assert_eq!(
+            metric
+                .context()
+                .tags()
+                .get_single_tag("task_arn")
+                .map(|tag| tag.value()),
+            Some(Some("arn:aws:ecs:region:account:task/task-id"))
+        );
+    }
+
+    #[test]
+    fn translate_metrics_preserves_fargate_task_arn_for_runtime_metrics() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut resource_metrics = single_gauge_with_resource_attributes(vec![
+            string_attribute("aws.ecs.launchtype", "fargate"),
+            string_attribute("aws.ecs.task.arn", "arn:aws:ecs:region:account:task/resource-task"),
+        ]);
+        resource_metrics.scope_metrics[0].metrics[0].name = "process.runtime.dotnet.gc.heap.size".to_string();
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        assert!(events.iter().all(|event| {
+            event
+                .try_as_metric()
+                .expect("metric event")
+                .context()
+                .tags()
+                .get_single_tag("task_arn")
+                .map(|tag| tag.value())
+                == Some(Some("arn:aws:ecs:region:account:task/resource-task"))
+        }));
+    }
+
+    #[test]
+    fn translate_metrics_preserves_configured_and_resource_fargate_task_arns_for_runtime_metrics() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut configured_tags = TagSet::default();
+        configured_tags.insert_tag("task_arn:configured-task");
+        translator.metric_tags = configured_tags.into_shared();
+
+        let mut resource_metrics = single_gauge_with_resource_attributes(vec![
+            string_attribute("aws.ecs.launchtype", "fargate"),
+            string_attribute("aws.ecs.task.arn", "arn:aws:ecs:region:account:task/resource-task"),
+        ]);
+        resource_metrics.scope_metrics[0].metrics[0].name = "process.runtime.dotnet.gc.heap.size".to_string();
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        assert!(events.iter().all(|event| {
+            let task_arns = event
+                .try_as_metric()
+                .expect("metric event")
+                .context()
+                .tags()
+                .into_iter()
+                .filter(|tag| tag.name() == "task_arn")
+                .map(|tag| tag.value())
+                .collect::<Vec<_>>();
+
+            task_arns.contains(&Some("configured-task"))
+                && task_arns.contains(&Some("arn:aws:ecs:region:account:task/resource-task"))
+        }));
     }
 
     #[test]
