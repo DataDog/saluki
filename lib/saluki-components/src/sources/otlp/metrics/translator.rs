@@ -450,7 +450,7 @@ impl OtlpMetricsTranslator {
     ) -> Result<IntoIter<Event>, GenericError> {
         let mut events = Vec::new();
         let resource = resource_metrics.resource.unwrap_or_default();
-        let source = self.attribute_translator.resource_to_source(&resource);
+        let source = self.attribute_translator.resource_to_metric_source(&resource);
 
         let resource_tag_mode = if self.config.resource_attributes_as_tags {
             ResourceAttributeTagMode::All
@@ -467,13 +467,16 @@ impl OtlpMetricsTranslator {
         let mut resource_tags = self.metric_tags.clone();
         resource_tags.extend_from_shared(&resource_attribute_tags);
 
-        // TODO: https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/metrics_translator.go#L736-L753
         let host = match source {
             Some(Source {
                 kind: SourceKind::HostnameKind,
                 identifier,
-            }) => MetaString::from(identifier),
-            _ => self.default_hostname.clone(),
+            }) => Some(MetaString::from(identifier)),
+            Some(Source {
+                kind: SourceKind::AwsEcsFargateKind,
+                ..
+            }) => None,
+            None => Some(self.default_hostname.clone()),
         };
 
         for scope_metrics in resource_metrics.scope_metrics {
@@ -541,13 +544,13 @@ impl OtlpMetricsTranslator {
                 }
 
                 let mut translated_events =
-                    self.map_to_dd_format(metric, &tags, Some(host.clone()), &resource.attributes, metrics);
+                    self.map_to_dd_format(metric, &tags, host.clone(), &resource.attributes, metrics);
                 events.append(&mut translated_events);
             }
 
             for metric in new_metrics {
                 let mut translated_events =
-                    self.map_to_dd_format(metric, &tags, Some(host.clone()), &resource.attributes, metrics);
+                    self.map_to_dd_format(metric, &tags, host.clone(), &resource.attributes, metrics);
                 events.append(&mut translated_events);
             }
         }
@@ -1902,6 +1905,38 @@ mod tests {
 
         let metric = events[0].try_as_metric().expect("metric event");
         assert_eq!(metric.context().host(), Some("resource-host"));
+    }
+
+    #[test]
+    fn translate_metrics_leaves_fargate_resource_host_unset() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut resource_metrics = single_gauge_resource_metrics(None);
+        resource_metrics.resource = Some(otlp_protos::opentelemetry::proto::resource::v1::Resource {
+            attributes: [
+                ("aws.ecs.launchtype", "fargate"),
+                ("aws.ecs.task.arn", "arn:aws:ecs:region:account:task/task-id"),
+            ]
+            .into_iter()
+            .map(|(key, value)| OtlpKeyValue {
+                key: key.to_string(),
+                value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                    value: Some(
+                        otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value.to_string()),
+                    ),
+                }),
+            })
+            .collect(),
+            ..Default::default()
+        });
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        let metric = events[0].try_as_metric().expect("metric event");
+        assert_eq!(metric.context().host(), None);
     }
 
     #[test]

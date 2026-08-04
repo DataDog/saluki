@@ -2333,7 +2333,6 @@ mod config_smoke {
     use serde_json::json;
 
     use super::AggregateConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
@@ -2350,8 +2349,6 @@ mod config_smoke {
                 cfg.as_typed::<AggregateConfiguration>()
                     .expect("AggregateConfiguration should deserialize")
             },
-            KEY_ALIASES,
-            DatadogRemapper::from_env_vars,
         )
         .await
     }

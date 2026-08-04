@@ -153,28 +153,12 @@ pub static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = La
 pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: ResourceAttributeTagMode) -> TagSet {
     let mut tags = TagSet::default();
 
+    if let Some(tag) = process_identifier_tag(attributes) {
+        tags.insert_tag(tag);
+    }
+
     for kv in attributes {
         match (kv.key.as_str(), kv.value.as_ref().and_then(|v| v.value.as_ref())) {
-            // Process attributes
-            (PROCESS_EXECUTABLE_NAME, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_EXECUTABLE_NAME, s_val));
-            }
-            (PROCESS_EXECUTABLE_PATH, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_EXECUTABLE_PATH, s_val));
-            }
-            (PROCESS_COMMAND, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_COMMAND, s_val));
-            }
-            (PROCESS_COMMAND_LINE, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_COMMAND_LINE, s_val));
-            }
-            (PROCESS_PID, Some(Value::IntValue(i_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_PID, i_val));
-            }
-            (PROCESS_OWNER, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_OWNER, s_val));
-            }
-
             // System attributes
             (OS_TYPE, Some(Value::StringValue(s_val))) => {
                 tags.insert_tag(format!("{}:{}", OS_TYPE, s_val));
@@ -217,6 +201,32 @@ pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: Resource
     extract_container_tags_from_resource_attributes(attributes, &mut tags);
 
     tags
+}
+
+/// Returns the highest-priority non-empty process identifier tag.
+///
+/// Process IDs and owners participate in origin detection but are not metric tags. When configured to add every
+/// scalar resource attribute, [`ResourceAttributeTagMode::All`] still adds their raw attributes by design.
+fn process_identifier_tag(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+    [
+        PROCESS_EXECUTABLE_NAME,
+        PROCESS_EXECUTABLE_PATH,
+        PROCESS_COMMAND,
+        PROCESS_COMMAND_LINE,
+    ]
+    .into_iter()
+    .find_map(|key| {
+        attributes.iter().find_map(|attribute| {
+            if attribute.key != key {
+                return None;
+            }
+
+            match attribute.value.as_ref().and_then(|value| value.value.as_ref()) {
+                Some(Value::StringValue(value)) if !value.is_empty() => Some(format!("{key}:{value}")),
+                _ => None,
+            }
+        })
+    })
 }
 
 /// Renders a scalar attribute value as a tag value string.
@@ -473,5 +483,86 @@ mod tests {
         let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
 
         assert!(tags.is_empty());
+    }
+
+    fn process_attributes(
+        executable_name: &str, executable_path: &str, command: &str, command_line: &str,
+    ) -> Vec<KeyValue> {
+        vec![
+            attr(PROCESS_EXECUTABLE_NAME, Value::StringValue(executable_name.into())),
+            attr(PROCESS_EXECUTABLE_PATH, Value::StringValue(executable_path.into())),
+            attr(PROCESS_COMMAND, Value::StringValue(command.into())),
+            attr(PROCESS_COMMAND_LINE, Value::StringValue(command_line.into())),
+        ]
+    }
+
+    #[test]
+    fn mapped_mode_emits_only_the_highest_priority_process_identifier() {
+        let mut attributes =
+            process_attributes("otelcol", "/usr/bin/otelcol", "otelcol", "otelcol --config config.yaml");
+        attributes.extend([
+            attr(PROCESS_PID, Value::IntValue(42)),
+            attr(PROCESS_OWNER, Value::StringValue("agent".into())),
+        ]);
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert_eq!(tags.len(), 1);
+        assert!(has(&tags, "process.executable.name:otelcol"));
+    }
+
+    #[test]
+    fn mapped_mode_falls_back_through_process_identifier_priority() {
+        for (attributes, expected) in [
+            (
+                process_attributes("", "/usr/bin/otelcol", "otelcol", "otelcol --config config.yaml"),
+                "process.executable.path:/usr/bin/otelcol",
+            ),
+            (
+                process_attributes("", "", "otelcol", "otelcol --config config.yaml"),
+                "process.command:otelcol",
+            ),
+            (
+                process_attributes("", "", "", "otelcol --config config.yaml"),
+                "process.command_line:otelcol --config config.yaml",
+            ),
+        ] {
+            let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+            assert_eq!(tags.len(), 1);
+            assert!(has(&tags, expected));
+        }
+    }
+
+    #[test]
+    fn mapped_mode_omits_empty_process_identifiers_and_non_identifier_process_attributes() {
+        let mut attributes = process_attributes("", "", "", "");
+        attributes.extend([
+            attr(PROCESS_PID, Value::IntValue(42)),
+            attr(PROCESS_OWNER, Value::StringValue("agent".into())),
+        ]);
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn all_mode_preserves_raw_process_attributes() {
+        let mut attributes =
+            process_attributes("otelcol", "/usr/bin/otelcol", "otelcol", "otelcol --config config.yaml");
+        attributes.extend([
+            attr(PROCESS_PID, Value::IntValue(42)),
+            attr(PROCESS_OWNER, Value::StringValue("agent".into())),
+        ]);
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::All);
+
+        assert!(has(&tags, "process.executable.name:otelcol"));
+        assert!(has(&tags, "process.executable.path:/usr/bin/otelcol"));
+        assert!(has(&tags, "process.command:otelcol"));
+        assert!(has(&tags, "process.command_line:otelcol --config config.yaml"));
+        assert!(has(&tags, "process.pid:42"));
+        assert!(has(&tags, "process.owner:agent"));
     }
 }

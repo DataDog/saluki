@@ -474,8 +474,9 @@ mod tests {
                 "additional_endpoints": {
                     "http://additional.example.com": ["additional-key", "additional-key", ""]
                 },
-                "observability_pipelines_worker_metrics_enabled": true,
-                "observability_pipelines_worker_metrics_url": "http://opw.example.com"
+                "observability_pipelines_worker": {
+                    "metrics": { "enabled": true, "url": "http://opw.example.com" }
+                }
             })),
             None,
             false,

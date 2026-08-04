@@ -13,6 +13,9 @@ services:
     image: intake:${ANTITHESIS_IMAGE_TAG:-latest}
     environment:
       NO_COLOR: "1"
+    volumes:
+      # The sampled datadog.yaml, so the intake can hold the SUT to what its config asked for.
+      - agent-config:/agent-config:ro
     healthcheck:
       # antithesis-intake serves HTTP on :2049. /dev/tcp avoids needing curl in the image.
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2049'"]
