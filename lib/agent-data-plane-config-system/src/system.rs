@@ -618,6 +618,20 @@ mod tests {
         assert_eq!(config.domains.otlp.traces.string_interner_size.get(), 512 * 1024);
     }
 
+    #[test]
+    fn invalid_metric_tag_value_allowlist_is_rejected_before_publication() {
+        let sources = SourceTree::all_explicit(json!({
+            "metric_tag_value_allowlist": [
+                { "metric_prefix": "requests.", "tag_name": "customer_id" },
+                { "metric_prefix": "requests.api.", "tag_name": "customer_id" }
+            ]
+        }));
+        let error = translate_strict(&sources).expect_err("overlapping allow-list prefixes should fail translation");
+
+        assert!(matches!(error, Error::Deserialize { .. }));
+        assert!(error.to_string().contains("overlapping metric prefixes"));
+    }
+
     #[tokio::test]
     async fn standalone_loads_numeric_byte_size() {
         // A byte-size setting documented as accepting a bare integer (`10485760`) rather than a
@@ -753,6 +767,50 @@ mod tests {
             system.config().domains.dogstatsd.origin.tag_cardinality,
             OriginTagCardinality::High
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_metric_tag_value_allowlist_update_keeps_last_known_good() {
+        let initial_allowlist = json!([{
+            "metric_prefix": "requests.",
+            "tag_name": "customer_id",
+            "values": ["customer-1"]
+        }]);
+        let (system, agent_tx) = connected_system(json!({
+            "log_level": "warn",
+            "metric_tag_value_allowlist": initial_allowlist
+        }))
+        .await;
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_tag_value_allowlist",
+                json!([
+                    { "metric_prefix": "requests.", "tag_name": "customer_id" },
+                    { "metric_prefix": "requests.api.", "tag_name": "customer_id" }
+                ]),
+            )))
+            .await
+            .unwrap();
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )))
+            .await
+            .unwrap();
+
+        await_config(&system, "the later valid update to take effect", |config| {
+            config.control.logging.level == "error"
+        })
+        .await;
+        let config = system.config();
+        assert_eq!(config.domains.dogstatsd.tag_value_allowlist.len(), 1);
+        assert_eq!(
+            config.domains.dogstatsd.tag_value_allowlist[0].metric_prefix,
+            "requests."
+        );
+        assert_eq!(config.domains.dogstatsd.tag_value_allowlist[0].values, ["customer-1"]);
     }
 
     #[tokio::test]

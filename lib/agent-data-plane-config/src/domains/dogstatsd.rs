@@ -2,11 +2,12 @@
 //! (some dynamic-capable), and debug logging.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Error;
 
@@ -37,6 +38,9 @@ pub struct Domain {
 
     /// Per-metric tag include/exclude rules.
     pub tag_filterlist: Vec<MetricTagFilterEntry>,
+
+    /// Per-metric tag value allow-list rules.
+    pub tag_value_allowlist: Vec<MetricTagValueAllowlistEntry>,
 
     /// Extra tags added to every metric.
     pub tags: Vec<String>,
@@ -347,6 +351,128 @@ pub struct MetricTagFilterEntry {
 
     /// Tags the action applies to.
     pub tags: Vec<String>,
+}
+
+/// One tag value allow-list entry.
+///
+/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing. Prefixes
+/// for the same tag must not overlap, including duplicate prefixes.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct MetricTagValueAllowlistEntry {
+    /// Non-empty metric-name prefix the entry applies to.
+    ///
+    /// Matching is exact and case-sensitive, including any whitespace. An empty prefix or a prefix that overlaps
+    /// another rule for the same tag is invalid.
+    pub metric_prefix: String,
+
+    /// Non-empty tag key whose values are constrained.
+    ///
+    /// Bare tags have no value and are not changed. Key/value tags with an empty value are processed normally. Empty
+    /// names and names containing `:` are invalid. Matching is exact and preserves whitespace.
+    pub tag_name: String,
+
+    /// Tag values retained unchanged.
+    ///
+    /// The default is an empty list, which treats every key/value tag as a mismatch. The empty string is a valid list
+    /// member and retains tags with an empty value. Matching is exact and preserves whitespace.
+    #[serde(default)]
+    pub values: Vec<String>,
+
+    /// Action applied when a tag value is absent from [`values`][Self::values].
+    ///
+    /// The default is [`Remove`][TagValueMismatchAction::Remove].
+    #[serde(default)]
+    pub on_miss: TagValueMismatchAction,
+
+    /// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace].
+    ///
+    /// The default is `other`. This field has no effect when `on_miss` is
+    /// [`Remove`][TagValueMismatchAction::Remove]. The replacement is emitted exactly as configured, including
+    /// whitespace.
+    #[serde(default = "default_tag_value_replacement")]
+    pub replacement: String,
+}
+
+fn default_tag_value_replacement() -> String {
+    "other".to_string()
+}
+
+impl Default for MetricTagValueAllowlistEntry {
+    fn default() -> Self {
+        Self {
+            metric_prefix: String::new(),
+            tag_name: String::new(),
+            values: Vec::new(),
+            on_miss: TagValueMismatchAction::Remove,
+            replacement: default_tag_value_replacement(),
+        }
+    }
+}
+
+/// Reports why a metric tag value allow-list cannot be represented.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvalidMetricTagValueAllowlist(String);
+
+impl fmt::Display for InvalidMetricTagValueAllowlist {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidMetricTagValueAllowlist {}
+
+/// Validates metric tag value allow-list entries.
+///
+/// # Errors
+///
+/// Returns an error for empty prefixes or tag names, tag names containing `:`, or overlapping prefixes for the same
+/// tag.
+pub fn validate_metric_tag_value_allowlists(
+    entries: &[MetricTagValueAllowlistEntry],
+) -> Result<(), InvalidMetricTagValueAllowlist> {
+    for (index, entry) in entries.iter().enumerate() {
+        let rule = index + 1;
+        if entry.metric_prefix.is_empty() {
+            return Err(InvalidMetricTagValueAllowlist(format!(
+                "metric tag value allow-list rule {rule} has an empty `metric_prefix`; configure a non-empty metric-name prefix"
+            )));
+        }
+        if entry.tag_name.is_empty() {
+            return Err(InvalidMetricTagValueAllowlist(format!(
+                "metric tag value allow-list rule {rule} for prefix '{}' has an empty `tag_name`; configure a non-empty tag name",
+                entry.metric_prefix
+            )));
+        }
+        if entry.tag_name.contains(':') {
+            return Err(InvalidMetricTagValueAllowlist(format!(
+                "metric tag value allow-list tag name '{}' contains ':'; configure only the tag key, without a colon or value",
+                entry.tag_name
+            )));
+        }
+        if let Some(other) = entries[..index].iter().find(|other| {
+            other.tag_name == entry.tag_name
+                && (other.metric_prefix.starts_with(&entry.metric_prefix)
+                    || entry.metric_prefix.starts_with(&other.metric_prefix))
+        }) {
+            return Err(InvalidMetricTagValueAllowlist(format!(
+                "overlapping metric prefixes '{}' and '{}' are configured for tag '{}'; configure non-overlapping prefixes for each tag",
+                other.metric_prefix, entry.metric_prefix, entry.tag_name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Action applied when a tag value is absent from its allow-list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TagValueMismatchAction {
+    /// Removes the tag.
+    #[default]
+    Remove,
+    /// Replaces the tag value with the configured sentinel.
+    Replace,
 }
 
 /// Whether a tag-filterlist entry includes or excludes the listed tags.
