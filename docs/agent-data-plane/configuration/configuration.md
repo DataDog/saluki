@@ -442,7 +442,6 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |                |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |                |
 | `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300            |
-| `data_plane.metrics.v3.series.enabled`                          | Enable ADP V3 series                       | false          |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint              | localhost:6317 |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
 | `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3              |
@@ -470,10 +469,6 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `otlp_config.traces.string_interner_size`                       | OTLP trace string interner capacity        |                |
 | `otlp_string_interner_size`                                     | OTLP context interner capacity             |                |
 | `serializer_max_metrics_per_payload`                            | Max metrics per payload                    |                |
-
-### `data_plane.metrics.v3.series.enabled`
-
-ADP requires this flag before it generates or forwards authoritative V3 series payloads. This is separate from `use_v3_api.series.*`, which matches the Core Agent V3 routing configuration.
 
 ### `data_plane.otlp.receiver_grpc_endpoint_temporary`
 

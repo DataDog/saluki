@@ -29,6 +29,7 @@ static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLoc
     m.insert(DEPLOYMENT_ENVIRONMENT_NAME, "env");
     m.insert(SERVICE_NAME, "service");
     m.insert(SERVICE_VERSION, "version");
+    m.insert(SERVICE_INSTANCE_ID, "service.instance.id");
     m
 });
 
@@ -231,7 +232,6 @@ fn raw_tag_value(value: &Value) -> Option<String> {
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let mut pod_uid = None;
 
@@ -331,6 +331,46 @@ mod tests {
     }
 
     #[test]
+    fn origin_id_uses_container_id() {
+        let attributes = vec![attr(CONTAINER_ID, Value::StringValue("container-123".into()))];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("container_id://container-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_uses_pod_uid_when_container_id_is_absent() {
+        let attributes = vec![attr(K8S_POD_UID, Value::StringValue("pod-123".into()))];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("kubernetes_pod_uid://pod-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_prefers_container_id_over_pod_uid() {
+        let attributes = vec![
+            attr(K8S_POD_UID, Value::StringValue("pod-123".into())),
+            attr(CONTAINER_ID, Value::StringValue("container-123".into())),
+        ];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("container_id://container-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_is_absent_without_supported_attributes() {
+        let attributes = vec![attr("service.name", Value::StringValue("api".into()))];
+
+        assert_eq!(origin_id_from_attributes(&attributes), None);
+    }
+
+    #[test]
     fn mapped_mode_emits_only_recognized_mappings() {
         let attributes = vec![
             attr("service.name", Value::StringValue("api".into())),
@@ -342,6 +382,38 @@ mod tests {
         assert!(has(&tags, "service:api"));
         assert!(!has(&tags, "service.name:api"));
         assert!(!has(&tags, "custom.resource.attribute:present"));
+    }
+
+    #[test]
+    fn mapped_mode_maps_service_instance_id_and_environment_aliases() {
+        let attributes = vec![
+            attr("service.version", Value::StringValue("1.2.3".into())),
+            attr("service.instance.id", Value::StringValue("instance-42".into())),
+            attr("deployment.environment.name", Value::StringValue("production".into())),
+            attr("deployment.environment", Value::StringValue("legacy".into())),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(has(&tags, "version:1.2.3"));
+        assert!(has(&tags, "service.instance.id:instance-42"));
+        assert!(has(&tags, "env:production"));
+        assert!(has(&tags, "env:legacy"));
+    }
+
+    #[test]
+    fn mapped_mode_skips_empty_core_mapping_values() {
+        let attributes = vec![
+            attr("service.name", Value::StringValue(String::new())),
+            attr("service.version", Value::StringValue(String::new())),
+            attr("service.instance.id", Value::StringValue(String::new())),
+            attr("deployment.environment.name", Value::StringValue(String::new())),
+            attr("deployment.environment", Value::StringValue(String::new())),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(tags.is_empty());
     }
 
     #[test]

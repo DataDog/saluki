@@ -29,6 +29,9 @@ global:
       DD_HOSTNAME: smp-regression
       DD_API_KEY: foo00000001
       DD_DD_URL: http://127.0.0.1:9091
+      # The SMP blackhole is not a Datadog-owned endpoint, so `datadog_only` would keep series on
+      # V2. Explicitly enable it to exercise the V3 series encoder and forwarder path.
+      DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS: "http://127.0.0.1:9091"
 
       # Dummy, self-signed certificate since we're not running alongside the Datadog Agent which
       # would otherwise be providing the IPC certificate.
@@ -330,7 +333,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when handling 'medium' DSD traffic."
         bounds:
           series: total_rss_bytes
-          upper_bound: "75.0 MiB"
+          upper_bound: "80.0 MiB"
 
     lading:
       generator:
@@ -362,7 +365,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when handling 'heavy' DSD traffic."
         bounds:
           series: total_rss_bytes
-          upper_bound: "140.0 MiB"
+          upper_bound: "145.0 MiB"
 
     lading:
       generator:
@@ -394,7 +397,7 @@ experiments:
         description: "Acceptable upper bound on the memory used by ADP when handling 'ultraheavy' DSD traffic."
         bounds:
           series: total_rss_bytes
-          upper_bound: "200.0 MiB"
+          upper_bound: "205.0 MiB"
 
     lading:
       generator:
@@ -423,7 +426,7 @@ experiments:
       environment:
         DD_AGGREGATE_CONTEXT_LIMIT: "3100"
         DD_OTLP_CACHED_CONTEXT_LIMIT: "3100"
-        DD_OTLP_CONFIG__TRACES__STRING_INTERNER_SIZE: "4MiB"
+        DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE: "4MiB"
 
     lading:
       generator:

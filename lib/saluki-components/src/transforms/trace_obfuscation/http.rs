@@ -11,7 +11,7 @@ pub fn obfuscate_url(val: &str, config: &HttpObfuscationConfig) -> Option<MetaSt
     let mut url = match Url::parse(val) {
         Ok(u) => u,
         Err(_) => {
-            if config.remove_query_string || config.remove_path_digits {
+            if config.remove_query_string || config.remove_paths_with_digits {
                 return Some("?".into());
             }
             return obfuscate_userinfo_fallback(val);
@@ -31,7 +31,7 @@ pub fn obfuscate_url(val: &str, config: &HttpObfuscationConfig) -> Option<MetaSt
         changed = true;
     }
 
-    if config.remove_path_digits {
+    if config.remove_paths_with_digits {
         if let Some(obfuscated_path) = obfuscate_path_digits(url.path()) {
             url.set_path(&obfuscated_path);
             changed = true;
@@ -93,7 +93,7 @@ mod tests {
     fn default_config() -> HttpObfuscationConfig {
         HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         }
     }
 
@@ -108,7 +108,7 @@ mod tests {
     fn test_obfuscate_url_removes_query_string() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("https://example.com/path?secret=value&key=data", &config);
         assert_eq!(result.unwrap().as_ref(), "https://example.com/path?");
@@ -118,7 +118,7 @@ mod tests {
     fn test_obfuscate_url_removes_path_digits() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("https://example.com/users/123/profile", &config);
         assert_eq!(result.unwrap().as_ref(), "https://example.com/users/?/profile");
@@ -128,7 +128,7 @@ mod tests {
     fn test_obfuscate_url_combined() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("https://user:pass@example.com/api/v2/users/456?token=secret", &config);
         assert_eq!(result.unwrap().as_ref(), "https://example.com/api/?/users/??");
@@ -138,7 +138,7 @@ mod tests {
     fn test_obfuscate_url_invalid_returns_question_mark() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("not a valid url", &config);
         assert_eq!(result.unwrap().as_ref(), "?");
@@ -184,7 +184,7 @@ mod tests {
     fn test_query_root_path() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("http://foo.com/", &config);
         // No query to remove -> no change
@@ -195,7 +195,7 @@ mod tests {
     fn test_query_path_with_digits_unchanged() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("http://foo.com/123", &config);
         // No query to remove -> no change
@@ -206,7 +206,7 @@ mod tests {
     fn test_query_removed_basic() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("http://foo.com/id/123/page/1?search=bar&page=2", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/id/123/page/1?");
@@ -216,7 +216,7 @@ mod tests {
     fn test_query_removed_with_fragment() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("http://foo.com/id/123/page/1?search=bar&page=2#fragment", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/id/123/page/1?#fragment");
@@ -226,7 +226,7 @@ mod tests {
     fn test_query_removed_no_key_value() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("http://foo.com/id/123/page/1?blabla", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/id/123/page/1?");
@@ -236,7 +236,7 @@ mod tests {
     fn test_query_percent_encoded_question_preserved() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("http://foo.com/id/123/pa%3Fge/1?blabla", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/id/123/pa%3Fge/1?");
@@ -246,7 +246,7 @@ mod tests {
     fn test_query_userinfo_and_query_removed() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: false,
+            remove_paths_with_digits: false,
         };
         let result = obfuscate_url("http://user:password@foo.com/1/2/3?q=james", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/1/2/3?");
@@ -257,7 +257,7 @@ mod tests {
     fn test_digits_root_unchanged() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/", &config);
         // No digits to remove -> no change
@@ -268,7 +268,7 @@ mod tests {
     fn test_digits_no_digits_unchanged() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/name?query=search", &config);
         // No digits to remove -> no change
@@ -279,7 +279,7 @@ mod tests {
     fn test_digits_path_obfuscated_query_preserved() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/id/123/page/1?search=bar&page=2", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/id/?/page/??search=bar&page=2");
@@ -289,7 +289,7 @@ mod tests {
     fn test_digits_mixed_alphanumeric_with_fragment() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url(
             "http://foo.com/id/a1/page/1qwe233?search=bar&page=2#fragment-123",
@@ -305,7 +305,7 @@ mod tests {
     fn test_digits_all_digit_segment() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/123", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/?");
@@ -315,7 +315,7 @@ mod tests {
     fn test_digits_multiple_digit_segments() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/123/abcd9", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/?/?");
@@ -325,7 +325,7 @@ mod tests {
     fn test_digits_between_non_digits() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/123/name/abcd9", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/?/name/?");
@@ -335,7 +335,7 @@ mod tests {
     fn test_digits_percent_encoded_preserved() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/1%3F3/nam%3Fe/abcd9", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/?/nam%3Fe/?");
@@ -345,7 +345,7 @@ mod tests {
     fn test_digits_userinfo_removed() {
         let config = HttpObfuscationConfig {
             remove_query_string: false,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://user:password@foo.com/1/2/3?q=james", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/?/?/??q=james");
@@ -356,7 +356,7 @@ mod tests {
     fn test_both_root_unchanged() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/", &config);
         // No userinfo, no query, no digits -> no change
@@ -367,7 +367,7 @@ mod tests {
     fn test_both_no_digits_no_query() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/name/id", &config);
         // No userinfo, no query, no digits -> no change
@@ -378,7 +378,7 @@ mod tests {
     fn test_both_no_digits_query_removed() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/name/id?query=search", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/name/id?");
@@ -388,7 +388,7 @@ mod tests {
     fn test_both_digits_and_query_removed() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/id/123/page/1?search=bar&page=2", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/id/?/page/??");
@@ -398,7 +398,7 @@ mod tests {
     fn test_both_with_fragment() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/id/123/page/1?search=bar&page=2#fragment", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/id/?/page/??#fragment");
@@ -408,7 +408,7 @@ mod tests {
     fn test_both_percent_encoded_digits() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/1%3F3/nam%3Fe/abcd9", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/?/nam%3Fe/?");
@@ -418,7 +418,7 @@ mod tests {
     fn test_both_percent_encoded_with_query() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://foo.com/id/123/pa%3Fge/1?blabla", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/id/?/pa%3Fge/??");
@@ -428,7 +428,7 @@ mod tests {
     fn test_both_userinfo_digits_query() {
         let config = HttpObfuscationConfig {
             remove_query_string: true,
-            remove_path_digits: true,
+            remove_paths_with_digits: true,
         };
         let result = obfuscate_url("http://user:password@foo.com/1/2/3?q=james", &config);
         assert_eq!(result.unwrap().as_ref(), "http://foo.com/?/?/??");

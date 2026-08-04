@@ -35,7 +35,12 @@ impl V3PayloadLimits {
     }
 
     pub(crate) fn should_flush_metric_count_limit(self, metrics: &[Metric]) -> bool {
-        metrics.len() >= self.max_metrics_per_payload
+        self.metric_count_reached(metrics.len())
+    }
+
+    /// Returns whether `count` metrics have reached the per-payload metric limit.
+    pub(crate) fn metric_count_reached(self, count: usize) -> bool {
+        count >= self.max_metrics_per_payload
     }
 
     pub(crate) fn should_flush_point_count_limit(self, data_point_count: usize) -> bool {
