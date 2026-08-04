@@ -160,6 +160,9 @@ impl Default for Scrubber {
             repl_func: None,
         };
 
+        // Redacts JSON string values whose key ends in `token` or `jwt` (for example, `auth_token`,
+        // `cluster_agent.auth_token`, or `refresh_token`). Requiring a quoted JSON value keeps non-string values such
+        // as `null` unchanged and preserves valid JSON.
         let json_token_replacer = Replacer {
             regex: Some(Regex::new(r#"(?i)("(?:[^"\\]|\\.)*(?:token|jwt)")(\s*:\s*)"(?:[^"\\]|\\.)*""#).unwrap()),
             repl: Some(b"$1$2\"********\"".to_vec()),
@@ -179,7 +182,9 @@ impl Default for Scrubber {
             repl_func: None,
         };
 
-        // `hints` is intentionally `None`: hint checks are case-sensitive, while token key matching is not.
+        // Redacts plain text and YAML values for unquoted keys ending in `token` or `jwt`, including dotted keys such
+        // as `cluster_agent.auth_token`. `hints` is intentionally `None`: hint checks are case-sensitive, while token
+        // key matching is not, so a `token` hint would skip uppercase keys such as `AUTH_TOKEN`.
         let plain_token_replacer = Replacer {
             regex: Some(
                 Regex::new(r#"(?i)(^|[^"0-9A-Za-z_])([0-9A-Za-z_.-]*(?:token|jwt))((?:=| = |:[ ]?)"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)("?)"#)
