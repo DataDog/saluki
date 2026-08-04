@@ -63,13 +63,6 @@ static RATE_AS_GAUGE_METRICS: LazyLock<HashSet<&'static str>> = LazyLock::new(||
     m
 });
 
-const APM_STATS_PAYLOAD_METRIC_NAME: &str = "dd.internal.stats.payload";
-
-fn is_non_apm_metric(metric: &OtlpMetric) -> bool {
-    !(RUNTIME_METRICS_MAPPINGS.contains_key(metric.name.as_str())
-        || metric.name == APM_STATS_PAYLOAD_METRIC_NAME && matches!(&metric.data, Some(OtlpMetricData::Sum(_))))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum DataType {
     Gauge,
@@ -473,27 +466,6 @@ impl OtlpMetricsTranslator {
         // instrumentation scope.
         let mut resource_tags = self.metric_tags.clone();
         resource_tags.extend_from_shared(&resource_attribute_tags);
-
-        // Only consumes a source after seeing a metric that is neither an APM stats payload nor a
-        // runtime metric.
-        let seen_non_apm_metric = resource_metrics
-            .scope_metrics
-            .iter()
-            .flat_map(|scope_metrics| &scope_metrics.metrics)
-            .any(is_non_apm_metric);
-
-        // Fargate task ARNs are extracted as resource tags. Keep that tag only when the resource contains genuine
-        // telemetry metrics
-        if !seen_non_apm_metric
-            && matches!(
-                source.as_ref().map(|source| &source.kind),
-                Some(SourceKind::AwsEcsFargateKind)
-            )
-        {
-            let mut mutable_resource_tags = resource_tags.to_mutable();
-            mutable_resource_tags.remove_tags("task_arn");
-            resource_tags = mutable_resource_tags.into_shared();
-        }
 
         let host = match source {
             Some(Source {
@@ -1967,33 +1939,14 @@ mod tests {
     }
 
     #[test]
-    fn translate_metrics_omits_fargate_task_arn_for_runtime_metrics_and_apm_stats_payloads() {
+    fn translate_metrics_preserves_fargate_task_arn_for_runtime_metrics() {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
-        let mut resource_metrics = single_gauge_resource_metrics(None);
-        resource_metrics.resource = Some(otlp_protos::opentelemetry::proto::resource::v1::Resource {
-            attributes: [
-                ("aws.ecs.launchtype", "fargate"),
-                ("aws.ecs.task.arn", "arn:aws:ecs:region:account:task/task-id"),
-            ]
-            .into_iter()
-            .map(|(key, value)| OtlpKeyValue {
-                key: key.to_string(),
-                value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
-                    value: Some(
-                        otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(value.to_string()),
-                    ),
-                }),
-            })
-            .collect(),
-            ..Default::default()
-        });
-        resource_metrics.scope_metrics[0].metrics[0].name = "process.runtime.go.goroutines".to_string();
-        resource_metrics.scope_metrics[0].metrics.push(OtlpMetric {
-            name: APM_STATS_PAYLOAD_METRIC_NAME.to_string(),
-            data: Some(OtlpMetricData::Sum(Sum::default())),
-            ..Default::default()
-        });
+        let mut resource_metrics = single_gauge_with_resource_attributes(vec![
+            string_attribute("aws.ecs.launchtype", "fargate"),
+            string_attribute("aws.ecs.task.arn", "arn:aws:ecs:region:account:task/resource-task"),
+        ]);
+        resource_metrics.scope_metrics[0].metrics[0].name = "process.runtime.dotnet.gc.heap.size".to_string();
 
         let events = translator
             .translate_metrics(resource_metrics, &metrics)
@@ -2007,7 +1960,43 @@ mod tests {
                 .context()
                 .tags()
                 .get_single_tag("task_arn")
-                .is_none()
+                .map(|tag| tag.value())
+                == Some(Some("arn:aws:ecs:region:account:task/resource-task"))
+        }));
+    }
+
+    #[test]
+    fn translate_metrics_preserves_configured_and_resource_fargate_task_arns_for_runtime_metrics() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+        let mut configured_tags = TagSet::default();
+        configured_tags.insert_tag("task_arn:configured-task");
+        translator.metric_tags = configured_tags.into_shared();
+
+        let mut resource_metrics = single_gauge_with_resource_attributes(vec![
+            string_attribute("aws.ecs.launchtype", "fargate"),
+            string_attribute("aws.ecs.task.arn", "arn:aws:ecs:region:account:task/resource-task"),
+        ]);
+        resource_metrics.scope_metrics[0].metrics[0].name = "process.runtime.dotnet.gc.heap.size".to_string();
+
+        let events = translator
+            .translate_metrics(resource_metrics, &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        assert!(events.iter().all(|event| {
+            let task_arns = event
+                .try_as_metric()
+                .expect("metric event")
+                .context()
+                .tags()
+                .into_iter()
+                .filter(|tag| tag.name() == "task_arn")
+                .map(|tag| tag.value())
+                .collect::<Vec<_>>();
+
+            task_arns.contains(&Some("configured-task"))
+                && task_arns.contains(&Some("arn:aws:ecs:region:account:task/resource-task"))
         }));
     }
 
