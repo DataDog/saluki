@@ -43,11 +43,15 @@ UP_MARKER = "/tmp/adp-liveness-up-validated"
 REQUESTS_PATH = "/tmp/adp-liveness-intake-requests.jsonl"
 ERROR_PATH = "/tmp/adp-liveness-intake-error"
 DOCKER_SOCKET_PATH = "/tmp/adp-liveness-docker.sock"
-DOCKER_API_PREFIX = "/v1.54"
-DOCKER_IMAGES_PATH = DOCKER_API_PREFIX + "/images/json"
-DOCKER_CONTAINERS_PATH = DOCKER_API_PREFIX + "/containers/json"
-DOCKER_EVENTS_PATH = DOCKER_API_PREFIX + "/events"
-DOCKER_INFO_PATH = DOCKER_API_PREFIX + "/info"
+# Routes are matched without the API version the Docker client prefixes them with, so an Agent
+# upgrade that raises the client's version cannot 404 the fixture.
+DOCKER_API_VERSION_PREFIX_REGEX = re.compile(r"^/v[0-9]+\.[0-9]+")
+# Advertised on `/_ping` so the client negotiates a version instead of falling back to its maximum.
+DOCKER_ADVERTISED_API_VERSION = "1.55"
+DOCKER_IMAGES_PATH = "/images/json"
+DOCKER_CONTAINERS_PATH = "/containers/json"
+DOCKER_EVENTS_PATH = "/events"
+DOCKER_INFO_PATH = "/info"
 EXPECTED_CONTAINER_TAGS = (
     "docker_image:example/adp-liveness:1.0",
     "env:liveness-fake",
@@ -195,10 +199,11 @@ class DockerDiscoveryHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        path = self.path.split("?", 1)[0]
+        path = DOCKER_API_VERSION_PREFIX_REGEX.sub("", self.path.split("?", 1)[0])
         expected_container_id = self.server.expected_container_id
         if path == "/_ping":
             self.send_response(200)
+            self.send_header("API-Version", DOCKER_ADVERTISED_API_VERSION)
             self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"OK")
@@ -218,7 +223,7 @@ class DockerDiscoveryHandler(BaseHTTPRequestHandler):
                     }
                 ]
             )
-        elif path == DOCKER_API_PREFIX + "/containers/" + expected_container_id + "/json":
+        elif path == "/containers/" + expected_container_id + "/json":
             self.send_json(
                 {
                     "Id": expected_container_id,
