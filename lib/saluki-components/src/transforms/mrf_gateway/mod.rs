@@ -217,7 +217,10 @@ impl Transform for MrfMetricsGateway {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config::{
+        dynamic::{ConfigSetting, ConfigUpdate},
+        ConfigurationLoader,
+    };
     use saluki_core::data_model::event::{metric::Metric, Event};
     use serde_json::json;
 
@@ -229,7 +232,7 @@ mod tests {
         let (config, sender) = ConfigurationLoader::for_tests(Some(value), None, true).await;
         let sender = sender.expect("dynamic sender should exist");
         sender
-            .send(ConfigUpdate::Snapshot(json!({})))
+            .send(ConfigUpdate::snapshot([]))
             .await
             .expect("initial dynamic snapshot should be sent");
         config.ready().await;
@@ -256,10 +259,10 @@ mod tests {
         assert!(!gw.should_forward(&Event::Metric(Metric::counter("any.metric", 1.0))));
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "multi_region_failover.failover_metrics".to_string(),
-                value: json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "multi_region_failover.failover_metrics",
+                json!(true),
+            )))
             .await
             .expect("dynamic update should be sent");
         let (_, maybe_failover_metrics) =
@@ -270,10 +273,10 @@ mod tests {
         assert!(gw.should_forward(&Event::Metric(Metric::counter("any.metric", 1.0))));
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "multi_region_failover.failover_metrics".to_string(),
-                value: json!(false),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "multi_region_failover.failover_metrics",
+                json!(false),
+            )))
             .await
             .expect("dynamic update should be sent");
         let (_, maybe_failover_metrics) =
@@ -303,10 +306,10 @@ mod tests {
         assert!(gw.should_forward(&Event::Metric(Metric::counter("also.allowed", 1.0))));
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "multi_region_failover.metric_allowlist".to_string(),
-                value: json!(["also.allowed"]),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "multi_region_failover.metric_allowlist",
+                json!(["also.allowed"]),
+            )))
             .await
             .expect("dynamic update should be sent");
         let (_, maybe_metric_allowlist) =

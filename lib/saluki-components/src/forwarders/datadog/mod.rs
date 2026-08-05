@@ -285,7 +285,7 @@ mod tests {
         .await;
         let sender = sender.expect("dynamic sender should exist");
         sender
-            .send(saluki_config::dynamic::ConfigUpdate::Snapshot(json!({})))
+            .send(saluki_config::dynamic::ConfigUpdate::snapshot([]))
             .await
             .expect("initial dynamic snapshot should be sent");
         generic_config.ready().await;
@@ -310,17 +310,18 @@ mod tests {
         assert_eq!(endpoint.api_key(), "mrf-api-key");
 
         sender
-            .send(saluki_config::dynamic::ConfigUpdate::Partial {
-                key: "api_key".to_string(),
-                value: json!("rotated-primary-api-key"),
-            })
+            .send(saluki_config::dynamic::ConfigUpdate::Partial(
+                saluki_config::dynamic::ConfigSetting::explicit("api_key", json!("rotated-primary-api-key")),
+            ))
             .await
             .expect("primary API key update should be sent");
         sender
-            .send(saluki_config::dynamic::ConfigUpdate::Partial {
-                key: "multi_region_failover.api_key".to_string(),
-                value: json!("rotated-mrf-api-key"),
-            })
+            .send(saluki_config::dynamic::ConfigUpdate::Partial(
+                saluki_config::dynamic::ConfigSetting::explicit(
+                    "multi_region_failover.api_key",
+                    json!("rotated-mrf-api-key"),
+                ),
+            ))
             .await
             .expect("MRF API key update should be sent");
 

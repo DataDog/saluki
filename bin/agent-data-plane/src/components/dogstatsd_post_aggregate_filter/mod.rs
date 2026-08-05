@@ -325,7 +325,10 @@ mod tests {
     use std::time::Duration;
 
     use metrics::set_default_local_recorder;
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config::{
+        dynamic::{ConfigSetting, ConfigUpdate},
+        ConfigurationLoader,
+    };
     use saluki_context::Context;
     use saluki_core::{
         data_model::event::{metric::Metric, Event},
@@ -560,10 +563,7 @@ mod tests {
     async fn runtime_updates_rebuild_the_effective_matcher() {
         let (config, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
         let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         config.ready().await;
 
         let mut filter = noop_filter(vec!["request.duration.max"], false, vec![], false);
@@ -574,10 +574,10 @@ mod tests {
 
         let mut filterlist_watcher = config.watch_for_updates("metric_filterlist");
         sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_filterlist".to_string(),
-                value: serde_json::json!(["request.duration.avg"]),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_filterlist",
+                serde_json::json!(["request.duration.avg"]),
+            )))
             .await
             .unwrap();
 

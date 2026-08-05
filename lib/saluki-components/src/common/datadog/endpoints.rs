@@ -950,7 +950,10 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 
 #[cfg(test)]
 mod tests {
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config::{
+        dynamic::{ConfigSetting, ConfigUpdate},
+        ConfigurationLoader,
+    };
 
     use super::*;
 
@@ -1056,9 +1059,10 @@ mod tests {
 
         // Apply an initial snapshot with key-1 and wait for readiness.
         sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "additional_endpoints": { "http://extra.example.com": ["key-1"] }
-            })))
+            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "additional_endpoints",
+                serde_json::json!({ "http://extra.example.com": ["key-1"] }),
+            )]))
             .await
             .expect("should send initial snapshot");
         config.ready().await;
@@ -1076,9 +1080,10 @@ mod tests {
 
         // Push a snapshot that rotates the key.
         sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "additional_endpoints": { "http://extra.example.com": ["key-2"] }
-            })))
+            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "additional_endpoints",
+                serde_json::json!({ "http://extra.example.com": ["key-2"] }),
+            )]))
             .await
             .expect("should send rotation snapshot");
 
