@@ -487,12 +487,11 @@ endif
 
 .PHONY: check-proxy-dumper-tools
 check-proxy-dumper-tools:
-ifeq ($(shell command -v go >/dev/null || echo not-found), not-found)
-	$(error "Please install Go.")
-endif
-ifeq ($(shell timeout 5s git remote show https://github.com/DataDog/dd-source 2>&1 >/dev/null || echo not-available), not-available)
-	$(error "Please ensure Git is configured correctly to accessing private/internal Datadog repositories.")
-endif
+	@command -v go >/dev/null || { echo "Please install Go." >&2; exit 1; }
+	@timeout 5s git remote show https://github.com/DataDog/dd-source >/dev/null 2>&1 || { \
+		echo "Please ensure Git is configured correctly to access private/internal Datadog repositories." >&2; \
+		exit 1; \
+	}
 
 ##@ Checking
 
