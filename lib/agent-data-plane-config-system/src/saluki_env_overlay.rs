@@ -12,7 +12,9 @@ use std::sync::OnceLock;
 
 use datadog_agent_config::{apply_env_at_path, EnvDecode};
 use serde::de::value::{Error as ValueError, StrDeserializer};
-use serde::de::{DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{
+    DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor,
+};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -120,8 +122,9 @@ impl PathRecorder<'_, '_> {
 // `PathRecorder` records a leaf at every scalar (and scalar-like) method, descends at `option` and
 // `newtype_struct`, and recurses at `struct`. The visited value is thrown away, so each leaf feeds
 // the visitor a throwaway of the right shape purely to let deserialization complete. `deserialize_any`
-// is a leaf: it is where `DurationString` and `ByteSize` land. `tuple`, `tuple_struct`, and `enum`
-// are unused by `SalukiOnly` and fail loudly if that ever changes.
+// is a leaf: it is where `DurationString` and `ByteSize` land. A fieldless (unit-variant) `enum` is
+// also a leaf, recorded as `RawString` since its environment and JSON forms are both a plain string.
+// `tuple`, `tuple_struct`, and enum variants carrying data return an error.
 macro_rules! record_scalar {
     ($method:ident, $visit:ident, $dummy:expr, $decode:expr) => {
         fn $method<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
@@ -228,12 +231,17 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
     }
 
     fn deserialize_enum<V>(
-        self, _name: &'static str, _variants: &'static [&'static str], _visitor: V,
+        mut self, _name: &'static str, variants: &'static [&'static str], visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(unsupported("enum"))
+        // A fieldless enum is a leaf: its environment and JSON forms are both the variant's plain
+        // string spelling. Which variant is fed to the visitor does not matter; the recorder
+        // discards the result once the leaf is noted.
+        self.record_leaf(EnvDecode::RawString);
+        let variant = variants.first().copied().unwrap_or_default();
+        visitor.visit_enum(UnitVariantAccess { variant })
     }
 
     fn deserialize_struct<V>(
@@ -267,6 +275,57 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
 
 fn unsupported(kind: &str) -> ValueError {
     serde::de::Error::custom(format!("SalukiOnly env tracer does not support {kind} leaves"))
+}
+
+/// Feeds a fixed variant name to a fieldless-enum visitor during leaf discovery.
+///
+/// Only unit variants are supported. A variant carrying data would need its own path recording, so
+/// those forms return an error instead of guessing.
+struct UnitVariantAccess {
+    variant: &'static str,
+}
+
+impl<'de> EnumAccess<'de> for UnitVariantAccess {
+    type Error = ValueError;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let key: StrDeserializer<'_, ValueError> = self.variant.into_deserializer();
+        let value = seed.deserialize(key)?;
+        Ok((value, self))
+    }
+}
+
+impl<'de> VariantAccess<'de> for UnitVariantAccess {
+    type Error = ValueError;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        Err(unsupported("enum newtype variant"))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(unsupported("enum tuple variant"))
+    }
+
+    fn struct_variant<V>(self, _fields: &'static [&'static str], _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(unsupported("enum struct variant"))
+    }
 }
 
 /// Feeds every field name to the derived struct visitor in turn, so serde requests each field's
