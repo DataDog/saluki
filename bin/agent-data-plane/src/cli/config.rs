@@ -4,8 +4,7 @@ use saluki_common::scrubber;
 use saluki_error::{ErrorContext as _, GenericError};
 use tracing::{error, info};
 
-use crate::cli::utils::api_or_exit;
-use crate::config::DataPlaneConfiguration;
+use crate::cli::utils::get_api_client_or_exit;
 
 /// Prints the current configuration.
 #[derive(FromArgs, Debug)]
@@ -31,9 +30,7 @@ fn parse_config_response(response_body: &[u8]) -> Result<serde_json::Value, Gene
 
 /// Entrypoint for the `config` command.
 pub async fn handle_config_command(local_config: LoadedConfiguration, command: ConfigCommand) {
-    let config = local_config.local();
-    let dp = DataPlaneConfiguration::from_configuration(config);
-    let mut api_client = api_or_exit(&dp, &local_config.raw_config()).await;
+    let mut api_client = get_api_client_or_exit(&local_config).await;
 
     let response_body = match if command.runtime {
         api_client.config_runtime().await

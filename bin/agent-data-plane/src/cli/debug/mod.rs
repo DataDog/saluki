@@ -2,8 +2,7 @@ use agent_data_plane_config_system::LoadedConfiguration;
 use argh::FromArgs;
 use tracing::{error, info};
 
-use crate::cli::utils::{api_or_exit, DataPlaneAPIClient};
-use crate::config::DataPlaneConfiguration;
+use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
 
 mod workload;
 use self::workload::{handle_workload_command, WorkloadCommand};
@@ -64,9 +63,7 @@ pub struct SetMetricLevelCommand {
 
 /// Entrypoint for the `debug` commands.
 pub async fn handle_debug_command(local_config: LoadedConfiguration, cmd: DebugCommand) {
-    let config = local_config.local();
-    let dp = DataPlaneConfiguration::from_configuration(config);
-    let mut api_client = api_or_exit(&dp, &local_config.raw_config()).await;
+    let mut api_client = get_api_client_or_exit(&local_config).await;
 
     match cmd.subcommand {
         DebugSubcommand::ResetLogLevel(_) => reset_log_level(&mut api_client).await,
