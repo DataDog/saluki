@@ -434,7 +434,11 @@ impl SalukiOnly {
             dsd.listeners.tcp_port = v;
         }
         if let Some(v) = &self.dogstatsd_vsock {
-            dsd.listeners.vsock = Some(v.clone());
+            // An explicitly empty value means "no vsock listener", matching how the DogStatsD source reads an empty
+            // `dogstatsd_socket`/`dogstatsd_stream_socket` and how the Datadog translator's `non_empty` treats their
+            // witnessed equivalents. Storing `Some("")` would instead leave a consumer trying to parse an empty
+            // address as one.
+            dsd.listeners.vsock = (!v.is_empty()).then(|| v.clone());
         }
         if let Some(v) = self.dogstatsd_buffer_count {
             dsd.listeners.buffer_count = v;
@@ -755,6 +759,30 @@ mod tests {
             let mut config = SalukiConfiguration::default();
             saluki_only.seed(&mut config);
             assert_eq!(config.control.memory_limit, expected);
+        }
+    }
+
+    /// An empty `dogstatsd_vsock` disables the listener, so it must reach the model as `None`.
+    ///
+    /// The DogStatsD source reads this key through `NoneAsEmptyString`, so `dogstatsd_vsock: ""`
+    /// leaves vsock off at runtime. Seeding `Some("")` would make the typed model disagree with
+    /// that, and would leave a typed consumer parsing an empty string as a vsock address rather
+    /// than skipping the listener.
+    #[test]
+    fn empty_dogstatsd_vsock_seeds_as_disabled() {
+        for (value, expected) in [
+            (json!({}), None),
+            (json!({ "dogstatsd_vsock": "" }), None),
+            (json!({ "dogstatsd_vsock": "host:8125" }), Some("host:8125")),
+        ] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value.clone()).expect("dogstatsd_vsock deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(
+                config.domains.dogstatsd.listeners.vsock.as_deref(),
+                expected,
+                "unexpected vsock listen address for {value}"
+            );
         }
     }
 
