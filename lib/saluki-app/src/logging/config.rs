@@ -103,6 +103,24 @@ mod tests {
         assert_eq!(config.log_file_max_size, DEFAULT_LOG_FILE_MAX_SIZE);
         assert_eq!(config.log_file_max_rolls, DEFAULT_LOG_FILE_MAX_ROLLS);
     }
+
+    #[test]
+    fn log_level_try_from_rejects_empty_string() {
+        let error = match LogLevel::try_from(String::new()) {
+            Ok(_) => panic!("an empty log level must be rejected"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("cannot be empty"),
+            "unexpected error message: {error}"
+        );
+    }
+
+    #[test]
+    fn log_level_try_from_parses_valid_directive() {
+        let log_level = LogLevel::try_from("saluki=debug".to_string()).expect("a valid directive should parse");
+        assert_eq!(log_level.as_env_filter().to_string(), "saluki=debug");
+    }
 }
 
 /// A parsed `tracing` log level filter.

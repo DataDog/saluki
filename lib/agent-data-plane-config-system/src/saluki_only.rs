@@ -39,8 +39,7 @@
 //!
 //! - a top-level key (`dogstatsd_tcp_port`, `aggregate_window_duration_seconds`) is a top-level
 //!   field of the same name;
-//! - a nested key (`apm_config.default_env`, `data_plane.metrics.v3.series.enabled`) is a field on
-//!   a matching chain of nested sub-structs.
+//! - a nested key (`apm_config.default_env`) is a field on a matching chain of nested sub-structs.
 //!
 //! A mismatch does not error. The field deserializes to `None`, `seed` skips it, and the model
 //! keeps its default: the value silently fails to transport.
@@ -67,14 +66,14 @@
 // TODO: consider separating these into their own namespace, SALUKI_* and saluki.yaml
 // TODO: consider not loading these into the same map as Datadog schema configuration
 
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
-use agent_data_plane_config::control::ListenAddress;
+use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 /// The parsed Saluki-schema-only configuration, shaped to mirror the source key hierarchy.
 ///
@@ -119,7 +118,10 @@ pub struct SalukiOnly {
     /// Maximum cached tagsets (`dogstatsd_cached_tagsets_limit`).
     pub dogstatsd_cached_tagsets_limit: Option<usize>,
     /// Explicit byte budget for the context interner (`dogstatsd_string_interner_size_bytes`).
-    pub dogstatsd_string_interner_size_bytes: Option<u64>,
+    ///
+    /// Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`.
+    /// When unset, the runtime derives the budget from `dogstatsd_string_interner_size`.
+    pub dogstatsd_string_interner_size_bytes: Option<ByteSize>,
     /// Whether to allow heap allocations for contexts (`dogstatsd_allow_context_heap_allocs`).
     pub dogstatsd_allow_context_heap_allocs: Option<bool>,
     /// Floor for metric sample rates (`dogstatsd_minimum_sample_rate`).
@@ -146,8 +148,9 @@ pub struct SalukiOnly {
     pub otlp_cached_contexts_limit: Option<usize>,
     /// Maximum cached OTLP tagsets (`otlp_cached_tagsets_limit`).
     pub otlp_cached_tagsets_limit: Option<usize>,
-    /// OTLP context interner entry count (`otlp_string_interner_size`).
-    pub otlp_string_interner_size: Option<u64>,
+    /// OTLP context interner byte budget (`otlp_string_interner_size`). Accepts human-readable sizes
+    /// such as `2MiB` as well as a plain byte count.
+    pub otlp_string_interner_size: Option<ByteSize>,
 
     // ── nested sections ───────────────────────────────────────────────────────
     /// Cross-cutting data-plane knobs (`data_plane.*`).
@@ -167,13 +170,44 @@ pub struct SalukiOnly {
 #[serde(default)]
 pub struct DataPlane {
     /// ADP graceful shutdown timeout, in seconds (`data_plane.stop_timeout`).
+    ///
+    /// If present, this will override the Datadog schema's `aggregator_stop_timeout` and
+    /// `forwarder_stop_timeout` values.
     pub stop_timeout: Option<u64>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
+    /// ADP-specific zstd compression level (`data_plane.serializer_zstd_compressor_level`), which
+    /// takes precedence over the Core Agent's `serializer_zstd_compressor_level`.
+    pub serializer_zstd_compressor_level: Option<i32>,
     /// Checks pipeline gate (`data_plane.checks.*`).
     pub checks: DataPlaneChecks,
-    /// Metrics-intake knobs (`data_plane.metrics.*`).
-    pub metrics: DataPlaneMetrics,
+    /// Temporary ADP-only OTLP receiver endpoint settings (`data_plane.otlp.*`).
+    pub otlp: DataPlaneOtlp,
+}
+
+// TODO(#2177): Delete these ADP-only defaults when receiver endpoints return to the canonical
+// schema-provided defaults (`localhost:4317` and `localhost:4318`).
+const DEFAULT_ADP_OTLP_RECEIVER_GRPC_ENDPOINT: &str = "localhost:6317";
+const DEFAULT_ADP_OTLP_RECEIVER_HTTP_ENDPOINT: &str = "localhost:6318";
+
+/// Temporary ADP-only OTLP receiver endpoint settings.
+///
+/// These settings override the schema-provided endpoint values so ADP and the Core Agent do not
+/// bind the same ports. The Core Agent does not read them.
+///
+/// TODO(#2177): Remove these keys and use the canonical
+/// `otlp_config.receiver.protocols.*.endpoint` keys once listener ownership prevents contention.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct DataPlaneOtlp {
+    /// gRPC receiver endpoint (`data_plane.otlp.receiver_grpc_endpoint_temporary`).
+    ///
+    /// Defaults to `localhost:6317`. Change this only to avoid a listener conflict.
+    pub receiver_grpc_endpoint_temporary: Option<String>,
+    /// HTTP receiver endpoint (`data_plane.otlp.receiver_http_endpoint_temporary`).
+    ///
+    /// Defaults to `localhost:6318`. Change this only to avoid a listener conflict.
+    pub receiver_http_endpoint_temporary: Option<String>,
 }
 
 /// `data_plane.checks.*`.
@@ -181,30 +215,6 @@ pub struct DataPlane {
 #[serde(default)]
 pub struct DataPlaneChecks {
     /// Whether the checks pipeline is enabled (`data_plane.checks.enabled`).
-    pub enabled: Option<bool>,
-}
-
-/// `data_plane.metrics.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct DataPlaneMetrics {
-    /// V3 metrics-intake knobs (`data_plane.metrics.v3.*`).
-    pub v3: DataPlaneMetricsV3,
-}
-
-/// `data_plane.metrics.v3.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct DataPlaneMetricsV3 {
-    /// V3 series knobs (`data_plane.metrics.v3.series.*`).
-    pub series: DataPlaneMetricsV3Series,
-}
-
-/// `data_plane.metrics.v3.series.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct DataPlaneMetricsV3Series {
-    /// ADP-only safety gate authorizing V3 series (`data_plane.metrics.v3.series.enabled`).
     pub enabled: Option<bool>,
 }
 
@@ -294,17 +304,46 @@ pub struct OtlpConfigReceiverProtocolsHttp {
     pub transport: Option<String>,
 }
 
+fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUsize, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let size = ByteSize::deserialize(deserializer)?;
+    let bytes = usize::try_from(size.as_u64()).map_err(serde::de::Error::custom)?;
+    let size =
+        NonZeroUsize::new(bytes).ok_or_else(|| serde::de::Error::custom("value of bytes must be greater than zero"))?;
+    if size > MAX_STRING_INTERNER_SIZE_BYTES {
+        return Err(serde::de::Error::custom(format!(
+            "value of bytes must not exceed {} bytes",
+            MAX_STRING_INTERNER_SIZE_BYTES
+        )));
+    }
+    Ok(size)
+}
+
 /// `otlp_config.traces.*`.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub struct OtlpConfigTraces {
-    /// OTLP trace context interner entry count (`otlp_config.traces.string_interner_size`).
-    pub string_interner_size: Option<u64>,
+    /// OTLP trace context interner byte budget (`otlp_config.traces.string_interner_size`). Accepts
+    /// human-readable sizes such as `512KiB` as well as a plain byte count.
+    #[serde(deserialize_with = "deserialize_string_interner_size")]
+    pub string_interner_size: NonZeroUsize,
     /// Compute top-level spans by span kind
     /// (`otlp_config.traces.enable_otlp_compute_top_level_by_span_kind`).
     pub enable_otlp_compute_top_level_by_span_kind: Option<bool>,
     /// Ignore missing Datadog fields on OTLP spans (`otlp_config.traces.ignore_missing_datadog_fields`).
     pub ignore_missing_datadog_fields: Option<bool>,
+}
+
+impl Default for OtlpConfigTraces {
+    fn default() -> Self {
+        Self {
+            string_interner_size: DEFAULT_STRING_INTERNER_SIZE_BYTES,
+            enable_otlp_compute_top_level_by_span_kind: None,
+            ignore_missing_datadog_fields: None,
+        }
+    }
 }
 
 /// The `ottl_filter_config` object: OTTL span-drop filter.
@@ -354,9 +393,7 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         // control
-        if let Some(v) = self.data_plane.stop_timeout {
-            config.control.stop_timeout = v;
-        }
+        config.control.stop_timeout = self.data_plane.stop_timeout.map(Duration::from_secs);
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
         }
@@ -383,9 +420,11 @@ impl SalukiOnly {
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
-        if let Some(v) = self.data_plane.metrics.v3.series.enabled {
-            config.shared.metrics_encoding.v3_series_enabled = v;
-        }
+        // Carried as a separate field rather than folded into `zstd_compressor_level`: the encoders
+        // still resolve the two against each other, and keeping one copy of that precedence rule
+        // matters more than collapsing the fields early.
+        config.shared.endpoints.compression.zstd_compressor_level_override =
+            self.data_plane.serializer_zstd_compressor_level;
 
         // domains.dogstatsd
         let dsd = &mut config.domains.dogstatsd;
@@ -411,7 +450,7 @@ impl SalukiOnly {
             dsd.contexts.cached_tagsets_limit = v;
         }
         if let Some(v) = self.dogstatsd_string_interner_size_bytes {
-            dsd.contexts.string_interner_size_bytes = Some(v);
+            dsd.contexts.string_interner_size_bytes = Some(v.as_u64());
         }
         if let Some(v) = self.dogstatsd_allow_context_heap_allocs {
             dsd.contexts.allow_context_heap_allocs = v;
@@ -450,11 +489,33 @@ impl SalukiOnly {
             otlp.contexts.cached_tagsets_limit = v;
         }
         if let Some(v) = self.otlp_string_interner_size {
-            otlp.contexts.string_interner_size = v;
+            otlp.contexts.string_interner_size = v.as_u64();
         }
         if let Some(v) = self.otlp_config.receiver.protocols.http.transport.clone() {
             otlp.receiver.http.transport = v;
         }
+        otlp.traces.string_interner_size = self.otlp_config.traces.string_interner_size;
+        if let Some(v) = self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind {
+            otlp.traces.enable_compute_top_level_by_span_kind = v;
+        }
+        if let Some(v) = self.otlp_config.traces.ignore_missing_datadog_fields {
+            otlp.traces.ignore_missing_datadog_fields = v;
+        }
+        // Replace the schema-translated endpoints so ADP cannot inherit the Core Agent's ports.
+        //
+        // TODO(#2177): Remove this override when ADP uses the canonical endpoint keys and defaults.
+        otlp.receiver.grpc.endpoint = self
+            .data_plane
+            .otlp
+            .receiver_grpc_endpoint_temporary
+            .clone()
+            .unwrap_or_else(|| DEFAULT_ADP_OTLP_RECEIVER_GRPC_ENDPOINT.to_string());
+        otlp.receiver.http.endpoint = self
+            .data_plane
+            .otlp
+            .receiver_http_endpoint_temporary
+            .clone()
+            .unwrap_or_else(|| DEFAULT_ADP_OTLP_RECEIVER_HTTP_ENDPOINT.to_string());
 
         // domains.traces
         let traces = &mut config.domains.traces;
@@ -488,15 +549,6 @@ impl SalukiOnly {
         if let Some(v) = self.apm_config.obfuscation.sql.table_names {
             traces.obfuscation.sql.table_names = v;
         }
-        if let Some(v) = self.otlp_config.traces.string_interner_size {
-            traces.otlp.string_interner_size = v;
-        }
-        if let Some(v) = self.otlp_config.traces.enable_otlp_compute_top_level_by_span_kind {
-            traces.otlp.enable_compute_top_level_by_span_kind = v;
-        }
-        if let Some(v) = self.otlp_config.traces.ignore_missing_datadog_fields {
-            traces.otlp.ignore_missing_datadog_fields = v;
-        }
         if let Some(filter) = &self.ottl_filter_config {
             traces.ottl_filter = OttlFilter {
                 error_mode: parse_ottl_error_mode(filter.error_mode.clone()),
@@ -511,8 +563,8 @@ impl SalukiOnly {
         }
 
         // domains.checks
-        if let Some(v) = self.checks_ipc_endpoint.clone() {
-            config.domains.checks.ipc_endpoint = ListenAddress(v);
+        if let Some(v) = &self.checks_ipc_endpoint {
+            config.domains.checks.ipc_endpoint = v.clone();
         }
     }
 }
@@ -565,8 +617,14 @@ mod tests {
             "data_plane": {
                 "stop_timeout": 45,
                 "standalone_mode": true,
+                "serializer_zstd_compressor_level": 9,
                 "checks": { "enabled": true },
-                "metrics": { "v3": { "series": { "enabled": true } } }
+                // TODO(#2177): Remove this block and its endpoint assertions when ADP uses the
+                // canonical schema-provided endpoint keys.
+                "otlp": {
+                    "receiver_grpc_endpoint_temporary": "0.0.0.0:19317",
+                    "receiver_http_endpoint_temporary": "0.0.0.0:19318"
+                }
             },
             // nested: apm_config
             "apm_config": {
@@ -602,7 +660,7 @@ mod tests {
         saluki_only.seed(&mut config);
 
         // control
-        assert_eq!(config.control.stop_timeout, 45);
+        assert_eq!(config.control.stop_timeout, Some(Duration::from_secs(45)));
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
         assert_eq!(config.control.memory_limit, ByteSize::mb(512).as_u64());
@@ -613,7 +671,10 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
-        assert!(config.shared.metrics_encoding.v3_series_enabled);
+        assert_eq!(
+            config.shared.endpoints.compression.zstd_compressor_level_override,
+            Some(9)
+        );
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;
@@ -641,6 +702,11 @@ mod tests {
         assert_eq!(otlp.contexts.cached_tagsets_limit, 222);
         assert_eq!(otlp.contexts.string_interner_size, 333);
         assert_eq!(otlp.receiver.http.transport, "tcp");
+        assert_eq!(otlp.receiver.grpc.endpoint, "0.0.0.0:19317");
+        assert_eq!(otlp.receiver.http.endpoint, "0.0.0.0:19318");
+        assert_eq!(otlp.traces.string_interner_size.get(), 777);
+        assert!(otlp.traces.enable_compute_top_level_by_span_kind);
+        assert!(otlp.traces.ignore_missing_datadog_fields);
 
         // domains.traces
         let traces = &config.domains.traces;
@@ -654,9 +720,6 @@ mod tests {
         assert!(traces.obfuscation.sql.keep_sql_alias);
         assert!(traces.obfuscation.sql.replace_digits);
         assert!(traces.obfuscation.sql.table_names);
-        assert_eq!(traces.otlp.string_interner_size, 777);
-        assert!(traces.otlp.enable_compute_top_level_by_span_kind);
-        assert!(traces.otlp.ignore_missing_datadog_fields);
         assert_eq!(traces.ottl_filter.error_mode, OttlErrorMode::Ignore);
         assert_eq!(
             traces.ottl_filter.span_conditions,
@@ -669,7 +732,7 @@ mod tests {
         );
 
         // domains.checks
-        assert_eq!(config.domains.checks.ipc_endpoint.0, "localhost:5006");
+        assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
     }
 
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed
@@ -688,6 +751,31 @@ mod tests {
         }
     }
 
+    /// `dogstatsd_string_interner_size_bytes` is a byte size the source may express as a bare
+    /// integer or a suffixed string. Both forms must reach the same runtime byte budget.
+    #[test]
+    fn dogstatsd_string_interner_size_bytes_accepts_a_bare_integer_or_a_string() {
+        for (value, expected) in [
+            (
+                json!({ "dogstatsd_string_interner_size_bytes": 12_582_912 }),
+                12_582_912,
+            ),
+            (
+                json!({ "dogstatsd_string_interner_size_bytes": "12MiB" }),
+                ByteSize::mib(12).as_u64(),
+            ),
+        ] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(value).expect("dogstatsd interner byte size deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(
+                config.domains.dogstatsd.contexts.string_interner_size_bytes,
+                Some(expected)
+            );
+        }
+    }
+
     /// An absent key leaves the model default in place (the common case). `seed` writes only present
     /// options, so this exercises the `Option`-in-source / default-in-model split. A wrong value
     /// here means the model `Default` is wrong, not this struct.
@@ -702,5 +790,14 @@ mod tests {
         assert_eq!(agg.context_limit, 1_000_000);
         assert_eq!(agg.flush_interval, Duration::from_secs(15));
         assert_eq!(agg.passthrough_idle_flush_timeout, Duration::from_secs(1));
+
+        // Temporary ADP defaults replace the witnessed schema values.
+        //
+        // TODO(#2177): Expect the canonical `localhost:4317` and `localhost:4318` defaults after
+        // removing the ADP-only endpoint settings.
+        let otlp = &config.domains.otlp;
+        assert_eq!(otlp.receiver.grpc.endpoint, "localhost:6317");
+        assert_eq!(otlp.receiver.http.endpoint, "localhost:6318");
+        assert_eq!(otlp.traces.string_interner_size, DEFAULT_STRING_INTERNER_SIZE_BYTES);
     }
 }

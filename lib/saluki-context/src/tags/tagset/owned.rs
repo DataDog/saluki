@@ -926,6 +926,29 @@ mod tests {
         assert_eq!(collect_sorted(&ts), vec!["a:1", "b:2"]);
     }
 
+    #[test]
+    fn merge_shared_does_not_deduplicate_tags() {
+        // Unlike `merge_missing_shared`, `merge_shared` documents that it does NOT avoid adding
+        // duplicate tags: the shared set is chained onto the base wholesale.
+        let base = shared_from(&["a:1", "b:2"]);
+        let mut ts = TagSet::from(base);
+
+        let other = shared_from(&["b:2", "c:3"]);
+        ts.merge_shared(&other);
+
+        // b:2 is present in both the base and the merged set, and both copies are retained.
+        assert_eq!(ts.len(), 4);
+        assert_eq!(collect_sorted(&ts), vec!["a:1", "b:2", "b:2", "c:3"]);
+    }
+
+    #[test]
+    fn display_renders_comma_separated_tags() {
+        let ts: TagSet = vec![Tag::from("a:1"), Tag::from("b:2")].into_iter().collect();
+        assert_eq!(ts.to_string(), "[a:1,b:2]");
+
+        assert_eq!(TagSet::default().to_string(), "[]");
+    }
+
     // --- to_mutable convenience ---
 
     #[test]

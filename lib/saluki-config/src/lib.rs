@@ -150,25 +150,11 @@ impl LookupSource {
 /// - environment variables (must be prefixed; see [`from_environment`][Self::from_environment])
 #[derive(Clone, Default)]
 pub struct ConfigurationLoader {
-    key_aliases: &'static [(&'static str, &'static str)],
     lookup_sources: HashSet<LookupSource>,
     provider_sources: Vec<ProviderSource>,
 }
 
 impl ConfigurationLoader {
-    /// Sets key aliases to apply when loading file-based configuration sources.
-    ///
-    /// Each entry is `(nested_path, flat_key)`. When a YAML or JSON file contains a value at `nested_path`
-    /// (dot-separated), that value is also emitted under `flat_key` at the top level—but only if `flat_key`
-    /// isn't already explicitly set at the top level. This ensures that both YAML nested format and flat env var
-    /// format produce the same Figment key, so source precedence (env vars > file) works correctly.
-    ///
-    /// Must be called before any file-loading methods ([`from_yaml`][Self::from_yaml], etc.) to take effect.
-    pub fn with_key_aliases(mut self, aliases: &'static [(&'static str, &'static str)]) -> Self {
-        self.key_aliases = aliases;
-        self
-    }
-
     /// Appends one or more providers to the configuration chain.
     ///
     /// Sources are merged in the order they're added: later sources take precedence over earlier ones. Call
@@ -199,7 +185,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_yaml(&path, self.key_aliases)?;
+        let resolved_provider = ResolvedProvider::from_yaml(&path)?;
         self.provider_sources
             .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
         Ok(self)
@@ -212,7 +198,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        match ResolvedProvider::from_yaml(&path, self.key_aliases) {
+        match ResolvedProvider::from_yaml(&path) {
             Ok(resolved_provider) => {
                 self.provider_sources
                     .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
@@ -237,7 +223,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        let resolved_provider = ResolvedProvider::from_json(&path, self.key_aliases)?;
+        let resolved_provider = ResolvedProvider::from_json(&path)?;
         self.provider_sources
             .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
         Ok(self)
@@ -250,7 +236,7 @@ impl ConfigurationLoader {
     where
         P: AsRef<std::path::Path>,
     {
-        match ResolvedProvider::from_json(&path, self.key_aliases) {
+        match ResolvedProvider::from_json(&path) {
             Ok(resolved_provider) => {
                 self.provider_sources
                     .push(ProviderSource::Static(ArcProvider(Arc::new(resolved_provider))));
@@ -412,37 +398,35 @@ impl ConfigurationLoader {
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
         enable_dynamic_configuration: bool,
     ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>) {
-        Self::for_tests_with_provider_factory(file_values, env_vars, enable_dynamic_configuration, &[], || {
+        Self::for_tests_with_provider_factory(file_values, env_vars, enable_dynamic_configuration, |_| {
             Serialized::defaults(serde_json::json!({}))
         })
         .await
     }
 
-    /// Like [`for_tests`][Self::for_tests], but applies `key_aliases` during file loading and calls
-    /// `provider_factory` to build an additional provider inserted between the file provider and the
-    /// environment provider.
+    /// Like [`for_tests`][Self::for_tests], but calls `provider_factory` to build an additional
+    /// provider inserted between the file provider and the environment provider.
     ///
-    /// The factory is called after test environment variables have been set, so any env var reads it performs
-    /// (for example, in `DatadogRemapper`) are consistent with the test's env setup.
+    /// The factory receives an owned copy of the explicitly configured test environment variables. Providers can use
+    /// this input instead of reading unrelated variables from the ambient process environment. The factory is called
+    /// after the test environment variables have been set for providers that still require process environment access.
     ///
     /// This is generally only useful for testing purposes, and is exposed publicly in order to be used in cross-crate testing scenarios.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn for_tests_with_provider_factory<P, F>(
         file_values: Option<serde_json::Value>, env_vars: Option<&[(String, String)]>,
-        enable_dynamic_configuration: bool, key_aliases: &'static [(&'static str, &'static str)], provider_factory: F,
+        enable_dynamic_configuration: bool, provider_factory: F,
     ) -> (GenericConfiguration, Option<tokio::sync::mpsc::Sender<ConfigUpdate>>)
     where
         P: Provider + Send + Sync + 'static,
-        F: FnOnce() -> P,
+        F: FnOnce(Vec<(String, String)>) -> P,
     {
         let json_file = tempfile::NamedTempFile::new().expect("should not fail to create temp file.");
         let path = &json_file.path();
         let json_to_write = file_values.unwrap_or(serde_json::json!({}));
         serde_json::to_writer(&json_file, &json_to_write).expect("should not fail to write to temp file.");
 
-        let mut loader = ConfigurationLoader::default()
-            .with_key_aliases(key_aliases)
-            .try_from_json(path);
+        let mut loader = ConfigurationLoader::default().try_from_json(path);
         let mut maybe_sender = None;
         if enable_dynamic_configuration {
             let (sender, receiver) = tokio::sync::mpsc::channel(1);
@@ -458,7 +442,7 @@ impl ConfigurationLoader {
         if let Some(pairs) = env_vars.as_ref() {
             for (k, v) in pairs.iter() {
                 // Set under both the raw name and the TEST_ prefix:
-                //   - Raw name: available to any env-reading providers (for example, DatadogRemapper)
+                //   - Raw name: available to any env-reading providers built by `provider_factory`
                 //   - TEST_ prefix: read by from_environment("TEST") (simulates DD_ prefix)
                 std::env::set_var(k, v);
                 std::env::set_var(format!("TEST_{}", k), v);
@@ -466,7 +450,8 @@ impl ConfigurationLoader {
         }
 
         // Build and insert the extra provider while env vars are set so it can snapshot them.
-        let loader = loader.add_providers([provider_factory()]);
+        let provider_env_vars = env_vars.unwrap_or_default().to_vec();
+        let loader = loader.add_providers([provider_factory(provider_env_vars)]);
 
         // Add environment provider last so it has the highest precedence.
         let loader = loader
@@ -496,11 +481,10 @@ impl ConfigurationLoader {
 /// configuration, returning the held guard.
 ///
 /// [`ConfigurationLoader::for_tests`] and [`ConfigurationLoader::for_tests_with_provider_factory`] set and unset
-/// process-wide environment variables to simulate `DD_`-prefixed configuration, and providers such as the Datadog
-/// environment-variable remapper read those same variables via [`std::env::vars`]. Because the process environment
-/// is global mutable state, any test in any crate that reads or writes environment variables relevant to
-/// configuration loading MUST hold this lock for the duration of that access, so that all such tests serialize
-/// against each other rather than racing.
+/// process-wide environment variables to simulate `DD_`-prefixed configuration. Because the process environment is
+/// global mutable state, any test in any crate that reads or writes environment variables relevant to configuration
+/// loading MUST hold this lock for the duration of that access, so that all such tests serialize against each other
+/// rather than racing.
 ///
 /// This is exposed publicly so that tests in downstream crates can serialize against the same single lock that the
 /// loader itself uses, instead of each hand-rolling an independent (and therefore non-serializing) mutex.
@@ -1337,5 +1321,53 @@ mod tests {
         assert_eq!(map.get("present"), Some(&&serde_json::json!("yes")));
         // Figment drops null values during deserialization, so they are absent from the output.
         assert!(!map.contains_key("absent"));
+    }
+
+    #[tokio::test]
+    async fn from_yaml_loads_configuration_file() {
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().expect("should create temp file");
+        file.write_all(b"top: value\nnested:\n  inner: 7\n")
+            .expect("should write temp file");
+        file.flush().expect("should flush temp file");
+
+        let cfg = ConfigurationLoader::default()
+            .from_yaml(file.path())
+            .expect("YAML file should load")
+            .into_generic()
+            .await
+            .expect("should build generic configuration");
+
+        assert_eq!(cfg.get_typed::<String>("top").unwrap(), "value");
+        assert_eq!(cfg.get_typed::<i64>("nested.inner").unwrap(), 7);
+    }
+
+    #[tokio::test]
+    async fn try_from_yaml_ignores_unreadable_file() {
+        // `try_from_yaml` swallows load errors (here, a nonexistent path), yielding a config with no values rather
+        // than failing to build.
+        let cfg = ConfigurationLoader::default()
+            .try_from_yaml("/nonexistent/definitely/not/here.yaml")
+            .into_generic()
+            .await
+            .expect("should build generic configuration even when the file is missing");
+
+        assert!(matches!(
+            cfg.get::<String>("anything"),
+            Err(ConfigurationError::MissingField { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn from_json_returns_error_for_invalid_file() {
+        use std::io::Write as _;
+
+        let mut file = tempfile::NamedTempFile::new().expect("should create temp file");
+        file.write_all(b"{ not valid json ").expect("should write temp file");
+        file.flush().expect("should flush temp file");
+
+        let result = ConfigurationLoader::default().from_json(file.path());
+        assert!(result.is_err(), "invalid JSON should fail to load at the loader level");
     }
 }

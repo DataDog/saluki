@@ -474,7 +474,6 @@ mod config_smoke {
     use serde_json::json;
 
     use super::DatadogApmStatsEncoderConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
@@ -486,8 +485,6 @@ mod config_smoke {
                 cfg.as_typed::<DatadogApmStatsEncoderConfiguration>()
                     .expect("DatadogApmStatsEncoderConfiguration should deserialize")
             },
-            KEY_ALIASES,
-            DatadogRemapper::new,
         )
         .await
     }

@@ -9,7 +9,7 @@
 //! consumer can depend on it without inheriting either.
 //!
 //! Every field is plain, source-agnostic data. There are no source key names in identifiers and no
-//! source serde (these structs are serialized for the `/config/internal` view but never
+//! source serde (these structs are serialized for the `/config/runtime` view but never
 //! deserialized from a source language; that is the source adapter's job).
 
 use std::fmt;
@@ -17,11 +17,12 @@ use std::fmt;
 use serde::Serialize;
 
 pub mod control;
+pub mod defaults;
 pub mod domains;
 pub mod live;
 pub mod shared;
 
-pub use control::{ControlConfiguration, ListenAddress, Logging};
+pub use control::{ControlConfiguration, Logging};
 pub use domains::DomainConfiguration;
 pub use live::Live;
 pub use shared::SharedConfiguration;

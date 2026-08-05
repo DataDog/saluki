@@ -29,6 +29,7 @@ static CORE_MAPPING: LazyLock<FastHashMap<&'static str, &'static str>> = LazyLoc
     m.insert(DEPLOYMENT_ENVIRONMENT_NAME, "env");
     m.insert(SERVICE_NAME, "service");
     m.insert(SERVICE_VERSION, "version");
+    m.insert(SERVICE_INSTANCE_ID, "service.instance.id");
     m
 });
 
@@ -152,28 +153,12 @@ pub static HTTP_MAPPINGS: LazyLock<FastHashMap<&'static str, &'static str>> = La
 pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: ResourceAttributeTagMode) -> TagSet {
     let mut tags = TagSet::default();
 
+    if let Some(tag) = process_identifier_tag(attributes) {
+        tags.insert_tag(tag);
+    }
+
     for kv in attributes {
         match (kv.key.as_str(), kv.value.as_ref().and_then(|v| v.value.as_ref())) {
-            // Process attributes
-            (PROCESS_EXECUTABLE_NAME, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_EXECUTABLE_NAME, s_val));
-            }
-            (PROCESS_EXECUTABLE_PATH, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_EXECUTABLE_PATH, s_val));
-            }
-            (PROCESS_COMMAND, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_COMMAND, s_val));
-            }
-            (PROCESS_COMMAND_LINE, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_COMMAND_LINE, s_val));
-            }
-            (PROCESS_PID, Some(Value::IntValue(i_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_PID, i_val));
-            }
-            (PROCESS_OWNER, Some(Value::StringValue(s_val))) => {
-                tags.insert_tag(format!("{}:{}", PROCESS_OWNER, s_val));
-            }
-
             // System attributes
             (OS_TYPE, Some(Value::StringValue(s_val))) => {
                 tags.insert_tag(format!("{}:{}", OS_TYPE, s_val));
@@ -218,6 +203,32 @@ pub fn tags_from_attributes(attributes: &[otlp_common::KeyValue], mode: Resource
     tags
 }
 
+/// Returns the highest-priority non-empty process identifier tag.
+///
+/// Process IDs and owners participate in origin detection but are not metric tags. When configured to add every
+/// scalar resource attribute, [`ResourceAttributeTagMode::All`] still adds their raw attributes by design.
+fn process_identifier_tag(attributes: &[otlp_common::KeyValue]) -> Option<String> {
+    [
+        PROCESS_EXECUTABLE_NAME,
+        PROCESS_EXECUTABLE_PATH,
+        PROCESS_COMMAND,
+        PROCESS_COMMAND_LINE,
+    ]
+    .into_iter()
+    .find_map(|key| {
+        attributes.iter().find_map(|attribute| {
+            if attribute.key != key {
+                return None;
+            }
+
+            match attribute.value.as_ref().and_then(|value| value.value.as_ref()) {
+                Some(Value::StringValue(value)) if !value.is_empty() => Some(format!("{key}:{value}")),
+                _ => None,
+            }
+        })
+    })
+}
+
 /// Renders a scalar attribute value as a tag value string.
 ///
 /// Bytes, arrays, and key-value lists return `None` and are not converted to tags.
@@ -231,7 +242,6 @@ fn raw_tag_value(value: &Value) -> Option<String> {
     }
 }
 
-#[allow(dead_code)]
 pub(super) fn origin_id_from_attributes(attributes: &[otlp_common::KeyValue]) -> Option<String> {
     let mut pod_uid = None;
 
@@ -331,6 +341,46 @@ mod tests {
     }
 
     #[test]
+    fn origin_id_uses_container_id() {
+        let attributes = vec![attr(CONTAINER_ID, Value::StringValue("container-123".into()))];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("container_id://container-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_uses_pod_uid_when_container_id_is_absent() {
+        let attributes = vec![attr(K8S_POD_UID, Value::StringValue("pod-123".into()))];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("kubernetes_pod_uid://pod-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_prefers_container_id_over_pod_uid() {
+        let attributes = vec![
+            attr(K8S_POD_UID, Value::StringValue("pod-123".into())),
+            attr(CONTAINER_ID, Value::StringValue("container-123".into())),
+        ];
+
+        assert_eq!(
+            origin_id_from_attributes(&attributes).as_deref(),
+            Some("container_id://container-123")
+        );
+    }
+
+    #[test]
+    fn origin_id_is_absent_without_supported_attributes() {
+        let attributes = vec![attr("service.name", Value::StringValue("api".into()))];
+
+        assert_eq!(origin_id_from_attributes(&attributes), None);
+    }
+
+    #[test]
     fn mapped_mode_emits_only_recognized_mappings() {
         let attributes = vec![
             attr("service.name", Value::StringValue("api".into())),
@@ -342,6 +392,38 @@ mod tests {
         assert!(has(&tags, "service:api"));
         assert!(!has(&tags, "service.name:api"));
         assert!(!has(&tags, "custom.resource.attribute:present"));
+    }
+
+    #[test]
+    fn mapped_mode_maps_service_instance_id_and_environment_aliases() {
+        let attributes = vec![
+            attr("service.version", Value::StringValue("1.2.3".into())),
+            attr("service.instance.id", Value::StringValue("instance-42".into())),
+            attr("deployment.environment.name", Value::StringValue("production".into())),
+            attr("deployment.environment", Value::StringValue("legacy".into())),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(has(&tags, "version:1.2.3"));
+        assert!(has(&tags, "service.instance.id:instance-42"));
+        assert!(has(&tags, "env:production"));
+        assert!(has(&tags, "env:legacy"));
+    }
+
+    #[test]
+    fn mapped_mode_skips_empty_core_mapping_values() {
+        let attributes = vec![
+            attr("service.name", Value::StringValue(String::new())),
+            attr("service.version", Value::StringValue(String::new())),
+            attr("service.instance.id", Value::StringValue(String::new())),
+            attr("deployment.environment.name", Value::StringValue(String::new())),
+            attr("deployment.environment", Value::StringValue(String::new())),
+        ];
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(tags.is_empty());
     }
 
     #[test]
@@ -401,5 +483,86 @@ mod tests {
         let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
 
         assert!(tags.is_empty());
+    }
+
+    fn process_attributes(
+        executable_name: &str, executable_path: &str, command: &str, command_line: &str,
+    ) -> Vec<KeyValue> {
+        vec![
+            attr(PROCESS_EXECUTABLE_NAME, Value::StringValue(executable_name.into())),
+            attr(PROCESS_EXECUTABLE_PATH, Value::StringValue(executable_path.into())),
+            attr(PROCESS_COMMAND, Value::StringValue(command.into())),
+            attr(PROCESS_COMMAND_LINE, Value::StringValue(command_line.into())),
+        ]
+    }
+
+    #[test]
+    fn mapped_mode_emits_only_the_highest_priority_process_identifier() {
+        let mut attributes =
+            process_attributes("otelcol", "/usr/bin/otelcol", "otelcol", "otelcol --config config.yaml");
+        attributes.extend([
+            attr(PROCESS_PID, Value::IntValue(42)),
+            attr(PROCESS_OWNER, Value::StringValue("agent".into())),
+        ]);
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert_eq!(tags.len(), 1);
+        assert!(has(&tags, "process.executable.name:otelcol"));
+    }
+
+    #[test]
+    fn mapped_mode_falls_back_through_process_identifier_priority() {
+        for (attributes, expected) in [
+            (
+                process_attributes("", "/usr/bin/otelcol", "otelcol", "otelcol --config config.yaml"),
+                "process.executable.path:/usr/bin/otelcol",
+            ),
+            (
+                process_attributes("", "", "otelcol", "otelcol --config config.yaml"),
+                "process.command:otelcol",
+            ),
+            (
+                process_attributes("", "", "", "otelcol --config config.yaml"),
+                "process.command_line:otelcol --config config.yaml",
+            ),
+        ] {
+            let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+            assert_eq!(tags.len(), 1);
+            assert!(has(&tags, expected));
+        }
+    }
+
+    #[test]
+    fn mapped_mode_omits_empty_process_identifiers_and_non_identifier_process_attributes() {
+        let mut attributes = process_attributes("", "", "", "");
+        attributes.extend([
+            attr(PROCESS_PID, Value::IntValue(42)),
+            attr(PROCESS_OWNER, Value::StringValue("agent".into())),
+        ]);
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::Mapped);
+
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn all_mode_preserves_raw_process_attributes() {
+        let mut attributes =
+            process_attributes("otelcol", "/usr/bin/otelcol", "otelcol", "otelcol --config config.yaml");
+        attributes.extend([
+            attr(PROCESS_PID, Value::IntValue(42)),
+            attr(PROCESS_OWNER, Value::StringValue("agent".into())),
+        ]);
+
+        let tags = tags_from_attributes(&attributes, ResourceAttributeTagMode::All);
+
+        assert!(has(&tags, "process.executable.name:otelcol"));
+        assert!(has(&tags, "process.executable.path:/usr/bin/otelcol"));
+        assert!(has(&tags, "process.command:otelcol"));
+        assert!(has(&tags, "process.command_line:otelcol --config config.yaml"));
+        assert!(has(&tags, "process.pid:42"));
+        assert!(has(&tags, "process.owner:agent"));
     }
 }

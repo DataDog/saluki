@@ -98,3 +98,86 @@ pub fn serialize_proto_bytes<S: Serializer>(bytes: &Vec<u8>, s: S) -> Result<S::
 pub fn deserialize_proto_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
     serde_bytes::ByteBuf::deserialize(d).map(|bb| bb.into_vec())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::de::IntoDeserializer as _;
+
+    use super::*;
+    use crate::metrics::MetricType;
+
+    #[derive(Serialize)]
+    struct EnumHolder {
+        #[serde(serialize_with = "serialize_proto_enum")]
+        value: EnumOrUnknown<MetricType>,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    struct BytesHolder {
+        #[serde(
+            serialize_with = "serialize_proto_bytes",
+            deserialize_with = "deserialize_proto_bytes",
+            default
+        )]
+        data: Vec<u8>,
+    }
+
+    #[test]
+    fn serialize_proto_enum_emits_the_wire_integer_for_known_and_unknown_values() {
+        // `MetricType::RATE` has wire value 2; an unknown discriminant is emitted verbatim.
+        let known = serde_json::to_value(EnumHolder {
+            value: EnumOrUnknown::from(MetricType::RATE),
+        })
+        .unwrap();
+        assert_eq!(known["value"], serde_json::json!(2));
+
+        let unknown = serde_json::to_value(EnumHolder {
+            value: EnumOrUnknown::from_i32(99),
+        })
+        .unwrap();
+        assert_eq!(unknown["value"], serde_json::json!(99));
+    }
+
+    #[test]
+    fn deserialize_proto_enum_maps_each_integer_width_through_from_i32() {
+        use serde::de::value::{Error as ValueError, I16Deserializer, I32Deserializer, U8Deserializer};
+
+        // The hand-written visitor accepts several integer widths and routes them all through
+        // `EnumOrUnknown::from_i32`, resolving known discriminants and preserving unknown ones. Each
+        // case below is fed through the matching narrow-integer serde deserializer so the corresponding
+        // `visit_*` arm is exercised directly.
+        let u8_de: U8Deserializer<ValueError> = 1u8.into_deserializer();
+        let from_u8: EnumOrUnknown<MetricType> =
+            deserialize_proto_enum(u8_de).expect("u8 discriminant should deserialize");
+        assert_eq!(from_u8.enum_value(), Ok(MetricType::COUNT));
+
+        let i16_de: I16Deserializer<ValueError> = 3i16.into_deserializer();
+        let from_i16: EnumOrUnknown<MetricType> =
+            deserialize_proto_enum(i16_de).expect("i16 discriminant should deserialize");
+        assert_eq!(from_i16.enum_value(), Ok(MetricType::GAUGE));
+
+        let i32_de: I32Deserializer<ValueError> = 2i32.into_deserializer();
+        let from_i32: EnumOrUnknown<MetricType> =
+            deserialize_proto_enum(i32_de).expect("i32 discriminant should deserialize");
+        assert_eq!(from_i32.enum_value(), Ok(MetricType::RATE));
+
+        // An unrecognized discriminant is retained as `Unknown`, not rejected or clamped.
+        let unknown_de: I32Deserializer<ValueError> = 99i32.into_deserializer();
+        let unknown: EnumOrUnknown<MetricType> =
+            deserialize_proto_enum(unknown_de).expect("unknown discriminant should still deserialize");
+        assert_eq!(unknown.value(), 99);
+        assert_eq!(unknown.enum_value(), Err(99));
+    }
+
+    #[test]
+    fn proto_bytes_round_trip_preserves_the_exact_byte_sequence() {
+        // The bytes helpers bridge protobuf's `Vec<u8>` fields to `serde_bytes`; a full round-trip must
+        // reproduce every byte, including a zero and a high byte.
+        let original = BytesHolder {
+            data: vec![0, 1, 2, 254, 255],
+        };
+        let encoded = serde_json::to_value(&original).unwrap();
+        let decoded: BytesHolder = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.data, vec![0, 1, 2, 254, 255]);
+    }
+}

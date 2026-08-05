@@ -4,6 +4,9 @@
 //!
 //! - `POST /api/v2/series`: accepts metric series payloads, records payload
 //!   shape assertions, and captures scalar metric contexts.
+//! - `POST /api/intake/metrics/v3/series`: accepts the Datadog Agent's v3 native
+//!   series payloads (dictionary + delta encoded columnar protobuf) and captures
+//!   scalar metric contexts.
 //! - `POST /api/beta/sketches`: accepts distribution sketch payloads and
 //!   captures sketch contexts.
 //! - `POST /api/v1/events_batch`: accepts protobuf event batches.
@@ -32,20 +35,26 @@ use super::{middleware::measure_compressed_size, state::AppState, MAX_COMPRESSED
 
 pub(super) fn routes() -> Router<AppState> {
     Router::new()
-        .merge(series_route())
+        .merge(measured_routes())
         .merge(decoded_payload_routes())
         .route("/api/v1/validate", get(|| async { StatusCode::OK }))
 }
 
-/// The `/api/v2/series` route. Pyld01-Pyld06 and Pyld22 need the compressed body and raw headers.
-/// `measure_compressed_size` runs outermost, then decompression. The route lifts the default body
-/// limit. The middleware cap is the backstop.
-fn series_route() -> Router<AppState> {
+/// Routes that fire payload assertions. `measure_compressed_size` runs outermost so Pyld05/Pyld06/Pyld22
+/// and the pre-decompression Content-Encoding are captured before `RequestDecompressionLayer` consumes
+/// them, then the default body limit is lifted so the middleware cap is the backstop. `/api/v2/series`,
+/// the v3 native series endpoint, and `/api/beta/sketches` all assert their envelope and byte properties,
+/// so all three share this measured stack.
+fn measured_routes() -> Router<AppState> {
     let layers = ServiceBuilder::new()
         .layer(from_fn(measure_compressed_size))
         .layer(RequestDecompressionLayer::new().pass_through_unaccepted(true))
         .layer(DefaultBodyLimit::disable());
-    Router::new().route("/api/v2/series", post(metrics::handle_series).layer(layers))
+    Router::new()
+        .route("/api/v2/series", post(metrics::handle_series))
+        .route("/api/intake/metrics/v3/series", post(metrics::handle_series_v3))
+        .route("/api/beta/sketches", post(metrics::handle_sketches))
+        .layer(layers)
 }
 
 /// Routes that decompress and parse a body without recording `Measurements`. One shared stack
@@ -53,7 +62,6 @@ fn series_route() -> Router<AppState> {
 /// handler caps the decompressed body with `to_bytes`.
 fn decoded_payload_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/beta/sketches", post(metrics::handle_sketches))
         .route("/api/v1/events_batch", post(events::handle_events_batch))
         .route("/api/v1/events", post(events::handle_events_v1))
         .route("/intake/", post(events::handle_intake))

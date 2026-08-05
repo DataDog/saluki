@@ -22,7 +22,7 @@ where
     /// Creates a new `OnDemandObjectPool`.
     pub fn new<S>(pool_name: S) -> Self
     where
-        S: Into<String>,
+        S: AsRef<str>,
     {
         Self::with_builder(pool_name, T::Data::default)
     }
@@ -37,7 +37,7 @@ where
     /// `builder` is called to construct each item.
     pub fn with_builder<S, B>(pool_name: S, builder: B) -> Self
     where
-        S: Into<String>,
+        S: AsRef<str>,
         B: Fn() -> T::Data + Send + Sync + 'static,
     {
         let strategy = Arc::new(OnDemandStrategy::with_builder(pool_name, builder));
@@ -77,12 +77,12 @@ struct OnDemandStrategy<T: Poolable> {
 impl<T: Poolable> OnDemandStrategy<T> {
     fn with_builder<S, B>(pool_name: S, builder: B) -> Self
     where
-        S: Into<String>,
+        S: AsRef<str>,
         B: Fn() -> T::Data + Send + Sync + 'static,
     {
         let builder = Box::new(builder);
 
-        let metrics = PoolMetrics::new(pool_name.into());
+        let metrics = PoolMetrics::new(pool_name.as_ref());
         metrics.capacity().set(usize::MAX as f64);
 
         Self {

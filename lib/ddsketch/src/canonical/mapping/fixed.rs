@@ -138,13 +138,23 @@ mod tests {
     use super::*;
     use crate::canonical::mapping::LogarithmicMapping;
 
+    // Shared `IndexMapping` conformance suite (round-trip, bound ordering, gamma/accuracy consistency, proto
+    // self-validation). This subsumes the former per-impl index/value round-trip and proto round-trip tests.
     #[test]
-    fn test_zero_sized() {
+    fn conforms_to_index_mapping_contract() {
+        let mapping = FixedLogarithmicMapping::new();
+        crate::canonical::mapping::conformance::assert_index_mapping_conformance(&mapping, 0.01);
+    }
+
+    // Being zero-sized is the entire reason this mapping exists, so it's asserted directly rather than via the
+    // shared conformance suite.
+    #[test]
+    fn is_zero_sized() {
         assert_eq!(std::mem::size_of::<FixedLogarithmicMapping>(), 0);
     }
 
     #[test]
-    fn test_matches_logarithmic_mapping() {
+    fn matches_logarithmic_mapping() {
         let fixed = FixedLogarithmicMapping::new();
         let dynamic = LogarithmicMapping::new(0.01).unwrap();
 
@@ -185,30 +195,5 @@ mod tests {
                 dynamic_val
             );
         }
-    }
-
-    #[test]
-    fn test_index_value_roundtrip() {
-        let mapping = FixedLogarithmicMapping::new();
-
-        for i in -100..100 {
-            let value = mapping.value(i);
-            let recovered_index = mapping.index(value);
-            assert!(
-                (recovered_index - i).abs() <= 1,
-                "index {} -> value {} -> index {}",
-                i,
-                value,
-                recovered_index
-            );
-        }
-    }
-
-    #[test]
-    fn test_proto_roundtrip() {
-        let mapping = FixedLogarithmicMapping::new();
-        let proto = mapping.to_proto();
-
-        assert!(mapping.validate_proto_mapping(&proto).is_ok());
     }
 }

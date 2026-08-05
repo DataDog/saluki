@@ -42,6 +42,7 @@ pub mod error {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DatadogConfiguration {
     #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
     pub additional_endpoints: HashMap<String, Vec<String>>,
 
     #[serde(default)]
@@ -61,6 +62,9 @@ pub struct DatadogConfiguration {
 
     #[serde(default)]
     pub autoscaling: Autoscaling,
+
+    #[serde(default)]
+    pub basic_telemetry_add_container_tags: bool,
 
     #[serde(default)]
     pub bind_host: String,
@@ -431,6 +435,7 @@ impl Default for DatadogConfiguration {
             api_key: Default::default(),
             apm_config: Default::default(),
             autoscaling: Default::default(),
+            basic_telemetry_add_container_tags: Default::default(),
             bind_host: Default::default(),
             cluster_agent: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
@@ -1843,7 +1848,7 @@ pub mod defaults {
         vec!["datadoghq.com".to_string()]
     }
     pub(super) fn datadog_configuration_use_v3_api_series_enabled() -> String {
-        "true".to_string()
+        "datadog_only".to_string()
     }
 }
 

@@ -49,8 +49,12 @@ into `SalukiConfiguration`.
 | Legacy test registry, legacy smoke test support, doc gen        | `lib/datadog-agent/config-testing/`                                        |
 | Hand-written Datadog witness implementation                     | `lib/agent-data-plane-config-system/src/translators/datadog_translator.rs` |
 | Saluki-only source model and `seed`                             | `lib/agent-data-plane-config-system/src/saluki_only.rs`                    |
+| Saluki-only defaults                                            | `lib/agent-data-plane-config/src/defaults.rs`                              |
 | Runtime loading and authority selection                         | `lib/agent-data-plane-config-system/src/loaded.rs`                         |
 | Translation gate and update loop                                | `lib/agent-data-plane-config-system/src/system.rs`                         |
+| Schema-driven environment reader (Datadog keys)                 | `lib/datadog-agent/config/src/env_reader.rs`                               |
+| Figment provider wrapping that reader                           | `lib/datadog-agent/config/src/env_provider.rs`                             |
+| Same provider, plus Saluki-only keys                            | `lib/agent-data-plane-config-system/src/env_provider.rs`                   |
 
 Paths and type names can move. Notify the user when this skill needs an update.
 
@@ -93,6 +97,27 @@ Use the following command to regenerate it:
 make build-schema-overlay
 ```
 
+## Environment variables and key shape
+
+The Datadog Agent does not derive a variable's name from its key path: it looks up each known key's
+declared variable names. `DD_PROXY_HTTP` reaches `proxy.http` while `DD_DOGSTATSD_PORT` reaches the
+flat `dogstatsd_port`, and nothing in either name marks the nesting boundary. No separator
+convention can reproduce this, so both configuration paths read the environment through the
+generated tables instead:
+
+- the typed path via `apply_datadog_env` plus the Saluki-only reader, and
+- the by-key path via `EnvironmentProvider`, a Figment provider wrapping those same readers.
+
+**Every source therefore delivers the Agent's canonical shape.** A struct deserialized from
+`GenericConfiguration` **MUST** read that shape. Do not add a `#[serde(rename)]` or `#[serde(alias)]`
+that maps a nested key onto a flattened spelling, and do not reintroduce a key-alias or
+environment-remapping table. Those existed once, only ran on file load, and so never applied to the
+Datadog Agent's configuration stream — which is the authority in the Core Agent deployment.
+
+Reserve `#[serde(flatten)]` for a struct that genuinely groups several *top-level* Agent keys (for
+example, the forwarder's `forwarder_*` retry settings). Name a Rust field after its canonical
+section rather than renaming it onto one.
+
 ## Saluki-only values
 
 Values absent from the Datadog schema reach `SalukiConfiguration` through the `SalukiOnly` source
@@ -107,16 +132,16 @@ Keep the authoritative Datadog path and delete the duplicate Saluki-only path.
 
 Exactly one layer owns each default:
 
-| Source class | Model type  | Default owner                         | Translation behavior             |
-|--------------|-------------|---------------------------------------|----------------------------------|
-| Saluki-only  | `Option<T>` | No default                            | `seed` preserves `None`          |
-| Saluki-only  | `T`         | One declaration beside the model type | `seed` assigns configured values |
-| Witnessed    | `T`         | Generated Datadog schema default      | `drive` always writes it         |
-| Witnessed    | `Option<T>` | No default                            | `drive` preserves `None`         |
+| Source class | Model type  | Default owner                                  | Translation behavior              |
+|--------------|-------------|------------------------------------------------|-----------------------------------|
+| Saluki-only  | `Option<T>` | No default                                     | `seed` preserves `None`           |
+| Saluki-only  | `T`         | `agent-data-plane-config/src/defaults.rs`      | `seed` assigns the resolved value |
+| Witnessed    | `T`         | Generated Datadog schema default               | `drive` always writes it          |
+| Witnessed    | `Option<T>` | No default                                     | `drive` preserves `None`          |
 
-For a Saluki-only default, use `#[serde(default = "...")]` with a nearby constant or function. If
-the component requires a value, model `T`; use `Option<T>` only when absence is meaningful to the
-component, not to defer its default.
+Define each Saluki-only default once in `lib/agent-data-plane-config/src/defaults.rs`; source and
+model defaults must reference that definition rather than restating its value. If the component
+requires a value, model `T`; use `Option<T>` only when absence is meaningful, not to defer a default.
 
 Push source parsing, defaults, and input validation to the configuration boundary. Components keep
 only validation that is truly business logic.
@@ -158,9 +183,14 @@ the witnessed model.
 
 1. Verify that the key is absent from `schema_overlay.yaml`.
 2. Add its destination to the correct `SalukiConfiguration` slice.
-3. Add the exact source hierarchy and a reliable parsing type to `SalukiOnly`.
-4. Add one `seed` assignment to the destination.
-5. (legacy): Keep `SALUKI_KEYS` consistent with the source key, type, and default.
+3. If it has a default, define it once in `agent-data-plane-config/src/defaults.rs` and reference it
+   from the model and source defaults.
+4. Add the exact source hierarchy and a reliable parsing type to `SalukiOnly`. A **nested** key
+   *requires* this even when its only consumer reads the by-key view: the Saluki-only environment
+   reader discovers its paths from `SalukiOnly`, and it is the sole source that places `DD_FOO_BAR`
+   at `foo.bar`. Without a field, the key is silently unreachable from the environment.
+5. Add one `seed` assignment to the destination.
+6. (legacy): Keep `SALUKI_KEYS` consistent with the source key, type, and default.
 
 ### Migrate a raw consumer
 
@@ -174,12 +204,17 @@ the witnessed model.
 5. Add any missing model, witness, or seed path with the workflows above.
 6. Change static construction to accept borrowed typed slices. For dynamic behavior, pass a narrow
    `Live<T>` and rebuild the reactive state after `changed()`.
-7. Remove source serde, Datadog key names, raw-map access, key watches, parsing, and configuration
-   defaults from the component.
+7. Remove source serde, Datadog key names, raw-map access, key watches, parsing, configuration
+   defaults, and code made unused by the cutover. `#[allow(dead_code)]` is not an acceptable way to
+   retain migration residue.
 8. Update topology call sites and tests. Preserve behavior tests using typed inputs; remove tests
    only when they tested legacy deserialization and nothing else.
+   - Do *not* rename `from_configuration`. Just change its signature to take typed configuration.
 9. Remove the component's `run_config_smoke_tests` invocation once it no longer deserializes from
-   `GenericConfiguration`. Keep `used_by`; it drives legacy smoke-test codegen.
+   `GenericConfiguration`. Replace migrated structs in the `used_by` field with
+   `TYPED_CONFIG_SYSTEM`.
+10. Higher risk cutovers should be tested with correctness or integration tests that exercise the
+    affected configurations.
 
 A cutover should be behaviorally transparent. If the old behavior conflicts with the source schema
 or typed-system invariants, surface the conflict rather than silently choosing one.

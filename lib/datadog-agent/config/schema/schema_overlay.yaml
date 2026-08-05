@@ -467,6 +467,16 @@ inventory:
       additional_attributes:
         config_registry_filename: get_typed.rs
 
+  basic_telemetry_add_container_tags:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Add container tags to basic telemetry signals"
+    test_support:
+      used_by: [TypedConfigSystem]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
   bind_host:
     support: full
     pipelines: [dogstatsd]
@@ -668,11 +678,23 @@ inventory:
   data_plane.secure_api_listen_address:
     support: full
     pipelines: [cross_cutting]
-    description: "Privileged API listen address"
+    description: "mTLS-authenticated privileged API address"
     documentation: |-
-      This is the privileged (secure) API endpoint. Addresses must include a URL scheme
-      (for example, `tcp://`). See `data_plane.api_listen_address` for the unprivileged
-      endpoint.
+      ### `data_plane.secure_api_listen_address`
+
+      This key configures the listener for the mTLS-authenticated privileged HTTP and gRPC API.
+      Addresses use a transport scheme (for example, `tcp://`) to select the underlying socket
+      type. See `data_plane.api_listen_address` for the unprivileged endpoint.
+
+      Before ADP routes a request, every client must present a certificate during the TLS
+      handshake. The presented leaf certificate's DER encoding must exactly equal the Agent IPC
+      certificate loaded from the configured `ipc_cert.pem`, and the handshake must prove
+      possession of its private key. An issuing CA does not broaden the accepted identity.
+
+      All clients use this same certificate and therefore share one principal; ADP does not
+      distinguish individual clients. Certificate rotation is exact-only: ADP accepts no old/new
+      certificate overlap. Coordinate replacement of `ipc_cert.pem` with restarts so every client
+      and the server use the same certificate.
     test_support:
       used_by: [get_typed]
       additional_attributes:
@@ -713,7 +735,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1987,17 +2009,47 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.logs.enabled"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "false"
       additional_attributes:
         config_registry_filename: otlp.rs
+
+  otlp_config.metrics.batch.flush_timeout:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "OTLP metrics batch flush timeout"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+  otlp_config.metrics.batch.max_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Maximum OTLP metrics batch size"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+  otlp_config.metrics.batch.min_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Minimum OTLP metrics batch size"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
     description: "otlp_config.metrics.enabled"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2006,7 +2058,7 @@ inventory:
     pipelines: [otlp]
     description: "OTLP histogram bucket reporting mode"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"counters"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2016,7 +2068,7 @@ inventory:
     pipelines: [otlp]
     description: "Emit OTLP histogram aggregation metrics."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2026,7 +2078,7 @@ inventory:
     pipelines: [otlp]
     description: "Add scalar resource attributes as raw tags."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2038,7 +2090,7 @@ inventory:
       Controls how summary quantiles are reported. The default `gauges` emits one gauge metric per quantile. Set this
       to `noquantiles` to omit quantile metrics.
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"noquantiles"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2051,7 +2103,7 @@ inventory:
       Controls how cumulative monotonic sums are reported. The default `to_delta` converts cumulative values to
       deltas and reports them as counts. Set this to `raw_value` to report cumulative values as gauges.
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"raw_value"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2065,7 +2117,7 @@ inventory:
       when the series started after the Agent Data Plane process. Set this to `drop` to always discard the first value
       or `keep` to always report it.
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"drop"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2075,7 +2127,7 @@ inventory:
     pipelines: [otlp]
     description: "Comma-separated tags for all OTLP metrics."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2084,7 +2136,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.endpoint"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2093,7 +2145,7 @@ inventory:
     pipelines: [otlp]
     description: "Max OTLP inbound gRPC message size (MiB)"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2103,7 +2155,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.transport"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2112,7 +2164,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.http.endpoint"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2121,7 +2173,7 @@ inventory:
     pipelines: [traces]
     description: "otlp_config.traces.enabled"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2130,7 +2182,7 @@ inventory:
     pipelines: [traces]
     description: "otlp_config.traces.internal_port"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2140,7 +2192,7 @@ inventory:
     pipelines: [traces]
     description: "OTLP trace sampling percentage"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2358,7 +2410,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Datadog site domain"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -2918,7 +2970,6 @@ excluded:
   azure_hostname_style: "ignored in initial audit 2026-04-23"
   azure_metadata_api_version: "ignored in initial audit 2026-04-23"
   azure_metadata_timeout: "ignored in initial audit 2026-04-23"
-  basic_telemetry_add_container_tags: "ignored in initial audit 2026-04-23"
   bosh_id: "ignored in initial audit 2026-04-23"
   c_core_dump: "ignored in initial audit 2026-04-23"
   c_stacktrace_collection: "ignored in initial audit 2026-04-23"
@@ -3949,9 +4000,6 @@ excluded:
   otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.flush_timeout: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.max_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"

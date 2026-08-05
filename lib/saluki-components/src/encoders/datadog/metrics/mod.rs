@@ -1,5 +1,6 @@
 use std::{collections::VecDeque, ops::Range, time::Duration};
 
+use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use facet::Facet;
@@ -45,10 +46,16 @@ use self::{
 };
 use crate::{
     common::datadog::{
-        clamp_payload_limits, default_serializer_compressor_kind,
-        endpoints::{series_v3_config_can_enable_v3, AdditionalEndpoints},
+        clamp_payload_limits,
+        config::{OpwMetricsConfiguration, OpwMetricsSettings},
+        data_plane::EncoderDataPlaneConfiguration,
+        default_serializer_compressor_kind,
+        endpoints::{
+            calculate_resolved_endpoint, default_site, deserialize_dd_url, series_v3_config_can_enable_v3,
+            AdditionalEndpoints, EndpointV3Settings, ResolvedEndpoint, V3EndpointConfig, DEFAULT_SITE,
+        },
         io::RB_BUFFER_CHUNK_SIZE,
-        protocol::{MetricsPayloadInfo, UseV3ApiSeriesConfig, V3ApiConfig},
+        protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
         resolve_zstd_compressor_level,
         telemetry::ComponentTelemetry,
@@ -95,6 +102,30 @@ const fn default_max_series_points_per_payload() -> usize {
 
 const fn default_flush_timeout_secs() -> u64 {
     2
+}
+
+/// The Datadog Agent's `use_v2_api` configuration section.
+#[derive(Clone, Deserialize, Facet)]
+#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+struct UseV2ApiConfig {
+    /// Whether to use the V2 API for series metrics.
+    ///
+    /// When `true` (the default), series metrics are sent to the V2 protobuf endpoint
+    /// (`/api/v2/series`). When `false`, series metrics are sent to the legacy V1 JSON endpoint
+    /// (`/api/v1/series`). Sketch metrics always use the V2 endpoint (`/api/beta/sketches`)
+    /// regardless of this setting.
+    ///
+    /// Defaults to `true`.
+    #[serde(default = "default_use_v2_api_series")]
+    series: bool,
+}
+
+impl Default for UseV2ApiConfig {
+    fn default() -> Self {
+        Self {
+            series: default_use_v2_api_series(),
+        }
+    }
 }
 
 const fn default_use_v2_api_series() -> bool {
@@ -158,25 +189,17 @@ fn metrics_encoder_mode_for_config(
     MetricsEncoderMode::from_config(use_v3, use_v3 && validate)
 }
 
-fn selected_metrics_primary_v3_override(
-    opw_enabled: bool, opw_url: &str, opw_use_v3_series: bool, vector_enabled: bool, vector_url: &str,
-    vector_use_v3_series: bool,
-) -> Option<bool> {
-    if opw_enabled {
-        metrics_primary_v3_override_for_url(opw_url, opw_use_v3_series)
-    } else if vector_enabled {
-        metrics_primary_v3_override_for_url(vector_url, vector_use_v3_series)
-    } else {
-        None
-    }
+fn selected_metrics_primary_v3_override(opw_metrics: &OpwMetricsConfiguration) -> Option<bool> {
+    selected_metrics_primary_endpoint(opw_metrics).map(|(_, use_v3_series)| use_v3_series)
 }
 
-fn metrics_primary_v3_override_for_url(url: &str, use_v3_series: bool) -> Option<bool> {
-    metrics_primary_url_can_resolve(url).then_some(use_v3_series)
+fn selected_metrics_primary_endpoint(opw_metrics: &OpwMetricsConfiguration) -> Option<(&str, bool)> {
+    let selected = opw_metrics.selected_endpoint()?;
+    let url = selected.url.trim();
+    metrics_primary_url_can_resolve(url).then_some((url, selected.use_v3_series))
 }
 
 fn metrics_primary_url_can_resolve(url: &str) -> bool {
-    let url = url.trim();
     if url.is_empty() {
         return false;
     }
@@ -188,13 +211,14 @@ fn metrics_primary_url_can_resolve(url: &str) -> bool {
 }
 
 fn series_v3_can_be_enabled_for_config(
-    serializer_use_v3_series: bool, metrics_primary_v3_override: Option<bool>, has_additional_endpoints: bool,
-    series_config: &UseV3ApiSeriesConfig,
+    use_v2_api_series: bool, serializer_use_v3_series: bool, metrics_primary_v3_override: Option<bool>,
+    has_additional_endpoints: bool, series_config: &UseV3ApiSeriesConfig,
 ) -> bool {
-    serializer_use_v3_series
-        || metrics_primary_v3_override == Some(true)
-        || ((metrics_primary_v3_override != Some(false) || has_additional_endpoints)
-            && series_v3_config_can_enable_v3(series_config))
+    use_v2_api_series
+        && (serializer_use_v3_series
+            || metrics_primary_v3_override == Some(true)
+            || ((metrics_primary_v3_override != Some(false) || has_additional_endpoints)
+                && series_v3_config_can_enable_v3(series_config)))
 }
 
 /// Datadog Metrics encoder.
@@ -309,8 +333,8 @@ pub struct DatadogMetricsConfiguration {
     /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
     ///
     /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
-    #[serde(rename = "data_plane_serializer_zstd_compressor_level", default)]
-    data_plane_zstd_compressor_level: Option<i32>,
+    #[serde(default)]
+    data_plane: EncoderDataPlaneConfiguration,
 
     /// The Core Agent's zstd compression level. Used only when set to a non-default value (not 1),
     /// since the Agent forwards its default over the config stream.
@@ -326,8 +350,8 @@ pub struct DatadogMetricsConfiguration {
     /// the V2 endpoint (`/api/beta/sketches`) regardless of this setting.
     ///
     /// Defaults to `true`.
-    #[serde(default = "default_use_v2_api_series")]
-    use_v2_api_series: bool,
+    #[serde(default)]
+    use_v2_api: UseV2ApiConfig,
 
     /// Whether to log metric payload contents before encoding.
     ///
@@ -348,45 +372,28 @@ pub struct DatadogMetricsConfiguration {
     #[serde(rename = "serializer_experimental_use_v3_api", default)]
     v3_api: V3ApiConfig,
 
-    /// Agent-compatible V3 API configuration for series metrics.
+    /// Agent-compatible V3 API configuration.
+    #[serde(default)]
+    use_v3_api: UseV3ApiConfig,
+
+    /// OPW/Vector metrics routing configuration.
+    ///
+    /// Read from the Agent's `observability_pipelines_worker` and (deprecated) `vector` sections,
+    /// which are top-level, so this is flattened into the same root.
     #[serde(flatten)]
-    use_v3_api_series: UseV3ApiSeriesConfig,
+    opw_metrics: OpwMetricsConfiguration,
 
-    /// ADP safety gate for authoritative V3 series metrics.
+    /// The Datadog site used to resolve the primary metrics endpoint.
     ///
-    /// Defaults to `false`.
-    #[serde(default, rename = "data_plane_metrics_v3_series_enabled")]
-    data_plane_metrics_v3_series_enabled: bool,
+    /// Defaults to `datadoghq.com`.
+    #[serde(default = "default_site")]
+    site: String,
 
-    /// Enables routing all metrics to Observability Pipelines Worker.
-    #[serde(default, rename = "observability_pipelines_worker_metrics_enabled")]
-    observability_pipelines_worker_metrics_enabled: bool,
-
-    /// Endpoint of the Observability Pipelines Worker instance to route metrics to.
-    #[serde(default, rename = "observability_pipelines_worker_metrics_url")]
-    observability_pipelines_worker_metrics_url: String,
-
-    /// Enables V3 series metrics when routing to Observability Pipelines Worker.
+    /// The optional explicit primary metrics endpoint.
     ///
-    /// Defaults to `false`.
-    #[serde(default, rename = "observability_pipelines_worker_metrics_use_v3_api_series")]
-    observability_pipelines_worker_metrics_use_v3_api_series: bool,
-
-    /// Enables routing all metrics to Vector.
-    #[serde(default, rename = "vector_metrics_enabled")]
-    vector_metrics_enabled: bool,
-
-    /// Endpoint of the Vector instance to route metrics to.
-    #[serde(default, rename = "vector_metrics_url")]
-    vector_metrics_url: String,
-
-    /// Enables V3 series metrics when routing to Vector.
-    ///
-    /// Deprecated in favor of `observability_pipelines_worker.metrics.use_v3_api.series`.
-    ///
-    /// Defaults to `false`.
-    #[serde(default, rename = "vector_metrics_use_v3_api_series")]
-    vector_metrics_use_v3_api_series: bool,
+    /// Defaults to unset, in which case `site` determines the endpoint.
+    #[serde(default, deserialize_with = "deserialize_dd_url")]
+    dd_url: Option<String>,
 
     /// Additional endpoints that metrics may be dual-shipped to.
     #[serde(default)]
@@ -399,9 +406,58 @@ impl DatadogMetricsConfiguration {
         Ok(config.as_typed()?)
     }
 
+    /// Creates a metrics encoder using authoritative typed metrics-routing configuration.
+    pub fn from_configuration_with_metrics_routing(
+        config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints,
+    ) -> Result<Self, GenericError> {
+        let mut metrics_config = Self::from_configuration(config)?;
+
+        metrics_config.compressor_kind = endpoints.compression.compressor_kind.clone();
+        metrics_config.use_v2_api.series = metrics.use_v2_series_api;
+        metrics_config.v3_api = (&metrics.v3_api).into();
+        metrics_config.use_v3_api.series = (&metrics.v3_series_mode).into();
+        metrics_config.opw_metrics = OpwMetricsConfiguration::new(
+            OpwMetricsSettings::new(
+                endpoints.opw_intake.enabled,
+                endpoints.opw_intake.url.clone(),
+                endpoints.opw_intake.use_v3_series,
+            ),
+            OpwMetricsSettings::new(
+                endpoints.vector_intake.enabled,
+                endpoints.vector_intake.url.clone(),
+                endpoints.vector_intake.use_v3_series,
+            ),
+        );
+
+        Ok(metrics_config)
+    }
+
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
     pub fn with_additional_tags(mut self, additional_tags: SharedTagSet) -> Self {
         self.additional_tags = Some(additional_tags);
+        self
+    }
+
+    /// Restricts endpoint-aware protocol selection to a single overridden metrics endpoint.
+    ///
+    /// This mirrors a forwarder branch that replaces the normal primary endpoint and removes additional and
+    /// OPW/Vector endpoints, such as Multi-Region Failover.
+    pub fn with_metrics_endpoint_override(mut self, dd_url: String) -> Self {
+        self.dd_url = Some(dd_url);
+        self.additional_endpoints = AdditionalEndpoints::default();
+        self.opw_metrics.disable();
+        self
+    }
+
+    /// Forces series metrics to use V2 without producing V3 shadow payloads.
+    ///
+    /// This is used for local destinations that only accept the V2 series protocol, such as the Cluster Agent.
+    pub fn with_v2_series_only(mut self) -> Self {
+        self.use_v3_api.series.enabled = "false".to_string();
+        self.use_v3_api.series.endpoints.clear();
+        self.v3_api.series.endpoints.clear();
+        self.v3_api.series.shadow_sample_rate = 0.0;
+        self.opw_metrics.clear_v3_series_overrides();
         self
     }
 
@@ -412,6 +468,101 @@ impl DatadogMetricsConfiguration {
             self.max_metrics_per_payload,
             self.max_series_points_per_payload,
         )
+    }
+
+    fn endpoint_v3_settings(
+        &self, endpoint: &ResolvedEndpoint, metrics_primary_v3_override: Option<bool>,
+        serializer_v3_configured_endpoint: Option<&str>,
+    ) -> EndpointV3Settings {
+        EndpointV3Settings::from_v3_config(V3EndpointConfig {
+            configured_endpoint: endpoint.configured_endpoint(),
+            resolved_endpoint: endpoint.endpoint(),
+            serializer_v3_configured_endpoint,
+            series_config: &self.use_v3_api.series,
+            metrics_primary_v3_override,
+            serializer_v3_series_endpoints: &self.v3_api.series.endpoints,
+            serializer_v3_sketches_endpoints: &self.v3_api.sketches.endpoints,
+            series_validate: self.v3_api.series.validate,
+            sketches_validate: self.v3_api.sketches.validate,
+            series_shadow_sites: &self.v3_api.series.shadow_sites,
+        })
+    }
+
+    fn configured_primary_endpoint(&self) -> String {
+        match self.dd_url.as_deref() {
+            Some(url) => url.to_string(),
+            None => {
+                let base_domain = if self.site.is_empty() { DEFAULT_SITE } else { &self.site };
+                format!("https://app.{base_domain}")
+            }
+        }
+    }
+
+    fn any_series_endpoint_matches(
+        &self, mut predicate: impl FnMut(&EndpointV3Settings) -> bool,
+    ) -> Result<bool, GenericError> {
+        let configured_primary_endpoint = self.configured_primary_endpoint();
+        if let Some((metrics_primary_url, metrics_primary_v3_override)) =
+            selected_metrics_primary_endpoint(&self.opw_metrics)
+        {
+            let metrics_primary = calculate_resolved_endpoint(Some(metrics_primary_url), &self.site, "")
+                .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
+            let settings = self.endpoint_v3_settings(
+                &metrics_primary,
+                Some(metrics_primary_v3_override),
+                Some(&configured_primary_endpoint),
+            );
+            if predicate(&settings) {
+                return Ok(true);
+            }
+        } else {
+            let primary = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, "")
+                .error_context("Failed parsing/resolving the primary destination endpoint.")?;
+            let settings = self.endpoint_v3_settings(&primary, None, None);
+            if predicate(&settings) {
+                return Ok(true);
+            }
+        }
+
+        for endpoint in self
+            .additional_endpoints
+            .resolved_endpoints(None)
+            .error_context("Failed parsing/resolving the additional destination endpoints.")?
+        {
+            let settings = self.endpoint_v3_settings(&endpoint, None, None);
+            if predicate(&settings) {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
+        if !self.use_v2_api.series || metrics_v3_disabled_by_compressor {
+            return Ok(true);
+        }
+
+        self.any_series_endpoint_matches(|settings| !settings.use_v3_series || settings.series_validation_mode)
+    }
+
+    fn requires_v3_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
+        if metrics_v3_disabled_by_compressor {
+            return Ok(false);
+        }
+
+        let metrics_primary_v3_override = selected_metrics_primary_v3_override(&self.opw_metrics);
+        if !series_v3_can_be_enabled_for_config(
+            self.use_v2_api.series,
+            self.v3_api.use_v3_series(),
+            metrics_primary_v3_override,
+            !self.additional_endpoints.is_empty(),
+            &self.use_v3_api.series,
+        ) {
+            return Ok(false);
+        }
+
+        self.any_series_endpoint_matches(|settings| settings.use_v3_series)
     }
 }
 
@@ -431,7 +582,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         let v3_serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
 
         let zstd_compressor_level = resolve_zstd_compressor_level(
-            self.data_plane_zstd_compressor_level,
+            self.data_plane.serializer_zstd_compressor_level,
             self.serializer_zstd_compressor_level,
         );
         let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
@@ -465,21 +616,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
 
         // Derive the encoding mode for each metric type from the configuration.
         let metrics_v3_disabled_by_compressor = matches!(v3_compression_scheme, CompressionScheme::Zlib(_));
-        let metrics_primary_v3_override = selected_metrics_primary_v3_override(
-            self.observability_pipelines_worker_metrics_enabled,
-            &self.observability_pipelines_worker_metrics_url,
-            self.observability_pipelines_worker_metrics_use_v3_api_series,
-            self.vector_metrics_enabled,
-            &self.vector_metrics_url,
-            self.vector_metrics_use_v3_api_series,
-        );
-        let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
-            self.v3_api.use_v3_series(),
-            metrics_primary_v3_override,
-            !self.additional_endpoints.is_empty(),
-            &self.use_v3_api_series,
-        );
-        let use_v3_series = self.data_plane_metrics_v3_series_enabled && series_v3_can_be_enabled;
+        let use_v3_series = self.requires_v3_series(metrics_v3_disabled_by_compressor)?;
         let series_mode = metrics_encoder_mode_for_config(
             use_v3_series,
             self.v3_api.series.validate,
@@ -490,7 +627,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             self.v3_api.sketches.validate,
             metrics_v3_disabled_by_compressor,
         );
-        let series_endpoint = if self.use_v2_api_series {
+        let series_endpoint = if self.use_v2_api.series {
             MetricsEndpoint::SeriesV2
         } else {
             MetricsEndpoint::SeriesV1
@@ -524,11 +661,16 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         } else {
             generic_payload_limits
         };
-        let mut v2_series_builder = v2::create_v2_request_builder(series_endpoint, &v2_endpoint_config)
-            .await
-            .error_context("Failed to create V2 series request builder.")?;
-        v2_series_builder.with_len_limits(series_uncompressed_limit, series_compressed_limit)?;
-        let v2_series_builder = Some(v2_series_builder);
+        let v2_series_builder = if self.requires_v2_series(metrics_v3_disabled_by_compressor)? {
+            let mut builder = v2::create_v2_request_builder(series_endpoint, &v2_endpoint_config)
+                .await
+                .error_context("Failed to create V2 series request builder.")?;
+            builder.with_len_limits(series_uncompressed_limit, series_compressed_limit)?;
+            Some(builder)
+        } else {
+            debug!("All metrics series endpoints use authoritative V3; disabling V2 series encoding.");
+            None
+        };
 
         let (sketches_uncompressed_limit, sketches_compressed_limit) = generic_payload_limits;
         let mut v2_sketch_builder = v2::create_v2_request_builder(MetricsEndpoint::Sketches, &v2_endpoint_config)
@@ -664,8 +806,32 @@ impl Encoder for DatadogMetrics {
                     None => break,
                 },
                 maybe_event_buffer = context.events().next() => match maybe_event_buffer {
-                    Some(event_buffer) => events_tx.send(event_buffer).await
-                        .error_context("Failed to send event buffer to request builder task.")?,
+                    Some(event_buffer) => {
+                        // Both channels between this task and the request builder task are bounded, and each task is
+                        // the producer on one and the consumer on the other. Blocking outright on `events_tx` would
+                        // stop us draining `payloads_rx`, which can deadlock: the builder task blocks sending a
+                        // payload once `payloads_tx` is full, so it never returns to receive from `events_rx`, so
+                        // capacity never frees up here. Keep draining payloads while we wait for capacity so that at
+                        // least one of the two channels is always making progress.
+                        let permit = loop {
+                            select! {
+                                biased;
+
+                                permit = events_tx.reserve() => break permit
+                                    .error_context("Failed to reserve capacity for event buffer.")?,
+                                maybe_payload = payloads_rx.recv() => match maybe_payload {
+                                    Some(payload) => if let Err(e) = context.dispatcher().dispatch(payload).await {
+                                        error!("Failed to dispatch payload: {}", e);
+                                    },
+
+                                    // Our payloads channel is gone, which means our request builder task went away unexpectedly.
+                                    None => return Err(generic_error!("Request builder task stopped before accepting event buffer.")),
+                                }
+                            }
+                        };
+
+                        permit.send(event_buffer);
+                    }
                     None => break,
                 },
             }
@@ -725,6 +891,8 @@ async fn run_request_builder(
     let mut v3_sketch_metrics = sketches_mode.needs_v3().then(Vec::<Metric>::new);
     let mut v3_series_points = 0usize;
     let mut v3_sketch_points = 0usize;
+    let mut v3_series_ratio = V3CompressionRatio::default();
+    let mut v3_sketch_ratio = V3CompressionRatio::default();
 
     let mut series_batch_id = None;
     let mut sketches_batch_id = None;
@@ -911,6 +1079,8 @@ async fn run_request_builder(
                                 endpoint,
                                 flush_context,
                                 v3_metrics,
+                                &mut v3_series_ratio,
+                                &mut v3_sketch_ratio,
                                 &mut payloads_tx,
                                 active_batch_id,
                                 v3_payload_info,
@@ -1040,6 +1210,7 @@ async fn run_request_builder(
                         if let Err(e) = encode_and_flush_v3_series_metrics(
                             flush_context,
                             metrics,
+                            &mut v3_series_ratio,
                             &mut payloads_tx,
                             series_active_batch_id,
                             v3_series_payload_info,
@@ -1081,6 +1252,7 @@ async fn run_request_builder(
                         if let Err(e) = encode_and_flush_v3_sketch_metrics(
                             v3_flush_context,
                             metrics,
+                            &mut v3_sketch_ratio,
                             &mut payloads_tx,
                             sketches_active_batch_id,
                             v3_sketches_payload_info,
@@ -1217,102 +1389,319 @@ struct V3FlushContext<'a> {
     telemetry: &'a ComponentTelemetry,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn encode_and_flush_v3_metrics(
     endpoint: MetricsEndpoint, context: V3FlushContext<'_>, metrics: &mut Vec<Metric>,
+    series_ratio: &mut V3CompressionRatio, sketches_ratio: &mut V3CompressionRatio,
     payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     match endpoint {
         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-            encode_and_flush_v3_series_metrics(context, metrics, payloads_tx, batch_id, payload_info).await
+            encode_and_flush_v3_series_metrics(context, metrics, series_ratio, payloads_tx, batch_id, payload_info)
+                .await
         }
         MetricsEndpoint::Sketches => {
-            encode_and_flush_v3_sketch_metrics(context, metrics, payloads_tx, batch_id, payload_info).await
+            encode_and_flush_v3_sketch_metrics(context, metrics, sketches_ratio, payloads_tx, batch_id, payload_info)
+                .await
         }
     }
 }
 
 async fn encode_and_flush_v3_series_metrics(
-    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, payloads_tx: &mut mpsc::Sender<Payload>,
-    batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
         return Ok(());
     }
     let metrics_to_flush = std::mem::take(metrics);
 
-    let requests = encode_v3_payload_requests(context.series_endpoint_uri, &metrics_to_flush, context, "series").await;
-    let batch_len = requests.len();
-    for (batch_seq, payload_request) in requests.into_iter().enumerate() {
-        flush_payload(
-            payload_request.request,
-            payload_request.event_count,
-            payload_request.data_point_count,
-            payloads_tx,
-            batch_id,
-            batch_seq,
-            batch_len,
-            payload_info,
-        )
-        .await?;
-        debug!(
-            events = payload_request.event_count,
-            data_points = payload_request.data_point_count,
-            "Sent V3 series payload."
-        );
-    }
-
-    Ok(())
+    encode_and_flush_v3_payload_requests(
+        context.series_endpoint_uri,
+        &metrics_to_flush,
+        context,
+        "series",
+        ratio,
+        payloads_tx,
+        batch_id,
+        payload_info,
+    )
+    .await
 }
 
 async fn encode_and_flush_v3_sketch_metrics(
-    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, payloads_tx: &mut mpsc::Sender<Payload>,
-    batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
+    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
         return Ok(());
     }
     let metrics_to_flush = std::mem::take(metrics);
 
-    let requests = encode_v3_payload_requests(V3_SKETCHES_ENDPOINT_URI, &metrics_to_flush, context, "sketches").await;
-    let batch_len = requests.len();
-    for (batch_seq, payload_request) in requests.into_iter().enumerate() {
-        flush_payload(
-            payload_request.request,
-            payload_request.event_count,
-            payload_request.data_point_count,
-            payloads_tx,
-            batch_id,
-            batch_seq,
-            batch_len,
-            payload_info,
-        )
-        .await?;
-        debug!(
-            events = payload_request.event_count,
-            data_points = payload_request.data_point_count,
-            "Sent V3 sketches payload."
-        );
-    }
-
-    Ok(())
+    encode_and_flush_v3_payload_requests(
+        V3_SKETCHES_ENDPOINT_URI,
+        &metrics_to_flush,
+        context,
+        "sketches",
+        ratio,
+        payloads_tx,
+        batch_id,
+        payload_info,
+    )
+    .await
 }
 
-async fn encode_v3_payload_requests(
-    endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
+/// Encodes `metrics` into one or more V3 payload requests, forwarding each one to the I/O task.
+///
+/// Requests are sent as they are built rather than accumulated, so a batch that splits into many payloads does not
+/// hold all of them in memory at once. The exception is validation/shadow batches, which carry an
+/// `X-Metrics-Request-Len` header that is only known once every payload in the batch has been built; those are
+/// collected first and sent afterwards.
+#[allow(clippy::too_many_arguments)]
+/// Smallest compression ratio used when translating the compressed size limit into an uncompressed byte target.
+///
+/// Guards against dividing by a pathologically small ratio and producing an enormous target.
+const V3_MIN_COMPRESSION_RATIO: f64 = 0.02;
+
+/// Fraction of the derived byte target that a batch is actually cut at.
+///
+/// Leaves headroom so that ordinary variation between batches does not push the finalized payload over the real limit
+/// and force the expensive re-encode path.
+const V3_BATCH_TARGET_MARGIN: f64 = 0.9;
+
+/// Weight given to the newest observation when updating the compression ratio.
+const V3_RATIO_SMOOTHING: f64 = 0.25;
+
+/// Tracks the compression ratio observed on emitted V3 payloads, so batches can be sized against the compressed limit.
+///
+/// V3 payloads are columnar and only compressed once the whole batch is finalized, so unlike the V2 request builder
+/// there is no live compressor to consult with a [`CompressionEstimator`] while batching. Instead we remember how well
+/// recent payloads compressed and use that to turn the compressed size limit (which is the limit that actually binds
+/// for metrics intake) into an uncompressed byte target for the next batch.
+#[derive(Default)]
+struct V3CompressionRatio {
+    ratio: Option<f64>,
+}
+
+impl V3CompressionRatio {
+    /// Returns the uncompressed byte target that a batch should be cut at.
+    fn uncompressed_target(&self, limits: V3PayloadLimits) -> usize {
+        // Until a payload has been observed, assume the data will not compress at all. That errs towards batches that
+        // are too small, which costs an extra payload, rather than too large, which costs a full re-encode.
+        let ratio = self.ratio.unwrap_or(1.0).clamp(V3_MIN_COMPRESSION_RATIO, 1.0);
+        let target_from_compressed_limit = (limits.max_compressed_size as f64 / ratio) as usize;
+        let target = target_from_compressed_limit.min(limits.max_uncompressed_size);
+
+        // Always leave room for at least one metric, however small the limits are.
+        (((target as f64) * V3_BATCH_TARGET_MARGIN) as usize).max(1)
+    }
+
+    /// Records the uncompressed and compressed sizes of an emitted payload.
+    fn record(&mut self, uncompressed_len: usize, compressed_len: usize) {
+        if uncompressed_len == 0 {
+            return;
+        }
+
+        let observed = compressed_len as f64 / uncompressed_len as f64;
+        self.ratio = Some(match self.ratio {
+            Some(current) => (current * (1.0 - V3_RATIO_SMOOTHING)) + (observed * V3_RATIO_SMOOTHING),
+            None => observed,
+        });
+    }
+}
+
+/// A contiguous run of metrics encoded into a single V3 payload.
+struct V3Batch {
+    encoded: V3EncodedMetrics,
+    event_count: usize,
+    data_point_count: usize,
+}
+
+/// Encodes metrics starting at `*idx` into a single V3 payload, stopping once a payload limit or
+/// `target_uncompressed_len` is reached, and advances `*idx` past everything consumed.
+///
+/// Sizing the batch while encoding it is what keeps this to a single encode pass. The alternative (encoding a large
+/// batch and halving it whenever the result is too big) re-encodes and re-compresses the same metrics once per level of
+/// splitting, which is dominated by dictionary rebuilding on high-cardinality data
+fn build_v3_batch(
+    metrics: &[Metric], idx: &mut usize, context: V3FlushContext<'_>, payload_kind: &'static str,
+    target_uncompressed_len: usize,
+) -> Option<V3Batch> {
+    let mut writer = V3Writer::new();
+    let mut tags_deduplicator = ReusableDeduplicator::new();
+    let additional_tags = context.endpoint_config.additional_tags();
+    let mut data_point_count = 0usize;
+    let mut cut_for_size = false;
+
+    while *idx < metrics.len() {
+        let metric = &metrics[*idx];
+
+        if !metric_has_emittable_values(metric) {
+            debug!(metric_name = %metric.context().name(), "Dropping metric with no emittable values.");
+            context.telemetry.events_dropped_encoder().increment(1);
+            *idx += 1;
+            continue;
+        }
+
+        let metric_points = metric.values().len();
+        if !context.payload_limits.point_count_fits(metric_points) {
+            // This metric exceeds the point limit on its own, so it cannot fit in any payload.
+            context.serializer_telemetry.record_item_too_big();
+            context
+                .serializer_telemetry
+                .record_split_reason(V3PayloadSplitReason::ItemTooBig);
+            warn!(
+                payload_kind,
+                data_points = metric_points,
+                point_limit = context.payload_limits.max_points_per_payload,
+                "Dropping oversized V3 metric that exceeds the point-count limit."
+            );
+            context.telemetry.events_dropped_encoder().increment(1);
+            *idx += 1;
+            continue;
+        }
+
+        // Limits that have to be honoured before the metric goes in. The first metric of a batch is always admitted,
+        // since it has already been checked to fit by itself.
+        if writer.metric_count() > 0 {
+            if !context
+                .payload_limits
+                .point_count_fits(data_point_count + metric_points)
+            {
+                context
+                    .serializer_telemetry
+                    .record_split_reason(V3PayloadSplitReason::MaxPoints);
+                break;
+            }
+
+            if context.payload_limits.metric_count_reached(writer.metric_count()) {
+                break;
+            }
+        }
+
+        write_metric_to_v3(&mut writer, metric, additional_tags, &mut tags_deduplicator);
+        data_point_count += metric_points;
+        *idx += 1;
+
+        // The size contribution of a metric is only knowable once it is written, since dictionary deduplication makes
+        // it depend on what came before. Cutting after the fact can overshoot by one metric, which the target's
+        // headroom absorbs; the finalized payload is checked against the real limits regardless.
+        if writer.estimated_uncompressed_len() >= target_uncompressed_len {
+            cut_for_size = true;
+            break;
+        }
+    }
+
+    // Only count this as a payload boundary if metrics actually remain: a batch that ends on the last metric was not
+    // split by anything.
+    if cut_for_size && *idx < metrics.len() {
+        context
+            .serializer_telemetry
+            .record_split_reason(V3PayloadSplitReason::PayloadFull);
+    }
+
+    let event_count = writer.metric_count();
+    if event_count == 0 {
+        return None;
+    }
+
+    match writer.finalize() {
+        Ok(encoded) => Some(V3Batch {
+            encoded,
+            event_count,
+            data_point_count,
+        }),
+        Err(e) => {
+            error!(error = %e, payload_kind, events = event_count, "Failed to encode V3 metrics payload request.");
+            context.telemetry.events_dropped_encoder().increment(event_count as u64);
+            None
+        }
+    }
+}
+
+/// Turns an encoded batch into a payload request, returning `None` if it does not fit the payload limits.
+async fn create_v3_batch_request(
+    endpoint_uri: &str, batch: V3Batch, context: V3FlushContext<'_>, payload_kind: &'static str,
+    ratio: &mut V3CompressionRatio,
+) -> Option<V3PayloadRequest> {
+    let V3Batch {
+        encoded,
+        event_count,
+        data_point_count,
+    } = batch;
+
+    let mut encoded_request =
+        match create_v3_request(endpoint_uri, encoded, context.endpoint_config.compression_scheme()).await {
+            Ok(request) => request,
+            Err(e) => {
+                error!(error = %e, payload_kind, events = event_count, "Failed to create V3 metrics request.");
+                context.telemetry.events_dropped_encoder().increment(event_count as u64);
+                return None;
+            }
+        };
+
+    // Feed the observation back even when the request is too big: an oversized batch is exactly the case where the
+    // target needs correcting.
+    ratio.record(encoded_request.uncompressed_len, encoded_request.compressed_len);
+
+    if !context.payload_limits.request_fits(&encoded_request) {
+        return None;
+    }
+
+    // Per-column compressed sizes are measured only for requests we actually emit. Measuring them eagerly in
+    // `create_v3_request` would compress every column of every oversized attempt that gets discarded, which is pure
+    // waste.
+    if let Err(e) =
+        measure_v3_column_compressed_sizes(&mut encoded_request.stats, context.endpoint_config.compression_scheme())
+            .await
+    {
+        error!(error = %e, payload_kind, "Failed to measure V3 column compressed sizes.");
+    } else {
+        record_v3_serializer_stats(context.serializer_telemetry, &encoded_request.stats);
+    }
+
+    Some(V3PayloadRequest {
+        request: encoded_request.request,
+        event_count,
+        data_point_count,
+    })
+}
+
+/// Re-encodes an oversized range as progressively smaller ranges until each one fits.
+///
+/// This is the fallback for a batch that was sized against the byte target but still exceeded the real payload limits.
+/// It re-encodes and re-compresses at every level of splitting, so it is deliberately only reached when the target
+/// guessed wrong.
+async fn split_and_encode_oversized_v3_range(
+    endpoint_uri: &str, metrics: &[Metric], range: Range<usize>, context: V3FlushContext<'_>,
+    payload_kind: &'static str, ratio: &mut V3CompressionRatio,
 ) -> Vec<V3PayloadRequest> {
+    // `build_v3_batch` advances past metrics it drops. Preserve that decision when the accepted batch has to be
+    // re-encoded: retrying the raw source range would otherwise resurrect those metrics.
+    let accepted_metrics = metrics[range]
+        .iter()
+        .filter(|metric| {
+            metric_has_emittable_values(metric) && context.payload_limits.point_count_fits(metric.values().len())
+        })
+        .collect::<Vec<_>>();
+
     let mut requests = Vec::new();
-    let mut pending_ranges = split_v3_metric_ranges_by_point_limit(metrics, context, payload_kind);
+    let mut pending_ranges = VecDeque::new();
+    pending_ranges.push_back(0..accepted_metrics.len());
 
     while let Some(range) = pending_ranges.pop_front() {
         if range.is_empty() {
             continue;
         }
 
-        let metrics_in_range = &metrics[range.clone()];
+        let metrics_in_range = &accepted_metrics[range.clone()];
         let event_count = metrics_in_range.len();
         let data_point_count = metrics_in_range.iter().map(|metric| metric.values().len()).sum();
 
-        let encoded = match encode_v3_metrics_batch(metrics_in_range, context.endpoint_config.additional_tags()) {
+        let encoded = match encode_v3_metrics_batch(
+            metrics_in_range.iter().copied(),
+            context.endpoint_config.additional_tags(),
+        ) {
             Ok(encoded) => encoded,
             Err(e) => {
                 error!(error = %e, payload_kind, events = event_count, "Failed to encode V3 metrics payload request.");
@@ -1320,23 +1709,14 @@ async fn encode_v3_payload_requests(
                 continue;
             }
         };
-        let encoded_request =
-            match create_v3_request(endpoint_uri, encoded, context.endpoint_config.compression_scheme()).await {
-                Ok(request) => request,
-                Err(e) => {
-                    error!(error = %e, payload_kind, events = event_count, "Failed to create V3 metrics request.");
-                    context.telemetry.events_dropped_encoder().increment(event_count as u64);
-                    continue;
-                }
-            };
+        let batch = V3Batch {
+            encoded,
+            event_count,
+            data_point_count,
+        };
 
-        if context.payload_limits.request_fits(&encoded_request) {
-            record_v3_serializer_stats(context.serializer_telemetry, &encoded_request.stats);
-            requests.push(V3PayloadRequest {
-                request: encoded_request.request,
-                event_count,
-                data_point_count,
-            });
+        if let Some(request) = create_v3_batch_request(endpoint_uri, batch, context, payload_kind, ratio).await {
+            requests.push(request);
             continue;
         }
 
@@ -1348,9 +1728,7 @@ async fn encode_v3_payload_requests(
                 .record_split_reason(V3PayloadSplitReason::ItemTooBig);
             warn!(
                 payload_kind,
-                compressed_len = encoded_request.compressed_len,
                 compressed_limit = context.payload_limits.max_compressed_size,
-                uncompressed_len = encoded_request.uncompressed_len,
                 uncompressed_limit = context.payload_limits.max_uncompressed_size,
                 "Dropping oversized V3 metric that cannot be split further."
             );
@@ -1370,6 +1748,104 @@ async fn encode_v3_payload_requests(
     requests
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn encode_and_flush_v3_payload_requests(
+    endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
+    ratio: &mut V3CompressionRatio, payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
+    payload_info: Option<MetricsPayloadInfo>,
+) -> Result<(), GenericError> {
+    // Batches that carry validation headers need the total payload count up front, so they cannot be streamed.
+    let stream_payloads = batch_id.is_none();
+    let mut pending_requests = Vec::new();
+    let target_uncompressed_len = ratio.uncompressed_target(context.payload_limits);
+    let mut idx = 0;
+
+    while idx < metrics.len() {
+        let batch_start = idx;
+        let Some(batch) = build_v3_batch(metrics, &mut idx, context, payload_kind, target_uncompressed_len) else {
+            // `build_v3_batch` always consumes at least one metric when one is available, but guard against spinning
+            // on a batch that somehow produced nothing.
+            if idx == batch_start {
+                error!(
+                    payload_kind,
+                    "V3 batching made no progress; dropping remaining metrics."
+                );
+                context
+                    .telemetry
+                    .events_dropped_encoder()
+                    .increment((metrics.len() - idx) as u64);
+                break;
+            }
+            continue;
+        };
+
+        let requests = match create_v3_batch_request(endpoint_uri, batch, context, payload_kind, ratio).await {
+            Some(request) => vec![request],
+            // The batch we sized against the byte target still came out over the real limits, so fall back to
+            // re-encoding it as progressively smaller ranges. The target self-corrects from the ratio we record on
+            // every emitted payload, so this should be rare.
+            None => {
+                split_and_encode_oversized_v3_range(
+                    endpoint_uri,
+                    metrics,
+                    batch_start..idx,
+                    context,
+                    payload_kind,
+                    ratio,
+                )
+                .await
+            }
+        };
+
+        for payload_request in requests {
+            if stream_payloads {
+                flush_payload(
+                    payload_request.request,
+                    payload_request.event_count,
+                    payload_request.data_point_count,
+                    payloads_tx,
+                    None,
+                    0,
+                    0,
+                    payload_info,
+                )
+                .await?;
+                debug!(
+                    payload_kind,
+                    events = payload_request.event_count,
+                    data_points = payload_request.data_point_count,
+                    "Sent V3 payload."
+                );
+            } else {
+                pending_requests.push(payload_request);
+            }
+        }
+    }
+
+    let batch_len = pending_requests.len();
+    for (batch_seq, payload_request) in pending_requests.into_iter().enumerate() {
+        flush_payload(
+            payload_request.request,
+            payload_request.event_count,
+            payload_request.data_point_count,
+            payloads_tx,
+            batch_id,
+            batch_seq,
+            batch_len,
+            payload_info,
+        )
+        .await?;
+        debug!(
+            payload_kind,
+            events = payload_request.event_count,
+            data_points = payload_request.data_point_count,
+            "Sent V3 payload."
+        );
+    }
+
+    Ok(())
+}
+
 fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3EncoderStats) {
     telemetry.record_values_count(stats.value_encoding_stats);
 
@@ -1378,6 +1854,22 @@ fn record_v3_serializer_stats(telemetry: &V3SerializerTelemetry, stats: &V3Encod
         let compressed_size = column.compressed_len as u64;
         telemetry.record_column_size(column.field_number, uncompressed_size, compressed_size);
     }
+}
+
+/// Measures the compressed size of each V3 column, for telemetry purposes.
+///
+/// This is deliberately separate from building the request: it is only worth paying for columns belonging to a request
+/// that will actually be sent, since oversized requests are discarded and re-encoded as smaller ranges.
+async fn measure_v3_column_compressed_sizes(
+    stats: &mut V3EncoderStats, compression_scheme: CompressionScheme,
+) -> Result<(), GenericError> {
+    for column in &mut stats.columns {
+        column.compressed_len = compressed_v3_len(&column.bytes, compression_scheme)
+            .await
+            .error_context("Failed to measure V3 column compressed size.")?;
+    }
+
+    Ok(())
 }
 
 async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) -> Result<usize, GenericError> {
@@ -1401,76 +1893,6 @@ async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) 
         .error_context("Failed to shutdown V3 compressor.")?;
 
     Ok(compressor.into_inner().freeze().len())
-}
-
-fn split_v3_metric_ranges_by_point_limit(
-    metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
-) -> VecDeque<Range<usize>> {
-    let mut ranges = VecDeque::new();
-    let mut current_start = None;
-    let mut current_points = 0usize;
-
-    for (idx, metric) in metrics.iter().enumerate() {
-        if !metric_has_emittable_values(metric) {
-            if let Some(start) = current_start.take() {
-                if start < idx {
-                    ranges.push_back(start..idx);
-                }
-            }
-            debug!(metric_name = %metric.context().name(), "Dropping metric with no emittable values.");
-            context.telemetry.events_dropped_encoder().increment(1);
-            current_points = 0;
-            continue;
-        }
-        let metric_points = metric.values().len();
-
-        if !context.payload_limits.point_count_fits(metric_points) {
-            // This metric exceeds the point limit by itself, so it cannot fit in any V3 payload request.
-            // Close the current range before dropping this oversized metric.
-            context.serializer_telemetry.record_item_too_big();
-            if let Some(start) = current_start.take() {
-                if start < idx {
-                    ranges.push_back(start..idx);
-                }
-            }
-            warn!(
-                payload_kind,
-                data_points = metric_points,
-                point_limit = context.payload_limits.max_points_per_payload,
-                "Dropping oversized V3 metric that exceeds the point-count limit."
-            );
-            context.telemetry.events_dropped_encoder().increment(1);
-            current_points = 0;
-            continue;
-        }
-
-        let would_exceed_point_limit =
-            current_points > 0 && !context.payload_limits.point_count_fits(current_points + metric_points);
-        if would_exceed_point_limit {
-            // This metric fits by itself, but not together with the current range.
-            // Adding this metric would overflow the current range, so start a new range at this metric.
-            context
-                .serializer_telemetry
-                .record_split_reason(V3PayloadSplitReason::MaxPoints);
-            if let Some(start) = current_start {
-                ranges.push_back(start..idx);
-            }
-            current_start = Some(idx);
-            current_points = 0;
-        } else if current_start.is_none() {
-            current_start = Some(idx);
-        }
-
-        current_points += metric_points;
-    }
-
-    if let Some(start) = current_start {
-        if start < metrics.len() {
-            ranges.push_back(start..metrics.len());
-        }
-    }
-
-    ranges
 }
 
 /// Converts a `Uuid` to a `HeaderValue`.
@@ -1514,8 +1936,8 @@ async fn flush_payload(
 }
 
 // Encodes a batch of metrics to V3 columnar format.
-fn encode_v3_metrics_batch(
-    metrics: &[Metric], additional_tags: &SharedTagSet,
+fn encode_v3_metrics_batch<'a>(
+    metrics: impl IntoIterator<Item = &'a Metric>, additional_tags: &SharedTagSet,
 ) -> Result<V3EncodedMetrics, GenericError> {
     let mut writer = V3Writer::new();
     let mut tags_deduplicator = ReusableDeduplicator::new();
@@ -1730,7 +2152,7 @@ fn is_v3_series_resource_tag(tag: &Tag) -> bool {
 
 /// Creates a V3 HTTP request from encoded payload data.
 async fn create_v3_request(
-    endpoint_uri: &str, mut encoded: V3EncodedMetrics, compression_scheme: CompressionScheme,
+    endpoint_uri: &str, encoded: V3EncodedMetrics, compression_scheme: CompressionScheme,
 ) -> Result<V3EncodedRequest, GenericError> {
     // Keep the wire payload as one continuous compressed stream. Per-column compressed sizes are measured
     // independently for telemetry.
@@ -1744,11 +2166,6 @@ async fn create_v3_request(
     };
 
     let uncompressed_len = header_len + encoded.payload.len();
-    for column in &mut encoded.stats.columns {
-        column.compressed_len = compressed_v3_len(&column.bytes, compression_scheme)
-            .await
-            .error_context("Failed to measure V3 column compressed size.")?;
-    }
 
     let buffer = ChunkedBytesBuffer::new(RB_BUFFER_CHUNK_SIZE);
     let mut compressor = Compressor::from_scheme(compression_scheme, buffer);
@@ -1804,11 +2221,12 @@ fn content_encoding_for_scheme(compression_scheme: CompressionScheme) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{collections::HashMap, io::Cursor};
 
     use bytes::Bytes;
     use datadog_protos::metrics::v3::MetricData as V3MetricData;
     use protobuf::Message as _;
+    use saluki_config::ConfigurationLoader;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context,
@@ -1861,6 +2279,56 @@ serializer_experimental_use_v3_api:
         );
     }
 
+    #[tokio::test]
+    async fn typed_metrics_routing_is_authoritative() {
+        let (raw, _) = ConfigurationLoader::for_tests(
+            Some(serde_json::json!({
+                "serializer_compressor_kind": "zlib",
+                "use_v2_api_series": true,
+                "use_v3_api_series_enabled": "true",
+                "observability_pipelines_worker_metrics_enabled": false,
+            })),
+            None,
+            false,
+        )
+        .await;
+
+        let mut endpoints = Endpoints::default();
+        endpoints.compression.compressor_kind = "zstd".to_string();
+        endpoints.opw_intake.enabled = true;
+        endpoints.opw_intake.url = "https://opw.example.com".to_string();
+        endpoints.opw_intake.use_v3_series = true;
+        let mut metrics = MetricsEncoding {
+            use_v2_series_api: false,
+            ..Default::default()
+        };
+        metrics.v3_api.compression_level = 7;
+        metrics.v3_api.series.validate = true;
+        metrics.v3_series_mode.mode = "false".to_string();
+        metrics.v3_series_mode.endpoint_modes =
+            HashMap::from([("https://app.datadoghq.com".to_string(), "true".to_string())]);
+
+        let config = DatadogMetricsConfiguration::from_configuration_with_metrics_routing(&raw, &metrics, &endpoints)
+            .expect("configuration should deserialize");
+
+        assert_eq!(config.compressor_kind, "zstd");
+        assert!(!config.use_v2_api.series);
+        assert_eq!(config.v3_api.compression_level, 7);
+        assert!(config.v3_api.series.validate);
+        assert_eq!(config.use_v3_api.series.enabled, "false");
+        assert_eq!(
+            config.use_v3_api.series.endpoints.get("https://app.datadoghq.com"),
+            Some(&"true".to_string())
+        );
+        // A selected endpoint means OPW routing is enabled; it carries the URL and V3 override.
+        let opw = config
+            .opw_metrics
+            .selected_endpoint()
+            .expect("OPW routing should be selected");
+        assert_eq!(opw.url, "https://opw.example.com");
+        assert!(opw.use_v3_series);
+    }
+
     #[test]
     fn agent_v3_api_shadow_defaults_match_agent() {
         let config = serde_yaml::from_str::<DatadogMetricsConfiguration>("").expect("configuration should deserialize");
@@ -1904,31 +2372,206 @@ serializer_experimental_use_v3_api:
         );
     }
 
+    fn v3_series_config(raw: &str) -> DatadogMetricsConfiguration {
+        serde_yaml::from_str(raw).expect("configuration should deserialize")
+    }
+
+    #[test]
+    fn mixed_v2_and_v3_endpoints_require_both_series_encoders() {
+        let config = v3_series_config(
+            r#"
+use_v3_api:
+  series:
+    enabled: "datadog_only"
+additional_endpoints:
+  https://custom.example.com:
+    - additional-api-key
+"#,
+        );
+
+        assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn all_v2_endpoints_do_not_require_v3_series() {
+        let config = v3_series_config(
+            r#"
+dd_url: http://127.0.0.1:9091
+use_v3_api:
+  series:
+    enabled: "datadog_only"
+"#,
+        );
+
+        assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(!config.requires_v3_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn validation_requires_v2_series() {
+        let config = v3_series_config(
+            r#"
+use_v3_api:
+  series:
+    enabled: "true"
+serializer_experimental_use_v3_api:
+  series:
+    validate: true
+"#,
+        );
+
+        assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn v1_series_configuration_takes_precedence_over_v3() {
+        let config = v3_series_config(
+            r#"
+use_v2_api:
+  series: false
+use_v3_api:
+  series:
+    enabled: "true"
+"#,
+        );
+
+        let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
+            config.use_v2_api.series,
+            false,
+            None,
+            false,
+            &config.use_v3_api.series,
+        );
+
+        assert!(!series_v3_can_be_enabled);
+
+        assert_eq!(
+            MetricsEncoderMode::V2Only,
+            metrics_encoder_mode_for_config(series_v3_can_be_enabled, false, false)
+        );
+
+        assert!(
+            config.requires_v2_series(false).expect("endpoint should resolve"),
+            "V1 configuration must retain the legacy series builder even when V3 is enabled"
+        );
+    }
+
+    #[test]
+    fn all_v3_serializer_endpoints_require_only_v3_series() {
+        let config = v3_series_config(
+            r#"
+dd_url: https://agent.datad0g.com.
+use_v3_api:
+  series:
+    enabled: "false"
+additional_endpoints:
+  https://agent.datadoghq.com.:
+    - additional-api-key
+serializer_experimental_use_v3_api:
+  series:
+    endpoints:
+      - https://agent.datad0g.com.
+      - https://agent.datadoghq.com.
+"#,
+        );
+
+        assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn endpoint_override_uses_the_overridden_endpoint_protocol() {
+        let config = v3_series_config(
+            r#"
+dd_url: https://primary.example.com
+use_v3_api:
+  series:
+    enabled: "false"
+serializer_experimental_use_v3_api:
+  series:
+    endpoints:
+      - https://primary.example.com
+      - https://v3-mrf.example.com
+"#,
+        );
+
+        let v2_mrf_config = config
+            .clone()
+            .with_metrics_endpoint_override("https://v2-mrf.example.com".to_string());
+        let v3_mrf_config = config.with_metrics_endpoint_override("https://v3-mrf.example.com".to_string());
+
+        assert!(v2_mrf_config
+            .requires_v2_series(false)
+            .expect("V2 MRF endpoint should resolve"));
+        assert!(!v2_mrf_config
+            .requires_v3_series(false)
+            .expect("V2 MRF endpoint should resolve"));
+        assert!(!v3_mrf_config
+            .requires_v2_series(false)
+            .expect("V3 MRF endpoint should resolve"));
+        assert!(v3_mrf_config
+            .requires_v3_series(false)
+            .expect("V3 MRF endpoint should resolve"));
+    }
+
+    #[test]
+    fn v2_series_only_override_keeps_v2_and_disables_shadowing() {
+        let config = v3_series_config(
+            r#"
+use_v3_api:
+  series:
+    enabled: "true"
+serializer_experimental_use_v3_api:
+  series:
+    shadow_sample_rate: 1.0
+"#,
+        )
+        .with_v2_series_only();
+
+        assert_eq!("false", config.use_v3_api.series.enabled);
+        assert!(config.use_v3_api.series.endpoints.is_empty());
+        assert!(config.v3_api.series.endpoints.is_empty());
+        assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);
+        assert!(config.requires_v2_series(false).expect("endpoint should resolve"));
+        assert!(!config.requires_v3_series(false).expect("endpoint should resolve"));
+    }
+
     #[test]
     fn agent_default_v3_does_not_enable_opw_only_encoder_mode() {
         let series_config = UseV3ApiSeriesConfig::default();
-        let invalid_metrics_primary_override =
-            selected_metrics_primary_v3_override(true, "http://[::1", false, true, "http://vector.example.com", false);
+        // An OPW override whose URL cannot resolve falls through to the Vector override.
+        let opw_metrics: OpwMetricsConfiguration = serde_json::from_value(serde_json::json!({
+            "observability_pipelines_worker": { "metrics": { "enabled": true, "url": "http://[::1" } },
+            "vector": { "metrics": { "enabled": true, "url": "http://vector.example.com" } },
+        }))
+        .expect("OPW metrics configuration should deserialize");
+        let invalid_metrics_primary_override = selected_metrics_primary_v3_override(&opw_metrics);
 
         assert!(!series_v3_can_be_enabled_for_config(
+            true,
             false,
             Some(false),
             false,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
+            true,
             false,
             Some(true),
             false,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
+            true,
             false,
             Some(false),
             true,
             &series_config
         ));
         assert!(series_v3_can_be_enabled_for_config(
+            true,
             true,
             Some(false),
             false,
@@ -1936,6 +2579,7 @@ serializer_experimental_use_v3_api:
         ));
         assert_eq!(None, invalid_metrics_primary_override);
         assert!(series_v3_can_be_enabled_for_config(
+            true,
             false,
             invalid_metrics_primary_override,
             false,
@@ -1997,9 +2641,12 @@ serializer_experimental_use_v3_api:
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::noop())
+            .await
+            .expect("column compressed sizes should be measured");
 
         for column in &request.stats.columns {
             assert_eq!(column.compressed_len, column.bytes.len());
@@ -2023,9 +2670,12 @@ serializer_experimental_use_v3_api:
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::zstd_default())
+        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::zstd_default())
             .await
             .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::zstd_default())
+            .await
+            .expect("column compressed sizes should be measured");
 
         for column in &request.stats.columns {
             let expected_compressed_len = compressed_v3_len(&column.bytes, CompressionScheme::zstd_default())
@@ -2126,9 +2776,12 @@ serializer_experimental_use_v3_api:
             Metric::gauge("v3.telemetry.float64", [(123, (1i64 << 30) as f64), (124, 1.5)]),
         ];
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
-        let request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created");
+        measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::noop())
+            .await
+            .expect("column compressed sizes should be measured");
 
         let value_sint64_column = request
             .stats
@@ -2193,6 +2846,50 @@ serializer_experimental_use_v3_api:
         }
     }
 
+    /// Collected form of a payload emitted by `encode_and_flush_v3_payload_requests`.
+    struct CollectedV3Payload {
+        event_count: usize,
+        data_point_count: usize,
+        request: Request<FrozenChunkedBytesBuffer>,
+    }
+
+    /// Drives `encode_and_flush_v3_payload_requests` and collects the payloads it emits.
+    ///
+    /// The channel is sized generously because nothing drains it concurrently here; production drains it from the
+    /// encoder's main task.
+    async fn collect_v3_payload_requests(metrics: &[Metric], context: V3FlushContext<'_>) -> Vec<CollectedV3Payload> {
+        let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(64);
+        let mut ratio = V3CompressionRatio::default();
+        encode_and_flush_v3_payload_requests(
+            V3_SERIES_ENDPOINT_URI,
+            metrics,
+            context,
+            "series",
+            &mut ratio,
+            &mut payloads_tx,
+            None,
+            None,
+        )
+        .await
+        .expect("payload requests should encode and flush");
+        drop(payloads_tx);
+
+        let mut collected = Vec::new();
+        while let Some(payload) = payloads_rx.recv().await {
+            let Payload::Http(http_payload) = payload else {
+                panic!("expected HTTP payload");
+            };
+            let (metadata, request) = http_payload.into_parts();
+            collected.push(CollectedV3Payload {
+                event_count: metadata.event_count(),
+                data_point_count: metadata.data_point_count(),
+                request,
+            });
+        }
+
+        collected
+    }
+
     #[tokio::test]
     async fn v3_payload_requests_split_by_compressed_size_limit() {
         let metrics = vec![
@@ -2209,7 +2906,7 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+        let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert_eq!(2, requests.len());
         assert_eq!(
@@ -2219,6 +2916,49 @@ serializer_experimental_use_v3_api:
         assert!(requests
             .iter()
             .all(|request| request.request.body().len() <= limits.max_compressed_size));
+    }
+
+    #[tokio::test]
+    async fn v3_byte_fallback_does_not_resurrect_metric_over_point_limit() {
+        let point_oversized_metric = Metric::counter("v3.fallback.over.point.limit", [(123, 1.0), (124, 2.0)]);
+
+        let byte_oversized_metric = Metric::counter(
+            concat!(
+                "v3.fallback.over.byte.limit.",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            ),
+            3.0,
+        );
+
+        let point_oversized_request = create_v3_test_request(std::slice::from_ref(&point_oversized_metric)).await;
+        let byte_oversized_request = create_v3_test_request(std::slice::from_ref(&byte_oversized_metric)).await;
+
+        assert!(byte_oversized_request.compressed_len > point_oversized_request.compressed_len);
+
+        let limits = V3PayloadLimits::new(point_oversized_request.compressed_len, usize::MAX, 10_000, 1);
+
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+
+        let requests = collect_v3_payload_requests(&[point_oversized_metric, byte_oversized_metric], context).await;
+
+        let emitted_point_counts = requests
+            .iter()
+            .map(|request| request.data_point_count)
+            .collect::<Vec<_>>();
+
+        assert!(
+            emitted_point_counts
+                .iter()
+                .all(|point_count| *point_count <= limits.max_points_per_payload),
+            "fallback emitted request point counts {emitted_point_counts:?} above limit {}",
+            limits.max_points_per_payload
+        );
     }
 
     #[tokio::test]
@@ -2236,7 +2976,7 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+        let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert_eq!(2, requests.len());
         assert_eq!(
@@ -2257,7 +2997,7 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+        let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert!(requests.is_empty());
         assert_eq!(recorder.counter("serializer.v3_item_too_big"), Some(1));
@@ -2283,7 +3023,7 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let requests = encode_v3_payload_requests(V3_SERIES_ENDPOINT_URI, &metrics, context, "series").await;
+        let requests = collect_v3_payload_requests(&metrics, context).await;
 
         assert_eq!(2, requests.len());
         assert_eq!(
@@ -2292,8 +3032,26 @@ serializer_experimental_use_v3_api:
         );
     }
 
+    /// Drives `build_v3_batch` to exhaustion, returning the metric range and event count of each batch it cut.
+    fn collect_v3_batches(
+        metrics: &[Metric], context: V3FlushContext<'_>, target_uncompressed_len: usize,
+    ) -> Vec<(Range<usize>, usize)> {
+        let mut batches = Vec::new();
+        let mut idx = 0;
+        while idx < metrics.len() {
+            let start = idx;
+            match build_v3_batch(metrics, &mut idx, context, "series", target_uncompressed_len) {
+                Some(batch) => batches.push((start..idx, batch.event_count)),
+                None if idx == start => break,
+                None => {}
+            }
+        }
+
+        batches
+    }
+
     #[test]
-    fn v3_metric_ranges_split_by_point_limit() {
+    fn v3_batches_are_cut_at_the_point_limit() {
         let metrics = vec![
             Metric::counter("v3.points.split.one", [(123, 1.0), (124, 2.0)]),
             Metric::counter("v3.points.split.two", [(123, 3.0), (124, 4.0)]),
@@ -2305,11 +3063,51 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
-        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
-            .into_iter()
-            .collect::<Vec<_>>();
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
 
-        assert_eq!(vec![0..1, 1..3], ranges);
+        assert_eq!(vec![(0..1, 1), (1..3, 2)], batches);
+    }
+
+    #[test]
+    fn v3_batches_are_cut_at_the_metric_limit() {
+        let metrics = vec![
+            Metric::counter("v3.metric.limit.a", 1.0),
+            Metric::counter("v3.metric.limit.b", 2.0),
+            Metric::counter("v3.metric.limit.c", 3.0),
+            Metric::counter("v3.metric.limit.d", 4.0),
+            Metric::counter("v3.metric.limit.e", 5.0),
+        ];
+        let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 2, 10_000);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 2, usize::MAX, None);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
+
+        assert_eq!(vec![(0..2, 2), (2..4, 2), (4..5, 1)], batches);
+    }
+
+    #[test]
+    fn v3_batches_are_cut_at_the_uncompressed_byte_target() {
+        let metrics = vec![
+            Metric::counter("v3.byte.target.a", 1.0),
+            Metric::counter("v3.byte.target.b", 2.0),
+            Metric::counter("v3.byte.target.c", 3.0),
+            Metric::counter("v3.byte.target.d", 4.0),
+        ];
+        let limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000);
+        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
+        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
+        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
+        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+
+        // A target of one byte forces a cut after every metric, since the estimate is non-zero once anything is
+        // written. This is the mechanism that keeps high-cardinality batches from being encoded and then re-split.
+        let batches = collect_v3_batches(&metrics, context, 1);
+
+        assert_eq!(4, batches.len());
+        assert!(batches.iter().all(|(_, event_count)| *event_count == 1));
     }
 
     #[test]
@@ -2326,11 +3124,9 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
-        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
-            .into_iter()
-            .collect::<Vec<_>>();
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
 
-        assert_eq!(vec![0..1, 1..2], ranges);
+        assert_eq!(vec![(0..1, 1), (1..2, 1)], batches);
         assert_eq!(
             recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "max_points")])),
             Some(1)
@@ -2338,7 +3134,7 @@ serializer_experimental_use_v3_api:
     }
 
     #[test]
-    fn v3_metric_ranges_drop_oversized_metric_after_previous_range() {
+    fn v3_batches_drop_oversized_metric_and_keep_batching() {
         let metrics = vec![
             Metric::counter("v3.points.oversized.before", [(123, 1.0), (124, 2.0)]),
             Metric::counter(
@@ -2355,16 +3151,16 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
-        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
-            .into_iter()
-            .collect::<Vec<_>>();
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
 
-        assert_eq!(vec![0..1, 2..3], ranges);
+        // Dropping the oversized metric no longer forces a payload boundary: the metrics either side of it share a
+        // batch, since together they still fit the point limit.
+        assert_eq!(vec![(0..3, 2)], batches);
         assert_eq!(recorder.counter("serializer.v3_item_too_big"), Some(1));
     }
 
     #[test]
-    fn v3_metric_ranges_skip_zero_point_metrics() {
+    fn v3_batches_skip_zero_point_metrics_without_splitting() {
         let metrics = vec![
             Metric::counter("v3.points.zero.before", 1.0),
             Metric::counter("v3.points.zero.empty", &[] as &[f64]),
@@ -2376,11 +3172,36 @@ serializer_experimental_use_v3_api:
         let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
 
-        let ranges = split_v3_metric_ranges_by_point_limit(&metrics, context, "series")
-            .into_iter()
-            .collect::<Vec<_>>();
+        let batches = collect_v3_batches(&metrics, context, usize::MAX);
 
-        assert_eq!(vec![0..1, 2..3], ranges);
+        assert_eq!(vec![(0..3, 2)], batches);
+    }
+
+    #[test]
+    fn v3_compression_ratio_targets_the_compressed_limit() {
+        let limits = V3PayloadLimits::new(500_000, 5_000_000, 10_000, 10_000);
+        let mut ratio = V3CompressionRatio::default();
+
+        // With nothing observed yet, assume no compression: the target tracks the compressed limit directly so the
+        // first batch cannot wildly overshoot.
+        let initial_target = ratio.uncompressed_target(limits);
+        assert_eq!((500_000.0 * V3_BATCH_TARGET_MARGIN) as usize, initial_target);
+
+        // After observing 4:1 compression, the target grows towards the uncompressed budget those bytes imply.
+        ratio.record(4_000_000, 1_000_000);
+        let observed_target = ratio.uncompressed_target(limits);
+        assert!(
+            observed_target > initial_target,
+            "target should grow once compression is observed: {observed_target} vs {initial_target}"
+        );
+
+        // It is still capped by the uncompressed limit, however well the data compresses.
+        ratio.record(4_000_000, 40_000);
+        ratio.record(4_000_000, 40_000);
+        ratio.record(4_000_000, 40_000);
+        ratio.record(4_000_000, 40_000);
+        ratio.record(4_000_000, 40_000);
+        assert!(ratio.uncompressed_target(limits) <= limits.max_uncompressed_size);
     }
 
     #[tokio::test]
@@ -2401,9 +3222,11 @@ serializer_experimental_use_v3_api:
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+        let mut ratio = V3CompressionRatio::default();
         encode_and_flush_v3_series_metrics(
             context,
             &mut metrics,
+            &mut ratio,
             &mut payloads_tx,
             Some(&batch_id),
             Some(MetricsPayloadInfo::v3_series()),
@@ -2467,9 +3290,11 @@ serializer_experimental_use_v3_api:
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
 
         let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
+        let mut ratio = V3CompressionRatio::default();
         encode_and_flush_v3_sketch_metrics(
             context,
             &mut metrics,
+            &mut ratio,
             &mut payloads_tx,
             Some(&batch_id),
             Some(MetricsPayloadInfo::v3_sketches()),
@@ -3101,7 +3926,6 @@ mod config_smoke {
     use serde_json::json;
 
     use super::DatadogMetricsConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
@@ -3118,8 +3942,6 @@ mod config_smoke {
                 cfg.as_typed::<DatadogMetricsConfiguration>()
                     .expect("DatadogMetricsConfiguration should deserialize")
             },
-            KEY_ALIASES,
-            DatadogRemapper::new,
         )
         .await
     }
@@ -3131,25 +3953,23 @@ mod use_v2_api_series_default {
     use serde_json::json;
 
     use super::{v2, DatadogMetricsConfiguration};
-    use crate::{common::datadog::clamp_payload_limits, config::KEY_ALIASES};
+    use crate::common::datadog::clamp_payload_limits;
 
     /// `use_v2_api_series` defaults to `true`, preserving V2 protobuf behavior when the flag is absent.
     #[tokio::test]
     async fn defaults_to_true_when_absent() {
         let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
             .add_providers([figment::providers::Serialized::defaults(json!({}))])
             .into_generic()
             .await
             .expect("config should load");
         let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-        assert!(parsed.use_v2_api_series);
+        assert!(parsed.use_v2_api.series);
     }
 
     #[tokio::test]
     async fn deserializes_payload_limit_keys() {
         let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
             .add_providers([figment::providers::Serialized::defaults(json!({
                 "serializer_max_payload_size": 4321,
                 "serializer_max_uncompressed_payload_size": 8765,
@@ -3171,7 +3991,6 @@ mod use_v2_api_series_default {
     async fn deserializes_max_series_points_per_payload() {
         // Default should be 10,000.
         let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
             .add_providers([figment::providers::Serialized::defaults(json!({}))])
             .into_generic()
             .await
@@ -3182,7 +4001,6 @@ mod use_v2_api_series_default {
 
         // Explicit value should round-trip.
         let cfg = ConfigurationLoader::default()
-            .with_key_aliases(KEY_ALIASES)
             .add_providers([figment::providers::Serialized::defaults(json!({
                 "serializer_max_series_points_per_payload": 500,
             }))])

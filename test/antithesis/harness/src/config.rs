@@ -117,10 +117,55 @@ impl DogStatsdConfig {
 /// unset. The current value caps the preallocation at 512 MiB.
 const MAX_STRING_INTERNER_ENTRIES: u64 = 1_048_576;
 
+/// Compressor both targets serialize metric payloads with.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum CompressorKind {
+    /// Deflate. Disables the v3 series intake on both targets.
+    Zlib,
+    /// Zstandard.
+    Zstd,
+    /// Gzip.
+    Gzip,
+    /// No compression, the Agent's `NoneKind`.
+    None,
+    /// A codec neither target implements, so each falls back its own way and the two lanes disagree
+    /// on the wire from one config value.
+    Snappy,
+}
+
+impl Distribution<CompressorKind> for StandardUniform {
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> CompressorKind {
+        match rng.random_range(0..5u8) {
+            0 => CompressorKind::Zlib,
+            1 => CompressorKind::Zstd,
+            2 => CompressorKind::Gzip,
+            3 => CompressorKind::None,
+            _ => CompressorKind::Snappy,
+        }
+    }
+}
+
+/// The Agent's nested `use_v3_api.series` switch between the v2 and v3 series
+/// intake.
+#[derive(Debug, Serialize)]
+pub(crate) struct UseV3ApiConfig {
+    /// The series sub-tree.
+    series: V3SeriesConfig,
+}
+
+/// The `enabled` leaf under a v3 series key.
+#[derive(Debug, Serialize)]
+pub(crate) struct V3SeriesConfig {
+    /// Whether the series intake is v3 rather than v2. A string because both the Agent and ADP read
+    /// this leaf as one, and ADP's typed model rejects a YAML boolean outright.
+    enabled: &'static str,
+}
+
 /// Agent-facing config. `hostname`, `api_key`, `dd_url`, and the socket are
-/// supplied by the environment; `log_level` and the `DogStatsD` options are
-/// sampled per branch. The static flags are appended by [`Self::to_yaml`], not
-/// fields here.
+/// supplied by the environment; `log_level`, the series intake API, and the
+/// `DogStatsD` options are sampled per branch. The static flags are appended by
+/// [`Self::to_yaml`], not fields here.
 #[derive(Debug, Serialize)]
 pub struct DatadogConfig {
     /// Agent hostname. Supplied by the environment. ADP requires it
@@ -132,6 +177,13 @@ pub struct DatadogConfig {
     dd_url: String,
     /// Agent log verbosity. Pinned to `error` (see [`LogLevel`]).
     log_level: LogLevel,
+    /// Series intake API for this timeline.
+    use_v3_api: UseV3ApiConfig,
+    /// Compressor for metric payloads. Sampled independently of the series API.
+    serializer_compressor_kind: CompressorKind,
+    /// ADP's safety gate for authoritative v3 series, which the Agent has no counterpart for.
+    /// Sampled with [`Self::use_v3_api`] so ADP and the Agent never split encodings in a timeline.
+    data_plane_metrics_v3_series_enabled: bool,
     /// `DogStatsD` options, flattened to top-level `dogstatsd_*` keys.
     #[serde(flatten)]
     dogstatsd: DogStatsdConfig,
@@ -145,11 +197,19 @@ impl DatadogConfig {
     pub fn sample<R: Rng + ?Sized>(
         rng: &mut R, hostname: &str, api_key: &str, dd_url: &str, dogstatsd_socket: &Path,
     ) -> Self {
+        let series_v3 = rng.random();
         Self {
             hostname: hostname.to_owned(),
             api_key: api_key.to_owned(),
             dd_url: dd_url.to_owned(),
             log_level: LogLevel::Error,
+            use_v3_api: UseV3ApiConfig {
+                series: V3SeriesConfig {
+                    enabled: if series_v3 { "true" } else { "false" },
+                },
+            },
+            serializer_compressor_kind: rng.random(),
+            data_plane_metrics_v3_series_enabled: series_v3,
             dogstatsd: DogStatsdConfig::sample(rng, dogstatsd_socket),
         }
     }
@@ -177,7 +237,6 @@ impl DatadogConfig {
 
 /// Yaml flags the Agent reads at boot that never vary.
 const STATIC_YAML_TAIL: &str = "use_dogstatsd: true
-use_v2_api_series: true
 inventories_enabled: false
 enable_metadata_collection: false
 cloud_provider_metadata: []
@@ -239,6 +298,7 @@ impl DriverConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::convert::Infallible;
 
     use rand::rand_core::TryRng;
@@ -302,5 +362,61 @@ mod tests {
     fn log_level_is_always_an_unambiguous_scalar() {
         assert!(has_key(&render(0), "log_level"));
         assert!(render(0).contains("log_level: error"));
+    }
+
+    /// The Agent's nested switch and ADP's safety gate, as a timeline renders them.
+    fn series_api(seed: u64) -> (bool, bool) {
+        let yaml = render(seed);
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).expect("parse rendered yaml");
+        // A string, not a YAML boolean: ADP's typed model reads this leaf as `String`, so an unquoted
+        // boolean fails deserialization and the target never boots.
+        let agent = match parsed["use_v3_api"]["series"]["enabled"]
+            .as_str()
+            .expect("use_v3_api.series.enabled is a string")
+        {
+            "true" => true,
+            "false" => false,
+            other => panic!("unexpected series mode {other}"),
+        };
+        let adp = parsed["data_plane_metrics_v3_series_enabled"]
+            .as_bool()
+            .expect("data_plane_metrics_v3_series_enabled");
+        (agent, adp)
+    }
+
+    #[test]
+    fn both_lanes_share_one_series_api() {
+        for seed in 0..16 {
+            let (agent, adp) = series_api(seed);
+            assert_eq!(agent, adp, "seed {seed}");
+        }
+    }
+
+    #[test]
+    fn series_api_samples_both_intakes() {
+        let mut seen = [false, false];
+        for seed in 0..16 {
+            seen[usize::from(series_api(seed).0)] = true;
+        }
+        assert_eq!(seen, [true, true]);
+    }
+
+    #[test]
+    fn compressor_samples_every_kind() {
+        let mut seen = BTreeSet::new();
+        for seed in 0..64 {
+            let yaml = render(seed);
+            let kind = yaml
+                .lines()
+                .find_map(|line| line.strip_prefix("serializer_compressor_kind: "))
+                .expect("serializer_compressor_kind")
+                .to_owned();
+            seen.insert(kind);
+        }
+        let want = ["gzip", "none", "snappy", "zlib", "zstd"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(seen, want);
     }
 }

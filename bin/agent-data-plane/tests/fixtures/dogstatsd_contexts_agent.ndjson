@@ -1,0 +1,4 @@
+{"Name":"z.metric","Host":"node-a","Type":"Gauge","TaggerTags":["pod_name:web-a"],"MetricTags":["env:prod","image:registry/repo:v1","bare"],"NoIndex":false,"Source":1}
+{"Name":"a.metric","Host":"node-a","Type":"Counter","TaggerTags":["pod_name:web-a"],"MetricTags":["env:prod","service:web"],"NoIndex":false,"Source":1}
+{"Name":"a.metric","Host":"node-b","Type":"Counter","TaggerTags":["pod_name:web-b"],"MetricTags":["env:prod","service:web"],"NoIndex":false,"Source":1}
+{"Name":"a.metric","Host":"node-c","Type":"Counter","TaggerTags":["pod_name:web-c"],"MetricTags":["env:staging","service:web"],"NoIndex":false,"Source":1}

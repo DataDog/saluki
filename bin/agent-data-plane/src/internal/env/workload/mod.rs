@@ -230,6 +230,12 @@ impl WorkloadProvider for RemoteAgentWorkloadProvider {
         }
     }
 
+    fn get_self_container_tags(&self) -> Option<SharedTagSet> {
+        let self_container_entity = self.on_demand_pid_resolver.resolve_self_container()?;
+        self.tags_querier
+            .get_entity_tags(&self_container_entity, OriginTagCardinality::Low)
+    }
+
     fn get_resolved_origin(&self, origin: RawOrigin<'_>) -> Option<ResolvedOrigin> {
         self.origin_resolver.get_resolved_origin(origin)
     }

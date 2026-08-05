@@ -1260,6 +1260,127 @@ mod tests {
         assert!(ms.is_cheaply_cloneable());
     }
 
+    /// A string long enough that it can neither be inlined (>23 bytes) nor mistaken for an inlined string, used to
+    /// force the non-inlined `MetaString` variants (owned/static/interned/shared).
+    const LONG: &str = "this string is definitely longer than twenty-three bytes";
+
+    fn hash_of(ms: &MetaString) -> u64 {
+        use std::hash::{Hash as _, Hasher as _};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ms.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn serde_round_trips_every_variant() {
+        // The custom `Serialize`/`Deserialize` (a hand-written `Visitor`) must survive a real format round-trip for
+        // every backing variant. Deserialization always reconstructs an inlined/owned string, so the invariant is
+        // content equality, not variant identity.
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        let cases: Vec<(MetaString, &str)> = vec![
+            (MetaString::empty(), ""),
+            (MetaString::try_inline("hi").expect("fits inline"), "hi"),
+            (MetaString::from_static(LONG), LONG),
+            (MetaString::from(String::from(LONG)), LONG),
+            (MetaString::from(interner.try_intern(LONG).expect("interns")), LONG),
+            (MetaString::from(Arc::<str>::from(LONG)), LONG),
+        ];
+
+        for (ms, expected) in cases {
+            let json = serde_json::to_string(&ms).expect("serialization should succeed");
+
+            // Decoding the JSON as a plain `String` confirms the serialized form carries the raw string content.
+            let as_plain: String = serde_json::from_str(&json).expect("serialized form should be a JSON string");
+            assert_eq!(as_plain, expected, "serialized form should carry the string content");
+
+            let back: MetaString = serde_json::from_str(&json).expect("deserialization should succeed");
+            assert_eq!(back, expected, "deserialized value should match the original content");
+            assert_eq!(ms, back, "round-trip should preserve equality");
+        }
+    }
+
+    #[test]
+    fn equal_content_hashes_equally_across_variants() {
+        // `Hash` delegates to the string content, so two `MetaString`s holding identical bytes must hash equally even
+        // when they use entirely different backing variants (otherwise they'd behave inconsistently as map keys).
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        let variants = [
+            MetaString::from_static(LONG),
+            MetaString::from(String::from(LONG)),
+            MetaString::from(interner.try_intern(LONG).expect("interns")),
+            MetaString::from(Arc::<str>::from(LONG)),
+        ];
+
+        // Confirm the fixtures really do exercise distinct backing variants.
+        assert_eq!(variants[0].inner.get_union_type(), UnionType::Static);
+        assert_eq!(variants[1].inner.get_union_type(), UnionType::Owned);
+        assert_eq!(variants[2].inner.get_union_type(), UnionType::InternedGenericMap);
+        assert_eq!(variants[3].inner.get_union_type(), UnionType::Shared);
+
+        let expected_hash = hash_of(&variants[0]);
+        for variant in &variants {
+            assert_eq!(
+                hash_of(variant),
+                expected_hash,
+                "hash must depend only on content, not the backing variant"
+            );
+            assert_eq!(
+                *variant, variants[0],
+                "equal content must compare equal across variants"
+            );
+        }
+
+        // An inlined short string and a static short string with the same content must also agree.
+        let inlined = MetaString::from("short");
+        let static_ = MetaString::from_static("short");
+        assert_eq!(inlined.inner.get_union_type(), UnionType::Inlined);
+        assert_eq!(static_.inner.get_union_type(), UnionType::Static);
+        assert_eq!(hash_of(&inlined), hash_of(&static_));
+    }
+
+    #[test]
+    fn from_interner_inlines_short_strings() {
+        // Step 1 of the documented fallback: an inlineable string is inlined and the interner is never consulted.
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        let ms = MetaString::from_interner("short", &interner);
+
+        assert_eq!(ms.inner.get_union_type(), UnionType::Inlined);
+        assert_eq!(ms, "short");
+        assert_eq!(interner.len(), 0, "inlining must not add an interner entry");
+    }
+
+    #[test]
+    fn from_interner_interns_non_inlineable_strings() {
+        // Step 2 of the documented fallback: a non-inlineable string is interned when the interner has capacity.
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        assert!(LONG.len() > INLINED_STR_MAX_LEN);
+
+        let ms = MetaString::from_interner(LONG, &interner);
+
+        assert_eq!(ms.inner.get_union_type(), UnionType::InternedGenericMap);
+        assert_eq!(ms, LONG);
+        assert_eq!(interner.len(), 1, "the string should have been interned");
+    }
+
+    #[test]
+    fn from_interner_falls_back_to_owned_when_interner_is_full() {
+        // Step 3 of the documented fallback: a non-inlineable string is allocated as an owned string when interning
+        // fails (here, because the interner is far too small to hold it).
+        let interner = GenericMapInterner::new(NonZeroUsize::new(16).unwrap());
+        assert!(LONG.len() > INLINED_STR_MAX_LEN);
+
+        let ms = MetaString::from_interner(LONG, &interner);
+
+        assert_eq!(ms.inner.get_union_type(), UnionType::Owned);
+        assert_eq!(ms, LONG);
+        assert_eq!(
+            interner.len(),
+            0,
+            "the interner had no room, so nothing should be interned"
+        );
+    }
+
     fn arb_unicode_str_max_len(max_len: usize) -> impl Strategy<Value = String> {
         ".{0,23}".prop_filter("resulting string is too long", move |s| s.len() <= max_len)
     }

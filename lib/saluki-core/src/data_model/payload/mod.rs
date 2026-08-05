@@ -126,3 +126,27 @@ impl Dispatchable for Payload {
         1
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::PayloadType;
+
+    #[test]
+    fn payload_type_display_renders_each_single_flag() {
+        // Note that the rendered names deliberately differ from the variant identifiers for HTTP and gRPC.
+        assert_eq!(PayloadType::Raw.to_string(), "Raw");
+        assert_eq!(PayloadType::Http.to_string(), "HTTP");
+        assert_eq!(PayloadType::Grpc.to_string(), "gRPC");
+    }
+
+    #[test]
+    fn payload_type_display_joins_combined_flags_in_declaration_order() {
+        // Combined flags render in the fixed declaration order joined by `|`, regardless of how they were OR'd together.
+        assert_eq!((PayloadType::Grpc | PayloadType::Raw).to_string(), "Raw|gRPC");
+        assert_eq!(PayloadType::all_bits().to_string(), "Raw|HTTP|gRPC");
+
+        // The empty bitmask (also the `Default`) renders as an empty string.
+        assert_eq!(PayloadType::none().to_string(), "");
+        assert_eq!(PayloadType::default().to_string(), "");
+    }
+}

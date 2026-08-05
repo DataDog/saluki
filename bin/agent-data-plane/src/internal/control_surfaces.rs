@@ -4,6 +4,8 @@ use saluki_components::{
     sources::{DogStatsDCaptureAPIHandler, DogStatsDReplayAPIHandler},
 };
 
+use crate::dogstatsd_contexts::DogStatsDContextDumpAPIHandler;
+
 /// Combined set of control surfaces to expose from the privileged API endpoint.
 #[derive(Default)]
 pub struct TopologyControlSurfaces {
@@ -34,6 +36,8 @@ pub struct DogStatsDControlSurface {
     pub(crate) capture_api_handler: DogStatsDCaptureAPIHandler,
     /// API handler for the `/dogstatsd/replay/session` endpoints.
     pub(crate) replay_api_handler: DogStatsDReplayAPIHandler,
+    /// API handler for the Agent-compatible `/agent/dogstatsd-contexts-dump` endpoint.
+    pub(crate) context_dump_api_handler: DogStatsDContextDumpAPIHandler,
 }
 
 impl DogStatsDControlSurface {
@@ -42,5 +46,6 @@ impl DogStatsDControlSurface {
             .with_handler(self.stats_api_handler)
             .with_handler(self.capture_api_handler)
             .with_handler(self.replay_api_handler)
+            .with_handler(self.context_dump_api_handler)
     }
 }

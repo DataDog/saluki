@@ -19,6 +19,9 @@ serde_bytes = { workspace = true, features = ["std"] }
 tonic = { workspace = true, features = ["codegen"] }
 tonic-prost = { workspace = true }
 
+[dev-dependencies]
+serde_json = { workspace = true }
+
 [build-dependencies]
 piecemeal-build = { workspace = true }
 protobuf = { workspace = true }

@@ -39,3 +39,4 @@ pub mod http;
 mod lenient_decode;
 mod properties;
 mod series_observation;
+mod sut_config;

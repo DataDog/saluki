@@ -44,6 +44,7 @@ use tracing::{debug, error};
 
 use crate::common::datadog::{
     apm::ApmConfig,
+    data_plane::EncoderDataPlaneConfiguration,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     resolve_zstd_compressor_level,
@@ -92,8 +93,8 @@ pub struct DatadogTraceConfiguration {
 
     /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
     /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
-    #[serde(rename = "data_plane_serializer_zstd_compressor_level", default)]
-    data_plane_zstd_compressor_level: Option<i32>,
+    #[serde(default)]
+    data_plane: EncoderDataPlaneConfiguration,
 
     /// The Core Agent's zstd compression level, used only when set to a non-default value (not 1).
     /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
@@ -170,7 +171,7 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let zstd_compressor_level = resolve_zstd_compressor_level(
-            self.data_plane_zstd_compressor_level,
+            self.data_plane.serializer_zstd_compressor_level,
             self.serializer_zstd_compressor_level,
         );
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
@@ -842,6 +843,7 @@ fn append_tags(target: &mut String, tags: &str) {
 mod tests {
     use std::collections::BTreeSet;
 
+    use datadog_agent_config::DatadogEnvProvider;
     use datadog_protos::traces::AgentPayload;
     use protobuf::Message as _;
     use saluki_config::ConfigurationLoader;
@@ -852,21 +854,21 @@ mod tests {
     use super::*;
     use crate::common::datadog::apm::ApmConfig;
     use crate::common::otlp::config::TracesConfig;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     async fn make_encoder(ets_enabled: bool) -> TraceEndpointEncoder {
+        // The variable is named exactly as the Datadog Agent spells it; the schema-driven provider
+        // resolves it to `apm_config.error_tracking_standalone.enabled`.
         let env_vars: Vec<(String, String)> = if ets_enabled {
-            vec![("APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(), "true".to_string())]
+            vec![(
+                "DD_APM_ERROR_TRACKING_STANDALONE_ENABLED".to_string(),
+                "true".to_string(),
+            )]
         } else {
             vec![]
         };
-        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(
-            None,
-            Some(&env_vars),
-            false,
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(None, None, false, |_| {
+            DatadogEnvProvider::from_env_vars(env_vars).expect("test environment values should decode")
+        })
         .await;
         let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
         TraceEndpointEncoder::new(
@@ -985,9 +987,10 @@ mod tests {
     async fn sampling_rate_clamps_percentage_to_unit_interval() {
         // `sampling_percentage` is a 0..100 percentage; only strictly in-range values map to a fractional rate, and
         // anything <= 0 or >= 100 collapses to 1.0 (sample everything).
-        let (cfg, _) =
-            ConfigurationLoader::for_tests_with_provider_factory(None, None, false, KEY_ALIASES, DatadogRemapper::new)
-                .await;
+        let (cfg, _) = ConfigurationLoader::for_tests_with_provider_factory(None, None, false, |pairs| {
+            DatadogEnvProvider::from_env_vars(pairs).expect("test environment values should decode")
+        })
+        .await;
         let apm_config = ApmConfig::from_configuration(&cfg).expect("ApmConfig should deserialize");
 
         let cases = [
@@ -1148,21 +1151,13 @@ mod config_smoke {
     use serde_json::json;
 
     use super::DatadogTraceConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_TRACE_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogTraceConfiguration>()
-                    .expect("DatadogTraceConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
+        run_config_smoke_tests(structs::DATADOG_TRACE_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DatadogTraceConfiguration>()
+                .expect("DatadogTraceConfiguration should deserialize")
+        })
         .await
     }
 }

@@ -1,10 +1,9 @@
 use std::sync::LazyLock;
 
+use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use axum::body::Bytes;
-use facet::Facet;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
 use saluki_core::components::ComponentContext;
@@ -12,56 +11,42 @@ use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, Pa
 use saluki_core::topology::OutputDefinition;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
 use tracing::{debug, error};
 
-use crate::common::otlp::config::Receiver;
 use crate::common::otlp::{
     build_metrics, Metrics, OtlpHandler, OtlpServerBuilder, OTLP_LOGS_GRPC_SERVICE_PATH,
     OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
 };
 
 /// Configuration for the OTLP relay.
-#[derive(Deserialize, Default, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[derive(Default)]
 pub struct OtlpRelayConfiguration {
-    #[serde(default)]
-    otlp_config: OtlpRelayConfig,
-}
-
-/// OTLP configuration for the relay.
-#[derive(Deserialize, Default, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
-pub struct OtlpRelayConfig {
-    #[serde(default)]
-    receiver: Receiver,
+    receiver: domains::otlp::Receiver,
 }
 
 impl OtlpRelayConfiguration {
-    /// Creates a new `OtlpRelayConfiguration` from the given generic configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        config.as_typed().map_err(Into::into)
+    /// Creates relay configuration from typed OTLP receiver settings.
+    pub fn from_configuration(receiver: &domains::otlp::Receiver) -> Self {
+        Self {
+            receiver: receiver.clone(),
+        }
     }
 
     fn http_endpoint(&self) -> ListenAddress {
-        let transport = &self.otlp_config.receiver.protocols.http.transport;
-        let endpoint = &self.otlp_config.receiver.protocols.http.endpoint;
-        let address = format!("{}://{}", transport, endpoint);
+        let address = format!("{}://{}", self.receiver.http.transport, self.receiver.http.endpoint);
         ListenAddress::try_from(address).expect("valid HTTP endpoint")
     }
 
     fn grpc_endpoint(&self) -> ListenAddress {
-        let transport = &self.otlp_config.receiver.protocols.grpc.transport;
-        let endpoint = &self.otlp_config.receiver.protocols.grpc.endpoint;
-        let address = format!("{}://{}", transport, endpoint);
+        let address = format!("{}://{}", self.receiver.grpc.transport, self.receiver.grpc.endpoint);
         ListenAddress::try_from(address).expect("valid gRPC endpoint")
     }
 
     fn grpc_max_recv_msg_size_bytes(&self) -> usize {
-        (self.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib * 1024 * 1024) as usize
+        (self.receiver.grpc.max_recv_msg_size_mib * 1024 * 1024) as usize
     }
 }
 
@@ -265,27 +250,44 @@ impl OtlpHandler for RelayHandler {
 }
 
 #[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
+mod tests {
+    use agent_data_plane_config::domains;
 
     use super::OtlpRelayConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::OTLP_RELAY_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<OtlpRelayConfiguration>()
-                    .expect("OtlpRelayConfiguration should deserialize")
+    fn relay(receiver: domains::otlp::Receiver) -> OtlpRelayConfiguration {
+        OtlpRelayConfiguration::from_configuration(&receiver)
+    }
+
+    #[test]
+    fn endpoints_combine_transport_and_address() {
+        let config = relay(domains::otlp::Receiver {
+            grpc: domains::otlp::GrpcReceiver {
+                endpoint: "0.0.0.0:4317".to_string(),
+                transport: "tcp".to_string(),
+                max_recv_msg_size_mib: 4,
             },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
+            http: domains::otlp::HttpReceiver {
+                endpoint: "0.0.0.0:4318".to_string(),
+                transport: "tcp".to_string(),
+            },
+            ..Default::default()
+        });
+
+        assert_eq!(config.grpc_endpoint().to_string(), "tcp://0.0.0.0:4317");
+        assert_eq!(config.http_endpoint().to_string(), "tcp://0.0.0.0:4318");
+    }
+
+    #[test]
+    fn grpc_max_recv_msg_size_converts_mib_to_bytes() {
+        let config = relay(domains::otlp::Receiver {
+            grpc: domains::otlp::GrpcReceiver {
+                max_recv_msg_size_mib: 8,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+
+        assert_eq!(config.grpc_max_recv_msg_size_bytes(), 8 * 1024 * 1024);
     }
 }

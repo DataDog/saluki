@@ -1,7 +1,7 @@
 //! OTTL filter processor component.
 //!
-//! Drops spans (and optionally span events) when OTTL conditions match, following the
-//! [OpenTelemetry filterprocessor] spec.
+//! Drops spans when OTTL conditions match, following the [OpenTelemetry filterprocessor] spec.
+//! Only span-level conditions (`traces.span`) are implemented; span-event filtering is not.
 //!
 //! [OpenTelemetry filterprocessor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/filterprocessor
 
@@ -150,43 +150,16 @@ impl SynchronousTransform for OttlFilter {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
 
-    use saluki_common::collections::FastHashMap;
     use saluki_config::ConfigurationLoader;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
-        data_model::event::{
-            trace::{AttributeValue, Span, Trace},
-            Event,
-        },
+        data_model::event::{trace::AttributeValue, Event},
         topology::EventsBuffer,
     };
-    use stringtheory::MetaString;
 
     use super::*;
-
-    fn make_span(_trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> Span {
-        let mut attr_map = FastHashMap::default();
-        for (k, v) in meta {
-            attr_map.insert(MetaString::from(k), AttributeValue::String(MetaString::from(v)));
-        }
-        Span::new("svc", "op", "res", "web", span_id, 0, 0, 0, 0).with_attributes(attr_map)
-    }
-
-    fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
-        let mut trace = Trace::new(spans);
-        if let Some(tags) = resource_tags {
-            let mut attrs = FastHashMap::default();
-            for t in tags {
-                if let Some((k, v)) = t.split_once(':') {
-                    attrs.insert(MetaString::from(k), AttributeValue::String(MetaString::from(v)));
-                }
-            }
-            trace.attributes = Arc::new(attrs);
-        }
-        trace
-    }
+    use crate::components::test_support::{make_span, make_trace};
 
     fn span_count_in_buffer(buffer: &EventsBuffer) -> usize {
         buffer
@@ -420,67 +393,95 @@ mod tests {
         );
     }
 
-    /// With `error_mode: ignore`, when condition evaluation errors (for example, type mismatch), the span is kept.
+    /// When a condition errors, `error_mode` decides the span's fate: ignore/silent keep it, propagate drops
+    /// it. One case per `ErrorMode` arm.
     #[tokio::test]
-    async fn error_mode_ignore_eval_error_keeps_span() {
-        let cfg_json = serde_json::json!({
-            "ottl_filter_config": {
-                "error_mode": "ignore",
-                "traces": { "span": ["attributes[\"x\"] > 1"] }
-            }
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = test_component_context();
-        let mut transform = ottl_config.build(ctx).await.unwrap();
-        let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
-        let trace = make_trace(vec![span], None);
-        let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::Trace(trace)).is_none());
-        transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 1);
+    async fn error_mode_controls_span_fate_when_a_condition_errors() {
+        struct Case {
+            error_mode: &'static str,
+            expected_span_count: usize,
+        }
+
+        let cases = [
+            Case {
+                error_mode: "ignore",
+                expected_span_count: 1,
+            },
+            Case {
+                error_mode: "silent",
+                expected_span_count: 1,
+            },
+            Case {
+                error_mode: "propagate",
+                expected_span_count: 0,
+            },
+        ];
+
+        for case in cases {
+            let cfg_json = serde_json::json!({
+                "ottl_filter_config": {
+                    "error_mode": case.error_mode,
+                    // `x` is a string, so `attributes["x"] > 1` errors during evaluation.
+                    "traces": { "span": ["attributes[\"x\"] > 1"] }
+                }
+            });
+            let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
+            let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+            let mut transform = ottl_config.build(test_component_context()).await.unwrap();
+            let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
+            let trace = make_trace(vec![span], None);
+            let mut buffer = EventsBuffer::default();
+            assert!(buffer.try_push(Event::Trace(trace)).is_none());
+            transform.transform_buffer(&mut buffer);
+            assert_eq!(
+                span_count_in_buffer(&buffer),
+                case.expected_span_count,
+                "error_mode={}",
+                case.error_mode
+            );
+        }
     }
 
-    /// With `error_mode: silent`, when condition evaluation errors, the span is kept (no log).
+    /// With `error_mode` omitted, the documented default (`Propagate`) drops the span when a condition errors.
     #[tokio::test]
-    async fn error_mode_silent_eval_error_keeps_span() {
+    async fn omitted_error_mode_defaults_to_propagate() {
         let cfg_json = serde_json::json!({
-            "ottl_filter_config": {
-                "error_mode": "silent",
-                "traces": { "span": ["attributes[\"x\"] > 1"] }
-            }
+            "ottl_filter_config": { "traces": { "span": ["attributes[\"x\"] > 1"] } }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = test_component_context();
-        let mut transform = ottl_config.build(ctx).await.unwrap();
+        let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("config should parse");
+        assert_eq!(
+            ottl_config.config.error_mode,
+            ErrorMode::Propagate,
+            "omitted error_mode must default to Propagate"
+        );
+
+        let mut transform = ottl_config
+            .build(test_component_context())
+            .await
+            .expect("build should succeed");
+        // `x` is a string, so `attributes["x"] > 1` errors during evaluation; propagate drops the span.
         let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
         assert!(buffer.try_push(Event::Trace(trace)).is_none());
         transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 1);
+        assert_eq!(
+            span_count_in_buffer(&buffer),
+            0,
+            "default (propagate) must drop the span when a condition errors"
+        );
     }
 
-    /// With `error_mode: propagate`, when condition evaluation errors, the span is dropped.
+    /// `error_mode` accepts only ignore/silent/propagate; any other value must fail deserialization.
     #[tokio::test]
-    async fn error_mode_propagate_eval_error_drops_span() {
+    async fn invalid_error_mode_value_is_rejected() {
         let cfg_json = serde_json::json!({
-            "ottl_filter_config": {
-                "error_mode": "propagate",
-                "traces": { "span": ["attributes[\"x\"] > 1"] }
-            }
+            "ottl_filter_config": { "error_mode": "explode" }
         });
         let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = test_component_context();
-        let mut transform = ottl_config.build(ctx).await.unwrap();
-        let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
-        let trace = make_trace(vec![span], None);
-        let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::Trace(trace)).is_none());
-        transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 0);
+        let result = OttlFilterConfiguration::from_configuration(&config);
+        assert!(result.is_err(), "an unrecognized error_mode value must be rejected");
     }
 
     /// `transform_buffer` removes only spans that match the condition; remaining spans are unchanged and in order.

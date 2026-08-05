@@ -41,7 +41,7 @@ endif
 export ADP_STANDALONE_IPC_CERT_FILE := /tmp/adp-ipc-cert.pem
 
 # macOS integration-test settings.
-MACOS_TEST_AGENT_VERSION ?= 7.81.1
+MACOS_TEST_AGENT_VERSION ?= 7.81.3
 MACOS_TEST_AGENT_DMG_DIR ?= /tmp/saluki-dda-dmg-cache
 MACOS_TEST_AGENT_DMG_URL ?= https://s3.amazonaws.com/dd-agent/datadog-agent-$(MACOS_TEST_AGENT_VERSION)-1.$(shell uname -m).dmg
 MACOS_TEST_AGENT_INSTALL_DIR ?= /tmp/saluki-dda/datadog-agent
@@ -487,12 +487,11 @@ endif
 
 .PHONY: check-proxy-dumper-tools
 check-proxy-dumper-tools:
-ifeq ($(shell command -v go >/dev/null || echo not-found), not-found)
-	$(error "Please install Go.")
-endif
-ifeq ($(shell timeout 5s git remote show https://github.com/DataDog/dd-source 2>&1 >/dev/null || echo not-available), not-available)
-	$(error "Please ensure Git is configured correctly to accessing private/internal Datadog repositories.")
-endif
+	@command -v go >/dev/null || { echo "Please install Go." >&2; exit 1; }
+	@timeout 5s git remote show https://github.com/DataDog/dd-source >/dev/null 2>&1 || { \
+		echo "Please ensure Git is configured correctly to access private/internal Datadog repositories." >&2; \
+		exit 1; \
+	}
 
 ##@ Checking
 
@@ -1002,4 +1001,4 @@ cargo-preinstall: ## Pre-installs all necessary Cargo tools (used for CI)
 cargo-install-%: override TOOL = $(@:cargo-install-%=%)
 cargo-install-%: override VERSIONED_TOOL = ${TOOL}@$(CARGO_TOOL_VERSION_$(TOOL))
 cargo-install-%: check-rust-build-tools
-	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)
+	@$(if $(findstring true,$(AUTOINSTALL)),test -f ${CARGO_BIN_DIR}/${TOOL} || (echo "[*] Installing ${VERSIONED_TOOL}..." && cargo binstall --locked --strategies ${CARGO_BINSTALL_STRATEGIES} ${VERSIONED_TOOL} --quiet -y),)

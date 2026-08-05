@@ -26,6 +26,7 @@ const DEFAULT_HOST_MAPPED_PROCFS_ROOT: &str = "/host/proc";
 const DEFAULT_HOST_MAPPED_CGROUPFS_ROOT: &str = "/host/sys/fs/cgroup";
 const CGROUPS_V1_BASE_CONTROLLER_NAME: &str = "memory";
 const CGROUPS_V2_CONTROLLERS_FILE: &str = "cgroup.controllers";
+const SELF_CGROUP_PATH: &str = "/proc/self/cgroup";
 
 /// Linux Control Groups-specific configuration.
 ///
@@ -457,6 +458,23 @@ where
     Ok(())
 }
 
+/// Gets the current process's container ID from its local cgroup membership.
+///
+/// This intentionally reads the process namespace's `/proc/self/cgroup` instead of a configured procfs root, which may
+/// refer to the host namespace.
+pub(crate) fn get_self_container_id(interner: &GenericMapInterner) -> Option<MetaString> {
+    let lines = read_lines(Path::new(SELF_CGROUP_PATH)).ok()?;
+    get_container_id_from_cgroup_lines(&lines, interner)
+}
+
+fn get_container_id_from_cgroup_lines(lines: &[String], interner: &GenericMapInterner) -> Option<MetaString> {
+    lines
+        .iter()
+        .filter_map(|line| CgroupControllerEntry::try_from_str(line))
+        .filter_map(|entry| entry.path.file_name().and_then(|name| name.to_str()))
+        .find_map(|cgroup_name| extract_container_id(cgroup_name, interner))
+}
+
 fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Option<MetaString> {
     // This regular expression is meant to capture:
     // - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
@@ -487,7 +505,7 @@ mod tests {
 
     use stringtheory::{interning::GenericMapInterner, MetaString};
 
-    use super::{extract_container_id, CgroupControllerEntry};
+    use super::{extract_container_id, get_container_id_from_cgroup_lines, CgroupControllerEntry};
 
     #[test]
     fn parse_controller_entry_cgroups_v1() {
@@ -517,14 +535,66 @@ mod tests {
         assert_eq!(entry.path, controller_path);
     }
 
+    fn extract(raw: &str) -> Option<MetaString> {
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        extract_container_id(raw, &interner)
+    }
+
+    #[test]
+    fn resolves_container_id_from_current_process_cgroup_format() {
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let cgroup_lines = vec![format!("0::/system.slice/cri-containerd-{container_id}.scope")];
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+
+        assert_eq!(
+            get_container_id_from_cgroup_lines(&cgroup_lines, &interner),
+            Some(MetaString::from(container_id))
+        );
+    }
+
+    #[test]
+    fn does_not_resolve_self_container_from_non_container_cgroup_fixture() {
+        let cgroup_lines = include_str!("testdata/non-container-proc-self-cgroup")
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+
+        assert_eq!(get_container_id_from_cgroup_lines(&cgroup_lines, &interner), None);
+    }
+
     #[test]
     fn extract_container_id_cri_containerd() {
         let expected_container_id =
             MetaString::from("06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe");
         let raw = format!("cri-containerd-{}.scope", expected_container_id);
-        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
 
-        let actual_container_id = extract_container_id(&raw, &interner);
-        assert_eq!(Some(expected_container_id), actual_container_id);
+        assert_eq!(extract(&raw), Some(expected_container_id));
+    }
+
+    // NOTE: `extract_container_id`'s documented intent is to exclude systemd `.mount` cgroups and CRI-O
+    // `crio-conmon-` cgroups, since neither represents an actual container. As currently written, though, the
+    // `.ends_with(".mount")`/`.starts_with("crio-conmon-")` checks are applied to the regex *match* -- which is a
+    // bare hexadecimal container ID -- rather than to the full cgroup name. A hex string can never end with
+    // `.mount` or start with `crio-conmon-`, so these two exclusion filters never actually fire. The two tests
+    // below pin that real, current behavior (the container ID is still extracted) rather than the documented
+    // intent, so a future fix that makes the filters effective will visibly flip these assertions.
+
+    #[test]
+    fn extract_container_id_does_not_exclude_dot_mount_cgroups() {
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let raw = format!("{}.mount", container_id);
+
+        // Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
+        assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
+    }
+
+    #[test]
+    fn extract_container_id_does_not_exclude_crio_conmon_cgroups() {
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let raw = format!("crio-conmon-{}.scope", container_id);
+
+        // Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
+        assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
     }
 }

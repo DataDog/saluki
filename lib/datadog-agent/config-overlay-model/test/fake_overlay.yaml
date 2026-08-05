@@ -130,7 +130,7 @@ inventory:
       payload capture is not yet available.
     issue: "#9999"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 

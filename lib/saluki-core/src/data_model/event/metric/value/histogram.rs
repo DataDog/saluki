@@ -521,4 +521,76 @@ mod tests {
         assert_eq!(view.sum(), 210.0);
         assert_eq!(view.count(), 5);
     }
+
+    #[test]
+    fn empty_histogram_has_no_aggregates() {
+        let mut h = Histogram::default();
+        let view = h.summary_view();
+        assert_eq!(view.min(), None);
+        assert_eq!(view.max(), None);
+        assert_eq!(view.median(), None);
+        assert_eq!(view.quantile(0.5), None);
+    }
+
+    #[test]
+    fn quantile_returns_none_outside_the_unit_interval() {
+        // The doc states quantiles outside `0.0..=1.0` return `None`.
+        let mut h = histogram_from_values(&[(1.0, 1), (2.0, 1), (3.0, 1)]);
+        let view = h.summary_view();
+        assert_eq!(view.quantile(-0.1), None);
+        assert_eq!(view.quantile(1.1), None);
+    }
+
+    #[test]
+    fn quantiles_select_expected_samples_for_uniform_weights() {
+        // Samples are sorted before querying, so insertion order does not matter: sorted values are [1, 2, 3, 4, 5],
+        // each with weight 1 (count 5).
+        let mut h = histogram_from_values(&[(3.0, 1), (1.0, 1), (5.0, 1), (2.0, 1), (4.0, 1)]);
+        let view = h.summary_view();
+
+        assert_eq!(view.count(), 5);
+        assert_eq!(view.min(), Some(1.0));
+        assert_eq!(view.max(), Some(5.0));
+        assert_eq!(view.avg(), 3.0);
+        // quantile(0.0) targets the smallest sample, quantile(1.0) the largest, and the median is the middle sample.
+        assert_eq!(view.quantile(0.0), Some(1.0));
+        assert_eq!(view.median(), Some(3.0));
+        assert_eq!(view.quantile(1.0), Some(5.0));
+    }
+
+    #[test]
+    fn quantiles_account_for_sample_weights() {
+        // A heavily-weighted low value should dominate the lower quantiles. Sorted: value 1.0 (weight 9), value
+        // 100.0 (weight 1); total count 10.
+        let mut h = histogram_from_values(&[(100.0, 1), (1.0, 9)]);
+        let view = h.summary_view();
+
+        assert_eq!(view.count(), 10);
+        assert_eq!(view.min(), Some(1.0));
+        assert_eq!(view.max(), Some(100.0));
+        // The cumulative weight of value 1.0 (9) already covers the 50th percentile...
+        assert_eq!(view.quantile(0.5), Some(1.0));
+        // ...but the 95th percentile (target ~9.49) falls past it, into value 100.0.
+        assert_eq!(view.quantile(0.95), Some(100.0));
+    }
+
+    #[test]
+    fn count_rounds_weight_from_integer_reciprocal_sample_rate() {
+        // A sample rate of 0.5 has an exact reciprocal weight of 2.0, so a single insertion counts as two samples.
+        let mut h = Histogram::default();
+        h.insert(10.0, SampleRate::try_from(0.5).unwrap());
+        let view = h.summary_view();
+        assert_eq!(view.count(), 2);
+        assert_eq!(view.sum(), 20.0);
+    }
+
+    #[test]
+    fn count_rounds_weight_from_non_integer_reciprocal_sample_rate() {
+        // The doc's worked example: a sample rate of 0.21 yields a weight of ~4.762, which the count rounds to 5
+        // (rather than truncating to 4).
+        let mut h = Histogram::default();
+        h.insert(1.0, SampleRate::try_from(0.21).unwrap());
+        let view = h.summary_view();
+        assert_eq!(view.count(), 5);
+    }
 }
