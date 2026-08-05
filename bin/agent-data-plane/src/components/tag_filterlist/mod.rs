@@ -345,7 +345,10 @@ pub fn filter_metric_tags(
 mod tests {
     use std::sync::Arc;
 
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config::{
+        dynamic::{ConfigSetting, ConfigUpdate},
+        ConfigurationLoader,
+    };
     use saluki_context::{
         tags::{Tag, TagSet},
         Context, TagSetMutViewState,
@@ -915,21 +918,18 @@ mod tests {
     async fn dynamic_update_partial_replaces_filter() {
         let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
         let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_tag_filterlist".to_string(),
-                value: serde_json::json!([
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_tag_filterlist",
+                serde_json::json!([
                     { "metric_name": "my.dist", "action": "exclude", "tags": ["host"] }
                 ]),
-            })
+            )))
             .await
             .unwrap();
 
@@ -952,21 +952,18 @@ mod tests {
     async fn dynamic_update_to_empty_clears_filter() {
         let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
         let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_tag_filterlist".to_string(),
-                value: serde_json::json!([
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_tag_filterlist",
+                serde_json::json!([
                     { "metric_name": "my.dist", "action": "exclude", "tags": ["env"] }
                 ]),
-            })
+            )))
             .await
             .unwrap();
 
@@ -978,10 +975,10 @@ mod tests {
         .expect("timed out waiting for initial metric_tag_filterlist update");
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_tag_filterlist".to_string(),
-                value: serde_json::json!([]),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_tag_filterlist",
+                serde_json::json!([]),
+            )))
             .await
             .unwrap();
 
@@ -1004,20 +1001,18 @@ mod tests {
     async fn dynamic_update_snapshot_applies_filter() {
         let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
         let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("metric_tag_filterlist");
 
         sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "metric_tag_filterlist": [
+            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "metric_tag_filterlist",
+                serde_json::json!([
                     { "metric_name": "my.dist", "action": "include", "tags": ["service"] }
-                ]
-            })))
+                ]),
+            )]))
             .await
             .unwrap();
 

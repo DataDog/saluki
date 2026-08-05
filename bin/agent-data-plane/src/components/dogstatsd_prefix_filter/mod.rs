@@ -344,7 +344,10 @@ impl Transform for DogStatsDPrefixFilter {
 #[cfg(test)]
 mod tests {
     use metrics::set_default_local_recorder;
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config::{
+        dynamic::{ConfigSetting, ConfigUpdate},
+        ConfigurationLoader,
+    };
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
 
     use super::*;
@@ -499,10 +502,7 @@ mod tests {
     async fn blocklist_and_filterlist_dynamic_updates_are_applied() {
         let (cfg, sender) = ConfigurationLoader::for_tests(Some(serde_json::json!({})), None, true).await;
         let sender = sender.expect("sender should exist");
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
 
         cfg.ready().await;
 
@@ -527,10 +527,10 @@ mod tests {
         let mut blocklist_watcher = cfg.watch_for_updates("statsd_metric_blocklist");
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "statsd_metric_blocklist".to_string(),
-                value: serde_json::json!(["foo".to_string()]),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "statsd_metric_blocklist",
+                serde_json::json!(["foo".to_string()]),
+            )))
             .await
             .unwrap();
 
@@ -557,10 +557,10 @@ mod tests {
 
         let mut metric_filterlist_watcher = cfg.watch_for_updates("metric_filterlist");
         sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_filterlist".to_string(),
-                value: serde_json::json!(["baz".to_string()]),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_filterlist",
+                serde_json::json!(["baz".to_string()]),
+            )))
             .await
             .unwrap();
 
@@ -594,10 +594,7 @@ mod tests {
         .await;
         let sender = sender.expect("sender should exist");
 
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         cfg.ready().await;
 
         let mut filter = FilterBuilder::new()
@@ -616,10 +613,10 @@ mod tests {
 
         let mut match_prefix_watcher = cfg.watch_for_updates("metric_filterlist_match_prefix");
         sender
-            .send(ConfigUpdate::Partial {
-                key: "metric_filterlist_match_prefix".to_string(),
-                value: serde_json::json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_filterlist_match_prefix",
+                serde_json::json!(true),
+            )))
             .await
             .unwrap();
 

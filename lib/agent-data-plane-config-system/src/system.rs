@@ -7,7 +7,7 @@ use std::sync::{Arc, OnceLock};
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
-use saluki_config::dynamic::ConfigUpdate;
+use saluki_config::dynamic::{settings_to_state, ConfigUpdate};
 use saluki_config::{upsert, ConfigurationError, GenericConfiguration};
 use serde::Deserialize;
 use serde_json::Value;
@@ -217,14 +217,18 @@ async fn agent_loop(
 /// `Snapshot` replaces the layer; `Partial` applies one (possibly dotted) key via `upsert`, the same
 /// handling the `saluki-config` updater uses, so the typed model and the compatibility map stay
 /// consistent.
+///
+/// The Agent layer is a value tree, so the provenance carried by each setting is dropped here. It is
+/// what would let translation tell an operator-set value from an Agent default, which is why the
+/// stream carries it; nothing consumes it yet.
 fn fold(agent: &mut Value, update: &ConfigUpdate) {
     match update {
-        ConfigUpdate::Snapshot(state) => *agent = state.clone(),
-        ConfigUpdate::Partial { key, value } => {
+        ConfigUpdate::Snapshot(settings) => *agent = settings_to_state(settings),
+        ConfigUpdate::Partial(setting) => {
             if agent.is_null() {
                 *agent = Value::Object(serde_json::Map::new());
             }
-            upsert(agent, key, value.clone());
+            upsert(agent, &setting.key, setting.value.clone());
         }
     }
 }
@@ -349,7 +353,7 @@ mod tests {
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
     use agent_data_plane_config::{Live, SalukiConfiguration};
     use datadog_agent_config::DatadogConfiguration;
-    use saluki_config::dynamic::ConfigUpdate;
+    use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
     use saluki_config::ConfigurationLoader;
     use serde_json::{json, Value};
     use tokio::sync::mpsc;
@@ -373,7 +377,7 @@ mod tests {
         let (agent_tx, agent_rx) = mpsc::channel(100);
         let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
         let compat_tx = compat_tx.expect("dynamic sender exists");
-        agent_tx.send(ConfigUpdate::Snapshot(json!({}))).await.unwrap();
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
         let system = ConfigurationSystem::connected(agent_rx, compat_tx, compat_map, base)
             .await
             .expect("system builds");
@@ -423,40 +427,41 @@ mod tests {
         );
 
         agent_tx
-            .send(ConfigUpdate::Snapshot(json!({
-                "serializer_compressor_kind": "zstd",
-                "serializer_experimental_use_v3_api": {
-                    "compression_level": 7,
-                    "series": {
-                        "endpoints": ["https://app.us3.datadoghq.com"],
-                        "validate": true,
-                        "use_beta": true,
-                        "beta_route": "/api/intake/metrics/custom/series",
-                        "shadow_sample_rate": 0.25,
-                        "shadow_sites": ["us3.datadoghq.com"]
-                    }
-                },
-                "use_v2_api": {
-                    "series": false
-                },
-                "use_v3_api": {
-                    "series": {
-                        "enabled": "false",
-                        "endpoints": {
-                            "https://app.datadoghq.com": "true"
-                        }
-                    }
-                },
-                "observability_pipelines_worker": {
-                    "metrics": {
-                        "enabled": true,
-                        "url": "https://opw.example.com",
-                        "use_v3_api": {
-                            "series": true
-                        }
-                    }
-                }
-            })))
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("serializer_compressor_kind", json!("zstd")),
+                ConfigSetting::explicit("serializer_experimental_use_v3_api.compression_level", json!(7)),
+                ConfigSetting::explicit(
+                    "serializer_experimental_use_v3_api.series.endpoints",
+                    json!(["https://app.us3.datadoghq.com"]),
+                ),
+                ConfigSetting::explicit("serializer_experimental_use_v3_api.series.validate", json!(true)),
+                ConfigSetting::explicit("serializer_experimental_use_v3_api.series.use_beta", json!(true)),
+                ConfigSetting::explicit(
+                    "serializer_experimental_use_v3_api.series.beta_route",
+                    json!("/api/intake/metrics/custom/series"),
+                ),
+                ConfigSetting::explicit(
+                    "serializer_experimental_use_v3_api.series.shadow_sample_rate",
+                    json!(0.25),
+                ),
+                ConfigSetting::explicit(
+                    "serializer_experimental_use_v3_api.series.shadow_sites",
+                    json!(["us3.datadoghq.com"]),
+                ),
+                ConfigSetting::explicit("use_v2_api.series", json!(false)),
+                ConfigSetting::explicit("use_v3_api.series.enabled", json!("false")),
+                // The Agent sends an object-valued setting whole, and these entry keys contain dots.
+                ConfigSetting::explicit(
+                    "use_v3_api.series.endpoints",
+                    json!({ "https://app.datadoghq.com": "true" }),
+                ),
+                ConfigSetting::explicit("observability_pipelines_worker.metrics.enabled", json!(true)),
+                ConfigSetting::explicit(
+                    "observability_pipelines_worker.metrics.url",
+                    json!("https://opw.example.com"),
+                ),
+                ConfigSetting::explicit("observability_pipelines_worker.metrics.use_v3_api.series", json!(true)),
+            ]))
             .await
             .unwrap();
 
@@ -611,17 +616,17 @@ mod tests {
         // Send a translation-invalid update, then a valid update to a different field. Updates are
         // processed in order, so once the second is observed the first has already been handled.
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "dogstatsd_tag_cardinality".to_string(),
-                value: json!("bogus"),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_tag_cardinality",
+                json!("bogus"),
+            )))
             .await
             .unwrap();
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "log_level".to_string(),
-                value: json!("error"),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )))
             .await
             .unwrap();
 
@@ -647,10 +652,10 @@ mod tests {
         ];
         for (i, level) in burst.iter().enumerate() {
             agent_tx
-                .send(ConfigUpdate::Partial {
-                    key: "log_level".to_string(),
-                    value: json!(level),
-                })
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "log_level",
+                    json!(level),
+                )))
                 .await
                 .unwrap();
             // Interleave a translation-invalid update mid-burst, then correct it. The invalid value
@@ -658,27 +663,27 @@ mod tests {
             // baseline keeps converging on the latest valid value regardless of the transient bad one.
             if i == burst.len() / 2 {
                 agent_tx
-                    .send(ConfigUpdate::Partial {
-                        key: "dogstatsd_tag_cardinality".to_string(),
-                        value: json!("bogus"),
-                    })
+                    .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                        "dogstatsd_tag_cardinality",
+                        json!("bogus"),
+                    )))
                     .await
                     .unwrap();
                 agent_tx
-                    .send(ConfigUpdate::Partial {
-                        key: "dogstatsd_tag_cardinality".to_string(),
-                        value: json!("high"),
-                    })
+                    .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                        "dogstatsd_tag_cardinality",
+                        json!("high"),
+                    )))
                     .await
                     .unwrap();
             }
         }
         let final_level = "error";
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "log_level".to_string(),
-                value: json!(final_level),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!(final_level),
+            )))
             .await
             .unwrap();
 
@@ -698,10 +703,10 @@ mod tests {
         assert!(!view.metrics_stats_enable);
 
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "dogstatsd_metrics_stats_enable".to_string(),
-                value: json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_metrics_stats_enable",
+                json!(true),
+            )))
             .await
             .unwrap();
 
@@ -722,10 +727,10 @@ mod tests {
         assert!(!*stats);
 
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "dogstatsd_metrics_stats_enable".to_string(),
-                value: json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_metrics_stats_enable",
+                json!(true),
+            )))
             .await
             .unwrap();
 

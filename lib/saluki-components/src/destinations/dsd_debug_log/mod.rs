@@ -508,7 +508,7 @@ mod tests {
     async fn dynamically_drops_until_metrics_stats_are_enabled() {
         use std::time::Duration;
 
-        use saluki_config::dynamic::ConfigUpdate;
+        use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
 
         let tempdir = tempdir().expect("temporary directory should be created");
         let log_file = tempdir.path().join("dogstatsd-stats.log");
@@ -525,7 +525,7 @@ mod tests {
         .await;
         let sender = sender.expect("dynamic sender should be present");
         sender
-            .send(ConfigUpdate::Snapshot(json!({})))
+            .send(ConfigUpdate::snapshot([]))
             .await
             .expect("initial dynamic snapshot should be sent");
         config.ready().await;
@@ -547,10 +547,10 @@ mod tests {
         assert!(!log_file.exists());
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "dogstatsd_metrics_stats_enable".to_string(),
-                value: json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_metrics_stats_enable",
+                json!(true),
+            )))
             .await
             .expect("dynamic update should be sent");
 
@@ -564,10 +564,10 @@ mod tests {
             .expect("enabled metric should be written");
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "dogstatsd_metrics_stats_enable".to_string(),
-                value: json!(false),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_metrics_stats_enable",
+                json!(false),
+            )))
             .await
             .expect("dynamic update should be sent");
 

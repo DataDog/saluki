@@ -501,14 +501,14 @@ mod tests {
     async fn policy_403_gate_reflects_dynamic_secrets_config_change() {
         use std::time::Duration as StdDuration;
 
-        use saluki_config::dynamic::ConfigUpdate;
+        use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
 
         let (config, sender) = ConfigurationLoader::for_tests(Some(json!({})), None, true).await;
         let sender = sender.expect("dynamic configuration sender should be present");
 
         // Apply an empty initial snapshot and wait for readiness.
         sender
-            .send(ConfigUpdate::Snapshot(json!({})))
+            .send(ConfigUpdate::snapshot([]))
             .await
             .expect("should send initial snapshot");
         config.ready().await;
@@ -522,10 +522,10 @@ mod tests {
         // Push a config update that enables secrets management.
         let mut watcher = config.watch_for_updates("secret_backend_command");
         sender
-            .send(ConfigUpdate::Partial {
-                key: "secret_backend_command".to_string(),
-                value: json!("/bin/true"),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "secret_backend_command",
+                json!("/bin/true"),
+            )))
             .await
             .expect("should send partial update");
 

@@ -98,7 +98,7 @@ mod tests {
     use tokio::sync::broadcast;
 
     use super::FieldUpdateWatcher;
-    use crate::dynamic::event::{ConfigChangeEvent, ConfigUpdate};
+    use crate::dynamic::event::{ConfigChangeEvent, ConfigSetting, ConfigUpdate};
     use crate::ConfigurationLoader;
 
     fn change_event(key: &str, new_value: serde_json::Value) -> ConfigChangeEvent {
@@ -130,19 +130,16 @@ mod tests {
         .await;
         let sender = sender.expect("sender should exist");
 
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("watched_key");
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "watched_key".to_string(),
-                value: serde_json::json!("hello"),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "watched_key",
+                serde_json::json!("hello"),
+            )))
             .await
             .unwrap();
 
@@ -164,20 +161,17 @@ mod tests {
         .await;
         let sender = sender.expect("sender should exist");
 
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("foobar.a");
 
         // Update nested value via dotted path
         sender
-            .send(ConfigUpdate::Partial {
-                key: "foobar.a".to_string(),
-                value: serde_json::json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "foobar.a",
+                serde_json::json!(true),
+            )))
             .await
             .unwrap();
 
@@ -203,20 +197,17 @@ mod tests {
         .await;
         let sender = sender.expect("sender should exist");
 
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         cfg.ready().await;
 
         let mut watcher = cfg.watch_for_updates("foobar.a");
 
         // Update parent object directly
         sender
-            .send(ConfigUpdate::Partial {
-                key: "foobar".to_string(),
-                value: serde_json::json!({ "a": true }),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "foobar",
+                serde_json::json!({ "a": true }),
+            )))
             .await
             .unwrap();
 
