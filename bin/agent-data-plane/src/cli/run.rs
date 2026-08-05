@@ -683,10 +683,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 
     let ottl_filter_config = OttlFilterConfiguration::from_configuration(&config.domains.traces.ottl_filter);
 
+    let ottl_transform_config = OttlTransformConfiguration::from_configuration(&config.domains.traces.ottl_transform);
+
     // The remaining trace-enrichment components still read from the raw compatibility map.
     let raw_config = config_system.raw_map();
-    let ottl_transform_config = OttlTransformConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure OTTL transform processor.")?;
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
         .with_transform_builder("ottl_transform", ottl_transform_config)
