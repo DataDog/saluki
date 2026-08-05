@@ -65,8 +65,11 @@ async fn main() -> Result<(), GenericError> {
 
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
     // (per-subagent log file key, never sharing a file with the Core Agent).
-    let bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_config)
+    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_config)
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
+    if matches!(&cli.action, Action::Config(command) if command.json) {
+        bootstrap_logging_config.log_to_console = false;
+    }
 
     let metrics_default_level = parse_metrics_level(&bootstrap_config)?;
 
@@ -223,7 +226,7 @@ async fn run_inner(
             return Ok(exit_code);
         }
         Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
-        Action::Config(_) => handle_config_command(&bootstrap_config).await,
+        Action::Config(cmd) => handle_config_command(&bootstrap_config, cmd).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
         Action::Version(v) => handle_version_command(v.json).await,
     }

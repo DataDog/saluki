@@ -63,7 +63,7 @@ pub struct SetMetricLevelCommand {
 
 /// Entrypoint for the `debug` commands.
 pub async fn handle_debug_command(bootstrap_config: &GenericConfiguration, cmd: DebugCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
+    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config).await {
         Ok(client) => client,
         Err(e) => {
             error!("Failed to create data plane API client: {:#}", e);

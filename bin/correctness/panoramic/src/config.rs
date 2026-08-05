@@ -259,6 +259,27 @@ pub enum ActionConfig {
         timeout: HumanDuration,
     },
 
+    /// Invoke the tested ADP binary as a CLI command.
+    AdpCli {
+        /// Arguments appended after the runtime-specific ADP binary and global configuration prefix.
+        args: Vec<String>,
+        /// Timeout for waiting for the command to succeed.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+
+    /// Invoke the Core Agent binary as a CLI command.
+    CoreAgentCli {
+        /// Arguments appended after the runtime-specific Core Agent binary and global configuration prefix.
+        args: Vec<String>,
+        /// Optional substring that must appear in successful command output.
+        #[serde(default)]
+        output_contains: Option<String>,
+        /// Timeout for waiting for the command to succeed.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+
     /// Run a command inside the target environment.
     TargetExec {
         /// Command and arguments to run in the target environment.
@@ -371,13 +392,13 @@ pub enum AssertionConfig {
         timeout: HumanDuration,
     },
 
-    /// Poll ADP's `/config` endpoint until one key equals the expected value.
+    /// Poll an ADP configuration view through its authenticated CLI until one key equals the expected value.
     AdpConfigKeyEquals {
         /// Configuration key to compare. Dotted paths address nested objects.
         key: String,
         /// Expected value.
         value: Value,
-        /// ADP `/config` endpoint.
+        /// Configuration endpoint selecting `/config` or the translated runtime view at `/config/runtime`.
         #[serde(default = "crate::assertions::default_adp_config_endpoint")]
         endpoint: String,
         /// Timeout for waiting for the value to appear.
@@ -421,6 +442,21 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(s, vars);
                 }
             }
+            ActionConfig::AdpCli { args, .. } => {
+                for arg in args {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
+            }
+            ActionConfig::CoreAgentCli {
+                args, output_contains, ..
+            } => {
+                for arg in args {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
+                if let Some(output_contains) = output_contains {
+                    crate::dynamic_vars::resolve_placeholders(output_contains, vars);
+                }
+            }
             ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
@@ -440,6 +476,21 @@ impl ActionConfig {
                 crate::dynamic_vars::find_unresolved(endpoint, &mut out);
                 if let serde_json::Value::String(s) = value {
                     crate::dynamic_vars::find_unresolved(s, &mut out);
+                }
+            }
+            ActionConfig::AdpCli { args, .. } => {
+                for arg in args {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
+                }
+            }
+            ActionConfig::CoreAgentCli {
+                args, output_contains, ..
+            } => {
+                for arg in args {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
+                }
+                if let Some(output_contains) = output_contains {
+                    crate::dynamic_vars::find_unresolved(output_contains, &mut out);
                 }
             }
             ActionConfig::TargetExec { command, .. } => {
@@ -1180,6 +1231,50 @@ procedure: []
             panic!("expected target_exec action");
         };
         assert_eq!(command, vec!["ping".to_string(), "10.0.0.5".to_string()]);
+    }
+
+    #[test]
+    fn adp_cli_resolves_placeholders_in_each_argument() {
+        let vars = dynamic_vars(&[("LEVEL", "INFO")]);
+        let mut action = ActionConfig::AdpCli {
+            args: vec![
+                "debug".to_string(),
+                "set-metric-level".to_string(),
+                "{{PANORAMIC_DYNAMIC_LEVEL}}".to_string(),
+            ],
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+
+        action.resolve_dynamic_vars(&vars);
+        assert!(action.unresolved_placeholders().is_empty());
+
+        let ActionConfig::AdpCli { args, .. } = action else {
+            panic!("expected adp_cli action");
+        };
+        assert_eq!(args, vec!["debug", "set-metric-level", "INFO"]);
+    }
+
+    #[test]
+    fn core_agent_cli_resolves_placeholders_in_arguments_and_output_matcher() {
+        let vars = dynamic_vars(&[("COMMAND", "status"), ("MATCH", "Agent Version")]);
+        let mut action = ActionConfig::CoreAgentCli {
+            args: vec!["{{PANORAMIC_DYNAMIC_COMMAND}}".to_string()],
+            output_contains: Some("Built Against {{PANORAMIC_DYNAMIC_MATCH}}".to_string()),
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+
+        assert!(!action.unresolved_placeholders().is_empty());
+        action.resolve_dynamic_vars(&vars);
+        assert!(action.unresolved_placeholders().is_empty());
+
+        let ActionConfig::CoreAgentCli {
+            args, output_contains, ..
+        } = action
+        else {
+            panic!("expected core_agent_cli action");
+        };
+        assert_eq!(args, vec!["status"]);
+        assert_eq!(output_contains.as_deref(), Some("Built Against Agent Version"));
     }
 
     #[test]

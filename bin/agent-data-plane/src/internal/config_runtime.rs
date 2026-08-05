@@ -1,4 +1,4 @@
-//! Internal configuration API handler.
+//! Runtime configuration API handler.
 
 use std::sync::Arc;
 
@@ -16,29 +16,29 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::runtime::{state::DataspaceRegistry, InitializationError, Supervisable, SupervisorFuture};
 use saluki_error::generic_error;
 
-/// State used for the internal configuration API handler.
+/// State used for the runtime configuration API handler.
 #[derive(Clone)]
-pub struct ConfigInternalState {
+pub struct ConfigRuntimeState {
     current: Arc<ArcSwap<SalukiConfiguration>>,
 }
 
 /// An API handler for returning the translated runtime configuration.
 ///
-/// This handler exposes a single route -- `/config/internal` -- that returns the current
+/// This handler exposes a single route -- `/config/runtime` -- that returns the current
 /// translated [`SalukiConfiguration`] in its serialized JSON form. It reflects any dynamic updates
 /// applied to the configuration since startup.
-pub struct ConfigInternalAPIHandler {
-    state: ConfigInternalState,
+pub struct ConfigRuntimeAPIHandler {
+    state: ConfigRuntimeState,
 }
 
-impl ConfigInternalAPIHandler {
+impl ConfigRuntimeAPIHandler {
     fn new(current: Arc<ArcSwap<SalukiConfiguration>>) -> Self {
         Self {
-            state: ConfigInternalState { current },
+            state: ConfigRuntimeState { current },
         }
     }
 
-    async fn config_handler(State(state): State<ConfigInternalState>) -> impl IntoResponse {
+    async fn config_handler(State(state): State<ConfigRuntimeState>) -> impl IntoResponse {
         let config = state.current.load();
         match serde_json::to_string(&**config) {
             Ok(body) => (StatusCode::OK, body).into_response(),
@@ -51,40 +51,40 @@ impl ConfigInternalAPIHandler {
     }
 }
 
-impl APIHandler for ConfigInternalAPIHandler {
-    type State = ConfigInternalState;
+impl APIHandler for ConfigRuntimeAPIHandler {
+    type State = ConfigRuntimeState;
 
     fn generate_initial_state(&self) -> Self::State {
         self.state.clone()
     }
 
     fn generate_routes(&self) -> Router<Self::State> {
-        Router::new().route("/config/internal", get(Self::config_handler))
+        Router::new().route("/config/runtime", get(Self::config_handler))
     }
 }
 
 /// A worker for exposing an endpoint that returns the translated runtime configuration.
 ///
-/// When running, the worker asserts a route (based on [`ConfigInternalAPIHandler`]) that returns
+/// When running, the worker asserts a route (based on [`ConfigRuntimeAPIHandler`]) that returns
 /// the current translated configuration. As the configuration may contain sensitive data, this
 /// route is only present on the privileged API endpoint.
-pub struct ConfigInternalWorker {
-    handler: ConfigInternalAPIHandler,
+pub struct ConfigRuntimeWorker {
+    handler: ConfigRuntimeAPIHandler,
 }
 
-impl ConfigInternalWorker {
-    /// Creates a new [`ConfigInternalWorker`] serving the given configuration.
+impl ConfigRuntimeWorker {
+    /// Creates a new [`ConfigRuntimeWorker`] serving the given configuration.
     pub fn new(current: Arc<ArcSwap<SalukiConfiguration>>) -> Self {
         Self {
-            handler: ConfigInternalAPIHandler::new(current),
+            handler: ConfigRuntimeAPIHandler::new(current),
         }
     }
 }
 
 #[async_trait]
-impl Supervisable for ConfigInternalWorker {
+impl Supervisable for ConfigRuntimeWorker {
     fn name(&self) -> &str {
-        "config-internal-api"
+        "config-runtime-api"
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
@@ -94,7 +94,7 @@ impl Supervisable for ConfigInternalWorker {
             let dataspace =
                 DataspaceRegistry::try_current().ok_or_else(|| generic_error!("Dataspace not available."))?;
 
-            dataspace.assert(config_route, "config-internal-api");
+            dataspace.assert(config_route, "config-runtime-api");
 
             process_shutdown.await;
             Ok(())

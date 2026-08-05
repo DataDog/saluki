@@ -182,13 +182,13 @@ async fn run_dogstatsd_command(
 ) -> Result<(), GenericError> {
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(config) => {
-            let mut api_client = data_plane_api_client(bootstrap_config)?;
+            let mut api_client = data_plane_api_client(bootstrap_config).await?;
             handle_dogstatsd_stats(&mut api_client, config)
                 .await
                 .error_context("Failed to run stats subcommand")
         }
         DogstatsdSubcommand::Capture(config) => {
-            let mut api_client = data_plane_api_client(bootstrap_config)?;
+            let mut api_client = data_plane_api_client(bootstrap_config).await?;
             handle_dogstatsd_capture(&mut api_client, config)
                 .await
                 .error_context("Failed to start DogStatsD capture")
@@ -196,7 +196,7 @@ async fn run_dogstatsd_command(
         DogstatsdSubcommand::Replay(config) => {
             #[cfg(target_os = "linux")]
             {
-                let mut api_client = data_plane_api_client(bootstrap_config)?;
+                let mut api_client = data_plane_api_client(bootstrap_config).await?;
                 handle_dogstatsd_replay(&mut api_client, bootstrap_config, config)
                     .await
                     .error_context("Failed to replay DogStatsD traffic")
@@ -218,20 +218,22 @@ async fn run_dogstatsd_command(
             if config.is_offline() {
                 handle_dogstatsd_top(None, config, &mut output).await
             } else {
-                let mut api_client = data_plane_api_client(bootstrap_config)?;
+                let mut api_client = data_plane_api_client(bootstrap_config).await?;
                 handle_dogstatsd_top(Some(&mut api_client), config, &mut output).await
             }
         }
         DogstatsdSubcommand::DumpContexts(_) => {
-            let mut api_client = data_plane_api_client(bootstrap_config)?;
+            let mut api_client = data_plane_api_client(bootstrap_config).await?;
             let mut output = std::io::stdout();
             handle_dogstatsd_dump_contexts(&mut api_client, &mut output).await
         }
     }
 }
 
-fn data_plane_api_client(config: &GenericConfiguration) -> Result<DataPlaneAPIClient, GenericError> {
-    DataPlaneAPIClient::from_config(config).error_context("Failed to create data plane API client")
+async fn data_plane_api_client(config: &GenericConfiguration) -> Result<DataPlaneAPIClient, GenericError> {
+    DataPlaneAPIClient::from_config(config)
+        .await
+        .error_context("Failed to create data plane API client")
 }
 
 async fn handle_dogstatsd_stats(api_client: &mut DataPlaneAPIClient, cmd: StatsCommand) -> Result<(), GenericError> {

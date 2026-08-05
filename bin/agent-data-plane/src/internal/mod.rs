@@ -11,7 +11,7 @@ use saluki_error::GenericError;
 
 use crate::config::DataPlaneConfiguration;
 
-mod config_internal;
+mod config_runtime;
 
 mod control_plane;
 pub use self::control_plane::create_control_plane_supervisor;

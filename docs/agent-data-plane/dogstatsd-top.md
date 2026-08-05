@@ -21,7 +21,7 @@ Wrote /var/run/datadog/dogstatsd_contexts.json.zstd
           3	request.count	(2 env, 1 service)
 ```
 
-Online requests use the same privileged API client path and access-control boundary as existing ADP commands. The API creates and returns only the server-local path `<run_path>/dogstatsd_contexts.json.zstd`.
+Online requests use the same IPC-certificate-authenticated privileged API client as existing ADP commands. The API creates and returns only the server-local path `<run_path>/dogstatsd_contexts.json.zstd`.
 
 The API does not return the artifact contents. The CLI reads the returned path directly, so the CLI process and ADP must see the same filesystem and path. If ADP runs in a container, run the CLI with the same mount or use the copy workflow in the next section. The API does not provide a remote download endpoint.
 

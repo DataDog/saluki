@@ -42,7 +42,7 @@ pub struct ControlConfiguration {
     /// Address the unsecured control API listens on.
     pub api_listen_address: ListenAddress,
 
-    /// Address the TLS-secured control API listens on.
+    /// Listen address for the mutually authenticated control API, which requires TLS client certificates.
     pub secure_api_listen_address: ListenAddress,
 
     /// Logging configuration, read before runtime authority exists.

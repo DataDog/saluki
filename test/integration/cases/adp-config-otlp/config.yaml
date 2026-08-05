@@ -1,6 +1,6 @@
 type: integration
 name: "adp-config-otlp"
-description: "Verifies OTLP config env vars reach ADP's /config/internal endpoint in connected mode."
+description: "Verifies OTLP config env vars reach ADP's /config/runtime endpoint in connected mode."
 timeout: 180s
 runtimes: [linux, mac, windows]
 
@@ -52,127 +52,127 @@ container:
 
 procedure:
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: control.logging.level
     value: info
     timeout: 60s
 
   # OTLP -- Datadog schema keys
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.receiver.logs_enabled
     value: true
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.receiver.metrics_enabled
     value: false
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.metrics.histogram_mode
     value: "Counters"
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.metrics.send_histogram_aggregations
     value: true
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.metrics.resource_attributes_as_tags
     value: true
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.metrics.sums.cumulative_monotonic_mode
     value: "RawValue"
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.metrics.sums.initial_cumulative_monotonic_value
     value: "Drop"
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.metrics.tags
     value: "env:integration-otlp,team:agent-dataplane"
     timeout: 60s
   # Verify that the temporary ADP endpoint settings override the schema-backed Agent settings.
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.receiver.grpc.endpoint
     value: "0.0.0.0:16317"
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.receiver.grpc.max_recv_msg_size_mib
     value: 7
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.receiver.grpc.transport
     value: "unix"
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.receiver.http.endpoint
     value: "0.0.0.0:16318"
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.traces.enabled
     value: false
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.traces.internal_port
     value: 5017
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.traces.probabilistic_sampler_sampling_percentage
     value: 42.5
     timeout: 60s
 
   # OTLP -- Saluki-only keys
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.traces.string_interner_size
     value: 1048576
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.traces.enable_compute_top_level_by_span_kind
     value: false
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.traces.ignore_missing_datadog_fields
     value: true
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.receiver.http.transport
     value: "unix"
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.contexts.string_interner_size
     value: 3145728
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.contexts.cached_contexts_limit
     value: 123456
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.contexts.cached_tagsets_limit
     value: 234567
     timeout: 60s
   - assertion: adp_config_key_equals
-    endpoint: "https://localhost:55101/config/internal"
+    endpoint: "https://localhost:55101/config/runtime"
     key: domains.otlp.contexts.allow_context_heap_allocs
     value: false
     timeout: 60s

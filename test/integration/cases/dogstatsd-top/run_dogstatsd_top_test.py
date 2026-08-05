@@ -13,6 +13,7 @@ from pathlib import Path
 ADP = Path("/opt/datadog-agent/embedded/bin/agent-data-plane")
 AGENT = Path("/opt/datadog-agent/bin/agent/agent")
 CONFIG = Path("/etc/datadog-agent/datadog.yaml")
+IPC_CERT = Path("/etc/datadog-agent/ipc_cert.pem")
 API_URL = "https://127.0.0.1:55101/agent/dogstatsd-contexts-dump"
 DUMP_FILENAME = "dogstatsd_contexts.json.zstd"
 COPIED_DUMP = Path("/tmp/dogstatsd-top-copied.json.zstd")
@@ -41,16 +42,17 @@ def run_adp(*arguments):
     return run([str(ADP), "--config", str(CONFIG), "dogstatsd", *arguments])
 
 
-def unverified_tls_context():
+def ipc_mtls_context():
     context = ssl.create_default_context()
     context.check_hostname = False
     context.verify_mode = ssl.CERT_NONE
+    context.load_cert_chain(IPC_CERT)
     return context
 
 
 def post_dump():
     request = urllib.request.Request(API_URL, data=b"", method="POST")
-    return urllib.request.urlopen(request, context=unverified_tls_context(), timeout=10)
+    return urllib.request.urlopen(request, context=ipc_mtls_context(), timeout=10)
 
 
 def send_dogstatsd_contexts():
@@ -136,7 +138,7 @@ def validate_dump_and_offline_interoperability():
 
 
 def main():
-    for required_path in [ADP, AGENT, CONFIG, AGENT_FIXTURE_COMPRESSED, AGENT_FIXTURE_PLAIN]:
+    for required_path in [ADP, AGENT, CONFIG, IPC_CERT, AGENT_FIXTURE_COMPRESSED, AGENT_FIXTURE_PLAIN]:
         if not required_path.exists():
             raise AssertionError(f"required test path does not exist: {required_path}")
 

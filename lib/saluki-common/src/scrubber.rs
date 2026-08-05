@@ -149,25 +149,48 @@ impl Default for Scrubber {
             repl_func: None,
         };
 
-        // Capture the optional closing `"` as $4 so the replacement preserves it for JSON values without breaking
-        // unquoted values (plain text / YAML). Without $4, `"password":"secret"` → `"password":"********` (invalid JSON).
-        // `:[ ]?` matches both compact JSON (`"password":"secret"`) and spaced YAML (`password: secret`).
-        let password_replacer = Replacer {
-            regex: Some(Regex::new(r#"(?i)(\"?(?:pass(?:word)?|pswd|pwd)\"?)((?:=| = |:[ ]?)\"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)(\"?)"#).unwrap()),
-            repl: Some(b"$1$2********$4".to_vec()),
+        // JSON string values need both quotes to be part of the match. Keeping the key and separator captures while
+        // replacing the complete value string prevents non-string JSON values from being mistaken for secrets.
+        let json_password_replacer = Replacer {
+            regex: Some(
+                Regex::new(r#"(?i)("(?:[^"\\]|\\.)*(?:pass(?:word)?|pswd|pwd)")(\s*:\s*)"(?:[^"\\]|\\.)*""#).unwrap(),
+            ),
+            repl: Some(b"$1$2\"********\"".to_vec()),
             hints: None,
             repl_func: None,
         };
 
-        // Redacts the value of any key ending in `token` or `jwt` (for example, `auth_token`,
-        // `cluster_agent.auth_token`, `refresh_token`). Mirrors `password_replacer`: the trailing `"` in the
-        // key group plus the `$4` closing-quote capture keep compact JSON (`"auth_token":"x"`) valid, and the
-        // optional leading `"` lets the match start mid-key (so dotted keys like `cluster_agent.auth_token`
-        // match after the `.`). `hints` is intentionally `None`: the hint check is case-sensitive, so a
-        // `"token"` hint would skip an uppercase `AUTH_TOKEN` key that `(?i)` would otherwise match.
-        let token_replacer = Replacer {
-            regex: Some(Regex::new(r#"(?i)(\"?(?:[\w-]*(?:token|jwt))\"?)((?:=| = |:[ ]?)\"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)(\"?)"#).unwrap()),
-            repl: Some(b"$1$2********$4".to_vec()),
+        // Redacts JSON string values whose key ends in `token` or `jwt` (for example, `auth_token`,
+        // `cluster_agent.auth_token`, or `refresh_token`). Requiring a quoted JSON value keeps non-string values such
+        // as `null` unchanged and preserves valid JSON.
+        let json_token_replacer = Replacer {
+            regex: Some(Regex::new(r#"(?i)("(?:[^"\\]|\\.)*(?:token|jwt)")(\s*:\s*)"(?:[^"\\]|\\.)*""#).unwrap()),
+            repl: Some(b"$1$2\"********\"".to_vec()),
+            hints: None,
+            repl_func: None,
+        };
+
+        // Plain text and YAML keys cannot begin immediately after a double quote. This retains legacy unquoted and
+        // dotted-key matching without allowing the search to begin partway through a quoted JSON key.
+        let plain_password_replacer = Replacer {
+            regex: Some(
+                Regex::new(r#"(?i)(^|[^"0-9A-Za-z_])([0-9A-Za-z_.-]*(?:pass(?:word)?|pswd|pwd))((?:=| = |:[ ]?)"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)("?)"#)
+                    .unwrap(),
+            ),
+            repl: Some(b"$1$2$3********$5".to_vec()),
+            hints: None,
+            repl_func: None,
+        };
+
+        // Redacts plain text and YAML values for unquoted keys ending in `token` or `jwt`, including dotted keys such
+        // as `cluster_agent.auth_token`. `hints` is intentionally `None`: hint checks are case-sensitive, while token
+        // key matching is not, so a `token` hint would skip uppercase keys such as `AUTH_TOKEN`.
+        let plain_token_replacer = Replacer {
+            regex: Some(
+                Regex::new(r#"(?i)(^|[^"0-9A-Za-z_])([0-9A-Za-z_.-]*(?:token|jwt))((?:=| = |:[ ]?)"?)([0-9A-Za-z#!$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~]+)("?)"#)
+                    .unwrap(),
+            ),
+            repl: Some(b"$1$2$3********$5".to_vec()),
             hints: None,
             repl_func: None,
         };
@@ -186,8 +209,10 @@ impl Default for Scrubber {
                 bearer_catchall_replacer_upper,
                 bearer_catchall_replacer_lower,
                 uri_password_replacer,
-                password_replacer,
-                token_replacer,
+                json_password_replacer,
+                json_token_replacer,
+                plain_password_replacer,
+                plain_token_replacer,
             ],
         }
     }
@@ -445,6 +470,57 @@ mod tests {
             cleaned_compact.contains("********"),
             "compact JSON password must be scrubbed: {cleaned_compact}"
         );
+    }
+
+    #[test]
+    fn test_json_sensitive_keys_preserve_non_string_values() {
+        let input = serde_json::json!({
+            "password": null,
+            "database_password": true,
+            "PWD": 42,
+            "auth_token": [
+                { "nested_password": "array-secret" },
+                "ordinary array value",
+            ],
+            "refresh_token": {
+                "nested_jwt": "object-secret",
+                "ordinary": "ordinary object value",
+            },
+            "ordinary_string": "ordinary root value",
+        });
+        let expected = serde_json::json!({
+            "password": null,
+            "database_password": true,
+            "PWD": 42,
+            "auth_token": [
+                { "nested_password": "********" },
+                "ordinary array value",
+            ],
+            "refresh_token": {
+                "nested_jwt": "********",
+                "ordinary": "ordinary object value",
+            },
+            "ordinary_string": "ordinary root value",
+        });
+        let encoded = serde_json::to_vec(&input).unwrap();
+        let cleaned = default_scrubber().scrub_bytes(&encoded);
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&cleaned).expect("scrubbing non-string values must preserve valid JSON");
+
+        assert_eq!(parsed, expected);
+    }
+
+    #[test]
+    fn test_json_sensitive_keys_scrub_string_values() {
+        let input =
+            r#"{"mysql_password":"supersecret","AUTH_TOKEN": "cluster-agent-token","service-jwt":"encoded.jwt"}"#;
+        let cleaned = default_scrubber().scrub_bytes(input.as_bytes());
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&cleaned).expect("scrubbing string values must preserve valid JSON");
+
+        assert_eq!(parsed["mysql_password"], "********");
+        assert_eq!(parsed["AUTH_TOKEN"], "********");
+        assert_eq!(parsed["service-jwt"], "********");
     }
 
     #[test]

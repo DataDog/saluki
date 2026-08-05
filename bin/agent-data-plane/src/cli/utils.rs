@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config};
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
@@ -50,12 +51,25 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the data plane configuration can't be deserialized, or the data plane API endpoints can't be
-    /// determined, an error will be returned.
-    pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
+    /// If the data plane or IPC authentication configuration can't be loaded, the IPC certificate can't be read or
+    /// parsed into a client TLS configuration, the privileged API endpoint isn't connection-oriented, or the HTTP
+    /// client can't be constructed, an error is returned.
+    pub async fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
+        let dp_config = DataPlaneConfiguration::from_configuration(config)
+            .error_context("Failed to load data plane configuration for privileged API client.")?;
+        let ipc_config = IpcAuthConfiguration::from_configuration(config)
+            .error_context("Failed to load IPC authentication configuration for privileged API client.")?;
 
-        let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
+        let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
+        let client_tls_config = build_ipc_client_ipc_tls_config(&ipc_cert_file_path)
+            .await
+            .with_error_context(|| {
+                format!(
+                    "Failed to load IPC TLS certificate and construct client TLS configuration from '{}'.",
+                    ipc_cert_file_path.display()
+                )
+            })?;
+        let builder = HttpClient::builder().with_client_tls_config(client_tls_config);
         Self::from_builder(builder, dp_config.secure_api_listen_address())
     }
 
@@ -81,7 +95,7 @@ impl DataPlaneAPIClient {
 
         let client = builder
             .build()
-            .error_context("Failed to construct API client for privileged API endpoint.")?;
+            .error_context("Failed to construct mTLS API client for privileged API endpoint.")?;
 
         Ok(Self { client, authority })
     }
@@ -308,6 +322,26 @@ impl DataPlaneAPIClient {
     /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
     pub async fn config(&mut self) -> Result<String, GenericError> {
         let uri = self.build_uri("/config", None);
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_success)
+    }
+
+    /// Retrieves the translated runtime configuration of the process.
+    ///
+    /// This is a point-in-time snapshot of the configuration used by the runtime, which could change over time if
+    /// dynamic configuration is enabled.
+    ///
+    /// The response body is returned as a plain string with no decoding or modification performed.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
+    pub async fn config_runtime(&mut self) -> Result<String, GenericError> {
+        let uri = self.build_uri("/config/runtime", None);
         let req = Request::get(uri).body(String::new()).expect("valid request");
         self.client
             .send(req)

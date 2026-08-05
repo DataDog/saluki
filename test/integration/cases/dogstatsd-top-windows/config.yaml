@@ -14,7 +14,6 @@ env:
 container:
   exposed_ports:
     - "58125/udp"
-    - "55101/tcp"
 
 procedure:
   - parallel:
@@ -22,16 +21,8 @@ procedure:
         port: 58125
         protocol: udp
         timeout: 60s
-      - assertion: port_listening
-        port: 55101
-        protocol: tcp
-        timeout: 60s
-      # The route is POST-only. A GET returns 405 when registration is complete and 404 when absent.
-      - assertion: http_check
-        endpoint: "https://localhost:55101/agent/dogstatsd-contexts-dump"
-        status:
-          not_equal: 404
-        insecure_skip_verify: true
+      - assertion: log_contains
+        pattern: "Agent Data Plane running."
         timeout: 60s
   - action: target_exec
     command:
@@ -45,7 +36,6 @@ procedure:
 
         $Adp = "C:\adp\agent-data-plane.exe"
         $Config = "C:\ProgramData\Datadog\datadog.yaml"
-        $ApiUrl = "https://127.0.0.1:55101/agent/dogstatsd-contexts-dump"
         $Result = "C:\dogstatsd-top-result"
         $CopiedDump = "C:\dogstatsd-top-copied.json.zstd"
         $RequestRow = "          2`tintegration.windows.top.requests`t(2 instance, 1 env)"
