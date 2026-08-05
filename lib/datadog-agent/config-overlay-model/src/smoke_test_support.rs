@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 pub enum ConfigurationStruct {
     AggregateConfiguration,
     ContainerdConfiguration,
-    DatadogApmStatsEncoderConfiguration,
     DatadogEventsConfiguration,
     DatadogLogsConfiguration,
     DatadogMetricsConfiguration,
@@ -49,7 +48,6 @@ impl ConfigurationStruct {
         match self {
             ConfigurationStruct::AggregateConfiguration => "AGGREGATE_CONFIGURATION",
             ConfigurationStruct::ContainerdConfiguration => "CONTAINERD_CONFIGURATION",
-            ConfigurationStruct::DatadogApmStatsEncoderConfiguration => "DATADOG_APM_STATS_ENCODER_CONFIGURATION",
             ConfigurationStruct::DatadogEventsConfiguration => "DATADOG_EVENTS_CONFIGURATION",
             ConfigurationStruct::DatadogLogsConfiguration => "DATADOG_LOGS_CONFIGURATION",
             ConfigurationStruct::DatadogMetricsConfiguration => "DATADOG_METRICS_CONFIGURATION",

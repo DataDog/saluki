@@ -60,8 +60,6 @@ pub mod structs {
     pub const DATADOG_EVENTS_CONFIGURATION: &str = "DatadogEventsConfiguration";
     /// Identifier for `DatadogServiceChecksConfiguration`.
     pub const DATADOG_SERVICE_CHECKS_CONFIGURATION: &str = "DatadogServiceChecksConfiguration";
-    /// Identifier for `DatadogApmStatsEncoderConfiguration`.
-    pub const DATADOG_APM_STATS_ENCODER_CONFIGURATION: &str = "DatadogApmStatsEncoderConfiguration";
     /// Identifier for `MrfConfiguration`.
     pub const MRF_CONFIGURATION: &str = "MrfConfiguration";
     /// Identifier for `RemoteAgentClientConfiguration`.
