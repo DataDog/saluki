@@ -313,12 +313,12 @@ mod tests {
     }
 
     #[test]
-    fn stop_timeout_uses_fallback_when_sum_overflows() {
+    fn stop_timeout_saturates_when_sum_overflows() {
         let mut config = SalukiConfiguration::default();
         config.control.aggregator_stop_timeout = Duration::MAX;
         config.shared.endpoints.forwarder.stop_timeout = Duration::from_secs(1);
         let dp = DataPlaneConfiguration::from_configuration(&config);
 
-        assert_eq!(dp.stop_timeout(), Duration::from_secs(4));
+        assert_eq!(dp.stop_timeout(), Duration::MAX);
     }
 }
