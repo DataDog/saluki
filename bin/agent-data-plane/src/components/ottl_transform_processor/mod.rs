@@ -7,10 +7,10 @@
 //!
 //! [OpenTelemetry Transform processor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/transformprocessor
 
+use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlTransform as TypedOttlTransform};
 use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser};
 use saluki_common::collections::FastHashMap;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -21,32 +21,19 @@ use saluki_error::{generic_error, GenericError};
 use stringtheory::MetaString;
 use tracing::{debug, error};
 
-mod config;
-use self::config::{ErrorMode, OttlTransformConfig};
-
 mod span_context;
 use self::span_context::{SpanTransformContext, SpanTransformFamily};
 
 /// Configuration for the OTTL Transform processor.
 #[derive(Clone, Debug)]
 pub struct OttlTransformConfiguration {
-    config: OttlTransformConfig,
+    config: TypedOttlTransform,
 }
 
 impl OttlTransformConfiguration {
-    /// Creates an `OttlTransformConfiguration` from the given configuration.
-    ///
-    /// Reads the OTTL Transform config from the `ottl_transform_config` key at the top level of the data-plane
-    /// configuration.
-    ///
-    /// # Errors
-    ///
-    /// If a value at `ottl_transform_config` exists but fails to deserialize, an error is returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let transform_config = config.try_get_typed::<OttlTransformConfig>("ottl_transform_config")?;
-        Ok(Self {
-            config: transform_config.unwrap_or_default(),
-        })
+    /// Creates an `OttlTransformConfiguration` from the resolved typed traces configuration.
+    pub fn from_configuration(config: &TypedOttlTransform) -> Self {
+        Self { config: config.clone() }
     }
 }
 
@@ -98,7 +85,7 @@ impl MemoryBounds for OttlTransformConfiguration {
 
 /// Synchronous transform that applies OTTL statements to each span in a trace.
 pub struct OttlTransform {
-    error_mode: ErrorMode,
+    error_mode: OttlErrorMode,
     span_parsers: Vec<ottl::Parser<SpanTransformFamily>>,
 }
 
@@ -115,11 +102,11 @@ impl OttlTransform {
             match parser.execute(&mut ctx) {
                 Ok(_) => {}
                 Err(e) => match self.error_mode {
-                    ErrorMode::Ignore => {
+                    OttlErrorMode::Ignore => {
                         error!(error = %e, "OTTL transform statement error; ignoring");
                     }
-                    ErrorMode::Silent => {}
-                    ErrorMode::Propagate => {
+                    OttlErrorMode::Silent => {}
+                    OttlErrorMode::Propagate => {
                         // The OTel spec drops the entire payload on propagate errors,
                         // but the SynchronousTransform API does not support error propagation.
                         // We log and stop processing further statements for this span.
@@ -153,7 +140,6 @@ impl SynchronousTransform for OttlTransform {
 mod tests {
     use std::collections::HashMap;
 
-    use saluki_config::ConfigurationLoader;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
         data_model::event::{
@@ -192,9 +178,32 @@ mod tests {
         ComponentContext::test_transform("ottl_transform")
     }
 
+    fn test_config(value: Option<serde_json::Value>) -> TypedOttlTransform {
+        let root = value
+            .and_then(|value| value.get("ottl_transform_config").cloned())
+            .unwrap_or_default();
+        let error_mode = match root.get("error_mode").and_then(serde_json::Value::as_str) {
+            Some("ignore") => OttlErrorMode::Ignore,
+            Some("silent") => OttlErrorMode::Silent,
+            _ => OttlErrorMode::Propagate,
+        };
+        let trace_statements = root
+            .get("trace_statements")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        TypedOttlTransform {
+            error_mode,
+            trace_statements,
+        }
+    }
+
     async fn build_transform(cfg_json: Option<serde_json::Value>) -> Box<dyn SynchronousTransform + Send> {
-        let (config, _) = ConfigurationLoader::for_tests(cfg_json, None, false).await;
-        let ottl_config = OttlTransformConfiguration::from_configuration(&config).expect("config should parse");
+        let typed = test_config(cfg_json);
+        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
         let ctx = test_component_context();
         ottl_config.build(ctx).await.expect("build should succeed")
     }
@@ -217,26 +226,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn from_configuration_invalid_yaml_returns_error() {
-        let invalid = serde_json::json!({
-            "ottl_transform_config": {
-                "unknown_field": 1
-            }
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(invalid), None, false).await;
-        let result = OttlTransformConfiguration::from_configuration(&config);
-        assert!(result.is_err(), "unknown fields must cause deserialization error");
-    }
-
-    #[tokio::test]
     async fn build_invalid_statement_returns_error() {
         let cfg_json = serde_json::json!({
             "ottl_transform_config": {
                 "trace_statements": ["syntax error !!"]
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlTransformConfiguration::from_configuration(&config).expect("config is valid");
+        let typed = test_config(Some(cfg_json));
+        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
         let ctx = test_component_context();
         let result = ottl_config.build(ctx).await;
         assert!(result.is_err(), "invalid OTTL syntax must make build fail");
@@ -499,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn error_mode_controls_processing_after_a_statement_error() {
         // After a statement errors, `error_mode` decides whether later statements still run: ignore/silent
-        // continue, propagate stops processing the span. One case per `ErrorMode` arm. The first statement
+        // continue, propagate stops processing the span. One case per `OttlErrorMode` arm. The first statement
         // (setting a read-only resource attribute) always errors.
         struct Case {
             error_mode: &'static str,
@@ -569,11 +566,11 @@ mod tests {
                 ]
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlTransformConfiguration::from_configuration(&config).expect("config should parse");
+        let typed = test_config(Some(cfg_json));
+        let ottl_config = OttlTransformConfiguration::from_configuration(&typed);
         assert_eq!(
             ottl_config.config.error_mode,
-            ErrorMode::Propagate,
+            OttlErrorMode::Propagate,
             "omitted error_mode must default to Propagate"
         );
 
@@ -591,17 +588,6 @@ mod tests {
             None,
             "default (propagate) must stop processing after the first statement error"
         );
-    }
-
-    #[tokio::test]
-    async fn invalid_error_mode_value_is_rejected() {
-        // `error_mode` accepts only ignore/silent/propagate; any other value must fail deserialization.
-        let cfg_json = serde_json::json!({
-            "ottl_transform_config": { "error_mode": "explode" }
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let result = OttlTransformConfiguration::from_configuration(&config);
-        assert!(result.is_err(), "an unrecognized error_mode value must be rejected");
     }
 
     // ---- Group 6: Multi-span and multi-trace (integration) ----
