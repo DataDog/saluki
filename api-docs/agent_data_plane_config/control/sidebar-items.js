@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ControlConfiguration","ControlIpc","ListenAddress","Logging"]};
+window.SIDEBAR_ITEMS = {"struct":["ControlConfiguration","ControlIpc","Logging"]};
