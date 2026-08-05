@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use agent_data_plane_config_system::LoadedConfiguration;
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config};
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
@@ -11,13 +12,13 @@ use hyper::body::Bytes;
 use hyper::body::Incoming;
 #[cfg(target_os = "linux")]
 use prost::Message as _;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{
     client::http::{HttpClient, HttpClientBuilder},
     ListenAddress,
 };
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROUTE};
 
@@ -25,6 +26,17 @@ use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROU
 pub struct DataPlaneAPIClient {
     client: HttpClient,
     authority: String,
+}
+
+/// Builds a data plane API client or exits after logging the error.
+pub(super) async fn get_api_client_or_exit(local_config: &LoadedConfiguration) -> DataPlaneAPIClient {
+    match DataPlaneAPIClient::from_configuration(local_config).await {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to create data plane API client: {:#}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -47,17 +59,19 @@ struct DogStatsDReplaySessionResponseBody {
 }
 
 impl DataPlaneAPIClient {
-    /// Creates a new `DataPlaneAPIClient` from the given generic configuration.
+    /// Creates a new `DataPlaneAPIClient` from the typed data plane configuration.
     ///
     /// # Errors
     ///
-    /// If the data plane or IPC authentication configuration can't be loaded, the IPC certificate can't be read or
-    /// parsed into a client TLS configuration, the privileged API endpoint isn't connection-oriented, or the HTTP
-    /// client can't be constructed, an error is returned.
-    pub async fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)
-            .error_context("Failed to load data plane configuration for privileged API client.")?;
-        let ipc_config = IpcAuthConfiguration::from_configuration(config)
+    /// If the IPC authentication configuration can't be loaded, the IPC certificate can't be read or parsed into a
+    /// client TLS configuration, the privileged API endpoint isn't connection-oriented, or the HTTP client can't be
+    /// constructed, an error is returned.
+    pub async fn from_configuration(loaded_config: &LoadedConfiguration) -> Result<Self, GenericError> {
+        let config = loaded_config.local();
+        let raw_config = loaded_config.raw_config();
+        let dp = DataPlaneConfiguration::from_configuration(config);
+        let listen_address = dp.secure_api_listen_address()?;
+        let ipc_config = IpcAuthConfiguration::from_configuration(&raw_config)
             .error_context("Failed to load IPC authentication configuration for privileged API client.")?;
 
         let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
@@ -70,7 +84,7 @@ impl DataPlaneAPIClient {
                 )
             })?;
         let builder = HttpClient::builder().with_client_tls_config(client_tls_config);
-        Self::from_builder(builder, dp_config.secure_api_listen_address())
+        Self::from_builder(builder, &listen_address)
     }
 
     fn from_builder(builder: HttpClientBuilder, listen_address: &ListenAddress) -> Result<Self, GenericError> {

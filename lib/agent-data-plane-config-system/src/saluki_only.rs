@@ -68,7 +68,6 @@
 
 use std::{num::NonZeroUsize, time::Duration};
 
-use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
 use agent_data_plane_config::SalukiConfiguration;
@@ -171,6 +170,9 @@ pub struct SalukiOnly {
 #[serde(default)]
 pub struct DataPlane {
     /// ADP graceful shutdown timeout, in seconds (`data_plane.stop_timeout`).
+    ///
+    /// If present, this will override the Datadog schema's `aggregator_stop_timeout` and
+    /// `forwarder_stop_timeout` values.
     pub stop_timeout: Option<u64>,
     /// Whether ADP runs in standalone mode (`data_plane.standalone_mode`).
     pub standalone_mode: Option<bool>,
@@ -391,9 +393,7 @@ impl SalukiOnly {
     /// of fields, so it does not matter whether `seed` runs before or after the drive.
     pub(crate) fn seed(&self, config: &mut SalukiConfiguration) {
         // control
-        if let Some(v) = self.data_plane.stop_timeout {
-            config.control.stop_timeout = v;
-        }
+        config.control.stop_timeout = self.data_plane.stop_timeout.map(Duration::from_secs);
         if let Some(v) = self.data_plane.standalone_mode {
             config.control.standalone_mode = v;
         }
@@ -563,8 +563,8 @@ impl SalukiOnly {
         }
 
         // domains.checks
-        if let Some(v) = self.checks_ipc_endpoint.clone() {
-            config.domains.checks.ipc_endpoint = ListenAddress(v);
+        if let Some(v) = &self.checks_ipc_endpoint {
+            config.domains.checks.ipc_endpoint = v.clone();
         }
     }
 }
@@ -660,7 +660,7 @@ mod tests {
         saluki_only.seed(&mut config);
 
         // control
-        assert_eq!(config.control.stop_timeout, 45);
+        assert_eq!(config.control.stop_timeout, Some(Duration::from_secs(45)));
         assert!(config.control.standalone_mode);
         assert!(config.control.checks);
         assert_eq!(config.control.memory_limit, ByteSize::mb(512).as_u64());
@@ -732,7 +732,7 @@ mod tests {
         );
 
         // domains.checks
-        assert_eq!(config.domains.checks.ipc_endpoint.0, "localhost:5006");
+        assert_eq!(config.domains.checks.ipc_endpoint, "localhost:5006");
     }
 
     /// `memory_limit` is a byte size the source may express as a bare integer (bytes) or a suffixed

@@ -5,10 +5,9 @@
 
 #![deny(warnings)]
 #![deny(missing_docs)]
-use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::{path::Path, time::Instant};
 
-use agent_data_plane_config_system::EnvironmentProvider;
+use agent_data_plane_config_system::{EnvPrecedence, LoadedConfiguration};
 // Pull in the Antithesis coverage-instrumentation runtime shim only when
 // building for antithesis. Load-baring: equired to avoid the shim being dropped
 // as unused.
@@ -17,7 +16,7 @@ use antithesis_instrumentation as _;
 use datadog_agent_commons::platform::PlatformSettings;
 use metrics::Level;
 use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
-use saluki_config::{ConfigurationLoader, GenericConfiguration};
+use saluki_config::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{error, info, warn};
@@ -61,23 +60,23 @@ async fn main() -> Result<(), GenericError> {
     // Load our "bootstrap" configuration -- static configuration on disk or from environment variables -- so we can
     // initialize basic subsystems before executing the given subcommand.
     let bootstrap_config_path = cli.config_file.unwrap_or_else(PlatformSettings::get_config_file_path);
-    let bootstrap_config = load_bootstrap_config(&bootstrap_config_path)?.bootstrap_generic();
+    let local_config = load_bootstrap_config(&bootstrap_config_path).await?;
 
     // Translate the bootstrap configuration into ADP's logging configuration, applying ADP-specific rules
     // (per-subagent log file key, never sharing a file with the Core Agent).
-    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&bootstrap_config)
+    let mut bootstrap_logging_config = LoggingConfigurationTranslator::translate(&local_config.raw_config())
         .error_context("Failed to translate logging configuration during bootstrap phase.")?;
     if matches!(&cli.action, Action::Config(command) if command.json) {
         bootstrap_logging_config.log_to_console = false;
     }
 
-    let metrics_default_level = parse_metrics_level(&bootstrap_config)?;
+    let metrics_default_level = parse_metrics_level(&local_config.raw_config())?;
 
     // Proceed with bootstrapping.
     //
     // This initializes logging, metrics, allocator telemetry, TLS, and more. We get handled a guard that we need to
     // hold until the application is about to exit, which ensures things like flushing any buffered logs, and so on.
-    let bootstrapper = AppBootstrapper::from_configuration(&bootstrap_config)
+    let bootstrapper = AppBootstrapper::from_configuration(&local_config.raw_config())
         .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
         .with_metrics_prefix("adp")
         .with_metrics_default_level(metrics_default_level)
@@ -100,8 +99,7 @@ async fn main() -> Result<(), GenericError> {
     let maybe_exit_code = run_inner(
         cli.action,
         started,
-        bootstrap_config_path,
-        bootstrap_config,
+        local_config,
         &mut bootstrap_guard,
         bootstrap_supervisor,
     )
@@ -143,22 +141,14 @@ fn initialize_antithesis() {
 
 /// Loads bootstrap configuration from the on-disk file and environment
 /// variables.
-fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<ConfigurationLoader, GenericError> {
-    let loaded = ConfigurationLoader::default()
-        .from_yaml(bootstrap_config_path)
-        .error_context("Failed to load Datadog Agent configuration file during bootstrap.")
-        .and_then(|loader| {
-            loader
-                .from_environment(PlatformSettings::get_env_var_prefix())
-                .error_context("Environment variable prefix should not be empty.")
-        })
-        .and_then(|loader| {
-            // Modeled keys are also contributed at their canonical (potentially nested) paths, so a
-            // consumer reading the Datadog Agent's own configuration shape sees environment values
-            // where it expects them.
-            let provider = EnvironmentProvider::new()
-                .map_err(|message| generic_error!("Failed to read configuration from the environment: {}", message))?;
-            Ok(loader.add_providers([provider]))
+async fn load_bootstrap_config(bootstrap_config_path: &Path) -> Result<LoadedConfiguration, GenericError> {
+    let loaded = LoadedConfiguration::load(bootstrap_config_path, EnvPrecedence::AfterFile)
+        .await
+        .with_error_context(|| {
+            format!(
+                "Failed to load local configuration from {} and the environment",
+                bootstrap_config_path.display()
+            )
         });
     // A graceful config rejection exits 1 rather than crashing; classify that against a clean boot.
     saluki_antithesis::always_or_unreachable!(
@@ -182,8 +172,8 @@ fn parse_metrics_level(config: &GenericConfiguration) -> Result<Level, GenericEr
 }
 
 async fn run_inner(
-    action: Action, started: Instant, config_path: PathBuf, bootstrap_config: GenericConfiguration,
-    bootstrap_guard: &mut BootstrapGuard, bootstrap_supervisor: Supervisor,
+    action: Action, started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
+    bootstrap_supervisor: Supervisor,
 ) -> Result<Option<i32>, GenericError> {
     match action {
         Action::Run(cmd) => {
@@ -196,9 +186,8 @@ async fn run_inner(
                 }
             }
 
-            // `Run` owns the full configuration lifecycle, so it takes the config path and builds the
-            // loader itself; the static `bootstrap_config` serves only the other subcommands below.
-            let exit_code = match handle_run_command(started, config_path, bootstrap_guard, bootstrap_supervisor).await
+            // `Run` consumes the local configuration and selects its runtime authority.
+            let exit_code = match handle_run_command(started, local_config, bootstrap_guard, bootstrap_supervisor).await
             {
                 Ok(()) => {
                     info!("Agent Data Plane stopped.");
@@ -225,9 +214,9 @@ async fn run_inner(
 
             return Ok(exit_code);
         }
-        Action::Debug(cmd) => handle_debug_command(&bootstrap_config, cmd).await,
-        Action::Config(cmd) => handle_config_command(&bootstrap_config, cmd).await,
-        Action::Dogstatsd(cmd) => handle_dogstatsd_command(&bootstrap_config, cmd).await,
+        Action::Debug(cmd) => handle_debug_command(local_config, cmd).await,
+        Action::Config(cmd) => handle_config_command(local_config, cmd).await,
+        Action::Dogstatsd(cmd) => handle_dogstatsd_command(local_config, cmd).await,
         Action::Version(v) => handle_version_command(v.json).await,
     }
 
