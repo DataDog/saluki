@@ -18,8 +18,10 @@ use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
 use saluki_config::DurationString;
-// The privileged API client's IPC identity, and the Linux replay path, read bootstrap keys through
-// the by-key view.
+// The Linux replay path resolves the DogStatsD socket through the by-key view. Its resolver is also
+// compiled for tests, so this import carries the same gate the resolver does.
+#[cfg(any(target_os = "linux", test))]
+use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 #[cfg(target_os = "linux")]
 use saluki_io::net::{unix::uds_sendmsg_with_creds, ProcessCredentials};
