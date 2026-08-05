@@ -1537,7 +1537,8 @@ fn map_histogram_runtime_metric_with_attributes(
                 let mut new_dp = dp.clone();
 
                 // Remove the attributes that were used for matching.
-                let keys_to_remove: HashSet<&str> = mapping.attributes.iter().map(|attribute| attribute.key).collect();
+                let keys_to_remove: FastHashSet<&str> =
+                    mapping.attributes.iter().map(|attribute| attribute.key).collect();
                 new_dp.attributes.retain(|kv| !keys_to_remove.contains(kv.key.as_str()));
 
                 new_histogram.data_points.push(new_dp);
