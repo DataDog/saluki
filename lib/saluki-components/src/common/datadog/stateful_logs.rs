@@ -23,10 +23,12 @@ use foldspace_core::{
         batch_status, stateful_intake_client::StatefulIntakeClient, BatchStatus, StatefulBatch as ProtoStatefulBatch,
     },
     CoreError, DefaultBatchEncoder, DispatchPolicy, LogRecord, MplexEffect, MplexTimerKind, MultiStreamConfig,
-    MultiStreamCore, PayloadDelivery, PayloadId, ProtoBatchEncoder, SenderId, StreamError, StreamId,
-    ZstdBatchCompressor,
+    MultiStreamCore, PayloadDelivery, PayloadId, PayloadRecovery, ProtoBatchEncoder, SenderId, StatelessLogRecord,
+    StreamError, StreamId, ZstdBatchCompressor,
 };
 use foldspace_patterns::ClusteringPatternExtractor;
+#[cfg(test)]
+use foldspace_server::ContentEncoding as FoldspaceContentEncoding;
 use foldspace_server::StatefulLogsDecoder;
 use http::{
     header::{CONTENT_ENCODING, CONTENT_LENGTH},
@@ -46,7 +48,7 @@ use uuid::Uuid;
 use super::{
     endpoints::ResolvedEndpoint,
     io::{track_queue_drops, PendingTransactions},
-    telemetry::ComponentTelemetry,
+    telemetry::{ComponentTelemetry, TransactionRetryCounters},
     transaction::{Metadata, Transaction, TransactionBody},
 };
 
@@ -73,36 +75,40 @@ where
     templates: Vec<LogTemplate>,
 }
 
-enum StatefulRequest<B>
+enum RetainedPayload<B>
 where
     B: Buf + Clone,
 {
-    Retained {
-        request: RetainedRequest<B>,
-        records: Vec<LogRecord>,
+    Stateful(RetainedRequest<B>),
+    StatelessRetry {
+        transaction: Transaction<B>,
+        retry_counters: TransactionRetryCounters,
     },
-    Passthrough(Transaction<B>),
+}
+
+impl<B> RetainedPayload<B>
+where
+    B: Buf + Clone,
+{
+    fn metadata(&self) -> &Metadata {
+        match self {
+            Self::Stateful(retained) => &retained.metadata,
+            Self::StatelessRetry { transaction, .. } => transaction.metadata(),
+        }
+    }
+
+    fn retry_counters(&self) -> Option<&TransactionRetryCounters> {
+        match self {
+            Self::Stateful(_) => None,
+            Self::StatelessRetry { retry_counters, .. } => Some(retry_counters),
+        }
+    }
 }
 
 impl<B> RetainedRequest<B>
 where
     B: Buf + Clone,
 {
-    fn try_from_transaction(transaction: Transaction<B>) -> StatefulRequest<B> {
-        let (metadata, request) = transaction.into_parts();
-        match parse_request_logs(&request) {
-            Ok((templates, records)) if !records.is_empty() => StatefulRequest::Retained {
-                request: Self {
-                    metadata,
-                    request: request.map(|_| TransactionBody::from(Vec::new())),
-                    templates,
-                },
-                records,
-            },
-            Ok(_) | Err(_) => StatefulRequest::Passthrough(Transaction::reassemble(metadata, request)),
-        }
-    }
-
     fn into_transaction(self, logs: Vec<foldspace_server::DecodedLog>) -> Result<Transaction<B>, GenericError> {
         if logs.len() != self.templates.len() {
             return Err(generic_error!(
@@ -136,6 +142,36 @@ where
         }
         Ok(Transaction::reassemble(self.metadata, request))
     }
+}
+
+struct StatelessRecovery<B>
+where
+    B: Buf + Clone,
+{
+    recovery: PayloadRecovery,
+    transaction: Transaction<B>,
+    retry_counters: Option<TransactionRetryCounters>,
+}
+
+enum TransactionEncoding<B>
+where
+    B: Buf + Clone,
+{
+    Encoded {
+        payload_id: PayloadId,
+        effects: Vec<MplexEffect>,
+    },
+    Passthrough(Box<Transaction<B>>),
+}
+
+enum PreparedRecovery<B>
+where
+    B: Buf + Clone,
+{
+    Reconstructed(Box<StatelessRecovery<B>>),
+    Dropped(PayloadRecovery),
+    Resolved,
+    Failed,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -235,53 +271,81 @@ fn parse_request_logs<B>(
 where
     B: Buf + Clone,
 {
-    let encoding = content_encoding(request.headers())?;
-    let encoded = copy_body(request.body());
-    let decoded = decompress_body(&encoded, encoding)?;
-    let values: Vec<JsonValue> =
-        serde_json::from_slice(&decoded).error_context("Failed to parse stateless logs transaction.")?;
-    let mut templates = Vec::with_capacity(values.len());
-    let mut records = Vec::with_capacity(values.len());
-    for value in values {
-        let JsonValue::Object(mut object) = value else {
-            return Err(generic_error!("Logs transaction contained a non-object entry."));
-        };
-        let timestamp_millis = log_timestamp_millis(&object)?;
-        let message = take_required_string(&mut object, "message")?;
-        let status = optional_string(&object, "status")?;
-        let hostname = optional_string(&object, "hostname")?;
-        let service = optional_string(&object, "service")?;
-        let source = optional_string(&object, "ddsource")?;
-        let tags = optional_string(&object, "ddtags")?;
-        let uuid =
-            take_optional_string(&mut object, DUAL_SEND_UUID_FIELD)?.unwrap_or_else(|| Uuid::now_v7().to_string());
-
-        let mut record = LogRecord::new(message.into_bytes(), timestamp_millis);
-        record.status = status;
-        record.hostname = hostname;
-        record.service = service;
-        record.source = source;
-        record.tags = tags
-            .as_deref()
-            .map(|tags| tags.split(',').map(ToOwned::to_owned).collect())
-            .unwrap_or_default();
-        record.uuid = Some(uuid);
+    let objects = parse_request_log_objects(request)?;
+    let mut templates = Vec::with_capacity(objects.len());
+    let mut records = Vec::with_capacity(objects.len());
+    for mut object in objects {
+        let record = log_record_from_object(&object, true)?;
+        object.remove("message");
+        object.remove(DUAL_SEND_UUID_FIELD);
         records.push(record);
         templates.push(LogTemplate { object });
     }
     Ok((templates, records))
 }
 
-fn take_required_string(object: &mut JsonMap<String, JsonValue>, field: &str) -> Result<String, GenericError> {
-    take_optional_string(object, field)?.ok_or_else(|| generic_error!("Log entry is missing string field '{}'.", field))
+fn parse_request_log_records<B>(request: &Request<TransactionBody<B>>) -> Result<Vec<StatelessLogRecord>, GenericError>
+where
+    B: Buf + Clone,
+{
+    parse_request_log_objects(request)?
+        .iter()
+        .map(|object| {
+            let record = log_record_from_object(object, false)?;
+            let original_json = serde_json::to_vec(object).error_context("Failed to preserve complete retry log.")?;
+            Ok(StatelessLogRecord::new(record, original_json))
+        })
+        .collect()
 }
 
-fn take_optional_string(object: &mut JsonMap<String, JsonValue>, field: &str) -> Result<Option<String>, GenericError> {
-    match object.remove(field) {
-        Some(JsonValue::String(value)) => Ok(Some(value)),
-        Some(_) => Err(generic_error!("Log field '{}' is not a string.", field)),
-        None => Ok(None),
+fn parse_request_log_objects<B>(
+    request: &Request<TransactionBody<B>>,
+) -> Result<Vec<JsonMap<String, JsonValue>>, GenericError>
+where
+    B: Buf + Clone,
+{
+    let encoding = content_encoding(request.headers())?;
+    let encoded = copy_body(request.body());
+    let decoded = decompress_body(&encoded, encoding)?;
+    let values: Vec<JsonValue> =
+        serde_json::from_slice(&decoded).error_context("Failed to parse stateless logs transaction.")?;
+    values
+        .into_iter()
+        .map(|value| match value {
+            JsonValue::Object(object) => Ok(object),
+            _ => Err(generic_error!("Logs transaction contained a non-object entry.")),
+        })
+        .collect()
+}
+
+fn log_record_from_object(object: &JsonMap<String, JsonValue>, generate_uuid: bool) -> Result<LogRecord, GenericError> {
+    let timestamp_millis = log_timestamp_millis(object)?;
+    let message = required_string(object, "message")?;
+    let status = optional_string(object, "status")?;
+    let hostname = optional_string(object, "hostname")?;
+    let service = optional_string(object, "service")?;
+    let source = optional_string(object, "ddsource")?;
+    let tags = optional_string(object, "ddtags")?;
+    let mut uuid = optional_string(object, DUAL_SEND_UUID_FIELD)?;
+    if uuid.is_none() && generate_uuid {
+        uuid = Some(Uuid::now_v7().to_string());
     }
+
+    let mut record = LogRecord::new(message.into_bytes(), timestamp_millis);
+    record.status = status;
+    record.hostname = hostname;
+    record.service = service;
+    record.source = source;
+    record.tags = tags
+        .as_deref()
+        .map(|tags| tags.split(',').map(ToOwned::to_owned).collect())
+        .unwrap_or_default();
+    record.uuid = uuid;
+    Ok(record)
+}
+
+fn required_string(object: &JsonMap<String, JsonValue>, field: &str) -> Result<String, GenericError> {
+    optional_string(object, field)?.ok_or_else(|| generic_error!("Log entry is missing string field '{}'.", field))
 }
 
 fn optional_string(object: &JsonMap<String, JsonValue>, field: &str) -> Result<Option<String>, GenericError> {
@@ -411,7 +475,7 @@ where
     endpoint: ResolvedEndpoint,
     open_timeout: Duration,
     streams: FastHashMap<u64, SenderStream>,
-    retained: FastHashMap<u64, RetainedRequest<B>>,
+    retained: FastHashMap<u64, RetainedPayload<B>>,
     events_tx: mpsc::UnboundedSender<StatefulEvent>,
     events_rx: mpsc::UnboundedReceiver<StatefulEvent>,
     telemetry: StatefulTelemetry,
@@ -480,20 +544,10 @@ where
         if self.disabled || transaction.request_uri().path() != LOGS_INTAKE_PATH {
             return Err(transaction);
         }
-        let (retained, records) = match RetainedRequest::try_from_transaction(transaction) {
-            StatefulRequest::Retained { request, records } => (request, records),
-            StatefulRequest::Passthrough(transaction) => return Err(transaction),
+        let (payload_id, effects) = match self.encode_transaction(transaction) {
+            TransactionEncoding::Encoded { payload_id, effects } => (payload_id, effects),
+            TransactionEncoding::Passthrough(transaction) => return Err(*transaction),
         };
-        for record in &records {
-            let effects = self.core.push_log(record);
-            debug_assert!(
-                effects.is_empty(),
-                "one HTTP transaction must map to one Foldspace payload"
-            );
-        }
-        let (payload_id, effects) = self.core.flush_with_payload_id();
-        let payload_id = payload_id.expect("a non-empty logs transaction must flush one payload");
-        self.retained.insert(payload_id.get(), retained);
 
         let high_priority_full = pending.high_priority_is_full_with(self.retained.len());
         if high_priority_full {
@@ -510,6 +564,90 @@ where
             self.execute(effects).await;
         }
         Ok(())
+    }
+
+    pub(super) fn can_attempt_retry(&self) -> bool {
+        !self.disabled && !self.streams.is_empty()
+    }
+
+    pub(super) async fn try_send_retry_transaction(
+        &mut self, transaction: Transaction<B>, retry_counters: TransactionRetryCounters,
+    ) -> Result<(), Transaction<B>> {
+        if !self.can_attempt_retry() || transaction.request_uri().path() != LOGS_INTAKE_PATH {
+            return Err(transaction);
+        }
+        let records = match parse_request_log_records(transaction.request()) {
+            Ok(records) if !records.is_empty() => records,
+            Ok(_) | Err(_) => return Err(transaction),
+        };
+        let (payload_id, effects) = match self.core.try_dispatch_stateless_logs(records) {
+            Ok(dispatched) => dispatched,
+            Err(rejected) => {
+                drop(rejected.into_logs());
+                return Err(transaction);
+            }
+        };
+        let sends_on_existing_stream = !effects.is_empty()
+            && effects.iter().all(|effect| match effect {
+                MplexEffect::SendBatch { sender_id, batch, .. } => self
+                    .streams
+                    .get(&sender_id.get())
+                    .is_some_and(|stream| stream.stream_id == batch.stream),
+                _ => false,
+            });
+        if !sends_on_existing_stream {
+            error!(
+                payload_id = payload_id.get(),
+                "Foldspace accepted a stateless retry without an existing adapter stream."
+            );
+            self.disabled = true;
+            if let Some(sender_id) = self.core.payload_sender(payload_id) {
+                if let Ok(recovery) = self
+                    .core
+                    .begin_recovery(sender_id, payload_id, PayloadDelivery::NotSent)
+                {
+                    let effects = self.core.complete_recovery(recovery);
+                    self.execute(effects).await;
+                }
+            }
+            return Err(transaction);
+        }
+        self.retained.insert(
+            payload_id.get(),
+            RetainedPayload::StatelessRetry {
+                transaction,
+                retry_counters,
+            },
+        );
+        self.execute(effects).await;
+        Ok(())
+    }
+
+    fn encode_transaction(&mut self, transaction: Transaction<B>) -> TransactionEncoding<B> {
+        let (metadata, request) = transaction.into_parts();
+        let (templates, records) = match parse_request_logs(&request) {
+            Ok((templates, records)) if !records.is_empty() => (templates, records),
+            Ok(_) | Err(_) => {
+                return TransactionEncoding::Passthrough(Box::new(Transaction::reassemble(metadata, request)))
+            }
+        };
+        let retained = RetainedRequest {
+            metadata,
+            request: request.map(|_| TransactionBody::from(Vec::new())),
+            templates,
+        };
+        for record in &records {
+            let effects = self.core.push_log(record);
+            debug_assert!(
+                effects.is_empty(),
+                "one HTTP transaction must map to one Foldspace payload"
+            );
+        }
+        let (payload_id, effects) = self.core.flush_with_payload_id();
+        let payload_id = payload_id.expect("a non-empty logs transaction must flush one payload");
+        self.retained
+            .insert(payload_id.get(), RetainedPayload::Stateful(retained));
+        TransactionEncoding::Encoded { payload_id, effects }
     }
 
     pub(super) async fn handle_event(
@@ -563,7 +701,7 @@ where
                 let effects = self.core.handle_ack(sender_id, stream_id, batch_id);
                 if let Some(payload_id) = payload_id {
                     if let Some(retained) = self.retained.remove(&payload_id.get()) {
-                        component_telemetry.track_successful_transaction(&retained.metadata, endpoint_domain);
+                        component_telemetry.track_successful_transaction(retained.metadata(), endpoint_domain);
                     }
                 }
                 self.execute(effects).await;
@@ -641,48 +779,25 @@ where
         &mut self, payload_id: PayloadId, delivery: PayloadDelivery, pending: &mut PendingTransactions<Transaction<B>>,
         component_telemetry: &ComponentTelemetry, endpoint_domain: &str,
     ) -> bool {
-        let Some(sender_id) = self.core.payload_sender(payload_id) else {
-            return true;
-        };
-        let recovery = match self.core.begin_recovery(sender_id, payload_id, delivery) {
-            Ok(recovery) => recovery,
-            Err(error) => {
-                self.disabled = true;
-                self.telemetry.conversion_errors.increment(1);
-                error!(payload_id = payload_id.get(), %error, "Failed to begin Foldspace stateless recovery.");
-                return false;
-            }
-        };
-        for stream in self.streams.values_mut() {
-            stream.remove_payload(payload_id);
-        }
-        let Some(retained) = self.retained.remove(&payload_id.get()) else {
-            self.telemetry.conversion_errors.increment(1);
-            error!(
-                payload_id = payload_id.get(),
-                "Foldspace recovery lost its request metadata."
-            );
-            self.core.complete_recovery(recovery);
-            return true;
-        };
-        let metadata = retained.metadata.clone();
-        let transaction = StatefulLogsDecoder::new()
-            .decode_recovery(&recovery)
-            .error_context("Failed to decode retained Foldspace payload.")
-            .and_then(|logs| retained.into_transaction(logs));
-        let transaction = match transaction {
-            Ok(transaction) => transaction,
-            Err(error) => {
-                self.telemetry.conversion_errors.increment(1);
-                component_telemetry.track_permanently_failed_transaction(&metadata, None, endpoint_domain);
-                error!(payload_id = payload_id.get(), %error, "Failed to reconstruct Foldspace payload; dropping it.");
-                self.core.complete_recovery(recovery);
-                return true;
-            }
-        };
-
-        match pending.push_low_priority(transaction).await {
+        let recovered =
+            match self.prepare_stateless_recovery(payload_id, delivery, component_telemetry, endpoint_domain) {
+                PreparedRecovery::Reconstructed(recovered) => *recovered,
+                PreparedRecovery::Dropped(recovery) => {
+                    let effects = self.core.complete_recovery(recovery);
+                    self.execute(effects).await;
+                    return true;
+                }
+                PreparedRecovery::Resolved => return true,
+                PreparedRecovery::Failed => return false,
+            };
+        let metadata = recovered.transaction.metadata().clone();
+        match pending.push_low_priority(recovered.transaction).await {
             Ok(push_result) => {
+                if delivery == PayloadDelivery::NotSent {
+                    if let Some(counters) = recovered.retry_counters.as_ref() {
+                        counters.increment_requeued();
+                    }
+                }
                 self.telemetry.converted.increment(1);
                 track_queue_drops(component_telemetry, endpoint_domain, push_result);
             }
@@ -696,9 +811,61 @@ where
                 );
             }
         }
-        let effects = self.core.complete_recovery(recovery);
+        let effects = self.core.complete_recovery(recovered.recovery);
         self.execute(effects).await;
         true
+    }
+
+    fn prepare_stateless_recovery(
+        &mut self, payload_id: PayloadId, delivery: PayloadDelivery, component_telemetry: &ComponentTelemetry,
+        endpoint_domain: &str,
+    ) -> PreparedRecovery<B> {
+        let Some(sender_id) = self.core.payload_sender(payload_id) else {
+            return PreparedRecovery::Resolved;
+        };
+        let recovery = match self.core.begin_recovery(sender_id, payload_id, delivery) {
+            Ok(recovery) => recovery,
+            Err(error) => {
+                self.disabled = true;
+                self.telemetry.conversion_errors.increment(1);
+                error!(payload_id = payload_id.get(), %error, "Failed to begin Foldspace stateless recovery.");
+                return PreparedRecovery::Failed;
+            }
+        };
+        for stream in self.streams.values_mut() {
+            stream.remove_payload(payload_id);
+        }
+        let Some(retained) = self.retained.remove(&payload_id.get()) else {
+            self.telemetry.conversion_errors.increment(1);
+            error!(
+                payload_id = payload_id.get(),
+                "Foldspace recovery lost its request metadata."
+            );
+            return PreparedRecovery::Dropped(recovery);
+        };
+        let metadata = retained.metadata().clone();
+        let retry_counters = retained.retry_counters().cloned();
+        let transaction = match retained {
+            RetainedPayload::Stateful(retained) => StatefulLogsDecoder::new()
+                .decode_recovery(&recovery)
+                .error_context("Failed to decode retained Foldspace payload.")
+                .and_then(|logs| retained.into_transaction(logs)),
+            RetainedPayload::StatelessRetry { transaction, .. } => Ok(transaction),
+        };
+        let transaction = match transaction {
+            Ok(transaction) => transaction,
+            Err(error) => {
+                self.telemetry.conversion_errors.increment(1);
+                component_telemetry.track_permanently_failed_transaction(&metadata, None, endpoint_domain);
+                error!(payload_id = payload_id.get(), %error, "Failed to reconstruct Foldspace payload; dropping it.");
+                return PreparedRecovery::Dropped(recovery);
+            }
+        };
+        PreparedRecovery::Reconstructed(Box::new(StatelessRecovery {
+            recovery,
+            transaction,
+            retry_counters,
+        }))
     }
 
     async fn execute(&mut self, effects: Vec<MplexEffect>) {
@@ -835,6 +1002,12 @@ where
         let payload_id = batch.payload_id;
         match stream.outbound.send(batch.proto).await {
             Ok(()) => {
+                if let Some(counters) = payload_id
+                    .and_then(|payload_id| self.retained.get(&payload_id.get()))
+                    .and_then(RetainedPayload::retry_counters)
+                {
+                    counters.increment_retries();
+                }
                 stream.inflight = Some(InflightBatch { batch_id, payload_id });
             }
             Err(error) => {
@@ -915,11 +1088,12 @@ mod tests {
     use bytes::Bytes;
     use http::header::{CONTENT_ENCODING, CONTENT_TYPE};
     use saluki_io::net::util::retry::{DiskUsageRetrieverImpl, PersistedQueueArgs, RetryQueue};
+    use saluki_metrics::test::TestRecorder;
 
     use super::*;
     use crate::common::datadog::{
         io::PendingTransaction,
-        telemetry::{SharedTransactionQueueTelemetry, TransactionQueueTelemetry},
+        telemetry::{SharedTransactionQueueTelemetry, TransactionQueueTelemetry, TransactionRetryTelemetry},
     };
 
     const TEST_DOMAIN: &str = "http://127.0.0.1";
@@ -948,12 +1122,14 @@ mod tests {
     }
 
     fn retain(transaction: Transaction<Bytes>) -> (RetainedRequest<Bytes>, Vec<LogRecord>) {
-        match RetainedRequest::try_from_transaction(transaction) {
-            StatefulRequest::Retained { request, records } => (request, records),
-            StatefulRequest::Passthrough(_) => {
-                panic!("test logs transaction should be accepted for stateful encoding")
-            }
-        }
+        let (metadata, request) = transaction.into_parts();
+        let (templates, records) = parse_request_logs(&request).unwrap();
+        let retained = RetainedRequest {
+            metadata,
+            request: request.map(|_| TransactionBody::from(Vec::new())),
+            templates,
+        };
+        (retained, records)
     }
 
     fn pending(max_high_priority: usize, max_retry_bytes: u64) -> PendingTransactions<Transaction<Bytes>> {
@@ -978,6 +1154,10 @@ mod tests {
             Duration::from_secs(1),
         )
         .unwrap()
+    }
+
+    fn retry_counters(metrics_builder: &MetricsBuilder) -> TransactionRetryCounters {
+        TransactionRetryTelemetry::from_builder(metrics_builder, TEST_DOMAIN).counters_for(LOGS_INTAKE_PATH)
     }
 
     fn open_core_streams(sender: &mut StatefulLogsSender<Bytes>) -> Vec<mpsc::Receiver<ProtoStatefulBatch>> {
@@ -1041,6 +1221,7 @@ mod tests {
             tags: Some("env:test,team:logs".to_owned()),
             timestamp_millis: 1_700_000_000_000,
             uuid: Some("uuid-p2".to_owned()),
+            original_json: None,
         };
         let output = retained.into_transaction(vec![decoded]).unwrap();
         assert_eq!(output.metadata().event_count, 1);
@@ -1105,6 +1286,213 @@ mod tests {
             .unwrap();
         assert!(!push_result.had_drops());
         assert_eq!(sender.streams.len(), stream_count);
+    }
+
+    #[tokio::test]
+    async fn converted_retry_uses_existing_stream_as_a_self_contained_batch() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        let mut receivers = open_core_streams(&mut sender);
+        let original_streams = sender
+            .streams
+            .iter()
+            .map(|(sender_id, stream)| (*sender_id, stream.stream_id))
+            .collect::<FastHashMap<_, _>>();
+        let mut pending = pending(0, TEST_RETRY_BYTES);
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+
+        assert!(sender
+            .try_send_transaction(
+                simple_log("retry on grpc 42", "grpc-retry-uuid"),
+                &mut pending,
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await
+            .is_ok());
+        assert!(sender.retained.is_empty());
+        let retry = pending.pop_low_priority().await.unwrap();
+
+        assert!(sender
+            .try_send_retry_transaction(retry, retry_counters(&metrics_builder))
+            .await
+            .is_ok());
+
+        assert!(!sender.retained.contains_key(&1));
+        assert!(sender.retained.contains_key(&2));
+        assert_eq!(sender.streams.len(), original_streams.len());
+        assert!(sender
+            .streams
+            .iter()
+            .all(|(sender_id, stream)| original_streams.get(sender_id) == Some(&stream.stream_id)));
+        assert!(sender
+            .streams
+            .values()
+            .any(|stream| stream.inflight.as_ref().and_then(|batch| batch.payload_id) == Some(PayloadId(2))));
+        let proto = receivers
+            .iter_mut()
+            .find_map(|receiver| receiver.try_recv().ok())
+            .expect("the stateless retry should be written to an existing stream");
+        let mut decoder = StatefulLogsDecoder::new();
+        let logs = decoder.decode_batch(&proto, FoldspaceContentEncoding::Zstd).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].message, "retry on grpc 42");
+        assert_eq!(logs[0].uuid.as_deref(), Some("grpc-retry-uuid"));
+        let original: JsonValue = serde_json::from_slice(logs[0].original_json.as_deref().unwrap()).unwrap();
+        assert_eq!(original["custom"], "preserved");
+        assert_eq!(decoder.state_bytes(), 0);
+        assert_eq!(decoder.stats().state_changes, 0);
+        let tags = &[("domain", TEST_DOMAIN), ("endpoint", LOGS_INTAKE_PATH)];
+        assert_eq!(recorder.counter(("network_http_requests_retries_total", tags)), Some(1));
+        assert_eq!(
+            recorder.counter(("network_http_requests_requeued_total", tags)),
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_without_an_open_stream_falls_back_without_stateful_mutation() {
+        let metrics_builder = MetricsBuilder::default();
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        let transaction = simple_log("http fallback 42", "http-fallback-uuid");
+
+        let transaction = sender
+            .try_send_retry_transaction(transaction, retry_counters(&metrics_builder))
+            .await
+            .expect_err("a retry without an open stream should use HTTP");
+
+        assert!(sender.streams.is_empty());
+        assert!(sender.retained.is_empty());
+        assert_eq!(parsed_body(transaction)[0][DUAL_SEND_UUID_FIELD], "http-fallback-uuid");
+    }
+
+    #[tokio::test]
+    async fn retry_without_immediate_stream_capacity_falls_back_without_rotating_streams() {
+        let metrics_builder = MetricsBuilder::default();
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        let _receivers = open_core_streams(&mut sender);
+        let original_streams = sender
+            .streams
+            .iter()
+            .map(|(sender_id, stream)| (*sender_id, stream.stream_id))
+            .collect::<FastHashMap<_, _>>();
+        let mut pending = pending(16, TEST_RETRY_BYTES);
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        for index in 0..STATEFUL_SENDERS {
+            assert!(sender
+                .try_send_transaction(
+                    simple_log(&format!("busy stream {index}"), &format!("busy-{index}")),
+                    &mut pending,
+                    &telemetry,
+                    TEST_DOMAIN,
+                )
+                .await
+                .is_ok());
+        }
+
+        let transaction = sender
+            .try_send_retry_transaction(
+                simple_log("busy fallback 42", "busy-fallback-uuid"),
+                retry_counters(&metrics_builder),
+            )
+            .await
+            .expect_err("a retry should fall back when its selected stream is busy");
+
+        assert_eq!(sender.retained.len(), STATEFUL_SENDERS);
+        assert_eq!(sender.streams.len(), original_streams.len());
+        assert!(sender
+            .streams
+            .iter()
+            .all(|(sender_id, stream)| original_streams.get(sender_id) == Some(&stream.stream_id)));
+        assert_eq!(parsed_body(transaction)[0][DUAL_SEND_UUID_FIELD], "busy-fallback-uuid");
+    }
+
+    #[tokio::test]
+    async fn grpc_retry_failed_before_transmission_requeues_complete_stateless_logs() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        let mut receivers = open_core_streams(&mut sender);
+        drop(receivers.remove(0));
+        let mut pending = pending(16, TEST_RETRY_BYTES);
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+
+        assert!(sender
+            .try_send_retry_transaction(
+                simple_log("grpc failed 42", "failed-grpc-retry-uuid"),
+                retry_counters(&metrics_builder),
+            )
+            .await
+            .is_ok());
+        let event = sender.next_event().await.unwrap();
+        sender.handle_event(event, &mut pending, &telemetry, TEST_DOMAIN).await;
+
+        let retry = pending.pop_low_priority().await.unwrap();
+        let value = &parsed_body(retry)[0];
+        assert_eq!(value["message"], "grpc failed 42");
+        assert_eq!(value[DUAL_SEND_UUID_FIELD], "failed-grpc-retry-uuid");
+        let tags = &[("domain", TEST_DOMAIN), ("endpoint", LOGS_INTAKE_PATH)];
+        assert_eq!(recorder.counter(("network_http_requests_retries_total", tags)), Some(0));
+        assert_eq!(
+            recorder.counter(("network_http_requests_requeued_total", tags)),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn transmitted_grpc_retry_failure_requeues_complete_stateless_logs() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        let _receivers = open_core_streams(&mut sender);
+        let mut pending = pending(16, TEST_RETRY_BYTES);
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+
+        assert!(sender
+            .try_send_retry_transaction(
+                simple_log("ambiguous retry 42", "ambiguous-retry-uuid"),
+                retry_counters(&metrics_builder),
+            )
+            .await
+            .is_ok());
+        let (sender_id, stream_id) = sender
+            .streams
+            .iter()
+            .find_map(|(sender_id, stream)| {
+                stream
+                    .inflight
+                    .is_some()
+                    .then_some((SenderId(*sender_id), stream.stream_id))
+            })
+            .unwrap();
+        sender
+            .handle_event(
+                StatefulEvent::Failed {
+                    sender_id,
+                    stream_id,
+                    error: MetaString::from_static("ambiguous retry transport failure"),
+                    failed_payload: None,
+                },
+                &mut pending,
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await;
+
+        let retry = pending.pop_low_priority().await.unwrap();
+        let value = &parsed_body(retry)[0];
+        assert_eq!(value["message"], "ambiguous retry 42");
+        assert_eq!(value[DUAL_SEND_UUID_FIELD], "ambiguous-retry-uuid");
+        let tags = &[("domain", TEST_DOMAIN), ("endpoint", LOGS_INTAKE_PATH)];
+        assert_eq!(recorder.counter(("network_http_requests_retries_total", tags)), Some(1));
+        assert_eq!(
+            recorder.counter(("network_http_requests_requeued_total", tags)),
+            Some(0)
+        );
     }
 
     #[tokio::test]
@@ -1406,9 +1794,18 @@ mod tests {
             .await
             .unwrap();
         let recovered = restarted.pop().await.unwrap().expect("persisted retry should recover");
-        let value = &parsed_body(recovered)[0];
+        let value = &parsed_body(recovered.clone())[0];
         assert_eq!(value["message"], "persisted 42");
         assert_eq!(value[DUAL_SEND_UUID_FIELD], "persisted-uuid");
         assert_eq!(value["custom"], "preserved");
+
+        let metrics_builder = MetricsBuilder::default();
+        let mut restarted_sender = sender("http://127.0.0.1:4317", "key-a");
+        let _receivers = open_core_streams(&mut restarted_sender);
+        assert!(restarted_sender
+            .try_send_retry_transaction(recovered, retry_counters(&metrics_builder))
+            .await
+            .is_ok());
+        assert!(restarted_sender.retained.contains_key(&1));
     }
 }

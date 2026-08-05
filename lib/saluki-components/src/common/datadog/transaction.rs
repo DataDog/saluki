@@ -248,6 +248,10 @@ where
         self.request.uri()
     }
 
+    pub(crate) const fn request(&self) -> &Request<TransactionBody<B>> {
+        &self.request
+    }
+
     /// Consumes the `Transaction` and returns the transaction metadata and original request.
     pub fn into_parts(self) -> (Metadata, http::Request<TransactionBody<B>>) {
         (self.metadata, self.request)

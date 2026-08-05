@@ -114,9 +114,9 @@ bitmask-enum = { version = "2.2", default-features = false }
 facet = { version = "0.46.0", default-features = false, features = ["std"] }
 figment = { version = "0.10", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
-foldspace-core = { git = "https://github.com/DataDog/foldspace", rev = "c585fd1fc09758eb61e133b0e4e023a01c82cb26" }
-foldspace-patterns = { git = "https://github.com/DataDog/foldspace", rev = "c585fd1fc09758eb61e133b0e4e023a01c82cb26", features = ["core-adapter"] }
-foldspace-server = { git = "https://github.com/DataDog/foldspace", rev = "c585fd1fc09758eb61e133b0e4e023a01c82cb26" }
+foldspace-core = { git = "https://github.com/DataDog/foldspace", rev = "bc3502dde8e136d93b1a0c35df03fd57f0490bc9" }
+foldspace-patterns = { git = "https://github.com/DataDog/foldspace", rev = "bc3502dde8e136d93b1a0c35df03fd57f0490bc9", features = ["core-adapter"] }
+foldspace-server = { git = "https://github.com/DataDog/foldspace", rev = "bc3502dde8e136d93b1a0c35df03fd57f0490bc9" }
 headers = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
