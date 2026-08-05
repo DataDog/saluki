@@ -76,6 +76,7 @@ pub struct DriverConfig {
     exposed_ports: Vec<(&'static str, u16)>,
     container_os: ContainerOs,
     host_cgroup_namespace: bool,
+    unconfined_seccomp: bool,
     /// Additional named Docker volume mounts, in `volume_name:/container/path` format.
     ///
     /// Unlike bind mounts specified via [`with_bind_mount`][Self::with_bind_mount], these reference
@@ -166,7 +167,8 @@ impl DriverConfig {
             .with_command(config.command)
             .with_env_vars(config.additional_env_vars)
             .with_container_os(config.container_os)
-            .with_host_cgroup_namespace(config.host_cgroup_namespace);
+            .with_host_cgroup_namespace(config.host_cgroup_namespace)
+            .with_unconfined_seccomp(config.unconfined_seccomp);
 
         Ok(driver_config)
     }
@@ -184,6 +186,7 @@ impl DriverConfig {
             exposed_ports: vec![],
             container_os: ContainerOs::Linux,
             host_cgroup_namespace: false,
+            unconfined_seccomp: false,
             additional_volume_mounts: vec![],
             network_aliases: vec![],
             additional_networks: vec![],
@@ -333,6 +336,16 @@ impl DriverConfig {
     /// Configures whether a Linux target joins the Docker host's cgroup namespace.
     pub fn with_host_cgroup_namespace(mut self, host_cgroup_namespace: bool) -> Self {
         self.host_cgroup_namespace = host_cgroup_namespace;
+        self
+    }
+
+    /// Configures whether a Linux target runs with Docker's seccomp profile disabled.
+    ///
+    /// Docker's default seccomp profile rejects `socket(2)` for address families it doesn't
+    /// allowlist, `AF_VSOCK` among them, so a test exercising vsock can't create a socket at all
+    /// without this. Prefer leaving it off: it removes syscall filtering for the whole container.
+    pub fn with_unconfined_seccomp(mut self, unconfined_seccomp: bool) -> Self {
+        self.unconfined_seccomp = unconfined_seccomp;
         self
     }
 
@@ -775,6 +788,11 @@ impl Driver {
         let cgroupns_mode = (self.config.container_os == ContainerOs::Linux && self.config.host_cgroup_namespace)
             .then_some(HostConfigCgroupnsModeEnum::HOST);
 
+        // Docker's default seccomp profile only allows `socket(2)` for allowlisted address families, so a container
+        // that needs an exotic one (AF_VSOCK, for example) can't create the socket at all until filtering is off.
+        let security_opt = (self.config.container_os == ContainerOs::Linux && self.config.unconfined_seccomp)
+            .then(|| vec!["seccomp=unconfined".to_string()]);
+
         let container_config = ContainerCreateBody {
             hostname: Some(self.config.driver_id.to_string()),
             env,
@@ -787,6 +805,7 @@ impl Driver {
                 publish_all_ports,
                 pid_mode,
                 cgroupns_mode,
+                security_opt,
                 ..Default::default()
             }),
             healthcheck: self.config.healthcheck.clone(),
@@ -1330,6 +1349,7 @@ mod tests {
             additional_env_vars: vec![],
             container_os: ContainerOs::Windows,
             host_cgroup_namespace: false,
+            unconfined_seccomp: false,
         };
 
         let config = DriverConfig::target("target", target).await.unwrap();
@@ -1347,11 +1367,29 @@ mod tests {
             additional_env_vars: vec![],
             container_os: ContainerOs::Linux,
             host_cgroup_namespace: true,
+            unconfined_seccomp: false,
         };
 
         let config = DriverConfig::target("target", target).await.unwrap();
 
         assert!(config.host_cgroup_namespace);
+    }
+
+    #[tokio::test]
+    async fn target_config_preserves_unconfined_seccomp() {
+        let target = TargetConfig {
+            image: "example:latest".to_string(),
+            entrypoint: vec![],
+            command: vec![],
+            additional_env_vars: vec![],
+            container_os: ContainerOs::Linux,
+            unconfined_seccomp: true,
+            host_cgroup_namespace: false,
+        };
+
+        let config = DriverConfig::target("target", target).await.unwrap();
+
+        assert!(config.unconfined_seccomp);
     }
 
     #[test]

@@ -54,6 +54,10 @@ pub struct Listeners {
     /// TCP port DogStatsD listens on. (not in Datadog Agent config schema)
     pub tcp_port: u16,
 
+    /// vsock address DogStatsD listens on, as `<cid>:<port>`. Unset disables the vsock listener.
+    /// (not in Datadog Agent config schema)
+    pub vsock: Option<String>,
+
     /// Path of the Unix datagram socket DogStatsD listens on.
     pub socket: Option<String>,
 

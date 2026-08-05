@@ -107,8 +107,11 @@ enum Error {
         source: ListenerError,
     },
 
-    #[snafu(display("No listeners configured. Please specify a port (`dogstatsd_port`) or a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`) to enable a listener."))]
+    #[snafu(display("No listeners configured. Please specify a port (`dogstatsd_port` or `dogstatsd_tcp_port`), a socket path (`dogstatsd_socket` or `dogstatsd_stream_socket`), or a vsock address (`dogstatsd_vsock`) to enable a listener."))]
     NoListenersConfigured,
+
+    #[snafu(display("Invalid `dogstatsd_vsock` address: {}", reason))]
+    InvalidVsockAddress { reason: String },
 
     #[snafu(display("Could not resolve bind_host '{}': {}", host, source))]
     UnresolvableBindHost { host: String, source: std::io::Error },
@@ -267,7 +270,7 @@ struct DogStatsDTelemetryConfiguration {
 
 /// DogStatsD source.
 ///
-/// Accepts metrics over TCP, UDP, or Unix Domain Sockets in the StatsD/DogStatsD format.
+/// Accepts metrics over TCP, UDP, Unix Domain Sockets, or vsock in the StatsD/DogStatsD format.
 #[serde_as]
 #[derive(Deserialize, Default)]
 #[cfg_attr(test, derive(derive_where::DeriveWhere, serde::Serialize))]
@@ -333,6 +336,27 @@ pub struct DogStatsDConfiguration {
     #[serde(rename = "dogstatsd_tcp_port", default = "default_tcp_port")]
     tcp_port: u16,
 
+    /// The address to listen on in vsock mode, given as `<cid>:<port>`.
+    ///
+    /// vsock (`AF_VSOCK`) is a connection-oriented transport between a hypervisor and its guest VMs, which lets
+    /// clients running inside a guest send metrics without any shared network or filesystem. Framing and message
+    /// handling match UDS stream mode: length-delimited frames over a persistent connection. Since vsock carries no
+    /// process credentials, senders are treated like TCP senders and no socket-based origin detection is performed.
+    ///
+    /// The CID identifies a VM on the vsock transport. It may be a bare 32-bit number, one of the well-known names
+    /// `any`, `hypervisor`, `local`, or `host`, or left empty to mean `any`. Leaving it empty (for example, `:8125`)
+    /// accepts connections addressed to any of the local context identifiers, which is the right choice for nearly
+    /// all deployments; name or number a CID only to pin the listener to that one. The port is a bare 32-bit
+    /// number—vsock ports are twice as wide as IP ports.
+    ///
+    /// If not set, vsock isn't used. Setting it on a platform without vsock support fails at startup, as does a value
+    /// that isn't a valid vsock address.
+    ///
+    /// Defaults to unset.
+    #[serde(rename = "dogstatsd_vsock", default)]
+    #[serde_as(as = "NoneAsEmptyString")]
+    vsock: Option<String>,
+
     /// The host to forward framed DogStatsD messages to over UDP.
     ///
     /// Forwarding is enabled only when this value is non-empty and `statsd_forward_port` is non-zero. Setup failures
@@ -374,10 +398,10 @@ pub struct DogStatsDConfiguration {
 
     /// Controls whether ADP logs oversized DogStatsD stream frames.
     ///
-    /// When set to `true`, ADP emits a warning when a UDS stream frame exceeds the
-    /// configured DogStatsD buffer size. The frame is still rejected either way.
+    /// When set to `true`, ADP emits a warning when a length-delimited stream frame, on either a UDS stream or vsock
+    /// listener, exceeds the configured DogStatsD buffer size. The frame is still rejected either way.
     ///
-    /// Enable this when diagnosing clients that send oversized UDS stream frames.
+    /// Enable this when diagnosing clients that send oversized stream frames.
     ///
     /// Defaults to `false`.
     #[serde(rename = "dogstatsd_stream_log_too_big", default)]
@@ -670,6 +694,7 @@ impl EolRequired {
             ListenAddress::Udp(_) => self.udp,
             ListenAddress::Tcp(_) => false,
             ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => self.uds,
+            ListenAddress::Vsock { .. } => false,
             ListenAddress::NamedPipe { .. } => self.named_pipe,
         }
     }
@@ -875,7 +900,11 @@ impl DogStatsDConfiguration {
     ///   - `non_local_traffic=true` → `0.0.0.0` (`bind_host` ignored)
     ///   - `bind_host=Some(ip)`     → `ip`
     ///   - `bind_host=None`         → `127.0.0.1`
-    fn build_addresses(&self, bind_host: Option<std::net::IpAddr>) -> Vec<ListenAddress> {
+    ///
+    /// ## Errors
+    ///
+    /// Returns an error if `dogstatsd_vsock` is set but isn't a valid vsock address.
+    fn build_addresses(&self, bind_host: Option<std::net::IpAddr>) -> Result<Vec<ListenAddress>, Error> {
         let bind_ip: std::net::IpAddr = if self.non_local_traffic {
             [0, 0, 0, 0].into()
         } else {
@@ -890,6 +919,12 @@ impl DogStatsDConfiguration {
 
         if self.tcp_port != 0 {
             addresses.push(ListenAddress::Tcp(std::net::SocketAddr::new(bind_ip, self.tcp_port)));
+        }
+
+        if let Some(vsock) = &self.vsock {
+            let address =
+                ListenAddress::try_from_vsock_address(vsock).map_err(|reason| Error::InvalidVsockAddress { reason })?;
+            addresses.push(address);
         }
 
         if let Some(socket_path) = &self.socket_path {
@@ -908,7 +943,7 @@ impl DogStatsDConfiguration {
             ));
         }
 
-        addresses
+        Ok(addresses)
     }
 
     fn uds_origin_detection_unsupported_on_platform(&self, addresses: &[ListenAddress]) -> bool {
@@ -942,7 +977,7 @@ impl DogStatsDConfiguration {
             }
         };
 
-        let addresses = self.build_addresses(bind_host);
+        let addresses = self.build_addresses(bind_host)?;
         self.warn_if_uds_origin_detection_unsupported(&addresses);
         let mut listeners = Vec::new();
         let socket_receive_buffer_size =
@@ -1576,7 +1611,7 @@ fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &
 
 fn should_warn_stream_log_too_big(listen_addr: &ListenAddress, error: &FramingError, stream_log_too_big: bool) -> bool {
     stream_log_too_big
-        && matches!(listen_addr, ListenAddress::Unix(_))
+        && matches!(listen_addr, ListenAddress::Unix(_) | ListenAddress::Vsock { .. })
         && matches!(error, FramingError::InvalidFrame { .. })
 }
 
@@ -2045,7 +2080,10 @@ mod tests {
     use saluki_io::{
         buf::{BytesBuffer, FixedSizeVec},
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
-        net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity},
+        net::{
+            ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, VSOCK_CID_ANY, VSOCK_CID_HOST,
+            VSOCK_CID_HYPERVISOR, VSOCK_CID_LOCAL,
+        },
     };
     use saluki_metrics::test::TestRecorder;
     use serde_json::json;
@@ -2357,7 +2395,7 @@ mod tests {
             }"#,
         );
 
-        let addresses = config.build_addresses(None);
+        let addresses = config.build_addresses(None).expect("addresses should build");
 
         assert_eq!(addresses, vec![named_pipe_listen_address()]);
     }
@@ -2372,7 +2410,7 @@ mod tests {
             }"#,
         );
 
-        let addresses = config.build_addresses(None);
+        let addresses = config.build_addresses(None).expect("addresses should build");
 
         let [ListenAddress::NamedPipe { input_buffer_size, .. }] = addresses.as_slice() else {
             panic!("expected only a named pipe listen address, got {addresses:?}");
@@ -2388,6 +2426,73 @@ mod tests {
         assert!(eol_required.for_listener(&named_pipe_listen_address()));
         assert!(!eol_required.for_listener(&udp_listen_address()));
         assert!(!eol_required.for_listener(&tcp_listen_address()));
+    }
+
+    #[test]
+    fn vsock_is_disabled_when_unset_or_empty() {
+        for json in ["{}", r#"{"dogstatsd_vsock": ""}"#] {
+            let config = deser_config(json);
+
+            assert_eq!(config.vsock, None, "unexpected parse of {json}");
+            assert!(!config
+                .build_addresses(None)
+                .expect("addresses should build")
+                .iter()
+                .any(|address| matches!(address, ListenAddress::Vsock { .. })));
+        }
+    }
+
+    #[test]
+    fn build_addresses_resolves_the_vsock_address_forms() {
+        let cases = [
+            // An omitted CID means "any local CID", which suits nearly every deployment.
+            (":8125", VSOCK_CID_ANY, 8125),
+            ("any:8125", VSOCK_CID_ANY, 8125),
+            ("host:8125", VSOCK_CID_HOST, 8125),
+            ("local:8125", VSOCK_CID_LOCAL, 8125),
+            ("hypervisor:8125", VSOCK_CID_HYPERVISOR, 8125),
+            ("42:5000", 42, 5000),
+            // vsock ports are 32 bits wide, so the upper range has to survive the config boundary.
+            ("42:4294967294", 42, 4_294_967_294),
+        ];
+
+        for (vsock, expected_cid, expected_port) in cases {
+            let config = deser_config(&format!(r#"{{"dogstatsd_port": 0, "dogstatsd_vsock": "{vsock}"}}"#));
+
+            assert_eq!(
+                config.build_addresses(None).expect("addresses should build"),
+                vec![ListenAddress::Vsock {
+                    cid: expected_cid,
+                    port: expected_port
+                }],
+                "unexpected result for '{vsock}'"
+            );
+        }
+    }
+
+    #[test]
+    fn build_addresses_rejects_a_malformed_vsock_address() {
+        for vsock in ["8125", "guest:8125", "2:", "2:-1"] {
+            let config = deser_config(&format!(r#"{{"dogstatsd_port": 0, "dogstatsd_vsock": "{vsock}"}}"#));
+
+            let error = config
+                .build_addresses(None)
+                .expect_err(&format!("'{vsock}' should be rejected"));
+            assert!(
+                error.to_string().contains("Invalid `dogstatsd_vsock` address"),
+                "unexpected error for '{vsock}': {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn eol_required_never_applies_to_vsock() {
+        // vsock frames are length-delimited, exactly like UDS stream frames, but `dogstatsd_eol_required` has no
+        // vsock value, so the terminator stays optional however the setting is spelled.
+        let config = deser_config(r#"{"dogstatsd_eol_required": ["udp", "uds", "named_pipe"]}"#);
+        let eol_required = config.eol_required();
+
+        assert!(!eol_required.for_listener(&ListenAddress::Vsock { cid: 2, port: 8125 }));
     }
 
     #[test]
@@ -2719,7 +2824,7 @@ mod tests {
                 "dogstatsd_socket": "/tmp/dsd.sock"
             }"#,
         );
-        let addresses = config.build_addresses(None);
+        let addresses = config.build_addresses(None).expect("addresses should build");
 
         assert!(config.uds_origin_detection_unsupported_on_platform(&addresses));
     }
@@ -2728,7 +2833,7 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     fn does_not_warn_for_udp_origin_detection_on_non_linux() {
         let config = deser_config(r#"{"dogstatsd_origin_detection": true}"#);
-        let addresses = config.build_addresses(None);
+        let addresses = config.build_addresses(None).expect("addresses should build");
 
         assert!(!config.uds_origin_detection_unsupported_on_platform(&addresses));
     }
@@ -2813,6 +2918,7 @@ mod tests {
     #[test]
     fn stream_log_too_big_warns_for_enabled_length_delimited_stream_invalid_frames() {
         let uds_stream = ListenAddress::Unix("/tmp/dsd-stream.sock".into());
+        let vsock_stream = ListenAddress::Vsock { cid: 2, port: 8125 };
         let named_pipe_stream = named_pipe_listen_address();
         let tcp_stream = ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
         let error = saluki_io::deser::framing::FramingError::InvalidFrame {
@@ -2822,6 +2928,9 @@ mod tests {
 
         assert!(super::should_warn_stream_log_too_big(&uds_stream, &error, true));
         assert!(!super::should_warn_stream_log_too_big(&uds_stream, &error, false));
+        // vsock uses the same length-delimited framing as a UDS stream, so it hits the same oversize path.
+        assert!(super::should_warn_stream_log_too_big(&vsock_stream, &error, true));
+        assert!(!super::should_warn_stream_log_too_big(&vsock_stream, &error, false));
         assert!(!super::should_warn_stream_log_too_big(&named_pipe_stream, &error, true));
         assert!(!super::should_warn_stream_log_too_big(&tcp_stream, &error, true));
     }
@@ -2895,7 +3004,7 @@ mod tests {
             Ipv4Addr::new(127, 0, 0, 2),
             123,
         )))];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         assert!(address_list_eq(&mut expected, &mut actual).is_err())
     }
 
@@ -2911,7 +3020,7 @@ mod tests {
             ..Default::default()
         };
         let mut expected = vec![];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -2930,7 +3039,7 @@ mod tests {
             Ipv4Addr::new(127, 0, 0, 1),
             8125,
         )))];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -2949,7 +3058,7 @@ mod tests {
             Ipv4Addr::new(0, 0, 0, 0),
             8125,
         )))];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -2968,7 +3077,7 @@ mod tests {
             Ipv4Addr::new(127, 0, 0, 1),
             9000,
         )))];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -2987,7 +3096,7 @@ mod tests {
             Ipv4Addr::new(0, 0, 0, 0),
             9000,
         )))];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -3003,7 +3112,7 @@ mod tests {
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Unixgram("/tmp/dsd.sock".into())];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -3019,7 +3128,7 @@ mod tests {
             ..Default::default()
         };
         let mut expected = vec![ListenAddress::Unix("/tmp/dsd-stream.sock".into())];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -3040,7 +3149,7 @@ mod tests {
             ListenAddress::Unixgram("/tmp/dsd.sock".into()),
             ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
         ];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -3061,7 +3170,7 @@ mod tests {
             ListenAddress::Unixgram("/tmp/dsd.sock".into()),
             ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
         ];
-        let mut actual = config.build_addresses(None);
+        let mut actual = config.build_addresses(None).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -3083,7 +3192,7 @@ mod tests {
             ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 9000))),
             ListenAddress::Unixgram("/tmp/dsd.sock".into()),
         ];
-        let mut actual = config.build_addresses(bind_host);
+        let mut actual = config.build_addresses(bind_host).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 
@@ -3106,7 +3215,7 @@ mod tests {
             ListenAddress::Tcp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 9000))),
             ListenAddress::Unix("/tmp/dsd-stream.sock".into()),
         ];
-        let mut actual = config.build_addresses(bind_host);
+        let mut actual = config.build_addresses(bind_host).expect("addresses should build");
         address_list_eq(&mut expected, &mut actual).unwrap();
     }
 

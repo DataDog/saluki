@@ -272,6 +272,33 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
         filename: "dogstatsd.rs",
     },
+    SalukiKey {
+        yaml_path: "dogstatsd_vsock",
+        description: "vsock listen address for DSD",
+        default: "",
+        documentation: Some(
+            "The vsock (`AF_VSOCK`) address that DogStatsD listens on, given as `<cid>:<port>`. vsock lets clients \
+             in a guest VM send metrics without shared networking or a shared filesystem. Framing matches UDS stream \
+             mode: length-delimited frames over a persistent connection. vsock carries no process credentials, so \
+             senders are treated like TCP senders and get no socket-based origin detection.\n\n\
+             The CID may be a bare 32-bit number, one of the well-known names `any`, `hypervisor`, `local`, or \
+             `host`, or left empty to mean `any`. Leaving it empty (for example, `:8125`) accepts connections \
+             addressed to any of the local CIDs, which suits nearly all deployments; name or number a CID only to \
+             pin the listener to that one. The port is a bare 32-bit number, since vsock ports are twice as wide as \
+             IP ports.\n\n\
+             Leave unset to disable vsock. Setting it on a platform without vsock support fails at startup, as does \
+             a value that isn't a valid vsock address.",
+        ),
+        value_type: "ValueType::String",
+        schema_default: None,
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &[],
+        used_by: &["DOGSTATSD_CONFIGURATION"],
+        test_json: Some(r#""host:8125""#),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
+        filename: "dogstatsd.rs",
+    },
     // ── otlp.rs ──────────────────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "otlp_config.traces.enable_otlp_compute_top_level_by_span_kind",

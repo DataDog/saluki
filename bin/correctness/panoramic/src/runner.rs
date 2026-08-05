@@ -837,6 +837,7 @@ impl IntegrationRunner {
             additional_env_vars: env_vars,
             container_os,
             host_cgroup_namespace: container.host_cgroup_namespace,
+            unconfined_seccomp: container.unconfined_seccomp,
         };
 
         let mut config = DriverConfig::target("target", target_config).await?;

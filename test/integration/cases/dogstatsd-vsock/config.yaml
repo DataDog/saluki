@@ -1,0 +1,54 @@
+type: integration
+name: "dogstatsd-vsock"
+description: "Verifies the DogStatsD vsock listener binds, ingests length-delimited frames, and rejects unframed data"
+timeout: 180s
+# vsock is Linux-only: the listener fails to bind anywhere else, by design.
+runtimes: [linux]
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-dsd-vsock"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  # `local` is VMADDR_CID_LOCAL, so the listener only accepts same-host loopback traffic and the
+  # test can't be perturbed by (or perturb) anything outside the container.
+  DD_DOGSTATSD_VSOCK: "local:58126"
+
+container:
+  files:
+    - "run_vsock_test.py:/dogstatsd-vsock/run_vsock_test.py"
+  # AF_VSOCK sockets are rejected by Docker's default seccomp profile, which only allows `socket(2)`
+  # for allowlisted address families. Without this the test can't open a socket at all -- and
+  # neither can ADP, so the listener would fail to bind.
+  unconfined_seccomp: true
+  exposed_ports:
+    - "55100/tcp"
+
+procedure:
+  # The listener has to come up before anything can connect to it. The logged address proves the
+  # `local:58126` config value resolved to CID 1 rather than being taken literally.
+  - parallel:
+      - assertion: log_contains
+        pattern: 'listen_addr:"vsock://1:58126" | DogStatsD listener started'
+        timeout: 60s
+      - assertion: port_listening
+        port: 55100
+        protocol: tcp
+        timeout: 60s
+  - action: target_exec
+    command:
+      - "/opt/datadog-agent/embedded/bin/python3"
+      - "/dogstatsd-vsock/run_vsock_test.py"
+    timeout: 90s
+  - assertion: file_contains
+    path: "/tmp/dogstatsd-vsock-integration-result"
+    pattern: "passed"
+    timeout: 10s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 10s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 10s

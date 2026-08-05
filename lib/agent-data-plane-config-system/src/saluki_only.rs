@@ -106,6 +106,8 @@ pub struct SalukiOnly {
     // ── DogStatsD listener/context/mapper keys (all top-level) ────────────────
     /// TCP listen port (`dogstatsd_tcp_port`).
     pub dogstatsd_tcp_port: Option<u16>,
+    /// vsock listen address, as `<cid>:<port>` (`dogstatsd_vsock`). Unset disables the listener.
+    pub dogstatsd_vsock: Option<String>,
     /// Baseline number of receive buffers (`dogstatsd_buffer_count`).
     pub dogstatsd_buffer_count: Option<usize>,
     /// Maximum number of receive buffers (`dogstatsd_buffer_count_max`).
@@ -431,6 +433,9 @@ impl SalukiOnly {
         if let Some(v) = self.dogstatsd_tcp_port {
             dsd.listeners.tcp_port = v;
         }
+        if let Some(v) = &self.dogstatsd_vsock {
+            dsd.listeners.vsock = Some(v.clone());
+        }
         if let Some(v) = self.dogstatsd_buffer_count {
             dsd.listeners.buffer_count = v;
         }
@@ -592,6 +597,7 @@ mod tests {
             "serializer_max_metrics_per_payload": 999,
             // dogstatsd listener/context/mapper
             "dogstatsd_tcp_port": 8126,
+            "dogstatsd_vsock": "host:8125",
             "dogstatsd_buffer_count": 64,
             "dogstatsd_buffer_count_max": 512,
             "dogstatsd_autoscale_udp_listeners": true,
@@ -679,6 +685,7 @@ mod tests {
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;
         assert_eq!(dsd.listeners.tcp_port, 8126);
+        assert_eq!(dsd.listeners.vsock.as_deref(), Some("host:8125"));
         assert_eq!(dsd.listeners.buffer_count, 64);
         assert_eq!(dsd.listeners.buffer_count_max, 512);
         assert!(dsd.listeners.autoscale_udp_listeners);
