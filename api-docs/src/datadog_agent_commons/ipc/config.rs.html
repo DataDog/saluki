@@ -48,7 +48,7 @@
 <a href=#48 id=48 data-nosnippet>48</a>    Duration::from_secs(<span class="number">2</span>)
 <a href=#49 id=49 data-nosnippet>49</a>}
 <a href=#50 id=50 data-nosnippet>50</a>
-<a href=#51 id=51 data-nosnippet>51</a><span class="doccomment">/// Datadog Agent IPC authentication configuration.
+<a href=#51 id=51 data-nosnippet>51</a><span class="doccomment">/// Datadog Agent IPC bearer-token and exact shared-certificate mTLS configuration.
 <a href=#52 id=52 data-nosnippet>52</a></span><span class="attr">#[derive(Deserialize)]
 <a href=#53 id=53 data-nosnippet>53</a>#[serde(default)]
 <a href=#54 id=54 data-nosnippet>54</a></span><span class="kw">pub struct </span>IpcAuthConfiguration {
@@ -60,11 +60,11 @@
 <a href=#60 id=60 data-nosnippet>60</a>    /// configuration.
 <a href=#61 id=61 data-nosnippet>61</a>    </span>auth_token_file_path: PathBuf,
 <a href=#62 id=62 data-nosnippet>62</a>
-<a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// Path to the Agent IPC TLS certificate file.
+<a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// Path to the shared Agent IPC mTLS identity file.
 <a href=#64 id=64 data-nosnippet>64</a>    ///
-<a href=#65 id=65 data-nosnippet>65</a>    /// The file is expected to be PEM-encoded, containing both a certificate and private key. The certificate will be
-<a href=#66 id=66 data-nosnippet>66</a>    /// used to verify the TLS server certificate presented by the Agent, and the certificate and private key will be
-<a href=#67 id=67 data-nosnippet>67</a>    /// used together to provide client authentication _to_ the Agent.
+<a href=#65 id=65 data-nosnippet>65</a>    /// The PEM file contains one certificate and its private key. IPC peers require exact leaf-certificate DER equality
+<a href=#66 id=66 data-nosnippet>66</a>    /// rather than CA-based trust, and each peer proves possession of the corresponding private key during the TLS
+<a href=#67 id=67 data-nosnippet>67</a>    /// handshake. The same identity authenticates both the client and server, so a CA chain cannot broaden it.
 <a href=#68 id=68 data-nosnippet>68</a>    ///
 <a href=#69 id=69 data-nosnippet>69</a>    /// Defaults to `ipc_cert.pem` in the same directory as the Agent authentication token file. (for example, if
 <a href=#70 id=70 data-nosnippet>70</a>    /// `auth_token_file_path` is `/etc/datadog-agent/auth_token`, this will be `/etc/datadog-agent/ipc_cert.pem`.)
@@ -72,9 +72,9 @@
 <a href=#72 id=72 data-nosnippet>72</a>}
 <a href=#73 id=73 data-nosnippet>73</a>
 <a href=#74 id=74 data-nosnippet>74</a><span class="kw">impl </span>IpcAuthConfiguration {
-<a href=#75 id=75 data-nosnippet>75</a>    <span class="comment">// Creates a new `IpcAuthConfiguration` from the given configuration.
-<a href=#76 id=76 data-nosnippet>76</a>    </span><span class="doccomment">///
-<a href=#77 id=77 data-nosnippet>77</a>    /// ## Errors
+<a href=#75 id=75 data-nosnippet>75</a>    <span class="doccomment">/// Creates a new `IpcAuthConfiguration` from the given configuration.
+<a href=#76 id=76 data-nosnippet>76</a>    ///
+<a href=#77 id=77 data-nosnippet>77</a>    /// # Errors
 <a href=#78 id=78 data-nosnippet>78</a>    ///
 <a href=#79 id=79 data-nosnippet>79</a>    /// If the configuration is invalid, an error is returned.
 <a href=#80 id=80 data-nosnippet>80</a>    </span><span class="kw">pub fn </span>from_configuration(config: <span class="kw-2">&amp;</span>GenericConfiguration) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, GenericError&gt; {
@@ -92,7 +92,7 @@
 <a href=#92 id=92 data-nosnippet>92</a>        <span class="self">self</span>.auth_token_file_path.clone()
 <a href=#93 id=93 data-nosnippet>93</a>    }
 <a href=#94 id=94 data-nosnippet>94</a>
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="doccomment">/// Gets the IPC certificate file path from the configuration.
+<a href=#95 id=95 data-nosnippet>95</a>    <span class="doccomment">/// Gets the shared IPC mTLS identity file path from the configuration.
 <a href=#96 id=96 data-nosnippet>96</a>    </span><span class="kw">pub fn </span>ipc_cert_file_path(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; PathBuf {
 <a href=#97 id=97 data-nosnippet>97</a>        <span class="comment">// If the IPC cert file path is set explicitly, we always prefer that.
 <a href=#98 id=98 data-nosnippet>98</a>        </span><span class="kw">if let </span><span class="prelude-val">Some</span>(path) = <span class="self">self</span>.ipc_cert_file_path.as_ref() {
