@@ -27,7 +27,7 @@ use saluki_core::{
     data_model::event::EventType,
     topology::{EventsBuffer, OutputDefinition},
 };
-use saluki_env::WorkloadProvider;
+use saluki_env::{features, WorkloadProvider};
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
@@ -64,21 +64,21 @@ fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
 }
 
 /// Resolves static tags that the streamed configuration or server process adds to OTLP metrics.
-fn resolve_static_metric_tags<E>(
-    otlp: &domains::otlp::Domain, global_tags: &shared::GlobalTags, environment: E,
-) -> Vec<String>
-where
-    E: Fn(&str) -> Option<String>,
-{
+fn resolve_static_metric_tags(otlp: &domains::otlp::Domain, global_tags: &shared::GlobalTags) -> Vec<String> {
+    resolve_static_metric_tags_for_environment(otlp, global_tags, features::is_ecs_fargate())
+}
+
+/// Resolves static tags for an explicit environment state.
+fn resolve_static_metric_tags_for_environment(
+    otlp: &domains::otlp::Domain, global_tags: &shared::GlobalTags, is_ecs_fargate: bool,
+) -> Vec<String> {
     let mut tags = Vec::new();
 
     if !otlp.metrics.provider_kind.is_empty() {
         tags.push(format!("provider_kind:{}", otlp.metrics.provider_kind));
     }
 
-    let ecs_fargate =
-        environment("AWS_EXECUTION_ENV").as_deref() == Some("AWS_ECS_FARGATE") || environment("ECS_FARGATE").is_some();
-    if !ecs_fargate && !otlp.metrics.eks_fargate {
+    if !is_ecs_fargate && !otlp.metrics.eks_fargate {
         return tags;
     }
 
@@ -92,7 +92,10 @@ where
     if !otlp.metrics.kubernetes_kubelet_nodename.is_empty() {
         tags.push(format!("eks_fargate_node:{}", otlp.metrics.kubernetes_kubelet_nodename));
     } else {
-        warn!("Couldn't build the 'eks_fargate_node' tag: kubernetes_kubelet_nodename is not configured.");
+        warn!(
+            "Tag 'eks_fargate_node' will be missing from telemetry ingested via OTLP due to missing configuration \
+             data. Set 'otlp_config.metrics.kubernetes_kubelet_nodename' in the Agent configuration."
+        );
     }
 
     if !tags.iter().any(|tag| tag.starts_with("kube_cluster_name:")) {
@@ -134,7 +137,7 @@ impl OtlpConfiguration {
         W: WorkloadProvider + Send + Sync + 'static,
     {
         let mut otlp = otlp.clone();
-        let static_tags = resolve_static_metric_tags(&otlp, &shared.tags, |key| std::env::var(key).ok());
+        let static_tags = resolve_static_metric_tags(&otlp, &shared.tags);
         apply_static_metric_tags(&mut otlp, static_tags);
 
         Self {
@@ -523,7 +526,8 @@ mod tests {
     use agent_data_plane_config::{domains, shared};
 
     use super::{
-        apply_static_metric_tags, parse_configured_metric_tags, resolve_static_metric_tags, OtlpConfiguration,
+        apply_static_metric_tags, parse_configured_metric_tags, resolve_static_metric_tags_for_environment,
+        OtlpConfiguration,
     };
 
     fn tags(raw: &str) -> Vec<String> {
@@ -578,7 +582,7 @@ mod tests {
             ..Default::default()
         };
 
-        let tags = resolve_static_metric_tags(&otlp, &global_tags, |_| None);
+        let tags = resolve_static_metric_tags_for_environment(&otlp, &global_tags, false);
 
         assert_eq!(
             tags,
@@ -591,6 +595,19 @@ mod tests {
                 "kube_distribution:eks",
             ]
         );
+    }
+
+    #[test]
+    fn ecs_fargate_static_tags_include_global_tags() {
+        let global_tags = shared::GlobalTags {
+            tags: vec!["env:prod".to_string()],
+            extra_tags: vec!["team:metrics".to_string()],
+            ..Default::default()
+        };
+
+        let tags = resolve_static_metric_tags_for_environment(&domains::otlp::Domain::default(), &global_tags, true);
+
+        assert_eq!(tags, ["env:prod", "team:metrics"]);
     }
 
     #[test]
