@@ -1545,12 +1545,12 @@ impl ReceivedBuffer {
         )
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn buffer(&self) -> &BytesBuffer {
         self.buffer.as_ref().expect("Received buffer already taken.")
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn buffer_mut(&mut self) -> &mut BytesBuffer {
         self.buffer.as_mut().expect("Received buffer already taken.")
     }
