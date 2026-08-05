@@ -159,6 +159,8 @@ pub struct SalukiOnly {
     pub apm_config: ApmConfig,
     /// OTLP receiver and trace knobs (`otlp_config.*`).
     pub otlp_config: OtlpConfig,
+    /// Logs transport knobs (`logs_config.*`).
+    pub logs_config: LogsConfig,
     /// OTTL span-drop filter (`ottl_filter_config`).
     pub ottl_filter_config: Option<OttlFilterConfig>,
     /// OTTL span-transform processor (`ottl_transform_config`).
@@ -216,6 +218,14 @@ pub struct DataPlaneOtlp {
 pub struct DataPlaneChecks {
     /// Whether the checks pipeline is enabled (`data_plane.checks.enabled`).
     pub enabled: Option<bool>,
+}
+
+/// `logs_config.*` transport settings absent from the vendored Datadog schema.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct LogsConfig {
+    /// Whether stateful Foldspace transport is enabled (`logs_config.use_grpc`).
+    pub use_grpc: Option<bool>,
 }
 
 /// `apm_config.*` Saluki-only knobs. (The Datadog Agent publishes many other `apm_config.*` keys;
@@ -425,6 +435,11 @@ impl SalukiOnly {
         // matters more than collapsing the fields early.
         config.shared.endpoints.compression.zstd_compressor_level_override =
             self.data_plane.serializer_zstd_compressor_level;
+
+        // domains.logs
+        if let Some(v) = self.logs_config.use_grpc {
+            config.domains.logs.stateful.enabled = v;
+        }
 
         // domains.dogstatsd
         let dsd = &mut config.domains.dogstatsd;
@@ -650,6 +665,7 @@ mod tests {
                     "ignore_missing_datadog_fields": true
                 }
             },
+            "logs_config": { "use_grpc": true },
             // top-level objects
             "ottl_filter_config": { "error_mode": "ignore", "traces": { "span": ["attributes[\"a\"] == \"b\""] } },
             "ottl_transform_config": { "error_mode": "silent", "trace_statements": ["set(name, \"x\")"] },
@@ -675,6 +691,9 @@ mod tests {
             config.shared.endpoints.compression.zstd_compressor_level_override,
             Some(9)
         );
+
+        // domains.logs
+        assert!(config.domains.logs.stateful.enabled);
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;
@@ -799,5 +818,6 @@ mod tests {
         assert_eq!(otlp.receiver.grpc.endpoint, "localhost:6317");
         assert_eq!(otlp.receiver.http.endpoint, "localhost:6318");
         assert_eq!(otlp.traces.string_interner_size, DEFAULT_STRING_INTERNER_SIZE_BYTES);
+        assert!(!config.domains.logs.stateful.enabled);
     }
 }

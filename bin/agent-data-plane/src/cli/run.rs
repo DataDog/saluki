@@ -390,7 +390,8 @@ async fn create_topology(
             &metrics_encoding,
             &endpoints,
         )
-        .error_context("Failed to configure Datadog forwarder.")?;
+        .error_context("Failed to configure Datadog forwarder.")?
+        .with_stateful_logs(config_system.config().domains.logs.stateful.clone());
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 

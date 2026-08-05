@@ -1,3 +1,4 @@
+use agent_data_plane_config::domains::logs::StatefulEncoding;
 use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
 use async_trait::async_trait;
 use http::Uri;
@@ -38,6 +39,7 @@ pub struct DatadogForwarderConfiguration {
     forwarder_config: ForwarderConfiguration,
 
     configuration: Option<GenericConfiguration>,
+    stateful_logs: StatefulEncoding,
 }
 
 impl DatadogForwarderConfiguration {
@@ -47,7 +49,14 @@ impl DatadogForwarderConfiguration {
         Ok(Self {
             forwarder_config,
             configuration: Some(config.clone()),
+            stateful_logs: StatefulEncoding::default(),
         })
+    }
+
+    /// Configures stateful logs transport.
+    pub fn with_stateful_logs(mut self, stateful_logs: StatefulEncoding) -> Self {
+        self.stateful_logs = stateful_logs;
+        self
     }
 
     /// Creates a forwarder using authoritative typed metrics-routing configuration.
@@ -102,7 +111,8 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
             get_dd_endpoint_name,
             telemetry.clone(),
             metrics_builder,
-        )?;
+        )?
+        .with_stateful_logs(self.stateful_logs.clone());
 
         Ok(Box::new(Datadog { forwarder }))
     }
