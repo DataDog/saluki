@@ -34,7 +34,7 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Returns the topology shutdown timeout.
     ///
     /// Uses `data_plane.stop_timeout` when configured. Otherwise, it sums `aggregator_stop_timeout`
-    /// and `forwarder_stop_timeout`, returning 4 seconds if the sum overflows.
+    /// and `forwarder_stop_timeout`, returning `Duration::MAX` if the sum overflows.
     pub fn stop_timeout(&self) -> Duration {
         match self.config.control.stop_timeout {
             Some(timeout) => timeout,
@@ -42,9 +42,7 @@ impl<'a> DataPlaneConfiguration<'a> {
                 .config
                 .control
                 .aggregator_stop_timeout
-                .checked_add(self.config.shared.endpoints.forwarder.stop_timeout)
-                // arbitrary fallback in case of overflow
-                .unwrap_or(Duration::from_secs(4)),
+                .saturating_add(self.config.shared.endpoints.forwarder.stop_timeout),
         }
     }
 
