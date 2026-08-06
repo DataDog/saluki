@@ -15,12 +15,12 @@ pub struct ConfigChangeEvent {
     pub new_value: Option<JsonValue>,
 }
 
-/// Whether a configuration setting was asked for, or merely defaulted.
+/// Whether a configuration setting was set explicitly, or merely defaulted.
 ///
 /// A configuration producer generally publishes every setting it knows about, including settings
-/// nobody configured, so a value on its own cannot answer "did anyone ask for this?". Consumers that
-/// treat an unconfigured setting differently from a configured one need this distinction; consumers
-/// that only want effective values can ignore it.
+/// nobody configured, so a value on its own cannot say whether anything set it.
+/// Consumers that treat a defaulted setting differently from a configured one need this distinction;
+/// consumers that only want effective values can ignore it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Provenance {
     /// The value came from a real input: a configuration file, an environment variable, remote
@@ -32,7 +32,7 @@ pub enum Provenance {
 
 /// A single configuration setting, as published by a configuration producer.
 ///
-/// The key is in the producer's own flat, possibly-dotted form, and the value is that key's entire
+/// The key is in the producer's own flat, possibly dotted form, and the value is that key's entire
 /// value: a map-valued setting arrives as one setting, not one setting per entry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConfigSetting {
@@ -54,7 +54,7 @@ impl ConfigSetting {
         }
     }
 
-    /// Creates a new `ConfigSetting` that an input explicitly asked for.
+    /// Creates a new `ConfigSetting` that an input set explicitly.
     pub fn explicit(key: impl Into<String>, value: JsonValue) -> Self {
         Self::new(key, value, Provenance::Explicit)
     }

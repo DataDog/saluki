@@ -345,8 +345,8 @@ const AGENT_UNSET_SOURCES: [&str; 2] = ["default", "schema"];
 /// Converts one setting from the Agent's config stream.
 ///
 /// An unrecognized source is treated as explicit: a source name we do not know is far more likely to
-/// be a new kind of real input than a new flavor of "nobody configured this", and treating a real
-/// input as a default would silently discard an operator's value.
+/// be a new kind of real input than a new way of saying nobody configured the setting, and treating a
+/// real input as a default would silently discard an operator's value.
 fn setting_to_config_setting(setting: &AgentConfigSetting) -> ConfigSetting {
     let provenance = if AGENT_UNSET_SOURCES.contains(&setting.source.as_str()) {
         Provenance::Default

@@ -7,6 +7,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
+use crate::ConfigValue;
 
 /// Cross-cutting configuration shared across domains.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -41,13 +42,22 @@ pub struct Endpoints {
     /// API key for the primary intake.
     pub api_key: String,
 
-    /// Base site domain for the primary intake, when set (for example, `datadoghq.com`).
-    pub site: Option<String>,
+    /// Base site domain for the primary intake (for example, `datadoghq.com`).
+    ///
+    /// The Datadog schema supplies `datadoghq.com` when nothing sets this key. Provenance is
+    /// `Explicit` only when an input set a non-empty site, so a consumer resolving an endpoint can
+    /// tell a configured site from one nobody chose.
+    pub site: ConfigValue<String>,
 
-    /// Full primary intake URL override, when set; takes precedence over `site`. A config-sourced
-    /// value equal to the Core Agent's default intake is dropped during translation so that `site`
-    /// is honored (see `consume_dd_url`); programmatic overrides are not filtered.
-    pub dd_url: Option<String>,
+    /// Full primary intake URL, which overrides [`site`](Self::site) when set explicitly.
+    ///
+    /// The Core Agent supplies this key at its schema default even when the operator configured only
+    /// `site`, so the URL alone cannot say whether it should override the site. Resolve the endpoint
+    /// from this value only when it is explicit; see
+    /// [`ConfigValue::is_explicit`](crate::ConfigValue::is_explicit). An empty value expresses no
+    /// intent and is therefore never explicit. Programmatic overrides bypass translation and are
+    /// always explicit.
+    pub dd_url: ConfigValue<String>,
 
     /// Additional dual-shipping endpoints, keyed by intake URL with their API keys.
     pub additional_endpoints: HashMap<String, Vec<String>>,
@@ -201,10 +211,17 @@ pub struct Forwarder {
     pub retry_queue_capacity_time_interval_sec: u64,
 
     /// Maximum number of payloads held in the in-memory retry queue.
-    pub retry_queue_max_size: Option<u64>,
+    ///
+    /// Deprecated in favor of [`retry_queue_payloads_max_size`](Self::retry_queue_payloads_max_size).
+    /// The Datadog schema supplies `0` when nothing sets this key. Because `0` is also a value an
+    /// operator can set, honor this setting only when it is explicit.
+    pub retry_queue_max_size: ConfigValue<u64>,
 
     /// Maximum total size, in bytes, of payloads held in the retry queue.
-    pub retry_queue_payloads_max_size: Option<u64>,
+    ///
+    /// The Datadog schema supplies 15 MiB when nothing sets this key. Takes precedence over
+    /// [`retry_queue_max_size`](Self::retry_queue_max_size) when set explicitly.
+    pub retry_queue_payloads_max_size: ConfigValue<u64>,
 
     /// Grace period the forwarder is given to drain before shutdown.
     pub stop_timeout: Duration,
