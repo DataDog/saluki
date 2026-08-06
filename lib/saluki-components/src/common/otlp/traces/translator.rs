@@ -1,7 +1,7 @@
 use std::collections::hash_map::IntoIter;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use agent_data_plane_config::domains;
 use otlp_protos::opentelemetry::proto::common::v1::{self as otlp_common, any_value::Value as OtlpValue};
 use otlp_protos::opentelemetry::proto::resource::v1::Resource as OtlpResource;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans;
@@ -13,7 +13,6 @@ use stringtheory::interning::GenericMapInterner;
 use stringtheory::MetaString;
 
 use crate::common::datadog::SAMPLING_PRIORITY_METRIC_KEY;
-use crate::common::otlp::config::TracesConfig;
 use crate::common::otlp::traces::transform::{
     bytes_to_hex_lowercase, get_otel_container_id, get_otel_env, get_otel_version, otel_span_to_dd_span,
     otlp_value_to_string,
@@ -165,14 +164,14 @@ struct TraceEntry {
 }
 
 pub struct OtlpTracesTranslator {
-    config: TracesConfig,
+    config: domains::otlp::Traces,
     interner: GenericMapInterner,
     string_builder: StringBuilder<GenericMapInterner>,
 }
 
 impl OtlpTracesTranslator {
-    pub fn new(config: TracesConfig, interner_size: NonZeroUsize) -> Self {
-        let interner = GenericMapInterner::new(interner_size);
+    pub fn new(config: domains::otlp::Traces) -> Self {
+        let interner = GenericMapInterner::new(config.string_interner_size);
         let string_builder = StringBuilder::new().with_interner(interner.clone());
         Self {
             config,
@@ -184,7 +183,7 @@ impl OtlpTracesTranslator {
     pub fn translate_spans(&mut self, resource_spans: ResourceSpans, metrics: &Metrics) -> impl Iterator<Item = Event> {
         let resource: OtlpResource = resource_spans.resource.unwrap_or_default();
         let ignore_missing_fields = self.config.ignore_missing_datadog_fields;
-        let compute_top_level = self.config.enable_otlp_compute_top_level_by_span_kind;
+        let compute_top_level = self.config.enable_compute_top_level_by_span_kind;
         let interner = &self.interner;
         let string_builder = &mut self.string_builder;
 
@@ -304,7 +303,6 @@ mod tests {
     use otlp_protos::opentelemetry::proto::trace::v1::{ResourceSpans, ScopeSpans, Span as OtlpSpan};
 
     use super::*;
-    use crate::common::otlp::config::TracesConfig;
     use crate::common::otlp::Metrics;
 
     fn string_kv(key: &str, value: &str) -> KeyValue {
@@ -351,7 +349,10 @@ mod tests {
     }
 
     fn translate(resource_spans: ResourceSpans) -> Vec<Trace> {
-        let mut translator = OtlpTracesTranslator::new(TracesConfig::default(), NonZeroUsize::new(64 * 1024).unwrap());
+        let mut translator = OtlpTracesTranslator::new(domains::otlp::Traces {
+            string_interner_size: std::num::NonZeroUsize::new(64 * 1024).unwrap(),
+            ..Default::default()
+        });
         let metrics = Metrics::for_tests();
         translator
             .translate_spans(resource_spans, &metrics)
