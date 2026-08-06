@@ -236,7 +236,7 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
                 None
             }
         },
-        // GPU entity tags are not used by the OTLP metrics entity resolver.
+        // We don't care about this, so we just ignore it.
         "gpu" => None,
         prefix => {
             warn!("Unhandled entity ID prefix: {}://{}", prefix, remote_entity_id.uid);

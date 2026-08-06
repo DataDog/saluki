@@ -1231,7 +1231,6 @@ mod tests {
             config.domains.dogstatsd.origin.tag_cardinality,
             OriginTagCardinality::High
         );
-        // The OTLP metrics cardinality uses the same source values but remains scoped to the OTLP metrics domain.
         assert_eq!(
             config.domains.otlp.metrics.tag_cardinality,
             OriginTagCardinality::Orchestrator

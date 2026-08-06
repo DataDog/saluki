@@ -22,6 +22,50 @@ const PROCESS_PID: &str = "process.pid";
 const CGROUP_INODE: &str = "datadog.container.cgroup_inode";
 const INIT_CONTAINER: &str = "datadog.container.is_init";
 
+#[derive(Default)]
+struct OtlpResourceAttributes<'a> {
+    container_id: Option<&'a str>,
+    oci_manifest_digest: Option<&'a str>,
+    ecs_task_arn: Option<&'a str>,
+    k8s_container_name: Option<&'a str>,
+    k8s_deployment_name: Option<&'a str>,
+    k8s_namespace_name: Option<&'a str>,
+    k8s_node_name: Option<&'a str>,
+    k8s_pod_uid: Option<&'a str>,
+    process_pid: Option<i64>,
+    cgroup_inode: Option<i64>,
+    init_container: Option<bool>,
+}
+
+impl<'a> OtlpResourceAttributes<'a> {
+    fn from_attributes(attributes: &'a [otlp_common::KeyValue]) -> Self {
+        let mut extracted = Self::default();
+
+        for attribute in attributes {
+            let Some(value) = attribute.value.as_ref().and_then(|value| value.value.as_ref()) else {
+                continue;
+            };
+
+            match (attribute.key.as_str(), value) {
+                (CONTAINER_ID, Value::StringValue(value)) => extracted.container_id = Some(value),
+                (OCI_MANIFEST_DIGEST, Value::StringValue(value)) => extracted.oci_manifest_digest = Some(value),
+                (ECS_TASK_ARN, Value::StringValue(value)) => extracted.ecs_task_arn = Some(value),
+                (K8S_CONTAINER_NAME, Value::StringValue(value)) => extracted.k8s_container_name = Some(value),
+                (K8S_DEPLOYMENT_NAME, Value::StringValue(value)) => extracted.k8s_deployment_name = Some(value),
+                (K8S_NAMESPACE_NAME, Value::StringValue(value)) => extracted.k8s_namespace_name = Some(value),
+                (K8S_NODE_NAME, Value::StringValue(value)) => extracted.k8s_node_name = Some(value),
+                (K8S_POD_UID, Value::StringValue(value)) => extracted.k8s_pod_uid = Some(value),
+                (PROCESS_PID, Value::IntValue(value)) => extracted.process_pid = Some(*value),
+                (CGROUP_INODE, Value::IntValue(value)) => extracted.cgroup_inode = Some(*value),
+                (INIT_CONTAINER, Value::BoolValue(value)) => extracted.init_container = Some(*value),
+                _ => {}
+            }
+        }
+
+        extracted
+    }
+}
+
 #[derive(Clone)]
 pub struct OtlpOriginTagResolver {
     workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
@@ -32,12 +76,7 @@ impl OtlpOriginTagResolver {
         Self { workload_provider }
     }
 
-    /// Resolves all entity and global tags for one OTLP metrics resource.
-    ///
-    /// The entity order mirrors the Core Agent's infra-attributes processor. The synthetic container candidate is
-    /// resolved first: direct container ID, process ID, cgroup inode, then pod UID plus container name. The first
-    /// fallback that returns tags stands in for the container ID that the Core Agent synthesizes before it evaluates
-    /// the remaining resource entities.
+    /// Resolves entity and global tags for one OTLP metrics resource by entity precedence.
     pub fn resolve_resource_tags(
         &self, attributes: &[otlp_common::KeyValue], tag_cardinality: OriginTagCardinality,
     ) -> SharedTagSet {
@@ -45,14 +84,15 @@ impl OtlpOriginTagResolver {
             return SharedTagSet::default();
         }
 
+        let attributes = OtlpResourceAttributes::from_attributes(attributes);
         let mut tags = TagSet::default();
         let mut written_keys = FastHashSet::default();
 
-        if let Some(container_entity) = self.container_entity_from_attributes(attributes, tag_cardinality) {
+        if let Some(container_entity) = self.container_entity_from_attributes(&attributes, tag_cardinality) {
             self.collect_tags_for_entity(container_entity, tag_cardinality, &mut written_keys, &mut tags);
         }
 
-        for entity_id in entity_ids_from_attributes(attributes) {
+        for entity_id in entity_ids_from_attributes(&attributes) {
             self.collect_tags_for_entity(entity_id, tag_cardinality, &mut written_keys, &mut tags);
         }
 
@@ -61,20 +101,22 @@ impl OtlpOriginTagResolver {
     }
 
     fn container_entity_from_attributes(
-        &self, attributes: &[otlp_common::KeyValue], tag_cardinality: OriginTagCardinality,
+        &self, attributes: &OtlpResourceAttributes<'_>, tag_cardinality: OriginTagCardinality,
     ) -> Option<EntityId> {
-        if let Some(container_id) = get_string_attribute(attributes, CONTAINER_ID).filter(|value| !value.is_empty()) {
+        if let Some(container_id) = attributes.container_id.filter(|value| !value.is_empty()) {
             return Some(EntityId::Container(container_id.into()));
         }
 
         let mut fallback_entities = Vec::with_capacity(3);
-        if let Some(process_id) = get_integer_attribute(attributes, PROCESS_PID)
+        if let Some(process_id) = attributes
+            .process_pid
             .and_then(|value| u32::try_from(value).ok())
             .filter(|value| *value != 0)
         {
             fallback_entities.push(EntityId::ContainerPid(process_id));
         }
-        if let Some(cgroup_inode) = get_integer_attribute(attributes, CGROUP_INODE)
+        if let Some(cgroup_inode) = attributes
+            .cgroup_inode
             .and_then(|value| u64::try_from(value).ok())
             .filter(|value| *value != 0)
         {
@@ -84,9 +126,6 @@ impl OtlpOriginTagResolver {
             fallback_entities.push(container_entity);
         }
 
-        // `get_tags_for_entity` follows local PID and inode aliases to a canonical container ID. Selecting the first
-        // entity with tags therefore matches the Core Agent's first successful container-ID fallback without exposing
-        // a container-ID resolution API from the workload provider.
         fallback_entities.into_iter().find(|entity_id| {
             self.workload_provider
                 .get_tags_for_entity(entity_id, tag_cardinality)
@@ -94,10 +133,10 @@ impl OtlpOriginTagResolver {
         })
     }
 
-    fn container_entity_from_external_data(&self, attributes: &[otlp_common::KeyValue]) -> Option<EntityId> {
-        let pod_uid = get_string_attribute(attributes, K8S_POD_UID)?;
-        let container_name = get_string_attribute(attributes, K8S_CONTAINER_NAME)?;
-        let init_container = get_bool_attribute(attributes, INIT_CONTAINER).unwrap_or(false);
+    fn container_entity_from_external_data(&self, attributes: &OtlpResourceAttributes<'_>) -> Option<EntityId> {
+        let pod_uid = attributes.k8s_pod_uid?;
+        let container_name = attributes.k8s_container_name?;
+        let init_container = attributes.init_container.unwrap_or(false);
         let external_data = format!("pu-{pod_uid},cn-{container_name},it-{init_container}");
 
         let mut origin = RawOrigin::default();
@@ -175,77 +214,38 @@ impl OriginTagsResolver for OtlpOriginTagResolver {
     }
 }
 
-fn entity_ids_from_attributes(attributes: &[otlp_common::KeyValue]) -> Vec<EntityId> {
+fn entity_ids_from_attributes(attributes: &OtlpResourceAttributes<'_>) -> Vec<EntityId> {
     let mut entity_ids = Vec::with_capacity(7);
 
-    if let Some(oci_manifest_digest) = get_string_attribute(attributes, OCI_MANIFEST_DIGEST) {
+    if let Some(oci_manifest_digest) = attributes.oci_manifest_digest {
         if let Some((_, digest)) = oci_manifest_digest.split_once("@sha256:") {
             entity_ids.push(EntityId::ContainerImageMetadata(format!("sha256:{digest}").into()));
         }
     }
-    if let Some(ecs_task_arn) = get_string_attribute(attributes, ECS_TASK_ARN) {
+    if let Some(ecs_task_arn) = attributes.ecs_task_arn {
         entity_ids.push(EntityId::EcsTask(ecs_task_arn.into()));
     }
-    if let (Some(deployment), Some(namespace)) = (
-        get_string_attribute(attributes, K8S_DEPLOYMENT_NAME),
-        get_string_attribute(attributes, K8S_NAMESPACE_NAME),
-    ) {
+    if let (Some(deployment), Some(namespace)) = (attributes.k8s_deployment_name, attributes.k8s_namespace_name) {
         entity_ids.push(EntityId::KubernetesDeployment(
             format!("{namespace}/{deployment}").into(),
         ));
     }
-    if let Some(namespace) = get_string_attribute(attributes, K8S_NAMESPACE_NAME) {
+    if let Some(namespace) = attributes.k8s_namespace_name {
         entity_ids.push(EntityId::KubernetesMetadata(format!("/namespaces//{namespace}").into()));
     }
-    if let Some(node_name) = get_string_attribute(attributes, K8S_NODE_NAME) {
+    if let Some(node_name) = attributes.k8s_node_name {
         entity_ids.push(EntityId::KubernetesNode(node_name.into()));
     }
-    if let Some(pod_uid) = get_string_attribute(attributes, K8S_POD_UID) {
+    if let Some(pod_uid) = attributes.k8s_pod_uid {
         if let Some(entity_id) = EntityId::from_pod_uid(pod_uid) {
             entity_ids.push(entity_id);
         }
     }
-    if let Some(process_id) = get_integer_attribute(attributes, PROCESS_PID) {
+    if let Some(process_id) = attributes.process_pid {
         entity_ids.push(EntityId::Process(MetaString::from(process_id.to_string())));
     }
 
     entity_ids
-}
-
-fn get_string_attribute<'a>(attributes: &'a [otlp_common::KeyValue], key: &str) -> Option<&'a str> {
-    attributes.iter().find_map(|attribute| {
-        (attribute.key == key)
-            .then(|| attribute.value.as_ref().and_then(|value| value.value.as_ref()))
-            .flatten()
-            .and_then(|value| match value {
-                Value::StringValue(value) => Some(value.as_str()),
-                _ => None,
-            })
-    })
-}
-
-fn get_integer_attribute(attributes: &[otlp_common::KeyValue], key: &str) -> Option<i64> {
-    attributes.iter().find_map(|attribute| {
-        (attribute.key == key)
-            .then(|| attribute.value.as_ref().and_then(|value| value.value.as_ref()))
-            .flatten()
-            .and_then(|value| match value {
-                Value::IntValue(value) => Some(*value),
-                _ => None,
-            })
-    })
-}
-
-fn get_bool_attribute(attributes: &[otlp_common::KeyValue], key: &str) -> Option<bool> {
-    attributes.iter().find_map(|attribute| {
-        (attribute.key == key)
-            .then(|| attribute.value.as_ref().and_then(|value| value.value.as_ref()))
-            .flatten()
-            .and_then(|value| match value {
-                Value::BoolValue(value) => Some(*value),
-                _ => None,
-            })
-    })
 }
 
 #[cfg(test)]
