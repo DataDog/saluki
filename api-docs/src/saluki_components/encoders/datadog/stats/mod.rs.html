@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>std::time::Duration;
 <a href=#4 id=4 data-nosnippet>4</a>
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>agent_data_plane_config::defaults::{DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_TRACE_ENV};
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>async_trait::async_trait;
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>datadog_protos::traces::{
 <a href=#8 id=8 data-nosnippet>8</a>    ClientGroupedStats <span class="kw">as </span>ProtoClientGroupedStats, ClientStatsBucket <span class="kw">as </span>ProtoClientStatsBucket,
@@ -53,7 +53,7 @@
 <a href=#53 id=53 data-nosnippet>53</a>}
 <a href=#54 id=54 data-nosnippet>54</a>
 <a href=#55 id=55 data-nosnippet>55</a><span class="kw">fn </span>default_env() -&gt; String {
-<a href=#56 id=56 data-nosnippet>56</a>    <span class="string">"none"</span>.to_string()
+<a href=#56 id=56 data-nosnippet>56</a>    DEFAULT_TRACE_ENV.to_owned()
 <a href=#57 id=57 data-nosnippet>57</a>}
 <a href=#58 id=58 data-nosnippet>58</a>
 <a href=#59 id=59 data-nosnippet>59</a><span class="doccomment">/// Configuration for the Datadog APM Stats encoder.
