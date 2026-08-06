@@ -6,8 +6,6 @@ use stringtheory::MetaString;
 pub(super) const METRIC_FILTERLIST_CONFIG_KEY: &str = "metric_filterlist";
 /// Configuration key for prefix matching on the current Agent metric filterlist.
 pub(super) const METRIC_FILTERLIST_MATCH_PREFIX_CONFIG_KEY: &str = "metric_filterlist_match_prefix";
-/// Configuration key for per-metric tag filter rules.
-pub(super) const METRIC_TAG_FILTERLIST_CONFIG_KEY: &str = "metric_tag_filterlist";
 /// Configuration key for the legacy Agent DogStatsD metric blocklist.
 pub(super) const STATSD_METRIC_BLOCKLIST_CONFIG_KEY: &str = "statsd_metric_blocklist";
 /// Configuration key for prefix matching on the legacy Agent DogStatsD metric blocklist.

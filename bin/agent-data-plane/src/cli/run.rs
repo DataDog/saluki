@@ -717,11 +717,7 @@ fn build_dogstatsd_context_dump_api_handler(
 }
 
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint,
-    config: &GenericConfiguration,
-    // Threaded in ready for the typed-config component cutover (aggregate/debug-log); unused until
-    // those components read from it, hence the leading underscore.
-    _config_system: &ConfigurationSystem,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, config_system: &ConfigurationSystem,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
@@ -773,7 +769,8 @@ async fn add_dsd_pipeline_to_blueprint(
     let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
-    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(config)
+    let dogstatsd_config = config_system.live(|config| &config.domains.dogstatsd);
+    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(dogstatsd_config)
         .error_context("Failed to configure metric tag filterlist transform.")?;
     let dsd_agg_config =
         AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
@@ -943,6 +940,13 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
 mod tests {
     use std::{path::Path, sync::Mutex, time::Duration};
 
+    use agent_data_plane_config::{
+        domains::dogstatsd::{
+            Domain as DogStatsDDomain, FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry,
+            TagValueMismatchAction,
+        },
+        Live,
+    };
     use async_trait::async_trait;
     use http::{Request, StatusCode};
     use http_body_util::{BodyExt as _, Empty};
@@ -1000,11 +1004,6 @@ mod tests {
                 "statsd_metric_namespace_blocklist": [],
                 "metric_filterlist": ["tenant.raw.blocked"],
                 "metric_filterlist_match_prefix": false,
-                "metric_tag_filterlist": [{
-                    "metric_name": "tenant.mapped.requests",
-                    "action": "exclude",
-                    "tags": ["remove"]
-                }],
                 "aggregate_flush_interval": { "secs": 60, "nanos": 0 }
             }))
             .await;
@@ -1014,8 +1013,23 @@ mod tests {
             let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
             let prefix_filter = DogStatsDPrefixFilterConfiguration::from_configuration(&config)
                 .expect("prefix filter configuration should parse");
-            let tag_filter =
-                TagFilterlistConfiguration::from_configuration(&config).expect("tag filter configuration should parse");
+            let dogstatsd_config = DogStatsDDomain {
+                tag_filterlist: vec![MetricTagFilterEntry {
+                    metric_name: "tenant.mapped.requests".to_string(),
+                    action: FilterAction::Exclude,
+                    tags: vec!["remove".to_string()],
+                }],
+                tag_value_allowlist: vec![MetricTagValueAllowlistEntry {
+                    metric_prefix: "tenant.mapped.".to_string(),
+                    tag_name: "customer_id".to_string(),
+                    values: vec!["top-1".to_string()],
+                    on_miss: TagValueMismatchAction::Remove,
+                    replacement: "other".to_string(),
+                }],
+                ..Default::default()
+            };
+            let tag_filter = TagFilterlistConfiguration::from_configuration(Live::new_fixed(dogstatsd_config))
+                .expect("tag filter configuration should be valid");
             let aggregate =
                 AggregateConfiguration::from_configuration(&config).expect("aggregate configuration should parse");
             let snapshot_handle = aggregate.context_snapshot_handle();
@@ -1065,14 +1079,24 @@ mod tests {
                 .send(Event::Metric(Metric::counter("raw.blocked", 1.0)))
                 .await
                 .expect("controlled source should accept the blocked metric");
-            let input_context = Context::from_static_parts("raw.requests.checkout", &["keep:client", "remove:secret"]);
+            let input_context = Context::from_static_parts(
+                "raw.requests.checkout",
+                &[
+                    "customer_id:top-1",
+                    "customer_id:long-tail",
+                    "keep:client",
+                    "remove:secret",
+                ],
+            );
             events_tx
                 .send(Event::Metric(Metric::counter(input_context.clone(), 1.0)))
                 .await
                 .expect("controlled source should accept the retained metric");
 
-            let expected_context =
-                Context::from_static_parts("tenant.mapped.requests", &["keep:client", "route:checkout"]);
+            let expected_context = Context::from_static_parts(
+                "tenant.mapped.requests",
+                &["customer_id:top-1", "keep:client", "route:checkout"],
+            );
             let snapshot = loop {
                 let snapshot = snapshot_handle
                     .snapshot()
@@ -1087,7 +1111,15 @@ mod tests {
             assert_eq!(snapshot.len(), 1);
             assert_eq!(snapshot[0].context(), &expected_context);
             assert_eq!(snapshot[0].metric_type(), AggregateMetricType::Counter);
-            assert_eq!(snapshot[0].context().tags().len(), 2);
+            assert_eq!(snapshot[0].context().tags().len(), 3);
+            assert_eq!(
+                snapshot[0]
+                    .context()
+                    .tags()
+                    .get_single_tag("customer_id")
+                    .and_then(|tag| tag.value()),
+                Some("top-1")
+            );
             assert_eq!(
                 snapshot[0]
                     .context()

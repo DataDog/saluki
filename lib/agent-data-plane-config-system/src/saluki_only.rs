@@ -66,14 +66,55 @@
 // TODO: consider separating these into their own namespace, SALUKI_* and saluki.yaml
 // TODO: consider not loading these into the same map as Datadog schema configuration
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{fmt, marker::PhantomData, num::NonZeroUsize, time::Duration};
 
 use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
+use agent_data_plane_config::domains::dogstatsd::{MetricTagValueAllowlistEntry, TagValueMismatchAction};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
 use saluki_config::DurationString;
+use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
+
+// The environment path recorder recognizes this serde newtype marker and decodes the leaf as JSON.
+pub(crate) const JSON_SEQUENCE_MARKER: &str = "SalukiJsonSequence";
+
+/// Marks a structured sequence that environment configuration encodes as JSON rather than a string list.
+#[derive(Clone, Debug)]
+struct JsonSequence<T>(Vec<T>);
+
+impl<'de, T> Deserialize<'de> for JsonSequence<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_newtype_struct(JSON_SEQUENCE_MARKER, JsonSequenceVisitor(PhantomData))
+    }
+}
+
+struct JsonSequenceVisitor<T>(PhantomData<T>);
+
+impl<'de, T> Visitor<'de> for JsonSequenceVisitor<T>
+where
+    T: Deserialize<'de>,
+{
+    type Value = JsonSequence<T>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a sequence")
+    }
+
+    fn visit_newtype_struct<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::deserialize(deserializer).map(JsonSequence)
+    }
+}
 
 /// The parsed Saluki-schema-only configuration, shaped to mirror the source key hierarchy.
 ///
@@ -128,6 +169,8 @@ pub struct SalukiOnly {
     pub dogstatsd_minimum_sample_rate: Option<f64>,
     /// Mapper string interner entry count (`dogstatsd_mapper_string_interner_size`).
     pub dogstatsd_mapper_string_interner_size: Option<u64>,
+    /// Per-metric tag value allow-list rules (`metric_tag_value_allowlist`).
+    metric_tag_value_allowlist: Option<JsonSequence<RawMetricTagValueAllowlistEntry>>,
 
     // ── aggregation keys (all top-level) ──────────────────────────────────────
     /// Aggregation window size, in seconds (`aggregate_window_duration_seconds`).
@@ -163,6 +206,30 @@ pub struct SalukiOnly {
     pub ottl_filter_config: Option<OttlFilterConfig>,
     /// OTTL span-transform processor (`ottl_transform_config`).
     pub ottl_transform_config: Option<OttlTransformConfig>,
+}
+
+fn default_tag_value_replacement() -> String {
+    "other".to_string()
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RawTagValueMismatchAction {
+    #[default]
+    Remove,
+    Replace,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RawMetricTagValueAllowlistEntry {
+    metric_prefix: String,
+    tag_name: String,
+    #[serde(default)]
+    values: Vec<String>,
+    #[serde(default)]
+    on_miss: RawTagValueMismatchAction,
+    #[serde(default = "default_tag_value_replacement")]
+    replacement: String,
 }
 
 /// `data_plane.*` Saluki-only knobs.
@@ -461,6 +528,22 @@ impl SalukiOnly {
         if let Some(v) = self.dogstatsd_mapper_string_interner_size {
             dsd.mapper.string_interner_size = v;
         }
+        if let Some(entries) = &self.metric_tag_value_allowlist {
+            dsd.tag_value_allowlist = entries
+                .0
+                .iter()
+                .map(|entry| MetricTagValueAllowlistEntry {
+                    metric_prefix: entry.metric_prefix.clone(),
+                    tag_name: entry.tag_name.clone(),
+                    values: entry.values.clone(),
+                    on_miss: match entry.on_miss {
+                        RawTagValueMismatchAction::Remove => TagValueMismatchAction::Remove,
+                        RawTagValueMismatchAction::Replace => TagValueMismatchAction::Replace,
+                    },
+                    replacement: entry.replacement.clone(),
+                })
+                .collect();
+        }
         if let Some(v) = self.aggregate_window_duration_seconds {
             dsd.aggregation.window_duration_seconds = v;
         }
@@ -602,6 +685,13 @@ mod tests {
             "dogstatsd_allow_context_heap_allocs": true,
             "dogstatsd_minimum_sample_rate": 0.25,
             "dogstatsd_mapper_string_interner_size": 2048,
+            "metric_tag_value_allowlist": [{
+                "metric_prefix": "requests.",
+                "tag_name": "customer_id",
+                "values": ["customer-1", "customer-2"],
+                "on_miss": "replace",
+                "replacement": "other"
+            }],
             // aggregation
             "aggregate_window_duration_seconds": 30,
             "aggregate_context_limit": 250000,
@@ -689,6 +779,13 @@ mod tests {
         assert!(dsd.contexts.allow_context_heap_allocs);
         assert_eq!(dsd.contexts.minimum_sample_rate, 0.25);
         assert_eq!(dsd.mapper.string_interner_size, 2048);
+        assert_eq!(dsd.tag_value_allowlist.len(), 1);
+        let allowlist = &dsd.tag_value_allowlist[0];
+        assert_eq!(allowlist.metric_prefix, "requests.");
+        assert_eq!(allowlist.tag_name, "customer_id");
+        assert_eq!(allowlist.values, ["customer-1", "customer-2"]);
+        assert_eq!(allowlist.on_miss, TagValueMismatchAction::Replace);
+        assert_eq!(allowlist.replacement, "other");
         assert_eq!(dsd.aggregation.window_duration_seconds, 30);
         assert_eq!(dsd.aggregation.context_limit, 250_000);
         assert_eq!(dsd.aggregation.flush_interval, Duration::from_secs(20));
