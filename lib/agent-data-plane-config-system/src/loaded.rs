@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::env_provider::EnvironmentProvider;
 use crate::saluki_env_overlay;
+use crate::source::SourceTree;
 use crate::system::{translate_strict, ConfigurationSystem, Error};
 
 // The environment-variable prefix ADP reads (`DD_`). Mirrors
@@ -52,7 +53,7 @@ pub enum EnvPrecedence {
 pub struct LoadedConfiguration {
     loader: ConfigurationLoader,
     // Nested local base used for typed translation and Agent-layer merges.
-    base: Value,
+    base: SourceTree,
     // Strictly translated local snapshot exposed before authority selection and used by standalone
     // mode.
     local: SalukiConfiguration,
@@ -66,7 +67,9 @@ impl LoadedConfiguration {
     /// Returns an error if a local source cannot be read, decoded, deserialized, or translated.
     pub async fn load(path: impl AsRef<Path>, env: EnvPrecedence) -> Result<Self, Error> {
         let loader = build_loader(path.as_ref(), env)?;
-        let base = build_base(path.as_ref(), env)?;
+        // Every value the local sources supply was set explicitly: the file set it or an environment
+        // variable supplied it.
+        let base = SourceTree::all_explicit(build_base(path.as_ref(), env)?);
         let local = translate_strict(&base)?;
         Ok(Self { loader, base, local })
     }
@@ -371,7 +374,7 @@ mod tests {
         std::fs::write(&path, "{}\n").unwrap();
         std::env::set_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES", "12MiB");
 
-        let base = build_base(&path, EnvPrecedence::AfterFile).expect("human-readable byte size builds");
+        let base = SourceTree::all_explicit(build_base(&path, EnvPrecedence::AfterFile).expect("base builds"));
         let config = translate_strict(&base).expect("human-readable byte size translates");
 
         std::env::remove_var("DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES");
