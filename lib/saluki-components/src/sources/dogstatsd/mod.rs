@@ -118,6 +118,7 @@ enum Error {
 ///
 /// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
 const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
+const DEFAULT_BUFFER_COUNT_MAX: usize = 26_880;
 const DOGSTATSD_LISTENER_WORKER_COUNT: usize = 1;
 const DOGSTATSD_PIPELINE_COUNT: usize = 1;
 const MIN_DOGSTATSD_WORKER_COUNT: usize = 2;
@@ -137,8 +138,8 @@ const fn default_buffer_count() -> usize {
 }
 
 const fn default_buffer_count_max() -> usize {
-    // 32768 buffers at the default 8 KiB size provide about 256 MiB of payload capacity.
-    32768
+    // 26880 buffers at the default 8 KiB size provide 210 MiB of payload capacity.
+    DEFAULT_BUFFER_COUNT_MAX
 }
 
 const fn default_port() -> u16 {
@@ -314,7 +315,7 @@ pub struct DogStatsDConfiguration {
     /// The pool never holds fewer buffers than `dogstatsd_buffer_count`, so a value below the baseline is treated as
     /// equal to it.
     ///
-    /// Defaults to 32768, or `dogstatsd_buffer_count` if that is larger.
+    /// Defaults to 26880, or `dogstatsd_buffer_count` if that is larger.
     #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
     buffer_count_max: usize,
 
@@ -2585,7 +2586,7 @@ mod tests {
         origin_detection_failed_for_telemetry, resolve_process_origin, shutdown_listeners_and_drain_datagram_decoders,
         BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
         DogStatsDConfiguration, DogStatsDDecoder, ProcessOrigin, QueuedDatagram, ReceivedBuffer, TrafficCapture,
-        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        DEFAULT_BUFFER_COUNT_MAX, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
@@ -3545,6 +3546,9 @@ mod tests {
 
     #[test]
     fn effective_max_buffer_count_never_below_baseline() {
+        let defaults = deser_config("{}");
+        assert_eq!(defaults.effective_max_buffer_count(), DEFAULT_BUFFER_COUNT_MAX);
+
         // A legacy config that only raised `dogstatsd_buffer_count` keeps its full capacity rather than being capped
         // to the `dogstatsd_buffer_count_max` default.
         let legacy = deser_config(r#"{"dogstatsd_buffer_count": 65536}"#);
