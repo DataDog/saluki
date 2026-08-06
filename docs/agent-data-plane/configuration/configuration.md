@@ -457,6 +457,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
 | `dogstatsd_tcp_port`                                            | TCP listen port for DSD                    |                |
+| `dogstatsd_vsock`                                               | vsock listen address for DSD               |                |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
 | `memory_limit`                                                  | Process memory limit                       |                |
 | `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
@@ -497,6 +498,16 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 ### `dogstatsd_string_interner_size_bytes`
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
+### `dogstatsd_vsock`
+
+The vsock (`AF_VSOCK`) address that DogStatsD listens on, given as `<cid>:<port>`. vsock lets clients in a guest VM send metrics without shared networking or a shared filesystem. Framing matches UDS stream mode: length-delimited frames over a persistent connection. vsock carries no process credentials, so senders are treated like TCP senders and get no socket-based origin detection.
+
+`dogstatsd_eol_required` has no vsock value, so a trailing newline is never required on a vsock listener. This matches TCP rather than UDS: the `uds` value applies only to the Unix socket listeners it names. `dogstatsd_so_rcvbuf` doesn't apply either: vsock receive buffering is sized by the transport's credit-based flow control rather than by `SO_RCVBUF`.
+
+The CID may be a bare 32-bit number, one of the well-known names `any`, `hypervisor`, `local`, or `host`, or left empty to mean `any`. Leaving it empty (for example, `:8125`) accepts connections addressed to any of the local CIDs, which suits nearly all deployments; name or number a CID only to pin the listener to that one. The port is a bare 32-bit number, since vsock ports are twice as wide as IP ports.
+
+Leave unset to disable vsock. Setting it on a platform without vsock support fails at startup, as does a value that isn't a valid vsock address.
 
 ### `memory_limit` / `memory_slop_factor`
 

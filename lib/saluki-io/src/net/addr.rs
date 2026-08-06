@@ -10,6 +10,18 @@ use url::Url;
 
 use super::Connection;
 
+/// vsock context identifier accepting connections addressed to any local CID (`VMADDR_CID_ANY`).
+pub const VSOCK_CID_ANY: u32 = 0xFFFF_FFFF;
+
+/// vsock context identifier of the hypervisor (`VMADDR_CID_HYPERVISOR`).
+pub const VSOCK_CID_HYPERVISOR: u32 = 0;
+
+/// vsock context identifier for same-host loopback (`VMADDR_CID_LOCAL`).
+pub const VSOCK_CID_LOCAL: u32 = 1;
+
+/// vsock context identifier of the host (`VMADDR_CID_HOST`).
+pub const VSOCK_CID_HOST: u32 = 2;
+
 /// A listen address.
 ///
 /// Listen addresses are used to bind listeners to specific local addresses and ports, and multiple address families and
@@ -22,6 +34,9 @@ use super::Connection;
 /// - `udp://[::1]:53` (listen on IPv6 loopback, UDP port 53)
 /// - `unixgram:///tmp/app.socket` (listen on a Unix datagram socket at `/tmp/app.socket`)
 /// - `unix:///tmp/app.socket` (listen on a Unix stream socket at `/tmp/app.socket`)
+/// - `vsock://:8125` (listen on any local vsock CID, port 8125)
+/// - `vsock://host:8125` (listen on the host vsock CID, port 8125)
+/// - `vsock://42:8125` (listen on vsock CID 42, port 8125)
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(try_from = "String")]
 pub enum ListenAddress {
@@ -36,6 +51,22 @@ pub enum ListenAddress {
 
     /// A Unix stream listen address.
     Unix(PathBuf),
+
+    /// A vsock (`AF_VSOCK`) stream listen address.
+    ///
+    /// vsock is a connection-oriented, host/guest transport: an address is a 32-bit context
+    /// identifier (CID) naming a VM, paired with a 32-bit port. Both values are wider than their
+    /// IP counterparts, so neither fits a [`SocketAddr`].
+    Vsock {
+        /// Context identifier (CID) to bind to.
+        ///
+        /// [`VSOCK_CID_ANY`] accepts connections addressed to any of the local context
+        /// identifiers.
+        cid: u32,
+
+        /// Port to bind to.
+        port: u32,
+    },
 
     /// A Windows named pipe listen address.
     NamedPipe {
@@ -72,6 +103,39 @@ impl ListenAddress {
         }
     }
 
+    /// Creates a vsock listen address from a `<cid>:<port>` address, given without the `vsock://` scheme.
+    ///
+    /// The CID may be a bare 32-bit number, one of the well-known names `any`, `hypervisor`, `local`, or `host`, or
+    /// empty to mean `any`. The port must be a bare 32-bit number: vsock ports are twice as wide as IP ports, and have
+    /// no named equivalents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the problem if the address has no `:` separator, or if either half fails to parse.
+    pub fn try_from_vsock_address(address: &str) -> Result<Self, String> {
+        let (raw_cid, raw_port) = address
+            .split_once(':')
+            .ok_or_else(|| format!("'{}' is missing the ':' separating the CID from the port", address))?;
+
+        let cid = match raw_cid {
+            "" | "any" => VSOCK_CID_ANY,
+            "hypervisor" => VSOCK_CID_HYPERVISOR,
+            "local" => VSOCK_CID_LOCAL,
+            "host" => VSOCK_CID_HOST,
+            other => other.parse::<u32>().map_err(|_| {
+                format!(
+                    "'{other}' is not a valid CID; expected a 32-bit number or one of: any, hypervisor, local, host"
+                )
+            })?,
+        };
+
+        let port = raw_port
+            .parse::<u32>()
+            .map_err(|_| format!("'{raw_port}' is not a valid port; expected a 32-bit number"))?;
+
+        Ok(Self::Vsock { cid, port })
+    }
+
     /// Returns the socket type of the listen address.
     pub const fn listener_type(&self) -> &'static str {
         match self {
@@ -79,6 +143,7 @@ impl ListenAddress {
             Self::Udp(_) => "udp",
             Self::Unixgram(_) => "unixgram",
             Self::Unix(_) => "unix",
+            Self::Vsock { .. } => "vsock",
             Self::NamedPipe { .. } => "named_pipe",
         }
     }
@@ -111,6 +176,7 @@ impl ListenAddress {
             // in fact, it's kind of the only way to connect to a unix domain socket :thonk:
             Self::Unixgram(_) => None,
             Self::Unix(_) => None,
+            Self::Vsock { .. } => None,
             Self::NamedPipe { .. } => None,
         }
     }
@@ -159,6 +225,7 @@ impl fmt::Display for ListenAddress {
             Self::Udp(addr) => write!(f, "udp://{}", addr),
             Self::Unixgram(path) => write!(f, "unixgram://{}", path.display()),
             Self::Unix(path) => write!(f, "unix://{}", path.display()),
+            Self::Vsock { cid, port } => write!(f, "vsock://{}:{}", cid, port),
             Self::NamedPipe { name, .. } => write!(f, "npipe://{}", name),
         }
     }
@@ -176,6 +243,13 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
     type Error = String;
 
     fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        // vsock addresses are parsed by hand, ahead of `Url`: a vsock port is 32 bits wide, while URL
+        // ports are capped at 16 bits, so `Url` rejects any address using the upper range.
+        if let Some(address) = value.strip_prefix("vsock://") {
+            return Self::try_from_vsock_address(address)
+                .map_err(|reason| format!("invalid vsock listen address: {}", reason));
+        }
+
         let url = match Url::parse(value) {
             Ok(url) => url,
             Err(e) => match e {
@@ -335,11 +409,20 @@ impl ProcessIdentity {
 /// Connection address.
 ///
 /// A generic representation of the address of a remote peer. This can either be a typical socket address (used for
-/// IPv4/IPv6), or potentially the process credentials of a Unix domain socket connection.
+/// IPv4/IPv6), a vsock address, or potentially the process credentials of a Unix domain socket connection.
 #[derive(Clone)]
 pub enum ConnectionAddress {
     /// A socket-like address.
     SocketLike(SocketAddr),
+
+    /// A vsock address.
+    Vsock {
+        /// Context identifier (CID) of the remote peer.
+        cid: u32,
+
+        /// Port of the remote peer.
+        port: u32,
+    },
 
     /// A process-like address.
     ProcessLike(ProcessIdentity),
@@ -349,6 +432,7 @@ impl fmt::Display for ConnectionAddress {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SocketLike(addr) => write!(f, "{}", addr),
+            Self::Vsock { cid, port } => write!(f, "vsock://{}:{}", cid, port),
             Self::ProcessLike(identity) => match identity {
                 ProcessIdentity::Credentials(creds) => {
                     write!(f, "<pid={} uid={} gid={}>", creds.pid, creds.uid, creds.gid)
@@ -365,7 +449,7 @@ impl ConnectionAddress {
     pub fn process_credentials(&self) -> Option<&ProcessCredentials> {
         match self {
             Self::ProcessLike(identity) => identity.credentials(),
-            Self::SocketLike(_) => None,
+            Self::SocketLike(_) | Self::Vsock { .. } => None,
         }
     }
 
@@ -373,7 +457,7 @@ impl ConnectionAddress {
     pub const fn has_process_credential_error(&self) -> bool {
         match self {
             Self::ProcessLike(identity) => identity.is_error(),
-            Self::SocketLike(_) => false,
+            Self::SocketLike(_) | Self::Vsock { .. } => false,
         }
     }
 
@@ -381,7 +465,7 @@ impl ConnectionAddress {
     pub const fn has_process_credential_telemetry_error(&self) -> bool {
         match self {
             Self::ProcessLike(identity) => identity.is_telemetry_error(),
-            Self::SocketLike(_) => false,
+            Self::SocketLike(_) | Self::Vsock { .. } => false,
         }
     }
 }
@@ -482,6 +566,89 @@ mod tests {
             address.as_windows_named_pipe_path().as_deref(),
             Some(r"\\.\pipe\datadog-dogstatsd")
         );
+    }
+
+    #[test]
+    fn vsock_listen_address_round_trips_through_its_url_form() {
+        let address = ListenAddress::try_from("vsock://2:8125").unwrap();
+
+        assert_eq!(address, ListenAddress::Vsock { cid: 2, port: 8125 });
+        assert_eq!(address.listener_type(), "vsock");
+        assert_eq!(address.to_string(), "vsock://2:8125");
+        assert_eq!(ListenAddress::try_from(address.to_string()).unwrap(), address);
+    }
+
+    #[test]
+    fn vsock_listen_address_accepts_full_32_bit_cid_and_port() {
+        // Both halves of a vsock address are 32 bits wide, unlike a URL port, so the upper range has to
+        // survive parsing.
+        let address = ListenAddress::try_from("vsock://4294967295:4294967295").unwrap();
+
+        assert_eq!(
+            address,
+            ListenAddress::Vsock {
+                cid: VSOCK_CID_ANY,
+                port: u32::MAX,
+            }
+        );
+    }
+
+    #[test]
+    fn vsock_address_resolves_named_and_omitted_cids() {
+        let cases = [
+            (":8125", VSOCK_CID_ANY),
+            ("any:8125", VSOCK_CID_ANY),
+            ("hypervisor:8125", VSOCK_CID_HYPERVISOR),
+            ("local:8125", VSOCK_CID_LOCAL),
+            ("host:8125", VSOCK_CID_HOST),
+            ("42:8125", 42),
+        ];
+
+        for (address, expected_cid) in cases {
+            assert_eq!(
+                ListenAddress::try_from_vsock_address(address).unwrap(),
+                ListenAddress::Vsock {
+                    cid: expected_cid,
+                    port: 8125
+                },
+                "unexpected result for '{address}'"
+            );
+
+            // The scheme-qualified URL form must resolve identically.
+            assert_eq!(
+                ListenAddress::try_from(format!("vsock://{address}")).unwrap(),
+                ListenAddress::try_from_vsock_address(address).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_vsock_addresses_are_rejected() {
+        for address in ["2", "", "guest:8125", "2:-1", "2:", "2:8125:9", "-1:8125"] {
+            assert!(
+                ListenAddress::try_from_vsock_address(address).is_err(),
+                "expected '{address}' to be rejected"
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vsock_cid_constants_match_the_kernel() {
+        assert_eq!(VSOCK_CID_ANY, tokio_vsock::VMADDR_CID_ANY);
+        assert_eq!(VSOCK_CID_HYPERVISOR, tokio_vsock::VMADDR_CID_HYPERVISOR);
+        assert_eq!(VSOCK_CID_LOCAL, tokio_vsock::VMADDR_CID_LOCAL);
+        assert_eq!(VSOCK_CID_HOST, tokio_vsock::VMADDR_CID_HOST);
+    }
+
+    #[test]
+    fn vsock_connection_address_carries_no_process_credentials() {
+        let peer_addr = ConnectionAddress::Vsock { cid: 3, port: 41235 };
+
+        assert_eq!(peer_addr.to_string(), "vsock://3:41235");
+        assert!(peer_addr.process_credentials().is_none());
+        assert!(!peer_addr.has_process_credential_error());
+        assert!(!peer_addr.has_process_credential_telemetry_error());
     }
 
     #[test]

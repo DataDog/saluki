@@ -84,6 +84,14 @@ static DOGSTATSD_BUFFER_COUNT_MAX_SCHEMA: SchemaEntry = SchemaEntry {
     default: Some("256"),
 };
 
+static DOGSTATSD_VSOCK_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "dogstatsd_vsock",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: None,
+};
+
 crate::declare_annotations! {
     /// `bind_host`-Global listen host fallback
     BIND_HOST = SalukiAnnotation {
@@ -567,6 +575,17 @@ crate::declare_annotations! {
         used_by: &[structs::DOGSTATSD_CONFIGURATION],
         value_type_override: None,
         test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `dogstatsd_vsock`
+    DOGSTATSD_VSOCK = SalukiAnnotation {
+        schema: &DOGSTATSD_VSOCK_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::DOGSTATSD_CONFIGURATION],
+        value_type_override: None,
+        test_json: Some(r#""host:8125""#),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
     /// `dogstatsd_windows_pipe_security_descriptor`-Windows named pipe ACL descriptor

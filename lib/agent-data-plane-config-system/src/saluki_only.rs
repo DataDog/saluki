@@ -105,6 +105,8 @@ pub struct SalukiOnly {
     // ── DogStatsD listener/context/mapper keys (all top-level) ────────────────
     /// TCP listen port (`dogstatsd_tcp_port`).
     pub dogstatsd_tcp_port: Option<u16>,
+    /// vsock listen address, as `<cid>:<port>` (`dogstatsd_vsock`). Unset disables the listener.
+    pub dogstatsd_vsock: Option<String>,
     /// Baseline number of receive buffers (`dogstatsd_buffer_count`).
     pub dogstatsd_buffer_count: Option<usize>,
     /// Maximum number of receive buffers (`dogstatsd_buffer_count_max`).
@@ -431,6 +433,13 @@ impl SalukiOnly {
         if let Some(v) = self.dogstatsd_tcp_port {
             dsd.listeners.tcp_port = v;
         }
+        if let Some(v) = &self.dogstatsd_vsock {
+            // An explicitly empty value means "no vsock listener", matching how the DogStatsD source reads an empty
+            // `dogstatsd_socket`/`dogstatsd_stream_socket` and how the Datadog translator's `non_empty` treats their
+            // witnessed equivalents. Storing `Some("")` would instead leave a consumer trying to parse an empty
+            // address as one.
+            dsd.listeners.vsock = (!v.is_empty()).then(|| v.clone());
+        }
         if let Some(v) = self.dogstatsd_buffer_count {
             dsd.listeners.buffer_count = v;
         }
@@ -596,6 +605,7 @@ mod tests {
             "serializer_max_metrics_per_payload": 999,
             // dogstatsd listener/context/mapper
             "dogstatsd_tcp_port": 8126,
+            "dogstatsd_vsock": "host:8125",
             "dogstatsd_buffer_count": 64,
             "dogstatsd_buffer_count_max": 512,
             "dogstatsd_autoscale_udp_listeners": true,
@@ -683,6 +693,7 @@ mod tests {
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;
         assert_eq!(dsd.listeners.tcp_port, 8126);
+        assert_eq!(dsd.listeners.vsock.as_deref(), Some("host:8125"));
         assert_eq!(dsd.listeners.buffer_count, 64);
         assert_eq!(dsd.listeners.buffer_count_max, 512);
         assert!(dsd.listeners.autoscale_udp_listeners);
@@ -752,6 +763,30 @@ mod tests {
             let mut config = SalukiConfiguration::default();
             saluki_only.seed(&mut config);
             assert_eq!(config.control.memory_limit, expected);
+        }
+    }
+
+    /// An empty `dogstatsd_vsock` disables the listener, so it must reach the model as `None`.
+    ///
+    /// The DogStatsD source reads this key through `NoneAsEmptyString`, so `dogstatsd_vsock: ""`
+    /// leaves vsock off at runtime. Seeding `Some("")` would make the typed model disagree with
+    /// that, and would leave a typed consumer parsing an empty string as a vsock address rather
+    /// than skipping the listener.
+    #[test]
+    fn empty_dogstatsd_vsock_seeds_as_disabled() {
+        for (value, expected) in [
+            (json!({}), None),
+            (json!({ "dogstatsd_vsock": "" }), None),
+            (json!({ "dogstatsd_vsock": "host:8125" }), Some("host:8125")),
+        ] {
+            let saluki_only: SalukiOnly = serde_json::from_value(value.clone()).expect("dogstatsd_vsock deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(
+                config.domains.dogstatsd.listeners.vsock.as_deref(),
+                expected,
+                "unexpected vsock listen address for {value}"
+            );
         }
     }
 

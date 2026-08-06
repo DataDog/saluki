@@ -36,6 +36,7 @@ pub fn get_framer(listen_address: &ListenAddress, eol_required: bool) -> DsdFram
         ListenAddress::Udp(_) => DsdFramer::NonStream(newline_framer),
         ListenAddress::Unixgram(_) => DsdFramer::NonStream(newline_framer),
         ListenAddress::Unix(_) => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
+        ListenAddress::Vsock { .. } => DsdFramer::Stream(NestedFramer::new(newline_framer, LengthDelimitedFramer)),
         ListenAddress::NamedPipe { .. } => DsdFramer::NonStream(newline_framer),
     }
 }
@@ -97,6 +98,23 @@ mod tests {
             framer.next_frame(&mut buf, true),
             Err(FramingError::InvalidFrame { .. })
         ));
+    }
+
+    #[test]
+    fn vsock_uses_length_delimited_framing() {
+        let payload = b"test.metric:1|c\n";
+        let mut buf = VecDeque::new();
+        buf.extend((payload.len() as u32).to_le_bytes());
+        buf.extend(payload);
+        let mut framer = get_framer(&ListenAddress::Vsock { cid: 2, port: 8125 }, false);
+
+        let frame = framer
+            .next_frame(&mut buf, false)
+            .expect("framing should not fail")
+            .expect("length-delimited frame should be available before EOF");
+
+        assert_eq!(&frame[..], b"test.metric:1|c");
+        assert!(buf.is_empty());
     }
 
     #[test]

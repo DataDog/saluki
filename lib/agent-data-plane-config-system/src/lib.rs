@@ -13,6 +13,11 @@
 //! only ADP production crate that bridges the source configuration to the model; it constructs no
 //! components and does not depend on `saluki-components`.
 
+// `saluki_only`'s transport test builds a `json!` literal holding every Saluki-only key, and that literal
+// outgrew the default macro recursion limit as keys were added. Raise the ceiling so adding a key stays a
+// one-line change.
+#![recursion_limit = "512"]
+
 mod env_provider;
 mod loaded;
 mod saluki_env_overlay;
