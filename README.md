@@ -1,5 +1,9 @@
 # saluki
 
+<!-- hy-mt2-i18n:start -->
+**English** · [中文](./README_zh-CN.md) · [日本語](./README_ja.md) · [Español](./README_es.md)
+<!-- hy-mt2-i18n:end -->
+
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/DataDog/saluki/blob/main/LICENSE)
 
 Saluki is a toolkit for building telemetry data planes in Rust.
