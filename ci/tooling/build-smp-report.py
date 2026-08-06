@@ -302,7 +302,12 @@ def partition_experiments(
     )
 
 
-def build_report(report: dict) -> str:
+def build_report(
+    report: dict,
+    baseline_label: str | None = None,
+    comparison_label: str | None = None,
+    include_diff_link: bool = True,
+) -> str:
     """Build the condensed Markdown report from a parsed report.json."""
     job_id = report.get("job_id", "(unknown)")
     job_info = report.get("job_info") or {}
@@ -325,11 +330,18 @@ def build_report(report: dict) -> str:
     else:
         headline = "## Optimization Goals: ✅ No significant changes detected"
 
+    baseline_display = baseline_label or short_sha(baseline_sha)
+    comparison_display = comparison_label or short_sha(comparison_sha)
+    comparison_summary = (
+        f"**Baseline:** `{baseline_display}` &middot; "
+        f"**Comparison:** `{comparison_display}`"
+    )
+    if include_diff_link:
+        comparison_summary += f" &middot; {diff_link(baseline_sha, comparison_sha)}"
+
     sections = [
         f"**Run ID:** `{job_id}`",
-        f"**Baseline:** `{short_sha(baseline_sha)}` &middot; "
-        f"**Comparison:** `{short_sha(comparison_sha)}` &middot; "
-        f"{diff_link(baseline_sha, comparison_sha)}",
+        comparison_summary,
         "",
         headline,
         "",
@@ -407,7 +419,7 @@ def build_failure_report(reason: str) -> str:
     return (
         "## Optimization Goals: ⚠️ Report unavailable\n\n"
         f"The benchmark run did not produce a usable report: {reason}\n\n"
-        "Check the `run-benchmarks-adp` job logs for details.\n"
+        "Check the benchmark job logs for details.\n"
     )
 
 
@@ -426,6 +438,19 @@ def main() -> int:
         type=Path,
         required=True,
         help="Path to write the generated Markdown report to.",
+    )
+    parser.add_argument(
+        "--baseline-label",
+        help="Optional display label for the baseline instead of its shortened SHA.",
+    )
+    parser.add_argument(
+        "--comparison-label",
+        help="Optional display label for the comparison instead of its shortened SHA.",
+    )
+    parser.add_argument(
+        "--no-diff-link",
+        action="store_true",
+        help="Omit the repository diff link when the images do not represent commits in this repository.",
     )
     args = parser.parse_args()
 
@@ -449,7 +474,14 @@ def main() -> int:
         )
         return 0
 
-    args.output_report.write_text(build_report(report))
+    args.output_report.write_text(
+        build_report(
+            report,
+            baseline_label=args.baseline_label,
+            comparison_label=args.comparison_label,
+            include_diff_link=not args.no_diff_link,
+        )
+    )
     return 0
 
 

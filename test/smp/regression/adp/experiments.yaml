@@ -127,6 +127,44 @@ templates:
                   histogram: 1
             maximum_prebuild_cache_size_bytes: "500 Mb"
 
+  # Runs the steady DogStatsD RSS workloads against the Core Agent and ADP. The target script
+  # selects the binary available in each SMP image while preserving the same socket, workload,
+  # CPU allotment, and memory allotment.
+  dsd_rss_comparison_base:
+    extends: dsd_base
+    target:
+      name: dogstatsd-rss
+      command: /bin/sh /etc/dogstatsd-rss/target.sh
+      profiling_environment: null
+      files:
+        empty.yaml: null
+        datadog.yaml:
+          content: "{}"
+        target.sh:
+          source: shared/dogstatsd-rss-target.sh
+      environment:
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: null
+        DD_DATA_PLANE_STANDALONE_MODE: null
+        DD_AGGREGATE_CONTEXT_LIMIT: null
+        DD_IPC_CERT_FILE_PATH: null
+        DD_LOG_FORMAT_JSON: null
+        DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS: null
+        DD_ENABLE_METADATA_COLLECTION: "false"
+        DD_INVENTORIES_ENABLED: "false"
+        DD_LOG_LEVEL: WARN
+        DD_USE_DOGSTATSD: "true"
+        DD_AUTH_TOKEN_FILE_PATH: /tmp/dogstatsd-rss-auth-token
+        SMP_ADP_AGGREGATE_CONTEXT_LIMIT: "3100"
+
+    report_links:
+      - text: (metrics)
+        link: "https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job_id }}&tpl_var_experiment%5B0%5D={{ experiment }}&view=spans&from_ts={{ start_time_ms }}&to_ts={{ end_time_ms }}&live=false"
+      - text: (logs)
+        link: "https://app.datadoghq.com/logs?query=experiment%3A{{ experiment }}%20run_id%3A{{ job_id }}&agg_m=count&agg_m_source=base&agg_q=%40span.url&agg_q_source=base&agg_t=count&fromUser=true&index=single-machine-performance-target-logs&messageDisplay=inline&refresh_mode=paused&storage=hot&stream_sort=time%2Cdesc&top_n=100&top_o=top&viz=stream&x_missing=true&from_ts={{ filter_start }}&to_ts={{ filter_end }}&live=false"
+
+    lading:
+      target_metrics: null
+
   # Base template for OTLP experiments
   otlp_base:
     target:
@@ -399,6 +437,86 @@ experiments:
           series: total_rss_bytes
           upper_bound: "205.0 MiB"
 
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 249000
+                    max: 251000
+            bytes_per_second: "100 MiB"
+            maximum_prebuild_cache_size_bytes: "768 Mb"
+
+  # ============================================================================
+  # DogStatsD: Core Agent versus ADP RSS comparison
+  # ============================================================================
+
+  - name: dogstatsd_rss_core_vs_adp_idle
+    extends: dsd_rss_comparison_base
+    suites: [dogstatsd-rss-comparison]
+    optimization_goal: memory
+    lading:
+      generator: []
+
+  - name: dogstatsd_rss_core_vs_adp_low
+    extends: dsd_rss_comparison_base
+    suites: [dogstatsd-rss-comparison]
+    optimization_goal: memory
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "1 MiB"
+            maximum_prebuild_cache_size_bytes: "100 Mb"
+
+  - name: dogstatsd_rss_core_vs_adp_medium
+    extends: dsd_rss_comparison_base
+    suites: [dogstatsd-rss-comparison]
+    optimization_goal: memory
+    target:
+      environment:
+        SMP_ADP_AGGREGATE_CONTEXT_LIMIT: "10100"
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 10000
+                    max: 10001
+            bytes_per_second: "10 MiB"
+            maximum_prebuild_cache_size_bytes: "500 Mb"
+
+  - name: dogstatsd_rss_core_vs_adp_heavy
+    extends: dsd_rss_comparison_base
+    suites: [dogstatsd-rss-comparison]
+    optimization_goal: memory
+    target:
+      environment:
+        SMP_ADP_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
+        SMP_ADP_AGGREGATE_CONTEXT_LIMIT: "100100"
+    lading:
+      generator:
+        - unix_datagram:
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 99000
+                    max: 101000
+            bytes_per_second: "50 MiB"
+            maximum_prebuild_cache_size_bytes: "512 Mb"
+
+  - name: dogstatsd_rss_core_vs_adp_ultraheavy
+    extends: dsd_rss_comparison_base
+    suites: [dogstatsd-rss-comparison]
+    optimization_goal: memory
+    target:
+      environment:
+        SMP_ADP_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "64MiB"
+        SMP_ADP_AGGREGATE_CONTEXT_LIMIT: "250100"
     lading:
       generator:
         - unix_datagram:
