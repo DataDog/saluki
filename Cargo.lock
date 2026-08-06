@@ -1693,7 +1693,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "foldspace-core"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=bc3502dde8e136d93b1a0c35df03fd57f0490bc9#bc3502dde8e136d93b1a0c35df03fd57f0490bc9"
+source = "git+https://github.com/DataDog/foldspace?rev=4b0359eaff254ce7135fdd7126673177229b2849#4b0359eaff254ce7135fdd7126673177229b2849"
 dependencies = [
  "foldspace-eviction",
  "prost",
@@ -1707,12 +1707,12 @@ dependencies = [
 [[package]]
 name = "foldspace-eviction"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=bc3502dde8e136d93b1a0c35df03fd57f0490bc9#bc3502dde8e136d93b1a0c35df03fd57f0490bc9"
+source = "git+https://github.com/DataDog/foldspace?rev=4b0359eaff254ce7135fdd7126673177229b2849#4b0359eaff254ce7135fdd7126673177229b2849"
 
 [[package]]
 name = "foldspace-patterns"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=bc3502dde8e136d93b1a0c35df03fd57f0490bc9#bc3502dde8e136d93b1a0c35df03fd57f0490bc9"
+source = "git+https://github.com/DataDog/foldspace?rev=4b0359eaff254ce7135fdd7126673177229b2849#4b0359eaff254ce7135fdd7126673177229b2849"
 dependencies = [
  "foldspace-core",
  "foldspace-eviction",
@@ -1722,7 +1722,7 @@ dependencies = [
 [[package]]
 name = "foldspace-patterns-tokenizer"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=bc3502dde8e136d93b1a0c35df03fd57f0490bc9#bc3502dde8e136d93b1a0c35df03fd57f0490bc9"
+source = "git+https://github.com/DataDog/foldspace?rev=4b0359eaff254ce7135fdd7126673177229b2849#4b0359eaff254ce7135fdd7126673177229b2849"
 dependencies = [
  "regex-automata",
  "serde_json",
@@ -1732,7 +1732,7 @@ dependencies = [
 [[package]]
 name = "foldspace-server"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/foldspace?rev=bc3502dde8e136d93b1a0c35df03fd57f0490bc9#bc3502dde8e136d93b1a0c35df03fd57f0490bc9"
+source = "git+https://github.com/DataDog/foldspace?rev=4b0359eaff254ce7135fdd7126673177229b2849#4b0359eaff254ce7135fdd7126673177229b2849"
 dependencies = [
  "flate2",
  "foldspace-core",

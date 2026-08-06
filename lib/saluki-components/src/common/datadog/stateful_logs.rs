@@ -56,6 +56,7 @@ const LOGS_INTAKE_PATH: &str = "/api/v2/logs";
 const STATEFUL_SENDERS: usize = 3;
 const STATEFUL_BATCH_CAPACITY: usize = usize::MAX;
 const STATEFUL_CHANNEL_CAPACITY: usize = 1;
+const STATELESS_BATCH_MAX_BYTES: usize = 5 * 1024 * 1024;
 const STATE_REQUEST_BYTES: u64 = 5 * 1024 * 1024;
 const DUAL_SEND_UUID_FIELD: &str = "dual-send-uuid";
 
@@ -75,15 +76,21 @@ where
     templates: Vec<LogTemplate>,
 }
 
+struct RetainedStatelessRequest<B>
+where
+    B: Buf + Clone,
+{
+    metadata: Metadata,
+    request: Request<TransactionBody<B>>,
+    retry_counters: TransactionRetryCounters,
+}
+
 enum RetainedPayload<B>
 where
     B: Buf + Clone,
 {
     Stateful(RetainedRequest<B>),
-    StatelessRetry {
-        transaction: Transaction<B>,
-        retry_counters: TransactionRetryCounters,
-    },
+    StatelessRetry(RetainedStatelessRequest<B>),
 }
 
 impl<B> RetainedPayload<B>
@@ -93,14 +100,14 @@ where
     fn metadata(&self) -> &Metadata {
         match self {
             Self::Stateful(retained) => &retained.metadata,
-            Self::StatelessRetry { transaction, .. } => transaction.metadata(),
+            Self::StatelessRetry(retained) => &retained.metadata,
         }
     }
 
     fn retry_counters(&self) -> Option<&TransactionRetryCounters> {
         match self {
             Self::Stateful(_) => None,
-            Self::StatelessRetry { retry_counters, .. } => Some(retry_counters),
+            Self::StatelessRetry(retained) => Some(&retained.retry_counters),
         }
     }
 }
@@ -131,17 +138,50 @@ where
             values.push(JsonValue::Object(template.object));
         }
 
-        let uncompressed = serde_json::to_vec(&values).error_context("Failed to encode recovered stateless logs.")?;
-        let encoding = content_encoding(self.request.headers())?;
-        let body = compress_body(&uncompressed, encoding)?;
-        let mut request = self.request.map(|_| TransactionBody::from(body));
-        if request.headers().contains_key(CONTENT_LENGTH) {
-            let content_length = HeaderValue::from_str(&request.body().remaining().to_string())
-                .error_context("Failed to update recovered logs content length.")?;
-            request.headers_mut().insert(CONTENT_LENGTH, content_length);
-        }
-        Ok(Transaction::reassemble(self.metadata, request))
+        transaction_from_values(self.metadata, self.request, values)
     }
+}
+
+impl<B> RetainedStatelessRequest<B>
+where
+    B: Buf + Clone,
+{
+    fn into_transaction(self, logs: Vec<foldspace_server::DecodedLog>) -> Result<Transaction<B>, GenericError> {
+        let mut values = Vec::with_capacity(logs.len());
+        for log in logs {
+            let original_json = log
+                .original_json
+                .ok_or_else(|| generic_error!("Self-contained Foldspace log is missing its original JSON object."))?;
+            let value: JsonValue = serde_json::from_slice(&original_json)
+                .error_context("Failed to parse retained self-contained log JSON.")?;
+            if !value.is_object() {
+                return Err(generic_error!("Self-contained Foldspace log JSON is not an object."));
+            }
+            values.push(value);
+        }
+
+        let mut metadata = self.metadata;
+        metadata.event_count = values.len();
+        transaction_from_values(metadata, self.request, values)
+    }
+}
+
+fn transaction_from_values<B>(
+    metadata: Metadata, request: Request<TransactionBody<B>>, values: Vec<JsonValue>,
+) -> Result<Transaction<B>, GenericError>
+where
+    B: Buf + Clone,
+{
+    let uncompressed = serde_json::to_vec(&values).error_context("Failed to encode recovered stateless logs.")?;
+    let encoding = content_encoding(request.headers())?;
+    let body = compress_body(&uncompressed, encoding)?;
+    let mut request = request.map(|_| TransactionBody::from(body));
+    if request.headers().contains_key(CONTENT_LENGTH) {
+        let content_length = HeaderValue::from_str(&request.body().remaining().to_string())
+            .error_context("Failed to update recovered logs content length.")?;
+        request.headers_mut().insert(CONTENT_LENGTH, content_length);
+    }
+    Ok(Transaction::reassemble(metadata, request))
 }
 
 struct StatelessRecovery<B>
@@ -474,6 +514,7 @@ where
     encoder: ProtoBatchEncoder<ZstdBatchCompressor>,
     endpoint: ResolvedEndpoint,
     open_timeout: Duration,
+    max_stateless_batch_bytes: usize,
     streams: FastHashMap<u64, SenderStream>,
     retained: FastHashMap<u64, RetainedPayload<B>>,
     events_tx: mpsc::UnboundedSender<StatefulEvent>,
@@ -519,6 +560,7 @@ where
             encoder: ProtoBatchEncoder::new(ZstdBatchCompressor::default()),
             endpoint,
             open_timeout: request_timeout,
+            max_stateless_batch_bytes: STATELESS_BATCH_MAX_BYTES,
             streams: FastHashMap::default(),
             retained: FastHashMap::default(),
             events_tx,
@@ -567,25 +609,48 @@ where
     }
 
     pub(super) fn can_attempt_retry(&self) -> bool {
-        !self.disabled && !self.streams.is_empty()
+        !self.disabled && self.core.can_dispatch_stateless_logs()
+    }
+
+    pub(super) fn owns_retry_transaction(&self, transaction: &Transaction<B>) -> bool {
+        transaction.request_uri().path() == LOGS_INTAKE_PATH
     }
 
     pub(super) async fn try_send_retry_transaction(
         &mut self, transaction: Transaction<B>, retry_counters: TransactionRetryCounters,
+        component_telemetry: &ComponentTelemetry, endpoint_domain: &str,
     ) -> Result<(), Transaction<B>> {
         if !self.can_attempt_retry() || transaction.request_uri().path() != LOGS_INTAKE_PATH {
             return Err(transaction);
         }
         let records = match parse_request_log_records(transaction.request()) {
             Ok(records) if !records.is_empty() => records,
-            Ok(_) | Err(_) => return Err(transaction),
+            Ok(_) | Err(_) => {
+                component_telemetry.track_permanently_failed_transaction(transaction.metadata(), None, endpoint_domain);
+                return Ok(());
+            }
         };
-        let (payload_id, effects) = match self.core.try_dispatch_stateless_logs(records) {
+        let log_count = records.len();
+        let dispatch = match self
+            .core
+            .try_dispatch_stateless_logs(records, self.max_stateless_batch_bytes)
+        {
             Ok(dispatched) => dispatched,
             Err(rejected) => {
                 drop(rejected.into_logs());
                 return Err(transaction);
             }
+        };
+        let (payload_id, effects, dropped_logs) = dispatch.into_parts();
+        if dropped_logs > 0 {
+            self.telemetry.oversized.increment(dropped_logs as u64);
+            let mut dropped_metadata = transaction.metadata().clone();
+            dropped_metadata.event_count = dropped_logs;
+            dropped_metadata.data_point_count = 0;
+            component_telemetry.track_permanently_failed_transaction(&dropped_metadata, None, endpoint_domain);
+        }
+        let Some(payload_id) = payload_id else {
+            return Ok(());
         };
         let sends_on_existing_stream = !effects.is_empty()
             && effects.iter().all(|effect| match effect {
@@ -612,12 +677,15 @@ where
             }
             return Err(transaction);
         }
+        let (mut metadata, request) = transaction.into_parts();
+        metadata.event_count = log_count.saturating_sub(dropped_logs);
         self.retained.insert(
             payload_id.get(),
-            RetainedPayload::StatelessRetry {
-                transaction,
+            RetainedPayload::StatelessRetry(RetainedStatelessRequest {
+                metadata,
+                request: request.map(|_| TransactionBody::from(Vec::new())),
                 retry_counters,
-            },
+            }),
         );
         self.execute(effects).await;
         Ok(())
@@ -699,7 +767,9 @@ where
                     None
                 };
                 let effects = self.core.handle_ack(sender_id, stream_id, batch_id);
-                if let Some(payload_id) = payload_id {
+                if let Some(payload_id) =
+                    payload_id.filter(|payload_id| self.core.payload_sender(*payload_id).is_none())
+                {
                     if let Some(retained) = self.retained.remove(&payload_id.get()) {
                         component_telemetry.track_successful_transaction(retained.metadata(), endpoint_domain);
                     }
@@ -850,7 +920,10 @@ where
                 .decode_recovery(&recovery)
                 .error_context("Failed to decode retained Foldspace payload.")
                 .and_then(|logs| retained.into_transaction(logs)),
-            RetainedPayload::StatelessRetry { transaction, .. } => Ok(transaction),
+            RetainedPayload::StatelessRetry(retained) => StatefulLogsDecoder::new()
+                .decode_recovery(&recovery)
+                .error_context("Failed to decode remaining self-contained Foldspace retry batches.")
+                .and_then(|logs| retained.into_transaction(logs)),
         };
         let transaction = match transaction {
             Ok(transaction) => transaction,
@@ -1195,6 +1268,29 @@ mod tests {
         )
     }
 
+    fn multiple_logs(messages: &[&str]) -> Transaction<Bytes> {
+        let logs = messages
+            .iter()
+            .enumerate()
+            .map(|(index, message)| {
+                serde_json::json!({
+                    "message": message,
+                    "@timestamp": "2026-08-03T12:00:00.000Z",
+                    "dual-send-uuid": format!("multi-{index}"),
+                    "custom": "preserved"
+                })
+            })
+            .collect::<Vec<_>>();
+        let request = Request::builder()
+            .method("POST")
+            .uri(LOGS_INTAKE_PATH)
+            .header(CONTENT_TYPE, "application/json")
+            .header("x-test-routing", "route-a")
+            .body(Bytes::from(serde_json::to_vec(&logs).unwrap()))
+            .unwrap();
+        Transaction::from_original(Metadata::from_event_and_data_point_count(logs.len(), 0), request)
+    }
+
     #[test]
     fn recovered_transaction_preserves_fields_uuid_and_compression() {
         let input = serde_json::json!([{
@@ -1316,7 +1412,7 @@ mod tests {
         let retry = pending.pop_low_priority().await.unwrap();
 
         assert!(sender
-            .try_send_retry_transaction(retry, retry_counters(&metrics_builder))
+            .try_send_retry_transaction(retry, retry_counters(&metrics_builder), &telemetry, TEST_DOMAIN)
             .await
             .is_ok());
 
@@ -1353,23 +1449,255 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_without_an_open_stream_falls_back_without_stateful_mutation() {
+    async fn stateless_retry_batches_are_sent_sequentially_on_one_existing_stream() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let mut sender = sender("http://127.0.0.1:4317", "key-a");
-        let transaction = simple_log("http fallback 42", "http-fallback-uuid");
+        sender.max_stateless_batch_bytes = 700;
+        let mut receivers = open_core_streams(&mut sender);
+        let original_streams = sender
+            .streams
+            .iter()
+            .map(|(sender_id, stream)| (*sender_id, stream.stream_id))
+            .collect::<FastHashMap<_, _>>();
+        let first_message = "a".repeat(200);
+        let second_message = "b".repeat(200);
 
-        let transaction = sender
-            .try_send_retry_transaction(transaction, retry_counters(&metrics_builder))
+        assert!(sender
+            .try_send_retry_transaction(
+                multiple_logs(&[&first_message, &second_message]),
+                retry_counters(&metrics_builder),
+                &telemetry,
+                TEST_DOMAIN,
+            )
             .await
-            .expect_err("a retry without an open stream should use HTTP");
+            .is_ok());
 
-        assert!(sender.streams.is_empty());
+        let (sender_id, stream_id) = sender
+            .streams
+            .iter()
+            .find_map(|(sender_id, stream)| {
+                stream
+                    .inflight
+                    .is_some()
+                    .then_some((SenderId(*sender_id), stream.stream_id))
+            })
+            .expect("the first retry batch should be inflight");
+        let receiver = &mut receivers[sender_id.get() as usize];
+        let first_batch = receiver.recv().await.unwrap();
+        let first_bytes = zstd::stream::decode_all(first_batch.data.as_slice()).unwrap();
+        assert!(first_bytes.len() <= sender.max_stateless_batch_bytes);
+        let mut decoder = StatefulLogsDecoder::new();
+        let first_logs = decoder
+            .decode_batch(&first_batch, FoldspaceContentEncoding::Zstd)
+            .unwrap();
+        assert_eq!(first_logs.len(), 1);
+        assert_eq!(first_logs[0].message, first_message);
+
+        let mut pending = pending(16, TEST_RETRY_BYTES);
+        sender
+            .handle_event(
+                StatefulEvent::Ack {
+                    sender_id,
+                    stream_id,
+                    batch_id: u64::from(first_batch.batch_id),
+                },
+                &mut pending,
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await;
+        assert_eq!(sender.streams.len(), original_streams.len());
+        assert!(sender
+            .streams
+            .iter()
+            .all(|(id, stream)| original_streams.get(id) == Some(&stream.stream_id)));
+        assert_eq!(sender.retained.len(), 1);
+
+        let second_batch = receiver.recv().await.unwrap();
+        let second_bytes = zstd::stream::decode_all(second_batch.data.as_slice()).unwrap();
+        assert!(second_bytes.len() <= sender.max_stateless_batch_bytes);
+        let second_logs = decoder
+            .decode_batch(&second_batch, FoldspaceContentEncoding::Zstd)
+            .unwrap();
+        assert_eq!(second_logs.len(), 1);
+        assert_eq!(second_logs[0].message, second_message);
+        sender
+            .handle_event(
+                StatefulEvent::Ack {
+                    sender_id,
+                    stream_id,
+                    batch_id: u64::from(second_batch.batch_id),
+                },
+                &mut pending,
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await;
+
         assert!(sender.retained.is_empty());
-        assert_eq!(parsed_body(transaction)[0][DUAL_SEND_UUID_FIELD], "http-fallback-uuid");
+        assert!(pending.is_empty());
+        let tags = &[("domain", TEST_DOMAIN), ("endpoint", LOGS_INTAKE_PATH)];
+        assert_eq!(recorder.counter(("network_http_requests_retries_total", tags)), Some(2));
     }
 
     #[tokio::test]
-    async fn retry_without_immediate_stream_capacity_falls_back_without_rotating_streams() {
+    async fn split_retry_failure_requeues_only_unacknowledged_logs() {
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        sender.max_stateless_batch_bytes = 700;
+        let mut receivers = open_core_streams(&mut sender);
+        let first_message = "a".repeat(200);
+        let second_message = "b".repeat(200);
+
+        assert!(sender
+            .try_send_retry_transaction(
+                multiple_logs(&[&first_message, &second_message]),
+                retry_counters(&metrics_builder),
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await
+            .is_ok());
+        let (sender_id, stream_id) = sender
+            .streams
+            .iter()
+            .find_map(|(sender_id, stream)| {
+                stream
+                    .inflight
+                    .is_some()
+                    .then_some((SenderId(*sender_id), stream.stream_id))
+            })
+            .unwrap();
+        let receiver = &mut receivers[sender_id.get() as usize];
+        let first_batch = receiver.recv().await.unwrap();
+        let mut pending = pending(16, TEST_RETRY_BYTES);
+        sender
+            .handle_event(
+                StatefulEvent::Ack {
+                    sender_id,
+                    stream_id,
+                    batch_id: u64::from(first_batch.batch_id),
+                },
+                &mut pending,
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await;
+        let _second_batch = receiver.recv().await.unwrap();
+
+        sender
+            .handle_event(
+                StatefulEvent::Failed {
+                    sender_id,
+                    stream_id,
+                    error: MetaString::from_static("split retry transport failure"),
+                    failed_payload: None,
+                },
+                &mut pending,
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await;
+
+        let retry = pending.pop_low_priority().await.unwrap();
+        assert_eq!(retry.metadata().event_count, 1);
+        let logs = parsed_body(retry);
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["message"], second_message);
+    }
+
+    #[tokio::test]
+    async fn single_log_larger_than_a_stateless_batch_is_dropped() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        sender.max_stateless_batch_bytes = 1;
+        let receivers = open_core_streams(&mut sender);
+
+        assert!(sender
+            .try_send_retry_transaction(
+                simple_log("too large", "too-large-uuid"),
+                retry_counters(&metrics_builder),
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await
+            .is_ok());
+
+        assert!(sender.retained.is_empty());
+        assert!(receivers.iter().all(|receiver| receiver.is_empty()));
+        assert_eq!(
+            recorder.counter(("stateful_logs_stateless_oversized_total", &[("domain", TEST_DOMAIN)])),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn oversized_log_is_dropped_while_fitting_logs_are_sent() {
+        let recorder = TestRecorder::default();
+        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
+        let metrics_builder = MetricsBuilder::default();
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        sender.max_stateless_batch_bytes = 700;
+        let mut receivers = open_core_streams(&mut sender);
+        let oversized = "x".repeat(2_000);
+
+        assert!(sender
+            .try_send_retry_transaction(
+                multiple_logs(&["fits", &oversized]),
+                retry_counters(&metrics_builder),
+                &telemetry,
+                TEST_DOMAIN,
+            )
+            .await
+            .is_ok());
+
+        let sender_id = sender
+            .streams
+            .iter()
+            .find_map(|(sender_id, stream)| stream.inflight.is_some().then_some(SenderId(*sender_id)))
+            .expect("the fitting log should be inflight");
+        let batch = receivers[sender_id.get() as usize].recv().await.unwrap();
+        let decompressed = zstd::stream::decode_all(batch.data.as_slice()).unwrap();
+        assert!(decompressed.len() <= sender.max_stateless_batch_bytes);
+        let logs = StatefulLogsDecoder::new()
+            .decode_batch(&batch, FoldspaceContentEncoding::Zstd)
+            .unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].message, "fits");
+        assert_eq!(sender.retained.values().next().unwrap().metadata().event_count, 1);
+        assert_eq!(
+            recorder.counter(("stateful_logs_stateless_oversized_total", &[("domain", TEST_DOMAIN)])),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_without_an_open_stream_remains_stateless_without_mutation() {
+        let metrics_builder = MetricsBuilder::default();
+        let mut sender = sender("http://127.0.0.1:4317", "key-a");
+        let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let transaction = simple_log("queued retry 42", "queued-retry-uuid");
+
+        let transaction = sender
+            .try_send_retry_transaction(transaction, retry_counters(&metrics_builder), &telemetry, TEST_DOMAIN)
+            .await
+            .expect_err("a retry without an open stream should remain queued");
+
+        assert!(sender.streams.is_empty());
+        assert!(sender.retained.is_empty());
+        assert_eq!(parsed_body(transaction)[0][DUAL_SEND_UUID_FIELD], "queued-retry-uuid");
+    }
+
+    #[tokio::test]
+    async fn retry_without_immediate_stream_capacity_remains_queued_without_rotating_streams() {
         let metrics_builder = MetricsBuilder::default();
         let mut sender = sender("http://127.0.0.1:4317", "key-a");
         let _receivers = open_core_streams(&mut sender);
@@ -1394,11 +1722,13 @@ mod tests {
 
         let transaction = sender
             .try_send_retry_transaction(
-                simple_log("busy fallback 42", "busy-fallback-uuid"),
+                simple_log("busy retry 42", "busy-retry-uuid"),
                 retry_counters(&metrics_builder),
+                &telemetry,
+                TEST_DOMAIN,
             )
             .await
-            .expect_err("a retry should fall back when its selected stream is busy");
+            .expect_err("a retry should remain queued when every stream is busy");
 
         assert_eq!(sender.retained.len(), STATEFUL_SENDERS);
         assert_eq!(sender.streams.len(), original_streams.len());
@@ -1406,7 +1736,7 @@ mod tests {
             .streams
             .iter()
             .all(|(sender_id, stream)| original_streams.get(sender_id) == Some(&stream.stream_id)));
-        assert_eq!(parsed_body(transaction)[0][DUAL_SEND_UUID_FIELD], "busy-fallback-uuid");
+        assert_eq!(parsed_body(transaction)[0][DUAL_SEND_UUID_FIELD], "busy-retry-uuid");
     }
 
     #[tokio::test]
@@ -1424,6 +1754,8 @@ mod tests {
             .try_send_retry_transaction(
                 simple_log("grpc failed 42", "failed-grpc-retry-uuid"),
                 retry_counters(&metrics_builder),
+                &telemetry,
+                TEST_DOMAIN,
             )
             .await
             .is_ok());
@@ -1456,6 +1788,8 @@ mod tests {
             .try_send_retry_transaction(
                 simple_log("ambiguous retry 42", "ambiguous-retry-uuid"),
                 retry_counters(&metrics_builder),
+                &telemetry,
+                TEST_DOMAIN,
             )
             .await
             .is_ok());
@@ -1803,7 +2137,12 @@ mod tests {
         let mut restarted_sender = sender("http://127.0.0.1:4317", "key-a");
         let _receivers = open_core_streams(&mut restarted_sender);
         assert!(restarted_sender
-            .try_send_retry_transaction(recovered, retry_counters(&metrics_builder))
+            .try_send_retry_transaction(
+                recovered,
+                retry_counters(&metrics_builder),
+                &ComponentTelemetry::from_builder(&metrics_builder),
+                TEST_DOMAIN,
+            )
             .await
             .is_ok());
         assert!(restarted_sender.retained.contains_key(&1));

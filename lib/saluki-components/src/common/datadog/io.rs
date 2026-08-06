@@ -68,6 +68,21 @@ struct InFlightTransaction<R> {
     result: R,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetryTransport {
+    Foldspace,
+    Http,
+}
+
+struct PendingRetry<B>
+where
+    B: Buf + Clone,
+{
+    transaction: Transaction<B>,
+    counters: TransactionRetryCounters,
+    transport: RetryTransport,
+}
+
 type InFlightTransactionResult<B> =
     InFlightTransaction<Result<Response<Incoming>, RetryCircuitBreakerError<BoxError, Request<TransactionBody<B>>>>>;
 type InFlightTaskResult<B> = Result<InFlightTransactionResult<B>, JoinError>;
@@ -734,29 +749,55 @@ async fn run_endpoint_io_loop<B>(
 
     let mut in_flight = JoinSet::new();
     let mut transaction_input_telemetry_by_endpoint = FastHashMap::<MetaString, TransactionInputTelemetry>::default();
-    let mut pending_http_retry = None;
+    let mut pending_retry = None;
     let mut done = false;
 
     loop {
-        // Retry logs through an existing Foldspace stream without waiting for HTTP circuit-breaker readiness.
-        if !done && pending_http_retry.is_none() && pending_txns.high_priority_is_empty() {
-            let can_attempt_stateful_retry = stateful_sender
+        if !done && pending_retry.is_none() && pending_txns.high_priority_is_empty() {
+            if let Some(transaction) = pending_txns.pop_low_priority().await {
+                let counters =
+                    retry_counters_for_transaction(&transaction, &mut retry_telemetry, endpoint_name.as_ref());
+                let transport = if stateful_sender
+                    .as_ref()
+                    .is_some_and(|sender| sender.owns_retry_transaction(&transaction))
+                {
+                    RetryTransport::Foldspace
+                } else {
+                    RetryTransport::Http
+                };
+                pending_retry = Some(PendingRetry {
+                    transaction,
+                    counters,
+                    transport,
+                });
+            }
+        }
+
+        let can_attempt_stateful_retry = pending_retry
+            .as_ref()
+            .is_some_and(|retry| retry.transport == RetryTransport::Foldspace)
+            && stateful_sender
                 .as_ref()
                 .is_some_and(StatefulLogsSender::can_attempt_retry);
-            if can_attempt_stateful_retry {
-                if let Some(txn) = pending_txns.pop_low_priority().await {
-                    let retry_counters =
-                        retry_counters_for_transaction(&txn, &mut retry_telemetry, endpoint_name.as_ref());
-                    let sender = stateful_sender
-                        .as_mut()
-                        .expect("stateful retry availability was checked above");
-                    match sender.try_send_retry_transaction(txn, retry_counters).await {
-                        Ok(()) => {
-                            debug!(endpoint_url, "Retry sent through an existing Foldspace stream.");
-                            continue;
-                        }
-                        Err(txn) => pending_http_retry = Some(txn),
-                    }
+        if !done && can_attempt_stateful_retry {
+            let retry = pending_retry.take().expect("a Foldspace retry was checked above");
+            let sender = stateful_sender
+                .as_mut()
+                .expect("Foldspace retry ownership requires a stateful sender");
+            match sender
+                .try_send_retry_transaction(retry.transaction, retry.counters.clone(), &telemetry, &endpoint_domain)
+                .await
+            {
+                Ok(()) => {
+                    debug!(endpoint_url, "Retry sent through an existing Foldspace stream.");
+                    continue;
+                }
+                Err(transaction) => {
+                    pending_retry = Some(PendingRetry {
+                        transaction,
+                        counters: retry.counters,
+                        transport: RetryTransport::Foldspace,
+                    });
                 }
             }
         }
@@ -817,17 +858,17 @@ async fn run_endpoint_io_loop<B>(
 
             // While we're not done and there are pending transactions, wait for the service to become ready and then
             // next the next available pending transaction.
-            svc = service.ready(), if !done && (pending_http_retry.is_some() || !pending_txns.is_empty()) => match svc {
+            svc = service.ready(), if !done && (!pending_txns.high_priority_is_empty()
+                || pending_retry.as_ref().is_some_and(|retry| retry.transport == RetryTransport::Http)) => match svc {
                 Ok(svc) => {
-                    let pending_txn = if pending_txns.high_priority_is_empty() {
-                        pending_http_retry.take().map(PendingTransaction::LowPriority)
-                    } else {
-                        None
-                    };
-                    let pending_txn = match pending_txn {
-                        Some(pending_txn) => Some(pending_txn),
-                        None => pending_txns.pop().await,
-                    };
+                    let pending_txn = pending_txns
+                        .pop_high_priority()
+                        .map(PendingTransaction::HighPriority)
+                        .or_else(|| {
+                            pending_retry
+                                .take()
+                                .map(|retry| PendingTransaction::LowPriority(retry.transaction))
+                        });
                     if let Some(pending_txn) = pending_txn {
                         let (metadata, request, retry_counters) = prepare_transaction_for_dispatch(
                             pending_txn,
@@ -886,11 +927,14 @@ async fn run_endpoint_io_loop<B>(
         }
     }
 
-    if let Some(txn) = pending_http_retry.take() {
-        match pending_txns.push_low_priority(txn).await {
-            Ok(push_result) => track_queue_drops(&telemetry, &endpoint_domain, push_result),
+    if let Some(retry) = pending_retry.take() {
+        match pending_txns.push_low_priority(retry.transaction).await {
+            Ok(push_result) => {
+                retry.counters.increment_requeued();
+                track_queue_drops(&telemetry, &endpoint_domain, push_result);
+            }
             Err(e) => {
-                error!(endpoint_url, error = %e, "Failed to preserve pending HTTP retry during shutdown. Events may be permanently lost.")
+                error!(endpoint_url, error = %e, "Failed to preserve pending retry during shutdown. Events may be permanently lost.")
             }
         }
     }
@@ -1081,19 +1125,17 @@ impl<T: Retryable> PendingTransactions<T> {
         }
     }
 
-    /// Returns `true` if there are no pending transactions.
-    ///
-    /// This includes both the high-priority and low-priority queues.
-    pub fn is_empty(&self) -> bool {
-        self.high_priority.is_empty() && self.low_priority.is_empty()
-    }
-
     pub(super) fn high_priority_is_full_with(&self, externally_pending: usize) -> bool {
         self.high_priority.len().saturating_add(externally_pending) > self.max_high_priority
     }
 
     pub(super) fn high_priority_is_empty(&self) -> bool {
         self.high_priority.is_empty()
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.high_priority.is_empty() && self.low_priority.is_empty()
     }
 
     /// Pushes a high-priority transaction into the queue.
@@ -1140,20 +1182,20 @@ impl<T: Retryable> PendingTransactions<T> {
         Ok(push_result)
     }
 
-    /// Pops the next transaction from the queue.
-    ///
-    /// The high-priority queue is drained first before attempting to pop from the low-priority queue. The returned
-    /// variant identifies the queue that contained the transaction.
-    pub async fn pop(&mut self) -> Option<PendingTransaction<T>> {
-        // We bias towards handling enqueued transactions first, since those are our "high priority" transactions, and we
-        // want to keep them flowing as fast as possible.
-        if let Some(transaction) = self.high_priority.pop_front() {
-            self.telemetry.high_prio_queue_removals().increment(1);
+    pub(super) fn pop_high_priority(&mut self) -> Option<T> {
+        let transaction = self.high_priority.pop_front()?;
+        self.telemetry.high_prio_queue_removals().increment(1);
 
-            debug!(
-                high_prio_queue_len = self.high_priority.len(),
-                "Dequeued pending transaction from high-priority queue."
-            );
+        debug!(
+            high_prio_queue_len = self.high_priority.len(),
+            "Dequeued pending transaction from high-priority queue."
+        );
+        Some(transaction)
+    }
+
+    #[cfg(test)]
+    pub(super) async fn pop(&mut self) -> Option<PendingTransaction<T>> {
+        if let Some(transaction) = self.pop_high_priority() {
             return Some(PendingTransaction::HighPriority(transaction));
         }
 
@@ -1580,10 +1622,11 @@ app.datadoghq.com: [key-a, key-b]
             .expect("overflow push should succeed");
         assert!(!push_result.had_drops());
 
-        let first = pending_txns
-            .pop()
-            .await
-            .expect("high-priority transaction should be queued");
+        let first = PendingTransaction::HighPriority(
+            pending_txns
+                .pop_high_priority()
+                .expect("high-priority transaction should be queued"),
+        );
         let (metadata, _request, retry_counters) =
             prepare_transaction_for_dispatch(first, &mut retry_telemetry, &test_logical_endpoint);
         assert!(retry_counters.is_none());
@@ -1606,7 +1649,12 @@ app.datadoghq.com: [key-a, key-b]
             None
         );
 
-        let overflow = pending_txns.pop().await.expect("overflow transaction should be queued");
+        let overflow = PendingTransaction::LowPriority(
+            pending_txns
+                .pop_low_priority()
+                .await
+                .expect("overflow transaction should be queued"),
+        );
         let (metadata, _request, retry_counters) =
             prepare_transaction_for_dispatch(overflow, &mut retry_telemetry, &test_logical_endpoint);
         assert!(retry_counters.is_some());
@@ -1688,7 +1736,8 @@ app.datadoghq.com: [key-a, key-b]
             .await
             .expect("retry queue push should succeed");
         assert!(!push_result.had_drops());
-        let pending_txn = pending_txns.pop().await.expect("retry should be queued");
+        let pending_txn =
+            PendingTransaction::LowPriority(pending_txns.pop_low_priority().await.expect("retry should be queued"));
         let (metadata, request, retry_counters) =
             prepare_transaction_for_dispatch(pending_txn, &mut retry_telemetry, &test_logical_endpoint);
         let result = service.call(request).await;
@@ -1734,7 +1783,8 @@ app.datadoghq.com: [key-a, key-b]
             .await
             .expect("retry queue push should succeed");
         assert!(!push_result.had_drops());
-        let pending_txn = pending_txns.pop().await.expect("retry should be queued");
+        let pending_txn =
+            PendingTransaction::LowPriority(pending_txns.pop_low_priority().await.expect("retry should be queued"));
         let (metadata, _request, retry_counters) =
             prepare_transaction_for_dispatch(pending_txn, &mut retry_telemetry, &test_logical_endpoint);
 
@@ -1752,7 +1802,8 @@ app.datadoghq.com: [key-a, key-b]
             domain,
         )
         .await;
-        assert!(pending_txns.is_empty());
+        assert!(pending_txns.high_priority_is_empty());
+        assert!(pending_txns.low_priority.is_empty());
         assert_eq!(
             recorder.counter(("network_http_requests_retries_total", &retry_metric_tags(domain))),
             Some(1)
@@ -1813,14 +1864,11 @@ app.datadoghq.com: [key-a, key-b]
         assert!(!push_result.had_drops());
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(1.0));
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
-        assert!(matches!(
-            pending_txns.pop().await,
-            Some(PendingTransaction::LowPriority(transaction)) if transaction == "retry"
-        ));
+        assert_eq!(pending_txns.pop_low_priority().await.as_deref(), Some("retry"));
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
 
-        assert!(pending_txns.pop().await.is_none());
+        assert!(pending_txns.pop_low_priority().await.is_none());
         assert_eq!(recorder.gauge("network_http_retry_queue_size"), Some(0.0));
         assert_eq!(recorder.gauge("network_http_retry_queue_bytes_per_sec"), Some(20.0));
     }
@@ -1844,10 +1892,7 @@ app.datadoghq.com: [key-a, key-b]
         assert!(!pending_txns.high_priority_is_empty());
         assert_eq!(pending_txns.pop_low_priority().await.as_deref(), Some("retry"));
         assert!(!pending_txns.high_priority_is_empty());
-        assert!(matches!(
-            pending_txns.pop().await,
-            Some(PendingTransaction::HighPriority(transaction)) if transaction == "fresh"
-        ));
+        assert_eq!(pending_txns.pop_high_priority().as_deref(), Some("fresh"));
     }
 
     #[tokio::test]
