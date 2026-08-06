@@ -1,8 +1,10 @@
 use std::time::Duration;
 
-use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+use agent_data_plane_config::domains::{
+    dogstatsd::OriginTagCardinality as ConfigOriginTagCardinality,
+    otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode},
 };
+use saluki_context::origin::OriginTagCardinality;
 use saluki_error::{generic_error, GenericError};
 
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
@@ -11,6 +13,8 @@ const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub struct OtlpMetricsTranslatorConfig {
+    /// Cardinality of entity and global tags resolved from an OTLP resource.
+    pub tag_cardinality: OriginTagCardinality,
     pub hist_mode: HistogramMode,
     pub send_histogram_aggregations: bool,
     pub cumulative_monotonic_mode: CumulativeMonotonicMode,
@@ -42,6 +46,16 @@ impl OtlpMetricsTranslatorConfig {
             return Err(generic_error!("no buckets mode and no send count sum are incompatible"));
         }
         Ok(())
+    }
+
+    pub fn with_tag_cardinality(mut self, tag_cardinality: ConfigOriginTagCardinality) -> Self {
+        self.tag_cardinality = match tag_cardinality {
+            ConfigOriginTagCardinality::Low => OriginTagCardinality::Low,
+            ConfigOriginTagCardinality::Orchestrator => OriginTagCardinality::Orchestrator,
+            ConfigOriginTagCardinality::High => OriginTagCardinality::High,
+            ConfigOriginTagCardinality::None => OriginTagCardinality::None,
+        };
+        self
     }
 
     pub fn with_remapping(mut self, with_remapping: bool) -> Self {
@@ -121,6 +135,7 @@ impl OtlpMetricsTranslatorConfig {
 impl Default for OtlpMetricsTranslatorConfig {
     fn default() -> Self {
         Self {
+            tag_cardinality: OriginTagCardinality::Low,
             hist_mode: HistogramMode::default(),
             send_histogram_aggregations: false,
             cumulative_monotonic_mode: CumulativeMonotonicMode::default(),

@@ -461,6 +461,26 @@ fn entity_id_to_remote_entity_id(entity_id: &EntityId) -> RemoteEntityId {
             prefix: "container_id".to_string(),
             uid: container_id.to_string(),
         },
+        EntityId::ContainerImageMetadata(digest) => RemoteEntityId {
+            prefix: "container_image_metadata".to_string(),
+            uid: digest.to_string(),
+        },
+        EntityId::EcsTask(task_arn) => RemoteEntityId {
+            prefix: "ecs_task".to_string(),
+            uid: task_arn.to_string(),
+        },
+        EntityId::KubernetesDeployment(deployment) => RemoteEntityId {
+            prefix: "deployment".to_string(),
+            uid: deployment.to_string(),
+        },
+        EntityId::KubernetesMetadata(metadata) => RemoteEntityId {
+            prefix: "kubernetes_metadata".to_string(),
+            uid: metadata.to_string(),
+        },
+        EntityId::KubernetesNode(node) => RemoteEntityId {
+            prefix: "kubernetes_node".to_string(),
+            uid: node.to_string(),
+        },
         EntityId::PodUid(pod_uid) => RemoteEntityId {
             prefix: "kubernetes_pod_uid".to_string(),
             uid: pod_uid.to_string(),
@@ -468,6 +488,10 @@ fn entity_id_to_remote_entity_id(entity_id: &EntityId) -> RemoteEntityId {
         EntityId::Global => RemoteEntityId {
             prefix: "internal".to_string(),
             uid: "global-entity-id".to_string(),
+        },
+        EntityId::Process(process_id) => RemoteEntityId {
+            prefix: "process".to_string(),
+            uid: process_id.to_string(),
         },
         EntityId::ContainerPid(pid) => RemoteEntityId {
             prefix: "container_pid".to_string(),
@@ -482,14 +506,32 @@ fn entity_id_to_remote_entity_id(entity_id: &EntityId) -> RemoteEntityId {
 
 pub(super) fn parse_entity_id_str(value: &str) -> Option<EntityId> {
     const CONTAINER_ID_PREFIX: &str = "container_id://";
+    const CONTAINER_IMAGE_METADATA_PREFIX: &str = "container_image_metadata://";
+    const ECS_TASK_PREFIX: &str = "ecs_task://";
+    const KUBERNETES_DEPLOYMENT_PREFIX: &str = "deployment://";
+    const KUBERNETES_METADATA_PREFIX: &str = "kubernetes_metadata://";
+    const KUBERNETES_NODE_PREFIX: &str = "kubernetes_node://";
     const POD_UID_PREFIX: &str = "kubernetes_pod_uid://";
+    const PROCESS_PREFIX: &str = "process://";
     const CONTAINER_PID_PREFIX: &str = "container_pid://";
     const CONTAINER_INODE_PREFIX: &str = "container_inode://";
 
     if let Some(container_id) = value.strip_prefix(CONTAINER_ID_PREFIX) {
         Some(EntityId::Container(container_id.into()))
+    } else if let Some(digest) = value.strip_prefix(CONTAINER_IMAGE_METADATA_PREFIX) {
+        Some(EntityId::ContainerImageMetadata(digest.into()))
+    } else if let Some(task_arn) = value.strip_prefix(ECS_TASK_PREFIX) {
+        Some(EntityId::EcsTask(task_arn.into()))
+    } else if let Some(deployment) = value.strip_prefix(KUBERNETES_DEPLOYMENT_PREFIX) {
+        Some(EntityId::KubernetesDeployment(deployment.into()))
+    } else if let Some(metadata) = value.strip_prefix(KUBERNETES_METADATA_PREFIX) {
+        Some(EntityId::KubernetesMetadata(metadata.into()))
+    } else if let Some(node) = value.strip_prefix(KUBERNETES_NODE_PREFIX) {
+        Some(EntityId::KubernetesNode(node.into()))
     } else if let Some(pod_uid) = value.strip_prefix(POD_UID_PREFIX) {
         Some(EntityId::PodUid(pod_uid.into()))
+    } else if let Some(process_id) = value.strip_prefix(PROCESS_PREFIX) {
+        Some(EntityId::Process(process_id.into()))
     } else if let Some(pid) = value.strip_prefix(CONTAINER_PID_PREFIX) {
         pid.parse().ok().map(EntityId::ContainerPid)
     } else if let Some(inode) = value.strip_prefix(CONTAINER_INODE_PREFIX) {

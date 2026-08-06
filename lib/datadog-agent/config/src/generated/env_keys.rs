@@ -786,6 +786,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_METRICS_TAG_CARDINALITY", "DD_OTLP_TAG_CARDINALITY"],
+        path: &["otlp_config", "metrics", "tag_cardinality"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_METRICS_TAGS"],
         path: &["otlp_config", "metrics", "tags"],
         decode: EnvDecode::RawString,

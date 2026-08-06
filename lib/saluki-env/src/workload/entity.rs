@@ -5,8 +5,14 @@ use std::{cmp::Ordering, fmt};
 use stringtheory::MetaString;
 use tracing::warn;
 
-const ENTITY_PREFIX_POD_UID: &str = "kubernetes_pod_uid://";
 const ENTITY_PREFIX_CONTAINER_ID: &str = "container_id://";
+const ENTITY_PREFIX_CONTAINER_IMAGE_METADATA: &str = "container_image_metadata://";
+const ENTITY_PREFIX_ECS_TASK: &str = "ecs_task://";
+const ENTITY_PREFIX_KUBERNETES_DEPLOYMENT: &str = "deployment://";
+const ENTITY_PREFIX_KUBERNETES_METADATA: &str = "kubernetes_metadata://";
+const ENTITY_PREFIX_KUBERNETES_NODE: &str = "kubernetes_node://";
+const ENTITY_PREFIX_POD_UID: &str = "kubernetes_pod_uid://";
+const ENTITY_PREFIX_PROCESS: &str = "process://";
 const ENTITY_PREFIX_CONTAINER_INODE: &str = "container_inode://";
 const ENTITY_PREFIX_CONTAINER_PID: &str = "container_pid://";
 
@@ -24,15 +30,33 @@ pub enum EntityId {
     /// anything within the workload, such as host or cluster tags.
     Global,
 
+    /// A container ID.
+    ///
+    /// This is generally a long hexadecimal string, as generally used by container runtimes like `containerd`.
+    Container(MetaString),
+
+    /// An OCI image manifest digest.
+    ContainerImageMetadata(MetaString),
+
+    /// An ECS task ARN.
+    EcsTask(MetaString),
+
+    /// A Kubernetes deployment, identified by `<namespace>/<name>`.
+    KubernetesDeployment(MetaString),
+
+    /// Kubernetes metadata, such as a namespace path.
+    KubernetesMetadata(MetaString),
+
+    /// A Kubernetes node name.
+    KubernetesNode(MetaString),
+
     /// A Kubernetes pod UID.
     ///
     /// Represents the UUID of a specific Kubernetes pod.
     PodUid(MetaString),
 
-    /// A container ID.
-    ///
-    /// This is generally a long hexadecimal string, as generally used by container runtimes like `containerd`.
-    Container(MetaString),
+    /// A process identifier reported by the remote tagger.
+    Process(MetaString),
 
     /// A container inode.
     ///
@@ -133,10 +157,17 @@ impl EntityId {
     fn precedence_value(&self) -> usize {
         match self {
             Self::Global => 0,
-            Self::PodUid(_) => 1,
-            Self::Container(_) => 2,
-            Self::ContainerInode(_) => 3,
-            Self::ContainerPid(_) => 4,
+            Self::Container(_) => 1,
+            Self::ContainerImageMetadata(_) => 2,
+            Self::EcsTask(_) => 3,
+            Self::KubernetesDeployment(_) => 4,
+            Self::KubernetesMetadata(_) => 5,
+            Self::KubernetesNode(_) => 6,
+            Self::PodUid(_) => 7,
+            Self::Process(_) => 8,
+            // These are local aliases used to resolve a container before the remote tagger entity lookup.
+            Self::ContainerInode(_) => 9,
+            Self::ContainerPid(_) => 10,
         }
     }
 }
@@ -145,8 +176,16 @@ impl fmt::Display for EntityId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Global => write!(f, "system://global"),
-            Self::PodUid(pod_uid) => write!(f, "{}{}", ENTITY_PREFIX_POD_UID, pod_uid),
             Self::Container(container_id) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_ID, container_id),
+            Self::ContainerImageMetadata(digest) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_IMAGE_METADATA, digest),
+            Self::EcsTask(task_arn) => write!(f, "{}{}", ENTITY_PREFIX_ECS_TASK, task_arn),
+            Self::KubernetesDeployment(deployment) => {
+                write!(f, "{}{}", ENTITY_PREFIX_KUBERNETES_DEPLOYMENT, deployment)
+            }
+            Self::KubernetesMetadata(metadata) => write!(f, "{}{}", ENTITY_PREFIX_KUBERNETES_METADATA, metadata),
+            Self::KubernetesNode(node) => write!(f, "{}{}", ENTITY_PREFIX_KUBERNETES_NODE, node),
+            Self::PodUid(pod_uid) => write!(f, "{}{}", ENTITY_PREFIX_POD_UID, pod_uid),
+            Self::Process(process_id) => write!(f, "{}{}", ENTITY_PREFIX_PROCESS, process_id),
             Self::ContainerInode(inode) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_INODE, inode),
             Self::ContainerPid(pid) => write!(f, "{}{}", ENTITY_PREFIX_CONTAINER_PID, pid),
         }
@@ -169,10 +208,12 @@ impl serde::Serialize for EntityId {
 /// This type establishes a total ordering over entity IDs based on their logical precedence, which is as follows:
 ///
 /// - global (highest precedence)
-/// - pod
 /// - container
-/// - container inode
-/// - container PID (lowest precedence)
+/// - OCI image metadata
+/// - ECS task
+/// - Kubernetes deployment, metadata, node, and pod
+/// - process
+/// - local container inode and PID aliases (lowest precedence)
 ///
 /// Wrapped entity IDs are be sorted highest to lowest precedence. For entity IDs with the same precedence, they're
 /// further ordered by their internal value. For entity IDs with a string identifier, lexicographical ordering is used.
@@ -205,9 +246,23 @@ impl Ord for HighestPrecedenceEntityIdRef<'_> {
         match (self.0, other.0) {
             // Global entities are always equal.
             (EntityId::Global, EntityId::Global) => Ordering::Equal,
-            (EntityId::PodUid(self_pod_uid), EntityId::PodUid(other_pod_uid)) => self_pod_uid.cmp(other_pod_uid),
             (EntityId::Container(self_container_id), EntityId::Container(other_container_id)) => {
                 self_container_id.cmp(other_container_id)
+            }
+            (EntityId::ContainerImageMetadata(self_digest), EntityId::ContainerImageMetadata(other_digest)) => {
+                self_digest.cmp(other_digest)
+            }
+            (EntityId::EcsTask(self_task_arn), EntityId::EcsTask(other_task_arn)) => self_task_arn.cmp(other_task_arn),
+            (EntityId::KubernetesDeployment(self_deployment), EntityId::KubernetesDeployment(other_deployment)) => {
+                self_deployment.cmp(other_deployment)
+            }
+            (EntityId::KubernetesMetadata(self_metadata), EntityId::KubernetesMetadata(other_metadata)) => {
+                self_metadata.cmp(other_metadata)
+            }
+            (EntityId::KubernetesNode(self_node), EntityId::KubernetesNode(other_node)) => self_node.cmp(other_node),
+            (EntityId::PodUid(self_pod_uid), EntityId::PodUid(other_pod_uid)) => self_pod_uid.cmp(other_pod_uid),
+            (EntityId::Process(self_process_id), EntityId::Process(other_process_id)) => {
+                self_process_id.cmp(other_process_id)
             }
             (EntityId::ContainerInode(self_inode), EntityId::ContainerInode(other_inode)) => {
                 self_inode.cmp(other_inode)

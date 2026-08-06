@@ -87,6 +87,7 @@ impl OtlpConfiguration {
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
         metrics::config::OtlpMetricsTranslatorConfig::default()
+            .with_tag_cardinality(self.otlp.metrics.tag_cardinality)
             .with_summary_mode(self.otlp.metrics.summaries.mode)
             .with_histogram_mode(self.otlp.metrics.histogram_mode)
             .with_send_histogram_aggregations(self.otlp.metrics.send_histogram_aggregations)
@@ -157,8 +158,9 @@ impl SourceBuilder for OtlpConfiguration {
 
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
 
-        let context_resolver =
-            build_context_resolver(&self.otlp.contexts, &context, maybe_origin_tags_resolver.clone())?;
+        // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
+        // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
+        let context_resolver = build_context_resolver(&self.otlp.contexts, &context, None)?;
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
@@ -234,6 +236,7 @@ impl Source for Otlp {
             metrics_translator_config,
             default_hostname,
             context_resolver,
+            origin_tag_resolver.clone(),
             metric_tags,
         )?;
 

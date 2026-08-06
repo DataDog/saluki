@@ -1293,6 +1293,11 @@ pub struct OtlpConfigMetrics {
     #[serde(default)]
     pub sums: OtlpConfigMetricsSums,
 
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_tag_cardinality"
+    )]
+    pub tag_cardinality: String,
+
     #[serde(default)]
     pub tags: String,
 }
@@ -1305,6 +1310,7 @@ impl Default for OtlpConfigMetrics {
             resource_attributes_as_tags: Default::default(),
             summaries: Default::default(),
             sums: Default::default(),
+            tag_cardinality: defaults::datadog_configuration_otlp_config_metrics_tag_cardinality(),
             tags: Default::default(),
         }
     }
@@ -1811,6 +1817,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint() -> String {
         "127.0.0.1:4319".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_tag_cardinality() -> String {
+        "low".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_metrics_histograms_mode() -> String {
         "distributions".to_string()
