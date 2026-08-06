@@ -1,5 +1,6 @@
 //! Obfuscation configuration types.
 
+use agent_data_plane_config::domains::traces;
 use facet::Facet;
 use saluki_config::deserialize_space_separated_or_seq;
 use serde::Deserialize;
@@ -46,6 +47,56 @@ pub struct ObfuscationConfig {
     /// OpenSearch obfuscation settings.
     #[serde(default)]
     pub(crate) opensearch: OpenSearchObfuscationConfig,
+}
+
+impl From<&traces::Obfuscation> for ObfuscationConfig {
+    fn from(config: &traces::Obfuscation) -> Self {
+        Self {
+            credit_cards: CreditCardObfuscationConfig {
+                enabled: config.credit_cards.enabled,
+                luhn: config.credit_cards.luhn,
+                keep_values: config.credit_cards.keep_values.clone(),
+            },
+            http: HttpObfuscationConfig {
+                remove_query_string: config.http.remove_query_string,
+                remove_paths_with_digits: config.http.remove_paths_with_digits,
+            },
+            memcached: MemcachedObfuscationConfig {
+                enabled: config.memcached.enabled,
+                keep_command: config.memcached.keep_command,
+            },
+            redis: RedisObfuscationConfig {
+                enabled: config.redis.enabled,
+                remove_all_args: config.redis.remove_all_args,
+            },
+            valkey: ValkeyObfuscationConfig {
+                enabled: config.valkey.enabled,
+                remove_all_args: config.valkey.remove_all_args,
+            },
+            sql: SqlObfuscationConfig {
+                dbms: config.sql.dbms.clone(),
+                table_names: config.sql.table_names,
+                replace_digits: config.sql.replace_digits,
+                keep_sql_alias: config.sql.keep_sql_alias,
+                dollar_quoted_func: config.sql.dollar_quoted_func,
+            },
+            mongodb: MongoObfuscationConfig {
+                enabled: config.mongodb.enabled,
+                keep_values: config.mongodb.keep_values.clone(),
+                obfuscate_sql_values: config.mongodb.obfuscate_sql_values.clone(),
+            },
+            elasticsearch: EsObfuscationConfig {
+                enabled: config.elasticsearch.enabled,
+                keep_values: config.elasticsearch.keep_values.clone(),
+                obfuscate_sql_values: config.elasticsearch.obfuscate_sql_values.clone(),
+            },
+            opensearch: OpenSearchObfuscationConfig {
+                enabled: config.opensearch.enabled,
+                keep_values: config.opensearch.keep_values.clone(),
+                obfuscate_sql_values: config.opensearch.obfuscate_sql_values.clone(),
+            },
+        }
+    }
 }
 
 /// HTTP URL obfuscation configuration.
@@ -208,4 +259,25 @@ pub struct OpenSearchObfuscationConfig {
     /// Keys whose string values should be SQL-obfuscated instead of replaced with `?`.
     #[serde(default, deserialize_with = "deserialize_space_separated_or_seq")]
     pub(crate) obfuscate_sql_values: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_obfuscation_configuration_preserves_settings() {
+        let mut typed = traces::Obfuscation::default();
+        typed.credit_cards.enabled = true;
+        typed.credit_cards.keep_values = vec!["safe.tag".to_owned()];
+        typed.sql.dbms = "postgresql".to_owned();
+        typed.mongodb.obfuscate_sql_values = vec!["query".to_owned()];
+
+        let converted = ObfuscationConfig::from(&typed);
+
+        assert!(converted.credit_cards.enabled);
+        assert_eq!(converted.credit_cards.keep_values, ["safe.tag"]);
+        assert_eq!(converted.sql.dbms, "postgresql");
+        assert_eq!(converted.mongodb.obfuscate_sql_values, ["query"]);
+    }
 }
