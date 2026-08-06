@@ -55,7 +55,6 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
         let traces_config = TracesConfig {
             enable_otlp_compute_top_level_by_span_kind: self.traces.enable_compute_top_level_by_span_kind,
             ignore_missing_datadog_fields: self.traces.ignore_missing_datadog_fields,
-            ..Default::default()
         };
         let traces_translator = OtlpTracesTranslator::new(traces_config, self.traces.string_interner_size);
 

@@ -166,7 +166,6 @@ impl SourceBuilder for OtlpConfiguration {
         let traces_config = TracesConfig {
             enable_otlp_compute_top_level_by_span_kind: self.otlp.traces.enable_compute_top_level_by_span_kind,
             ignore_missing_datadog_fields: self.otlp.traces.ignore_missing_datadog_fields,
-            ..Default::default()
         };
         let traces_translator = OtlpTracesTranslator::new(traces_config, self.otlp.traces.string_interner_size);
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;

@@ -1,6 +1,6 @@
 use std::{fmt::Write, time::Duration};
 
-use agent_data_plane_config::{domains, SharedConfiguration};
+use agent_data_plane_config::{defaults::DEFAULT_TRACE_ENV, domains, SharedConfiguration};
 use async_trait::async_trait;
 use datadog_protos::traces::builders::{
     attribute_any_value::AttributeAnyValueType, attribute_array_value::AttributeArrayValueType, AgentPayloadBuilder,
@@ -121,7 +121,7 @@ impl DatadogTraceConfiguration {
         // ADP defaults the global environment tag to `none` rather than the Core Agent's empty
         // string, so normalize an empty resolved value back to `none`.
         let env = if traces.env.is_empty() {
-            "none".to_string()
+            DEFAULT_TRACE_ENV.to_owned()
         } else {
             traces.env.clone()
         };
