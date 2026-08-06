@@ -365,10 +365,13 @@ impl Listener {
                 }),
             #[cfg(target_os = "linux")]
             ListenerInner::Vsock(vsock) => {
+                // Deliberately no `SO_RCVBUF`: vsock receive buffering is governed by the transport's credit-based
+                // flow control, sized by `SO_VM_SOCKETS_BUFFER_SIZE` at level `AF_VSOCK`. A `SO_RCVBUF` setsockopt is
+                // accepted by the generic socket layer and updates `sk_rcvbuf`, but the transport never reads it, so
+                // making the call would only give the false impression that the receive buffer had been sized.
                 let (socket, addr) = vsock.accept().await.context(FailedToAccept {
                     address: self.listen_address.clone(),
                 })?;
-                configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                 Ok((socket, addr).into())
             }
             #[cfg(windows)]
@@ -649,13 +652,9 @@ mod tests {
     use std::time::Duration;
 
     use bytes::BytesMut;
-    #[cfg(target_os = "linux")]
-    use tokio::io::AsyncWriteExt as _;
     use tokio::{net::TcpStream, time::timeout};
 
     use super::*;
-    #[cfg(target_os = "linux")]
-    use crate::net::ConnectionAddress;
 
     const REQUESTED_RECV_BUFFER_SIZE: usize = 131_072;
     const TEST_PACKET: &[u8] = b"hello";
@@ -838,64 +837,6 @@ mod tests {
         assert!(!stream.is_connectionless());
     }
 
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn vsock_listener_accepts_with_receive_buffer_size() {
-        // Bind to the local CID on an ephemeral port (`VMADDR_PORT_ANY`) so the test can't collide with
-        // anything else using vsock on the host.
-        let address = ListenAddress::Vsock {
-            cid: tokio_vsock::VMADDR_CID_LOCAL,
-            port: u32::MAX,
-        };
-        let mut listener = match Listener::from_listen_address(address, None).await {
-            Ok(listener) => listener.with_receive_buffer_size(Some(REQUESTED_RECV_BUFFER_SIZE)),
-            // Not every kernel has a vsock loopback transport loaded, so skip instead of failing there.
-            Err(e) if is_vsock_unavailable_error(&e) => return,
-            Err(e) => panic!("listener should bind: {e}"),
-        };
-        let local_addr = vsock_local_addr(&listener).expect("local addr should be available");
-
-        let client = tokio::spawn(async move {
-            let mut client = tokio_vsock::VsockStream::connect(local_addr).await?;
-            client.write_all(TEST_PACKET).await?;
-            // Hold the connection open until the test has read from it.
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            io::Result::Ok(())
-        });
-        let mut stream = timeout(Duration::from_secs(1), listener.accept())
-            .await
-            .expect("accept should not time out")
-            .expect("listener should accept vsock stream");
-
-        let actual_recv_buffer_size = stream
-            .recv_buffer_size()
-            .expect("receive buffer size should be available");
-        assert!(
-            actual_recv_buffer_size >= REQUESTED_RECV_BUFFER_SIZE,
-            "expected receive buffer size >= {REQUESTED_RECV_BUFFER_SIZE}, got {actual_recv_buffer_size}"
-        );
-        assert!(!stream.is_connectionless());
-        assert_eq!(listener.min_buffer_reservation(), 1);
-
-        let mut buffer = BytesMut::with_capacity(TEST_PACKET.len());
-        let (bytes_read, peer_addr) = timeout(Duration::from_secs(1), stream.receive(&mut buffer))
-            .await
-            .expect("receive should not time out")
-            .expect("packet should receive");
-
-        assert_eq!(bytes_read, TEST_PACKET.len());
-        assert_eq!(&buffer[..], TEST_PACKET);
-
-        // vsock peers are identified by CID and port only: there are no process credentials to report.
-        let ConnectionAddress::Vsock { cid, .. } = peer_addr else {
-            panic!("expected a vsock peer address, got {peer_addr}");
-        };
-        assert_eq!(cid, tokio_vsock::VMADDR_CID_LOCAL);
-        assert!(peer_addr.process_credentials().is_none());
-
-        client.abort();
-    }
-
     #[cfg(not(target_os = "linux"))]
     #[tokio::test]
     async fn vsock_listener_is_unsupported_on_non_linux() {
@@ -907,27 +848,6 @@ mod tests {
         };
 
         assert!(err.to_string().contains("vsock listen addresses are not supported"));
-    }
-
-    #[cfg(target_os = "linux")]
-    fn is_vsock_unavailable_error(error: &ListenerError) -> bool {
-        let ListenerError::FailedToBind { source, .. } = error else {
-            return false;
-        };
-
-        // A host with no vsock transport rejects the address family outright, or has no device to bind to.
-        matches!(
-            source.raw_os_error(),
-            Some(libc::EAFNOSUPPORT) | Some(libc::ENODEV) | Some(libc::EADDRNOTAVAIL)
-        )
-    }
-
-    #[cfg(target_os = "linux")]
-    fn vsock_local_addr(listener: &Listener) -> io::Result<VsockAddr> {
-        match &listener.inner {
-            ListenerInner::Vsock(vsock) => vsock.local_addr(),
-            _ => panic!("expected vsock listener"),
-        }
     }
 
     #[tokio::test]

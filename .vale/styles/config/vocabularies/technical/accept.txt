@@ -255,8 +255,5 @@ hoc
 rss
 waker
 cid(s?)
-docker
-syscall
-seccomp
 vm(s?)
 pr

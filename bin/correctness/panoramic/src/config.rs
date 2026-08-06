@@ -222,17 +222,6 @@ pub struct ContainerConfig {
     /// needs the target's local cgroup path to expose its Docker container ID.
     #[serde(default)]
     pub host_cgroup_namespace: bool,
-
-    /// Whether the Linux target runs with Docker's seccomp profile disabled.
-    ///
-    /// Docker's default profile rejects `socket(2)` for address families it doesn't allowlist,
-    /// `AF_VSOCK` among them, so a test exercising an exotic address family can't create a socket
-    /// at all without this.
-    ///
-    /// Defaults to `false`. Enable this only when the test genuinely needs a blocked syscall: it
-    /// removes syscall filtering for the whole container.
-    #[serde(default)]
-    pub unconfined_seccomp: bool,
 }
 
 /// A single step in the assertion pipeline.

@@ -503,6 +503,8 @@ Accepts a bare integer number of bytes or a human-readable byte-size string such
 
 The vsock (`AF_VSOCK`) address that DogStatsD listens on, given as `<cid>:<port>`. vsock lets clients in a guest VM send metrics without shared networking or a shared filesystem. Framing matches UDS stream mode: length-delimited frames over a persistent connection. vsock carries no process credentials, so senders are treated like TCP senders and get no socket-based origin detection.
 
+`dogstatsd_eol_required` has no vsock value, so a trailing newline is never required on a vsock listener. This matches TCP rather than UDS: the `uds` value applies only to the Unix socket listeners it names. `dogstatsd_so_rcvbuf` doesn't apply either: vsock receive buffering is sized by the transport's credit-based flow control rather than by `SO_RCVBUF`.
+
 The CID may be a bare 32-bit number, one of the well-known names `any`, `hypervisor`, `local`, or `host`, or left empty to mean `any`. Leaving it empty (for example, `:8125`) accepts connections addressed to any of the local CIDs, which suits nearly all deployments; name or number a CID only to pin the listener to that one. The port is a bare 32-bit number, since vsock ports are twice as wide as IP ports.
 
 Leave unset to disable vsock. Setting it on a platform without vsock support fails at startup, as does a value that isn't a valid vsock address.

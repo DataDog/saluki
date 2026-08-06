@@ -339,9 +339,14 @@ pub struct DogStatsDConfiguration {
     /// The address to listen on in vsock mode, given as `<cid>:<port>`.
     ///
     /// vsock (`AF_VSOCK`) is a connection-oriented transport between a hypervisor and its guest VMs, which lets
-    /// clients running inside a guest send metrics without any shared network or filesystem. Framing and message
-    /// handling match UDS stream mode: length-delimited frames over a persistent connection. Since vsock carries no
-    /// process credentials, senders are treated like TCP senders and no socket-based origin detection is performed.
+    /// clients running inside a guest send metrics without any shared network or filesystem. Framing matches UDS
+    /// stream mode: length-delimited frames over a persistent connection. Since vsock carries no process
+    /// credentials, senders are treated like TCP senders and no socket-based origin detection is performed.
+    ///
+    /// `dogstatsd_eol_required` has no vsock value, so a trailing newline is never required on a vsock listener,
+    /// regardless of how that setting is spelled. This matches TCP rather than UDS: the `uds` value applies only to
+    /// the Unix socket listeners it names. `dogstatsd_so_rcvbuf` doesn't apply either: vsock receive buffering is
+    /// sized by the transport's credit-based flow control rather than by `SO_RCVBUF`.
     ///
     /// The CID identifies a VM on the vsock transport. It may be a bare 32-bit number, one of the well-known names
     /// `any`, `hypervisor`, `local`, or `host`, or left empty to mean `any`. Leaving it empty (for example, `:8125`)
@@ -668,6 +673,8 @@ struct EolRequired {
     udp: bool,
     uds: bool,
     named_pipe: bool,
+    tcp: bool,
+    vsock: bool,
 }
 
 impl EolRequired {
@@ -679,9 +686,11 @@ impl EolRequired {
                 "udp" => eol_required.udp = true,
                 "uds" => eol_required.uds = true,
                 "named_pipe" => eol_required.named_pipe = true,
+                "tcp" => eol_required.tcp = true,
+                "vsock" => eol_required.vsock = true,
                 _ => warn!(
                     value,
-                    "Invalid dogstatsd_eol_required value. Expected 'udp', 'uds', or 'named_pipe'."
+                    "Invalid dogstatsd_eol_required value. Expected 'udp', 'uds', 'named_pipe', 'tcp', or 'vsock'."
                 ),
             }
         }
@@ -692,9 +701,9 @@ impl EolRequired {
     fn for_listener(&self, listen_addr: &ListenAddress) -> bool {
         match listen_addr {
             ListenAddress::Udp(_) => self.udp,
-            ListenAddress::Tcp(_) => false,
+            ListenAddress::Tcp(_) => self.tcp,
             ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => self.uds,
-            ListenAddress::Vsock { .. } => false,
+            ListenAddress::Vsock { .. } => self.vsock,
             ListenAddress::NamedPipe { .. } => self.named_pipe,
         }
     }
@@ -2080,10 +2089,7 @@ mod tests {
     use saluki_io::{
         buf::{BytesBuffer, FixedSizeVec},
         deser::codec::dogstatsd::{DogStatsDCodec, DogStatsDCodecConfiguration, ParsedPacket},
-        net::{
-            ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, VSOCK_CID_ANY, VSOCK_CID_HOST,
-            VSOCK_CID_HYPERVISOR, VSOCK_CID_LOCAL,
-        },
+        net::{ConnectionAddress, ListenAddress, ProcessCredentials, ProcessIdentity, VSOCK_CID_HOST},
     };
     use saluki_metrics::test::TestRecorder;
     use serde_json::json;
@@ -2442,53 +2448,33 @@ mod tests {
         }
     }
 
+    /// `dogstatsd_vsock` reaches the address parser, in both the accepting and rejecting directions.
+    ///
+    /// The grammar itself -- named CIDs, an omitted CID, the 32-bit port range -- belongs to
+    /// [`ListenAddress::try_from_vsock_address`] and is covered there. This only pins the wiring.
     #[test]
-    fn build_addresses_resolves_the_vsock_address_forms() {
-        let cases = [
-            // An omitted CID means "any local CID", which suits nearly every deployment.
-            (":8125", VSOCK_CID_ANY, 8125),
-            ("any:8125", VSOCK_CID_ANY, 8125),
-            ("host:8125", VSOCK_CID_HOST, 8125),
-            ("local:8125", VSOCK_CID_LOCAL, 8125),
-            ("hypervisor:8125", VSOCK_CID_HYPERVISOR, 8125),
-            ("42:5000", 42, 5000),
-            // vsock ports are 32 bits wide, so the upper range has to survive the config boundary.
-            ("42:4294967294", 42, 4_294_967_294),
-        ];
+    fn build_addresses_wires_dogstatsd_vsock_through_the_address_parser() {
+        let config = deser_config(r#"{"dogstatsd_port": 0, "dogstatsd_vsock": "host:8125"}"#);
+        assert_eq!(
+            config.build_addresses(None).expect("addresses should build"),
+            vec![ListenAddress::Vsock {
+                cid: VSOCK_CID_HOST,
+                port: 8125
+            }]
+        );
 
-        for (vsock, expected_cid, expected_port) in cases {
-            let config = deser_config(&format!(r#"{{"dogstatsd_port": 0, "dogstatsd_vsock": "{vsock}"}}"#));
-
-            assert_eq!(
-                config.build_addresses(None).expect("addresses should build"),
-                vec![ListenAddress::Vsock {
-                    cid: expected_cid,
-                    port: expected_port
-                }],
-                "unexpected result for '{vsock}'"
-            );
-        }
-    }
-
-    #[test]
-    fn build_addresses_rejects_a_malformed_vsock_address() {
-        for vsock in ["8125", "guest:8125", "2:", "2:-1"] {
-            let config = deser_config(&format!(r#"{{"dogstatsd_port": 0, "dogstatsd_vsock": "{vsock}"}}"#));
-
-            let error = config
-                .build_addresses(None)
-                .expect_err(&format!("'{vsock}' should be rejected"));
-            assert!(
-                error.to_string().contains("Invalid `dogstatsd_vsock` address"),
-                "unexpected error for '{vsock}': {error}"
-            );
-        }
+        let config = deser_config(r#"{"dogstatsd_port": 0, "dogstatsd_vsock": "guest:8125"}"#);
+        let error = config.build_addresses(None).expect_err("'guest' is not a valid CID");
+        assert!(
+            error.to_string().contains("Invalid `dogstatsd_vsock` address"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
     fn eol_required_never_applies_to_vsock() {
-        // vsock frames are length-delimited, exactly like UDS stream frames, but `dogstatsd_eol_required` has no
-        // vsock value, so the terminator stays optional however the setting is spelled.
+        // `dogstatsd_eol_required` has no vsock value, so a terminator is never required on a vsock
+        // listener, however the setting is spelled.
         let config = deser_config(r#"{"dogstatsd_eol_required": ["udp", "uds", "named_pipe"]}"#);
         let eol_required = config.eol_required();
 

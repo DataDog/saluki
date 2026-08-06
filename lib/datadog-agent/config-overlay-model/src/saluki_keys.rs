@@ -281,6 +281,10 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
              in a guest VM send metrics without shared networking or a shared filesystem. Framing matches UDS stream \
              mode: length-delimited frames over a persistent connection. vsock carries no process credentials, so \
              senders are treated like TCP senders and get no socket-based origin detection.\n\n\
+             `dogstatsd_eol_required` has no vsock value, so a trailing newline is never required on a vsock \
+             listener. This matches TCP rather than UDS: the `uds` value applies only to the Unix socket listeners \
+             it names. `dogstatsd_so_rcvbuf` doesn't apply either: vsock receive buffering is sized by the \
+             transport's credit-based flow control rather than by `SO_RCVBUF`.\n\n\
              The CID may be a bare 32-bit number, one of the well-known names `any`, `hypervisor`, `local`, or \
              `host`, or left empty to mean `any`. Leaving it empty (for example, `:8125`) accepts connections \
              addressed to any of the local CIDs, which suits nearly all deployments; name or number a CID only to \

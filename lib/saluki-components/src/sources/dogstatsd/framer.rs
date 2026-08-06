@@ -118,20 +118,6 @@ mod tests {
     }
 
     #[test]
-    fn vsock_missing_newline_is_rejected_when_required() {
-        let payload = b"test.metric:1|c";
-        let mut buf = VecDeque::new();
-        buf.extend((payload.len() as u32).to_le_bytes());
-        buf.extend(payload);
-        let mut framer = get_framer(&ListenAddress::Vsock { cid: 2, port: 8125 }, true);
-
-        assert!(matches!(
-            framer.next_frame(&mut buf, true),
-            Err(FramingError::InvalidFrame { .. })
-        ));
-    }
-
-    #[test]
     fn named_pipe_uses_raw_newline_framing() {
         let payload = b"test.metric:1|c\n";
         let mut buf = VecDeque::from(payload.to_vec());

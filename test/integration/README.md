@@ -126,9 +126,6 @@ container:
     - "8125/udp"
     - "5100/tcp"
 
-  # Optional: run the Linux target with Docker's seccomp profile disabled (default: false)
-  unconfined_seccomp: false
-
 # Required: list of steps to run sequentially.
 # Each step is either a single assertion, a single action, or a parallel assertion block.
 procedure:
@@ -148,24 +145,6 @@ procedure:
     pattern: "Topology healthy"
     timeout: 30s
 ```
-
-### Relaxing container seccomp
-
-Docker's default seccomp profile only allows `socket(2)` for the address families it allowlists.
-`AF_VSOCK` isn't one of them, so a test that needs an exotic address family can't open a socket at
-all — and neither can ADP, which means the listener under test never binds. Set
-`container.unconfined_seccomp: true` for those cases:
-
-```yaml
-container:
-  unconfined_seccomp: true
-```
-
-> [!WARNING]
-> This removes syscall filtering for the whole container. Use it only when the test needs a syscall
-> the default profile blocks, and prefer leaving it off everywhere else.
-
-The option applies to Linux targets only; it's ignored on Windows.
 
 ### Parallel Assertions
 

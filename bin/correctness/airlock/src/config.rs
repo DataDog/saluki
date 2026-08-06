@@ -64,7 +64,4 @@ pub struct TargetConfig {
 
     /// Whether the Linux target joins the Docker host's cgroup namespace.
     pub host_cgroup_namespace: bool,
-
-    /// Whether the Linux target runs with Docker's seccomp profile disabled.
-    pub unconfined_seccomp: bool,
 }
