@@ -56,6 +56,11 @@ into `SalukiConfiguration`.
 | Figment provider wrapping that reader                           | `lib/datadog-agent/config/src/env_provider.rs`                             |
 | Same provider, plus Saluki-only keys                            | `lib/agent-data-plane-config-system/src/env_provider.rs`                   |
 
+Source-sensitive typed fields use `ConfigValue<T>` and `Provenance` from
+`lib/agent-data-plane-config`. The wrapper keeps the effective value and its provenance together
+while serializing as the underlying value. Use it when consumers must distinguish a source default
+from an explicit setting; ordinary fields should remain plain values.
+
 Paths and type names can move. Notify the user when this skill needs an update.
 
 ### Architectural dependency boundaries
@@ -109,10 +114,11 @@ generated tables instead:
 - the by-key path via `EnvironmentProvider`, a Figment provider wrapping those same readers.
 
 **Every source therefore delivers the Agent's canonical shape.** A struct deserialized from
-`GenericConfiguration` **MUST** read that shape. Do not add a `#[serde(rename)]` or `#[serde(alias)]`
-that maps a nested key onto a flattened spelling, and do not reintroduce a key-alias or
-environment-remapping table. Those existed once, only ran on file load, and so never applied to the
-Datadog Agent's configuration stream — which is the authority in the Core Agent deployment.
+`GenericConfiguration` **MUST** read that shape. Do not add a `#[serde(rename)]` or
+`#[serde(alias)]` that maps a nested key onto a flattened spelling, and do not reintroduce a
+key-alias or environment-remapping table. Those existed once, only ran on file load, and so never
+applied to the Datadog Agent's configuration stream — which is the authority in the Core Agent
+deployment.
 
 Reserve `#[serde(flatten)]` for a struct that genuinely groups several *top-level* Agent keys (for
 example, the forwarder's `forwarder_*` retry settings). Name a Rust field after its canonical
@@ -132,16 +138,17 @@ Keep the authoritative Datadog path and delete the duplicate Saluki-only path.
 
 Exactly one layer owns each default:
 
-| Source class | Model type  | Default owner                                  | Translation behavior              |
-|--------------|-------------|------------------------------------------------|-----------------------------------|
-| Saluki-only  | `Option<T>` | No default                                     | `seed` preserves `None`           |
-| Saluki-only  | `T`         | `agent-data-plane-config/src/defaults.rs`      | `seed` assigns the resolved value |
-| Witnessed    | `T`         | Generated Datadog schema default               | `drive` always writes it          |
-| Witnessed    | `Option<T>` | No default                                     | `drive` preserves `None`          |
+| Source class | Model type  | Default owner                             | Translation behavior              |
+|--------------|-------------|-------------------------------------------|-----------------------------------|
+| Saluki-only  | `Option<T>` | No default                                | `seed` preserves `None`           |
+| Saluki-only  | `T`         | `agent-data-plane-config/src/defaults.rs` | `seed` assigns the resolved value |
+| Witnessed    | `T`         | Generated Datadog schema default          | `drive` always writes it          |
+| Witnessed    | `Option<T>` | No default                                | `drive` preserves `None`          |
 
 Define each Saluki-only default once in `lib/agent-data-plane-config/src/defaults.rs`; source and
 model defaults must reference that definition rather than restating its value. If the component
-requires a value, model `T`; use `Option<T>` only when absence is meaningful, not to defer a default.
+requires a value, model `T`; use `Option<T>` only when absence is meaningful, not to defer a
+default.
 
 Push source parsing, defaults, and input validation to the configuration boundary. Components keep
 only validation that is truly business logic.
