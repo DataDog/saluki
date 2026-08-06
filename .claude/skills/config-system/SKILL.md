@@ -56,10 +56,9 @@ into `SalukiConfiguration`.
 | Figment provider wrapping that reader                           | `lib/datadog-agent/config/src/env_provider.rs`                             |
 | Same provider, plus Saluki-only keys                            | `lib/agent-data-plane-config-system/src/env_provider.rs`                   |
 
-Source-sensitive typed fields use `ConfigValue<T>` and `Provenance` from
-`lib/agent-data-plane-config`. The wrapper keeps the effective value and its provenance together
-while serializing as the underlying value. Use it when consumers must distinguish a source default
-from an explicit setting; ordinary fields should remain plain values.
+In `SalukiConfiguration`, you may use `ConfigValue<T>` when we need to know the difference between a
+value that was explicitly set by the user, or where the value is a default. The Agent API provides a
+`source` field which we are simplifying into `Provinence`, which is either `Default` or `Explicit`.
 
 Paths and type names can move. Notify the user when this skill needs an update.
 
