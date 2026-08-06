@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
 use async_trait::async_trait;
 use saluki_common::task::HandleExt as _;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -15,8 +16,6 @@ use tracing::{debug, error};
 
 mod telemetry;
 use self::telemetry::ComponentTelemetry;
-
-const DEFAULT_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Buffered incremental encoder.
 ///
@@ -44,7 +43,7 @@ where
     /// Creates a new `BufferedIncrementalConfiguration` from the given incremental encoder builder.
     pub fn from_encoder_builder(encoder_builder: EB) -> Self {
         Self {
-            flush_timeout: DEFAULT_FLUSH_TIMEOUT,
+            flush_timeout: DEFAULT_ENCODER_FLUSH_TIMEOUT,
             encoder_builder,
         }
     }

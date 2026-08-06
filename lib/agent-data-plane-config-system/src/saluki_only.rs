@@ -571,6 +571,7 @@ impl SalukiOnly {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
     use serde_json::json;
 
     use super::*;
@@ -799,5 +800,10 @@ mod tests {
         assert_eq!(otlp.receiver.grpc.endpoint, "localhost:6317");
         assert_eq!(otlp.receiver.http.endpoint, "localhost:6318");
         assert_eq!(otlp.traces.string_interner_size, DEFAULT_STRING_INTERNER_SIZE_BYTES);
+
+        assert_eq!(
+            config.shared.metrics_encoding.flush_timeout,
+            DEFAULT_ENCODER_FLUSH_TIMEOUT
+        );
     }
 }

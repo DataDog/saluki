@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
+
 /// Cross-cutting configuration shared across domains.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SharedConfiguration {
@@ -240,10 +242,13 @@ pub struct BasicTelemetry {
 
 /// Metrics-encoder settings reused across the metrics-emitting pipelines (DogStatsD, checks, and
 /// OTLP): histogram settings, payload limits, and the encoder flush timeout.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MetricsEncoding {
     /// How long the encoder waits before flushing a partially filled payload. (not in Datadog Agent
     /// config schema)
+    ///
+    /// Shared by the metrics-emitting pipelines and the traces encoder, all of which read the
+    /// `flush_timeout_secs` key. Defaults to 2 seconds.
     pub flush_timeout: Duration,
 
     /// Maximum number of metrics packed into a single payload. (not in Datadog Agent config schema)
@@ -278,6 +283,27 @@ pub struct MetricsEncoding {
 
     /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
     pub v3_series_mode: V3SeriesMode,
+}
+
+impl Default for MetricsEncoding {
+    fn default() -> Self {
+        Self {
+            // The `flush_timeout_secs` key is Saluki-only, so its default belongs to the ADP config
+            // crate rather than a source schema.
+            flush_timeout: DEFAULT_ENCODER_FLUSH_TIMEOUT,
+            max_metrics_per_payload: 0,
+            max_payload_size: 0,
+            max_series_payload_size: 0,
+            max_series_points_per_payload: 0,
+            max_series_uncompressed_payload_size: 0,
+            max_uncompressed_payload_size: 0,
+            use_v2_series_api: false,
+            log_payloads: false,
+            histogram: HistogramEncoding::default(),
+            v3_api: V3ApiEncoding::default(),
+            v3_series_mode: V3SeriesMode::default(),
+        }
+    }
 }
 
 /// V3 metrics-intake protocol settings for the series and sketches payloads

@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use agent_data_plane_config::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
 use async_trait::async_trait;
 use datadog_protos::traces::{
     ClientGroupedStats as ProtoClientGroupedStats, ClientStatsBucket as ProtoClientStatsBucket,
@@ -48,7 +49,7 @@ const MAX_STATS_PER_PAYLOAD: usize = 4000;
 static CONTENT_TYPE_MSGPACK: HeaderValue = HeaderValue::from_static("application/msgpack");
 
 const fn default_flush_timeout_secs() -> u64 {
-    2
+    DEFAULT_ENCODER_FLUSH_TIMEOUT.as_secs()
 }
 
 fn default_env() -> String {

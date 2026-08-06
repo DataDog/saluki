@@ -1,6 +1,9 @@
 use std::{collections::VecDeque, ops::Range, time::Duration};
 
-use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
+use agent_data_plane_config::{
+    defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT,
+    shared::{Endpoints, MetricsEncoding},
+};
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use facet::Facet;
@@ -101,7 +104,7 @@ const fn default_max_series_points_per_payload() -> usize {
 }
 
 const fn default_flush_timeout_secs() -> u64 {
-    2
+    DEFAULT_ENCODER_FLUSH_TIMEOUT.as_secs()
 }
 
 /// The Datadog Agent's `use_v2_api` configuration section.
