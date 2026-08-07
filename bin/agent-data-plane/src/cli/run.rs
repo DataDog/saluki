@@ -693,8 +693,7 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_sampler", trace_sampler_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure APM Stats transform.")?
+    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&config.domains.traces)
         .with_environment_provider(env_provider.clone())
         .await?;
     let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(&raw_config)
