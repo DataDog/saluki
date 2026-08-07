@@ -348,18 +348,18 @@ impl Default for OtlpConfigTraces {
 
 /// The `ottl_filter_config` object: OTTL span-drop filter.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OttlFilterConfig {
     /// Evaluation error handling mode (`ottl_filter_config.error_mode`: `ignore` / `silent` /
-    /// `propagate`).
-    pub error_mode: Option<String>,
+    /// `propagate`). Defaults to `propagate`; an unrecognized value is a configuration error.
+    pub error_mode: OttlErrorModeSource,
     /// OTTL trace filters (`ottl_filter_config.traces.*`).
     pub traces: OttlFilterTraces,
 }
 
 /// `ottl_filter_config.traces.*`.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OttlFilterTraces {
     /// OTTL span-drop conditions (`ottl_filter_config.traces.span`).
     pub span: Vec<String>,
@@ -367,22 +367,41 @@ pub struct OttlFilterTraces {
 
 /// The `ottl_transform_config` object: OTTL span-transform processor.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OttlTransformConfig {
     /// Evaluation error handling mode (`ottl_transform_config.error_mode`: `ignore` / `silent` /
-    /// `propagate`).
-    pub error_mode: Option<String>,
+    /// `propagate`). Defaults to `propagate`; an unrecognized value is a configuration error.
+    pub error_mode: OttlErrorModeSource,
     /// OTTL span-mutating statements (`ottl_transform_config.trace_statements`).
     pub trace_statements: Vec<String>,
 }
 
-/// Parses an OTTL error mode string, defaulting to the model default (`Propagate`) when absent or
-/// unrecognized.
-fn parse_ottl_error_mode(mode: Option<String>) -> OttlErrorMode {
-    match mode.as_deref() {
-        Some("ignore") => OttlErrorMode::Ignore,
-        Some("silent") => OttlErrorMode::Silent,
-        _ => OttlErrorMode::Propagate,
+/// Evaluation error handling mode for the OTTL filter/transform processors, as written at
+/// `ottl_filter_config.error_mode` / `ottl_transform_config.error_mode`.
+///
+/// A dedicated, strictly parsed type rather than `Option<String>`: an unrecognized value (for
+/// example a typo like `ignroe`) is a deserialization error instead of silently resolving to
+/// [`Propagate`](Self::Propagate). Mirrors the OpenTelemetry Collector filter/transform
+/// processors' `error_mode` values.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum OttlErrorModeSource {
+    /// Log evaluation errors and continue.
+    Ignore,
+    /// Swallow evaluation errors silently and continue.
+    Silent,
+    /// Propagate the error up the pipeline; the payload is dropped.
+    #[default]
+    Propagate,
+}
+
+impl From<OttlErrorModeSource> for OttlErrorMode {
+    fn from(mode: OttlErrorModeSource) -> Self {
+        match mode {
+            OttlErrorModeSource::Ignore => OttlErrorMode::Ignore,
+            OttlErrorModeSource::Silent => OttlErrorMode::Silent,
+            OttlErrorModeSource::Propagate => OttlErrorMode::Propagate,
+        }
     }
 }
 
@@ -551,13 +570,13 @@ impl SalukiOnly {
         }
         if let Some(filter) = &self.ottl_filter_config {
             traces.ottl_filter = OttlFilter {
-                error_mode: parse_ottl_error_mode(filter.error_mode.clone()),
+                error_mode: filter.error_mode.into(),
                 span_conditions: filter.traces.span.clone(),
             };
         }
         if let Some(transform) = &self.ottl_transform_config {
             traces.ottl_transform = OttlTransform {
-                error_mode: parse_ottl_error_mode(transform.error_mode.clone()),
+                error_mode: transform.error_mode.into(),
                 trace_statements: transform.trace_statements.clone(),
             };
         }
@@ -753,6 +772,64 @@ mod tests {
             saluki_only.seed(&mut config);
             assert_eq!(config.control.memory_limit, expected);
         }
+    }
+
+    /// An unrecognized `error_mode` must fail deserialization rather than silently resolving to
+    /// `Propagate`. Covers both `ottl_filter_config` and `ottl_transform_config`.
+    #[test]
+    fn ottl_error_mode_rejects_an_unrecognized_value() {
+        for value in [
+            json!({ "ottl_filter_config": { "error_mode": "ignroe" } }),
+            json!({ "ottl_transform_config": { "error_mode": "ignroe" } }),
+        ] {
+            let result: Result<SalukiOnly, _> = serde_json::from_value(value);
+            assert!(
+                result.is_err(),
+                "an unrecognized error_mode value must be a deserialization error, not a silent default"
+            );
+        }
+    }
+
+    /// An unknown field under `ottl_filter_config` or `ottl_transform_config` must fail
+    /// deserialization, matching the `deny_unknown_fields` behavior of the adapters these types
+    /// replaced.
+    #[test]
+    fn ottl_config_rejects_unknown_fields() {
+        for value in [
+            json!({ "ottl_filter_config": { "not_a_real_field": true } }),
+            json!({ "ottl_filter_config": { "traces": { "span_event": [] } } }),
+            json!({ "ottl_transform_config": { "not_a_real_field": true } }),
+        ] {
+            let result: Result<SalukiOnly, _> = serde_json::from_value(value);
+            assert!(result.is_err(), "an unknown field must be a deserialization error");
+        }
+    }
+
+    /// Every valid `error_mode` string round-trips to its domain `OttlErrorMode`, and an absent
+    /// `error_mode` defaults to `Propagate`.
+    #[test]
+    fn ottl_error_mode_valid_values_round_trip() {
+        for (source, expected) in [
+            ("ignore", OttlErrorMode::Ignore),
+            ("silent", OttlErrorMode::Silent),
+            ("propagate", OttlErrorMode::Propagate),
+        ] {
+            let saluki_only: SalukiOnly =
+                serde_json::from_value(json!({ "ottl_filter_config": { "error_mode": source } }))
+                    .expect("valid error_mode deserializes");
+            let mut config = SalukiConfiguration::default();
+            saluki_only.seed(&mut config);
+            assert_eq!(
+                config.domains.traces.ottl_filter.error_mode, expected,
+                "error_mode={source}"
+            );
+        }
+
+        let saluki_only: SalukiOnly =
+            serde_json::from_value(json!({})).expect("absent ottl_filter_config deserializes");
+        let mut config = SalukiConfiguration::default();
+        saluki_only.seed(&mut config);
+        assert_eq!(config.domains.traces.ottl_filter.error_mode, OttlErrorMode::Propagate);
     }
 
     /// `dogstatsd_string_interner_size_bytes` is a byte size the source may express as a bare

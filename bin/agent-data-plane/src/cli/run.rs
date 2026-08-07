@@ -681,10 +681,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let trace_obfuscation_config =
         TraceObfuscationConfiguration::from_configuration(&config.domains.traces.obfuscation);
 
+    let ottl_filter_config = OttlFilterConfiguration::from_configuration(&config.domains.traces.ottl_filter);
+
     // The remaining trace-enrichment components still read from the raw compatibility map.
     let raw_config = config_system.raw_map();
-    let ottl_filter_config = OttlFilterConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure OTTL filter processor.")?;
     let ottl_transform_config = OttlTransformConfiguration::from_configuration(&raw_config)
         .error_context("Failed to configure OTTL transform processor.")?;
     let dd_traces_enrich_config = ChainedConfiguration::default()

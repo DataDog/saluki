@@ -281,6 +281,28 @@ mod tests {
     }
 
     #[test]
+    fn ottl_filter_error_mode_environment_variable_reaches_the_model() {
+        // `DD_OTTL_FILTER_CONFIG_ERROR_MODE` exercises the enum leaf: the environment value is a
+        // plain string, decoded as a Saluki-only leaf, then validated during configuration
+        // deserialization.
+        use agent_data_plane_config::domains::traces::OttlErrorMode;
+
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_ottl_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_OTTL_FILTER_CONFIG_ERROR_MODE", "silent");
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+
+        std::env::remove_var("DD_OTTL_FILTER_CONFIG_ERROR_MODE");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            loaded.local().domains.traces.ottl_filter.error_mode,
+            OttlErrorMode::Silent
+        );
+    }
+
+    #[test]
     fn a_nested_datadog_environment_variable_reaches_the_by_key_view() {
         // `DD_PROXY_HTTP` names a nested key, which Figment's prefix scan cannot place. The
         // schema-driven provider resolves it, so the by-key view serves it at `proxy.http`.
