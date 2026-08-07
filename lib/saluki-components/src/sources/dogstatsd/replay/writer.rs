@@ -4,6 +4,7 @@ use std::{
     io::{self, BufWriter, Write},
     path::{Path, PathBuf},
     sync::{
+        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
         Arc, Mutex,
     },
@@ -55,6 +56,7 @@ pub(crate) struct CaptureRecord {
 pub(super) struct TrafficCaptureWriter {
     queue_depth: usize,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    ongoing: Arc<AtomicBool>,
     state: Arc<Mutex<WriterState>>,
 }
 
@@ -114,14 +116,14 @@ impl TrafficCaptureWriter {
         Self {
             queue_depth: queue_depth.max(MIN_CAPTURE_DEPTH),
             workload_provider,
+            ongoing: Arc::new(AtomicBool::new(false)),
             state: Arc::new(Mutex::new(WriterState::default())),
         }
     }
 
     /// Returns whether a capture session is currently active.
     pub(super) fn is_ongoing(&self) -> bool {
-        let state = self.state.lock().expect("capture writer mutex poisoned");
-        state.ongoing
+        self.ongoing.load(Ordering::Acquire)
     }
 
     /// Starts a new capture session.
@@ -144,18 +146,21 @@ impl TrafficCaptureWriter {
         state.target_path = Some(target_path.clone());
         state.compressed = compressed;
         state.traffic_tx = Some(traffic_tx);
+        self.ongoing.store(true, Ordering::Release);
 
         let shared_state = Arc::clone(&self.state);
+        let ongoing = Arc::clone(&self.ongoing);
         let workload_provider = self.workload_provider.clone();
         if let Err(e) = thread::Builder::new()
             .name("dogstatsd-capture-writer".into())
-            .spawn(move || run_capture_loop(shared_state, traffic_rx, writer, duration, workload_provider))
+            .spawn(move || run_capture_loop(shared_state, ongoing, traffic_rx, writer, duration, workload_provider))
         {
             state.ongoing = false;
             state.accepting = false;
             state.target_path = None;
             state.compressed = false;
             state.traffic_tx = None;
+            self.ongoing.store(false, Ordering::Release);
             return Err(generic_error!("Failed to spawn capture writer thread: {}", e));
         }
 
@@ -280,8 +285,9 @@ fn open_target_writer(target_path: &Path, compressed: bool) -> Result<CaptureFil
 }
 
 fn run_capture_loop(
-    state: Arc<Mutex<WriterState>>, traffic_rx: Receiver<CaptureRecord>, mut writer: CaptureFileWriter,
-    duration: Duration, workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    state: Arc<Mutex<WriterState>>, ongoing: Arc<AtomicBool>, traffic_rx: Receiver<CaptureRecord>,
+    mut writer: CaptureFileWriter, duration: Duration,
+    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 ) {
     let mut pid_map = FastHashMap::<i32, String>::default();
     let start = std::time::Instant::now();
@@ -319,6 +325,7 @@ fn run_capture_loop(
     state.target_path = None;
     state.compressed = false;
     state.traffic_tx = None;
+    ongoing.store(false, Ordering::Release);
 }
 
 fn write_record(

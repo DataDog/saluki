@@ -1573,6 +1573,7 @@ struct BufferedStreamReader {
 impl BufferedStreamReader {
     fn new(
         stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
+        origin_detection_enabled: bool, traffic_capture: TrafficCapture,
         capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     ) -> Self {
         debug_assert!(!stream.is_connectionless());
@@ -1583,6 +1584,8 @@ impl BufferedStreamReader {
                 stream,
                 io_buffer_pool,
                 memory_limiter,
+                origin_detection_enabled,
+                traffic_capture,
                 capture_entity_resolver,
                 packets_tx,
             ),
@@ -1607,6 +1610,7 @@ impl Drop for BufferedStreamReader {
 
 async fn receive_connected_stream(
     mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
+    origin_detection_enabled: bool, traffic_capture: TrafficCapture,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     packets_tx: mpsc::Sender<io::Result<ReceivedBuffer>>,
 ) {
@@ -1630,7 +1634,12 @@ async fn receive_connected_stream(
                 break;
             }
         };
-        let process_origin = resolve_process_origin(capture_entity_resolver.as_deref(), &peer_addr);
+        let process_origin = resolve_process_origin_if_needed(
+            origin_detection_enabled,
+            &traffic_capture,
+            capture_entity_resolver.as_deref(),
+            &peer_addr,
+        );
 
         let (received, returned_buffer) = ReceivedBuffer::with_return(buffer, bytes_read, peer_addr, process_origin);
 
@@ -1651,6 +1660,7 @@ async fn receive_connected_stream(
 
 async fn receive_connectionless_stream(
     mut stream: Stream, io_buffer_pool: ElasticObjectPool<BytesBuffer>, memory_limiter: MemoryLimiter,
+    origin_detection_enabled: bool, traffic_capture: TrafficCapture,
     capture_entity_resolver: Option<Arc<dyn CaptureEntityResolver + Send + Sync>>,
     datagram_sender: mpsc::Sender<QueuedDatagram>, socket_context: Arc<DatagramSocketContext>,
 ) {
@@ -1662,7 +1672,12 @@ async fn receive_connectionless_stream(
         let mut buffer = acquire_io_buffer(&io_buffer_pool).await;
         let result = match stream.receive(&mut buffer).await {
             Ok((bytes_read, peer_addr)) => {
-                let process_origin = resolve_process_origin(capture_entity_resolver.as_deref(), &peer_addr);
+                let process_origin = resolve_process_origin_if_needed(
+                    origin_detection_enabled,
+                    &traffic_capture,
+                    capture_entity_resolver.as_deref(),
+                    &peer_addr,
+                );
                 Ok(ReceivedBuffer::without_return(
                     buffer,
                     bytes_read,
@@ -1886,7 +1901,7 @@ impl DogStatsDDecoder {
             Ok(Some(event)) => {
                 if let Some(event_buffer) = self.buffer_event(event) {
                     debug!(%listen_addr, %peer_addr, "Event buffer is full. Forwarding events.");
-                    dispatch_events(event_buffer, &self.source_context, listen_addr).await;
+                    dispatch_events(event_buffer, &self.source_context).await;
                 }
             }
             Ok(None) => {}
@@ -1911,9 +1926,9 @@ impl DogStatsDDecoder {
         }
     }
 
-    async fn flush_events(&mut self, listen_addr: &ListenAddress) {
+    async fn flush_events(&mut self) {
         if let Some(event_buffer) = self.event_buffer.take() {
-            dispatch_events(event_buffer, &self.source_context, listen_addr).await;
+            dispatch_events(event_buffer, &self.source_context).await;
         }
     }
 }
@@ -1923,7 +1938,6 @@ async fn drive_datagram_decoder(
     decoder_context: DecoderContext,
 ) {
     let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
-    let mut last_socket_context: Option<Arc<DatagramSocketContext>> = None;
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -1962,19 +1976,14 @@ async fn drive_datagram_decoder(
                     let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
                     debug_assert_eq!(outcome, DecodeOutcome::Continue);
                 }
-                last_socket_context = Some(socket_context);
             }
             _ = buffer_flush.tick() => {
-                if let Some(socket_context) = last_socket_context.as_ref() {
-                    decoder.flush_events(&socket_context.listen_addr).await;
-                }
+                decoder.flush_events().await;
             }
         }
     }
 
-    if let Some(socket_context) = last_socket_context.as_ref() {
-        decoder.flush_events(&socket_context.listen_addr).await;
-    }
+    decoder.flush_events().await;
 }
 
 async fn drive_stream(stream: Stream, source_context: SourceContext, handler_context: HandlerContext) {
@@ -1988,6 +1997,8 @@ async fn drive_stream(stream: Stream, source_context: SourceContext, handler_con
             stream,
             handler_context.io_buffer_pool,
             memory_limiter,
+            handler_context.decoder_context.origin_detection_enabled,
+            handler_context.decoder_context.traffic_capture.clone(),
             handler_context.capture_entity_resolver,
             handler_context.datagram_sender,
             socket_context,
@@ -2007,6 +2018,8 @@ async fn drive_connected_stream(stream: Stream, source_context: SourceContext, h
         stream,
         handler_context.io_buffer_pool.clone(),
         memory_limiter,
+        handler_context.decoder_context.origin_detection_enabled,
+        handler_context.decoder_context.traffic_capture.clone(),
         handler_context.capture_entity_resolver.clone(),
     );
     let receiver = stream_reader.take_receiver();
@@ -2067,13 +2080,13 @@ async fn drive_decoder(
             },
 
             _ = buffer_flush.tick() => {
-                decoder.flush_events(&listen_addr).await;
+                decoder.flush_events().await;
             },
 
         }
     }
 
-    decoder.flush_events(&listen_addr).await;
+    decoder.flush_events().await;
 }
 
 fn should_drop_oversized_named_pipe_frame(listen_addr: &ListenAddress, buffer: &BytesBuffer) -> bool {
@@ -2191,6 +2204,17 @@ fn resolve_process_origin(
         Some(resolver) => ProcessOrigin::Pinned(resolver.resolve_container_entity_for_live_pid(process_id)),
         None => ProcessOrigin::Unpinned(process_id),
     })
+}
+
+fn resolve_process_origin_if_needed(
+    origin_detection_enabled: bool, traffic_capture: &TrafficCapture,
+    capture_entity_resolver: Option<&(dyn CaptureEntityResolver + Send + Sync)>, peer_addr: &ConnectionAddress,
+) -> Option<ProcessOrigin> {
+    if !origin_detection_enabled && !traffic_capture.is_ongoing() {
+        return None;
+    }
+
+    resolve_process_origin(capture_entity_resolver, peer_addr)
 }
 
 fn received_payload(buffer: &BytesBuffer, bytes_read: usize) -> &[u8] {
@@ -2432,8 +2456,8 @@ fn get_filtered_tags_iterator<'a>(
     RawTagsFilter::exclude(raw_tags, WellKnownTagsFilterPredicate).chain(additional_tags.iter().map(|s| s.as_str()))
 }
 
-async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext, listen_addr: &ListenAddress) {
-    debug!(%listen_addr, events_len = event_buffer.len(), "Forwarding events.");
+async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &SourceContext) {
+    debug!(events_len = event_buffer.len(), "Forwarding events.");
 
     // TODO: This is maybe a little dicey because if we fail to dispatch the events, we may not have iterated over all of
     // them, so there might still be eventd events when get to the service checks point, and eventd events and/or service
@@ -2459,7 +2483,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
             .send_all(eventd_events)
             .await
         {
-            error!(%listen_addr, error = %e, "Failed to dispatch eventd events.");
+            error!(error = %e, "Failed to dispatch eventd events.");
 
             saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "events" });
         }
@@ -2479,7 +2503,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
             .send_all(service_check_events)
             .await
         {
-            error!(%listen_addr, error = %e, "Failed to dispatch service check events.");
+            error!(error = %e, "Failed to dispatch service check events.");
 
             saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "service_checks" });
         }
@@ -2492,7 +2516,7 @@ async fn dispatch_events(mut event_buffer: EventsBuffer, source_context: &Source
             .dispatch_named("metrics", event_buffer)
             .await
         {
-            error!(%listen_addr, error = %e, "Failed to dispatch metric events.");
+            error!(error = %e, "Failed to dispatch metric events.");
 
             saluki_antithesis::unreachable!("dsd dispatch failed mid-buffer", { "stream": "metrics" });
         }
@@ -2582,10 +2606,10 @@ mod tests {
         },
         handle_frame, handle_metric_packet,
         metrics::build_metrics,
-        origin_detection_failed_for_telemetry, resolve_process_origin, shutdown_listeners_and_drain_datagram_decoders,
-        BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
-        DogStatsDConfiguration, DogStatsDDecoder, ProcessOrigin, QueuedDatagram, ReceivedBuffer, TrafficCapture,
-        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
+        origin_detection_failed_for_telemetry, resolve_process_origin, resolve_process_origin_if_needed,
+        shutdown_listeners_and_drain_datagram_decoders, BufferDecodeContext, BufferDecodeMode, ContextResolvers,
+        DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsDConfiguration, DogStatsDDecoder, ProcessOrigin,
+        QueuedDatagram, ReceivedBuffer, TrafficCapture, DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
@@ -2616,6 +2640,7 @@ mod tests {
     #[derive(Default)]
     struct CaptureTestEntityResolver {
         pid_map: StdMutex<HashMap<u32, EntityId>>,
+        resolution_count: AtomicUsize,
     }
 
     impl CaptureTestEntityResolver {
@@ -2624,7 +2649,12 @@ mod tests {
             pid_map.insert(process_id, entity_id);
             Self {
                 pid_map: StdMutex::new(pid_map),
+                resolution_count: AtomicUsize::new(0),
             }
+        }
+
+        fn resolution_count(&self) -> usize {
+            self.resolution_count.load(Ordering::Relaxed)
         }
 
         #[cfg(target_os = "linux")]
@@ -2638,6 +2668,7 @@ mod tests {
 
     impl CaptureEntityResolver for CaptureTestEntityResolver {
         fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId> {
+            self.resolution_count.fetch_add(1, Ordering::Relaxed);
             self.pid_map
                 .lock()
                 .expect("PID map lock should not be poisoned")
@@ -2780,13 +2811,13 @@ mod tests {
         );
         assert_eq!(packets_rx.len(), event_buffer_capacity);
 
-        decoder.flush_events(&listen_addr).await;
+        decoder.flush_events().await;
         let flushed_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
             .await
             .expect("partial event buffer flush should not time out")
             .expect("metrics output should remain connected");
         assert_eq!(flushed_buffer.len(), 1);
-        decoder.flush_events(&listen_addr).await;
+        decoder.flush_events().await;
         assert!(
             metrics_rx.try_recv().is_err(),
             "empty flush should not dispatch another buffer"
@@ -2908,7 +2939,7 @@ mod tests {
             .expect("stopped decoder should return the I/O buffer");
         assert!(!returned_buffer.has_remaining());
 
-        decoder.flush_events(&listen_addr).await;
+        decoder.flush_events().await;
         let flushed_buffer = timeout(Duration::from_secs(1), metrics_rx.recv())
             .await
             .expect("connected event buffer flush should not time out")
@@ -3682,6 +3713,8 @@ mod tests {
             Stream::from(receiver),
             pool,
             MemoryLimiter::noop(),
+            false,
+            TrafficCapture::new(PathBuf::new(), 1),
             None,
             packets_tx,
             socket_context,
@@ -3767,6 +3800,8 @@ mod tests {
             stream,
             pool,
             MemoryLimiter::noop(),
+            true,
+            TrafficCapture::new(PathBuf::new(), 1),
             Some(capture_entity_resolver.clone()),
             packets_tx,
             test_datagram_socket_context(listen_addr),
@@ -3786,6 +3821,7 @@ mod tests {
             received.process_origin,
             Some(ProcessOrigin::Pinned(Some(original_entity.clone())))
         );
+        assert_eq!(capture_entity_resolver.resolution_count(), 1);
 
         // Simulate the sender exiting and its PID being reused before a decoder worker reaches the queued packet.
         capture_entity_resolver.set_pid_mapping(process_id, reused_entity.clone());
@@ -3850,6 +3886,8 @@ mod tests {
             Stream::from(receiver),
             pool,
             MemoryLimiter::noop(),
+            false,
+            TrafficCapture::new(PathBuf::new(), 1),
             None,
             packets_tx,
         ));
@@ -3895,6 +3933,8 @@ mod tests {
             Stream::from(receiver),
             pool,
             MemoryLimiter::noop(),
+            false,
+            TrafficCapture::new(PathBuf::new(), 1),
             None,
             packets_tx,
         ));
@@ -4436,6 +4476,61 @@ mod tests {
                 EntityId::from_local_data("ci-pid-container").expect("container entity")
             )))
         );
+    }
+
+    #[test]
+    fn resolve_process_origin_skips_live_lookup_when_unused() {
+        let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
+            42,
+            EntityId::from_local_data("ci-pid-container").expect("container entity"),
+        );
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
+            pid: 42,
+            uid: 0,
+            gid: 0,
+        }));
+        let traffic_capture = TrafficCapture::new(PathBuf::new(), 1);
+
+        assert_eq!(
+            resolve_process_origin_if_needed(false, &traffic_capture, Some(&capture_entity_resolver), &peer_addr),
+            None
+        );
+        assert_eq!(capture_entity_resolver.resolution_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn resolve_process_origin_pins_live_entity_during_capture() {
+        let capture_entity_resolver = CaptureTestEntityResolver::with_pid_mapping(
+            42,
+            EntityId::from_local_data("ci-pid-container").expect("container entity"),
+        );
+        let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Credentials(ProcessCredentials {
+            pid: 42,
+            uid: 0,
+            gid: 0,
+        }));
+        let capture_dir = tempfile::tempdir().expect("capture directory should be created");
+        let traffic_capture = TrafficCapture::new(capture_dir.path().to_path_buf(), 1);
+        traffic_capture
+            .start_capture(None, Duration::from_secs(30), false)
+            .expect("capture should start");
+
+        assert_eq!(
+            resolve_process_origin_if_needed(false, &traffic_capture, Some(&capture_entity_resolver), &peer_addr),
+            Some(ProcessOrigin::Pinned(Some(
+                EntityId::from_local_data("ci-pid-container").expect("container entity")
+            )))
+        );
+        assert_eq!(capture_entity_resolver.resolution_count(), 1);
+
+        traffic_capture.stop_capture();
+        timeout(Duration::from_secs(1), async {
+            while traffic_capture.is_ongoing() {
+                yield_now().await;
+            }
+        })
+        .await
+        .expect("capture should stop");
     }
 
     #[test]
