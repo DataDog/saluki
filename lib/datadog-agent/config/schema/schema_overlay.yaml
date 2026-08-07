@@ -528,12 +528,12 @@ inventory:
 
   cluster_name:
     support: full
-    pipelines: [otlp]
-    description: "Kubernetes cluster name for EKS Fargate OTLP tags"
+    pipelines: [dogstatsd, otlp]
+    description: "EKS Fargate cluster name static tag"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
-        config_registry_filename: otlp.rs
+        config_registry_filename: shared.rs
 
   cmd_port:
     support: full
@@ -1347,12 +1347,12 @@ inventory:
 
   eks_fargate:
     support: full
-    pipelines: [otlp]
-    description: "Enable EKS Fargate static tags for OTLP metrics"
+    pipelines: [dogstatsd, otlp]
+    description: "Enable EKS Fargate static tags"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
-        config_registry_filename: otlp.rs
+        config_registry_filename: shared.rs
 
   enable_json_stream_shared_compressor_buffers:
     support: none
@@ -1760,12 +1760,12 @@ inventory:
 
   kubernetes_kubelet_nodename:
     support: full
-    pipelines: [otlp]
-    description: "Kubernetes node name for EKS Fargate metric tags"
+    pipelines: [dogstatsd, otlp]
+    description: "Kubernetes node name for EKS Fargate static tags"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
-        config_registry_filename: otlp.rs
+        config_registry_filename: shared.rs
 
   log_file_max_rolls:
     support: full
@@ -2249,10 +2249,10 @@ inventory:
     pipelines: [dogstatsd, otlp]
     description: "Provider kind static tag"
     test_support:
-      used_by: [DogStatsDConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_PROVIDER_KIND]
       additional_attributes:
-        config_registry_filename: dogstatsd.rs
+        config_registry_filename: shared.rs
 
   proxy.http:
     support: full

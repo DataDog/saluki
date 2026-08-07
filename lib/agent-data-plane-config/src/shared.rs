@@ -17,6 +17,9 @@ pub struct SharedConfiguration {
     /// Global and host-level tagging.
     pub tags: GlobalTags,
 
+    /// Inputs used to derive deployment-wide static tags.
+    pub static_tags: StaticTagSettings,
+
     /// Tags attached to basic liveness telemetry.
     pub basic_telemetry: BasicTelemetry,
 
@@ -32,6 +35,33 @@ pub struct SharedConfiguration {
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
     pub metrics_level: String,
+}
+
+/// Inputs used to derive deployment-wide static tags.
+///
+/// These values retain their existing configuration keys. They are shared because both DogStatsD and OTLP consume the
+/// same derived tags; this type does not introduce a new configuration section.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct StaticTagSettings {
+    /// Deployment-provider classification added as `provider_kind:<value>` when non-empty.
+    ///
+    /// Defaults to empty, which adds no provider-kind tag.
+    pub provider_kind: String,
+
+    /// Whether the deployment uses EKS Fargate.
+    ///
+    /// Defaults to `false`. When enabled, the static-tag resolver adds EKS-specific tags in addition to global tags.
+    pub eks_fargate: bool,
+
+    /// Kubernetes node name used for the EKS Fargate node tag.
+    ///
+    /// Defaults to empty, which omits `eks_fargate_node` and emits a warning when EKS Fargate is enabled.
+    pub kubernetes_kubelet_nodename: String,
+
+    /// Kubernetes cluster name used for the EKS Fargate cluster tag.
+    ///
+    /// Defaults to empty, which omits `kube_cluster_name` unless the configured global tags already provide one.
+    pub cluster_name: String,
 }
 
 /// Primary outbound endpoints plus the forwarder, proxy, TLS, and compression settings that apply

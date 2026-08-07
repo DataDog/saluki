@@ -660,7 +660,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `cluster_agent.enabled`                                        | Enable Cluster Agent communication                 |
 | `cluster_agent.kubernetes_service_name`                        | Cluster Agent Kubernetes service name              |
 | `cluster_agent.url`                                            | Cluster Agent HTTPS endpoint                       |
-| `cluster_name`                                                 | Kubernetes cluster name for EKS Fargate OTLP tags  |
+| `cluster_name`                                                 | EKS Fargate cluster name static tag                |
 | `cmd_port`                                                     | Core Agent CMD API port for ADP gRPC IPC           |
 | `cri_connection_timeout`                                       | CRI container runtime connection timeout (s)       |
 | `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
@@ -709,7 +709,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `dogstatsd_tag_cardinality`                                    | Default tag cardinality level                      |
 | `dogstatsd_tags`                                               | Extra tags added to all DSD data                   |
 | `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor                  |
-| `eks_fargate`                                                  | Enable EKS Fargate static tags for OTLP metrics    |
+| `eks_fargate`                                                  | Enable EKS Fargate static tags                     |
 | `enable_payloads.events`                                       | Allow sending event payloads                       |
 | `enable_payloads.series`                                       | Allow sending series payloads                      |
 | `enable_payloads.service_checks`                               | Allow sending service check payloads               |
@@ -738,7 +738,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `histogram_copy_to_distribution`                               | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                        | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                        | Histogram percentile aggregates                    |
-| `kubernetes_kubelet_nodename`                                  | Kubernetes node name for EKS Fargate metric tags   |
+| `kubernetes_kubelet_nodename`                                  | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                           | Max rolled log files to retain                     |
 | `log_file_max_size`                                            | Max log file size before rolling                   |
 | `log_format_json`                                              | Emit logs as JSON                                  |

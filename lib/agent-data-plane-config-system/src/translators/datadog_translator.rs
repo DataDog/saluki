@@ -399,7 +399,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_cluster_name(&mut self, value: String) {
-        self.config.domains.otlp.metrics.cluster_name = value;
+        self.config.shared.static_tags.cluster_name = value;
     }
 
     fn consume_cmd_port(&mut self, value: i64) {
@@ -665,7 +665,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_eks_fargate(&mut self, value: bool) {
-        self.config.domains.otlp.metrics.eks_fargate = value;
+        self.config.shared.static_tags.eks_fargate = value;
     }
 
     fn consume_extra_tags(&mut self, value: Vec<String>) {
@@ -795,7 +795,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_kubernetes_kubelet_nodename(&mut self, value: String) {
-        self.config.domains.otlp.metrics.kubernetes_kubelet_nodename = value;
+        self.config.shared.static_tags.kubernetes_kubelet_nodename = value;
     }
 
     fn consume_log_file_max_rolls(&mut self, value: i64) {
@@ -1008,8 +1008,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_provider_kind(&mut self, value: String) {
-        self.config.domains.dogstatsd.listeners.provider_kind = value.clone();
-        self.config.domains.otlp.metrics.provider_kind = value;
+        self.config.shared.static_tags.provider_kind = value;
     }
 
     fn consume_tags(&mut self, value: Vec<String>) {
