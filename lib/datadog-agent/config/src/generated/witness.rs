@@ -55,6 +55,7 @@ pub trait DatadogConfigWitness {
     fn consume_cluster_agent_enabled(&mut self, value: bool);
     fn consume_cluster_agent_kubernetes_service_name(&mut self, value: String);
     fn consume_cluster_agent_url(&mut self, value: String);
+    fn consume_cluster_name(&mut self, value: String);
     fn consume_cmd_port(&mut self, value: i64);
     fn consume_cri_connection_timeout(&mut self, value: i64);
     fn consume_cri_query_timeout(&mut self, value: i64);
@@ -106,12 +107,14 @@ pub trait DatadogConfigWitness {
     fn consume_dogstatsd_tags(&mut self, value: Vec<String>);
     fn consume_dogstatsd_windows_pipe_security_descriptor(&mut self, value: String);
     fn consume_dogstatsd_workers_count(&mut self, value: i64);
+    fn consume_eks_fargate(&mut self, value: bool);
     fn consume_enable_payloads_events(&mut self, value: bool);
     fn consume_enable_payloads_series(&mut self, value: bool);
     fn consume_enable_payloads_service_checks(&mut self, value: bool);
     fn consume_enable_payloads_sketches(&mut self, value: bool);
     fn consume_env(&mut self, value: String);
     fn consume_expected_tags_duration(&mut self, value: std::time::Duration);
+    fn consume_extra_tags(&mut self, value: Vec<String>);
     fn consume_forwarder_apikey_validation_interval(&mut self, value: i64);
     fn consume_forwarder_backoff_base(&mut self, value: i64);
     fn consume_forwarder_backoff_factor(&mut self, value: i64);
@@ -137,6 +140,7 @@ pub trait DatadogConfigWitness {
     fn consume_histogram_copy_to_distribution(&mut self, value: bool);
     fn consume_histogram_copy_to_distribution_prefix(&mut self, value: String);
     fn consume_histogram_percentiles(&mut self, value: Vec<String>);
+    fn consume_kubernetes_kubelet_nodename(&mut self, value: String);
     fn consume_log_file_max_rolls(&mut self, value: i64);
     fn consume_log_file_max_size(&mut self, value: String);
     fn consume_log_format_json(&mut self, value: bool);
@@ -207,6 +211,7 @@ pub trait DatadogConfigWitness {
     fn consume_statsd_metric_namespace_blacklist(&mut self, value: Vec<String>);
     fn consume_syslog_rfc(&mut self, value: bool);
     fn consume_syslog_uri(&mut self, value: String);
+    fn consume_tags(&mut self, value: Vec<String>);
     fn consume_telemetry_dogstatsd_origin(&mut self, value: bool);
     fn consume_use_proxy_for_cloud_metadata(&mut self, value: bool);
     fn consume_use_v2_api_series(&mut self, value: bool);
@@ -304,6 +309,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_cluster_agent_enabled(config.cluster_agent.enabled.clone());
     consumer.consume_cluster_agent_kubernetes_service_name(config.cluster_agent.kubernetes_service_name.clone());
     consumer.consume_cluster_agent_url(config.cluster_agent.url.clone());
+    consumer.consume_cluster_name(config.cluster_name.clone());
     consumer.consume_cmd_port(config.cmd_port.clone());
     consumer.consume_cri_connection_timeout(config.cri_connection_timeout.clone());
     consumer.consume_cri_query_timeout(config.cri_query_timeout.clone());
@@ -361,12 +367,14 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer
         .consume_dogstatsd_windows_pipe_security_descriptor(config.dogstatsd_windows_pipe_security_descriptor.clone());
     consumer.consume_dogstatsd_workers_count(config.dogstatsd_workers_count.clone());
+    consumer.consume_eks_fargate(config.eks_fargate.clone());
     consumer.consume_enable_payloads_events(config.enable_payloads.events.clone());
     consumer.consume_enable_payloads_series(config.enable_payloads.series.clone());
     consumer.consume_enable_payloads_service_checks(config.enable_payloads.service_checks.clone());
     consumer.consume_enable_payloads_sketches(config.enable_payloads.sketches.clone());
     consumer.consume_env(config.env.clone());
     consumer.consume_expected_tags_duration(config.expected_tags_duration.clone());
+    consumer.consume_extra_tags(config.extra_tags.clone());
     consumer.consume_forwarder_apikey_validation_interval(config.forwarder_apikey_validation_interval.clone());
     consumer.consume_forwarder_backoff_base(config.forwarder_backoff_base.clone());
     consumer.consume_forwarder_backoff_factor(config.forwarder_backoff_factor.clone());
@@ -394,6 +402,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_histogram_copy_to_distribution(config.histogram_copy_to_distribution.clone());
     consumer.consume_histogram_copy_to_distribution_prefix(config.histogram_copy_to_distribution_prefix.clone());
     consumer.consume_histogram_percentiles(config.histogram_percentiles.clone());
+    consumer.consume_kubernetes_kubelet_nodename(config.kubernetes_kubelet_nodename.clone());
     consumer.consume_log_file_max_rolls(config.log_file_max_rolls.clone());
     consumer.consume_log_file_max_size(config.log_file_max_size.clone());
     consumer.consume_log_format_json(config.log_format_json.clone());
@@ -521,6 +530,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_statsd_metric_namespace_blacklist(config.statsd_metric_namespace_blacklist.clone());
     consumer.consume_syslog_rfc(config.syslog_rfc.clone());
     consumer.consume_syslog_uri(config.syslog_uri.clone());
+    consumer.consume_tags(config.tags.clone());
     consumer.consume_telemetry_dogstatsd_origin(config.telemetry.dogstatsd_origin.clone());
     consumer.consume_use_proxy_for_cloud_metadata(config.use_proxy_for_cloud_metadata.clone());
     consumer.consume_use_v2_api_series(config.use_v2_api.series.clone());

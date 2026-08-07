@@ -398,6 +398,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.cluster_agent.url = non_empty(value);
     }
 
+    fn consume_cluster_name(&mut self, value: String) {
+        self.config.shared.static_tags.cluster_name = value;
+    }
+
     fn consume_cmd_port(&mut self, value: i64) {
         self.config.control.ipc.cmd_port = to_port(value);
     }
@@ -660,6 +664,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.env = value;
     }
 
+    fn consume_eks_fargate(&mut self, value: bool) {
+        self.config.shared.static_tags.eks_fargate = value;
+    }
+
+    fn consume_extra_tags(&mut self, value: Vec<String>) {
+        self.config.shared.tags.extra_tags = value;
+    }
+
     fn consume_expected_tags_duration(&mut self, value: Duration) {
         self.config.shared.tags.expected_tags_duration = value;
     }
@@ -780,6 +792,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_histogram_percentiles(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.histogram.percentiles = value;
+    }
+
+    fn consume_kubernetes_kubelet_nodename(&mut self, value: String) {
+        self.config.shared.static_tags.kubernetes_kubelet_nodename = value;
     }
 
     fn consume_log_file_max_rolls(&mut self, value: i64) {
@@ -992,7 +1008,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_provider_kind(&mut self, value: String) {
-        self.config.domains.dogstatsd.listeners.provider_kind = value;
+        self.config.shared.static_tags.provider_kind = value;
+    }
+
+    fn consume_tags(&mut self, value: Vec<String>) {
+        self.config.shared.tags.tags = value;
     }
 
     fn consume_proxy_http(&mut self, value: String) {

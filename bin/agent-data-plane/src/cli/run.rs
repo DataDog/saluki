@@ -40,7 +40,7 @@ use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::{EnvironmentProvider as _, HostProvider as _};
+use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{debug, error, info, trace, warn};
 
@@ -50,7 +50,8 @@ use crate::{
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
         liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, static_tags::resolve_static_tags,
+        tag_filterlist::TagFilterlistConfiguration,
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
@@ -728,9 +729,8 @@ fn build_dogstatsd_context_dump_api_handler(
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint,
     config: &GenericConfiguration,
-    // Threaded in ready for the typed-config component cutover (aggregate/debug-log); unused until
-    // those components read from it, hence the leading underscore.
-    _config_system: &ConfigurationSystem,
+    // Supplies the typed configuration used to resolve source-wide static tags.
+    config_system: &ConfigurationSystem,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
@@ -773,8 +773,15 @@ async fn add_dsd_pipeline_to_blueprint(
         .get_hostname()
         .await
         .error_context("Failed to get default hostname for DogStatsD source.")?;
+    let typed = config_system.config();
+    let static_tags = resolve_static_tags(
+        &typed.shared.static_tags,
+        &typed.shared.tags,
+        features::is_ecs_fargate(),
+    );
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
+        .with_static_tags(static_tags)
         .with_default_hostname(default_hostname)
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
@@ -907,8 +914,14 @@ async fn add_otlp_pipeline_to_blueprint(
             .get_hostname()
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
-        let config = config_system.config();
-        let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp)
+        let typed = config_system.config();
+        let static_tags = resolve_static_tags(
+            &typed.shared.static_tags,
+            &typed.shared.tags,
+            features::is_ecs_fargate(),
+        );
+        let otlp_config = OtlpConfiguration::from_configuration(&typed.domains.otlp)
+            .with_static_metric_tags(static_tags)
             .with_default_hostname(default_hostname)
             .with_workload_provider(env_provider.workload().clone());
 
