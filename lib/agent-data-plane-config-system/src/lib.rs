@@ -12,11 +12,17 @@
 //! configuration and, when the map streams updates, keeps that configuration current. This is the
 //! only ADP production crate that bridges the source configuration to the model; it constructs no
 //! components and does not depend on `saluki-components`.
+//!
+//! Sources are layered as `SourceTree`s, which keep each value together with the provenance of that
+//! value. That is what lets a configuration producer's own defaults be layered over local
+//! configuration without shadowing it, and what lets translation resolve a setting whose meaning
+//! depends on whether it was set explicitly.
 
 mod env_provider;
 mod loaded;
 mod saluki_env_overlay;
 mod saluki_only;
+mod source;
 mod system;
 mod translators;
 

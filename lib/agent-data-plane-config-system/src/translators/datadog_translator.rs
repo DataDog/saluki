@@ -8,8 +8,11 @@
 //!
 //! Most keys assign a single field directly. The endpoint keys (`api_key`, `dd_url`, `site`,
 //! `additional_endpoints`) are copied into the model without selecting a primary endpoint here.
-//! `dd_url` and `site` also remove known empty or default values because config-source information
-//! is unavailable to ADP (see #1965).
+//!
+//! A key whose meaning depends on whether its value was set explicitly, rather than on the value
+//! alone, is assigned as a [`ConfigValue`]. A schema key with a default is always present in
+//! `DatadogConfiguration`, so the value cannot answer that question; the translator reads the answer
+//! from the merged source layer instead.
 //!
 //! Conversions that can fail (enum parsing, byte-size parsing, JSON structure parsing) record a
 //! [`TranslateError`] via `record_error` and either retain a recoverable value or leave the field
@@ -27,9 +30,11 @@ use agent_data_plane_config::domains::otlp::{
     DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
-use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
 use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
+
+use crate::source::SourceTree;
 
 /// Translates a [`DatadogConfiguration`] into a [`SalukiConfiguration`].
 ///
@@ -39,6 +44,7 @@ use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, Tr
 #[derive(Debug)]
 pub(crate) struct DatadogTranslator<'a> {
     datadog: &'a DatadogConfiguration,
+    sources: &'a SourceTree,
     config: SalukiConfiguration,
     errors: Vec<TranslateError>,
 }
@@ -46,10 +52,12 @@ pub(crate) struct DatadogTranslator<'a> {
 type Result<T> = std::result::Result<T, TranslateError>;
 
 impl<'a> DatadogTranslator<'a> {
-    /// Creates a translator that will read from `datadog`.
-    pub(crate) fn new(datadog: &'a DatadogConfiguration) -> Self {
+    /// Creates a translator that will read from `datadog`, taking provenance from the merged
+    /// `sources` layer `datadog` was deserialized from.
+    pub(crate) fn new(datadog: &'a DatadogConfiguration, sources: &'a SourceTree) -> Self {
         Self {
             datadog,
+            sources,
             config: SalukiConfiguration::default(),
             errors: Vec::new(),
         }
@@ -67,21 +75,19 @@ impl<'a> DatadogTranslator<'a> {
     fn record_error(&mut self, error: TranslateError) {
         self.errors.push(error);
     }
+
+    /// Returns whether an input set `key`'s value explicitly, treating an empty value as a default.
+    ///
+    /// An empty string expresses no intent: it names no site and no URL. Recording it as a default
+    /// keeps a consumer from having to re-check for emptiness before honoring an override.
+    fn provenance_if_non_empty(&self, key: &str, value: &str) -> Provenance {
+        if value.is_empty() {
+            Provenance::Default
+        } else {
+            self.sources.provenance(key)
+        }
+    }
 }
-
-/// Default primary intake URL that the Core Agent sends for `dd_url`.
-///
-/// Because config-source information is unavailable to ADP (#1965), the translator treats this
-/// value as unset so a configured `site` can be resolved later. Programmatic overrides via
-/// `EndpointConfiguration::set_dd_url` (MRF, cluster-agent forwarder) bypass this translator and
-/// are not filtered.
-const DEFAULT_PRIMARY_ENDPOINT: &str = "https://app.datadoghq.com";
-
-/// Schema default the Core Agent streams for `forwarder_retry_queue_payloads_max_size` (15 MiB).
-const DEFAULT_FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE: u64 = 15 * 1024 * 1024;
-
-/// Schema default the Core Agent streams for the deprecated `forwarder_retry_queue_max_size` (0).
-const DEFAULT_FORWARDER_RETRY_QUEUE_MAX_SIZE: u64 = 0;
 
 /// Returns `None` for an empty `s`; otherwise returns `Some(s)`.
 fn non_empty(s: String) -> Option<String> {
@@ -89,23 +95,6 @@ fn non_empty(s: String) -> Option<String> {
         None
     } else {
         Some(s)
-    }
-}
-
-/// Returns `None` when `value` equals the schema default the Core Agent streams for a key.
-///
-/// Until we properly handle #1965, there is no way for ADP to recognize the difference between
-/// a value set by the user and a default value provided by the Agent's config stream.
-/// As a workaround, we recognize the default value and treat it as though the user did not
-/// explicitly set it.
-///
-/// This could be done with a functional style using `.filter`, but it's easier to understand
-/// written as an if-else statement.
-fn drop_when_schema_default<T: PartialEq>(value: T, schema_default: T) -> Option<T> {
-    if value == schema_default {
-        None
-    } else {
-        Some(value)
     }
 }
 
@@ -471,8 +460,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dd_url(&mut self, value: String) {
-        self.config.shared.endpoints.dd_url =
-            non_empty(value).and_then(|url| drop_when_schema_default(url, DEFAULT_PRIMARY_ENDPOINT.to_owned()));
+        // The Core Agent streams this key at its schema default even when the operator configured
+        // only `site`, so the URL is carried through as-is and provenance records whether it is an
+        // override anyone set. Programmatic overrides via `EndpointConfiguration::set_dd_url`
+        // (MRF, cluster-agent forwarder) bypass this translator entirely.
+        let provenance = self.provenance_if_non_empty("dd_url", &value);
+        self.config.shared.endpoints.dd_url = ConfigValue::new(value, provenance);
     }
 
     fn consume_disable_file_logging(&mut self, value: bool) {
@@ -718,13 +711,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_retry_queue_max_size(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.retry_queue_max_size =
-            drop_when_schema_default(value.max(0) as u64, DEFAULT_FORWARDER_RETRY_QUEUE_MAX_SIZE);
+        // This deprecated key's schema default is `0`, which is also a value an operator can set, so
+        // only provenance distinguishes the two.
+        let provenance = self.sources.provenance("forwarder_retry_queue_max_size");
+        self.config.shared.endpoints.forwarder.retry_queue_max_size = ConfigValue::new(value.max(0) as u64, provenance);
     }
 
     fn consume_forwarder_retry_queue_payloads_max_size(&mut self, value: i64) {
+        let provenance = self.sources.provenance("forwarder_retry_queue_payloads_max_size");
         self.config.shared.endpoints.forwarder.retry_queue_payloads_max_size =
-            drop_when_schema_default(value.max(0) as u64, DEFAULT_FORWARDER_RETRY_QUEUE_PAYLOADS_MAX_SIZE);
+            ConfigValue::new(value.max(0) as u64, provenance);
     }
 
     fn consume_forwarder_stop_timeout(&mut self, value: i64) {
@@ -1062,7 +1058,8 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_site(&mut self, value: String) {
-        self.config.shared.endpoints.site = non_empty(value);
+        let provenance = self.provenance_if_non_empty("site", &value);
+        self.config.shared.endpoints.site = ConfigValue::new(value, provenance);
     }
 
     fn consume_skip_ssl_validation(&mut self, value: bool) {
@@ -1167,6 +1164,7 @@ fn parse_seconds(key: &str, value: i64) -> Result<Duration> {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt;
     use std::time::Duration;
 
     use agent_data_plane_config::domains::{
@@ -1175,33 +1173,85 @@ mod tests {
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
     };
-    use datadog_agent_config::DatadogConfiguration;
-    use serde_json::json;
+    use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
+    use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
+    use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
+    use serde_json::{json, Value};
 
     use super::DatadogTranslator;
     use crate::saluki_only::SalukiOnly;
+    use crate::source::SourceTree;
+
+    /// Translates `sources`, treating every value it supplies as one an input set explicitly.
+    ///
+    /// This is the local file and environment: a value is present only because someone set it.
+    fn translate_explicit(sources: Value) -> (SalukiConfiguration, Option<TranslateErrors>) {
+        translate_sources(&SourceTree::all_explicit(sources))
+    }
+
+    /// Translates a configuration producer's `(key, value, provenance)` settings.
+    ///
+    /// Use this when a test turns on whether the producer was given a value or supplied its own
+    /// default, which is what the Datadog Agent's configuration stream distinguishes.
+    fn translate_stream(
+        settings: &[(&str, Value, StreamProvenance)],
+    ) -> (SalukiConfiguration, Option<TranslateErrors>) {
+        let settings: Vec<_> = settings
+            .iter()
+            .map(|(key, value, provenance)| ConfigSetting::new(*key, value.clone(), *provenance))
+            .collect();
+
+        translate_sources(&SourceTree::from_settings(&settings))
+    }
+
+    /// Asserts that `actual` was set explicitly and holds `expected`.
+    #[track_caller]
+    fn assert_explicit<T, U>(actual: &ConfigValue<T>, expected: U)
+    where
+        T: fmt::Debug + PartialEq<U>,
+        U: fmt::Debug,
+    {
+        assert!(actual.is_explicit(), "{actual:?} should be explicit");
+        assert_eq!(actual.value, expected);
+    }
+
+    /// Asserts that nothing set `actual` and that it holds `expected` as its default.
+    #[track_caller]
+    fn assert_defaulted<T, U>(actual: &ConfigValue<T>, expected: U)
+    where
+        T: fmt::Debug + PartialEq<U>,
+        U: fmt::Debug,
+    {
+        assert!(!actual.is_explicit(), "{actual:?} should be a default");
+        assert_eq!(actual.value, expected);
+    }
+
+    /// Deserializes the Datadog source model from `sources` and drives the witness over it.
+    fn translate_sources(sources: &SourceTree) -> (SalukiConfiguration, Option<TranslateErrors>) {
+        let datadog: DatadogConfiguration =
+            serde_json::from_value(sources.to_value()).expect("datadog source deserializes");
+
+        DatadogTranslator::new(&datadog, sources).translate()
+    }
 
     #[test]
     fn translate_small_map_through_witness_and_seed() {
         // A small raw Datadog source map exercising a scalar conversion, an enum parse, a
         // duration parse, and the raw endpoint inputs.
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+        let (mut config, errors) = translate_explicit(json!({
             "api_key": "abc",
             "dd_url": "https://custom.example.com",
             "dogstatsd_port": 9125,
             "dogstatsd_tag_cardinality": "high",
             "expected_tags_duration": "15s",
             "telemetry": { "dogstatsd_origin": true },
-        }))
-        .expect("datadog source deserializes");
+        }));
 
         // A small Saluki-only source setting one seeded field.
         let saluki_only: SalukiOnly = serde_json::from_value(json!({
             "dogstatsd_tcp_port": 8126,
         }))
         .expect("saluki-only source deserializes");
-
-        let (mut config, errors) = DatadogTranslator::new(&datadog).translate();
         saluki_only.seed(&mut config);
         assert!(errors.is_none());
 
@@ -1216,12 +1266,9 @@ mod tests {
         assert_eq!(config.shared.tags.expected_tags_duration, Duration::from_secs(15));
         // Driven bool in a nested Datadog section.
         assert!(config.domains.dogstatsd.telemetry.origin_breakdown);
-        // Raw endpoint inputs: carried through without resolution (see #1965).
+        // Raw endpoint inputs: carried through without selecting a primary endpoint here.
         assert_eq!(config.shared.endpoints.api_key, "abc");
-        assert_eq!(
-            config.shared.endpoints.dd_url.as_deref(),
-            Some("https://custom.example.com")
-        );
+        assert_explicit(&config.shared.endpoints.dd_url, "https://custom.example.com");
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
     }
@@ -1234,7 +1281,7 @@ mod tests {
             false
         );
 
-        let (config, errors) = DatadogTranslator::new(&defaulted).translate();
+        let (config, errors) = translate_explicit(json!({}));
         assert!(errors.is_none());
         assert_eq!(
             serde_json::to_value(&config).expect("typed configuration serializes")["shared"]["basic_telemetry"]
@@ -1242,11 +1289,9 @@ mod tests {
             false
         );
 
-        let enabled: DatadogConfiguration = serde_json::from_value(json!({
+        let (config, errors) = translate_explicit(json!({
             "basic_telemetry_add_container_tags": true,
-        }))
-        .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&enabled).translate();
+        }));
         assert!(errors.is_none());
         assert_eq!(
             serde_json::to_value(&config).expect("typed configuration serializes")["shared"]["basic_telemetry"]
@@ -1255,70 +1300,102 @@ mod tests {
         );
     }
 
+    // Issue #1965: the Core Agent streams `dd_url` at its schema default even when the operator
+    // configured only `site`. The translator used to compare the URL against that default and treat a
+    // match as unset, which also discarded an operator's deliberate choice of the default intake.
+    // Provenance separates the two.
     #[test]
-    fn dd_url_at_default_is_dropped_so_site_wins() {
-        // The Core Agent sends `dd_url` at its default intake even when the user only set
-        // `site`. Translation must treat that default as unset so downstream endpoint resolution
-        // can use `site`, while any other `dd_url` is carried through as an explicit override.
-        let defaulted: DatadogConfiguration = serde_json::from_value(json!({
+    fn a_defaulted_dd_url_is_not_an_override_so_site_wins() {
+        let (config, errors) = translate_stream(&[
+            ("site", json!("datadoghq.eu"), StreamProvenance::Explicit),
+            ("dd_url", json!("https://app.datadoghq.com"), StreamProvenance::Default),
+        ]);
+
+        assert!(errors.is_none());
+        // The effective value survives, so a consumer that wants the URL need not restate it.
+        assert_defaulted(&config.shared.endpoints.dd_url, "https://app.datadoghq.com");
+        assert_explicit(&config.shared.endpoints.site, "datadoghq.eu");
+    }
+
+    #[test]
+    fn an_explicit_dd_url_is_an_override_even_at_the_default_intake() {
+        // Comparing values cannot see this: the operator chose the default intake deliberately, and
+        // that choice must still override `site`.
+        let (config, errors) = translate_explicit(json!({
             "site": "datadoghq.eu",
             "dd_url": "https://app.datadoghq.com",
-        }))
-        .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&defaulted).translate();
-        assert!(errors.is_none());
-        assert_eq!(config.shared.endpoints.dd_url, None);
-        assert_eq!(config.shared.endpoints.site.as_deref(), Some("datadoghq.eu"));
+        }));
 
-        let overridden: DatadogConfiguration = serde_json::from_value(json!({
+        assert!(errors.is_none());
+        assert_explicit(&config.shared.endpoints.dd_url, "https://app.datadoghq.com");
+    }
+
+    #[test]
+    fn a_dd_url_override_is_carried_through() {
+        let (config, errors) = translate_explicit(json!({
             "site": "datadoghq.eu",
             "dd_url": "https://proxy.internal.example.com:3128",
-        }))
-        .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&overridden).translate();
+        }));
+
         assert!(errors.is_none());
-        assert_eq!(
-            config.shared.endpoints.dd_url.as_deref(),
-            Some("https://proxy.internal.example.com:3128")
+        assert_explicit(
+            &config.shared.endpoints.dd_url,
+            "https://proxy.internal.example.com:3128",
         );
     }
 
     #[test]
-    fn retry_queue_sizes_at_schema_default_are_dropped_so_fallback_works() {
-        // The Core Agent sends both keys even when the user configured neither one. Treating
-        // those default values as explicit settings would hide a value supplied through the
-        // deprecated key, so translation must represent the defaults as unset (see #1965).
+    fn an_empty_endpoint_value_is_not_explicit() {
+        // An empty string names no site and no URL, so it expresses no intent no matter which source
+        // supplied it.
+        let (config, errors) = translate_explicit(json!({ "site": "", "dd_url": "" }));
 
-        // Neither key set: both arrive at their schema defaults and must be dropped to `None`.
-        let defaulted: DatadogConfiguration = serde_json::from_value(json!({})).expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&defaulted).translate();
         assert!(errors.is_none());
-        assert_eq!(config.shared.endpoints.forwarder.retry_queue_payloads_max_size, None);
-        assert_eq!(config.shared.endpoints.forwarder.retry_queue_max_size, None);
+        assert_defaulted(&config.shared.endpoints.site, "");
+        assert_defaulted(&config.shared.endpoints.dd_url, "");
+    }
 
-        // Only the deprecated key is set: preserve its value and leave the new key unset so the
-        // retry configuration uses the deprecated setting.
-        let deprecated_only: DatadogConfiguration = serde_json::from_value(json!({
-            "forwarder_retry_queue_max_size": 42,
-        }))
-        .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&deprecated_only).translate();
+    #[test]
+    fn retry_queue_sizes_are_honored_only_when_explicit() {
+        // The Core Agent streams both keys even when the operator configured neither. Treating those
+        // defaults as explicit settings would hide a value supplied through the deprecated key.
+        let (config, errors) = translate_stream(&[
+            ("forwarder_retry_queue_max_size", json!(0), StreamProvenance::Default),
+            (
+                "forwarder_retry_queue_payloads_max_size",
+                json!(15 * 1024 * 1024),
+                StreamProvenance::Default,
+            ),
+        ]);
         assert!(errors.is_none());
-        assert_eq!(config.shared.endpoints.forwarder.retry_queue_max_size, Some(42));
-        assert_eq!(config.shared.endpoints.forwarder.retry_queue_payloads_max_size, None);
+        // The schema defaults are still the effective values.
+        let forwarder = &config.shared.endpoints.forwarder;
+        assert_defaulted(&forwarder.retry_queue_max_size, 0);
+        assert_defaulted(&forwarder.retry_queue_payloads_max_size, 15 * 1024 * 1024);
 
-        // Only the new key set to a non-default value: it is carried through.
-        let payloads_only: DatadogConfiguration = serde_json::from_value(json!({
-            "forwarder_retry_queue_payloads_max_size": 1024,
-        }))
-        .expect("datadog source deserializes");
-        let (config, errors) = DatadogTranslator::new(&payloads_only).translate();
+        // Only the deprecated key is explicit, so the retry configuration must use it.
+        let (config, errors) = translate_explicit(json!({ "forwarder_retry_queue_max_size": 42 }));
         assert!(errors.is_none());
-        assert_eq!(
-            config.shared.endpoints.forwarder.retry_queue_payloads_max_size,
-            Some(1024)
-        );
-        assert_eq!(config.shared.endpoints.forwarder.retry_queue_max_size, None);
+        let forwarder = &config.shared.endpoints.forwarder;
+        assert_explicit(&forwarder.retry_queue_max_size, 42);
+        assert_defaulted(&forwarder.retry_queue_payloads_max_size, 15 * 1024 * 1024);
+
+        // Only the new key is explicit.
+        let (config, errors) = translate_explicit(json!({ "forwarder_retry_queue_payloads_max_size": 1024 }));
+        assert!(errors.is_none());
+        let forwarder = &config.shared.endpoints.forwarder;
+        assert_explicit(&forwarder.retry_queue_payloads_max_size, 1024);
+        assert_defaulted(&forwarder.retry_queue_max_size, 0);
+    }
+
+    #[test]
+    fn an_explicit_retry_queue_size_of_zero_is_not_a_default() {
+        // `0` is this deprecated key's schema default and also a value an operator can set. Comparing
+        // values conflated the two, silently discarding the operator's setting.
+        let (config, errors) = translate_explicit(json!({ "forwarder_retry_queue_max_size": 0 }));
+
+        assert!(errors.is_none());
+        assert_explicit(&config.shared.endpoints.forwarder.retry_queue_max_size, 0);
     }
 
     #[test]
@@ -1329,16 +1406,13 @@ mod tests {
         // the list: the entry is kept with `action` defaulted to `exclude`, an error is recorded
         // (so a strict startup rejects the config), and the surrounding valid entries survive (so a
         // lenient runtime update keeps filtering).
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+        let (config, errors) = translate_explicit(json!({
             "metric_tag_filterlist": [
                 { "metric_name": "a", "action": "include", "tags": ["x"] },
                 { "metric_name": "b", "action": "exlude", "tags": ["y"] },
                 { "metric_name": "c", "action": "exclude", "tags": ["z"] },
             ],
-        }))
-        .expect("datadog source deserializes");
-
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        }));
 
         let entries = &config.domains.dogstatsd.tag_filterlist;
         assert_eq!(entries.len(), 3, "a bad action must not drop the other entries");
@@ -1361,24 +1435,18 @@ mod tests {
         // preserves the u16 validation formerly provided by GenericConfiguration instead of
         // clamping invalid ports.
         for value in [0, 5003, u16::MAX as i64] {
-            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            let (config, errors) = translate_explicit(json!({
                 "otlp_config": { "traces": { "internal_port": value } }
-            }))
-            .expect("datadog source deserializes");
-
-            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+            }));
 
             assert!(errors.is_none());
             assert_eq!(config.domains.otlp.traces.internal_port, value as u16);
         }
 
         for value in [-1, u16::MAX as i64 + 1] {
-            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            let (config, errors) = translate_explicit(json!({
                 "otlp_config": { "traces": { "internal_port": value } }
-            }))
-            .expect("datadog source deserializes");
-
-            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+            }));
 
             assert_eq!(config.domains.otlp.traces.internal_port, 0);
             let errors = errors.expect("an out-of-range port should record a translation error");
@@ -1388,7 +1456,7 @@ mod tests {
 
     #[test]
     fn summary_mode_translates_known_values() {
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+        let (config, errors) = translate_explicit(json!({
             "otlp_config": {
                 "metrics": {
                     "summaries": {
@@ -1396,10 +1464,7 @@ mod tests {
                     }
                 }
             }
-        }))
-        .expect("datadog source deserializes");
-
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        }));
 
         assert!(errors.is_none());
         assert_eq!(config.domains.otlp.metrics.summaries.mode, SummaryMode::NoQuantiles);
@@ -1407,7 +1472,7 @@ mod tests {
 
     #[test]
     fn invalid_summary_mode_records_error_and_keeps_default() {
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+        let (config, errors) = translate_explicit(json!({
             "otlp_config": {
                 "metrics": {
                     "summaries": {
@@ -1415,10 +1480,7 @@ mod tests {
                     }
                 }
             }
-        }))
-        .expect("datadog source deserializes");
-
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        }));
 
         assert_eq!(config.domains.otlp.metrics.summaries.mode, SummaryMode::Gauges);
         let errors = errors.expect("invalid mode should record a translation error");
@@ -1428,7 +1490,7 @@ mod tests {
 
     #[test]
     fn cumulative_monotonic_sum_mode_translates_known_values() {
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+        let (config, errors) = translate_explicit(json!({
             "otlp_config": {
                 "metrics": {
                     "sums": {
@@ -1436,10 +1498,7 @@ mod tests {
                     }
                 }
             }
-        }))
-        .expect("datadog source deserializes");
-
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        }));
 
         assert!(errors.is_none());
         assert_eq!(
@@ -1450,7 +1509,7 @@ mod tests {
 
     #[test]
     fn invalid_cumulative_monotonic_sum_mode_records_error_and_keeps_default() {
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+        let (config, errors) = translate_explicit(json!({
             "otlp_config": {
                 "metrics": {
                     "sums": {
@@ -1458,10 +1517,7 @@ mod tests {
                     }
                 }
             }
-        }))
-        .expect("datadog source deserializes");
-
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        }));
 
         assert_eq!(
             config.domains.otlp.metrics.sums.cumulative_monotonic_mode,
@@ -1483,7 +1539,7 @@ mod tests {
             ("drop", InitialCumulativeMonotonicValue::Drop),
             ("keep", InitialCumulativeMonotonicValue::Keep),
         ] {
-            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            let (config, errors) = translate_explicit(json!({
                 "otlp_config": {
                     "metrics": {
                         "sums": {
@@ -1491,10 +1547,7 @@ mod tests {
                         }
                     }
                 }
-            }))
-            .expect("datadog source deserializes");
-
-            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+            }));
 
             assert!(errors.is_none());
             assert_eq!(
@@ -1506,7 +1559,7 @@ mod tests {
 
     #[test]
     fn invalid_initial_cumulative_monotonic_value_records_error_and_keeps_default() {
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+        let (config, errors) = translate_explicit(json!({
             "otlp_config": {
                 "metrics": {
                     "sums": {
@@ -1514,10 +1567,7 @@ mod tests {
                     }
                 }
             }
-        }))
-        .expect("datadog source deserializes");
-
-        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+        }));
 
         assert_eq!(
             config.domains.otlp.metrics.sums.initial_cumulative_monotonic_value,
@@ -1544,12 +1594,9 @@ mod tests {
             ),
             (json!({ "max_recv_msg_size_mib": 8 }), 8),
         ] {
-            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            let (config, errors) = translate_explicit(json!({
                 "otlp_config": { "receiver": { "protocols": { "grpc": configured } } }
-            }))
-            .expect("datadog source deserializes");
-
-            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+            }));
 
             assert!(errors.is_none());
             assert_eq!(config.domains.otlp.receiver.grpc.max_recv_msg_size_mib, expected);

@@ -24,7 +24,7 @@ pub mod space_separated;
 
 pub use self::duration_string::{parse_duration, DurationString, ParseDurationError};
 pub use self::dynamic::FieldUpdateWatcher;
-use self::dynamic::{ConfigChangeEvent, ConfigUpdate};
+use self::dynamic::{settings_to_state, ConfigChangeEvent, ConfigUpdate};
 use self::provider::ResolvedProvider;
 pub use self::space_separated::{deserialize_opt_space_separated_or_seq, deserialize_space_separated_or_seq};
 
@@ -578,9 +578,11 @@ async fn run_dynamic_config_updater(
         }
     };
 
+    // The by-key view is an effective-value view: it holds what each key resolves to, so it drops the
+    // provenance carried by each setting.
     let mut dynamic_state = match initial_update {
-        ConfigUpdate::Snapshot(state) => state,
-        ConfigUpdate::Partial { .. } => {
+        ConfigUpdate::Snapshot(settings) => settings_to_state(&settings),
+        ConfigUpdate::Partial(_) => {
             // This is theoretically unreachable, as `configstream` should always send a snapshot first.
             error!("First dynamic config message was not a snapshot. Updater may be in an inconsistent state.");
             serde_json::Value::Null
@@ -625,17 +627,17 @@ async fn run_dynamic_config_updater(
 
         // Update our local dynamic state based on the received message.
         match update {
-            ConfigUpdate::Snapshot(new_state) => {
+            ConfigUpdate::Snapshot(settings) => {
                 debug!("Received configuration snapshot update.");
-                dynamic_state = new_state;
+                dynamic_state = settings_to_state(&settings);
             }
-            ConfigUpdate::Partial { key, value } => {
-                debug!(%key, "Received partial configuration update.");
+            ConfigUpdate::Partial(setting) => {
+                debug!(key = %setting.key, "Received partial configuration update.");
                 if dynamic_state.is_null() {
                     dynamic_state = serde_json::Value::Object(serde_json::Map::new());
                 }
                 if dynamic_state.is_object() {
-                    upsert(&mut dynamic_state, &key, value);
+                    upsert(&mut dynamic_state, &setting.key, setting.value);
                 } else {
                     error!(
                         "Received partial update but current dynamic state is not an object. This should not happen."
@@ -911,6 +913,7 @@ fn from_figment_error(lookup_sources: &HashSet<LookupSource>, e: figment::Error)
 
 #[cfg(test)]
 mod tests {
+    use super::dynamic::ConfigSetting;
     use super::*;
 
     #[tokio::test]
@@ -951,9 +954,10 @@ mod tests {
         .await;
         let sender = sender.expect("sender should exist");
         sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "new": "from_snapshot",
-            })))
+            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "new",
+                serde_json::json!("from_snapshot"),
+            )]))
             .await
             .unwrap();
 
@@ -968,10 +972,10 @@ mod tests {
         let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "new_key".to_string(),
-                value: "from dynamic update".to_string().into(),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "new_key",
+                "from dynamic update".to_string().into(),
+            )))
             .await
             .unwrap();
 
@@ -991,10 +995,10 @@ mod tests {
 
         // Test that an update with a nested key is applied.
         sender
-            .send(ConfigUpdate::Partial {
-                key: "foobar.a".to_string(),
-                value: serde_json::json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "foobar.a",
+                serde_json::json!(true),
+            )))
             .await
             .unwrap();
 
@@ -1037,7 +1041,10 @@ mod tests {
             let (cfg, sender) = ConfigurationLoader::for_tests(None, None, true).await;
             let sender = sender.expect("sender should exist");
             sender
-                .send(ConfigUpdate::Snapshot(serde_json::json!({ "observed": "old" })))
+                .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                    "observed",
+                    serde_json::json!("old"),
+                )]))
                 .await
                 .unwrap();
             cfg.ready().await;
@@ -1058,10 +1065,10 @@ mod tests {
         let figment_guard = cfg.inner.figment.read().unwrap();
 
         sender
-            .blocking_send(ConfigUpdate::Partial {
-                key: "observed".to_string(),
-                value: serde_json::json!("new"),
-            })
+            .blocking_send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "observed",
+                serde_json::json!("new"),
+            )))
             .unwrap();
 
         let early_event = recv_with_timeout(&mut rx, std::time::Duration::from_millis(100));
@@ -1096,9 +1103,10 @@ mod tests {
         let sender = sender.expect("sender should exist");
 
         sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({
-                "env_var": "from_snapshot_env_var"
-            })))
+            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "env_var",
+                serde_json::json!("from_snapshot_env_var"),
+            )]))
             .await
             .unwrap();
 
@@ -1111,28 +1119,28 @@ mod tests {
 
         // Send a partial update that attempts to override the env-backed key.
         sender
-            .send(ConfigUpdate::Partial {
-                key: "env_var".to_string(),
-                value: serde_json::json!("from_partial"),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "env_var",
+                serde_json::json!("from_partial"),
+            )))
             .await
             .unwrap();
 
         // Also attempt to override the nested env-backed key via dynamic.
         sender
-            .send(ConfigUpdate::Partial {
-                key: "foobar.a".to_string(),
-                value: serde_json::json!(false),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "foobar.a",
+                serde_json::json!(false),
+            )))
             .await
             .unwrap();
 
         // Send a dummy partial update to ensure the updater has processed prior partials.
         sender
-            .send(ConfigUpdate::Partial {
-                key: "dummy".to_string(),
-                value: serde_json::json!(1),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dummy",
+                serde_json::json!(1),
+            )))
             .await
             .unwrap();
 
@@ -1165,19 +1173,16 @@ mod tests {
         .await;
         let sender = sender.expect("sender should exist");
 
-        sender
-            .send(ConfigUpdate::Snapshot(serde_json::json!({})))
-            .await
-            .unwrap();
+        sender.send(ConfigUpdate::snapshot([])).await.unwrap();
         cfg.ready().await;
 
         let mut rx = cfg.subscribe_for_updates().expect("dynamic updates should be enabled");
 
         sender
-            .send(ConfigUpdate::Partial {
-                key: "new_parent.new_child".to_string(),
-                value: serde_json::json!(42),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "new_parent.new_child",
+                serde_json::json!(42),
+            )))
             .await
             .unwrap();
 

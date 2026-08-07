@@ -1,22 +1,21 @@
 //! [`ConfigurationSystem`]: the runtime configuration, translated from the raw sources and kept
 //! current as the Datadog Agent streams updates.
 
-use std::collections::HashSet;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use agent_data_plane_config::{Live, SalukiConfiguration};
 use arc_swap::ArcSwap;
 use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
 use saluki_config::dynamic::ConfigUpdate;
-use saluki_config::{upsert, ConfigurationError, GenericConfiguration};
+use saluki_config::{ConfigurationError, GenericConfiguration};
 use serde::Deserialize;
 use serde_json::Value;
 use snafu::Snafu;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, warn};
 
-use crate::saluki_env_overlay;
 use crate::saluki_only::SalukiOnly;
+use crate::source::SourceTree;
 use crate::translators::DatadogTranslator;
 
 /// An error building the translated configuration from the raw sources.
@@ -90,14 +89,14 @@ impl ConfigurationSystem {
     /// cannot be deserialized or translated.
     pub(crate) async fn connected(
         mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>,
-        compat_map: GenericConfiguration, base: Value,
+        compat_map: GenericConfiguration, base: SourceTree,
     ) -> Result<Self> {
         // The first stream message is the authoritative initial snapshot.
         let first = agent_rx.recv().await.ok_or(Error::StreamClosed)?;
 
         // Fold it into the accumulating Agent layer and forward it to the compat map, then wait for
         // the compat map to apply it so `raw_map()` is populated before any consumer reads it.
-        let mut agent = Value::Null;
+        let mut agent = SourceTree::empty();
         fold(&mut agent, &first);
         forward(&compat_tx, first).await;
         compat_map.ready().await;
@@ -106,8 +105,7 @@ impl ConfigurationSystem {
         // fails the boot and we never run on bad config. At runtime (see `agent_loop`) the same
         // check instead rejects the offending update and keeps the last-known-good configuration,
         // because a runtime update must never take the system down.
-        let merged = deep_merge(base.clone(), agent.clone());
-        let config = translate_strict(&merged)?;
+        let config = translate_strict(&base.overlay(&agent))?;
 
         let current = Arc::new(ArcSwap::from_pointee(config));
         // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
@@ -179,8 +177,8 @@ impl ConfigurationSystem {
 /// Each update is processed individually (no burst collapse) so a rejection can be attributed to the
 /// exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
 async fn agent_loop(
-    mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>, base: Value, mut agent: Value,
-    current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>,
+    mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>, base: SourceTree,
+    mut agent: SourceTree, current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>,
 ) {
     while let Some(update) = agent_rx.recv().await {
         // Validate-then-commit: fold onto a tentative copy of the Agent layer and drive the typed
@@ -188,8 +186,7 @@ async fn agent_loop(
         // value never lingers to re-poison a later merge.
         let mut tentative = agent.clone();
         fold(&mut tentative, &update);
-        let merged = deep_merge(base.clone(), tentative.clone());
-        match translate_strict(&merged) {
+        match translate_strict(&base.overlay(&tentative)) {
             Ok(config) => {
                 agent = tentative;
                 current.store(Arc::new(config));
@@ -214,18 +211,15 @@ async fn agent_loop(
 
 /// Folds one update into the accumulating Agent layer.
 ///
-/// `Snapshot` replaces the layer; `Partial` applies one (possibly dotted) key via `upsert`, the same
-/// handling the `saluki-config` updater uses, so the typed model and the compatibility map stay
-/// consistent.
-fn fold(agent: &mut Value, update: &ConfigUpdate) {
+/// `Snapshot` replaces the layer; `Partial` applies one (possibly dotted) key, the same handling the
+/// `saluki-config` updater uses, so the typed model and the compatibility map stay consistent.
+///
+/// Each setting's provenance is retained, which is what lets a later update that demotes a value to
+/// an Agent default stop shadowing the local value it had been overriding.
+fn fold(agent: &mut SourceTree, update: &ConfigUpdate) {
     match update {
-        ConfigUpdate::Snapshot(state) => *agent = state.clone(),
-        ConfigUpdate::Partial { key, value } => {
-            if agent.is_null() {
-                *agent = Value::Object(serde_json::Map::new());
-            }
-            upsert(agent, key, value.clone());
-        }
+        ConfigUpdate::Snapshot(settings) => *agent = SourceTree::from_settings(settings),
+        ConfigUpdate::Partial(setting) => agent.set(setting),
     }
 }
 
@@ -239,77 +233,19 @@ async fn forward(compat_tx: &mpsc::Sender<ConfigUpdate>, update: ConfigUpdate) {
 /// # Errors
 ///
 /// Returns an error if either source model cannot be deserialized or any key fails translation.
-pub(crate) fn translate_strict(merged: &Value) -> Result<SalukiConfiguration> {
-    let Sources { datadog, saluki } = deserialize_sources(merged)?;
-    let (config, errors) = translate(&datadog, &saluki);
+pub(crate) fn translate_strict(merged: &SourceTree) -> Result<SalukiConfiguration> {
+    let Sources { datadog, saluki } = deserialize_sources(&merged.to_value())?;
+    let (config, errors) = translate(&datadog, &saluki, merged);
     if let Some(errors) = errors {
         return Err(Error::Translate { source: errors });
     }
     Ok(config)
 }
 
-/// Merges `overlay` onto `base`, with `overlay` winning. Objects merge recursively; every other
-/// value (and any type mismatch) is replaced by the overlay's value.
-//
-// This is the authoritative-Agent merge: the Agent snapshot layered on the local base. The merge is
-// schema-leaf-level, not structural: it recurses through sections (the intermediate path objects a
-// leaf lives under) and replaces at every leaf. A map- or array-typed leaf (for example
-// `additional_endpoints`) is therefore replaced wholesale by whichever source supplies it, never
-// key-unioned across sources. The section-vs-leaf distinction comes from the schema's own leaf
-// paths (see `section_paths`).
-//
 // TODO: A map/array-valued schema leaf is replaced wholesale when any source (file, environment, or
 // the Agent config stream) supplies it. Verify this is the intended semantic for the remote Agent
 // config stream: ADP is that stream's first consumer, so the correct behavior for a stream update to
 // a map-shaped setting may not have been defined yet.
-fn deep_merge(base: Value, overlay: Value) -> Value {
-    merge_at(base, overlay, &mut Vec::new(), section_paths())
-}
-
-// Recurse only where `path` names a schema section; everywhere else the overlay value replaces the
-// base value. This covers leaves (map, array, or scalar) and any unknown key not in the schema. As
-// before, an array or a base/overlay type mismatch falls through to a wholesale replace.
-fn merge_at(base: Value, overlay: Value, path: &mut Vec<String>, sections: &HashSet<Vec<String>>) -> Value {
-    match (base, overlay) {
-        (Value::Object(mut base_map), Value::Object(overlay_map)) => {
-            for (key, overlay_value) in overlay_map {
-                path.push(key.clone());
-                let merged = match base_map.remove(&key) {
-                    Some(base_value) if sections.contains(path.as_slice()) => {
-                        merge_at(base_value, overlay_value, path, sections)
-                    }
-                    _ => overlay_value,
-                };
-                path.pop();
-                base_map.insert(key, merged);
-            }
-            Value::Object(base_map)
-        }
-        (_, overlay) => overlay,
-    }
-}
-
-// Every proper prefix of a modeled leaf path, across both source models. A path in this set is a
-// section the merge recurses into; a path that is a leaf (or unknown) is absent, so the merge
-// replaces there. Built once from the schema's own leaf tables, so it cannot drift from the models.
-fn section_paths() -> &'static HashSet<Vec<String>> {
-    static SECTIONS: OnceLock<HashSet<Vec<String>>> = OnceLock::new();
-    SECTIONS.get_or_init(|| {
-        let mut sections = HashSet::new();
-        let mut add_prefixes = |segments: Vec<String>| {
-            for end in 1..segments.len() {
-                sections.insert(segments[..end].to_vec());
-            }
-        };
-        for path in datadog_agent_config::datadog_leaf_paths() {
-            add_prefixes(path.iter().map(|segment| (*segment).to_string()).collect());
-        }
-        for path in saluki_env_overlay::leaf_paths() {
-            add_prefixes(path.to_vec());
-        }
-        sections
-    })
-}
 
 /// The sources deserialized from the merged configuration value, separated by source authority.
 struct Sources {
@@ -336,8 +272,14 @@ fn deserialize_sources(merged: &Value) -> Result<Sources> {
 /// converted leaves its field at the model default and records an error. The Saluki-only values
 /// then seed their disjoint destinations, which cannot fail. The returned configuration is always
 /// complete: every valid value is present, and every invalid one holds its default.
-fn translate(datadog: &DatadogConfiguration, saluki: &SalukiOnly) -> (SalukiConfiguration, Option<TranslateErrors>) {
-    let (mut config, errors) = DatadogTranslator::new(datadog).translate();
+///
+/// `sources` is the same merged layer the models were deserialized from. The translator consults it
+/// for provenance, which a deserialized source model cannot supply: a schema key with a default is
+/// always present, so its value alone cannot say whether an input set it explicitly.
+fn translate(
+    datadog: &DatadogConfiguration, saluki: &SalukiOnly, sources: &SourceTree,
+) -> (SalukiConfiguration, Option<TranslateErrors>) {
+    let (mut config, errors) = DatadogTranslator::new(datadog, sources).translate();
     saluki.seed(&mut config);
     (config, errors)
 }
@@ -347,21 +289,22 @@ mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
+    use agent_data_plane_config::Provenance;
     use agent_data_plane_config::{Live, SalukiConfiguration};
     use datadog_agent_config::DatadogConfiguration;
-    use saluki_config::dynamic::ConfigUpdate;
+    use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance as StreamProvenance};
     use saluki_config::ConfigurationLoader;
     use serde_json::{json, Value};
     use tokio::sync::mpsc;
 
-    use super::{deep_merge, translate, translate_strict, ConfigurationSystem, Error, SalukiOnly};
+    use super::{translate, translate_strict, ConfigurationSystem, Error, SalukiOnly, SourceTree};
 
     /// Builds a standalone system whose authority is the local sources (`file` + `env`).
     async fn standalone_system(
         file: Option<Value>, env: Option<&[(String, String)]>,
     ) -> Result<ConfigurationSystem, Error> {
         let (compat_map, _) = ConfigurationLoader::for_tests(file, env, false).await;
-        let base = compat_map.as_typed::<Value>().expect("base extracts");
+        let base = SourceTree::all_explicit(compat_map.as_typed::<Value>().expect("base extracts"));
         let config = translate_strict(&base)?;
         Ok(ConfigurationSystem::standalone(compat_map, config))
     }
@@ -373,7 +316,8 @@ mod tests {
         let (agent_tx, agent_rx) = mpsc::channel(100);
         let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
         let compat_tx = compat_tx.expect("dynamic sender exists");
-        agent_tx.send(ConfigUpdate::Snapshot(json!({}))).await.unwrap();
+        agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        let base = SourceTree::all_explicit(base);
         let system = ConfigurationSystem::connected(agent_rx, compat_tx, compat_map, base)
             .await
             .expect("system builds");
@@ -423,40 +367,41 @@ mod tests {
         );
 
         agent_tx
-            .send(ConfigUpdate::Snapshot(json!({
-                "serializer_compressor_kind": "zstd",
-                "serializer_experimental_use_v3_api": {
-                    "compression_level": 7,
-                    "series": {
-                        "endpoints": ["https://app.us3.datadoghq.com"],
-                        "validate": true,
-                        "use_beta": true,
-                        "beta_route": "/api/intake/metrics/custom/series",
-                        "shadow_sample_rate": 0.25,
-                        "shadow_sites": ["us3.datadoghq.com"]
-                    }
-                },
-                "use_v2_api": {
-                    "series": false
-                },
-                "use_v3_api": {
-                    "series": {
-                        "enabled": "false",
-                        "endpoints": {
-                            "https://app.datadoghq.com": "true"
-                        }
-                    }
-                },
-                "observability_pipelines_worker": {
-                    "metrics": {
-                        "enabled": true,
-                        "url": "https://opw.example.com",
-                        "use_v3_api": {
-                            "series": true
-                        }
-                    }
-                }
-            })))
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("serializer_compressor_kind", json!("zstd")),
+                ConfigSetting::explicit("serializer_experimental_use_v3_api.compression_level", json!(7)),
+                ConfigSetting::explicit(
+                    "serializer_experimental_use_v3_api.series.endpoints",
+                    json!(["https://app.us3.datadoghq.com"]),
+                ),
+                ConfigSetting::explicit("serializer_experimental_use_v3_api.series.validate", json!(true)),
+                ConfigSetting::explicit("serializer_experimental_use_v3_api.series.use_beta", json!(true)),
+                ConfigSetting::explicit(
+                    "serializer_experimental_use_v3_api.series.beta_route",
+                    json!("/api/intake/metrics/custom/series"),
+                ),
+                ConfigSetting::explicit(
+                    "serializer_experimental_use_v3_api.series.shadow_sample_rate",
+                    json!(0.25),
+                ),
+                ConfigSetting::explicit(
+                    "serializer_experimental_use_v3_api.series.shadow_sites",
+                    json!(["us3.datadoghq.com"]),
+                ),
+                ConfigSetting::explicit("use_v2_api.series", json!(false)),
+                ConfigSetting::explicit("use_v3_api.series.enabled", json!("false")),
+                // The Agent sends an object-valued setting whole, and these entry keys contain dots.
+                ConfigSetting::explicit(
+                    "use_v3_api.series.endpoints",
+                    json!({ "https://app.datadoghq.com": "true" }),
+                ),
+                ConfigSetting::explicit("observability_pipelines_worker.metrics.enabled", json!(true)),
+                ConfigSetting::explicit(
+                    "observability_pipelines_worker.metrics.url",
+                    json!("https://opw.example.com"),
+                ),
+                ConfigSetting::explicit("observability_pipelines_worker.metrics.use_v3_api.series", json!(true)),
+            ]))
             .await
             .unwrap();
 
@@ -551,8 +496,8 @@ mod tests {
     fn zero_otlp_trace_interner_size_is_rejected() {
         // Component builders used to discover this after translation. Reject zero before publishing
         // an invalid typed model.
-        let error = translate_strict(&json!({ "otlp_config": { "traces": { "string_interner_size": 0 } } }))
-            .expect_err("zero trace interner size should fail translation");
+        let sources = SourceTree::all_explicit(json!({ "otlp_config": { "traces": { "string_interner_size": 0 } } }));
+        let error = translate_strict(&sources).expect_err("zero trace interner size should fail translation");
 
         assert!(matches!(error, Error::Deserialize { .. }));
         assert!(error.to_string().contains("value of bytes must be greater than zero"));
@@ -560,8 +505,9 @@ mod tests {
 
     #[test]
     fn oversized_otlp_trace_interner_size_is_rejected() {
-        let error = translate_strict(&json!({ "otlp_config": { "traces": { "string_interner_size": "2GiB" } } }))
-            .expect_err("oversized trace interner should fail translation");
+        let sources =
+            SourceTree::all_explicit(json!({ "otlp_config": { "traces": { "string_interner_size": "2GiB" } } }));
+        let error = translate_strict(&sources).expect_err("oversized trace interner should fail translation");
 
         assert!(matches!(error, Error::Deserialize { .. }));
         assert!(error.to_string().contains("must not exceed 1073741824 bytes"));
@@ -569,8 +515,9 @@ mod tests {
 
     #[test]
     fn positive_otlp_trace_interner_size_is_accepted() {
-        let config = translate_strict(&json!({ "otlp_config": { "traces": { "string_interner_size": "512KiB" } } }))
-            .expect("positive trace interner size should translate");
+        let sources =
+            SourceTree::all_explicit(json!({ "otlp_config": { "traces": { "string_interner_size": "512KiB" } } }));
+        let config = translate_strict(&sources).expect("positive trace interner size should translate");
 
         assert_eq!(config.domains.otlp.traces.string_interner_size.get(), 512 * 1024);
     }
@@ -599,17 +546,17 @@ mod tests {
         // Send a translation-invalid update, then a valid update to a different field. Updates are
         // processed in order, so once the second is observed the first has already been handled.
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "dogstatsd_tag_cardinality".to_string(),
-                value: json!("bogus"),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_tag_cardinality",
+                json!("bogus"),
+            )))
             .await
             .unwrap();
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "log_level".to_string(),
-                value: json!("error"),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )))
             .await
             .unwrap();
 
@@ -635,10 +582,10 @@ mod tests {
         ];
         for (i, level) in burst.iter().enumerate() {
             agent_tx
-                .send(ConfigUpdate::Partial {
-                    key: "log_level".to_string(),
-                    value: json!(level),
-                })
+                .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                    "log_level",
+                    json!(level),
+                )))
                 .await
                 .unwrap();
             // Interleave a translation-invalid update mid-burst, then correct it. The invalid value
@@ -646,27 +593,27 @@ mod tests {
             // baseline keeps converging on the latest valid value regardless of the transient bad one.
             if i == burst.len() / 2 {
                 agent_tx
-                    .send(ConfigUpdate::Partial {
-                        key: "dogstatsd_tag_cardinality".to_string(),
-                        value: json!("bogus"),
-                    })
+                    .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                        "dogstatsd_tag_cardinality",
+                        json!("bogus"),
+                    )))
                     .await
                     .unwrap();
                 agent_tx
-                    .send(ConfigUpdate::Partial {
-                        key: "dogstatsd_tag_cardinality".to_string(),
-                        value: json!("high"),
-                    })
+                    .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                        "dogstatsd_tag_cardinality",
+                        json!("high"),
+                    )))
                     .await
                     .unwrap();
             }
         }
         let final_level = "error";
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "log_level".to_string(),
-                value: json!(final_level),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!(final_level),
+            )))
             .await
             .unwrap();
 
@@ -679,6 +626,132 @@ mod tests {
         assert_eq!(system.config().control.logging.level, final_level);
     }
 
+    // Issue #1965: the Core Agent streams every setting it knows about, including the ones nobody
+    // configured, so its schema defaults must not overwrite the local file.
+    #[tokio::test]
+    async fn a_defaulted_agent_value_does_not_erase_a_local_one() {
+        let (system, agent_tx) = connected_system(json!({ "dd_url": "https://vector.example.com" })).await;
+
+        agent_tx
+            .send(ConfigUpdate::snapshot([ConfigSetting::new(
+                "dd_url",
+                json!("https://app.datadoghq.com"),
+                StreamProvenance::Default,
+            )]))
+            .await
+            .unwrap();
+        // A later unrelated update is observable, so once it lands the snapshot above has been handled.
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )))
+            .await
+            .unwrap();
+        await_config(&system, "the trailing update to take effect", |c| {
+            c.control.logging.level == "error"
+        })
+        .await;
+
+        let dd_url = &system.config().shared.endpoints.dd_url;
+        assert!(dd_url.is_explicit());
+        assert_eq!(dd_url.value, "https://vector.example.com");
+    }
+
+    #[tokio::test]
+    async fn demoting_an_agent_value_to_a_default_reveals_the_local_value() {
+        let (system, agent_tx) = connected_system(json!({ "dd_url": "https://vector.example.com" })).await;
+
+        // The Agent takes over the setting.
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dd_url",
+                json!("https://app.datadoghq.eu"),
+            )))
+            .await
+            .unwrap();
+        await_config(&system, "the Agent override to take effect", |c| {
+            c.shared.endpoints.dd_url.value == "https://app.datadoghq.eu"
+        })
+        .await;
+
+        // The operator removes it from the Agent's configuration, so the Agent now reports its own
+        // default. The Agent layer must stop shadowing the local value rather than pinning the value
+        // it last held.
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::new(
+                "dd_url",
+                json!("https://app.datadoghq.com"),
+                StreamProvenance::Default,
+            )))
+            .await
+            .unwrap();
+
+        await_config(&system, "the local value to be revealed again", |c| {
+            c.shared.endpoints.dd_url.value == "https://vector.example.com"
+        })
+        .await;
+        assert!(system.config().shared.endpoints.dd_url.is_explicit());
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_replaces_the_agent_layer() {
+        let (system, agent_tx) = connected_system(json!({})).await;
+
+        agent_tx
+            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "dogstatsd_port",
+                json!(9125),
+            )]))
+            .await
+            .unwrap();
+        await_config(&system, "the first snapshot to take effect", |c| {
+            c.domains.dogstatsd.listeners.port == 9125
+        })
+        .await;
+
+        // A snapshot is the producer's complete state, so a setting it omits is no longer set and the
+        // port returns to the schema default rather than lingering at 9125.
+        agent_tx
+            .send(ConfigUpdate::snapshot([ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )]))
+            .await
+            .unwrap();
+
+        await_config(&system, "the replacing snapshot to take effect", |c| {
+            c.control.logging.level == "error"
+        })
+        .await;
+        assert_eq!(system.config().domains.dogstatsd.listeners.port, 8125);
+    }
+
+    #[tokio::test]
+    async fn a_live_view_wakes_when_only_provenance_changes() {
+        let (system, agent_tx) = connected_system(json!({})).await;
+        let mut dd_url = system.live(|c| &c.shared.endpoints.dd_url);
+        // Nothing has set the URL, so it is the schema default the Agent supplies.
+        assert_eq!(dd_url.provenance, Provenance::Default);
+        assert_eq!(dd_url.value, "https://app.datadoghq.com");
+
+        // The same URL, now deliberately chosen. The value is unchanged, so only provenance can carry
+        // the fact that it became an override.
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dd_url",
+                json!("https://app.datadoghq.com"),
+            )))
+            .await
+            .unwrap();
+
+        let updated = tokio::time::timeout(Duration::from_secs(2), dd_url.changed())
+            .await
+            .expect("the view observes a provenance-only change");
+        assert_eq!(updated.provenance, Provenance::Explicit);
+        assert_eq!(updated.value, "https://app.datadoghq.com");
+    }
+
     #[tokio::test]
     async fn live_view_observes_debug_log_update() {
         let (system, agent_tx) = connected_system(json!({ "dogstatsd_metrics_stats_enable": false })).await;
@@ -686,10 +759,10 @@ mod tests {
         assert!(!view.metrics_stats_enable);
 
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "dogstatsd_metrics_stats_enable".to_string(),
-                value: json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_metrics_stats_enable",
+                json!(true),
+            )))
             .await
             .unwrap();
 
@@ -710,10 +783,10 @@ mod tests {
         assert!(!*stats);
 
         agent_tx
-            .send(ConfigUpdate::Partial {
-                key: "dogstatsd_metrics_stats_enable".to_string(),
-                value: json!(true),
-            })
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "dogstatsd_metrics_stats_enable",
+                json!(true),
+            )))
             .await
             .unwrap();
 
@@ -753,25 +826,22 @@ mod tests {
 
     #[test]
     fn translate_small_map_through_witness_and_seed() {
-        // A small raw Datadog source map exercising a scalar conversion, an enum parse, a
-        // duration parse, and the raw endpoint inputs.
-        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+        // A small raw source map exercising a scalar conversion, an enum parse, a duration parse, the
+        // raw endpoint inputs, and one seeded Saluki-only field.
+        let sources = SourceTree::all_explicit(json!({
             "api_key": "abc",
             "dd_url": "https://custom.example.com",
             "dogstatsd_port": 9125,
             "dogstatsd_tag_cardinality": "high",
             "expected_tags_duration": "15s",
             "telemetry": { "dogstatsd_origin": true },
-        }))
-        .expect("datadog source deserializes");
-
-        // A small Saluki-only source setting one seeded field.
-        let saluki: SalukiOnly = serde_json::from_value(json!({
             "dogstatsd_tcp_port": 8126,
-        }))
-        .expect("saluki-only source deserializes");
+        }));
+        let value = sources.to_value();
+        let datadog: DatadogConfiguration = serde_json::from_value(value.clone()).expect("datadog source deserializes");
+        let saluki: SalukiOnly = serde_json::from_value(value).expect("saluki-only source deserializes");
 
-        let (config, errors) = translate(&datadog, &saluki);
+        let (config, errors) = translate(&datadog, &saluki, &sources);
         assert!(errors.is_none(), "translation of a valid map records no error");
 
         // Driven scalar conversion: i64 -> u16.
@@ -785,57 +855,11 @@ mod tests {
         assert_eq!(config.shared.tags.expected_tags_duration, Duration::from_secs(15));
         // Driven bool in a nested Datadog section.
         assert!(config.domains.dogstatsd.telemetry.origin_breakdown);
-        // Raw endpoint inputs: carried through without resolution (see #1965).
+        // Raw endpoint inputs: carried through without selecting a primary endpoint here.
         assert_eq!(config.shared.endpoints.api_key, "abc");
-        assert_eq!(
-            config.shared.endpoints.dd_url.as_deref(),
-            Some("https://custom.example.com")
-        );
+        assert!(config.shared.endpoints.dd_url.is_explicit());
+        assert_eq!(config.shared.endpoints.dd_url.value, "https://custom.example.com");
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
-    }
-
-    // A map-typed schema leaf (`additional_endpoints`) is replaced wholesale, not key-unioned: the
-    // overlay's map fully supplants the base's rather than the two being merged.
-    #[test]
-    fn merge_replaces_a_map_typed_leaf_wholesale() {
-        let base = json!({ "additional_endpoints": { "https://a.example.com": ["k1"] } });
-        let overlay = json!({ "additional_endpoints": { "https://b.example.com": ["k2"] } });
-
-        let merged = deep_merge(base, overlay);
-
-        assert_eq!(
-            merged,
-            json!({ "additional_endpoints": { "https://b.example.com": ["k2"] } })
-        );
-    }
-
-    // A schema section (`apm_config`) is recursed into: leaves from both sources coexist, and a leaf
-    // set by both sources takes the overlay's value.
-    #[test]
-    fn merge_recurses_into_a_section_and_replaces_leaves_within_it() {
-        let base = json!({ "apm_config": { "compute_stats_by_span_kind": true, "enable_rare_sampler": true } });
-        let overlay = json!({ "apm_config": { "enable_rare_sampler": false } });
-
-        let merged = deep_merge(base, overlay);
-
-        assert_eq!(
-            merged,
-            json!({ "apm_config": { "compute_stats_by_span_kind": true, "enable_rare_sampler": false } })
-        );
-    }
-
-    // A scalar leaf still replaces, and a colliding array leaf is replaced rather than adjoined.
-    #[test]
-    fn merge_replaces_scalar_and_array_leaves() {
-        let base = json!({ "dogstatsd_port": 8125, "dogstatsd_mapper_profiles": ["a"] });
-        let overlay = json!({ "dogstatsd_port": 9125, "dogstatsd_mapper_profiles": ["b"] });
-
-        let merged = deep_merge(base, overlay);
-
-        assert_eq!(
-            merged,
-            json!({ "dogstatsd_port": 9125, "dogstatsd_mapper_profiles": ["b"] })
-        );
     }
 }

@@ -15,14 +15,17 @@ use datadog_protos::agent::{
     flare::v1::{flare_provider_server::*, *},
     status::v1::{status_provider_server::*, *},
     telemetry::v1::{get_telemetry_response::*, telemetry_provider_server::*, *},
-    ConfigSnapshot,
+    ConfigSetting as AgentConfigSetting, ConfigSnapshot,
 };
 use futures::StreamExt;
 use process_memory::Querier as MemoryQuerier;
 use prost_types::value::Kind;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::{dynamic::ConfigUpdate, upsert, GenericConfiguration};
+use saluki_config::{
+    dynamic::{ConfigSetting, ConfigUpdate, Provenance},
+    GenericConfiguration,
+};
 use saluki_core::{
     diagnostic::{subscribe_events, DiagnosticCollector, DiagnosticDetails, DiagnosticEvent},
     observability::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor},
@@ -305,20 +308,12 @@ async fn run_config_stream_event_loop(
                 Ok(event) => {
                     let update = match event.event {
                         Some(config_event::Event::Snapshot(snapshot)) => {
-                            let map = snapshot_to_map(&snapshot);
-                            Some(ConfigUpdate::Snapshot(map))
+                            Some(ConfigUpdate::Snapshot(snapshot_to_settings(&snapshot)))
                         }
-                        Some(config_event::Event::Update(update)) => {
-                            if let Some(setting) = update.setting {
-                                let v = proto_value_to_serde_value(&setting.value);
-                                Some(ConfigUpdate::Partial {
-                                    key: setting.key,
-                                    value: v,
-                                })
-                            } else {
-                                None
-                            }
-                        }
+                        Some(config_event::Event::Update(update)) => update
+                            .setting
+                            .as_ref()
+                            .map(|setting| ConfigUpdate::Partial(setting_to_config_setting(setting))),
                         None => {
                             error!("Received a configuration update event with no data.");
                             None
@@ -343,16 +338,32 @@ async fn run_config_stream_event_loop(
     }
 }
 
-/// Converts a `ConfigSnapshot` into a nested `serde_json::Value::Object`.
-fn snapshot_to_map(snapshot: &ConfigSnapshot) -> Value {
-    let mut root = Value::Object(Map::new());
+/// Agent source names for values the Agent supplied itself rather than an operator: `default` is a
+/// schema default value, and `schema` is a declared key that has no value at all.
+const AGENT_UNSET_SOURCES: [&str; 2] = ["default", "schema"];
 
-    for setting in &snapshot.settings {
-        let value = proto_value_to_serde_value(&setting.value);
-        upsert(&mut root, &setting.key, value);
-    }
+/// Converts one setting from the Agent's config stream.
+///
+/// An unrecognized source is treated as explicit: a source name we do not know is far more likely to
+/// be a new kind of real input than a new way of saying nobody configured the setting, and treating a
+/// real input as a default would silently discard an operator's value.
+fn setting_to_config_setting(setting: &AgentConfigSetting) -> ConfigSetting {
+    let provenance = if AGENT_UNSET_SOURCES.contains(&setting.source.as_str()) {
+        Provenance::Default
+    } else {
+        Provenance::Explicit
+    };
 
-    root
+    ConfigSetting::new(
+        setting.key.clone(),
+        proto_value_to_serde_value(&setting.value),
+        provenance,
+    )
+}
+
+/// Converts a `ConfigSnapshot` into the settings it carries.
+fn snapshot_to_settings(snapshot: &ConfigSnapshot) -> Vec<ConfigSetting> {
+    snapshot.settings.iter().map(setting_to_config_setting).collect()
 }
 
 /// Recursively converts a `google::protobuf::Value` into a `serde_json::Value`.
@@ -883,6 +894,74 @@ mod tests {
         let input = vec![b'y'; DIAGNOSTIC_ARTIFACT_MAX_BYTES];
         let output = cap_artifact_data(input.clone());
         assert_eq!(output, input);
+    }
+
+    fn agent_setting(source: &str, key: &str, value: &str) -> AgentConfigSetting {
+        AgentConfigSetting {
+            source: source.to_string(),
+            key: key.to_string(),
+            value: Some(prost_types::Value {
+                kind: Some(Kind::StringValue(value.to_string())),
+            }),
+        }
+    }
+
+    #[test]
+    fn agent_supplied_sources_are_marked_as_defaults() {
+        for source in AGENT_UNSET_SOURCES {
+            let setting = setting_to_config_setting(&agent_setting(source, "dd_url", "https://app.datadoghq.com"));
+
+            assert_eq!(setting.key, "dd_url");
+            assert_eq!(setting.value, Value::from("https://app.datadoghq.com"));
+            assert_eq!(
+                setting.provenance,
+                Provenance::Default,
+                "source {source} should be a default"
+            );
+        }
+    }
+
+    #[test]
+    fn operator_supplied_sources_are_marked_as_explicit() {
+        // The last source is deliberately not one the Agent publishes today: an unrecognized source is
+        // treated as a real input rather than silently discarded as a default.
+        for source in [
+            "file",
+            "environment-variable",
+            "remote-config",
+            "cli",
+            "source-from-the-future",
+        ] {
+            let setting = setting_to_config_setting(&agent_setting(source, "dd_url", "https://app.datadoghq.eu"));
+
+            assert_eq!(
+                setting.provenance,
+                Provenance::Explicit,
+                "source {source} should be explicit"
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_settings_keep_their_order_values_and_provenance() {
+        let snapshot = ConfigSnapshot {
+            origin: "core-agent".to_string(),
+            sequence_id: 1,
+            settings: vec![
+                agent_setting("file", "site", "datadoghq.eu"),
+                agent_setting("default", "dd_url", "https://app.datadoghq.com"),
+            ],
+        };
+
+        let settings = snapshot_to_settings(&snapshot);
+
+        assert_eq!(
+            settings,
+            vec![
+                ConfigSetting::explicit("site", Value::from("datadoghq.eu")),
+                ConfigSetting::new("dd_url", Value::from("https://app.datadoghq.com"), Provenance::Default),
+            ]
+        );
     }
 
     #[test]
