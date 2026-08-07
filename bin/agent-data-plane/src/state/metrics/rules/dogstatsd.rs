@@ -146,18 +146,22 @@ pub fn get_dogstatsd_remappings() -> Vec<RemapperRule> {
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_sent",
             "dogstatsd_client.bytes_sent",
-        ),
+        )
+        .with_help_text("Total bytes sent by DogStatsD clients"),
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_dropped",
             "dogstatsd_client.bytes_dropped",
-        ),
+        )
+        .with_help_text("Total bytes dropped by DogStatsD clients"),
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_dropped_queue",
             "dogstatsd_client.bytes_dropped_queue",
-        ),
+        )
+        .with_help_text("Total bytes dropped because the DogStatsD client sender queue is full"),
         RemapperRule::by_name(
             "adp.dogstatsd_client_telemetry_bytes_dropped_writer",
             "dogstatsd_client.bytes_dropped_writer",
-        ),
+        )
+        .with_help_text("Total bytes dropped because the DogStatsD client writer cannot send"),
     ]
 }

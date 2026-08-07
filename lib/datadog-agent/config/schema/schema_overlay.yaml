@@ -230,7 +230,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -240,7 +240,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.keep_values"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -249,7 +249,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.luhn"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -258,7 +258,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -268,7 +268,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.keep_values"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -277,7 +277,7 @@ inventory:
     pipelines: [traces]
     description: "Obfuscate SQL values in ES queries"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -286,7 +286,7 @@ inventory:
     pipelines: [traces]
     description: "Strip numeric segments from HTTP paths"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -295,7 +295,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.http.remove_query_string"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -304,7 +304,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.memcached.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -314,7 +314,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.memcached.keep_command"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -323,7 +323,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -333,7 +333,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.keep_values"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -342,7 +342,7 @@ inventory:
     pipelines: [traces]
     description: "Obfuscate SQL values in MongoDB queries"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -351,7 +351,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -361,7 +361,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.keep_values"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -370,7 +370,7 @@ inventory:
     pipelines: [traces]
     description: "Obfuscate SQL values in OpenSearch queries"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -379,7 +379,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -389,7 +389,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.remove_all_args"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -398,7 +398,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.valkey.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -408,7 +408,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.valkey.remove_all_args"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -1395,7 +1395,7 @@ inventory:
     description: "Agent environment name"
     documentation: "ADP reads env but defaults to 'none' instead of the core agent's ''. Scope is narrower in ADP (only traces/stats encoders). Neither implementation uses env directly on the DogStatsD metrics path."
     test_support:
-      used_by: [DatadogApmStatsEncoderConfiguration, DatadogTraceConfiguration]
+      used_by: [DatadogApmStatsEncoderConfiguration, TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2258,7 +2258,7 @@ inventory:
           DatadogLogsConfiguration,
           DatadogMetricsConfiguration,
           DatadogServiceChecksConfiguration,
-          DatadogTraceConfiguration,
+          TypedConfigSystem,
           ForwarderConfiguration,
         ]
       additional_attributes:
@@ -2410,7 +2410,7 @@ inventory:
           DatadogLogsConfiguration,
           DatadogMetricsConfiguration,
           DatadogServiceChecksConfiguration,
-          DatadogTraceConfiguration,
+          TypedConfigSystem,
         ]
       value_type_override: integer
       additional_attributes:

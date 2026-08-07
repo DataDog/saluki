@@ -22,8 +22,7 @@ use tracing::{debug, error, warn};
 
 use crate::common::otlp::traces::translator::OtlpTracesTranslator;
 use crate::common::otlp::{
-    build_metrics, config::TracesConfig, Metrics, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH,
-    OTLP_TRACES_GRPC_SERVICE_PATH,
+    build_metrics, Metrics, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
 };
 
 /// Configuration for the OTLP decoder.
@@ -52,12 +51,7 @@ impl DecoderBuilder for OtlpDecoderConfiguration {
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError> {
         let metrics = build_metrics(&context);
-        let traces_config = TracesConfig {
-            enable_otlp_compute_top_level_by_span_kind: self.traces.enable_compute_top_level_by_span_kind,
-            ignore_missing_datadog_fields: self.traces.ignore_missing_datadog_fields,
-            ..Default::default()
-        };
-        let traces_translator = OtlpTracesTranslator::new(traces_config, self.traces.string_interner_size);
+        let traces_translator = OtlpTracesTranslator::new(self.traces.clone());
 
         Ok(Box::new(OtlpDecoder {
             traces_translator,

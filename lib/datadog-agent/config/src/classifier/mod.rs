@@ -54,8 +54,6 @@ pub mod structs {
     pub const DOGSTATSD_PREFIX_FILTER_CONFIGURATION: &str = "DogStatsDPrefixFilterConfiguration";
     /// Identifier for `DatadogMetricsConfiguration`.
     pub const DATADOG_METRICS_CONFIGURATION: &str = "DatadogMetricsConfiguration";
-    /// Identifier for `DatadogTraceConfiguration`.
-    pub const DATADOG_TRACE_CONFIGURATION: &str = "DatadogTraceConfiguration";
     /// Identifier for `DatadogLogsConfiguration`.
     pub const DATADOG_LOGS_CONFIGURATION: &str = "DatadogLogsConfiguration";
     /// Identifier for `DatadogEventsConfiguration`.
@@ -66,8 +64,6 @@ pub mod structs {
     pub const DATADOG_APM_STATS_ENCODER_CONFIGURATION: &str = "DatadogApmStatsEncoderConfiguration";
     /// Identifier for `MrfConfiguration`.
     pub const MRF_CONFIGURATION: &str = "MrfConfiguration";
-    /// Identifier for `TraceObfuscationConfiguration`.
-    pub const TRACE_OBFUSCATION_CONFIGURATION: &str = "TraceObfuscationConfiguration";
     /// Identifier for `RemoteAgentClientConfiguration`.
     pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
     /// Identifier for `TagFilterlistConfiguration`.

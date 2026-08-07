@@ -5,7 +5,25 @@
 //! only want the definitive codegen defaults rather than restating values that can drift (see
 //! #1802).
 
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, time::Duration};
+
+/// Default timeout before a partially filled encoder payload is flushed.
+pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Default environment for traces that do not provide one.
+pub const DEFAULT_TRACE_ENV: &str = "none";
+
+/// Whether error traces are sampled independently of the base sampler by default.
+pub const DEFAULT_ERROR_SAMPLING_ENABLED: bool = true;
+
+/// Default rare-sampler traces-per-second budget.
+pub const DEFAULT_RARE_SAMPLER_TPS: f64 = 5.0;
+
+/// Default rare-sampler cooldown, in seconds.
+pub const DEFAULT_RARE_SAMPLER_COOLDOWN_SECS: f64 = 300.0;
+
+/// Default rare-sampler signature cardinality.
+pub const DEFAULT_RARE_SAMPLER_CARDINALITY: usize = 200;
 
 /// Default OTLP trace string interner capacity: 512 KiB.
 pub const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap();

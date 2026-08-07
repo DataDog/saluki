@@ -418,7 +418,7 @@ async fn create_topology(
     }
 
     if dp.traces_pipeline_required() {
-        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map(), env_provider).await?;
+        add_baseline_traces_pipeline_to_blueprint(&mut blueprint, config_system, env_provider).await?;
     }
 
     // Connected topologies emit liveness through the metric and service-check baselines created above. Standalone
@@ -665,18 +665,27 @@ async fn add_baseline_service_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_traces_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
-    let dd_traces_config = DatadogTraceConfiguration::from_configuration(config)
-        .error_context("Failed to configure Datadog Traces encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
-    let trace_obfuscation_config = TraceObfuscationConfiguration::from_apm_configuration(config)?;
-    let trace_sampler_config = TraceSamplerConfiguration::from_configuration(config)
-        .error_context("Failed to configure Trace Sampler transform.")?;
-    let ottl_filter_config = OttlFilterConfiguration::from_configuration(config)
+    let config = config_system.config();
+    let dd_traces_config = DatadogTraceConfiguration::from_configuration(
+        &config.domains.traces,
+        &config.domains.otlp.traces,
+        &config.shared,
+    )
+    .with_environment_provider(env_provider.clone())
+    .await?;
+    let trace_sampler_config =
+        TraceSamplerConfiguration::from_configuration(&config.domains.traces, &config.domains.otlp.traces);
+
+    let trace_obfuscation_config =
+        TraceObfuscationConfiguration::from_configuration(&config.domains.traces.obfuscation);
+
+    // The remaining trace-enrichment components still read from the raw compatibility map.
+    let raw_config = config_system.raw_map();
+    let ottl_filter_config = OttlFilterConfiguration::from_configuration(&raw_config)
         .error_context("Failed to configure OTTL filter processor.")?;
-    let ottl_transform_config = OttlTransformConfiguration::from_configuration(config)
+    let ottl_transform_config = OttlTransformConfiguration::from_configuration(&raw_config)
         .error_context("Failed to configure OTTL transform processor.")?;
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
@@ -684,11 +693,11 @@ async fn add_baseline_traces_pipeline_to_blueprint(
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_sampler", trace_sampler_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(config)
+    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&raw_config)
         .error_context("Failed to configure APM Stats transform.")?
         .with_environment_provider(env_provider.clone())
         .await?;
-    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(config)
+    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(&raw_config)
         .error_context("Failed to configure Datadog APM Stats encoder.")?
         .with_environment_provider(env_provider.clone())
         .await?;
@@ -868,12 +877,12 @@ async fn add_otlp_pipeline_to_blueprint(
             "OTLP proxy mode enabled. Select OTLP payloads will be proxied to the Core Agent."
         );
 
-        let typed = config_system.config();
-        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&typed.domains.otlp.receiver);
-        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&typed.domains.otlp.traces);
+        let config = config_system.config();
+        let otlp_relay_config = OtlpRelayConfiguration::from_configuration(&config.domains.otlp.receiver);
+        let otlp_decoder_config = OtlpDecoderConfiguration::from_configuration(&config.domains.otlp.traces);
 
         let local_agent_otlp_forwarder_config =
-            OtlpForwarderConfiguration::from_configuration(&typed.domains.otlp.traces, core_agent_otlp_grpc_endpoint);
+            OtlpForwarderConfiguration::from_configuration(&config.domains.otlp.traces, core_agent_otlp_grpc_endpoint);
 
         blueprint
             // Components.
@@ -898,8 +907,8 @@ async fn add_otlp_pipeline_to_blueprint(
             .get_hostname()
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
-        let typed = config_system.config();
-        let otlp_config = OtlpConfiguration::from_configuration(&typed.domains.otlp)
+        let config = config_system.config();
+        let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp)
             .with_default_hostname(default_hostname)
             .with_workload_provider(env_provider.workload().clone());
 

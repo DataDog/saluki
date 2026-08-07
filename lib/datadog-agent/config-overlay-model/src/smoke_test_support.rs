@@ -16,7 +16,6 @@ pub enum ConfigurationStruct {
     DatadogLogsConfiguration,
     DatadogMetricsConfiguration,
     DatadogServiceChecksConfiguration,
-    DatadogTraceConfiguration,
     DogStatsDConfiguration,
     DogStatsDDebugLogConfiguration,
     DogStatsDMapperConfiguration,
@@ -26,7 +25,6 @@ pub enum ConfigurationStruct {
     ProxyConfiguration,
     RemoteAgentClientConfiguration,
     TagFilterlistConfiguration,
-    TraceObfuscationConfiguration,
 
     /// Keys consumed through the typed configuration translation system.
     TypedConfigSystem,
@@ -56,7 +54,6 @@ impl ConfigurationStruct {
             ConfigurationStruct::DatadogLogsConfiguration => "DATADOG_LOGS_CONFIGURATION",
             ConfigurationStruct::DatadogMetricsConfiguration => "DATADOG_METRICS_CONFIGURATION",
             ConfigurationStruct::DatadogServiceChecksConfiguration => "DATADOG_SERVICE_CHECKS_CONFIGURATION",
-            ConfigurationStruct::DatadogTraceConfiguration => "DATADOG_TRACE_CONFIGURATION",
             ConfigurationStruct::DogStatsDConfiguration => "DOGSTATSD_CONFIGURATION",
             ConfigurationStruct::DogStatsDDebugLogConfiguration => "DOGSTATSD_DEBUG_LOG_CONFIGURATION",
             ConfigurationStruct::DogStatsDMapperConfiguration => "DOGSTATSD_MAPPER_CONFIGURATION",
@@ -66,7 +63,6 @@ impl ConfigurationStruct {
             ConfigurationStruct::ProxyConfiguration => "PROXY_CONFIGURATION",
             ConfigurationStruct::RemoteAgentClientConfiguration => "REMOTE_AGENT_CLIENT_CONFIGURATION",
             ConfigurationStruct::TagFilterlistConfiguration => "TAG_FILTERLIST_CONFIGURATION",
-            ConfigurationStruct::TraceObfuscationConfiguration => "TRACE_OBFUSCATION_CONFIGURATION",
             ConfigurationStruct::TypedConfigSystem => "TYPED_CONFIG_SYSTEM",
             ConfigurationStruct::GetTyped => "GET_TYPED",
             ConfigurationStruct::NoSmoke => "NO_SMOKE",
