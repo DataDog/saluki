@@ -1,6 +1,6 @@
 # SMP (Single Machine Performance) Experiments
 
-This directory contains performance regression tests and implementation comparisons for ADP (Agent Data Plane) that run on the Single Machine Performance infrastructure.
+This directory contains performance regression tests for ADP (Agent Data Plane) that run on the Single Machine Performance infrastructure.
 
 ## Overview
 
@@ -16,13 +16,9 @@ SMP tests measure ADP's performance characteristics under various workloads. Eac
 ```
 test/smp/regression/adp/
 ├── experiments.yaml          # Experiment definitions (source of truth)
-├── config.yaml               # Default SMP suite configuration
-├── dogstatsd-rss-comparison-config.yaml # SMP config without profiling replicas
+├── config.yaml               # Shared SMP config (copied into each suite below)
 ├── generate_experiments.py   # Script to generate the per-suite case directories
 ├── shared/                   # Files copied into experiments at generation time (e.g. cert.pem)
-├── dogstatsd-rss-comparison/ # Manual Core Agent versus ADP RSS comparison
-│   ├── config.yaml
-│   └── cases/...
 ├── quality-gates/            # PR gating suite (experiments with `checks:`)
 │   ├── config.yaml
 │   └── cases/
@@ -37,33 +33,24 @@ test/smp/regression/adp/
 ```
 
 > [!NOTE]
-> `dogstatsd-rss-comparison/`, `quality-gates/`, and `full/` are generated; never edit them by hand. Edit `experiments.yaml`
+> `quality-gates/` and `full/` are generated; never edit them by hand. Edit `experiments.yaml`
 > and run `make generate-smp-experiments`.
 
 ## Suites
 
-Experiments are generated into three suites, each a self-contained SMP target-config directory:
+Experiments are generated into two suites, each a self-contained SMP target-config directory:
 
 - **`quality-gates/`** — the PR gate. Contains only experiments that declare `checks:` (those
   whose bounds define whether a PR is suitable to merge). CI runs this suite on every PR and
   fails the pipeline if a bound is breached.
-- **`full/`** — the superset of all ADP regression experiments (including the quality gates). CI runs this
+- **`full/`** — the superset of *all* experiments (including the quality gates). CI runs this
   suite nightly on `main` (summarizing to Slack) for long-term trend analysis, and on-demand as
   a manual job on a PR (reporting to the PR). The full suite never gates a PR.
-- **`dogstatsd-rss-comparison/`** — an on-demand comparison of Core Agent and ADP RSS under the
-  existing idle, low, medium, heavy, and ultra-heavy steady DogStatsD workloads. CI mirrors the
-  fixed Core Agent image into SMP, uses the current PR's ADP image, and reports `total_rss_bytes`
-  with Core Agent as the baseline.
 
 An experiment's membership is derived automatically: it joins `quality-gates/` if and only if it
 declares `checks:`. There is no separate flag to maintain — the bound *is* the gate. Define each
 experiment once in `experiments.yaml`; the generator writes the gating experiments, identically,
-into both suite directories. Experiments with an explicit `suites:` list are generated only into
-the named suites.
-
-To run the Core Agent comparison on a PR, start the manual
-`run-benchmarks-dogstatsd-rss-comparison` GitLab job. The job posts an observational RSS report to
-the PR and does not act as a merge gate.
+into both suite directories.
 
 ## Defining Experiments
 
@@ -176,8 +163,6 @@ experiments:
         - unix_datagram:
             bytes_per_second: "10 MiB"   # Merged into template config
 ```
-
-Set `generator: []` on an experiment to remove all inherited generators.
 
 ## Optimization Goals
 

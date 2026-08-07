@@ -3,7 +3,8 @@
 Generate SMP experiment configuration files from experiments.yaml.
 
 This script reads the experiment definitions from experiments.yaml and generates one
-target-config directory for each configured suite.
+target-config directory per suite (see SUITES): the full superset under full/ and the PR
+gating subset under quality-gates/, each holding a copy of config.yaml and a cases/ tree.
 
 Usage:
     python generate_experiments.py          # Generate experiment files
@@ -24,19 +25,21 @@ import yaml
 SCRIPT_DIR = Path(__file__).parent
 EXPERIMENTS_FILE = SCRIPT_DIR / "experiments.yaml"
 CONFIG_FILE = SCRIPT_DIR / "config.yaml"
-DOGSTATSD_RSS_COMPARISON_CONFIG_FILE = SCRIPT_DIR / "dogstatsd-rss-comparison-config.yaml"
 
 # Legacy single-suite output directory (used before the split into per-suite directories
 # below). It is removed when regenerating and flagged by --check so it can't silently linger.
 LEGACY_CASES_DIR = SCRIPT_DIR / "cases"
 
-# Experiments without an explicit `suites` list retain the existing behavior: all are written to
-# `full`, and experiments with bounds are also written to `quality-gates`. Explicitly scoped
-# experiments are written only to their named suites.
-SUITE_CONFIG_FILES = {
-    "full": CONFIG_FILE,
-    "quality-gates": CONFIG_FILE,
-    "dogstatsd-rss-comparison": DOGSTATSD_RSS_COMPARISON_CONFIG_FILE,
+# Experiments are materialized into one or more "suites", each of which is a self-contained SMP
+# target-config directory (a copied config.yaml plus a cases/ tree). A suite's predicate decides,
+# from the raw experiment definition, whether the experiment belongs to that suite:
+#   - "full": every experiment. This is the nightly / on-demand superset.
+#   - "quality-gates": only experiments that declare `checks:`. This is the PR gating subset; an
+#     experiment's bound *is* its gate, so the presence of `checks` is the classifier.
+# A gating experiment is written, byte-for-byte identically, into both suites.
+SUITES = {
+    "full": lambda experiment: True,
+    "quality-gates": lambda experiment: "checks" in experiment,
 }
 
 # Mapping from optimization goal to directory name suffix
@@ -74,7 +77,7 @@ def merge_generator_lists(base_generators: list, overlay_generators: list) -> li
     if not base_generators:
         return copy.deepcopy(overlay_generators)
     if not overlay_generators:
-        return []
+        return copy.deepcopy(base_generators)
 
     # Build a map of base generators by type
     result = []
@@ -139,10 +142,10 @@ def deep_merge(base: dict, overlay: dict, path: tuple = ()) -> dict:
     return result
 
 
-def apply_template_chain(
-    base: dict, templates: dict, template_name: str, seen: set = None
+def resolve_template_chain(
+    templates: dict, template_name: str, seen: set = None
 ) -> dict:
-    """Apply a template and its inheritance chain to a base configuration."""
+    """Resolve a template and its inheritance chain."""
     if seen is None:
         seen = set()
 
@@ -156,13 +159,15 @@ def apply_template_chain(
 
     template = templates[template_name]
 
-    result = copy.deepcopy(base)
+    # If this template extends another, resolve that first
     if "extends" in template:
         parent_name = template["extends"]
-        result = apply_template_chain(result, templates, parent_name, seen)
+        parent = resolve_template_chain(templates, parent_name, seen)
+        # Remove extends from template before merging
+        template_copy = {k: v for k, v in template.items() if k != "extends"}
+        return deep_merge(parent, template_copy)
 
-    template_config = {k: v for k, v in template.items() if k != "extends"}
-    return deep_merge(result, template_config)
+    return copy.deepcopy(template)
 
 
 def resolve_experiment(experiment: dict, global_config: dict, templates: dict) -> dict:
@@ -177,40 +182,18 @@ def resolve_experiment(experiment: dict, global_config: dict, templates: dict) -
     # Apply template if specified
     if "extends" in experiment:
         template_name = experiment["extends"]
-        result = apply_template_chain(result, templates, template_name)
+        template = resolve_template_chain(templates, template_name)
+        result = deep_merge(result, template)
 
-    # Apply experiment-specific config, excluding generator-only metadata.
+    # Apply experiment-specific config (excluding 'name', 'extends', and 'optimization_goals')
     experiment_config = {
         k: v
         for k, v in experiment.items()
-        if k not in ("name", "extends", "optimization_goals", "suites")
+        if k not in ("name", "extends", "optimization_goals")
     }
     result = deep_merge(result, experiment_config)
 
     return result
-
-
-def get_experiment_suites(experiment: dict) -> list[str]:
-    """Return the output suites selected by an experiment definition."""
-    requested_suites = experiment.get("suites")
-    if requested_suites is not None:
-        if not isinstance(requested_suites, list) or not requested_suites:
-            raise ValueError(
-                f"suites must be a non-empty list in experiment '{experiment['name']}'"
-            )
-
-        unknown_suites = set(requested_suites) - set(SUITE_CONFIG_FILES)
-        if unknown_suites:
-            raise ValueError(
-                f"Unknown suites in experiment '{experiment['name']}': "
-                f"{', '.join(sorted(unknown_suites))}"
-            )
-        return requested_suites
-
-    suites = ["full"]
-    if "checks" in experiment:
-        suites.append("quality-gates")
-    return suites
 
 
 def expand_optimization_goals(experiment: dict) -> list[tuple[str, str]]:
@@ -445,22 +428,22 @@ def generate_experiments(
 ) -> dict[str, list[str]]:
     """Generate all experiment files into per-suite directories under base_dir.
 
-    For each suite, writes a cases/ tree plus its config.yaml into base_dir/<suite>/, and
+    For each suite, writes a cases/ tree plus a copy of config.yaml into base_dir/<suite>/, and
     returns a mapping of suite name to the list of experiment (variant) names written into it.
-    base_path is the source root used to resolve `source:` files and suite configurations.
+    base_path is the source root used to resolve `source:` files and the shared config.yaml.
     """
     global_config = config.get("global", {})
     templates = config.get("templates", {})
     experiments = config.get("experiments", [])
 
-    generated = {suite: [] for suite in SUITE_CONFIG_FILES}
+    generated = {suite: [] for suite in SUITES}
 
     for experiment in experiments:
         # Resolve the base experiment config (without optimization goal).
         resolved_base = resolve_experiment(experiment, global_config, templates)
 
         # Determine which suites this experiment belongs to.
-        suites = get_experiment_suites(experiment)
+        suites = [suite for suite, in_suite in SUITES.items() if in_suite(experiment)]
 
         # Expand optimization goals into variants, writing each into every matching suite.
         for name, goal in expand_optimization_goals(experiment):
@@ -471,11 +454,11 @@ def generate_experiments(
                 write_experiment(name, resolved, base_dir / suite / "cases", base_path)
                 generated[suite].append(name)
 
-    # Copy each suite's SMP config into its target-config directory.
-    for suite, suite_config_file in SUITE_CONFIG_FILES.items():
+    # Copy the shared SMP config.yaml into each suite's target-config directory.
+    for suite in SUITES:
         suite_dir = base_dir / suite
         suite_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(base_path / suite_config_file.name, suite_dir / "config.yaml")
+        shutil.copy2(base_path / CONFIG_FILE.name, suite_dir / "config.yaml")
 
     return generated
 
@@ -576,10 +559,9 @@ def main():
         print(f"Error: {EXPERIMENTS_FILE} not found", file=sys.stderr)
         sys.exit(1)
 
-    for suite_config_file in SUITE_CONFIG_FILES.values():
-        if not suite_config_file.exists():
-            print(f"Error: {suite_config_file} not found", file=sys.stderr)
-            sys.exit(1)
+    if not CONFIG_FILE.exists():
+        print(f"Error: {CONFIG_FILE} not found", file=sys.stderr)
+        sys.exit(1)
 
     config = load_config(EXPERIMENTS_FILE)
 
@@ -588,7 +570,7 @@ def main():
             sys.exit(1)
     else:
         # Clear existing suite directories (and the pre-split cases/ dir) and regenerate.
-        for suite in SUITE_CONFIG_FILES:
+        for suite in SUITES:
             suite_dir = SCRIPT_DIR / suite
             if suite_dir.exists():
                 shutil.rmtree(suite_dir)
