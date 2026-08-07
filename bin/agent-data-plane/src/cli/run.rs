@@ -685,8 +685,6 @@ async fn add_baseline_traces_pipeline_to_blueprint(
 
     let ottl_transform_config = OttlTransformConfiguration::from_configuration(&config.domains.traces.ottl_transform);
 
-    // The remaining trace-enrichment components still read from the raw compatibility map.
-    let raw_config = config_system.raw_map();
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
         .with_transform_builder("ottl_transform", ottl_transform_config)
@@ -696,10 +694,10 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&config.domains.traces)
         .with_environment_provider(env_provider.clone())
         .await?;
-    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure Datadog APM Stats encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
+    let dd_apm_stats_encoder =
+        DatadogApmStatsEncoderConfiguration::from_configuration(&config.domains.traces, &config.shared)
+            .with_environment_provider(env_provider.clone())
+            .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?

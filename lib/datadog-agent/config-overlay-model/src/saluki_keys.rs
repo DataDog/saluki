@@ -556,11 +556,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
-        used_by: &[
-            "DATADOG_APM_STATS_ENCODER_CONFIGURATION",
-            "DATADOG_METRICS_CONFIGURATION",
-            "TYPED_CONFIG_SYSTEM",
-        ],
+        used_by: &["DATADOG_METRICS_CONFIGURATION", "TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::Traces, Pipeline::DogStatsD])",
         filename: "encoders.rs",

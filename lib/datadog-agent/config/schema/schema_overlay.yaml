@@ -1384,7 +1384,7 @@ inventory:
     description: "Agent environment name"
     documentation: "ADP reads env but defaults to 'none' instead of the core agent's ''. Scope is narrower in ADP (only traces/stats encoders). Neither implementation uses env directly on the DogStatsD metrics path."
     test_support:
-      used_by: [DatadogApmStatsEncoderConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
