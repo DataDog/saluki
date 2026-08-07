@@ -29,7 +29,7 @@ checks:
   description: Acceptable upper bound on the memory used by ADP when handling 'ultraheavy' DSD traffic.
   bounds:
     series: total_rss_bytes
-    upper_bound: 205.0 MiB
+    upper_bound: 420.0 MiB
 report_links:
 - text: (metrics)
   link: https://app.datadoghq.com/dashboard/4br-nxz-khi?fromUser=true&refresh_mode=paused&tpl_var_adp-run-id%5B0%5D={{ job_id

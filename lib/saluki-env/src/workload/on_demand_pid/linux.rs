@@ -19,7 +19,7 @@ struct Telemetry {
     interner_entries: Gauge,
 }
 
-type PIDCache = Cache<u32, EntityId>;
+type PIDCache = Cache<u32, Option<EntityId>>;
 const DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT: usize = 500_000;
 const DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION: Duration = Duration::from_secs(30);
 
@@ -70,12 +70,17 @@ impl ResolverImpl {
     pub fn resolve(&self, process_id: u32) -> Option<EntityId> {
         // First, check our PID mapping cache.
         if let Some(container_id) = self.pid_mappings_cache.get(&process_id) {
-            trace!(
-                "Resolved PID {} to container ID {} from cache.",
-                process_id,
-                container_id
-            );
-            return Some(container_id);
+            match &container_id {
+                Some(container_id) => {
+                    trace!(
+                        "Resolved PID {} to container ID {} from cache.",
+                        process_id,
+                        container_id
+                    );
+                }
+                None => trace!("Found cached negative container ID lookup for PID {}.", process_id),
+            }
+            return container_id;
         }
 
         // If we don't have a mapping, query the host OS for it.
@@ -85,7 +90,7 @@ impl ResolverImpl {
 
                 debug!("Resolved PID {} to container ID {}.", process_id, container_eid);
 
-                self.pid_mappings_cache.insert(process_id, container_eid.clone());
+                self.pid_mappings_cache.insert(process_id, Some(container_eid.clone()));
                 Some(container_eid)
             }
             None => {
@@ -93,6 +98,7 @@ impl ResolverImpl {
                     "Failed to resolve container ID for PID {}. Process ID may not be part of a container.",
                     process_id
                 );
+                self.pid_mappings_cache.insert(process_id, None);
                 None
             }
         }
