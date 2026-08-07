@@ -38,9 +38,6 @@ pub struct SharedConfiguration {
 }
 
 /// Inputs used to derive deployment-wide static tags.
-///
-/// These values retain their existing configuration keys. They are shared because both DogStatsD and OTLP consume the
-/// same derived tags; this type does not introduce a new configuration section.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct StaticTagSettings {
     /// Deployment-provider classification added as `provider_kind:<value>` when non-empty.

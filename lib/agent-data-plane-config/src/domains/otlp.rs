@@ -48,8 +48,7 @@ pub struct Metrics {
     /// Comma-separated list of tags to add to every emitted metric.
     ///
     /// Defaults to empty. When the static-tag resolver produces no tags, this value is preserved.
-    /// When it produces one or more tags, those tags replace this value to match the Core Agent;
-    /// the two sets are not merged.
+    /// When it produces one or more tags, those tags replace this value; the two sets are not merged.
     pub tags: String,
 
     /// OTLP summary translation settings.
