@@ -70,11 +70,13 @@ enum DataType {
     Rate,
 }
 
+// Outlines whether a metric can be overriden from one metric type into another
 enum MetricTypeOverride<'a> {
     Known(DataType),
     Unsupported(&'a str),
 }
 
+// Different outcomes attributed to overriding a metric type
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum MetricTypeOverrideWarningKind {
     InvalidType,
