@@ -19,7 +19,7 @@
 <a href=#19 id=19 data-nosnippet>19</a>    interner_entries: Gauge,
 <a href=#20 id=20 data-nosnippet>20</a>}
 <a href=#21 id=21 data-nosnippet>21</a>
-<a href=#22 id=22 data-nosnippet>22</a><span class="kw">type </span>PIDCache = Cache&lt;u32, EntityId&gt;;
+<a href=#22 id=22 data-nosnippet>22</a><span class="kw">type </span>PIDCache = Cache&lt;u32, <span class="prelude-ty">Option</span>&lt;EntityId&gt;&gt;;
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">const </span>DEFAULT_PID_CACHE_CACHED_PIDS_LIMIT: usize = <span class="number">500_000</span>;
 <a href=#24 id=24 data-nosnippet>24</a><span class="kw">const </span>DEFAULT_PID_CACHE_IDLE_PID_EXPIRATION: Duration = Duration::from_secs(<span class="number">30</span>);
 <a href=#25 id=25 data-nosnippet>25</a>
@@ -70,49 +70,55 @@
 <a href=#70 id=70 data-nosnippet>70</a>    </span><span class="kw">pub fn </span>resolve(<span class="kw-2">&amp;</span><span class="self">self</span>, process_id: u32) -&gt; <span class="prelude-ty">Option</span>&lt;EntityId&gt; {
 <a href=#71 id=71 data-nosnippet>71</a>        <span class="comment">// First, check our PID mapping cache.
 <a href=#72 id=72 data-nosnippet>72</a>        </span><span class="kw">if let </span><span class="prelude-val">Some</span>(container_id) = <span class="self">self</span>.pid_mappings_cache.get(<span class="kw-2">&amp;</span>process_id) {
-<a href=#73 id=73 data-nosnippet>73</a>            <span class="macro">trace!</span>(
-<a href=#74 id=74 data-nosnippet>74</a>                <span class="string">"Resolved PID {} to container ID {} from cache."</span>,
-<a href=#75 id=75 data-nosnippet>75</a>                process_id,
-<a href=#76 id=76 data-nosnippet>76</a>                container_id
-<a href=#77 id=77 data-nosnippet>77</a>            );
-<a href=#78 id=78 data-nosnippet>78</a>            <span class="kw">return </span><span class="prelude-val">Some</span>(container_id);
-<a href=#79 id=79 data-nosnippet>79</a>        }
-<a href=#80 id=80 data-nosnippet>80</a>
-<a href=#81 id=81 data-nosnippet>81</a>        <span class="comment">// If we don't have a mapping, query the host OS for it.
-<a href=#82 id=82 data-nosnippet>82</a>        </span><span class="kw">match </span><span class="self">self</span>.cgroups_reader.get_cgroup_by_pid(process_id) {
-<a href=#83 id=83 data-nosnippet>83</a>            <span class="prelude-val">Some</span>(cgroup) =&gt; {
-<a href=#84 id=84 data-nosnippet>84</a>                <span class="kw">let </span>container_eid = EntityId::Container(cgroup.into_container_id());
+<a href=#73 id=73 data-nosnippet>73</a>            <span class="kw">match </span><span class="kw-2">&amp;</span>container_id {
+<a href=#74 id=74 data-nosnippet>74</a>                <span class="prelude-val">Some</span>(container_id) =&gt; {
+<a href=#75 id=75 data-nosnippet>75</a>                    <span class="macro">trace!</span>(
+<a href=#76 id=76 data-nosnippet>76</a>                        <span class="string">"Resolved PID {} to container ID {} from cache."</span>,
+<a href=#77 id=77 data-nosnippet>77</a>                        process_id,
+<a href=#78 id=78 data-nosnippet>78</a>                        container_id
+<a href=#79 id=79 data-nosnippet>79</a>                    );
+<a href=#80 id=80 data-nosnippet>80</a>                }
+<a href=#81 id=81 data-nosnippet>81</a>                <span class="prelude-val">None </span>=&gt; <span class="macro">trace!</span>(<span class="string">"Found cached negative container ID lookup for PID {}."</span>, process_id),
+<a href=#82 id=82 data-nosnippet>82</a>            }
+<a href=#83 id=83 data-nosnippet>83</a>            <span class="kw">return </span>container_id;
+<a href=#84 id=84 data-nosnippet>84</a>        }
 <a href=#85 id=85 data-nosnippet>85</a>
-<a href=#86 id=86 data-nosnippet>86</a>                <span class="macro">debug!</span>(<span class="string">"Resolved PID {} to container ID {}."</span>, process_id, container_eid);
-<a href=#87 id=87 data-nosnippet>87</a>
-<a href=#88 id=88 data-nosnippet>88</a>                <span class="self">self</span>.pid_mappings_cache.insert(process_id, container_eid.clone());
-<a href=#89 id=89 data-nosnippet>89</a>                <span class="prelude-val">Some</span>(container_eid)
-<a href=#90 id=90 data-nosnippet>90</a>            }
-<a href=#91 id=91 data-nosnippet>91</a>            <span class="prelude-val">None </span>=&gt; {
-<a href=#92 id=92 data-nosnippet>92</a>                <span class="macro">debug!</span>(
-<a href=#93 id=93 data-nosnippet>93</a>                    <span class="string">"Failed to resolve container ID for PID {}. Process ID may not be part of a container."</span>,
-<a href=#94 id=94 data-nosnippet>94</a>                    process_id
-<a href=#95 id=95 data-nosnippet>95</a>                );
-<a href=#96 id=96 data-nosnippet>96</a>                <span class="prelude-val">None
-<a href=#97 id=97 data-nosnippet>97</a>            </span>}
-<a href=#98 id=98 data-nosnippet>98</a>        }
-<a href=#99 id=99 data-nosnippet>99</a>    }
-<a href=#100 id=100 data-nosnippet>100</a>
-<a href=#101 id=101 data-nosnippet>101</a>    <span class="doccomment">/// Resolves the current process's container entity from local cgroup membership.
-<a href=#102 id=102 data-nosnippet>102</a>    </span><span class="kw">pub fn </span>resolve_self_container(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;EntityId&gt; {
-<a href=#103 id=103 data-nosnippet>103</a>        get_self_container_id(<span class="kw-2">&amp;</span><span class="self">self</span>.interner).map(EntityId::Container)
-<a href=#104 id=104 data-nosnippet>104</a>    }
-<a href=#105 id=105 data-nosnippet>105</a>}
+<a href=#86 id=86 data-nosnippet>86</a>        <span class="comment">// If we don't have a mapping, query the host OS for it.
+<a href=#87 id=87 data-nosnippet>87</a>        </span><span class="kw">match </span><span class="self">self</span>.cgroups_reader.get_cgroup_by_pid(process_id) {
+<a href=#88 id=88 data-nosnippet>88</a>            <span class="prelude-val">Some</span>(cgroup) =&gt; {
+<a href=#89 id=89 data-nosnippet>89</a>                <span class="kw">let </span>container_eid = EntityId::Container(cgroup.into_container_id());
+<a href=#90 id=90 data-nosnippet>90</a>
+<a href=#91 id=91 data-nosnippet>91</a>                <span class="macro">debug!</span>(<span class="string">"Resolved PID {} to container ID {}."</span>, process_id, container_eid);
+<a href=#92 id=92 data-nosnippet>92</a>
+<a href=#93 id=93 data-nosnippet>93</a>                <span class="self">self</span>.pid_mappings_cache.insert(process_id, <span class="prelude-val">Some</span>(container_eid.clone()));
+<a href=#94 id=94 data-nosnippet>94</a>                <span class="prelude-val">Some</span>(container_eid)
+<a href=#95 id=95 data-nosnippet>95</a>            }
+<a href=#96 id=96 data-nosnippet>96</a>            <span class="prelude-val">None </span>=&gt; {
+<a href=#97 id=97 data-nosnippet>97</a>                <span class="macro">debug!</span>(
+<a href=#98 id=98 data-nosnippet>98</a>                    <span class="string">"Failed to resolve container ID for PID {}. Process ID may not be part of a container."</span>,
+<a href=#99 id=99 data-nosnippet>99</a>                    process_id
+<a href=#100 id=100 data-nosnippet>100</a>                );
+<a href=#101 id=101 data-nosnippet>101</a>                <span class="self">self</span>.pid_mappings_cache.insert(process_id, <span class="prelude-val">None</span>);
+<a href=#102 id=102 data-nosnippet>102</a>                <span class="prelude-val">None
+<a href=#103 id=103 data-nosnippet>103</a>            </span>}
+<a href=#104 id=104 data-nosnippet>104</a>        }
+<a href=#105 id=105 data-nosnippet>105</a>    }
 <a href=#106 id=106 data-nosnippet>106</a>
-<a href=#107 id=107 data-nosnippet>107</a><span class="kw">async fn </span>drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
-<a href=#108 id=108 data-nosnippet>108</a>    <span class="kw">loop </span>{
-<a href=#109 id=109 data-nosnippet>109</a>        sleep(Duration::from_secs(<span class="number">1</span>)).<span class="kw">await</span>;
-<a href=#110 id=110 data-nosnippet>110</a>
-<a href=#111 id=111 data-nosnippet>111</a>        telemetry.interner_entries().set(interner.len() <span class="kw">as </span>f64);
-<a href=#112 id=112 data-nosnippet>112</a>        telemetry
-<a href=#113 id=113 data-nosnippet>113</a>            .interner_capacity_bytes()
-<a href=#114 id=114 data-nosnippet>114</a>            .set(interner.capacity_bytes() <span class="kw">as </span>f64);
-<a href=#115 id=115 data-nosnippet>115</a>        telemetry.interner_len_bytes().set(interner.len_bytes() <span class="kw">as </span>f64);
-<a href=#116 id=116 data-nosnippet>116</a>    }
-<a href=#117 id=117 data-nosnippet>117</a>}
+<a href=#107 id=107 data-nosnippet>107</a>    <span class="doccomment">/// Resolves the current process's container entity from local cgroup membership.
+<a href=#108 id=108 data-nosnippet>108</a>    </span><span class="kw">pub fn </span>resolve_self_container(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;EntityId&gt; {
+<a href=#109 id=109 data-nosnippet>109</a>        get_self_container_id(<span class="kw-2">&amp;</span><span class="self">self</span>.interner).map(EntityId::Container)
+<a href=#110 id=110 data-nosnippet>110</a>    }
+<a href=#111 id=111 data-nosnippet>111</a>}
+<a href=#112 id=112 data-nosnippet>112</a>
+<a href=#113 id=113 data-nosnippet>113</a><span class="kw">async fn </span>drive_telemetry(interner: GenericMapInterner, telemetry: Telemetry) {
+<a href=#114 id=114 data-nosnippet>114</a>    <span class="kw">loop </span>{
+<a href=#115 id=115 data-nosnippet>115</a>        sleep(Duration::from_secs(<span class="number">1</span>)).<span class="kw">await</span>;
+<a href=#116 id=116 data-nosnippet>116</a>
+<a href=#117 id=117 data-nosnippet>117</a>        telemetry.interner_entries().set(interner.len() <span class="kw">as </span>f64);
+<a href=#118 id=118 data-nosnippet>118</a>        telemetry
+<a href=#119 id=119 data-nosnippet>119</a>            .interner_capacity_bytes()
+<a href=#120 id=120 data-nosnippet>120</a>            .set(interner.capacity_bytes() <span class="kw">as </span>f64);
+<a href=#121 id=121 data-nosnippet>121</a>        telemetry.interner_len_bytes().set(interner.len_bytes() <span class="kw">as </span>f64);
+<a href=#122 id=122 data-nosnippet>122</a>    }
+<a href=#123 id=123 data-nosnippet>123</a>}
 </code></pre></div></section></main></body></html>

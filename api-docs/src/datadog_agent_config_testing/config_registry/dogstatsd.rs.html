@@ -81,7 +81,7 @@
 <a href=#81 id=81 data-nosnippet>81</a>    yaml_path: <span class="string">"dogstatsd_buffer_count_max"</span>,
 <a href=#82 id=82 data-nosnippet>82</a>    env_vars: <span class="kw-2">&amp;</span>[],
 <a href=#83 id=83 data-nosnippet>83</a>    value_type: ValueType::Integer,
-<a href=#84 id=84 data-nosnippet>84</a>    default: <span class="prelude-val">Some</span>(<span class="string">"256"</span>),
+<a href=#84 id=84 data-nosnippet>84</a>    default: <span class="prelude-val">Some</span>(<span class="string">"32768"</span>),
 <a href=#85 id=85 data-nosnippet>85</a>};
 <a href=#86 id=86 data-nosnippet>86</a>
 <a href=#87 id=87 data-nosnippet>87</a><span class="macro">crate::declare_annotations!</span> {
@@ -580,10 +580,10 @@
 <a href=#580 id=580 data-nosnippet>580</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#581 id=581 data-nosnippet>581</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#582 id=582 data-nosnippet>582</a>    };
-<a href=#583 id=583 data-nosnippet>583</a>    <span class="doccomment">/// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
-<a href=#584 id=584 data-nosnippet>584</a>    </span>TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
-<a href=#585 id=585 data-nosnippet>585</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_ORIGIN,
-<a href=#586 id=586 data-nosnippet>586</a>        support_level: SupportLevel::Full,
+<a href=#583 id=583 data-nosnippet>583</a>    <span class="doccomment">/// `dogstatsd_workers_count`-Number of DSD processing workers
+<a href=#584 id=584 data-nosnippet>584</a>    </span>DOGSTATSD_WORKERS_COUNT = SalukiAnnotation {
+<a href=#585 id=585 data-nosnippet>585</a>        schema: <span class="kw-2">&amp;</span>schema::DOGSTATSD_WORKERS_COUNT,
+<a href=#586 id=586 data-nosnippet>586</a>        support_level: SupportLevel::Partial,
 <a href=#587 id=587 data-nosnippet>587</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#588 id=588 data-nosnippet>588</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#589 id=589 data-nosnippet>589</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
@@ -591,5 +591,16 @@
 <a href=#591 id=591 data-nosnippet>591</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#592 id=592 data-nosnippet>592</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
 <a href=#593 id=593 data-nosnippet>593</a>    };
-<a href=#594 id=594 data-nosnippet>594</a>}
+<a href=#594 id=594 data-nosnippet>594</a>    <span class="doccomment">/// `telemetry.dogstatsd_origin`-Per-origin processed-metrics telemetry
+<a href=#595 id=595 data-nosnippet>595</a>    </span>TELEMETRY_DOGSTATSD_ORIGIN = SalukiAnnotation {
+<a href=#596 id=596 data-nosnippet>596</a>        schema: <span class="kw-2">&amp;</span>schema::TELEMETRY_DOGSTATSD_ORIGIN,
+<a href=#597 id=597 data-nosnippet>597</a>        support_level: SupportLevel::Full,
+<a href=#598 id=598 data-nosnippet>598</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#599 id=599 data-nosnippet>599</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#600 id=600 data-nosnippet>600</a>        used_by: <span class="kw-2">&amp;</span>[structs::DOGSTATSD_CONFIGURATION],
+<a href=#601 id=601 data-nosnippet>601</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#602 id=602 data-nosnippet>602</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#603 id=603 data-nosnippet>603</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD]),
+<a href=#604 id=604 data-nosnippet>604</a>    };
+<a href=#605 id=605 data-nosnippet>605</a>}
 </code></pre></div></section></main></body></html>
