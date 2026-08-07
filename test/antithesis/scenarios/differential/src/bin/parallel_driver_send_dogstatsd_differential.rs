@@ -62,10 +62,8 @@ mod unix_driver {
         // Both targets share one receive buffer, so one payload limit keeps neither from truncating.
         let driver_config = DriverConfig::read(&config.config_dir)?;
         // Agent first, ADP second: `stats.sent` and `stats.max_packed` are indexed in this order.
-        let batch = driver::sample(&mut AntithesisRng);
         let stats = driver::run(
             AntithesisRng,
-            batch,
             driver_config.payload_byte_limit,
             driver_config.datagram_count,
             vec![agent_socket, adp_socket],
@@ -76,7 +74,7 @@ mod unix_driver {
         let multi_value_both = stats.max_packed[0] > 0 && stats.max_packed[1] > 0;
 
         assert_reachable!(
-            "differential workload ran a dogstatsd batch",
+            "differential workload ran a dogstatsd load",
             &json!({
                 "payloads_received": payloads_received,
                 "agent_sent": agent_sent,

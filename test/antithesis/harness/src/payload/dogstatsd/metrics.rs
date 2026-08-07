@@ -1,180 +1,157 @@
-//! Feral `DogStatsD` metric-line generation.
+//! Structured `DogStatsD` metric generation.
 
-use rand::distr::Distribution;
-use rand::seq::IndexedRandom;
 use rand::{Rng, RngExt};
 
-use super::common::{self, Vibe};
-use crate::rand::{Boundary, Wide};
+use super::common;
 
+/// The metric types: count, gauge, timing, histogram, set, distribution.
 const METRIC_TYPES: &[&[u8]] = &[b"c", b"g", b"ms", b"h", b"s", b"d"];
 
-/// Sample-rate payloads (the `@` field).
-const COMPLIANT_RATE: &[&[u8]] = &[b"1", b"0.5", b"0.25", b"0.1", b"0.001"];
+/// Extension-field counts: mostly none, with a boundary tail.
+const EXT_COUNTS: &[usize] = &[0, 0, 0, 0, 1, 1, 2, 3, 127, 255];
 
-const ABERRANT_RATE: &[&[u8]] = &[
-    b"+0.5", b"1.", b".5", b"0x1p-1", b"1_000", b"2", b"inf", b"+inf", b"-inf", b"nan",
-];
-
-/// Container-id payloads (the `c:` field).
-const COMPLIANT_CONTAINER: &[&[u8]] = &[b"ci-0a1b2c3d4e5f", b"cid-deadbeef", b"in-4026531840"];
-
-/// External-data items (the `e:` field), joined by ',' at runtime.
-const COMPLIANT_EXT: &[&[u8]] = &[
-    b"it-true",
-    b"it-false",
-    b"cn-redis",
-    b"cn-web",
-    b"pu-810fe89d",
-    b"pu-abc",
-];
-
-/// Cardinality payloads (the `card:` field).
-const COMPLIANT_CARD: &[&[u8]] = &[b"none", b"low", b"orchestrator", b"high"];
-
-/// The `e:` external-data item separator.
-const EXT_SEPARATORS: &[u8] = b",";
-
-/// How to build a value.
-#[derive(Clone, Copy)]
-enum ValueKind {
-    Aberrant,
-    Int,
-    Wide,
+/// A structured metric: `name:value[:value...]|type[|ext...]`.
+#[derive(Clone, Debug)]
+pub(crate) struct Metric {
+    /// Metric name content.
+    name: Vec<u8>,
+    /// One value for a set, else a `:`-packed run of Go-float tokens.
+    values: Vec<Vec<u8>>,
+    /// The type symbol.
+    kind: &'static [u8],
+    /// `key:value` tags.
+    tags: Vec<Vec<u8>>,
+    /// Extension chunks, each carrying its own prefix: `@`, `c:`, `e:`, or `card:`.
+    extensions: Vec<Vec<u8>>,
 }
 
-/// A metric extension field.
-#[derive(Clone, Copy)]
-enum Ext {
-    Rate,
-    Container,
-    External,
-    Cardinality,
-}
-
-/// Append one metric line `<NAME>:<VALUE>|<TYPE>[|ext...]` to `buf`. Returns
-/// the packed value count when the value is a multi-value run, else `None`.
-pub(crate) fn write<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> Option<usize> {
-    common::write_words(rng, buf, vibe);
-    buf.push(b':');
-    let packed = write_value(rng, buf, vibe);
-    buf.push(b'|');
-    if let Some(&t) = METRIC_TYPES.choose(rng) {
-        buf.extend_from_slice(t);
+impl Metric {
+    /// Sample a metric with content over the full forwarded alphabet.
+    pub(crate) fn generate(rng: &mut (impl Rng + ?Sized), budget: usize) -> Option<Self> {
+        let kind = METRIC_TYPES[rng.random_range(0..METRIC_TYPES.len())];
+        // `name:value|kind` is the whole of a valid metric, so the name is built against what is left
+        // once the rest of that skeleton is reserved.
+        let reserved = 1 + common::min_value_token() + 1 + kind.len();
+        let name_room = budget.checked_sub(reserved)?;
+        let name = common::identifier_within(rng, name_room);
+        if name.is_empty() {
+            return None;
+        }
+        let mut spent = name.len() + reserved;
+        let values = if kind == b"s" {
+            vec![common::opaque_value_within(
+                rng,
+                budget - spent + common::min_value_token(),
+            )]
+        } else {
+            // The first value is already reserved. Each extra one costs a `:` and its own bytes.
+            let mut values = vec![common::float_token_within(
+                rng,
+                budget - spent + common::min_value_token(),
+            )];
+            spent = spent - common::min_value_token() + values[0].len();
+            for _ in 1..value_count(rng) {
+                let room = budget.saturating_sub(spent + 1);
+                let value = common::float_token_within(rng, room);
+                if value.is_empty() {
+                    break;
+                }
+                spent += 1 + value.len();
+                values.push(value);
+            }
+            values
+        };
+        if values.iter().any(Vec::is_empty) {
+            return None;
+        }
+        let spent: usize =
+            name.len() + 1 + values.iter().map(Vec::len).sum::<usize>() + values.len() - 1 + 1 + kind.len();
+        let tags = common::tags_within(rng, budget.saturating_sub(spent));
+        let spent = spent + common::tags_len(&tags);
+        Some(Self {
+            name,
+            values,
+            kind,
+            tags,
+            extensions: extensions(rng, budget.saturating_sub(spent)),
+        })
     }
-    common::write_tags(rng, buf, vibe);
-    write_extensions(rng, buf, vibe);
-    buf.push(b'\n');
-    packed
+
+    /// Serialize the metric to datagram bytes, without the trailing `\n`.
+    pub(crate) fn serialize(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.name);
+        out.push(b':');
+        for (i, value) in self.values.iter().enumerate() {
+            if i > 0 {
+                out.push(b':');
+            }
+            out.extend_from_slice(value);
+        }
+        out.push(b'|');
+        out.extend_from_slice(self.kind);
+        common::serialize_tags(&self.tags, out);
+        for ext in &self.extensions {
+            out.push(b'|');
+            out.extend_from_slice(ext);
+        }
+    }
+
+    /// The packed multi-value run length, or zero for a single value or a set.
+    pub(crate) fn packed(&self) -> usize {
+        if self.kind != b"s" && self.values.len() > 1 {
+            self.values.len()
+        } else {
+            0
+        }
+    }
 }
 
-/// The value field: a `:`-packed run of scalars. Run odds:
-///
-/// | run | odds   |
-/// |-----|--------|
-/// | 1   | 99%    |
-/// | 2   | 0.5%   |
-/// | 3   | 0.25%  |
-/// | 4   | 0.125% |
-/// | 5   | 0.125% |
-fn write_value<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) -> Option<usize> {
-    let count: u8 = match rng.random_range(0..800u16) {
+/// The `:`-packed value run length. Overwhelmingly one, with a short tail.
+fn value_count(rng: &mut (impl Rng + ?Sized)) -> usize {
+    match rng.random_range(0..800u16) {
         0..792 => 1,
         792..796 => 2,
         796..798 => 3,
         798 => 4,
-        799..=u16::MAX => 5,
-    };
-    for i in 0..count {
-        if i > 0 {
-            buf.push(b':');
-        }
-        write_scalar(rng, buf, vibe);
-    }
-    (count > 1).then_some(usize::from(count))
-}
-
-/// Write one scalar. Clean: a wide log-uniform value. Feral: an aberrant literal,
-/// a wide integer, or a wide float in a compact or cursed-but-equivalent expanded
-/// encoding.
-fn write_scalar<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
-    let mut ryu = ryu::Buffer::new();
-    match vibe {
-        Vibe::Clean => {
-            let v: f64 = Wide.sample(rng);
-            buf.extend_from_slice(ryu.format(v).as_bytes());
-        }
-        Vibe::Feral => match [ValueKind::Aberrant, ValueKind::Int, ValueKind::Wide].choose(rng) {
-            Some(ValueKind::Aberrant) => {
-                if let Some(&v) = common::ABERRANT_VALUE.choose(rng) {
-                    buf.extend_from_slice(v);
-                }
-            }
-            Some(ValueKind::Wide) => {
-                let v: f64 = Wide.sample(rng);
-                common::write_number(rng, buf, ryu.format(v).as_bytes());
-            }
-            _ => {
-                let mut itoa = itoa::Buffer::new();
-                let v: i64 = Wide.sample(rng);
-                common::write_number(rng, buf, itoa.format(v).as_bytes());
-            }
-        },
+        _ => 5,
     }
 }
 
-/// A boundary-sampled count of extension fields, each a random kind. Repeats and
-/// zero are allowed.
-fn write_extensions<R: Rng + ?Sized>(rng: &mut R, buf: &mut Vec<u8>, vibe: Vibe) {
-    let count = Boundary::<u8>::new().sample(rng);
+/// Sample a run of extension chunks.
+fn extensions(rng: &mut (impl Rng + ?Sized), budget: usize) -> Vec<Vec<u8>> {
+    let count = EXT_COUNTS[rng.random_range(0..EXT_COUNTS.len())];
+    let mut out = Vec::new();
+    let mut room = budget;
     for _ in 0..count {
-        match [Ext::Rate, Ext::Container, Ext::External, Ext::Cardinality].choose(rng) {
-            Some(Ext::Rate) => common::write_field(rng, buf, vibe, b"@", COMPLIANT_RATE, ABERRANT_RATE),
-            Some(Ext::Container) => {
-                common::write_field(rng, buf, vibe, b"c:", COMPLIANT_CONTAINER, common::ABERRANT_WORD);
-            }
-            Some(Ext::External) => {
-                buf.extend_from_slice(b"|e:");
-                common::write_segments(rng, buf, vibe, COMPLIANT_EXT, common::ABERRANT_WORD, EXT_SEPARATORS);
-            }
-            _ => common::write_field(rng, buf, vibe, b"card:", COMPLIANT_CARD, common::ABERRANT_WORD),
-        }
+        // Each chunk carries a leading `|`.
+        let Some(chunk_room) = room.checked_sub(1) else {
+            break;
+        };
+        let Some(chunk) = ext_chunk(rng, chunk_room) else {
+            break;
+        };
+        room -= 1 + chunk.len();
+        out.push(chunk);
     }
+    out
 }
 
-#[cfg(test)]
-mod test {
-    use proptest::prelude::*;
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
-
-    use super::{write_value, Vibe};
-
-    fn any_vibe() -> impl Strategy<Value = Vibe> {
-        prop_oneof![Just(Vibe::Clean), Just(Vibe::Feral)]
-    }
-
-    proptest! {
-        /// A value carrying a `:`-packed run must report its count. The split
-        /// piece count is the run length, so it must equal the returned count.
-        #[test]
-        fn packed_value_reports_its_count(seed: u64, vibe in any_vibe()) {
-            let mut rng = SmallRng::seed_from_u64(seed);
-            for _ in 0..1_000 {
-                let mut buf = Vec::new();
-                let packed = write_value(&mut rng, &mut buf, vibe);
-                let values = buf.split(|&b| b == b':').count();
-                if values > 1 {
-                    prop_assert_eq!(
-                        packed,
-                        Some(values),
-                        "value {:?} packs {} values but write_value returned {:?}",
-                        String::from_utf8_lossy(&buf),
-                        values,
-                        packed
-                    );
-                }
-            }
-        }
-    }
+/// One extension chunk with its prefix. The `@` rate is a parseable token. The origin chunks carry
+/// free content the Agent never drops on.
+fn ext_chunk(rng: &mut (impl Rng + ?Sized), budget: usize) -> Option<Vec<u8>> {
+    let prefix: &[u8] = match rng.random_range(0..4u8) {
+        0 => b"@",
+        1 => b"c:",
+        2 => b"e:",
+        _ => b"card:",
+    };
+    let body_room = budget.checked_sub(prefix.len())?;
+    let body = if prefix == b"@" {
+        common::rate_token_within(rng, body_room)?
+    } else {
+        common::optional_text_within(rng, body_room)
+    };
+    let mut chunk = prefix.to_vec();
+    chunk.extend_from_slice(&body);
+    Some(chunk)
 }
