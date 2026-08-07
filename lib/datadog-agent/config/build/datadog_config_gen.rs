@@ -227,7 +227,7 @@ fn render(
     pruned_schema: Value, aliases: &HashMap<String, Vec<String>>, durations: &BTreeMap<String, u64>,
     input_shapes: &BTreeMap<String, InputShape>,
 ) -> String {
-    let root_schema: schemars::schema::RootSchema =
+    let root_schema: schemars8::schema::RootSchema =
         serde_json::from_value(pruned_schema).expect("pruned schema is not a valid JSON Schema document");
 
     let mut settings = TypeSpaceSettings::default();
@@ -260,6 +260,9 @@ fn render(
     durationize(&mut file, durations);
     inject_input_shapes(&mut file, input_shapes);
 
+    // `prettyplease` renders a `syn` 3 `File`, distinct from the `syn` 2 tree we just finished
+    // mutating above, so round-trip through tokens to bridge between the two major versions.
+    let file = syn3::parse2::<syn3::File>(quote::quote!(#file)).expect("rendered file is not valid syn 3 syntax");
     let rendered = blank_lines_between_fields(&prettyplease::unparse(&file));
     let rendered = blank_lines_between_items(&rendered);
 

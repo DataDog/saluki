@@ -16,10 +16,18 @@ datadog-agent-config-overlay-model = { workspace = true }
 go-duration = { workspace = true }
 indexmap = { workspace = true }
 prettyplease = { workspace = true, features = ["verbatim"] }
-schemars = { workspace = true }
+quote = { workspace = true }
+# `typify` pins its own `schemars` dependency to 0.8 (the `RootSchema` type `add_root_schema`
+# expects), so this is aliased separately from the workspace's `schemars` (0.9) to hand `typify`
+# the exact type it wants without dragging the whole crate back to 0.8.
+schemars8 = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-syn = { workspace = true }
+syn = { workspace = true, features = ["printing"] }
+# `prettyplease` 0.3 renders `syn` 3's `File`, not the workspace's `syn` 2 used everywhere else in
+# this build script for AST manipulation, so the finished tree is re-parsed through this alias
+# right before handing it to `prettyplease::unparse`.
+syn3 = { workspace = true, features = ["full", "parsing"] }
 typify = { workspace = true }
 
 [lints]

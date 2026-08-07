@@ -150,6 +150,8 @@ fn type_to_string(ty: &Type) -> String {
         attrs: Vec::new(),
         items: vec![Item::Type(alias)],
     };
+    // `prettyplease` renders a `syn` 3 `File`; bridge the `syn` 2 tree built above through tokens.
+    let file = syn3::parse2::<syn3::File>(quote::quote!(#file)).expect("synthetic file is not valid syn 3 syntax");
     let rendered = prettyplease::unparse(&file);
     let rendered = rendered.trim();
     let inner = rendered

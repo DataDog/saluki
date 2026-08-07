@@ -137,7 +137,7 @@ ordered-float = { version = "5", default-features = false }
 pastey = { version = "0.2", default-features = false }
 pin-project = { version = "1.1", default-features = false }
 pin-project-lite = { version = "0.2", default-features = false }
-prettyplease = { version = "0.2", features = ["verbatim"] }
+prettyplease = { version = "0.3", features = ["verbatim"] }
 proc-macro2 = { version = "1", default-features = false, features = ["proc-macro"] }
 quote = { version = "1", default-features = false, features = ["proc-macro"] }
 derive-where = { version = "1.6", default-features = false }
@@ -159,7 +159,7 @@ rustls-cng-crypto = { version = "0.2.0", git = "https://github.com/DataDog/rustl
   "tls12",
 ] }
 rustls-webpki = { version = "0.103", default-features = false }
-schemars = { version = "0.8", default-features = false }
+schemars = { version = "0.9", default-features = false }
 similar-asserts = { version = "2.0", default-features = false }
 slab = { version = "0.4.12", default-features = false }
 syn = { version = "2", default-features = false, features = ["full", "parsing", "visit-mut"] }
@@ -207,7 +207,7 @@ smallvec = { version = "1.15", default-features = false, features = [
 windows-sys = { version = "0.61", default-features = false }
 rustls-native-certs = { version = "0.8", default-features = false }
 hashbrown = { version = "0.17", default-features = false }
-quick_cache = { version = "0.6", default-features = false }
+quick_cache = { version = "0.7", default-features = false }
 crossbeam-queue = { version = "0.3", default-features = false, features = [
   "alloc",
 ] }
@@ -257,6 +257,8 @@ lru-slab = { version = "0.1.2", default-features = false }
 antithesis-instrumentation = { version = "0.1" }
 antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "78c9db56771f0f6b01cb5404765c5a96852c159c", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
 mime = "0.3"
+schemars8 = { package = "schemars", version = "0.8" }
+syn3 = { package = "syn", version = "3", default-features = false }
 
 [patch.crates-io]
 # Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends

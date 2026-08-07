@@ -260,9 +260,6 @@ where
     type RequestState = ();
 
     #[inline]
-    fn begin_request(&self) -> Self::RequestState {}
-
-    #[inline]
     fn on_evict(&self, _state: &mut Self::RequestState, key: K, _value: V) {
         // Note: this fires for all capacity-driven evictions including rejected overweight
         // inserts (items whose weight exceeds the cache capacity). Callers using custom
