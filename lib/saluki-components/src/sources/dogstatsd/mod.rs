@@ -2589,12 +2589,12 @@ mod tests {
     use tokio::{
         io::AsyncWriteExt as _,
         net::{UnixDatagram, UnixStream},
-        task::yield_now,
     };
     use tokio::{
         net::UdpSocket,
         runtime::Handle,
         sync::{mpsc, Mutex},
+        task::yield_now,
         time::timeout,
     };
 
