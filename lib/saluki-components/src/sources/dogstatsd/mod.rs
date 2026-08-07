@@ -118,7 +118,7 @@ enum Error {
 ///
 /// 4096 entries × 512 bytes = 2 MiB, matching ADP's previous default.
 const INTERNER_BASELINE_BYTES_PER_ENTRY: u64 = 512;
-const DEFAULT_BUFFER_COUNT_MAX: usize = 26_624;
+const DEFAULT_BUFFER_COUNT_MAX: usize = 32_768;
 const DOGSTATSD_LISTENER_WORKER_COUNT: usize = 1;
 const DOGSTATSD_PIPELINE_COUNT: usize = 1;
 const MIN_DOGSTATSD_WORKER_COUNT: usize = 2;
@@ -138,7 +138,7 @@ const fn default_buffer_count() -> usize {
 }
 
 const fn default_buffer_count_max() -> usize {
-    // 26624 buffers at the default 8 KiB size provide 208 MiB of payload capacity.
+    // 32768 buffers at the default 8 KiB size provide 256 MiB of payload capacity.
     DEFAULT_BUFFER_COUNT_MAX
 }
 
@@ -315,7 +315,7 @@ pub struct DogStatsDConfiguration {
     /// The pool never holds fewer buffers than `dogstatsd_buffer_count`, so a value below the baseline is treated as
     /// equal to it.
     ///
-    /// Defaults to 26624, or `dogstatsd_buffer_count` if that is larger.
+    /// Defaults to 32768, or `dogstatsd_buffer_count` if that is larger.
     #[serde(rename = "dogstatsd_buffer_count_max", default = "default_buffer_count_max")]
     buffer_count_max: usize,
 
