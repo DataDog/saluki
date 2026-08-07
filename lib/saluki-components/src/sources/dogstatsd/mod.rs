@@ -122,6 +122,8 @@ const DEFAULT_BUFFER_COUNT_MAX: usize = 32_768;
 const DOGSTATSD_LISTENER_WORKER_COUNT: usize = 1;
 const DOGSTATSD_PIPELINE_COUNT: usize = 1;
 const MIN_DOGSTATSD_WORKER_COUNT: usize = 2;
+// Amortize shared receiver locking and task wakeups without letting one decoder monopolize the queue.
+const DATAGRAM_DECODE_BATCH_SIZE: usize = 32;
 
 fn default_decoder_worker_count(vcpus: usize) -> usize {
     vcpus
@@ -1941,16 +1943,21 @@ async fn drive_datagram_decoder(
     let mut decoder = DogStatsDDecoder::new(source_context, decoder_context);
     let mut buffer_flush = interval(Duration::from_millis(100));
     buffer_flush.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut datagrams = Vec::with_capacity(DATAGRAM_DECODE_BATCH_SIZE);
 
     loop {
         select! {
-            maybe_datagram = async {
-                datagram_receiver.lock().await.recv().await
+            received_count = async {
+                datagram_receiver
+                    .lock()
+                    .await
+                    .recv_many(&mut datagrams, DATAGRAM_DECODE_BATCH_SIZE)
+                    .await
             } => {
-                let Some(QueuedDatagram { result, socket_context }) = maybe_datagram else {
+                if received_count == 0 {
                     break;
-                };
-                {
+                }
+                for QueuedDatagram { result, socket_context } in datagrams.drain(..) {
                     let DatagramSocketContext {
                         listen_addr,
                         eol_required,
@@ -1976,6 +1983,7 @@ async fn drive_datagram_decoder(
                     );
                     let outcome = decoder.decode_buffer(&mut buffer_decode_context, received).await;
                     debug_assert_eq!(outcome, DecodeOutcome::Continue);
+                    last_socket_context = Some(socket_context);
                 }
             }
             _ = buffer_flush.tick() => {
