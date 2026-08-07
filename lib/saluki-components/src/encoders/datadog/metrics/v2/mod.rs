@@ -332,8 +332,10 @@ fn encode_series_metric(
     }
 
     for (timestamp, value) in points {
-        // If this is a rate metric, scale our value by the interval, in seconds.
+        // If this is a rate metric with an interval, scale our value by the interval in seconds.
+        // A zero interval represents an unnormalized rate and is emitted without scaling.
         let value = maybe_interval
+            .filter(|interval| !interval.is_zero())
             .map(|interval| value / interval.as_secs_f64())
             .unwrap_or(value);
         if !emittable(value) {
@@ -818,6 +820,25 @@ mod tests {
         let series = datadog_protos::metrics::MetricSeries::parse_from_bytes(&payload).expect("payload should decode");
         let values: Vec<f64> = series.points.iter().map(|point| point.value).collect();
         assert_eq!(values, vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn encodes_zero_interval_rate_without_scaling() {
+        let rate = Metric::rate("my.unnormalized.rate", 42.0, Duration::ZERO);
+        let host_tags = SharedTagSet::default();
+        let mut scratch_buf = Vec::new();
+        let mut tags_deduplicator = ReusableDeduplicator::new();
+        let mut payload = Vec::new();
+        {
+            let mut writer = CodedOutputStream::vec(&mut payload);
+            encode_series_metric(&rate, &host_tags, &mut writer, &mut scratch_buf, &mut tags_deduplicator)
+                .expect("zero-interval rate should encode");
+            writer.flush().expect("payload should flush");
+        }
+
+        let series = datadog_protos::metrics::MetricSeries::parse_from_bytes(&payload).expect("payload should decode");
+        assert_eq!(series.points.len(), 1);
+        assert_eq!(series.points[0].value, 42.0);
     }
 
     #[test]
