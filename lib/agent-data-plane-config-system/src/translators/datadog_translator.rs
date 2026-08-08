@@ -605,21 +605,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_tag_cardinality(&mut self, value: String) {
-        // TODO: consider moving the enum to agent-data-plane-config
-        let cardinality = match value.to_ascii_lowercase().as_str() {
-            "low" => OriginTagCardinality::Low,
-            "orchestrator" => OriginTagCardinality::Orchestrator,
-            "high" => OriginTagCardinality::High,
-            "none" => OriginTagCardinality::None,
-            other => {
-                self.record_error(TranslateError::new_with_message(
-                    "dogstatsd_tag_cardinality",
-                    format!("unknown tag cardinality `{other}`"),
-                ));
-                return;
-            }
-        };
-        self.config.domains.dogstatsd.origin.tag_cardinality = cardinality;
+        match value.parse::<OriginTagCardinality>() {
+            Ok(cardinality) => self.config.domains.dogstatsd.origin.tag_cardinality = cardinality,
+            Err(error) => self.record_error(TranslateError::new("dogstatsd_tag_cardinality", error)),
+        }
     }
 
     fn consume_dogstatsd_tags(&mut self, value: Vec<String>) {
@@ -937,21 +926,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_metrics_tag_cardinality(&mut self, value: String) {
-        let cardinality = match value.to_ascii_lowercase().as_str() {
-            "low" => OriginTagCardinality::Low,
-            "orchestrator" => OriginTagCardinality::Orchestrator,
-            "high" => OriginTagCardinality::High,
-            "none" => OriginTagCardinality::None,
-            _ => {
-                self.record_error(TranslateError::new(
-                    "otlp_config.metrics.tag_cardinality",
-                    format!("unknown OTLP tag cardinality `{value}`; expected low, orchestrator, high, or none"),
-                ));
-                return;
-            }
-        };
-
-        self.config.domains.otlp.metrics.tag_cardinality = cardinality;
+        match value.parse::<OriginTagCardinality>() {
+            Ok(cardinality) => self.config.domains.otlp.metrics.tag_cardinality = cardinality,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.metrics.tag_cardinality", error)),
+        }
     }
 
     fn consume_otlp_config_metrics_tags(&mut self, value: String) {

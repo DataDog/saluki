@@ -80,7 +80,7 @@ pub struct OtlpMetricsTranslator {
     config: OtlpMetricsTranslatorConfig,
     default_hostname: MetaString,
     context_resolver: ContextResolver,
-    origin_tag_resolver: Option<OtlpOriginTagResolver>,
+    origin_tag_resolver: OtlpOriginTagResolver,
     resolved_origin_tags: SharedTagSet,
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
@@ -427,7 +427,7 @@ impl OtlpMetricsTranslator {
     /// configured metric tags.
     pub fn new(
         config: OtlpMetricsTranslatorConfig, default_hostname: MetaString, context_resolver: ContextResolver,
-        origin_tag_resolver: Option<OtlpOriginTagResolver>, metric_tags: SharedTagSet,
+        origin_tag_resolver: OtlpOriginTagResolver, metric_tags: SharedTagSet,
     ) -> Result<Self, GenericError> {
         config
             .validate()
@@ -468,9 +468,7 @@ impl OtlpMetricsTranslator {
             .into_shared();
         self.resolved_origin_tags = self
             .origin_tag_resolver
-            .as_ref()
-            .map(|resolver| resolver.resolve_resource_tags(&resource.attributes, self.config.tag_cardinality))
-            .unwrap_or_default();
+            .resolve_resource_tags(&resource.attributes, self.config.tag_cardinality);
 
         // Combine configured and resource-derived tags once per resource, then reuse them for every
         // instrumentation scope.
@@ -581,7 +579,9 @@ impl OtlpMetricsTranslator {
             config: Default::default(),
             default_hostname: MetaString::from_static("default-host"),
             context_resolver: ContextResolverBuilder::for_tests().build(),
-            origin_tag_resolver: None,
+            origin_tag_resolver: OtlpOriginTagResolver::new(std::sync::Arc::new(
+                saluki_env::workload::providers::NoopWorkloadProvider,
+            )),
             resolved_origin_tags: SharedTagSet::default(),
             prev_pts: PointsCache::for_tests(),
             process_start_time_ns,

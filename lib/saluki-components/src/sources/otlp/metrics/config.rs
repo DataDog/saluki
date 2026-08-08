@@ -1,10 +1,9 @@
 use std::time::Duration;
 
 use agent_data_plane_config::domains::{
-    dogstatsd::OriginTagCardinality as ConfigOriginTagCardinality,
+    dogstatsd::OriginTagCardinality,
     otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode},
 };
-use saluki_context::origin::OriginTagCardinality;
 use saluki_error::{generic_error, GenericError};
 
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
@@ -46,16 +45,6 @@ impl OtlpMetricsTranslatorConfig {
             return Err(generic_error!("no buckets mode and no send count sum are incompatible"));
         }
         Ok(())
-    }
-
-    pub fn with_tag_cardinality(mut self, tag_cardinality: ConfigOriginTagCardinality) -> Self {
-        self.tag_cardinality = match tag_cardinality {
-            ConfigOriginTagCardinality::Low => OriginTagCardinality::Low,
-            ConfigOriginTagCardinality::Orchestrator => OriginTagCardinality::Orchestrator,
-            ConfigOriginTagCardinality::High => OriginTagCardinality::High,
-            ConfigOriginTagCardinality::None => OriginTagCardinality::None,
-        };
-        self
     }
 
     pub fn with_remapping(mut self, with_remapping: bool) -> Self {

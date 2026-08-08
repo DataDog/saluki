@@ -3,9 +3,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 use serde::Serialize;
+
+use crate::Error;
 
 // TODO: better name than Domain? Pipeline? Topology? BlueprintConfig?
 /// Resolved DogStatsD configuration.
@@ -144,6 +147,22 @@ pub enum OriginTagCardinality {
     Orchestrator,
     High,
     None,
+}
+
+impl FromStr for OriginTagCardinality {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "low" => Ok(Self::Low),
+            "orchestrator" => Ok(Self::Orchestrator),
+            "high" => Ok(Self::High),
+            "none" => Ok(Self::None),
+            other => Err(Error::new_without_source(format!(
+                "unknown tag cardinality `{other}`; expected low, orchestrator, high, or none"
+            ))),
+        }
+    }
 }
 
 /// Telemetry emitted by the DogStatsD source.
