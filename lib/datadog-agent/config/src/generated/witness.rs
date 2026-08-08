@@ -168,6 +168,7 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_metrics_summaries_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_sums_cumulative_monotonic_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(&mut self, value: String);
+    fn consume_otlp_config_metrics_tag_cardinality(&mut self, value: String);
     fn consume_otlp_config_metrics_tags(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
@@ -443,6 +444,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .initial_cumulative_monotonic_value
             .clone(),
     );
+    consumer.consume_otlp_config_metrics_tag_cardinality(config.otlp_config.metrics.tag_cardinality.clone());
     consumer.consume_otlp_config_metrics_tags(config.otlp_config.metrics.tags.clone());
     consumer.consume_otlp_config_receiver_protocols_grpc_endpoint(
         config.otlp_config.receiver.protocols.grpc.endpoint.clone(),

@@ -605,21 +605,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_tag_cardinality(&mut self, value: String) {
-        // TODO: consider moving the enum to agent-data-plane-config
-        let cardinality = match value.to_ascii_lowercase().as_str() {
-            "low" => OriginTagCardinality::Low,
-            "orchestrator" => OriginTagCardinality::Orchestrator,
-            "high" => OriginTagCardinality::High,
-            "none" => OriginTagCardinality::None,
-            other => {
-                self.record_error(TranslateError::new_with_message(
-                    "dogstatsd_tag_cardinality",
-                    format!("unknown tag cardinality `{other}`"),
-                ));
-                return;
-            }
-        };
-        self.config.domains.dogstatsd.origin.tag_cardinality = cardinality;
+        match value.parse::<OriginTagCardinality>() {
+            Ok(cardinality) => self.config.domains.dogstatsd.origin.tag_cardinality = cardinality,
+            Err(error) => self.record_error(TranslateError::new("dogstatsd_tag_cardinality", error)),
+        }
     }
 
     fn consume_dogstatsd_tags(&mut self, value: Vec<String>) {
@@ -946,6 +935,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_otlp_config_metrics_tag_cardinality(&mut self, value: String) {
+        match value.parse::<OriginTagCardinality>() {
+            Ok(cardinality) => self.config.domains.otlp.metrics.tag_cardinality = cardinality,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.metrics.tag_cardinality", error)),
+        }
+    }
+
     fn consume_otlp_config_metrics_tags(&mut self, value: String) {
         self.config.domains.otlp.metrics.tags = value;
     }
@@ -1201,6 +1197,7 @@ mod tests {
             "dogstatsd_port": 9125,
             "dogstatsd_workers_count": 3,
             "dogstatsd_tag_cardinality": "high",
+            "otlp_config": { "metrics": { "tag_cardinality": "orchestrator" } },
             "expected_tags_duration": "15s",
             "telemetry": { "dogstatsd_origin": true },
         }))
@@ -1223,6 +1220,10 @@ mod tests {
         assert_eq!(
             config.domains.dogstatsd.origin.tag_cardinality,
             OriginTagCardinality::High
+        );
+        assert_eq!(
+            config.domains.otlp.metrics.tag_cardinality,
+            OriginTagCardinality::Orchestrator
         );
         // Driven `format: duration` parse: a Go duration string becomes a `Duration`.
         assert_eq!(config.shared.tags.expected_tags_duration, Duration::from_secs(15));

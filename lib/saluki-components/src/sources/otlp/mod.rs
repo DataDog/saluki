@@ -64,7 +64,6 @@ fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
 }
 
 /// Configuration for the OTLP source.
-#[derive(Default)]
 pub struct OtlpConfiguration {
     default_hostname: MetaString,
 
@@ -72,45 +71,37 @@ pub struct OtlpConfiguration {
     otlp: domains::otlp::Domain,
 
     /// Workload provider to utilize for origin detection/enrichment.
-    workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
+    workload_provider: Arc<dyn WorkloadProvider + Send + Sync>,
 }
 
 impl OtlpConfiguration {
-    /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration.
-    pub fn from_configuration(otlp: &domains::otlp::Domain) -> Self {
+    /// Creates a new `OtlpConfiguration` from the resolved OTLP configuration and workload provider.
+    pub fn from_configuration<W>(otlp: &domains::otlp::Domain, workload_provider: W) -> Self
+    where
+        W: WorkloadProvider + Send + Sync + 'static,
+    {
         Self {
             default_hostname: MetaString::default(),
             otlp: otlp.clone(),
-            workload_provider: None,
+            workload_provider: Arc::new(workload_provider),
         }
     }
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
-        metrics::config::OtlpMetricsTranslatorConfig::default()
+        let mut config = metrics::config::OtlpMetricsTranslatorConfig::default()
             .with_summary_mode(self.otlp.metrics.summaries.mode)
             .with_histogram_mode(self.otlp.metrics.histogram_mode)
             .with_send_histogram_aggregations(self.otlp.metrics.send_histogram_aggregations)
             .with_cumulative_monotonic_mode(self.otlp.metrics.sums.cumulative_monotonic_mode)
             .with_initial_cumulative_monotonic_value(self.otlp.metrics.sums.initial_cumulative_monotonic_value)
-            .with_resource_attributes_as_tags(self.otlp.metrics.resource_attributes_as_tags)
+            .with_resource_attributes_as_tags(self.otlp.metrics.resource_attributes_as_tags);
+        config.tag_cardinality = self.otlp.metrics.tag_cardinality;
+        config
     }
 
     /// Sets the default hostname used when OTLP metrics do not carry a resource hostname.
     pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
         self.default_hostname = hostname.into();
-        self
-    }
-
-    /// Sets the workload provider to use for configuring origin detection/enrichment.
-    ///
-    /// A workload provider must be set otherwise origin detection/enrichment won't be enabled.
-    ///
-    /// Defaults to unset.
-    pub fn with_workload_provider<W>(mut self, workload_provider: W) -> Self
-    where
-        W: WorkloadProvider + Send + Sync + 'static,
-    {
-        self.workload_provider = Some(Arc::new(workload_provider));
         self
     }
 }
@@ -155,10 +146,11 @@ impl SourceBuilder for OtlpConfiguration {
             .next()
             .ok_or_else(|| generic_error!("No addresses resolved for HTTP endpoint '{}'", http_endpoint_str))?;
 
-        let maybe_origin_tags_resolver = self.workload_provider.clone().map(OtlpOriginTagResolver::new);
+        let origin_tag_resolver = OtlpOriginTagResolver::new(Arc::clone(&self.workload_provider));
 
-        let context_resolver =
-            build_context_resolver(&self.otlp.contexts, &context, maybe_origin_tags_resolver.clone())?;
+        // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
+        // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
+        let context_resolver = build_context_resolver(&self.otlp.contexts, &context, None)?;
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
@@ -168,7 +160,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         Ok(Box::new(Otlp {
             context_resolver,
-            origin_tag_resolver: maybe_origin_tags_resolver,
+            origin_tag_resolver,
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
@@ -192,7 +184,7 @@ impl MemoryBounds for OtlpConfiguration {
 
 pub struct Otlp {
     context_resolver: ContextResolver,
-    origin_tag_resolver: Option<OtlpOriginTagResolver>,
+    origin_tag_resolver: OtlpOriginTagResolver,
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
@@ -234,6 +226,7 @@ impl Source for Otlp {
             metrics_translator_config,
             default_hostname,
             context_resolver,
+            origin_tag_resolver.clone(),
             metric_tags,
         )?;
 
@@ -351,7 +344,7 @@ impl OtlpHandler for SourceHandler {
 
 async fn run_converter(
     mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
-    origin_tag_resolver: Option<OtlpOriginTagResolver>, shutdown_handle: ShutdownHandle,
+    origin_tag_resolver: OtlpOriginTagResolver, shutdown_handle: ShutdownHandle,
     mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, mut traces_translator: OtlpTracesTranslator,
 ) {
     pin!(shutdown_handle);
@@ -392,7 +385,7 @@ async fn run_converter(
                         }
                     }
                     OtlpResource::Logs(resource_logs) => {
-                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, origin_tag_resolver.as_ref());
+                        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, &origin_tag_resolver);
                         for log_event in translator {
                             metrics.logs_received().increment(1);
 
@@ -486,7 +479,7 @@ mod tests {
             metrics,
             ..Default::default()
         };
-        OtlpConfiguration::from_configuration(&otlp)
+        OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
     }
 
     #[test]
@@ -556,7 +549,7 @@ mod tests {
     #[test]
     fn cumulative_monotonic_sum_mode_defaults_to_delta_conversion() {
         assert_eq!(
-            OtlpConfiguration::default()
+            config_with_metrics(domains::otlp::Metrics::default())
                 .metrics_translator_config()
                 .cumulative_monotonic_mode,
             CumulativeMonotonicMode::ToDelta
