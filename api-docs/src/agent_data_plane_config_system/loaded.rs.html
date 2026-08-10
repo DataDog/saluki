@@ -281,83 +281,105 @@
 <a href=#281 id=281 data-nosnippet>281</a>    }
 <a href=#282 id=282 data-nosnippet>282</a>
 <a href=#283 id=283 data-nosnippet>283</a>    <span class="attr">#[test]
-<a href=#284 id=284 data-nosnippet>284</a>    </span><span class="kw">fn </span>a_nested_datadog_environment_variable_reaches_the_by_key_view() {
-<a href=#285 id=285 data-nosnippet>285</a>        <span class="comment">// `DD_PROXY_HTTP` names a nested key, which Figment's prefix scan cannot place. The
-<a href=#286 id=286 data-nosnippet>286</a>        // schema-driven provider resolves it, so the by-key view serves it at `proxy.http`.
-<a href=#287 id=287 data-nosnippet>287</a>        </span><span class="kw">let </span>_guard = test_env_lock();
-<a href=#288 id=288 data-nosnippet>288</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_bykey_env_{}.yaml"</span>, std::process::id()));
-<a href=#289 id=289 data-nosnippet>289</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
-<a href=#290 id=290 data-nosnippet>290</a>        std::env::set_var(<span class="string">"DD_PROXY_HTTP"</span>, <span class="string">"http://proxy.example.com"</span>);
-<a href=#291 id=291 data-nosnippet>291</a>
-<a href=#292 id=292 data-nosnippet>292</a>        <span class="kw">let </span>loaded = block_on(LoadedConfiguration::load(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile)).expect(<span class="string">"local sources load"</span>);
-<a href=#293 id=293 data-nosnippet>293</a>        <span class="kw">let </span>raw = loaded.raw_config();
+<a href=#284 id=284 data-nosnippet>284</a>    </span><span class="kw">fn </span>ottl_filter_error_mode_environment_variable_reaches_the_model() {
+<a href=#285 id=285 data-nosnippet>285</a>        <span class="comment">// `DD_OTTL_FILTER_CONFIG_ERROR_MODE` exercises the enum leaf: the environment value is a
+<a href=#286 id=286 data-nosnippet>286</a>        // plain string, decoded as a Saluki-only leaf, then validated during configuration
+<a href=#287 id=287 data-nosnippet>287</a>        // deserialization.
+<a href=#288 id=288 data-nosnippet>288</a>        </span><span class="kw">use </span>agent_data_plane_config::domains::traces::OttlErrorMode;
+<a href=#289 id=289 data-nosnippet>289</a>
+<a href=#290 id=290 data-nosnippet>290</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#291 id=291 data-nosnippet>291</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_ottl_env_{}.yaml"</span>, std::process::id()));
+<a href=#292 id=292 data-nosnippet>292</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
+<a href=#293 id=293 data-nosnippet>293</a>        std::env::set_var(<span class="string">"DD_OTTL_FILTER_CONFIG_ERROR_MODE"</span>, <span class="string">"silent"</span>);
 <a href=#294 id=294 data-nosnippet>294</a>
-<a href=#295 id=295 data-nosnippet>295</a>        std::env::remove_var(<span class="string">"DD_PROXY_HTTP"</span>);
-<a href=#296 id=296 data-nosnippet>296</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
-<a href=#297 id=297 data-nosnippet>297</a>        <span class="macro">assert_eq!</span>(
-<a href=#298 id=298 data-nosnippet>298</a>            raw.try_get_typed::&lt;String&gt;(<span class="string">"proxy.http"</span>).expect(<span class="string">"key reads"</span>),
-<a href=#299 id=299 data-nosnippet>299</a>            <span class="prelude-val">Some</span>(<span class="string">"http://proxy.example.com"</span>.to_string())
-<a href=#300 id=300 data-nosnippet>300</a>        );
-<a href=#301 id=301 data-nosnippet>301</a>    }
-<a href=#302 id=302 data-nosnippet>302</a>
-<a href=#303 id=303 data-nosnippet>303</a>    <span class="attr">#[test]
-<a href=#304 id=304 data-nosnippet>304</a>    </span><span class="kw">fn </span>the_adp_zstd_override_reaches_both_views_from_the_environment() {
-<a href=#305 id=305 data-nosnippet>305</a>        <span class="comment">// `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` names a nested Saluki-only key that the
-<a href=#306 id=306 data-nosnippet>306</a>        // prefix scan flattens to `data_plane_serializer_zstd_compressor_level`. The five payload
-<a href=#307 id=307 data-nosnippet>307</a>        // encoders read it from the by-key view, so cover that view alongside the typed model.
-<a href=#308 id=308 data-nosnippet>308</a>        </span><span class="kw">let </span>_guard = test_env_lock();
-<a href=#309 id=309 data-nosnippet>309</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_zstd_env_{}.yaml"</span>, std::process::id()));
-<a href=#310 id=310 data-nosnippet>310</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
-<a href=#311 id=311 data-nosnippet>311</a>        std::env::set_var(<span class="string">"DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>, <span class="string">"7"</span>);
-<a href=#312 id=312 data-nosnippet>312</a>
-<a href=#313 id=313 data-nosnippet>313</a>        <span class="kw">let </span>loaded = block_on(LoadedConfiguration::load(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile)).expect(<span class="string">"local sources load"</span>);
-<a href=#314 id=314 data-nosnippet>314</a>        <span class="kw">let </span>from_by_key = loaded
-<a href=#315 id=315 data-nosnippet>315</a>            .raw_config()
-<a href=#316 id=316 data-nosnippet>316</a>            .try_get_typed::&lt;i32&gt;(<span class="string">"data_plane.serializer_zstd_compressor_level"</span>)
-<a href=#317 id=317 data-nosnippet>317</a>            .expect(<span class="string">"key reads"</span>);
-<a href=#318 id=318 data-nosnippet>318</a>        <span class="kw">let </span>from_typed = loaded
-<a href=#319 id=319 data-nosnippet>319</a>            .local()
-<a href=#320 id=320 data-nosnippet>320</a>            .shared
-<a href=#321 id=321 data-nosnippet>321</a>            .endpoints
-<a href=#322 id=322 data-nosnippet>322</a>            .compression
-<a href=#323 id=323 data-nosnippet>323</a>            .zstd_compressor_level_override;
+<a href=#295 id=295 data-nosnippet>295</a>        <span class="kw">let </span>loaded = block_on(LoadedConfiguration::load(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile)).expect(<span class="string">"local sources load"</span>);
+<a href=#296 id=296 data-nosnippet>296</a>
+<a href=#297 id=297 data-nosnippet>297</a>        std::env::remove_var(<span class="string">"DD_OTTL_FILTER_CONFIG_ERROR_MODE"</span>);
+<a href=#298 id=298 data-nosnippet>298</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#299 id=299 data-nosnippet>299</a>        <span class="macro">assert_eq!</span>(
+<a href=#300 id=300 data-nosnippet>300</a>            loaded.local().domains.traces.ottl_filter.error_mode,
+<a href=#301 id=301 data-nosnippet>301</a>            OttlErrorMode::Silent
+<a href=#302 id=302 data-nosnippet>302</a>        );
+<a href=#303 id=303 data-nosnippet>303</a>    }
+<a href=#304 id=304 data-nosnippet>304</a>
+<a href=#305 id=305 data-nosnippet>305</a>    <span class="attr">#[test]
+<a href=#306 id=306 data-nosnippet>306</a>    </span><span class="kw">fn </span>a_nested_datadog_environment_variable_reaches_the_by_key_view() {
+<a href=#307 id=307 data-nosnippet>307</a>        <span class="comment">// `DD_PROXY_HTTP` names a nested key, which Figment's prefix scan cannot place. The
+<a href=#308 id=308 data-nosnippet>308</a>        // schema-driven provider resolves it, so the by-key view serves it at `proxy.http`.
+<a href=#309 id=309 data-nosnippet>309</a>        </span><span class="kw">let </span>_guard = test_env_lock();
+<a href=#310 id=310 data-nosnippet>310</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_bykey_env_{}.yaml"</span>, std::process::id()));
+<a href=#311 id=311 data-nosnippet>311</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
+<a href=#312 id=312 data-nosnippet>312</a>        std::env::set_var(<span class="string">"DD_PROXY_HTTP"</span>, <span class="string">"http://proxy.example.com"</span>);
+<a href=#313 id=313 data-nosnippet>313</a>
+<a href=#314 id=314 data-nosnippet>314</a>        <span class="kw">let </span>loaded = block_on(LoadedConfiguration::load(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile)).expect(<span class="string">"local sources load"</span>);
+<a href=#315 id=315 data-nosnippet>315</a>        <span class="kw">let </span>raw = loaded.raw_config();
+<a href=#316 id=316 data-nosnippet>316</a>
+<a href=#317 id=317 data-nosnippet>317</a>        std::env::remove_var(<span class="string">"DD_PROXY_HTTP"</span>);
+<a href=#318 id=318 data-nosnippet>318</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#319 id=319 data-nosnippet>319</a>        <span class="macro">assert_eq!</span>(
+<a href=#320 id=320 data-nosnippet>320</a>            raw.try_get_typed::&lt;String&gt;(<span class="string">"proxy.http"</span>).expect(<span class="string">"key reads"</span>),
+<a href=#321 id=321 data-nosnippet>321</a>            <span class="prelude-val">Some</span>(<span class="string">"http://proxy.example.com"</span>.to_string())
+<a href=#322 id=322 data-nosnippet>322</a>        );
+<a href=#323 id=323 data-nosnippet>323</a>    }
 <a href=#324 id=324 data-nosnippet>324</a>
-<a href=#325 id=325 data-nosnippet>325</a>        std::env::remove_var(<span class="string">"DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>);
-<a href=#326 id=326 data-nosnippet>326</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
-<a href=#327 id=327 data-nosnippet>327</a>        <span class="macro">assert_eq!</span>(from_by_key, <span class="prelude-val">Some</span>(<span class="number">7</span>));
-<a href=#328 id=328 data-nosnippet>328</a>        <span class="macro">assert_eq!</span>(from_typed, <span class="prelude-val">Some</span>(<span class="number">7</span>));
-<a href=#329 id=329 data-nosnippet>329</a>    }
-<a href=#330 id=330 data-nosnippet>330</a>
-<a href=#331 id=331 data-nosnippet>331</a>    <span class="attr">#[test]
-<a href=#332 id=332 data-nosnippet>332</a>    </span><span class="kw">fn </span>build_base_rejects_a_malformed_environment_value() {
-<a href=#333 id=333 data-nosnippet>333</a>        <span class="kw">let </span>_guard = test_env_lock();
-<a href=#334 id=334 data-nosnippet>334</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_build_base_bad_{}.yaml"</span>, std::process::id()));
-<a href=#335 id=335 data-nosnippet>335</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"dogstatsd_port: 8125\n"</span>).unwrap();
-<a href=#336 id=336 data-nosnippet>336</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>);
-<a href=#337 id=337 data-nosnippet>337</a>
-<a href=#338 id=338 data-nosnippet>338</a>        <span class="kw">let </span>result = build_base(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile);
-<a href=#339 id=339 data-nosnippet>339</a>
-<a href=#340 id=340 data-nosnippet>340</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_PORT"</span>);
-<a href=#341 id=341 data-nosnippet>341</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
-<a href=#342 id=342 data-nosnippet>342</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(Error::Base { .. })));
-<a href=#343 id=343 data-nosnippet>343</a>    }
-<a href=#344 id=344 data-nosnippet>344</a>
-<a href=#345 id=345 data-nosnippet>345</a>    <span class="attr">#[test]
-<a href=#346 id=346 data-nosnippet>346</a>    </span><span class="kw">fn </span>build_base_accepts_a_human_readable_dogstatsd_interner_size() {
-<a href=#347 id=347 data-nosnippet>347</a>        <span class="kw">let </span>_guard = test_env_lock();
-<a href=#348 id=348 data-nosnippet>348</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_build_base_interner_{}.yaml"</span>, std::process::id()));
-<a href=#349 id=349 data-nosnippet>349</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
-<a href=#350 id=350 data-nosnippet>350</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES"</span>, <span class="string">"12MiB"</span>);
-<a href=#351 id=351 data-nosnippet>351</a>
-<a href=#352 id=352 data-nosnippet>352</a>        <span class="kw">let </span>base = build_base(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile).expect(<span class="string">"human-readable byte size builds"</span>);
-<a href=#353 id=353 data-nosnippet>353</a>        <span class="kw">let </span>config = translate_strict(<span class="kw-2">&amp;</span>base).expect(<span class="string">"human-readable byte size translates"</span>);
-<a href=#354 id=354 data-nosnippet>354</a>
-<a href=#355 id=355 data-nosnippet>355</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES"</span>);
-<a href=#356 id=356 data-nosnippet>356</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
-<a href=#357 id=357 data-nosnippet>357</a>        <span class="macro">assert_eq!</span>(
-<a href=#358 id=358 data-nosnippet>358</a>            config.domains.dogstatsd.contexts.string_interner_size_bytes,
-<a href=#359 id=359 data-nosnippet>359</a>            <span class="prelude-val">Some</span>(ByteSize::mib(<span class="number">12</span>).as_u64())
-<a href=#360 id=360 data-nosnippet>360</a>        );
-<a href=#361 id=361 data-nosnippet>361</a>    }
-<a href=#362 id=362 data-nosnippet>362</a>}
+<a href=#325 id=325 data-nosnippet>325</a>    <span class="attr">#[test]
+<a href=#326 id=326 data-nosnippet>326</a>    </span><span class="kw">fn </span>the_adp_zstd_override_reaches_both_views_from_the_environment() {
+<a href=#327 id=327 data-nosnippet>327</a>        <span class="comment">// `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` names a nested Saluki-only key that the
+<a href=#328 id=328 data-nosnippet>328</a>        // prefix scan flattens to `data_plane_serializer_zstd_compressor_level`. The five payload
+<a href=#329 id=329 data-nosnippet>329</a>        // encoders read it from the by-key view, so cover that view alongside the typed model.
+<a href=#330 id=330 data-nosnippet>330</a>        </span><span class="kw">let </span>_guard = test_env_lock();
+<a href=#331 id=331 data-nosnippet>331</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_zstd_env_{}.yaml"</span>, std::process::id()));
+<a href=#332 id=332 data-nosnippet>332</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
+<a href=#333 id=333 data-nosnippet>333</a>        std::env::set_var(<span class="string">"DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>, <span class="string">"7"</span>);
+<a href=#334 id=334 data-nosnippet>334</a>
+<a href=#335 id=335 data-nosnippet>335</a>        <span class="kw">let </span>loaded = block_on(LoadedConfiguration::load(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile)).expect(<span class="string">"local sources load"</span>);
+<a href=#336 id=336 data-nosnippet>336</a>        <span class="kw">let </span>from_by_key = loaded
+<a href=#337 id=337 data-nosnippet>337</a>            .raw_config()
+<a href=#338 id=338 data-nosnippet>338</a>            .try_get_typed::&lt;i32&gt;(<span class="string">"data_plane.serializer_zstd_compressor_level"</span>)
+<a href=#339 id=339 data-nosnippet>339</a>            .expect(<span class="string">"key reads"</span>);
+<a href=#340 id=340 data-nosnippet>340</a>        <span class="kw">let </span>from_typed = loaded
+<a href=#341 id=341 data-nosnippet>341</a>            .local()
+<a href=#342 id=342 data-nosnippet>342</a>            .shared
+<a href=#343 id=343 data-nosnippet>343</a>            .endpoints
+<a href=#344 id=344 data-nosnippet>344</a>            .compression
+<a href=#345 id=345 data-nosnippet>345</a>            .zstd_compressor_level_override;
+<a href=#346 id=346 data-nosnippet>346</a>
+<a href=#347 id=347 data-nosnippet>347</a>        std::env::remove_var(<span class="string">"DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL"</span>);
+<a href=#348 id=348 data-nosnippet>348</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#349 id=349 data-nosnippet>349</a>        <span class="macro">assert_eq!</span>(from_by_key, <span class="prelude-val">Some</span>(<span class="number">7</span>));
+<a href=#350 id=350 data-nosnippet>350</a>        <span class="macro">assert_eq!</span>(from_typed, <span class="prelude-val">Some</span>(<span class="number">7</span>));
+<a href=#351 id=351 data-nosnippet>351</a>    }
+<a href=#352 id=352 data-nosnippet>352</a>
+<a href=#353 id=353 data-nosnippet>353</a>    <span class="attr">#[test]
+<a href=#354 id=354 data-nosnippet>354</a>    </span><span class="kw">fn </span>build_base_rejects_a_malformed_environment_value() {
+<a href=#355 id=355 data-nosnippet>355</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#356 id=356 data-nosnippet>356</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_build_base_bad_{}.yaml"</span>, std::process::id()));
+<a href=#357 id=357 data-nosnippet>357</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"dogstatsd_port: 8125\n"</span>).unwrap();
+<a href=#358 id=358 data-nosnippet>358</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_PORT"</span>, <span class="string">"not-a-number"</span>);
+<a href=#359 id=359 data-nosnippet>359</a>
+<a href=#360 id=360 data-nosnippet>360</a>        <span class="kw">let </span>result = build_base(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile);
+<a href=#361 id=361 data-nosnippet>361</a>
+<a href=#362 id=362 data-nosnippet>362</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_PORT"</span>);
+<a href=#363 id=363 data-nosnippet>363</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#364 id=364 data-nosnippet>364</a>        <span class="macro">assert!</span>(<span class="macro">matches!</span>(result, <span class="prelude-val">Err</span>(Error::Base { .. })));
+<a href=#365 id=365 data-nosnippet>365</a>    }
+<a href=#366 id=366 data-nosnippet>366</a>
+<a href=#367 id=367 data-nosnippet>367</a>    <span class="attr">#[test]
+<a href=#368 id=368 data-nosnippet>368</a>    </span><span class="kw">fn </span>build_base_accepts_a_human_readable_dogstatsd_interner_size() {
+<a href=#369 id=369 data-nosnippet>369</a>        <span class="kw">let </span>_guard = test_env_lock();
+<a href=#370 id=370 data-nosnippet>370</a>        <span class="kw">let </span>path = std::env::temp_dir().join(<span class="macro">format!</span>(<span class="string">"adp_build_base_interner_{}.yaml"</span>, std::process::id()));
+<a href=#371 id=371 data-nosnippet>371</a>        std::fs::write(<span class="kw-2">&amp;</span>path, <span class="string">"{}\n"</span>).unwrap();
+<a href=#372 id=372 data-nosnippet>372</a>        std::env::set_var(<span class="string">"DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES"</span>, <span class="string">"12MiB"</span>);
+<a href=#373 id=373 data-nosnippet>373</a>
+<a href=#374 id=374 data-nosnippet>374</a>        <span class="kw">let </span>base = build_base(<span class="kw-2">&amp;</span>path, EnvPrecedence::AfterFile).expect(<span class="string">"human-readable byte size builds"</span>);
+<a href=#375 id=375 data-nosnippet>375</a>        <span class="kw">let </span>config = translate_strict(<span class="kw-2">&amp;</span>base).expect(<span class="string">"human-readable byte size translates"</span>);
+<a href=#376 id=376 data-nosnippet>376</a>
+<a href=#377 id=377 data-nosnippet>377</a>        std::env::remove_var(<span class="string">"DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES"</span>);
+<a href=#378 id=378 data-nosnippet>378</a>        std::fs::remove_file(<span class="kw-2">&amp;</span>path).ok();
+<a href=#379 id=379 data-nosnippet>379</a>        <span class="macro">assert_eq!</span>(
+<a href=#380 id=380 data-nosnippet>380</a>            config.domains.dogstatsd.contexts.string_interner_size_bytes,
+<a href=#381 id=381 data-nosnippet>381</a>            <span class="prelude-val">Some</span>(ByteSize::mib(<span class="number">12</span>).as_u64())
+<a href=#382 id=382 data-nosnippet>382</a>        );
+<a href=#383 id=383 data-nosnippet>383</a>    }
+<a href=#384 id=384 data-nosnippet>384</a>}
 </code></pre></div></section></main></body></html>
