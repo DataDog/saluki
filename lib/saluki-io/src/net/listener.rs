@@ -8,6 +8,8 @@ use socket2::SockRef;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
 use tokio::net::{TcpListener, UdpSocket as TokioUdpSocket};
+#[cfg(target_os = "linux")]
+use tokio_vsock::{VsockAddr, VsockListener};
 use tracing::warn;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -99,6 +101,8 @@ enum ListenerInner {
     Unixgram(Option<tokio::net::UnixDatagram>),
     #[cfg(unix)]
     Unix(tokio::net::UnixListener),
+    #[cfg(target_os = "linux")]
+    Vsock(VsockListener),
     #[cfg(windows)]
     NamedPipe {
         server: NamedPipeServer,
@@ -223,6 +227,18 @@ impl Listener {
                     reason: "Unix listen addresses are not supported on this platform",
                 });
             }
+            #[cfg(target_os = "linux")]
+            ListenAddress::Vsock { cid, port } => VsockListener::bind(VsockAddr::new(*cid, *port))
+                .map(ListenerInner::Vsock)
+                .context(FailedToBind {
+                    address: listen_address.clone(),
+                })?,
+            #[cfg(not(target_os = "linux"))]
+            ListenAddress::Vsock { .. } => {
+                return Err(ListenerError::InvalidConfiguration {
+                    reason: "vsock listen addresses are not supported on this platform",
+                });
+            }
             #[cfg(windows)]
             ListenAddress::NamedPipe {
                 name: _,
@@ -283,6 +299,8 @@ impl Listener {
             ListenerInner::Unixgram(_) => 1,
             #[cfg(unix)]
             ListenerInner::Unix(_) => 1,
+            #[cfg(target_os = "linux")]
+            ListenerInner::Vsock(_) => 1,
             #[cfg(windows)]
             ListenerInner::NamedPipe { .. } => 1,
         }
@@ -344,6 +362,17 @@ impl Listener {
                     })?;
                     Ok(socket.into())
                 }),
+            #[cfg(target_os = "linux")]
+            ListenerInner::Vsock(vsock) => {
+                // Deliberately no `SO_RCVBUF`: vsock receive buffering is governed by the transport's credit-based
+                // flow control, sized by `SO_VM_SOCKETS_BUFFER_SIZE` at level `AF_VSOCK`. A `SO_RCVBUF` setsockopt is
+                // accepted by the generic socket layer and updates `sk_rcvbuf`, but the transport never reads it, so
+                // making the call would only give the false impression that the receive buffer had been sized.
+                let (socket, addr) = vsock.accept().await.context(FailedToAccept {
+                    address: self.listen_address.clone(),
+                })?;
+                Ok((socket, addr).into())
+            }
             #[cfg(windows)]
             ListenerInner::NamedPipe {
                 server,
@@ -805,6 +834,19 @@ mod tests {
             "expected receive buffer size >= {REQUESTED_RECV_BUFFER_SIZE}, got {actual_recv_buffer_size}"
         );
         assert!(!stream.is_connectionless());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[tokio::test]
+    async fn vsock_listener_is_unsupported_on_non_linux() {
+        let address = ListenAddress::Vsock { cid: 2, port: 8125 };
+
+        let err = match Listener::from_listen_address(address, None).await {
+            Ok(_) => panic!("vsock should be unsupported on non-Linux"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("vsock listen addresses are not supported"));
     }
 
     #[tokio::test]

@@ -13,6 +13,8 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     net::{TcpStream, UdpSocket},
 };
+#[cfg(target_os = "linux")]
+use tokio_vsock::{VsockAddr, VsockStream};
 
 use super::addr::{ConnectionAddress, ProcessIdentity};
 #[cfg(unix)]
@@ -31,6 +33,13 @@ pub enum Connection {
     #[cfg(unix)]
     Unix(#[pin] tokio::net::UnixStream),
 
+    /// A vsock socket.
+    ///
+    /// vsock has no equivalent of Unix domain socket process credentials, so the peer is identified solely by its
+    /// CID and port, much like a TCP peer.
+    #[cfg(target_os = "linux")]
+    Vsock(#[pin] VsockStream, VsockAddr),
+
     /// A Windows named pipe in byte stream mode.
     #[cfg(windows)]
     NamedPipe(#[pin] NamedPipeServer),
@@ -42,6 +51,8 @@ impl Connection {
             Self::Tcp(inner, addr) => inner.read_buf(buf).await.map(|n| (n, (*addr).into())),
             #[cfg(unix)]
             Self::Unix(inner) => unix_recvmsg(inner, buf).await,
+            #[cfg(target_os = "linux")]
+            Self::Vsock(inner, addr) => inner.read_buf(buf).await.map(|n| (n, vsock_connection_addr(addr))),
             #[cfg(windows)]
             Self::NamedPipe(inner) => inner
                 .read_buf(buf)
@@ -55,9 +66,19 @@ impl Connection {
             Self::Tcp(_, addr) => ConnectionAddress::SocketLike(*addr),
             #[cfg(unix)]
             Self::Unix(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
+            #[cfg(target_os = "linux")]
+            Self::Vsock(_, addr) => vsock_connection_addr(addr),
             #[cfg(windows)]
             Self::NamedPipe(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn vsock_connection_addr(addr: &VsockAddr) -> ConnectionAddress {
+    ConnectionAddress::Vsock {
+        cid: addr.cid(),
+        port: addr.port(),
     }
 }
 
@@ -67,6 +88,8 @@ impl AsyncRead for Connection {
             ConnectionProjected::Tcp(inner, _) => inner.poll_read(cx, buf),
             #[cfg(unix)]
             ConnectionProjected::Unix(inner) => inner.poll_read(cx, buf),
+            #[cfg(target_os = "linux")]
+            ConnectionProjected::Vsock(inner, _) => inner.poll_read(cx, buf),
             #[cfg(windows)]
             ConnectionProjected::NamedPipe(inner) => inner.poll_read(cx, buf),
         }
@@ -79,6 +102,8 @@ impl AsyncWrite for Connection {
             ConnectionProjected::Tcp(inner, _) => inner.poll_write(cx, buf),
             #[cfg(unix)]
             ConnectionProjected::Unix(inner) => inner.poll_write(cx, buf),
+            #[cfg(target_os = "linux")]
+            ConnectionProjected::Vsock(inner, _) => inner.poll_write(cx, buf),
             #[cfg(windows)]
             ConnectionProjected::NamedPipe(inner) => inner.poll_write(cx, buf),
         }
@@ -89,6 +114,8 @@ impl AsyncWrite for Connection {
             ConnectionProjected::Tcp(inner, _) => inner.poll_flush(cx),
             #[cfg(unix)]
             ConnectionProjected::Unix(inner) => inner.poll_flush(cx),
+            #[cfg(target_os = "linux")]
+            ConnectionProjected::Vsock(inner, _) => inner.poll_flush(cx),
             #[cfg(windows)]
             ConnectionProjected::NamedPipe(inner) => inner.poll_flush(cx),
         }
@@ -99,6 +126,8 @@ impl AsyncWrite for Connection {
             ConnectionProjected::Tcp(inner, _) => inner.poll_shutdown(cx),
             #[cfg(unix)]
             ConnectionProjected::Unix(inner) => inner.poll_shutdown(cx),
+            #[cfg(target_os = "linux")]
+            ConnectionProjected::Vsock(inner, _) => inner.poll_shutdown(cx),
             #[cfg(windows)]
             ConnectionProjected::NamedPipe(inner) => inner.poll_shutdown(cx),
         }
@@ -183,6 +212,8 @@ impl Stream {
                 Connection::Tcp(inner, _) => socket2::SockRef::from(inner).recv_buffer_size(),
                 #[cfg(unix)]
                 Connection::Unix(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
+                #[cfg(target_os = "linux")]
+                Connection::Vsock(inner, _) => socket2::SockRef::from(inner).recv_buffer_size(),
                 #[cfg(windows)]
                 Connection::NamedPipe(_) => Ok(0),
             },
@@ -232,6 +263,17 @@ impl From<tokio::net::UnixStream> for Stream {
         Self {
             inner: StreamInner::Connection {
                 socket: Connection::Unix(stream),
+            },
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl From<(VsockStream, VsockAddr)> for Stream {
+    fn from((stream, remote_addr): (VsockStream, VsockAddr)) -> Self {
+        Self {
+            inner: StreamInner::Connection {
+                socket: Connection::Vsock(stream, remote_addr),
             },
         }
     }
