@@ -159,7 +159,7 @@ rustls-cng-crypto = { version = "0.2.0", git = "https://github.com/DataDog/rustl
   "tls12",
 ] }
 rustls-webpki = { version = "0.103", default-features = false }
-schemars = { version = "0.8", default-features = false }
+schemars = { version = "1.0", default-features = false }
 similar-asserts = { version = "2.0", default-features = false }
 slab = { version = "0.4.12", default-features = false }
 syn = { version = "2", default-features = false, features = ["full", "parsing", "visit-mut"] }
