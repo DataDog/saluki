@@ -90,6 +90,7 @@
         "typify-macro",
         "prettyplease"
       ],
+      "groupName": "blocked schema/codegen dependencies",
       "dependencyDashboardApproval": true
     },
     // Warn reviewers that genuine Cargo major updates (1.x → 2.0, etc.) may
