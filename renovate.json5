@@ -78,6 +78,20 @@
         "**Cargo breaking update (pre-v1.0)** — `0.x` → `0.y` is a breaking change in Cargo's semver. Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
       ]
     },
+    // schemars/typify/prettyplease are stuck in a dependency deadlock tracked
+    // in our #2289 and at https://github.com/oxidecomputer/typify/issues/886
+    {
+      "matchManagers": ["cargo"],
+      "matchPackageNames": [
+        "schemars",
+        "schemars_derive",
+        "typify",
+        "typify-impl",
+        "typify-macro",
+        "prettyplease"
+      ],
+      "dependencyDashboardApproval": true
+    },
     // Warn reviewers that genuine Cargo major updates (1.x → 2.0, etc.) may
     // also require manual fixes for removed features or API changes.
     {
