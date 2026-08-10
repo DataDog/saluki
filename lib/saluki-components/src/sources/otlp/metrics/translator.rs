@@ -38,7 +38,8 @@ use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
 use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
 use crate::common::otlp::attributes::translator::AttributeTranslator;
-use crate::common::otlp::attributes::{raw_origin_from_attributes, ResourceAttributeTagMode};
+use crate::common::otlp::attributes::ResourceAttributeTagMode;
+use crate::common::otlp::origin::OtlpOriginTagResolver;
 use crate::common::otlp::util::{Source, SourceKind};
 use crate::sources::otlp::Metrics;
 
@@ -94,6 +95,8 @@ pub struct OtlpMetricsTranslator {
     config: OtlpMetricsTranslatorConfig,
     default_hostname: MetaString,
     context_resolver: ContextResolver,
+    origin_tag_resolver: OtlpOriginTagResolver,
+    resolved_origin_tags: SharedTagSet,
     prev_pts: PointsCache,
     process_start_time_ns: u64, // Used for initial value consumption.
     attribute_translator: AttributeTranslator,
@@ -441,7 +444,7 @@ impl OtlpMetricsTranslator {
     /// configured metric tags.
     pub fn new(
         config: OtlpMetricsTranslatorConfig, default_hostname: MetaString, context_resolver: ContextResolver,
-        metric_tags: SharedTagSet,
+        origin_tag_resolver: OtlpOriginTagResolver, metric_tags: SharedTagSet,
     ) -> Result<Self, GenericError> {
         config
             .validate()
@@ -453,6 +456,8 @@ impl OtlpMetricsTranslator {
             config,
             default_hostname,
             context_resolver,
+            origin_tag_resolver,
+            resolved_origin_tags: SharedTagSet::default(),
             prev_pts: PointsCache::from_config(config),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
@@ -479,6 +484,9 @@ impl OtlpMetricsTranslator {
             .attribute_translator
             .tags_from_attributes(&resource.attributes, resource_tag_mode)
             .into_shared();
+        self.resolved_origin_tags = self
+            .origin_tag_resolver
+            .resolve_resource_tags(&resource.attributes, self.config.tag_cardinality);
 
         // Combine configured and resource-derived tags once per resource, then reuse them for every
         // instrumentation scope.
@@ -589,6 +597,10 @@ impl OtlpMetricsTranslator {
             config: Default::default(),
             default_hostname: MetaString::from_static("default-host"),
             context_resolver: ContextResolverBuilder::for_tests().build(),
+            origin_tag_resolver: OtlpOriginTagResolver::new(std::sync::Arc::new(
+                saluki_env::workload::providers::NoopWorkloadProvider,
+            )),
+            resolved_origin_tags: SharedTagSet::default(),
             prev_pts: PointsCache::for_tests(),
             process_start_time_ns,
             attribute_translator: AttributeTranslator::new(),
@@ -699,12 +711,11 @@ impl OtlpMetricsTranslator {
     ) {
         context.metrics.metrics_received().increment(1);
 
-        let raw_origin = raw_origin_from_attributes(context.resource_attributes);
-        match self.context_resolver.resolve_with_optional_host(
+        match self.context_resolver.resolve_with_optional_host_and_origin_tags(
             &dims.name,
             dims.host.as_deref(),
             &dims.tags,
-            Some(raw_origin),
+            self.resolved_origin_tags.clone(),
         ) {
             Some(resolved_context) => {
                 let timestamp_s = timestamp_ns / 1_000_000_000;
@@ -1059,12 +1070,11 @@ impl OtlpMetricsTranslator {
         context: &TranslationContext, interval: i64,
     ) {
         context.metrics.metrics_received().increment(1);
-        let raw_origin = raw_origin_from_attributes(context.resource_attributes);
-        match self.context_resolver.resolve_with_optional_host(
+        match self.context_resolver.resolve_with_optional_host_and_origin_tags(
             &dims.name,
             dims.host.as_deref(),
             &dims.tags,
-            Some(raw_origin),
+            self.resolved_origin_tags.clone(),
         ) {
             Some(resolved_context) => {
                 if interval != 0 {

@@ -763,6 +763,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.metrics.summaries.mode`                           | OTLP summary quantile reporting mode.              |
 | `otlp_config.metrics.sums.cumulative_monotonic_mode`           | Cumulative monotonic sum reporting mode.           |
 | `otlp_config.metrics.sums.initial_cumulative_monotonic_value`  | Initial cumulative sum reporting behavior.         |
+| `otlp_config.metrics.tag_cardinality`                          | Tag cardinality for OTLP metric entity enrichment. |
 | `otlp_config.metrics.tags`                                     | Comma-separated tags for all OTLP metrics.         |
 | `otlp_config.receiver.protocols.grpc.endpoint`                 | otlp_config.receiver.protocols.grpc.endpoint       |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`    | Max OTLP inbound gRPC message size (MiB)           |

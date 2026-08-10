@@ -6,7 +6,7 @@ use std::{num::NonZeroUsize, str::FromStr};
 use serde::Serialize;
 
 use crate::defaults::DEFAULT_STRING_INTERNER_SIZE_BYTES;
-use crate::Error;
+use crate::{domains::dogstatsd::OriginTagCardinality, Error};
 
 /// Resolved OTLP configuration.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -30,6 +30,12 @@ pub struct Domain {
 /// OTLP metrics translation settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Metrics {
+    /// Tag cardinality applied to entity and global tags enriched onto OTLP metrics.
+    ///
+    /// Defaults to `low`. Set this to `orchestrator` or `high` when the additional series cardinality is acceptable.
+    /// `none` disables entity and global tag enrichment.
+    pub tag_cardinality: OriginTagCardinality,
+
     /// How explicit histogram buckets are reported.
     pub histogram_mode: HistogramMode,
 
