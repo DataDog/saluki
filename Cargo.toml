@@ -259,9 +259,11 @@ antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", 
 mime = "0.3"
 
 [patch.crates-io]
-# Forked version of `hyper-http-proxy` that removes an unused dependency on `rustls-native-certs`, which transitively depends
-# on a version of `rustls-pemfile` that is no longer maintained and triggers a hit when running `cargo deny`.
-hyper-http-proxy = { git = "https://github.com/tobz/hyper-http-proxy.git", branch = "main" }
+# Forked version of `hyper-http-proxy` that adds a timeout for the TLS handshake performed when
+# tunneling to an HTTPS destination through a proxy. Tracked upstream at
+# https://github.com/metalbear-co/hyper-http-proxy/pull/9; switch back to the upstream crate once
+# that merges.
+hyper-http-proxy = { git = "https://github.com/jszwedko/hyper-http-proxy.git", branch = "jszwedko/tls-handshake-timeout" }
 
 [profile.devel]
 inherits = "dev"

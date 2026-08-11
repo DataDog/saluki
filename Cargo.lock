@@ -2137,8 +2137,8 @@ dependencies = [
 
 [[package]]
 name = "hyper-http-proxy"
-version = "1.1.0"
-source = "git+https://github.com/tobz/hyper-http-proxy.git?branch=main#c7c5aad8b0cba98dd3ca404b45031473ef2d03b6"
+version = "1.1.1"
+source = "git+https://github.com/jszwedko/hyper-http-proxy.git?branch=jszwedko%2Ftls-handshake-timeout#f4ed3a8ea3424e7c47d7d9e09f244eda83c25693"
 dependencies = [
  "bytes",
  "futures-util",

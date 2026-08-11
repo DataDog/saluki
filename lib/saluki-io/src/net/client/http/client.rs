@@ -376,10 +376,12 @@ impl HttpClientBuilder {
             None => self.tls_builder.build()?,
         };
         let connector = self.connector_builder.build(tls_config)?;
+        let tls_handshake_timeout = connector.tls_handshake_timeout();
         // TODO(fips): Look into updating `hyper-http-proxy` to use the provided connector for establishing the
         // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
         // being used.
         let mut proxy_connector = hyper_http_proxy::ProxyConnector::new(connector)?;
+        proxy_connector.set_tls_handshake_timeout(Some(tls_handshake_timeout));
         if let Some(proxies) = &self.proxies {
             for proxy in proxies {
                 proxy_connector.add_proxy(proxy.to_owned());
@@ -513,6 +515,54 @@ mod tests {
         );
 
         server_task.abort();
+    }
+
+    #[tokio::test]
+    async fn tls_handshake_timeout_fires_against_a_stalled_proxy_tunnel() {
+        initialize_crypto_provider();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("should bind listener");
+        let proxy_addr = listener.local_addr().expect("should have local address");
+        let proxy_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("proxy should accept a connection");
+            let mut request = [0; 4096];
+            let bytes_read = stream
+                .read(&mut request)
+                .await
+                .expect("proxy should read the CONNECT request");
+            assert!(bytes_read > 0, "proxy should receive a CONNECT request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
+                .await
+                .expect("proxy should write the CONNECT response");
+            // Complete the CONNECT tunnel but never speak TLS, so the client's handshake deadline is
+            // the only thing that can end the connection attempt.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(stream);
+        });
+
+        let proxy_uri: Uri = format!("http://{proxy_addr}").parse().expect("proxy URI should parse");
+        let mut client = HttpClient::builder()
+            .with_proxies(vec![Proxy::new(hyper_http_proxy::Intercept::All, proxy_uri)])
+            .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()))
+            .with_tls_handshake_timeout(Duration::from_millis(200))
+            .with_http_protocol(HttpProtocol::Http1)
+            .build()
+            .expect("client should build");
+        let request = Request::get("https://example.invalid/")
+            .body(Empty::<Bytes>::new())
+            .expect("request should build");
+
+        let error = timeout(Duration::from_secs(5), client.send(request))
+            .await
+            .expect("request should not hit the outer test timeout")
+            .expect_err("handshake should time out before completing");
+        assert!(
+            format!("{error:#}").contains("TLS handshake timed out"),
+            "expected a TLS handshake timeout, got: {error:#}"
+        );
+
+        proxy_task.abort();
     }
 
     fn mutual_tls_configs() -> (ServerConfig, ClientConfig) {
