@@ -354,6 +354,7 @@ mod tests {
         Context, TagSetMutViewState,
     };
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
+    use saluki_core::components::ComponentSpawner;
     use saluki_core::components::{
         transforms::{TransformBuilder, TransformContext},
         ComponentContext,
@@ -1145,7 +1146,11 @@ mod tests {
         let health = HealthRegistry::new()
             .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
             .expect("component was not previously registered");
+        // This component doesn't spawn supervised children yet, so a spawner over a never-run supervisor is
+        // sufficient. Anything that does spawn needs `TestComponentSupervisor` (saluki_core::components::test_util)
+        // instead, otherwise the spawn fails with `SupervisorGone`.
         let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
+        let spawner = ComponentSpawner::new(supervisor_handle, Handle::current());
 
         let context = TransformContext::new(
             &topology_context,
@@ -1154,7 +1159,7 @@ mod tests {
             health,
             dispatcher,
             consumer,
-            supervisor_handle,
+            spawner,
         );
 
         transform.run(context).await.expect("tag filterlist run should succeed");

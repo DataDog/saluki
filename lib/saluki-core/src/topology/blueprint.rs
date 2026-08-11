@@ -959,7 +959,7 @@ mod tests {
             if let Some(started) = self.spawned_child {
                 context
                     .spawn_handle()
-                    .spawn(CountingChild { started })
+                    .spawn_supervisable(CountingChild { started })
                     .await
                     .expect("should spawn dynamic child");
             }

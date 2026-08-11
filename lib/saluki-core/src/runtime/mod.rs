@@ -75,4 +75,7 @@ pub use self::supervisor::{
     WorkerSpec,
 };
 
+mod workers;
+pub use self::workers::{interruptible_worker, noninterruptible_worker, FnWorker, IntoWorkerResult};
+
 mod worker_state;

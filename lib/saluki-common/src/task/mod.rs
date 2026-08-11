@@ -11,7 +11,7 @@ use tracing::Instrument as _;
 use crate::resource_tracking::Track as _;
 
 mod instrument;
-use self::instrument::TaskInstrument as _;
+pub use self::instrument::{InstrumentedTask, TaskInstrument};
 
 /// Spawns a new asynchronous task, returning a [`JoinHandle`] for it.
 ///

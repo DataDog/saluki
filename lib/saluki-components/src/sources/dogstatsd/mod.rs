@@ -2564,6 +2564,7 @@ mod tests {
     use saluki_config::ConfigurationLoader;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
+    use saluki_core::components::ComponentSpawner;
     use saluki_core::{
         components::{sources::SourceContext, ComponentContext},
         health::HealthRegistry,
@@ -2733,16 +2734,20 @@ mod tests {
         let health = health_registry
             .register_component(&SubsystemIdentifier::from_dotted("test.decoder"))
             .expect("test decoder should have a health handle");
+        // This component doesn't spawn supervised children yet, so a spawner over a never-run supervisor is
+        // sufficient. Anything that does spawn needs `TestComponentSupervisor` (saluki_core::components::test_util)
+        // instead, otherwise the spawn fails with `SupervisorGone`.
         let supervisor_handle = Supervisor::new("dogstatsd-decoder-test")
             .expect("test supervisor name should be valid")
             .handle();
+        let spawner = ComponentSpawner::new(supervisor_handle, Handle::current());
         let source_context = SourceContext::new(
             &topology_context,
             &component_context,
             ComponentRegistry::default(),
             health,
             dispatcher,
-            supervisor_handle,
+            spawner,
         );
 
         (source_context, metrics_rx)
