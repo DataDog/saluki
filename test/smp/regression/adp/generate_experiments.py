@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import copy
+import json
 import os
 import re
 import shutil
@@ -45,6 +46,12 @@ SUITES = {
 
 # Suffix marking a target file `source:` as a Jinja template rather than a file to copy verbatim.
 JINJA_TEMPLATE_SUFFIX = ".j2"
+
+# Loader used to check that rendered templates still parse. PyYAML's pure-Python parser dominates
+# the runtime of this script when a template renders megabytes of configuration -- around 25
+# seconds for a 12 MiB filterlist, against 4 with libyaml -- so use libyaml's parser wherever the
+# runtime was built with it, and fall back to the pure-Python one where it wasn't.
+SafeLoader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 # Keys of the resolved configuration that are handed to SMP with their own `{{ ... }}` templating
 # intact, and so must not be rendered here. SMP substitutes the job ID, experiment name and time
@@ -469,24 +476,43 @@ def dump_yaml(data: dict) -> str:
 
 
 def render_target_template(
-    source: str, filename: str, env: jinja2.Environment, variables: dict
+    source: str,
+    filename: str,
+    env: jinja2.Environment,
+    variables: dict,
+    cache: dict,
 ) -> str:
     """Render a target file from a Jinja template, and check that it still parses as YAML.
 
     A template is how a file gets structure that would be unreadable written out by hand, such as
     a `metric_tag_filterlist` with thousands of entries. Rendering it here rather than at run time
     means a broken template fails generation instead of an SMP job twenty minutes in.
+
+    Experiments routinely share a rendering -- an idle variant and a traffic variant of the same
+    scenario differ in their load generation, not in their target configuration -- and both
+    rendering and parsing megabytes of YAML is the bulk of this script's runtime, so results are
+    cached against the template and the variables that produced them.
     """
+    key = (source, json.dumps(variables, sort_keys=True, default=str))
+    if key in cache:
+        return cache[key]
+
     rendered = env.get_template(source).render(exp_vars=variables)
 
     if filename.endswith((".yaml", ".yml")):
         try:
-            yaml.safe_load(rendered)
+            # Scan the event stream rather than loading the document: the check is for a template
+            # that renders malformed YAML, and every syntax error surfaces during parsing, without
+            # paying to build Python objects out of megabytes of configuration. The one thing this
+            # gives up is resolving aliases, which these templates deliberately never emit.
+            for _ in yaml.parse(rendered, Loader=SafeLoader):
+                pass
         except yaml.YAMLError as error:
             raise ValueError(
                 f"Template '{source}' rendered invalid YAML for '{filename}': {error}"
             ) from error
 
+    cache[key] = rendered
     return rendered
 
 
@@ -496,6 +522,7 @@ def write_target_files(
     base_path: Path,
     env: jinja2.Environment,
     variables: dict,
+    render_cache: dict,
 ) -> None:
     """
     Write target configuration files.
@@ -506,6 +533,7 @@ def write_target_files(
         base_path: Base path for resolving relative source paths (directory containing experiments.yaml)
         env: Jinja environment used to render `.j2` sources
         variables: The experiment's `variables`, exposed to templates as `exp_vars`
+        render_cache: Renderings shared across experiments, keyed by template and variables
     """
     for filename, file_spec in files_config.items():
         file_path = target_dir / filename
@@ -519,7 +547,9 @@ def write_target_files(
             if source_path.suffix == JINJA_TEMPLATE_SUFFIX:
                 # Render the template rather than copying it verbatim.
                 file_path.write_text(
-                    render_target_template(source, filename, env, variables)
+                    render_target_template(
+                        source, filename, env, variables, render_cache
+                    )
                 )
             else:
                 shutil.copy2(source_path, file_path)
@@ -548,6 +578,7 @@ def write_experiment(
     base_path: Path,
     env: jinja2.Environment,
     variables: dict,
+    render_cache: dict,
 ) -> None:
     """Write the experiment files to the output directory."""
     experiment_dir = output_dir / name
@@ -572,7 +603,9 @@ def write_experiment(
     files_config = config.get("target", {}).get(
         "files", {"empty.yaml": {"content": "{}"}}
     )
-    write_target_files(target_dir, files_config, base_path, env, variables)
+    write_target_files(
+        target_dir, files_config, base_path, env, variables, render_cache
+    )
 
 
 def generate_experiments(
@@ -589,6 +622,7 @@ def generate_experiments(
     experiments = config.get("experiments", [])
 
     env = build_jinja_env(base_path)
+    render_cache = {}
     generated = {suite: [] for suite in SUITES}
 
     for experiment in experiments:
@@ -612,7 +646,13 @@ def generate_experiments(
 
             for suite in suites:
                 write_experiment(
-                    name, resolved, base_dir / suite / "cases", base_path, env, variables
+                    name,
+                    resolved,
+                    base_dir / suite / "cases",
+                    base_path,
+                    env,
+                    variables,
+                    render_cache,
                 )
                 generated[suite].append(name)
 
