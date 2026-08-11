@@ -12,8 +12,13 @@ global:
   erratic: false
 
   target:
+    # Every experiment runs against the converged Datadog Agent image, which carries both the Core
+    # Agent and ADP. Most experiments ignore the Core Agent entirely: the command below starts ADP
+    # by itself, in standalone mode, exactly as it ran when the target was the ADP image. The tag
+    # filtering experiments at the bottom of this file instead boot the image's own entrypoint, so
+    # ADP comes up under the Core Agent and takes its configuration over the config stream.
     name: agent-data-plane
-    command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
+    command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
     cpu_allotment: 4
     memory_allotment: 2GiB
 
@@ -45,8 +50,9 @@ global:
 
       # Enable internal telemetry endpoint.
 
+    # Applied to the replicas SMP profiles. SMP loads ddprof into the target itself, via
+    # LD_PRELOAD, so these are read by that profiler rather than by anything we run.
     profiling_environment:
-      SMP_PROFILING_ENABLED: "true"
       DD_SERVICE: "agent-data-plane"
       DD_TRACE_AGENT_URL: "unix:///smp-host/apm.socket"
       DD_PROFILING_NATIVE_PRESET: "cpu_live_heap"
@@ -126,6 +132,140 @@ templates:
                   set: 9
                   histogram: 1
             maximum_prebuild_cache_size_bytes: "500 Mb"
+
+  # Base template for the tag filtering experiments.
+  tagfilter_base:
+    variables:
+      metric_prefix: tagfilter.metric.
+      metric_first: 10000
+      traffic_metrics: 500
+      tag_prefix: tagfilter_tag_
+      tag_pool: 58
+      filterlist_tags: 54
+      filterlist_metrics: 0
+
+    target:
+      # SMP mounts the case's `datadog-agent/` directory at /etc/datadog-agent, where both
+      # processes read `datadog.yaml`. The standalone target files don't apply here.
+      name: datadog-agent
+      command: /bin/entrypoint.sh
+
+      # Headroom for two processes, both of which hold the filterlist: the 10,000-entry variant is
+      # ~12 MiB of YAML that the Core Agent parses, streams, and ADP then materializes.
+      memory_allotment: 4GiB
+
+      files:
+        empty.yaml: null
+        cert.pem: null
+        datadog.yaml:
+          source: shared/tagfilter-datadog.yaml.j2
+
+      environment:
+        # Run ADP alongside the Core Agent, owning the DogStatsD pipeline.
+        # `DD_DATA_PLANE_ENABLED` has to be in the environment (rather than only in `datadog.yaml`)
+        # because the image's cont-init.d hook keys off it to set up ADP's environment directory.
+        DD_DATA_PLANE_ENABLED: "true"
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+
+        # The point of these experiments. Standalone mode would decouple ADP from the Core Agent,
+        # and so from the filterlist; instead ADP registers as a remote agent and subscribes to the
+        # Core Agent's configuration. Remote agent and config stream are already the defaults, and
+        # are explicit here because they're the subject of the experiment.
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
+        DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
+        DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
+
+        # The Core Agent provides the IPC certificate here, so drop the standalone dummy.
+        DD_IPC_CERT_FILE_PATH: null
+
+        # ADP-only settings. The image's cont-init.d hook strips the `ADP_` prefix and exposes
+        # these to ADP alone, keeping Saluki-only keys out of the Core Agent's environment.
+        #
+        # Set the aggregator's context limit just above the number of contexts the generator
+        # produces, so the aggregator isn't the limiting factor, and give the context resolver's
+        # string interner room for the corpora below.
+        ADP_DD_AGGREGATE_CONTEXT_LIMIT: "80000"
+        ADP_DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
+
+    lading:
+      blackhole:
+        - http:
+            binding_addr: "127.0.0.1:9091"
+        # The process payload endpoint the Core Agent talks to.
+        - http:
+            binding_addr: "127.0.0.1:9092"
+
+      target_metrics:
+        # ADP serves its internal telemetry on the unprivileged API endpoint, as everywhere else.
+        - prometheus:
+            uri: "http://127.0.0.1:5100/metrics"
+            tags:
+              sub_agent: adp
+        # The Core Agent serves its telemetry on the expvar port.
+        - prometheus:
+            uri: "http://127.0.0.1:5000/telemetry"
+            tags:
+              sub_agent: core
+
+  # Tag filtering with no traffic at all: the target starts, takes the filterlist over the config
+  # stream, and sits there. What this measures is the standing cost of holding a filterlist.
+  tagfilter_idle:
+    extends: tagfilter_base
+    lading:
+      generator: []
+
+  # Tag filtering under 100 MB/s of DogStatsD over UDS, with wide tagsets -- the shape tag
+  # filtering exists for.
+  #
+  # `contexts`, `tags_per_msg` and `bytes_per_second` are identical across every traffic variant;
+  # only the filterlist changes.
+  tagfilter_dsd_uds_100mb:
+    extends: tagfilter_base
+
+    lading:
+      generator:
+        - unix_datagram:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            path: "/tmp/adp-dogstatsd-dgram.sock"
+            block_cache_method: Fixed
+            bytes_per_second: "100 MiB"
+            maximum_prebuild_cache_size_bytes: "500 Mb"
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 78000
+                    max: 78000
+                tags_per_msg:
+                  inclusive:
+                    min: 54
+                    max: 54
+                multivalue_count:
+                  inclusive:
+                    min: 2
+                    max: 32
+                multivalue_pack_probability: 0.08
+                kind_weights:
+                  metric: 100
+                  event: 0
+                  service_check: 0
+                metric_weights:
+                  count: 208
+                  gauge: 66
+                  timer: 0
+                  distribution: 72
+                  set: 9
+                  histogram: 1
+
+                # The corpora lading draws from, as range patterns it expands at run time. Write
+                # these with `lading_range()` rather than as literal `{{X-Y}}` patterns: Jinja
+                # shares those delimiters and would evaluate the pattern as arithmetic here.
+                metric_names:
+                  - "{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.metric_first, exp_vars.traffic_metrics) }}"
+                tag_names:
+                  - "{{ exp_vars.tag_prefix }}{{ lading_range(0, exp_vars.tag_pool) }}"
+                tag_values:
+                  - "value{{ lading_range(0, 10) }}"
 
   # Base template for OTLP experiments
   otlp_base:
@@ -494,7 +634,7 @@ experiments:
       - ingress_throughput
 
     target:
-      command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
+      command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
       files:
         empty.yaml: null
         ottl_config.yaml:
@@ -514,7 +654,7 @@ experiments:
       - ingress_throughput
 
     target:
-      command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
+      command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/ottl_config.yaml run
       files:
         empty.yaml: null
         ottl_config.yaml:
@@ -523,3 +663,51 @@ experiments:
               error_mode: ignore
               trace_statements:
                 - 'set(attributes["test_attr"], "test-val")'
+
+  # ============================================================================
+  # Tag filtering experiments
+  # ============================================================================
+
+  - name: tagfilter_0metrics_idle
+    extends: tagfilter_idle
+    optimization_goal: memory
+
+  - name: tagfilter_0metrics_100mb
+    extends: tagfilter_dsd_uds_100mb
+    optimization_goal: cpu
+
+  - name: tagfilter_500metrics_idle
+    extends: tagfilter_idle
+    optimization_goal: memory
+    variables:
+      filterlist_metrics: 500
+
+  - name: tagfilter_500metrics_100mb
+    extends: tagfilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      filterlist_metrics: 500
+
+  - name: tagfilter_1000metrics_idle
+    extends: tagfilter_idle
+    optimization_goal: memory
+    variables:
+      filterlist_metrics: 1000
+
+  - name: tagfilter_1000metrics_100mb
+    extends: tagfilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      filterlist_metrics: 1000
+
+  - name: tagfilter_10000metrics_idle
+    extends: tagfilter_idle
+    optimization_goal: memory
+    variables:
+      filterlist_metrics: 10000
+
+  - name: tagfilter_10000metrics_100mb
+    extends: tagfilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      filterlist_metrics: 10000

@@ -2,7 +2,7 @@ optimization_goal: memory
 erratic: false
 target:
   name: agent-data-plane
-  command: /maybe-profile.sh /usr/local/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
+  command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
   cpu_allotment: 4
   memory_allotment: 2GiB
   environment:
@@ -19,7 +19,6 @@ target:
     DD_OTLP_CACHED_CONTEXT_LIMIT: "3100"
     DD_OTLP_CONFIG_TRACES_STRING_INTERNER_SIZE: 4MiB
   profiling_environment:
-    SMP_PROFILING_ENABLED: "true"
     DD_SERVICE: agent-data-plane
     DD_TRACE_AGENT_URL: unix:///smp-host/apm.socket
     DD_PROFILING_NATIVE_PRESET: cpu_live_heap

@@ -39,7 +39,8 @@ RUN --mount=type=bind,from=ci-scripts,target=/scripts \
     apt-get update && \
     apt-get install -y --no-install-recommends \
       build-essential software-properties-common curl ca-certificates git gnupg2 \
-      lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 ninja-build python3 python3-pip python3-yaml && \
+      lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 ninja-build python3 python3-pip python3-yaml \
+      python3-jinja2 && \
     /scripts/clean-temporary-caches.sh
 
 # Install the Docker CLI directly, as well as the CI-specific credential helper.

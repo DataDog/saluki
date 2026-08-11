@@ -1,0 +1,45 @@
+{# Datadog Agent configuration for the tag filtering experiments.
+
+   Rendered by generate_experiments.py with the experiment's `variables` in scope as `exp_vars`.
+   The generated copies under full/cases/ are outputs: edit this template, then run
+   `make generate-smp-experiments`. #}
+hostname: smp-regression
+api_key: foo00000001
+
+# SMP's blackholes stand in for the intake.
+dd_url: http://127.0.0.1:9091
+process_config:
+  process_dd_url: http://127.0.0.1:9092
+
+# SMP mounts the configuration directory read-only, so the Agent can't write its IPC credentials
+# to the default location underneath it. ADP derives the IPC certificate path from the auth
+# token's directory exactly like the Agent does, so relocating the token relocates both, and the
+# two stay in agreement.
+auth_token_file_path: /tmp/agent-auth-token
+
+# Expose the Core Agent's Prometheus telemetry for lading to scrape.
+telemetry:
+  enabled: true
+
+# Keep the target from poking around its execution environment or the network, which would
+# otherwise add noise the experiment doesn't control for.
+cloud_provider_metadata: []
+remote_configuration:
+  enabled: false
+
+# Disable UDP and hand DogStatsD to ADP over UDS in SOCK_DGRAM mode.
+dogstatsd_port: 0
+dogstatsd_socket: /tmp/adp-dogstatsd-dgram.sock
+{% if exp_vars.filterlist_metrics %}
+
+# Configure Agent-side tag aggregation.
+metric_tag_filterlist:
+{% for metric_name in lading_names(exp_vars.metric_prefix, exp_vars.metric_first, exp_vars.filterlist_metrics) %}
+- metric_name: {{ metric_name }}
+  action: include
+  tags:
+{% for tag_name in lading_names(exp_vars.tag_prefix, 0, exp_vars.tag_pool)[:exp_vars.filterlist_tags] %}
+  - {{ tag_name }}
+{% endfor %}
+{% endfor %}
+{% endif %}

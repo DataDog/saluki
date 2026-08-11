@@ -11,6 +11,21 @@ SMP tests measure ADP's performance characteristics under various workloads. Eac
 - **Optimization goal**: What metric to optimize for (`cpu`, `memory`, or `ingress_throughput`)
 - **Quality checks**: Optional bounds on metrics (for example, memory usage limits)
 
+## The target image
+
+SMP fixes one target image per job, so every experiment runs against the same one: the converged
+Datadog Agent image (`docker/Dockerfile.datadog-agent`), built in CI from that side's ADP build.
+An experiment picks how much of it to use through `target.command`:
+
+- Most experiments run ADP by itself, in standalone mode, by pointing the command straight at the
+  ADP binary. The Core Agent never starts.
+- The tag filtering experiments run the image's own entrypoint, so the Core Agent comes up and
+  supervises ADP. They need it: a `metric_tag_filterlist` is Core Agent configuration, and reaches
+  ADP over the config stream.
+
+Profiling is SMP's to arrange: the SMP experiment runner loads `ddprof` into the target with `LD_PRELOAD` on the
+replicas named by `ddprof_replicas` in `config.yaml`.
+
 ## Directory Structure
 
 ```
@@ -18,7 +33,8 @@ test/smp/regression/adp/
 ├── experiments.yaml          # Experiment definitions (source of truth)
 ├── config.yaml               # Shared SMP config (copied into each suite below)
 ├── generate_experiments.py   # Script to generate the per-suite case directories
-├── shared/                   # Files copied into experiments at generation time (e.g. cert.pem)
+├── shared/                   # Files pulled into experiments at generation time: copied verbatim
+│                             # (cert.pem) or rendered if they are Jinja templates (*.j2)
 ├── quality-gates/            # PR gating suite (experiments with `checks:`)
 │   ├── config.yaml
 │   └── cases/
@@ -211,9 +227,81 @@ target:
       source: shared/cert.pem    # Relative to experiments.yaml
 ```
 
+A source ending in `.j2` is rendered as a Jinja template rather than copied. See
+[Variables and Templating](#variables-and-templating).
+
 ### Default Behavior
 
 If no `files` are specified, a default `empty.yaml` with `{}` content is created. Files are inherited from global/templates and merged with experiment-specific files (experiment values take precedence on conflict).
+
+## Variables and Templating
+
+Some experiments need structure that is impractical to write out by hand — a
+`metric_tag_filterlist` with thousands of entries, say. Rather than special-casing that in the
+generator, an experiment can declare `variables:` and use Jinja to build what it needs.
+
+`variables:` is inherited and merged like everything else (`global` → `template` → `experiment`),
+so a template can hold the expressions while each experiment supplies the numbers. It is an input
+to generation, not part of the output. Templates see it as `exp_vars`:
+
+```yaml
+templates:
+  my_base:
+    variables:
+      metric_prefix: example.metric.
+      metric_first: 10000
+      metric_count: 0            # overridden per experiment
+
+experiments:
+  - name: my_experiment
+    extends: my_base
+    variables:
+      metric_count: 500
+```
+
+Templating applies in two places, both fed by that one set of variables:
+
+- **Any string in the experiment configuration.** Values are rendered after inheritance is
+  resolved, so `"{{ exp_vars.metric_count }}"` works in an environment variable, a lading setting,
+  or inline file content. An unknown variable is an error, not an empty string.
+- **Target files whose `source:` ends in `.j2`.** The file is rendered as a Jinja template instead
+  of being copied, which is where loops belong. The result is checked for valid YAML if the target
+  filename is a YAML file.
+
+`report_links` is left alone: SMP does its own `{{ job_id }}` substitution in those.
+
+### Helpers
+
+Two functions are available in every template:
+
+| Helper | Purpose |
+| --- | --- |
+| `lading_range(first, count)` | Renders a lading range pattern, for example `lading_range(10000, 500)` → `{{10000-10499}}`. |
+| `lading_names(prefix, first, count)` | Expands the same range into the list of names lading produces, padding included. |
+
+Use `lading_range` rather than writing a pattern out. Jinja and lading share `{{ ... }}`
+delimiters, so a literal `{{0-499}}` would be evaluated as arithmetic during generation and never
+reach lading. Generation rejects literal patterns and points here.
+
+`lading_names` is the other half: it produces the same strings for the places that need them
+written out in full, so both sides of an experiment agree. Because lading pads numeric ranges to
+the width of the range's *end*, take subsets by slicing the full range
+(`lading_names(prefix, 0, pool)[:subset]`) rather than by generating a shorter one, which would
+pad differently.
+
+### Tag filtering, as an example
+
+The tag filtering experiments use all of this. `variables:` fixes the corpora and the filterlist
+size, the lading generator draws from patterns built with `lading_range`, and
+`shared/tagfilter-datadog.yaml.j2` loops over `lading_names` to build the filterlist the Core
+Agent streams to ADP. One set of numbers drives both, so the filterlist can't end up naming
+metrics the generator never sends — which is a silent failure, since the experiment still runs
+green while measuring nothing.
+
+> [!NOTE]
+> The rendered `datadog.yaml` files are large — the 10,000-entry variants are ~12 MiB each. That
+> is the configuration under test, and it compresses to well under a megabyte in git, but it is
+> worth knowing before adding another size variant.
 
 ## Regenerating Experiments
 
@@ -240,3 +328,9 @@ make profile-run-adp
 # Then, in another terminal, run the experiment's load generator
 make profile-run-smp-experiment EXPERIMENT=dsd_uds_10mb_3k_contexts_throughput
 ```
+
+> [!NOTE]
+> This drives an ADP process you started yourself, so it only covers the experiments that run ADP
+> standalone. Running a tag filtering experiment locally means running the converged image
+> (`make build-datadog-agent-image-release`) with that case's `datadog.yaml`, and pointing lading
+> at it by hand.
