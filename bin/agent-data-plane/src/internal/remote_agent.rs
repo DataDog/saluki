@@ -340,7 +340,7 @@ async fn run_config_stream_event_loop(
 
 /// Sources that indicate the Agent supplied the value rather than an operator.
 const AGENT_DEFAULT_SOURCE: &str = "default";
-/// It is unclear whether we can ever receive this, but if we do it was not set by the user.
+/// A value that was not set by the user nor does the schema define default value for.
 const AGENT_DECLARED_ONLY_SOURCE: &str = "schema";
 const AGENT_UNSET_SOURCES: [&str; 2] = [AGENT_DEFAULT_SOURCE, AGENT_DECLARED_ONLY_SOURCE];
 
