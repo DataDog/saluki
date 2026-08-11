@@ -841,15 +841,17 @@ endif
 	--inlined-functions true --timeline --upload-period 10 --preset cpu_live_heap \
 	target/release/agent-data-plane run
 
+SMP_GENERATOR := test/smp/regression/adp/generate_experiments.py
+
 .PHONY: generate-smp-experiments
 generate-smp-experiments: ## Generates SMP experiment configs from experiments.yaml
 	@echo "[*] Generating SMP experiment configurations..."
-	@python3 test/smp/regression/adp/generate_experiments.py
+	@$(PYTHON) $(SMP_GENERATOR)
 
 .PHONY: check-smp-experiments
 check-smp-experiments: ## Verifies SMP experiment configs are up-to-date (CI)
 	@echo "[*] Checking SMP experiment configurations..."
-	@python3 test/smp/regression/adp/generate_experiments.py --check
+	@$(PYTHON) $(SMP_GENERATOR) --check
 
 .PHONY: profile-run-smp-experiment
 profile-run-smp-experiment: ## Runs a specific SMP experiment for Saluki
@@ -923,6 +925,28 @@ run-docs: ## Runs a local development server for documentation
 	@bun run docs:dev
 
 ##@ Utility
+
+# Interpreter used by targets that run our Python tooling: the local virtualenv when there is one,
+# otherwise whatever `python3` resolves to. That keeps local development on the pinned versions in
+# requirements.txt -- some of these scripts generate committed files that CI compares
+# byte-for-byte -- without making the virtualenv mandatory, since CI's build image pre-installs
+# the same requirements system-wide.
+#
+# Deliberately recursive (`=`, not `:=`) so the choice is made when a recipe runs rather than when
+# the makefile is parsed, and `make ensure-python-venv generate-smp-experiments` works in one go.
+# There is no separate "activate the virtualenv" target because make gives every recipe line its
+# own shell; naming the interpreter is the equivalent, and activation does nothing more than put
+# this same binary first on PATH.
+VENV_DIR := .venv
+VENV_PYTHON := $(VENV_DIR)/bin/python
+PYTHON_REQUIREMENTS := requirements.txt
+PYTHON = $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
+
+.PHONY: ensure-python-venv
+ensure-python-venv: ## Creates the virtualenv that Python tooling prefers, or updates an existing one
+	@echo "[*] Installing Python tooling dependencies into $(VENV_DIR)..."
+	@python3 -m venv $(VENV_DIR)
+	@$(VENV_PYTHON) -m pip install --quiet --disable-pip-version-check --requirement $(PYTHON_REQUIREMENTS)
 
 .PHONY: update-protos
 update-protos: ## Updates all vendored Protocol Buffers definitions from their source repositories

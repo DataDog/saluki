@@ -317,6 +317,11 @@ To verify configurations are up-to-date (useful in CI):
 make check-smp-experiments
 ```
 
+Both targets run the generator with the local virtualenv at `.venv` when there is one, and fall
+back to `python3` otherwise, as CI does — its build image pre-installs the same pinned
+`requirements.txt`. Set the virtualenv up, or update it after that file changes, with
+`make ensure-python-venv`.
+
 ## Running Experiments Locally
 
 To run a specific experiment locally for profiling:

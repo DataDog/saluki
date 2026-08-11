@@ -39,8 +39,18 @@ RUN --mount=type=bind,from=ci-scripts,target=/scripts \
     apt-get update && \
     apt-get install -y --no-install-recommends \
       build-essential software-properties-common curl ca-certificates git gnupg2 \
-      lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 ninja-build python3 python3-pip python3-yaml \
-      python3-jinja2 && \
+      lsb-release make cmake unzip gcc g++ binutils jq bc bzip2 ninja-build python3 python3-pip \
+      python3-venv && \
+    /scripts/clean-temporary-caches.sh
+
+# Pre-install the Python dependencies our tooling needs (requirements.txt), so jobs don't pay to
+# download them on every run. They go to the system interpreter, which is what the Makefile falls
+# back to when there is no local virtualenv, and the versions stay pinned to the same file
+# developers install from. `--break-system-packages` is needed because the Ubuntu base marks its
+# interpreter as externally managed; in a single-purpose CI image that is exactly what we want.
+RUN --mount=type=bind,source=requirements.txt,target=/tmp/requirements.txt \
+    --mount=type=bind,from=ci-scripts,target=/scripts \
+    pip3 install --break-system-packages --requirement /tmp/requirements.txt && \
     /scripts/clean-temporary-caches.sh
 
 # Install the Docker CLI directly, as well as the CI-specific credential helper.

@@ -1,0 +1,12 @@
+# Python dependencies for this repository's tooling.
+#
+# `make ensure-python-venv` installs these into a local virtualenv, which the targets that run
+# Python scripts prefer over the system interpreter. CI's build image pre-installs this same file
+# system-wide instead, so its jobs don't download anything at run time.
+#
+# Versions are pinned because some of that tooling generates committed files that CI compares
+# byte-for-byte (see test/smp/regression/adp/generate_experiments.py): an unpinned YAML emitter or
+# template engine could reformat its output and fail a check for reasons that have nothing to do
+# with the change under review.
+Jinja2==3.1.6
+PyYAML==6.0.3
