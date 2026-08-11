@@ -381,7 +381,10 @@ impl HttpClientBuilder {
         // connection to the proxy itself, even when the proxy is at an HTTPS URL, to ensure our desired TLS stack is
         // being used.
         let mut proxy_connector = hyper_http_proxy::ProxyConnector::new(connector)?;
-        proxy_connector.set_tls_handshake_timeout(Some(tls_handshake_timeout));
+        // A zero timeout means the handshake deadline is disabled, matching `HttpsCapableConnector`'s own
+        // handling of `Duration::ZERO` for direct connections.
+        let proxy_tls_handshake_timeout = (!tls_handshake_timeout.is_zero()).then_some(tls_handshake_timeout);
+        proxy_connector.set_tls_handshake_timeout(proxy_tls_handshake_timeout);
         if let Some(proxies) = &self.proxies {
             for proxy in proxies {
                 proxy_connector.add_proxy(proxy.to_owned());
@@ -560,6 +563,53 @@ mod tests {
         assert!(
             format!("{error:#}").contains("TLS handshake timed out"),
             "expected a TLS handshake timeout, got: {error:#}"
+        );
+
+        proxy_task.abort();
+    }
+
+    #[tokio::test]
+    async fn zero_tls_handshake_timeout_disables_the_proxy_tunnel_deadline() {
+        initialize_crypto_provider();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("should bind listener");
+        let proxy_addr = listener.local_addr().expect("should have local address");
+        let proxy_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("proxy should accept a connection");
+            let mut request = [0; 4096];
+            let bytes_read = stream
+                .read(&mut request)
+                .await
+                .expect("proxy should read the CONNECT request");
+            assert!(bytes_read > 0, "proxy should receive a CONNECT request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
+                .await
+                .expect("proxy should write the CONNECT response");
+            // Complete the CONNECT tunnel but never speak TLS, so the request only fails if some
+            // deadline (mistakenly) bounds the handshake.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(stream);
+        });
+
+        let proxy_uri: Uri = format!("http://{proxy_addr}").parse().expect("proxy URI should parse");
+        let mut client = HttpClient::builder()
+            .with_proxies(vec![Proxy::new(hyper_http_proxy::Intercept::All, proxy_uri)])
+            .with_tls_config(|builder| builder.with_root_cert_store(RootCertStore::empty()))
+            .with_tls_handshake_timeout(Duration::ZERO)
+            .with_http_protocol(HttpProtocol::Http1)
+            .build()
+            .expect("client should build");
+        let request = Request::get("https://example.invalid/")
+            .body(Empty::<Bytes>::new())
+            .expect("request should build");
+
+        // A zero handshake timeout means "disabled", so the request should still be pending well past
+        // the point where a mistakenly active zero-length deadline would have already failed it.
+        let result = timeout(Duration::from_millis(300), client.send(request)).await;
+        assert!(
+            result.is_err(),
+            "a disabled timeout should not fail the proxy tunnel's TLS handshake, got: {result:?}"
         );
 
         proxy_task.abort();
