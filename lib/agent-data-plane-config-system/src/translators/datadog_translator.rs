@@ -841,6 +841,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.tls.min_tls_version = value;
     }
 
+    fn consume_tls_handshake_timeout(&mut self, value: Duration) {
+        self.config.shared.endpoints.tls.handshake_timeout = value;
+    }
+
     fn consume_multi_region_failover_api_key(&mut self, value: String) {
         self.config.domains.multi_region_failover.api_key = non_empty(value);
     }

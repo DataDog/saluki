@@ -320,13 +320,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("[]"),
     },
     ClassifierEntry {
-        yaml_path: "tls_handshake_timeout",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::Medium),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-        default: DefaultValue::DurationNanos(10000000000),
-    },
-    ClassifierEntry {
         yaml_path: "use_dogstatsd",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),

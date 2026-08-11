@@ -412,6 +412,13 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub telemetry: Telemetry,
 
+    #[serde(
+        default = "duration_defaults::tls_handshake_timeout",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub tls_handshake_timeout: std::time::Duration,
+
     #[serde(default)]
     pub use_proxy_for_cloud_metadata: bool,
 
@@ -561,6 +568,7 @@ impl Default for DatadogConfiguration {
             syslog_rfc: Default::default(),
             syslog_uri: Default::default(),
             telemetry: Default::default(),
+            tls_handshake_timeout: duration_defaults::tls_handshake_timeout(),
             use_proxy_for_cloud_metadata: Default::default(),
             use_v2_api: Default::default(),
             use_v3_api: Default::default(),
@@ -1868,5 +1876,8 @@ pub mod defaults {
 mod duration_defaults {
     pub(super) fn expected_tags_duration() -> std::time::Duration {
         std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn tls_handshake_timeout() -> std::time::Duration {
+        std::time::Duration::from_nanos(10000000000)
     }
 }

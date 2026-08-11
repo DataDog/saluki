@@ -115,7 +115,9 @@ mod tests {
     #[test]
     fn incompatible_non_default() {
         let c = classifier();
-        let result = c.classify("tls_handshake_timeout", &Value::Number(999.into())).unwrap();
+        let result = c
+            .classify("dogstatsd_stats_buffer", &Value::Number(999.into()))
+            .unwrap();
         assert!(matches!(result.support_level, SupportLevel::Incompatible(_)));
         assert!(!result.is_default);
     }
@@ -139,8 +141,10 @@ mod tests {
     #[test]
     fn duration_default_null_is_not_default() {
         let c = classifier();
-        // tls_handshake_timeout has a duration default (10s); a null value can't be normalized.
-        let result = c.classify("tls_handshake_timeout", &Value::Null).unwrap();
+        // dogstatsd_packet_buffer_flush_timeout has a duration default (100ms); a null value can't be normalized.
+        let result = c
+            .classify("dogstatsd_packet_buffer_flush_timeout", &Value::Null)
+            .unwrap();
         assert!(!result.is_default);
     }
 
@@ -149,14 +153,17 @@ mod tests {
         let c = classifier();
         // Neither an empty string nor arbitrary text parses as a duration, so neither matches.
         assert!(
-            !c.classify("tls_handshake_timeout", &Value::String("".into()))
+            !c.classify("dogstatsd_packet_buffer_flush_timeout", &Value::String("".into()))
                 .unwrap()
                 .is_default
         );
         assert!(
-            !c.classify("tls_handshake_timeout", &Value::String("something".into()))
-                .unwrap()
-                .is_default
+            !c.classify(
+                "dogstatsd_packet_buffer_flush_timeout",
+                &Value::String("something".into())
+            )
+            .unwrap()
+            .is_default
         );
     }
 
@@ -165,7 +172,7 @@ mod tests {
         let c = classifier();
         // The default is also matched when supplied as a Go duration string rather than nanoseconds.
         let result = c
-            .classify("tls_handshake_timeout", &Value::String("10s".into()))
+            .classify("dogstatsd_packet_buffer_flush_timeout", &Value::String("100ms".into()))
             .unwrap();
         assert!(result.is_default);
     }
@@ -173,7 +180,7 @@ mod tests {
     #[test]
     fn incompatible_severity_levels() {
         let c = classifier();
-        let result = c.classify("tls_handshake_timeout", &Value::Number(30.into())).unwrap();
+        let result = c.classify("dogstatsd_stats_buffer", &Value::Number(30.into())).unwrap();
         assert!(matches!(
             result.support_level,
             SupportLevel::Incompatible(Severity::Medium)
@@ -183,10 +190,13 @@ mod tests {
     #[test]
     fn duration_default_as_nanoseconds_is_default() {
         let c = classifier();
-        // The Agent transmits tls_handshake_timeout (schema default "10s") as integer nanoseconds.
-        // The classifier must recognize this as the default and not flag it as an override.
+        // The Agent transmits dogstatsd_packet_buffer_flush_timeout (schema default "100ms") as integer
+        // nanoseconds. The classifier must recognize this as the default and not flag it as an override.
         let result = c
-            .classify("tls_handshake_timeout", &Value::Number(10_000_000_000i64.into()))
+            .classify(
+                "dogstatsd_packet_buffer_flush_timeout",
+                &Value::Number(100_000_000i64.into()),
+            )
             .unwrap();
         assert!(result.is_default);
     }
@@ -194,9 +204,12 @@ mod tests {
     #[test]
     fn duration_non_default_nanoseconds_is_not_default() {
         let c = classifier();
-        // 5s in nanoseconds is not the 10s default.
+        // 5ms in nanoseconds is not the 100ms default.
         let result = c
-            .classify("tls_handshake_timeout", &Value::Number(5_000_000_000i64.into()))
+            .classify(
+                "dogstatsd_packet_buffer_flush_timeout",
+                &Value::Number(5_000_000i64.into()),
+            )
             .unwrap();
         assert!(!result.is_default);
     }

@@ -172,6 +172,7 @@ static GOLDEN_ORDER: &[(&str, &[&str])] = &[
             "forwarder_storage_max_size_in_bytes",
             "forwarder_storage_path",
             "forwarder_outdated_file_in_days",
+            "tls_handshake_timeout",
         ],
     ),
     (

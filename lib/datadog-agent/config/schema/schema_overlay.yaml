@@ -2593,12 +2593,18 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   tls_handshake_timeout:
-    support: none
-    severity: medium
-    planned: true
+    support: full
     pipelines: [cross_cutting]
     description: "HTTP TLS handshake timeout"
-    documentation: "Existing request timeout covers the gap."
+    documentation: |
+      ADP applies `tls_handshake_timeout` to the TLS handshake step of outbound Datadog intake connections,
+      independent of `forwarder_timeout`, which bounds the full request. ADP owns the TLS layer directly rather than
+      delegating the handshake to an opaque connect-and-handshake future, so it can time out the handshake without
+      also aborting an in-progress TCP connect.
+    test_support:
+      used_by: [ForwarderConfiguration]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
     issue: "#178"
 
   use_dogstatsd:

@@ -1,24 +1,26 @@
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::{
     future::Future,
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::{Duration, Instant},
 };
-#[cfg(unix)]
-use std::{path::PathBuf, sync::Arc};
 
 use http::{Extensions, Uri};
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder, MaybeHttpsStream};
+use hyper_rustls::MaybeHttpsStream;
 use hyper_util::{
     client::legacy::connect::{CaptureConnection, Connected, Connection, HttpConnector},
     rt::TokioIo,
 };
 use metrics::Counter;
 use pin_project_lite::pin_project;
-use rustls::ClientConfig;
+use rustls::{pki_types::ServerName, ClientConfig};
 use saluki_error::GenericError;
 use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
 #[cfg(target_os = "linux")]
 use tokio_vsock::{VsockAddr, VsockStream};
 use tower::{BoxError, Service};
@@ -359,9 +361,15 @@ pub enum HttpProtocol {
 }
 
 /// A connector that supports HTTP or HTTPS.
+///
+/// Unlike [`hyper_rustls::HttpsConnector`], which fuses the transport connect and TLS handshake into a single
+/// opaque future, this connector performs them as two distinct steps. That split allows a timeout to be scoped to
+/// just the handshake, rather than the combined connect-and-handshake duration.
 #[derive(Clone)]
 pub struct HttpsCapableConnector {
-    inner: HttpsConnector<InnerConnector>,
+    inner: InnerConnector,
+    tls_config: Arc<ClientConfig>,
+    tls_handshake_timeout: Duration,
     bytes_sent: Option<Counter>,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
@@ -377,28 +385,88 @@ impl Service<Uri> for HttpsCapableConnector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
-        let inner = self.inner.call(dst);
+        let is_https = match dst.scheme_str() {
+            Some("https") => true,
+            Some("http") => false,
+            scheme => {
+                let scheme = scheme.map(str::to_owned);
+                return Box::pin(async move {
+                    Err(Box::new(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("unsupported URI scheme: {scheme:?}"),
+                    )) as BoxError)
+                });
+            }
+        };
+        let transport_fut = self.inner.call(dst.clone());
+        let tls_config = Arc::clone(&self.tls_config);
+        let tls_handshake_timeout = self.tls_handshake_timeout;
         let bytes_sent = self.bytes_sent.clone();
         let error_telemetry = self.error_telemetry.clone();
         let conn_age_limit = self.conn_age_limit;
+
         Box::pin(async move {
-            match inner.await {
-                Ok(inner) => Ok(HttpsCapableConnection {
-                    inner,
-                    bytes_sent,
-                    error_telemetry,
-                    conn_age_limit,
-                }),
-                Err(error) => {
-                    if is_tls_error(error.as_ref()) {
+            let transport = transport_fut.await?;
+
+            let inner = if is_https {
+                let host = dst.host().ok_or_else(|| -> BoxError {
+                    Box::new(io::Error::new(io::ErrorKind::InvalidInput, "URI has no host"))
+                })?;
+                let host = strip_ipv6_brackets(host);
+                let server_name = ServerName::try_from(host)
+                    .map_err(|error| -> BoxError { Box::new(error) })?
+                    .to_owned();
+
+                let handshake = TlsConnector::from(tls_config).connect(server_name, TokioIo::new(transport));
+
+                match await_handshake_with_deadline(tls_handshake_timeout, handshake).await {
+                    Ok(stream) => MaybeHttpsStream::from(stream),
+                    Err(error) => {
                         if let Some(error_telemetry) = &error_telemetry {
                             error_telemetry.increment_tls_error();
                         }
+                        return Err(error);
                     }
-                    Err(error)
                 }
-            }
+            } else {
+                MaybeHttpsStream::from(transport)
+            };
+
+            Ok(HttpsCapableConnection {
+                inner,
+                bytes_sent,
+                error_telemetry,
+                conn_age_limit,
+            })
         })
+    }
+}
+
+/// Strips the surrounding brackets from a bracketed IPv6 host, as found in a URI authority.
+///
+/// [`rustls::pki_types::ServerName`] accepts unbracketed IPv6 addresses but rejects the bracketed form that
+/// [`http::Uri::host`] returns (for example, `[::1]`), so this normalizes the host before constructing the server name.
+fn strip_ipv6_brackets(host: &str) -> &str {
+    host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
+}
+
+/// Awaits a TLS handshake future, bounding it by `timeout` unless `timeout` is zero.
+///
+/// A zero duration means the handshake deadline is disabled.
+/// `tokio::time::timeout` with a zero duration fires immediately rather than never, so that case is handled by
+/// awaiting the handshake directly instead of wrapping it in a timeout.
+async fn await_handshake_with_deadline<F, T, E>(timeout: Duration, handshake: F) -> Result<T, BoxError>
+where
+    F: Future<Output = Result<T, E>>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    if timeout.is_zero() {
+        return handshake.await.map_err(|error| Box::new(error) as BoxError);
+    }
+
+    match tokio::time::timeout(timeout, handshake).await {
+        Ok(result) => result.map_err(|error| Box::new(error) as BoxError),
+        Err(_) => Err(Box::new(io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out")) as BoxError),
     }
 }
 
@@ -414,6 +482,7 @@ fn build_dns_resolver(error_telemetry: &Option<HttpTransactionErrorTelemetry>) -
 #[derive(Default)]
 pub struct HttpsCapableConnectorBuilder {
     connect_timeout: Option<Duration>,
+    tls_handshake_timeout: Option<Duration>,
     bytes_sent: Option<Counter>,
     error_telemetry: Option<HttpTransactionErrorTelemetry>,
     conn_age_limit: Option<Duration>,
@@ -430,6 +499,14 @@ impl HttpsCapableConnectorBuilder {
     /// Defaults to 30 seconds.
     pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the timeout for completing the TLS handshake after a connection is established.
+    ///
+    /// Defaults to 10 seconds.
+    pub fn with_tls_handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.tls_handshake_timeout = Some(timeout);
         self
     }
 
@@ -499,8 +576,9 @@ impl HttpsCapableConnectorBuilder {
     }
 
     /// Builds the `HttpsCapableConnector` from the given TLS configuration.
-    pub fn build(self, tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
+    pub fn build(self, mut tls_config: ClientConfig) -> Result<HttpsCapableConnector, GenericError> {
         let connect_timeout = self.connect_timeout.unwrap_or(Duration::from_secs(30));
+        let tls_handshake_timeout = self.tls_handshake_timeout.unwrap_or(Duration::from_secs(10));
 
         // Create the HTTP connector, and ensure that we don't enforce _only_ HTTP, since that will break being able to
         // wrap this in an HTTPS connector.
@@ -519,17 +597,12 @@ impl HttpsCapableConnectorBuilder {
             vsock_addr: self.vsock_addr,
         };
 
-        // Create the HTTPS connector.
-        let https_connector_builder = HttpsConnectorBuilder::new().with_tls_config(tls_config).https_or_http();
-        let https_connector = match self.http_protocol {
-            HttpProtocol::Auto => https_connector_builder
-                .enable_all_versions()
-                .wrap_connector(inner_connector),
-            HttpProtocol::Http1 => https_connector_builder.enable_http1().wrap_connector(inner_connector),
-        };
+        tls_config.alpn_protocols = http_protocol_alpns(self.http_protocol);
 
         Ok(HttpsCapableConnector {
-            inner: https_connector,
+            inner: inner_connector,
+            tls_config: Arc::new(tls_config),
+            tls_handshake_timeout,
             bytes_sent: self.bytes_sent,
             error_telemetry: self.error_telemetry,
             conn_age_limit: self.conn_age_limit,
@@ -537,29 +610,12 @@ impl HttpsCapableConnectorBuilder {
     }
 }
 
-#[cfg(test)]
-fn configure_tls_alpn_for_http_protocol(mut tls_config: ClientConfig, protocol: HttpProtocol) -> ClientConfig {
+/// Selects the ALPN protocols to advertise for the given HTTP protocol.
+fn http_protocol_alpns(protocol: HttpProtocol) -> Vec<Vec<u8>> {
     match protocol {
-        HttpProtocol::Auto => {
-            tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        }
-        HttpProtocol::Http1 => {
-            tls_config.alpn_protocols.clear();
-        }
+        HttpProtocol::Auto => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        HttpProtocol::Http1 => Vec::new(),
     }
-
-    tls_config
-}
-
-fn is_tls_error(error: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current = Some(error);
-    while let Some(error) = current {
-        if error.downcast_ref::<rustls::Error>().is_some() {
-            return true;
-        }
-        current = error.source();
-    }
-    false
 }
 
 fn is_dns_error(error: &(dyn std::error::Error + 'static)) -> bool {
@@ -593,38 +649,109 @@ pub(super) fn check_connection_state(captured_conn: CaptureConnection) {
 
 #[cfg(test)]
 mod tests {
-    use super::{configure_tls_alpn_for_http_protocol, HttpProtocol};
+    use std::{io, time::Duration};
 
-    fn empty_tls_config() -> rustls::ClientConfig {
-        rustls::ClientConfig::builder_with_provider(default_crypto_provider().into())
-            .with_safe_default_protocol_versions()
-            .expect("default protocol versions should be valid")
-            .with_root_certificates(rustls::RootCertStore::empty())
-            .with_no_client_auth()
+    use super::{await_handshake_with_deadline, http_protocol_alpns, HttpProtocol};
+
+    #[tokio::test(start_paused = true)]
+    async fn handshake_deadline_of_zero_disables_the_timeout() {
+        let handshake = async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<_, io::Error>(())
+        };
+
+        let result = await_handshake_with_deadline(Duration::ZERO, handshake).await;
+        assert!(result.is_ok());
     }
 
-    #[cfg(not(windows))]
-    fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
-        rustls::crypto::aws_lc_rs::default_provider()
+    #[tokio::test(start_paused = true)]
+    async fn handshake_deadline_times_out_when_exceeded() {
+        let handshake = async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<_, io::Error>(())
+        };
+
+        let result = await_handshake_with_deadline(Duration::from_secs(10), handshake).await;
+        let error = result.expect_err("expected handshake to time out");
+        assert!(error.to_string().contains("TLS handshake timed out"));
     }
 
-    #[cfg(windows)]
-    fn default_crypto_provider() -> rustls::crypto::CryptoProvider {
-        rustls_cng_crypto::default_provider()
+    #[tokio::test]
+    async fn handshake_deadline_propagates_success() {
+        let handshake = async { Ok::<_, io::Error>(42) };
+
+        let result = await_handshake_with_deadline(Duration::from_secs(10), handshake).await;
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn strip_ipv6_brackets_unwraps_bracketed_addresses() {
+        use super::strip_ipv6_brackets;
+
+        assert_eq!(strip_ipv6_brackets("[::1]"), "::1");
+        assert_eq!(strip_ipv6_brackets("[2001:db8::1]"), "2001:db8::1");
+    }
+
+    #[test]
+    fn strip_ipv6_brackets_leaves_unbracketed_hosts_alone() {
+        use super::strip_ipv6_brackets;
+
+        assert_eq!(strip_ipv6_brackets("example.com"), "example.com");
+        assert_eq!(strip_ipv6_brackets("::1"), "::1");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn call_rejects_unsupported_uri_scheme() {
+        use std::sync::Arc;
+
+        use rustls::{ClientConfig, RootCertStore};
+        use tower::Service as _;
+
+        use super::{HttpsCapableConnector, InnerConnector};
+        use crate::net::dns::SystemResolver;
+
+        let inner = InnerConnector {
+            http: SystemResolver::new().into_http_connector(),
+            connect_timeout: Duration::from_secs(1),
+            error_telemetry: None,
+            unix_socket_path: None,
+            #[cfg(target_os = "linux")]
+            vsock_addr: None,
+        };
+
+        let tls_config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+
+        let mut connector = HttpsCapableConnector {
+            inner,
+            tls_config,
+            tls_handshake_timeout: Duration::from_secs(1),
+            bytes_sent: None,
+            error_telemetry: None,
+            conn_age_limit: None,
+        };
+
+        let uri: http::Uri = "ftp://example.com/".parse().unwrap();
+        let error = connector.call(uri).await.err().expect("expected scheme to be rejected");
+        assert!(error.to_string().contains("unsupported URI scheme"));
     }
 
     #[test]
     fn auto_protocol_advertises_h2_and_http1_alpn() {
-        let tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Auto);
+        let alpn_protocols = http_protocol_alpns(HttpProtocol::Auto);
 
-        assert_eq!(tls_config.alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
+        assert_eq!(alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
     }
 
     #[test]
     fn http1_protocol_leaves_alpn_empty() {
-        let tls_config = configure_tls_alpn_for_http_protocol(empty_tls_config(), HttpProtocol::Http1);
+        let alpn_protocols = http_protocol_alpns(HttpProtocol::Http1);
 
-        assert!(tls_config.alpn_protocols.is_empty());
+        assert!(alpn_protocols.is_empty());
     }
 
     // vsock takes priority over unix when both are configured, matching Agent behavior.
