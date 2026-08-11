@@ -452,7 +452,7 @@ fn strip_ipv6_brackets(host: &str) -> &str {
 
 /// Awaits a TLS handshake future, bounding it by `timeout` unless `timeout` is zero.
 ///
-/// A zero duration means the handshake deadline is disabled, matching the core Agent convention for this setting.
+/// A zero duration means the handshake deadline is disabled.
 /// `tokio::time::timeout` with a zero duration fires immediately rather than never, so that case is handled by
 /// awaiting the handshake directly instead of wrapping it in a timeout.
 async fn await_handshake_with_deadline<F, T, E>(timeout: Duration, handshake: F) -> Result<T, BoxError>
