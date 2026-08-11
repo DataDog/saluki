@@ -230,7 +230,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -240,7 +240,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.keep_values"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -249,7 +249,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.credit_cards.luhn"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -258,7 +258,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -268,7 +268,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.elasticsearch.keep_values"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -277,7 +277,7 @@ inventory:
     pipelines: [traces]
     description: "Obfuscate SQL values in ES queries"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -286,7 +286,7 @@ inventory:
     pipelines: [traces]
     description: "Strip numeric segments from HTTP paths"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -295,7 +295,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.http.remove_query_string"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -304,7 +304,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.memcached.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -314,7 +314,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.memcached.keep_command"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -323,7 +323,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -333,7 +333,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.mongodb.keep_values"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -342,7 +342,7 @@ inventory:
     pipelines: [traces]
     description: "Obfuscate SQL values in MongoDB queries"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -351,7 +351,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -361,7 +361,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.opensearch.keep_values"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -370,7 +370,7 @@ inventory:
     pipelines: [traces]
     description: "Obfuscate SQL values in OpenSearch queries"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -379,7 +379,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -389,7 +389,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.redis.remove_all_args"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -398,7 +398,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.valkey.enabled"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
@@ -408,7 +408,7 @@ inventory:
     pipelines: [traces]
     description: "apm_config.obfuscation.valkey.remove_all_args"
     test_support:
-      used_by: [TraceObfuscationConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: trace_obfuscation.rs
 
@@ -466,6 +466,16 @@ inventory:
       test_json: '["container.memory.usage"]'
       additional_attributes:
         config_registry_filename: get_typed.rs
+
+  basic_telemetry_add_container_tags:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Add container tags to basic telemetry signals"
+    test_support:
+      used_by: [TypedConfigSystem]
+      test_json: "true"
+      additional_attributes:
+        config_registry_filename: data_plane.rs
 
   bind_host:
     support: full
@@ -668,11 +678,23 @@ inventory:
   data_plane.secure_api_listen_address:
     support: full
     pipelines: [cross_cutting]
-    description: "Privileged API listen address"
+    description: "mTLS-authenticated privileged API address"
     documentation: |-
-      This is the privileged (secure) API endpoint. Addresses must include a URL scheme
-      (for example, `tcp://`). See `data_plane.api_listen_address` for the unprivileged
-      endpoint.
+      ### `data_plane.secure_api_listen_address`
+
+      This key configures the listener for the mTLS-authenticated privileged HTTP and gRPC API.
+      Addresses use a transport scheme (for example, `tcp://`) to select the underlying socket
+      type. See `data_plane.api_listen_address` for the unprivileged endpoint.
+
+      Before ADP routes a request, every client must present a certificate during the TLS
+      handshake. The presented leaf certificate's DER encoding must exactly equal the Agent IPC
+      certificate loaded from the configured `ipc_cert.pem`, and the handshake must prove
+      possession of its private key. An issuing CA does not broaden the accepted identity.
+
+      All clients use this same certificate and therefore share one principal; ADP does not
+      distinguish individual clients. Certificate rotation is exact-only: ADP accepts no old/new
+      certificate overlap. Coordinate replacement of `ipc_cert.pem` with restarts so every client
+      and the server use the same certificate.
     test_support:
       used_by: [get_typed]
       additional_attributes:
@@ -713,7 +735,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1104,7 +1126,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Packet buffer flush timeout"
-    documentation: "ADP decodes inline."
+    documentation: "ADP queues individual datagrams without packet batching."
 
   dogstatsd_packet_buffer_size:
     support: none
@@ -1112,7 +1134,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Datagrams per packet buffer"
-    documentation: "ADP decodes inline."
+    documentation: "ADP queues individual datagrams in its bounded I/O buffer pool."
 
   dogstatsd_pipe_name:
     support: full
@@ -1155,7 +1177,7 @@ inventory:
     planned: false
     pipelines: [dogstatsd]
     description: "Packet channel buffer size"
-    documentation: "ADP uses async tasks."
+    documentation: "ADP bounds datagram queues with `dogstatsd_buffer_count_max`."
 
   dogstatsd_so_rcvbuf:
     support: full
@@ -1296,12 +1318,23 @@ inventory:
         config_registry_filename: dogstatsd.rs
 
   dogstatsd_workers_count:
-    support: none
-    severity: low
-    planned: false
+    support: partial
     pipelines: [dogstatsd]
     description: "Number of DSD processing workers"
-    documentation: "ADP uses async tasks."
+    documentation: |-
+      The core Agent uses `dogstatsd_workers_count` to override the size of one worker pool shared by
+      all DogStatsD listeners. When this setting is `0`, it derives the count from available vCPUs
+      and the DogStatsD pipeline configuration.
+
+      ADP uses the same explicit override for one decoder worker pool shared by all connectionless
+      UDP and UDS datagram listeners. When this setting is `0`, ADP matches the core Agent's default
+      pipeline settings: one listener worker, one aggregation pipeline, and at least two decoder
+      workers. Connection-oriented listeners continue to use one decoder per connection.
+    issue: "#2079"
+    test_support:
+      used_by: [DogStatsDConfiguration]
+      additional_attributes:
+        config_registry_filename: dogstatsd.rs
 
   enable_json_stream_shared_compressor_buffers:
     support: none
@@ -1362,7 +1395,7 @@ inventory:
     description: "Agent environment name"
     documentation: "ADP reads env but defaults to 'none' instead of the core agent's ''. Scope is narrower in ADP (only traces/stats encoders). Neither implementation uses env directly on the DogStatsD metrics path."
     test_support:
-      used_by: [DatadogApmStatsEncoderConfiguration, DatadogTraceConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -1987,17 +2020,47 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.logs.enabled"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "false"
       additional_attributes:
         config_registry_filename: otlp.rs
+
+  otlp_config.metrics.batch.flush_timeout:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "OTLP metrics batch flush timeout"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+  otlp_config.metrics.batch.max_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Maximum OTLP metrics batch size"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+  otlp_config.metrics.batch.min_size:
+    support: none
+    severity: low
+    planned: false
+    pipelines: [otlp]
+    description: "Minimum OTLP metrics batch size"
+    documentation: |-
+      The core Agent batches OTLP metric input before translation through its serializer exporter queue.
+      ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
     description: "otlp_config.metrics.enabled"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2006,7 +2069,7 @@ inventory:
     pipelines: [otlp]
     description: "OTLP histogram bucket reporting mode"
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"counters"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2016,7 +2079,7 @@ inventory:
     pipelines: [otlp]
     description: "Emit OTLP histogram aggregation metrics."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2026,7 +2089,20 @@ inventory:
     pipelines: [otlp]
     description: "Add scalar resource attributes as raw tags."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.summaries.mode:
+    support: full
+    pipelines: [otlp]
+    description: "OTLP summary quantile reporting mode."
+    documentation: |-
+      Controls how summary quantiles are reported. The default `gauges` emits one gauge metric per quantile. Set this
+      to `noquantiles` to omit quantile metrics.
+    test_support:
+      used_by: [TypedConfigSystem]
+      test_json: '"noquantiles"'
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2038,7 +2114,7 @@ inventory:
       Controls how cumulative monotonic sums are reported. The default `to_delta` converts cumulative values to
       deltas and reports them as counts. Set this to `raw_value` to report cumulative values as gauges.
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"raw_value"'
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2052,8 +2128,22 @@ inventory:
       when the series started after the Agent Data Plane process. Set this to `drop` to always discard the first value
       or `keep` to always report it.
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"drop"'
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.tag_cardinality:
+    support: full
+    pipelines: [otlp]
+    description: "Tag cardinality for OTLP metric entity enrichment."
+    documentation: |-
+      Controls the cardinality of entity and global tags added to OTLP metrics. The default `low` adds
+      low-cardinality workload tags. Set this to `orchestrator` or `high` only when the resulting additional metric
+      series are acceptable. Set it to `none` to disable entity and global tag enrichment.
+    test_support:
+      used_by: [TypedConfigSystem]
+      test_json: '"high"'
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2062,7 +2152,7 @@ inventory:
     pipelines: [otlp]
     description: "Comma-separated tags for all OTLP metrics."
     test_support:
-      used_by: [OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2071,7 +2161,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.endpoint"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2080,7 +2170,7 @@ inventory:
     pipelines: [otlp]
     description: "Max OTLP inbound gRPC message size (MiB)"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2090,7 +2180,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.grpc.transport"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2099,7 +2189,7 @@ inventory:
     pipelines: [otlp]
     description: "otlp_config.receiver.protocols.http.endpoint"
     test_support:
-      used_by: [OtlpRelayConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2108,7 +2198,7 @@ inventory:
     pipelines: [traces]
     description: "otlp_config.traces.enabled"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2117,7 +2207,7 @@ inventory:
     pipelines: [traces]
     description: "otlp_config.traces.internal_port"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: otlp.rs
@@ -2127,7 +2217,7 @@ inventory:
     pipelines: [traces]
     description: "OTLP trace sampling percentage"
     test_support:
-      used_by: [OtlpDecoderConfiguration, OtlpConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2182,7 +2272,7 @@ inventory:
           DatadogLogsConfiguration,
           DatadogMetricsConfiguration,
           DatadogServiceChecksConfiguration,
-          DatadogTraceConfiguration,
+          TypedConfigSystem,
           ForwarderConfiguration,
         ]
       additional_attributes:
@@ -2334,7 +2424,7 @@ inventory:
           DatadogLogsConfiguration,
           DatadogMetricsConfiguration,
           DatadogServiceChecksConfiguration,
-          DatadogTraceConfiguration,
+          TypedConfigSystem,
         ]
       value_type_override: integer
       additional_attributes:
@@ -2345,7 +2435,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Datadog site domain"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -2911,7 +3001,6 @@ excluded:
   azure_hostname_style: "ignored in initial audit 2026-04-23"
   azure_metadata_api_version: "ignored in initial audit 2026-04-23"
   azure_metadata_timeout: "ignored in initial audit 2026-04-23"
-  basic_telemetry_add_container_tags: "ignored in initial audit 2026-04-23"
   bosh_id: "ignored in initial audit 2026-04-23"
   c_core_dump: "ignored in initial audit 2026-04-23"
   c_stacktrace_collection: "ignored in initial audit 2026-04-23"
@@ -3942,14 +4031,9 @@ excluded:
   otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.flush_timeout: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.max_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.summaries.mode: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.tag_cardinality: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.include_metadata: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time: "ignored in initial audit 2026-04-23"
   otlp_config.receiver.protocols.grpc.max_concurrent_streams: "ignored in initial audit 2026-04-23"

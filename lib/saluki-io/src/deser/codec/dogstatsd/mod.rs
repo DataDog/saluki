@@ -223,3 +223,69 @@ impl DogStatsDCodec {
         Ok(service_check)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn codec() -> DogStatsDCodec {
+        DogStatsDCodec::from_configuration(DogStatsDCodecConfiguration::default())
+    }
+
+    #[test]
+    fn parse_message_type_routes_by_leading_marker() {
+        // Only the exact `_e{` and `_sc|` prefixes select the event/service-check parsers; everything else — including
+        // payloads that merely start with `_e`/`_sc` but lack the structural marker — is treated as a metric sample.
+        assert!(matches!(parse_message_type(b"_e{5,4}:title|text"), MessageType::Event));
+        assert!(matches!(parse_message_type(b"_sc|svc|0"), MessageType::ServiceCheck));
+
+        assert!(matches!(
+            parse_message_type(b"page.views:1|c"),
+            MessageType::MetricSample
+        ));
+        // `_events` / `_scope` share a leading substring with the markers but aren't the markers themselves.
+        assert!(matches!(parse_message_type(b"_events:1|c"), MessageType::MetricSample));
+        assert!(matches!(parse_message_type(b"_scope:1|c"), MessageType::MetricSample));
+        assert!(matches!(parse_message_type(b""), MessageType::MetricSample));
+    }
+
+    #[test]
+    fn decode_packet_dispatches_to_the_matching_parser() {
+        let codec = codec();
+
+        // A metric sample is routed to the metric parser.
+        match codec.decode_packet(b"page.views:1|c").expect("metric should decode") {
+            ParsedPacket::Metric(metric) => assert_eq!(metric.metric_name, "page.views"),
+            _ => panic!("expected a metric packet"),
+        }
+
+        // An `_e{`-prefixed payload is routed to the event parser.
+        match codec.decode_packet(b"_e{5,4}:title|text").expect("event should decode") {
+            ParsedPacket::Event(event) => {
+                assert_eq!(&*event.title, "title");
+                assert_eq!(&*event.text, "text");
+            }
+            _ => panic!("expected an event packet"),
+        }
+
+        // An `_sc|`-prefixed payload is routed to the service-check parser.
+        match codec
+            .decode_packet(b"_sc|my.check|0")
+            .expect("service check should decode")
+        {
+            ParsedPacket::ServiceCheck(service_check) => assert_eq!(&*service_check.name, "my.check"),
+            _ => panic!("expected a service-check packet"),
+        }
+    }
+
+    #[test]
+    fn decode_packet_propagates_parser_errors_from_the_selected_path() {
+        // Dispatch happens before parsing, so a payload with the event marker but an invalid body is routed to the
+        // event parser and surfaces that parser's error rather than being silently retried as a metric.
+        let codec = codec();
+        match codec.decode_packet(b"_e{0,4}:|text") {
+            Err(err) => assert_eq!(err.kind, nom::error::ErrorKind::Verify),
+            Ok(_) => panic!("empty-title event must fail to decode"),
+        }
+    }
+}

@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
+use agent_data_plane_config::domains::{
+    dogstatsd::OriginTagCardinality,
+    otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode},
+};
 use saluki_error::{generic_error, GenericError};
 
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
@@ -9,6 +12,8 @@ const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
 pub struct OtlpMetricsTranslatorConfig {
+    /// Cardinality of entity and global tags resolved from an OTLP resource.
+    pub tag_cardinality: OriginTagCardinality,
     pub hist_mode: HistogramMode,
     pub send_histogram_aggregations: bool,
     pub cumulative_monotonic_mode: CumulativeMonotonicMode,
@@ -77,8 +82,9 @@ impl OtlpMetricsTranslatorConfig {
         self
     }
 
-    pub fn with_quantiles(mut self, quantiles: bool) -> Self {
-        self.quantiles = quantiles;
+    /// Sets how OTLP summary quantiles are reported.
+    pub fn with_summary_mode(mut self, summary_mode: SummaryMode) -> Self {
+        self.quantiles = matches!(summary_mode, SummaryMode::Gauges);
         self
     }
 
@@ -118,6 +124,7 @@ impl OtlpMetricsTranslatorConfig {
 impl Default for OtlpMetricsTranslatorConfig {
     fn default() -> Self {
         Self {
+            tag_cardinality: OriginTagCardinality::Low,
             hist_mode: HistogramMode::default(),
             send_histogram_aggregations: false,
             cumulative_monotonic_mode: CumulativeMonotonicMode::default(),
@@ -131,6 +138,54 @@ impl Default for OtlpMetricsTranslatorConfig {
             infer_delta_interval: false,
             delta_ttl: DEFAULT_DELTA_TTL,
             sweep_interval: DEFAULT_SWEEP_INTERVAL,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Ports the `TestConfig`/`(*Config).validate` rejection rule from the Go
+    // opentelemetry-mapping-go implementation: "no buckets" histogram mode is only valid when
+    // count/sum aggregations are also being sent.
+    // https://github.com/DataDog/datadog-agent/blob/main/pkg/opentelemetry-mapping-go/otlp/metrics/config.go
+    #[test]
+    fn validate_rejects_no_buckets_mode_without_histogram_aggregations() {
+        let config = OtlpMetricsTranslatorConfig::default()
+            .with_histogram_mode(HistogramMode::NoBuckets)
+            .with_send_histogram_aggregations(false);
+
+        let err = config
+            .validate()
+            .expect_err("no-buckets histogram mode without aggregations must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "no buckets mode and no send count sum are incompatible"
+        );
+    }
+
+    #[test]
+    fn validate_allows_no_buckets_mode_with_histogram_aggregations() {
+        // The rejection is specific to the missing aggregations: enabling them makes the same
+        // histogram mode valid.
+        let config = OtlpMetricsTranslatorConfig::default()
+            .with_histogram_mode(HistogramMode::NoBuckets)
+            .with_send_histogram_aggregations(true);
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_allows_bucketed_modes_regardless_of_aggregations() {
+        // Only the `NoBuckets`/`!send_histogram_aggregations` pair is incompatible; the bucketed
+        // modes are accepted even without aggregations.
+        for hist_mode in [HistogramMode::Counters, HistogramMode::Distributions] {
+            let config = OtlpMetricsTranslatorConfig::default()
+                .with_histogram_mode(hist_mode)
+                .with_send_histogram_aggregations(false);
+
+            assert!(config.validate().is_ok(), "expected {hist_mode:?} to validate");
         }
     }
 }

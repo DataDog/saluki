@@ -149,3 +149,47 @@ fn calculate_backoff(
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::calculate_backoff;
+
+    // These cases reproduce the worked example from `calculate_backoff`'s own doc comment: minimum/maximum backoff
+    // durations of 100ms/1000ms, a 100MB limit, and a 95% threshold. The doc promises specific values at specific
+    // fractions of the limit, so we assert those exact durations rather than merely that a backoff was produced.
+    const LIMIT: usize = 100_000_000;
+    const THRESHOLD: f64 = 0.95;
+    const MIN: Duration = Duration::from_millis(100);
+    const MAX: Duration = Duration::from_millis(1000);
+
+    fn backoff_at(actual_rss: usize) -> Option<Duration> {
+        calculate_backoff(LIMIT, actual_rss, THRESHOLD, MIN, MAX)
+    }
+
+    #[test]
+    fn no_backoff_below_or_at_threshold() {
+        // Well below the threshold: no backpressure at all.
+        assert_eq!(backoff_at(90_000_000), None);
+
+        // Exactly at the 95% threshold: the comparison is strictly greater-than, so still no backoff.
+        assert_eq!(backoff_at(95_000_000), None);
+    }
+
+    #[test]
+    fn backoff_scales_linearly_across_the_threshold_band() {
+        // The doc's worked example: at 97.5% of the limit we are halfway through the 95%..100% band, so the backoff is
+        // the minimum (100ms) plus half of the 900ms range (450ms) => 550ms.
+        assert_eq!(backoff_at(97_500_000), Some(Duration::from_millis(550)));
+    }
+
+    #[test]
+    fn backoff_saturates_at_the_maximum() {
+        // At exactly 100% of the limit we reach the far end of the band, which is the maximum backoff (1000ms).
+        assert_eq!(backoff_at(100_000_000), Some(MAX));
+
+        // Beyond the limit the computed backoff would exceed the maximum, so it is clamped to the maximum.
+        assert_eq!(backoff_at(120_000_000), Some(MAX));
+    }
+}

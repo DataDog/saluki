@@ -34,6 +34,7 @@ members = [
   "lib/saluki-io",
   "lib/saluki-metadata",
   "lib/saluki-metrics",
+  "lib/saluki-metrics-macros",
   "lib/saluki-tls",
   "lib/stringtheory",
   "test/antithesis/harness",
@@ -76,6 +77,7 @@ saluki-error = { path = "lib/saluki-error" }
 saluki-io = { path = "lib/saluki-io" }
 saluki-metadata = { path = "lib/saluki-metadata" }
 saluki-metrics = { path = "lib/saluki-metrics" }
+saluki-metrics-macros = { path = "lib/saluki-metrics-macros" }
 saluki-tls = { path = "lib/saluki-tls" }
 stele = { path = "bin/correctness/stele" }
 stringtheory = { path = "lib/stringtheory" }
@@ -136,6 +138,8 @@ pastey = { version = "0.2", default-features = false }
 pin-project = { version = "1.1", default-features = false }
 pin-project-lite = { version = "0.2", default-features = false }
 prettyplease = { version = "0.2", features = ["verbatim"] }
+proc-macro2 = { version = "1", default-features = false, features = ["proc-macro"] }
+quote = { version = "1", default-features = false, features = ["proc-macro"] }
 derive-where = { version = "1.6", default-features = false }
 proptest = { version = "1.11", default-features = false, features = ["std"] }
 prost = { version = "0.14", default-features = false }
@@ -212,7 +216,7 @@ tower-http = { version = "0.7", default-features = false }
 bollard = { version = "0.21", default-features = false }
 home = { version = "0.5", default-features = false }
 reqwest = { version = "0.13", default-features = false }
-lading-payload = { git = "https://github.com/DataDog/lading", rev = "576129489df44ae0e71c4871c51910837c919b90" }
+lading-payload = { git = "https://github.com/DataDog/lading", rev = "c61c51c5fbb1d0ebcf1b12de847c042522c8c7a7" }
 serde_yaml = { version = "0.9", default-features = false }
 serde_with = { version = "3.18.0", default-features = false, features = [
   "macros",

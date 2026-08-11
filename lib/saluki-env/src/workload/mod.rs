@@ -31,10 +31,11 @@ pub mod providers;
 
 pub mod stores;
 
-/// Resolves live process IDs observed during traffic capture to workload entities.
+/// Resolves live process IDs observed from local socket credentials to workload entities.
 ///
-/// This is intentionally narrower than [`WorkloadProvider`]: callers should only use it for PIDs observed from the
-/// local operating system while capturing traffic. It's not a general-purpose historical PID lookup API.
+/// This is intentionally narrower than [`WorkloadProvider`]: callers should only use it for current PIDs obtained
+/// directly from the local operating system. Callers that defer processing should retain the returned entity ID rather
+/// than resolve the PID again later. This isn't a general-purpose historical PID lookup API.
 pub trait CaptureEntityResolver {
     /// Resolves a live process ID to the container entity that owns it, if known.
     fn resolve_container_entity_for_live_pid(&self, process_id: u32) -> Option<EntityId>;
@@ -63,6 +64,13 @@ pub trait WorkloadProvider {
     /// entity wasn't found.
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet>;
 
+    /// Gets low-cardinality tags for the container that runs this process.
+    ///
+    /// Providers that cannot determine the process container return `None`.
+    fn get_self_container_tags(&self) -> Option<SharedTagSet> {
+        None
+    }
+
     /// Resolves a raw origin.
     ///
     ///  If the origin is empty, `None` is returned. Otherwise, `Some(ResolvedOrigin)` will be returned, which contains
@@ -77,6 +85,13 @@ where
     fn get_tags_for_entity(&self, entity_id: &EntityId, cardinality: OriginTagCardinality) -> Option<SharedTagSet> {
         match self.as_ref() {
             Some(provider) => provider.get_tags_for_entity(entity_id, cardinality),
+            None => None,
+        }
+    }
+
+    fn get_self_container_tags(&self) -> Option<SharedTagSet> {
+        match self.as_ref() {
+            Some(provider) => provider.get_self_container_tags(),
             None => None,
         }
     }

@@ -136,15 +136,21 @@ impl std::fmt::Display for LexerError {
     }
 }
 
-/// Lexical analysis result
-pub struct Lexer<'a> {
-    lexer: logos::Lexer<'a, Token<'a>>,
-}
+/// Lexical analyzer for OTTL
+///
+/// Zero-sized type for exposing methods to tokenize an OTTL input stream.
+pub struct Lexer;
 
-impl<'a> Lexer<'a> {
-    /// Collect tokens with their positions (spans)
-    /// Returns an error if any invalid token is encountered
-    pub fn collect_with_spans(input: &'a str) -> Result<Vec<(Token<'a>, std::ops::Range<usize>)>, LexerError> {
+impl Lexer {
+    /// Extracts a series of tokens from the input stream.
+    ///
+    /// All tokens are paired with a range value that represents the span of bytes in the original input stream that
+    /// they are attached to.
+    ///
+    /// # Errors
+    ///
+    /// If an invalid token is encountered, an error is returned.
+    pub fn collect_with_spans(input: &str) -> Result<Vec<(Token<'_>, std::ops::Range<usize>)>, LexerError> {
         let mut lexer = Token::lexer(input);
         let mut tokens = Vec::new();
         while let Some(result) = lexer.next() {
@@ -161,13 +167,5 @@ impl<'a> Lexer<'a> {
             }
         }
         Ok(tokens)
-    }
-}
-
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>, ()>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.lexer.next()
     }
 }

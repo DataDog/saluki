@@ -400,51 +400,82 @@ mod tests {
     }
 
     #[test]
-    fn exclude_removes_listed_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.dist".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["env".to_string(), "host".to_string()],
-        }];
-        let filters = compile_filters(&entries);
+    fn filter_metric_tags_treats_distribution_and_count_metrics_identically() {
+        // `filter_metric_tags` applies the same rule logic to distribution (sketch) and count metrics. The
+        // run-loop type guard (exercised by `run_loop_enforces_type_guard_and_exercises_context_cache`) is what
+        // restricts which metric types ever reach this function; the function itself never branches on the type.
+        // Each case is asserted against both a distribution and a counter, and against both the resulting tags
+        // and the returned outcome, so the two paths can't silently drift apart.
+        struct Case {
+            name: &'static str,
+            action: FilterAction,
+            filter_metric_name: &'static str,
+            filter_tags: &'static [&'static str],
+            input_tags: &'static [&'static str],
+            expected_tags: &'static [&'static str],
+            expected_outcome: FilterMetricTagsOutcome,
+        }
 
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
+        let cases = [
+            Case {
+                name: "exclude removes the listed tags",
+                action: FilterAction::Exclude,
+                filter_metric_name: "my.metric",
+                filter_tags: &["env", "host"],
+                input_tags: &["env:prod", "service:web", "host:h1"],
+                expected_tags: &["service:web"],
+                expected_outcome: FilterMetricTagsOutcome::Modified { removed_tags: 2 },
+            },
+            Case {
+                name: "include keeps only the listed tags",
+                action: FilterAction::Include,
+                filter_metric_name: "my.metric",
+                filter_tags: &["env"],
+                input_tags: &["env:prod", "service:web", "host:h1"],
+                expected_tags: &["env:prod"],
+                expected_outcome: FilterMetricTagsOutcome::Modified { removed_tags: 2 },
+            },
+            Case {
+                name: "a rule for a different metric name is a miss",
+                action: FilterAction::Exclude,
+                filter_metric_name: "other.metric",
+                filter_tags: &["env"],
+                input_tags: &["env:prod", "service:web"],
+                expected_tags: &["env:prod", "service:web"],
+                expected_outcome: FilterMetricTagsOutcome::RuleMiss,
+            },
+            Case {
+                name: "a matching rule that removes no tags is a no-op",
+                action: FilterAction::Exclude,
+                filter_metric_name: "my.metric",
+                filter_tags: &["region"],
+                input_tags: &["env:prod", "service:web"],
+                expected_tags: &["env:prod", "service:web"],
+                expected_outcome: FilterMetricTagsOutcome::NoChange,
+            },
+        ];
 
-        assert_eq!(tag_names(&metric), vec!["service:web"]);
-    }
+        type MetricBuilder = fn(&'static str, &[&'static str]) -> Metric;
+        let builders: [(&str, MetricBuilder); 2] = [("distribution", distribution_metric), ("counter", counter_metric)];
 
-    #[test]
-    fn include_keeps_only_listed_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.dist".to_string(),
-            action: FilterAction::Include,
-            tags: vec!["env".to_string()],
-        }];
-        let filters = compile_filters(&entries);
+        for case in &cases {
+            let entries = vec![MetricTagFilterEntry {
+                metric_name: case.filter_metric_name.to_string(),
+                action: case.action,
+                tags: case.filter_tags.iter().map(|s| s.to_string()).collect(),
+            }];
+            let filters = compile_filters(&entries);
 
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
+            for (kind, build) in builders {
+                let mut metric = build("my.metric", case.input_tags);
+                let mut state = TagSetMutViewState::default();
+                let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
 
-        assert_eq!(tag_names(&metric), vec!["env:prod"]);
-    }
-
-    #[test]
-    fn non_matching_metric_unchanged() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "other.dist".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["env".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
+                let expected_tags: Vec<String> = case.expected_tags.iter().map(|s| s.to_string()).collect();
+                assert_eq!(tag_names(&metric), expected_tags, "{kind}: {}", case.name);
+                assert_eq!(outcome, case.expected_outcome, "{kind}: {}", case.name);
+            }
+        }
     }
 
     #[test]
@@ -452,74 +483,6 @@ mod tests {
         let metric = counter_metric("my.counter", &["env:prod", "service:web"]);
         assert!(!metric.values().is_sketch(), "counter should not be a sketch");
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-    }
-
-    #[test]
-    fn count_exclude_removes_listed_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.counter".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["env".to_string(), "host".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = counter_metric("my.counter", &["env:prod", "service:web", "host:h1"]);
-        let mut state = TagSetMutViewState::default();
-        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["service:web"]);
-        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 2 });
-    }
-
-    #[test]
-    fn count_include_keeps_only_listed_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.counter".to_string(),
-            action: FilterAction::Include,
-            tags: vec!["env".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = counter_metric("my.counter", &["env:prod", "service:web", "host:h1"]);
-        let mut state = TagSetMutViewState::default();
-        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["env:prod"]);
-        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 2 });
-    }
-
-    #[test]
-    fn count_non_matching_metric_unchanged() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "other.counter".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["env".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = counter_metric("my.counter", &["env:prod", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-        assert_eq!(outcome, FilterMetricTagsOutcome::RuleMiss);
-    }
-
-    #[test]
-    fn count_no_change_outcome_when_filter_matches_no_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.counter".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["region".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = counter_metric("my.counter", &["env:prod", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-        assert_eq!(outcome, FilterMetricTagsOutcome::NoChange);
     }
 
     #[test]
@@ -669,26 +632,91 @@ mod tests {
     }
 
     #[test]
-    fn missing_action_defaults_to_exclude() {
-        let entry: MetricTagFilterEntry = serde_json::from_value(json!({
-            "metric_name": "my.dist",
-            "tags": ["env"]
-        }))
-        .unwrap();
+    fn filter_action_deserialize_maps_each_documented_branch() {
+        // `FilterAction`'s custom `Deserialize` recognizes exactly `"include"`; the empty string, an explicit
+        // null, and any unrecognized value all resolve to the documented `Exclude` default, and an omitted key
+        // falls back to `Exclude` via `#[serde(default)]`. One case per branch.
+        enum Action {
+            Missing,
+            Null,
+            Value(&'static str),
+        }
 
-        assert_eq!(entry.action, FilterAction::Exclude);
+        struct Case {
+            name: &'static str,
+            action: Action,
+            expected: FilterAction,
+        }
+
+        let cases = [
+            Case {
+                name: "explicit include",
+                action: Action::Value("include"),
+                expected: FilterAction::Include,
+            },
+            Case {
+                name: "explicit exclude",
+                action: Action::Value("exclude"),
+                expected: FilterAction::Exclude,
+            },
+            Case {
+                name: "empty string",
+                action: Action::Value(""),
+                expected: FilterAction::Exclude,
+            },
+            Case {
+                name: "unrecognized value",
+                action: Action::Value("invalid"),
+                expected: FilterAction::Exclude,
+            },
+            Case {
+                name: "explicit null",
+                action: Action::Null,
+                expected: FilterAction::Exclude,
+            },
+            Case {
+                name: "omitted key",
+                action: Action::Missing,
+                expected: FilterAction::Exclude,
+            },
+        ];
+
+        for case in cases {
+            let mut value = json!({ "metric_name": "my.dist", "tags": ["env"] });
+            match case.action {
+                Action::Missing => {}
+                Action::Null => value["action"] = serde_json::Value::Null,
+                Action::Value(action) => value["action"] = json!(action),
+            }
+
+            let entry: MetricTagFilterEntry =
+                serde_json::from_value(value).unwrap_or_else(|e| panic!("{}: deserialize failed: {e}", case.name));
+
+            assert_eq!(entry.action, case.expected, "{}", case.name);
+        }
     }
 
-    #[test]
-    fn invalid_action_defaults_to_exclude() {
-        let entry: MetricTagFilterEntry = serde_json::from_value(json!({
-            "metric_name": "my.dist",
-            "action": "invalid",
-            "tags": ["env"]
-        }))
-        .unwrap();
+    #[tokio::test]
+    async fn context_cache_capacity_defaults_to_100k_and_can_be_overridden() {
+        // With no `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` key present, the capacity falls
+        // back to the documented default of 100,000.
+        let (default_config, _) = ConfigurationLoader::for_tests(Some(json!({})), None, false).await;
+        let default_builder =
+            TagFilterlistConfiguration::from_configuration(&default_config).expect("config should parse");
+        assert_eq!(default_builder.context_cache_capacity, 100_000);
 
-        assert_eq!(entry.action, FilterAction::Exclude);
+        // Setting the key overrides the default with the configured value.
+        let (override_config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "data_plane": { "dogstatsd": { "aggregator_tag_filter_cache_capacity": 512 } }
+            })),
+            None,
+            false,
+        )
+        .await;
+        let override_builder =
+            TagFilterlistConfiguration::from_configuration(&override_config).expect("config should parse");
+        assert_eq!(override_builder.context_cache_capacity, 512);
     }
 
     #[test]

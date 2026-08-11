@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sql_quantizer() {
+    fn sql_quantizer() {
         let cases = vec![
             // Basic cases
             (
@@ -382,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn test_keep_sql_alias() {
+    fn keep_sql_alias() {
         let query = "SELECT username AS person FROM users WHERE id=4";
 
         // Test with keep_sql_alias = false (default)
@@ -403,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn test_can_obfuscate_autovacuum() {
+    fn can_obfuscate_autovacuum() {
         let config = default_config();
         let cases = vec![
             (
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn test_dollar_quoted_func() {
+    fn dollar_quoted_func() {
         let query = "SELECT $func$INSERT INTO table VALUES ('a', 1, 2)$func$ FROM users";
 
         // Test with dollar_quoted_func = false (default)
@@ -451,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sql_replace_digits() {
+    fn sql_replace_digits() {
         let config = SqlObfuscationConfig {
             replace_digits: true,
             ..default_config()
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     #[ignore] // TODO: $action is obfuscated to ? - tokenizer needs to recognize $identifier as SQL Server variable
-    fn test_single_dollar_identifier() {
+    fn single_dollar_identifier() {
         let query = r#"
 	MERGE INTO Employees AS target
 	USING EmployeeUpdates AS source
@@ -509,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn test_pg_json_operators() {
+    fn pg_json_operators() {
         let config = SqlObfuscationConfig {
             dbms: "postgres".to_string(),
             ..default_config()
@@ -553,7 +553,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiple_process() {
+    fn multiple_process() {
         let config = default_config();
 
         let cases = vec![

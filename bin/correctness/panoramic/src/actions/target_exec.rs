@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -27,6 +28,70 @@ impl TargetExecAction {
     }
 }
 
+enum CommandSubject {
+    FullCommand(String),
+    Redacted(&'static str),
+}
+
+#[derive(Clone, Copy)]
+enum ChildOutputPolicy {
+    Include,
+    Omit,
+}
+
+pub(crate) struct CommandDiagnostics {
+    subject: CommandSubject,
+    child_output: ChildOutputPolicy,
+}
+
+impl CommandDiagnostics {
+    fn full(command: &[String]) -> Self {
+        Self {
+            subject: CommandSubject::FullCommand(command.join(" ")),
+            child_output: ChildOutputPolicy::Include,
+        }
+    }
+
+    pub(crate) fn redacted(label: &'static str) -> Self {
+        Self {
+            subject: CommandSubject::Redacted(label),
+            child_output: ChildOutputPolicy::Include,
+        }
+    }
+
+    pub(crate) fn redacted_without_child_output(label: &'static str) -> Self {
+        Self {
+            subject: CommandSubject::Redacted(label),
+            child_output: ChildOutputPolicy::Omit,
+        }
+    }
+
+    fn validation_subject(&self) -> &str {
+        match &self.subject {
+            CommandSubject::FullCommand(_) => "target_exec command",
+            CommandSubject::Redacted(label) => label,
+        }
+    }
+
+    fn host_subject(&self) -> String {
+        match &self.subject {
+            CommandSubject::FullCommand(command) => format!("host command '{command}'"),
+            CommandSubject::Redacted(label) => label.to_string(),
+        }
+    }
+
+    fn container_subject(&self, container_name: &str) -> String {
+        match &self.subject {
+            CommandSubject::FullCommand(command) => format!("command in container '{container_name}': {command}"),
+            CommandSubject::Redacted(label) => format!("{label} in container '{container_name}'"),
+        }
+    }
+
+    fn includes_child_output(&self) -> bool {
+        matches!(self.child_output, ChildOutputPolicy::Include)
+    }
+}
+
 #[async_trait::async_trait]
 impl Action for TargetExecAction {
     fn name(&self) -> &'static str {
@@ -39,24 +104,8 @@ impl Action for TargetExecAction {
 
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
-        let result = if ctx.is_host_process {
-            exec_on_host_with_timeout(
-                &self.command,
-                self.timeout,
-                &ctx.cancel_token,
-                &ctx.container_exit_token,
-            )
-            .await
-        } else {
-            exec_in_container_with_timeout(
-                &ctx.container_name,
-                &self.command,
-                self.timeout,
-                &ctx.cancel_token,
-                &ctx.container_exit_token,
-            )
-            .await
-        };
+        let diagnostics = CommandDiagnostics::full(&self.command);
+        let result = execute_target_command(ctx, &self.command, &diagnostics, self.timeout, None).await;
 
         match result {
             Ok(output) => AssertionResult {
@@ -79,43 +128,80 @@ impl Action for TargetExecAction {
     }
 }
 
+pub(crate) async fn execute_target_command(
+    ctx: &AssertionContext, command: &[String], diagnostics: &CommandDiagnostics, timeout: Duration,
+    host_env: Option<&HashMap<String, String>>,
+) -> Result<String, GenericError> {
+    if ctx.is_host_process {
+        exec_on_host_with_timeout(
+            command,
+            diagnostics,
+            host_env,
+            timeout,
+            &ctx.cancel_token,
+            &ctx.container_exit_token,
+        )
+        .await
+    } else {
+        exec_in_container_with_timeout(
+            &ctx.container_name,
+            command,
+            diagnostics,
+            timeout,
+            &ctx.cancel_token,
+            &ctx.container_exit_token,
+        )
+        .await
+    }
+}
+
 async fn exec_in_container_with_timeout(
-    container_name: &str, command: &[String], timeout: Duration, cancel_token: &CancellationToken,
-    exit_token: &CancellationToken,
+    container_name: &str, command: &[String], diagnostics: &CommandDiagnostics, timeout: Duration,
+    cancel_token: &CancellationToken, exit_token: &CancellationToken,
 ) -> Result<String, GenericError> {
     if command.is_empty() {
-        return Err(generic_error!("target_exec command must not be empty."));
+        return Err(generic_error!(
+            "{} must not be empty.",
+            diagnostics.validation_subject()
+        ));
     }
 
     tokio::select! {
         _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
         _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
-        result = tokio::time::timeout(timeout, exec_in_container_collect(container_name, command.to_vec())) => match result {
-            Ok(result) => result,
-            Err(_) => Err(generic_error!("Timed out running command in container '{}': {}.", container_name, command.join(" "))),
+        result = tokio::time::timeout(timeout, exec_in_container_collect(container_name, command, diagnostics)) => match result {
+            Ok(result) if diagnostics.includes_child_output() => result,
+            Ok(result) => result.with_error_context(|| format!("Failed to run {}.", diagnostics.container_subject(container_name))),
+            Err(_) => Err(generic_error!("Timed out running {}.", diagnostics.container_subject(container_name))),
         }
     }
 }
 
 async fn exec_on_host_with_timeout(
-    command: &[String], timeout: Duration, cancel_token: &CancellationToken, exit_token: &CancellationToken,
+    command: &[String], diagnostics: &CommandDiagnostics, host_env: Option<&HashMap<String, String>>,
+    timeout: Duration, cancel_token: &CancellationToken, exit_token: &CancellationToken,
 ) -> Result<String, GenericError> {
     if command.is_empty() {
-        return Err(generic_error!("target_exec command must not be empty."));
+        return Err(generic_error!(
+            "{} must not be empty.",
+            diagnostics.validation_subject()
+        ));
     }
 
     tokio::select! {
         _ = cancel_token.cancelled() => Err(generic_error!("Action cancelled.")),
         _ = exit_token.cancelled() => Err(generic_error!("Action cancelled because the target exited.")),
-        result = tokio::time::timeout(timeout, exec_on_host_collect(command.to_vec())) => match result {
+        result = tokio::time::timeout(timeout, exec_on_host_collect(command, diagnostics, host_env)) => match result {
             Ok(result) => result,
-            Err(_) => Err(generic_error!("Timed out running host command '{}'.", command.join(" "))),
+            Err(_) => Err(generic_error!("Timed out running {}.", diagnostics.host_subject())),
         }
     }
 }
 
-async fn exec_in_container_collect(container_name: &str, cmd: Vec<String>) -> Result<String, GenericError> {
-    if cmd.is_empty() {
+async fn exec_in_container_collect(
+    container_name: &str, command: &[String], diagnostics: &CommandDiagnostics,
+) -> Result<String, GenericError> {
+    if command.is_empty() {
         return Err(generic_error!("target_exec command must not be empty."));
     }
 
@@ -124,7 +210,7 @@ async fn exec_in_container_collect(container_name: &str, cmd: Vec<String>) -> Re
         .create_exec(
             container_name,
             CreateExecOptions::<String> {
-                cmd: Some(cmd),
+                cmd: Some(command.to_vec()),
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
                 ..Default::default()
@@ -155,31 +241,57 @@ async fn exec_in_container_collect(container_name: &str, cmd: Vec<String>) -> Re
         .await
         .error_context("Failed to inspect exec.")?;
     if inspect.exit_code != Some(0) {
-        return Err(generic_error!("exec exited {:?}: {}", inspect.exit_code, output_text));
+        return if diagnostics.includes_child_output() {
+            Err(generic_error!("exec exited {:?}: {}", inspect.exit_code, output_text))
+        } else {
+            Err(generic_error!(
+                "{} exited {:?}.",
+                diagnostics.container_subject(container_name),
+                inspect.exit_code
+            ))
+        };
     }
 
     Ok(output_text)
 }
 
-async fn exec_on_host_collect(cmd: Vec<String>) -> Result<String, GenericError> {
-    let (program, args) = cmd
+async fn exec_on_host_collect(
+    command: &[String], diagnostics: &CommandDiagnostics, host_env: Option<&HashMap<String, String>>,
+) -> Result<String, GenericError> {
+    let (program, args) = command
         .split_first()
-        .ok_or_else(|| generic_error!("target_exec command must not be empty."))?;
+        .ok_or_else(|| generic_error!("{} must not be empty.", diagnostics.validation_subject()))?;
+    let mut child = Command::new(program);
+    child.args(args);
+    if let Some(host_env) = host_env {
+        child.envs(host_env);
+    }
 
-    let output = Command::new(program)
-        .args(args)
+    let output = child
         .stdin(Stdio::null())
         .kill_on_drop(true)
         .output()
         .await
-        .with_error_context(|| format!("Failed to run host command '{}'.", cmd.join(" ")))?;
+        .with_error_context(|| format!("Failed to run {}.", diagnostics.host_subject()))?;
 
+    collect_host_output(output, diagnostics)
+}
+
+fn collect_host_output(output: std::process::Output, diagnostics: &CommandDiagnostics) -> Result<String, GenericError> {
     let mut output_text = String::new();
     output_text.push_str(&String::from_utf8_lossy(&output.stdout));
     output_text.push_str(&String::from_utf8_lossy(&output.stderr));
 
     if !output.status.success() {
-        return Err(generic_error!("host command exited {}: {}", output.status, output_text));
+        return if diagnostics.includes_child_output() {
+            Err(generic_error!("host command exited {}: {}", output.status, output_text))
+        } else {
+            Err(generic_error!(
+                "{} exited {}.",
+                diagnostics.host_subject(),
+                output.status
+            ))
+        };
     }
 
     Ok(output_text)
@@ -187,7 +299,7 @@ async fn exec_on_host_collect(cmd: Vec<String>) -> Result<String, GenericError> 
 
 #[cfg(test)]
 mod tests {
-    use super::{exec_on_host_collect, exec_on_host_with_timeout, TargetExecAction};
+    use super::{exec_on_host_collect, exec_on_host_with_timeout, CommandDiagnostics, TargetExecAction};
     use crate::actions::Action as _;
 
     #[test]
@@ -204,27 +316,97 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_exec_collects_stdout() {
-        let output = exec_on_host_collect(vec![
+    async fn redacted_without_child_output_suppresses_stdout_and_stderr() {
+        let stdout_secret = "suppressed-stdout-secret";
+        let stderr_secret = "suppressed-stderr-secret";
+        let command = vec![
             "sh".to_string(),
             "-c".to_string(),
-            "printf target-exec".to_string(),
-        ])
-        .await
-        .expect("host command should succeed");
+            format!("printf '{stdout_secret}'; printf '{stderr_secret}' >&2; exit 9"),
+        ];
+        let diagnostics = CommandDiagnostics::redacted_without_child_output("fixed safe command label");
 
-        assert_eq!(output, "target-exec");
+        let error = exec_on_host_collect(&command, &diagnostics, None)
+            .await
+            .expect_err("nonzero command should fail");
+        let message = error.to_string();
+
+        assert!(message.contains("fixed safe command label"));
+        assert!(!message.contains(stdout_secret), "diagnostic exposed stdout: {message}");
+        assert!(!message.contains(stderr_secret), "diagnostic exposed stderr: {message}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancellation_interrupts_an_already_started_host_child() {
+        let marker_id = rand::random::<u64>();
+        let started_marker = std::env::temp_dir().join(format!("panoramic-exec-{marker_id}-started"));
+        let release_marker = std::env::temp_dir().join(format!("panoramic-exec-{marker_id}-release"));
+        let delayed_marker = std::env::temp_dir().join(format!("panoramic-exec-{marker_id}-delayed"));
+        let command = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf x > \"$0\"; while ! test -e \"$1\"; do sleep 1; done; printf x > \"$2\"".to_string(),
+            started_marker.to_string_lossy().into_owned(),
+            release_marker.to_string_lossy().into_owned(),
+            delayed_marker.to_string_lossy().into_owned(),
+        ];
+        let diagnostics = CommandDiagnostics::full(&command);
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        let exit_token = tokio_util::sync::CancellationToken::new();
+        let run = exec_on_host_with_timeout(
+            &command,
+            &diagnostics,
+            None,
+            std::time::Duration::from_secs(60),
+            &cancel_token,
+            &exit_token,
+        );
+        tokio::pin!(run);
+
+        let started: Result<(), String> = tokio::select! {
+            _ = async {
+                while !started_marker.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            } => Ok(()),
+            result = &mut run => Err(format!("child exited before its marker: {result:?}")),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => Err("child did not start within 30 seconds".to_string()),
+        };
+        cancel_token.cancel();
+        started.expect("host child should start and remain running");
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), &mut run)
+            .await
+            .expect("cancellation should interrupt the child within 2 seconds")
+            .expect_err("cancelled host command should fail");
+        assert!(error.to_string().contains("Action cancelled"));
+
+        std::fs::write(&release_marker, b"x").expect("release marker should be written");
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        let delayed_write_occurred = delayed_marker.exists();
+        let _ = std::fs::remove_file(started_marker);
+        let _ = std::fs::remove_file(release_marker);
+        let _ = std::fs::remove_file(delayed_marker);
+        assert!(
+            !delayed_write_occurred,
+            "cancelled host child performed its delayed marker write"
+        );
     }
 
     #[tokio::test]
     async fn host_exec_reports_nonzero_exit_immediately() {
+        let command = [
+            "sh".to_string(),
+            "-c".to_string(),
+            "printf fail-message >&2; exit 7".to_string(),
+        ];
+        let diagnostics = CommandDiagnostics::full(&command);
         let started = std::time::Instant::now();
         let err = exec_on_host_with_timeout(
-            &[
-                "sh".to_string(),
-                "-c".to_string(),
-                "printf fail-message >&2; exit 7".to_string(),
-            ],
+            &command,
+            &diagnostics,
+            None,
             std::time::Duration::from_secs(30),
             &tokio_util::sync::CancellationToken::new(),
             &tokio_util::sync::CancellationToken::new(),
@@ -250,14 +432,18 @@ mod tests {
 
         #[cfg(not(windows))]
         {
-            vec!["sh".to_string(), "-c".to_string(), "sleep 5".to_string()]
+            vec!["sleep".to_string(), "5".to_string()]
         }
     }
 
     #[tokio::test]
     async fn host_exec_times_out() {
+        let command = slow_host_command();
+        let diagnostics = CommandDiagnostics::full(&command);
         let err = exec_on_host_with_timeout(
-            &slow_host_command(),
+            &command,
+            &diagnostics,
+            None,
             std::time::Duration::from_millis(50),
             &tokio_util::sync::CancellationToken::new(),
             &tokio_util::sync::CancellationToken::new(),

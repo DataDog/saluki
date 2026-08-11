@@ -42,6 +42,7 @@ pub mod error {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DatadogConfiguration {
     #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_string_map_scalar_or_seq")]
     pub additional_endpoints: HashMap<String, Vec<String>>,
 
     #[serde(default)]
@@ -61,6 +62,9 @@ pub struct DatadogConfiguration {
 
     #[serde(default)]
     pub autoscaling: Autoscaling,
+
+    #[serde(default)]
+    pub basic_telemetry_add_container_tags: bool,
 
     #[serde(default)]
     pub bind_host: String,
@@ -185,6 +189,9 @@ pub struct DatadogConfiguration {
         default = "defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor"
     )]
     pub dogstatsd_windows_pipe_security_descriptor: String,
+
+    #[serde(default)]
+    pub dogstatsd_workers_count: i64,
 
     #[serde(default)]
     pub enable_payloads: EnablePayloads,
@@ -438,6 +445,7 @@ impl Default for DatadogConfiguration {
             api_key: Default::default(),
             apm_config: Default::default(),
             autoscaling: Default::default(),
+            basic_telemetry_add_container_tags: Default::default(),
             bind_host: Default::default(),
             cluster_agent: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
@@ -477,6 +485,7 @@ impl Default for DatadogConfiguration {
             dogstatsd_tag_cardinality: defaults::datadog_configuration_dogstatsd_tag_cardinality(),
             dogstatsd_tags: Default::default(),
             dogstatsd_windows_pipe_security_descriptor: defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor(),
+            dogstatsd_workers_count: Default::default(),
             enable_payloads: Default::default(),
             env: Default::default(),
             expected_tags_duration: duration_defaults::expected_tags_duration(),
@@ -1291,7 +1300,15 @@ pub struct OtlpConfigMetrics {
     pub resource_attributes_as_tags: bool,
 
     #[serde(default)]
+    pub summaries: OtlpConfigMetricsSummaries,
+
+    #[serde(default)]
     pub sums: OtlpConfigMetricsSums,
+
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_tag_cardinality"
+    )]
+    pub tag_cardinality: String,
 
     #[serde(default)]
     pub tags: String,
@@ -1303,7 +1320,9 @@ impl Default for OtlpConfigMetrics {
             enabled: defaults::default_bool::<true>(),
             histograms: Default::default(),
             resource_attributes_as_tags: Default::default(),
+            summaries: Default::default(),
             sums: Default::default(),
+            tag_cardinality: defaults::datadog_configuration_otlp_config_metrics_tag_cardinality(),
             tags: Default::default(),
         }
     }
@@ -1325,6 +1344,22 @@ impl Default for OtlpConfigMetricsHistograms {
         Self {
             mode: defaults::datadog_configuration_otlp_config_metrics_histograms_mode(),
             send_aggregation_metrics: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigMetricsSummaries {
+    #[serde(
+        default = "defaults::datadog_configuration_otlp_config_metrics_summaries_mode"
+    )]
+    pub mode: String,
+}
+
+impl Default for OtlpConfigMetricsSummaries {
+    fn default() -> Self {
+        Self {
+            mode: defaults::datadog_configuration_otlp_config_metrics_summaries_mode(),
         }
     }
 }
@@ -1795,8 +1830,14 @@ pub mod defaults {
     pub(super) fn datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint() -> String {
         "127.0.0.1:4319".to_string()
     }
+    pub(super) fn datadog_configuration_otlp_config_metrics_tag_cardinality() -> String {
+        "low".to_string()
+    }
     pub(super) fn datadog_configuration_otlp_config_metrics_histograms_mode() -> String {
         "distributions".to_string()
+    }
+    pub(super) fn datadog_configuration_otlp_config_metrics_summaries_mode() -> String {
+        "gauges".to_string()
     }
     pub(super) fn datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode() -> String {
         "to_delta".to_string()
@@ -1828,7 +1869,7 @@ pub mod defaults {
         vec!["datadoghq.com".to_string()]
     }
     pub(super) fn datadog_configuration_use_v3_api_series_enabled() -> String {
-        "true".to_string()
+        "datadog_only".to_string()
     }
 }
 

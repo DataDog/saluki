@@ -1,13 +1,13 @@
 //! OTTL filter processor component.
 //!
-//! Drops spans (and optionally span events) when OTTL conditions match, following the
-//! [OpenTelemetry filterprocessor] spec.
+//! Drops spans when OTTL conditions match, following the [OpenTelemetry filterprocessor] spec.
+//! Only span-level conditions (`traces.span`) are implemented; span-event filtering is not.
 //!
 //! [OpenTelemetry filterprocessor]: https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/release/v0.144.x/processor/filterprocessor
 
+use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter as TypedOttlFilter};
 use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser, Value};
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -17,33 +17,19 @@ use saluki_core::{
 use saluki_error::{generic_error, GenericError};
 use tracing::{debug, error};
 
-mod config;
 mod span_context;
-
-use config::{ErrorMode, OttlFilterConfig};
 use span_context::{SpanFilterContext, SpanFilterFamily};
 
 /// Configuration for the OTTL filter processor, loaded from the data plane config.
 #[derive(Clone, Debug)]
 pub struct OttlFilterConfiguration {
-    config: OttlFilterConfig,
+    config: TypedOttlFilter,
 }
 
 impl OttlFilterConfiguration {
-    /// Creates configuration from the given generic configuration.
-    ///
-    /// Reads the OTTL filter config from the `ottl_filter_config` key at the top level of the
-    /// data-plane configuration. The YAML structure is: `error_mode`, `traces.span` (list
-    /// of OTTL condition strings). If the key is absent, a default (no-op) config is used.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a value at `ottl_filter_config` exists but fails to deserialize.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let filter_config = config.try_get_typed::<OttlFilterConfig>("ottl_filter_config")?;
-        Ok(Self {
-            config: filter_config.unwrap_or_default(),
-        })
+    /// Creates configuration from the resolved typed traces configuration.
+    pub fn from_configuration(config: &TypedOttlFilter) -> Self {
+        Self { config: config.clone() }
     }
 }
 
@@ -61,7 +47,7 @@ impl SynchronousTransformBuilder for OttlFilterConfiguration {
         let enums = EnumMap::new();
 
         let mut span_parsers = Vec::new();
-        for condition in &self.config.traces.span {
+        for condition in &self.config.span_conditions {
             let condition = condition.trim();
             if condition.is_empty() {
                 continue;
@@ -91,7 +77,7 @@ impl MemoryBounds for OttlFilterConfiguration {
 
 /// Synchronous transform that drops spans matching OTTL conditions.
 pub struct OttlFilter {
-    error_mode: ErrorMode,
+    error_mode: OttlErrorMode,
     span_parsers: Vec<ottl::Parser<SpanFilterFamily>>,
 }
 
@@ -118,11 +104,11 @@ impl OttlFilter {
                 }
                 Ok(_) => continue,
                 Err(e) => match self.error_mode {
-                    ErrorMode::Ignore => {
+                    OttlErrorMode::Ignore => {
                         error!(error = %e, "OTTL filter condition error; ignoring");
                     }
-                    ErrorMode::Silent => {}
-                    ErrorMode::Propagate => {
+                    OttlErrorMode::Silent => {}
+                    OttlErrorMode::Propagate => {
                         //propagate: The processor returns the error up the pipeline. This will result in the payload
                         // being dropped from the collector.
                         // AZH: The current API of SynchronousTransform::transform_buffer does not propagate errors;
@@ -150,43 +136,15 @@ impl SynchronousTransform for OttlFilter {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
 
-    use saluki_common::collections::FastHashMap;
-    use saluki_config::ConfigurationLoader;
     use saluki_core::{
         components::{transforms::*, ComponentContext},
-        data_model::event::{
-            trace::{AttributeValue, Span, Trace},
-            Event,
-        },
+        data_model::event::{trace::AttributeValue, Event},
         topology::EventsBuffer,
     };
-    use stringtheory::MetaString;
 
     use super::*;
-
-    fn make_span(_trace_id: u64, span_id: u64, meta: HashMap<String, String>) -> Span {
-        let mut attr_map = FastHashMap::default();
-        for (k, v) in meta {
-            attr_map.insert(MetaString::from(k), AttributeValue::String(MetaString::from(v)));
-        }
-        Span::new("svc", "op", "res", "web", span_id, 0, 0, 0, 0).with_attributes(attr_map)
-    }
-
-    fn make_trace(spans: Vec<Span>, resource_tags: Option<Vec<&'static str>>) -> Trace {
-        let mut trace = Trace::new(spans);
-        if let Some(tags) = resource_tags {
-            let mut attrs = FastHashMap::default();
-            for t in tags {
-                if let Some((k, v)) = t.split_once(':') {
-                    attrs.insert(MetaString::from(k), AttributeValue::String(MetaString::from(v)));
-                }
-            }
-            trace.attributes = Arc::new(attrs);
-        }
-        trace
-    }
+    use crate::components::test_support::{make_span, make_trace};
 
     fn span_count_in_buffer(buffer: &EventsBuffer) -> usize {
         buffer
@@ -202,11 +160,32 @@ mod tests {
         ComponentContext::test_transform("ottl_filter")
     }
 
+    fn test_config(value: serde_json::Value) -> OttlFilterConfiguration {
+        let root = value.get("ottl_filter_config").cloned().unwrap_or_default();
+        let error_mode = match root.get("error_mode").and_then(serde_json::Value::as_str) {
+            Some("ignore") => OttlErrorMode::Ignore,
+            Some("silent") => OttlErrorMode::Silent,
+            _ => OttlErrorMode::Propagate,
+        };
+        let span_conditions = root
+            .pointer("/traces/span")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        let typed = TypedOttlFilter {
+            error_mode,
+            span_conditions,
+        };
+        OttlFilterConfiguration::from_configuration(&typed)
+    }
+
     /// When `ottl_filter_config` is absent, config defaults to empty conditions and no spans are dropped.
     #[tokio::test]
     async fn from_configuration_absent_key_returns_default() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("should succeed");
+        let ottl_config = test_config(serde_json::json!({}));
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.expect("build should succeed");
         let span = make_span(1, 1, HashMap::from([("a".into(), "b".into())]));
@@ -217,19 +196,6 @@ mod tests {
         assert_eq!(span_count_in_buffer(&buffer), 1, "default config must not drop spans");
     }
 
-    /// When `ottl_filter_config` is present but invalid (for example, unknown fields), `from_configuration` returns an error.
-    #[tokio::test]
-    async fn from_configuration_invalid_yaml_returns_error() {
-        let invalid = serde_json::json!({
-            "ottl_filter_config": {
-                "unknown_field": 1
-            }
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(invalid), None, false).await;
-        let result = OttlFilterConfiguration::from_configuration(&config);
-        assert!(result.is_err(), "invalid ottl_filter_config must yield error");
-    }
-
     /// When a span condition string is invalid OTTL syntax, `build` returns an error.
     #[tokio::test]
     async fn build_invalid_condition_returns_error() {
@@ -238,8 +204,7 @@ mod tests {
                 "traces": { "span": ["syntax error !!"] }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("config is valid");
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let result = ottl_config.build(ctx).await;
         assert!(result.is_err(), "invalid OTTL condition must make build fail");
@@ -258,8 +223,7 @@ mod tests {
                 }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).expect("config is valid");
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.expect("build must succeed");
         let span_match_first = make_span(1, 1, HashMap::from([("a".into(), "x".into())]));
@@ -286,8 +250,7 @@ mod tests {
     /// With no conditions configured, no span is dropped.
     #[tokio::test]
     async fn should_drop_span_empty_parsers_returns_false() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = test_config(serde_json::json!({}));
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("drop".into(), "me".into())]));
@@ -304,8 +267,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("env".into(), "drop".into())]));
@@ -322,8 +284,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("env".into(), "keep".into())]));
@@ -340,8 +301,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["resource.attributes[\"host.name\"] == \"localhost\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::new());
@@ -370,8 +330,7 @@ mod tests {
                 }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span_first_false_second_true = make_span(
@@ -404,8 +363,7 @@ mod tests {
                 "traces": { "span": ["attributes[\"x\"]"] }
             }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let span = make_span(1, 1, HashMap::from([("x".into(), "value".into())]));
@@ -420,67 +378,82 @@ mod tests {
         );
     }
 
-    /// With `error_mode: ignore`, when condition evaluation errors (for example, type mismatch), the span is kept.
+    /// When a condition errors, `error_mode` decides the span's fate: ignore/silent keep it, propagate drops
+    /// it. One case per `ErrorMode` arm.
     #[tokio::test]
-    async fn error_mode_ignore_eval_error_keeps_span() {
-        let cfg_json = serde_json::json!({
-            "ottl_filter_config": {
-                "error_mode": "ignore",
-                "traces": { "span": ["attributes[\"x\"] > 1"] }
-            }
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = test_component_context();
-        let mut transform = ottl_config.build(ctx).await.unwrap();
-        let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
-        let trace = make_trace(vec![span], None);
-        let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::Trace(trace)).is_none());
-        transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 1);
+    async fn error_mode_controls_span_fate_when_a_condition_errors() {
+        struct Case {
+            error_mode: &'static str,
+            expected_span_count: usize,
+        }
+
+        let cases = [
+            Case {
+                error_mode: "ignore",
+                expected_span_count: 1,
+            },
+            Case {
+                error_mode: "silent",
+                expected_span_count: 1,
+            },
+            Case {
+                error_mode: "propagate",
+                expected_span_count: 0,
+            },
+        ];
+
+        for case in cases {
+            let cfg_json = serde_json::json!({
+                "ottl_filter_config": {
+                    "error_mode": case.error_mode,
+                    // `x` is a string, so `attributes["x"] > 1` errors during evaluation.
+                    "traces": { "span": ["attributes[\"x\"] > 1"] }
+                }
+            });
+            let ottl_config = test_config(cfg_json);
+            let mut transform = ottl_config.build(test_component_context()).await.unwrap();
+            let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
+            let trace = make_trace(vec![span], None);
+            let mut buffer = EventsBuffer::default();
+            assert!(buffer.try_push(Event::Trace(trace)).is_none());
+            transform.transform_buffer(&mut buffer);
+            assert_eq!(
+                span_count_in_buffer(&buffer),
+                case.expected_span_count,
+                "error_mode={}",
+                case.error_mode
+            );
+        }
     }
 
-    /// With `error_mode: silent`, when condition evaluation errors, the span is kept (no log).
+    /// With `error_mode` omitted, the documented default (`Propagate`) drops the span when a condition errors.
     #[tokio::test]
-    async fn error_mode_silent_eval_error_keeps_span() {
+    async fn omitted_error_mode_defaults_to_propagate() {
         let cfg_json = serde_json::json!({
-            "ottl_filter_config": {
-                "error_mode": "silent",
-                "traces": { "span": ["attributes[\"x\"] > 1"] }
-            }
+            "ottl_filter_config": { "traces": { "span": ["attributes[\"x\"] > 1"] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = test_component_context();
-        let mut transform = ottl_config.build(ctx).await.unwrap();
-        let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
-        let trace = make_trace(vec![span], None);
-        let mut buffer = EventsBuffer::default();
-        assert!(buffer.try_push(Event::Trace(trace)).is_none());
-        transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 1);
-    }
+        let ottl_config = test_config(cfg_json);
+        assert_eq!(
+            ottl_config.config.error_mode,
+            OttlErrorMode::Propagate,
+            "omitted error_mode must default to Propagate"
+        );
 
-    /// With `error_mode: propagate`, when condition evaluation errors, the span is dropped.
-    #[tokio::test]
-    async fn error_mode_propagate_eval_error_drops_span() {
-        let cfg_json = serde_json::json!({
-            "ottl_filter_config": {
-                "error_mode": "propagate",
-                "traces": { "span": ["attributes[\"x\"] > 1"] }
-            }
-        });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
-        let ctx = test_component_context();
-        let mut transform = ottl_config.build(ctx).await.unwrap();
+        let mut transform = ottl_config
+            .build(test_component_context())
+            .await
+            .expect("build should succeed");
+        // `x` is a string, so `attributes["x"] > 1` errors during evaluation; propagate drops the span.
         let span = make_span(1, 1, HashMap::from([("x".into(), "string".into())]));
         let trace = make_trace(vec![span], None);
         let mut buffer = EventsBuffer::default();
         assert!(buffer.try_push(Event::Trace(trace)).is_none());
         transform.transform_buffer(&mut buffer);
-        assert_eq!(span_count_in_buffer(&buffer), 0);
+        assert_eq!(
+            span_count_in_buffer(&buffer),
+            0,
+            "default (propagate) must drop the span when a condition errors"
+        );
     }
 
     /// `transform_buffer` removes only spans that match the condition; remaining spans are unchanged and in order.
@@ -489,8 +462,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"drop\"] == \"yes\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let keep1 = make_span(
@@ -539,8 +511,7 @@ mod tests {
         let cfg_json = serde_json::json!({
             "ottl_filter_config": { "traces": { "span": ["attributes[\"env\"] == \"drop\""] } }
         });
-        let (config, _) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
-        let ottl_config = OttlFilterConfiguration::from_configuration(&config).unwrap();
+        let ottl_config = test_config(cfg_json);
         let ctx = test_component_context();
         let mut transform = ottl_config.build(ctx).await.unwrap();
         let s1 = make_span(1, 1, HashMap::from([("env".into(), "drop".into())]));

@@ -412,17 +412,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `dogstatsd_workers_count`-Number of DSD processing workers
-    DOGSTATSD_WORKERS_COUNT = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_WORKERS_COUNT,
-        support_level: SupportLevel::Incompatible(Severity::Low),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `enable_json_stream_shared_compressor_buffers`-Pre-allocate shared compressor buffers
     ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS = SalukiAnnotation {
         schema: &schema::ENABLE_JSON_STREAM_SHARED_COMPRESSOR_BUFFERS,
@@ -455,6 +444,39 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `otlp_config.metrics.batch.flush_timeout`-OTLP metrics batch flush timeout
+    OTLP_CONFIG_METRICS_BATCH_FLUSH_TIMEOUT = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_BATCH_FLUSH_TIMEOUT,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.metrics.batch.max_size`-Maximum OTLP metrics batch size
+    OTLP_CONFIG_METRICS_BATCH_MAX_SIZE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_BATCH_MAX_SIZE,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.metrics.batch.min_size`-Minimum OTLP metrics batch size
+    OTLP_CONFIG_METRICS_BATCH_MIN_SIZE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_METRICS_BATCH_MIN_SIZE,
+        support_level: SupportLevel::Incompatible(Severity::Low),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
     /// `use_dogstatsd`-Master DogStatsD enable toggle
     USE_DOGSTATSD = SalukiAnnotation {

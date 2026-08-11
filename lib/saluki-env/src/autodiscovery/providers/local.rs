@@ -323,19 +323,9 @@ mod tests {
         }
     }
 
-    // Copy a file from test_data to the temp directory
+    // Copy a file from test_data to the temp directory, preserving its name.
     async fn copy_test_file(source_name: &str, temp_dir: &Path) -> PathBuf {
-        let source_path = test_data_path().join(source_name);
-        let target_path = temp_dir.join(source_name);
-
-        let content = fs::read_to_string(&source_path)
-            .await
-            .unwrap_or_else(|_| panic!("Failed to read test file: {:?}", source_path));
-
-        let mut file = fs::File::create(&target_path).await.unwrap();
-        file.write_all(content.as_bytes()).await.unwrap();
-
-        target_path
+        copy_test_file_as(source_name, source_name, temp_dir).await
     }
 
     // Copy a file from test_data to the temp directory with a different target name.

@@ -183,7 +183,64 @@ fn sendmsg_with_ucred(fd: libc::c_int, payload: &[u8], creds: &libc::ucred) -> i
 mod tests {
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 
+    use bytes::BytesMut;
+
     use super::*;
+
+    // Creates a connected AF_UNIX/SOCK_DGRAM socket pair, returning `(sender, receiver)`.
+    fn unix_dgram_socketpair() -> (Socket, Socket) {
+        let mut fds: [libc::c_int; 2] = [-1, -1];
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_DGRAM, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "socketpair failed: {}", io::Error::last_os_error());
+
+        // SAFETY: `socketpair` succeeded, so both descriptors are valid and owned by us.
+        unsafe { (Socket::from_raw_fd(fds[0]), Socket::from_raw_fd(fds[1])) }
+    }
+
+    #[test]
+    fn uds_recvmsg_reads_peer_credentials() {
+        // With SO_PASSCRED enabled on the receiver, the kernel attaches the sender's real PID/UID/GID as an
+        // SCM_CREDENTIALS control message, which `uds_recvmsg` must parse into `ProcessIdentity::Credentials`.
+        let (sender, receiver) = unix_dgram_socketpair();
+        enable_uds_socket_credentials(&receiver).expect("enabling SO_PASSCRED should succeed");
+
+        let payload = b"origin-detection-payload";
+        let sent = sender.send(payload).expect("send should succeed");
+        assert_eq!(sent, payload.len());
+
+        let mut buf = BytesMut::with_capacity(128);
+        let (n, addr) = uds_recvmsg(&receiver, &mut buf).expect("recvmsg should succeed");
+        assert_eq!(n, payload.len());
+        assert_eq!(&buf[..], payload);
+
+        let creds = addr
+            .process_credentials()
+            .expect("peer credentials should be present after SO_PASSCRED");
+        assert_eq!(creds.pid, std::process::id() as libc::pid_t);
+        assert_eq!(creds.uid, unsafe { libc::getuid() });
+        assert_eq!(creds.gid, unsafe { libc::getgid() });
+    }
+
+    #[test]
+    fn uds_recvmsg_without_passcred_reports_unavailable() {
+        // Without SO_PASSCRED, no ancillary credentials are delivered: control length is zero, so the identity is
+        // `Unavailable` (a "no origin info" state), not an error and not fabricated credentials.
+        let (sender, receiver) = unix_dgram_socketpair();
+
+        let payload = b"no-creds-payload";
+        sender.send(payload).expect("send should succeed");
+
+        let mut buf = BytesMut::with_capacity(128);
+        let (n, addr) = uds_recvmsg(&receiver, &mut buf).expect("recvmsg should succeed");
+        assert_eq!(n, payload.len());
+        assert_eq!(&buf[..], payload);
+
+        assert!(matches!(
+            addr,
+            ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable)
+        ));
+        assert!(addr.process_credentials().is_none());
+    }
 
     #[test]
     fn sendmsg_with_current_credentials_round_trips_payload() {

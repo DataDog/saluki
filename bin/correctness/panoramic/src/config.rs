@@ -215,6 +215,13 @@ pub struct ContainerConfig {
     /// Ports to expose (port/protocol format, for example, "8125/udp").
     #[serde(default)]
     pub exposed_ports: Vec<String>,
+
+    /// Whether the Linux target joins the Docker host's cgroup namespace.
+    ///
+    /// Defaults to `false` to preserve cgroup namespace isolation. Enable this only when a test
+    /// needs the target's local cgroup path to expose its Docker container ID.
+    #[serde(default)]
+    pub host_cgroup_namespace: bool,
 }
 
 /// A single step in the assertion pipeline.
@@ -248,6 +255,27 @@ pub enum ActionConfig {
         #[serde(default = "crate::actions::default_core_agent_config_endpoint_template")]
         endpoint: String,
         /// Timeout for waiting for the Core Agent API to accept the mutation.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+
+    /// Invoke the tested ADP binary as a CLI command.
+    AdpCli {
+        /// Arguments appended after the runtime-specific ADP binary and global configuration prefix.
+        args: Vec<String>,
+        /// Timeout for waiting for the command to succeed.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+
+    /// Invoke the Core Agent binary as a CLI command.
+    CoreAgentCli {
+        /// Arguments appended after the runtime-specific Core Agent binary and global configuration prefix.
+        args: Vec<String>,
+        /// Optional substring that must appear in successful command output.
+        #[serde(default)]
+        output_contains: Option<String>,
+        /// Timeout for waiting for the command to succeed.
         #[serde(default = "default_action_timeout")]
         timeout: HumanDuration,
     },
@@ -364,13 +392,13 @@ pub enum AssertionConfig {
         timeout: HumanDuration,
     },
 
-    /// Poll ADP's `/config` endpoint until one key equals the expected value.
+    /// Poll an ADP configuration view through its authenticated CLI until one key equals the expected value.
     AdpConfigKeyEquals {
         /// Configuration key to compare. Dotted paths address nested objects.
         key: String,
         /// Expected value.
         value: Value,
-        /// ADP `/config` endpoint.
+        /// Configuration endpoint selecting `/config` or the translated runtime view at `/config/runtime`.
         #[serde(default = "crate::assertions::default_adp_config_endpoint")]
         endpoint: String,
         /// Timeout for waiting for the value to appear.
@@ -414,6 +442,21 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(s, vars);
                 }
             }
+            ActionConfig::AdpCli { args, .. } => {
+                for arg in args {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
+            }
+            ActionConfig::CoreAgentCli {
+                args, output_contains, ..
+            } => {
+                for arg in args {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
+                if let Some(output_contains) = output_contains {
+                    crate::dynamic_vars::resolve_placeholders(output_contains, vars);
+                }
+            }
             ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
@@ -433,6 +476,21 @@ impl ActionConfig {
                 crate::dynamic_vars::find_unresolved(endpoint, &mut out);
                 if let serde_json::Value::String(s) = value {
                     crate::dynamic_vars::find_unresolved(s, &mut out);
+                }
+            }
+            ActionConfig::AdpCli { args, .. } => {
+                for arg in args {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
+                }
+            }
+            ActionConfig::CoreAgentCli {
+                args, output_contains, ..
+            } => {
+                for arg in args {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
+                }
+                if let Some(output_contains) = output_contains {
+                    crate::dynamic_vars::find_unresolved(output_contains, &mut out);
                 }
             }
             ActionConfig::TargetExec { command, .. } => {
@@ -1001,7 +1059,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_duration() {
+    fn parse_duration_handles_units_and_combinations() {
         assert_eq!(parse_duration("10s").unwrap(), Duration::from_secs(10));
         assert_eq!(parse_duration("1m").unwrap(), Duration::from_secs(60));
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
@@ -1012,7 +1070,25 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_port_spec() {
+    fn parse_duration_treats_a_trailing_unitless_number_as_seconds() {
+        // Documented no-unit fallback: a trailing number with no unit is interpreted as seconds, both on
+        // its own and after a unit-qualified component.
+        assert_eq!(parse_duration("42").unwrap(), Duration::from_secs(42));
+        assert_eq!(parse_duration("1m30").unwrap(), Duration::from_secs(90));
+    }
+
+    #[test]
+    fn parse_duration_rejects_a_zero_duration() {
+        // Documented zero-duration rejection: a total of zero is an error regardless of how it is spelled.
+        let unitless = parse_duration("0").expect_err("a bare zero should be rejected");
+        assert!(unitless.contains("greater than zero"), "unexpected error: {unitless}");
+
+        let with_unit = parse_duration("0s").expect_err("an explicit zero-second duration should be rejected");
+        assert!(with_unit.contains("greater than zero"), "unexpected error: {with_unit}");
+    }
+
+    #[test]
+    fn parse_port_spec_parses_valid_specs_and_rejects_invalid_ones() {
         let (port, protocol) = parse_port_spec("8125/udp").unwrap();
         assert_eq!(port, 8125);
         assert_eq!(protocol, "udp");
@@ -1026,7 +1102,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_file_spec() {
+    fn parse_file_spec_splits_on_first_colon() {
         let (host, container) = parse_file_spec("./config.yaml:/etc/config.yaml").unwrap();
         assert_eq!(host, "./config.yaml");
         assert_eq!(container, "/etc/config.yaml");
@@ -1035,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn test_target_exec_action_deserializes_command() {
+    fn target_exec_action_deserializes_command() {
         let action: ActionConfig = serde_yaml::from_str(
             r#"
 action: target_exec
@@ -1053,7 +1129,7 @@ timeout: 12s
     }
 
     #[test]
-    fn test_windows_runtime_is_valid_for_integration_discovery() {
+    fn windows_runtime_is_valid_for_integration_discovery() {
         let base_dir = create_test_case_dir(
             "windows-smoke",
             r#"
@@ -1073,7 +1149,7 @@ procedure: []
     }
 
     #[test]
-    fn test_windows_runtime_reports_harness_owned_container_image() {
+    fn windows_runtime_reports_harness_owned_container_image() {
         let base_dir = create_test_case_dir(
             "windows-smoke",
             r#"
@@ -1092,7 +1168,7 @@ procedure: []
     }
 
     #[test]
-    fn test_linux_runtime_reports_harness_owned_container_image() {
+    fn linux_runtime_reports_harness_owned_container_image() {
         let base_dir = create_test_case_dir(
             "linux-smoke",
             r#"
@@ -1108,6 +1184,159 @@ procedure: []
         let images = tests[0].images();
 
         assert_eq!(images.get("container"), Some(&DEFAULT_LINUX_TARGET_IMAGE.to_string()));
+    }
+
+    fn dynamic_vars(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn core_agent_config_set_resolves_placeholders_in_all_string_fields() {
+        let vars = dynamic_vars(&[("KEY", "resolved_key"), ("VAL", "resolved_val"), ("EP", "resolved_ep")]);
+        let mut action = ActionConfig::CoreAgentConfigSet {
+            key: "prefix.{{PANORAMIC_DYNAMIC_KEY}}".to_string(),
+            value: Value::String("{{PANORAMIC_DYNAMIC_VAL}}".to_string()),
+            endpoint: "http://agent/{{PANORAMIC_DYNAMIC_EP}}".to_string(),
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+
+        assert!(
+            !action.unresolved_placeholders().is_empty(),
+            "placeholders should be detected before resolution"
+        );
+        action.resolve_dynamic_vars(&vars);
+
+        let ActionConfig::CoreAgentConfigSet {
+            key, value, endpoint, ..
+        } = action
+        else {
+            panic!("expected core_agent_config_set action");
+        };
+        assert_eq!(key, "prefix.resolved_key");
+        assert_eq!(value, Value::String("resolved_val".to_string()));
+        assert_eq!(endpoint, "http://agent/resolved_ep");
+    }
+
+    #[test]
+    fn target_exec_resolves_placeholders_in_each_command_argument() {
+        let vars = dynamic_vars(&[("IP", "10.0.0.5")]);
+        let mut action = ActionConfig::TargetExec {
+            command: vec!["ping".to_string(), "{{PANORAMIC_DYNAMIC_IP}}".to_string()],
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+
+        action.resolve_dynamic_vars(&vars);
+
+        let ActionConfig::TargetExec { command, .. } = action else {
+            panic!("expected target_exec action");
+        };
+        assert_eq!(command, vec!["ping".to_string(), "10.0.0.5".to_string()]);
+    }
+
+    #[test]
+    fn adp_cli_resolves_placeholders_in_each_argument() {
+        let vars = dynamic_vars(&[("LEVEL", "INFO")]);
+        let mut action = ActionConfig::AdpCli {
+            args: vec![
+                "debug".to_string(),
+                "set-metric-level".to_string(),
+                "{{PANORAMIC_DYNAMIC_LEVEL}}".to_string(),
+            ],
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+
+        action.resolve_dynamic_vars(&vars);
+        assert!(action.unresolved_placeholders().is_empty());
+
+        let ActionConfig::AdpCli { args, .. } = action else {
+            panic!("expected adp_cli action");
+        };
+        assert_eq!(args, vec!["debug", "set-metric-level", "INFO"]);
+    }
+
+    #[test]
+    fn core_agent_cli_resolves_placeholders_in_arguments_and_output_matcher() {
+        let vars = dynamic_vars(&[("COMMAND", "status"), ("MATCH", "Agent Version")]);
+        let mut action = ActionConfig::CoreAgentCli {
+            args: vec!["{{PANORAMIC_DYNAMIC_COMMAND}}".to_string()],
+            output_contains: Some("Built Against {{PANORAMIC_DYNAMIC_MATCH}}".to_string()),
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+
+        assert!(!action.unresolved_placeholders().is_empty());
+        action.resolve_dynamic_vars(&vars);
+        assert!(action.unresolved_placeholders().is_empty());
+
+        let ActionConfig::CoreAgentCli {
+            args, output_contains, ..
+        } = action
+        else {
+            panic!("expected core_agent_cli action");
+        };
+        assert_eq!(args, vec!["status"]);
+        assert_eq!(output_contains.as_deref(), Some("Built Against Agent Version"));
+    }
+
+    #[test]
+    fn assertion_variants_resolve_placeholders_in_their_documented_fields() {
+        let vars = dynamic_vars(&[("IP", "10.0.0.5"), ("PORT", "8125")]);
+
+        let mut log = AssertionConfig::LogContains {
+            pattern: "listen:{{PANORAMIC_DYNAMIC_IP}}".to_string(),
+            regex: false,
+            timeout: HumanDuration(Duration::from_secs(1)),
+            stream: LogStream::default(),
+        };
+        log.resolve_dynamic_vars(&vars);
+        let AssertionConfig::LogContains { pattern, .. } = &log else {
+            panic!("expected log_contains");
+        };
+        assert_eq!(pattern, "listen:10.0.0.5");
+        assert!(log.unresolved_placeholders().is_empty());
+
+        let mut http = AssertionConfig::HttpCheck {
+            endpoint: "http://{{PANORAMIC_DYNAMIC_IP}}:{{PANORAMIC_DYNAMIC_PORT}}/health".to_string(),
+            status: HttpStatusMatcher::Equal(200),
+            insecure_skip_verify: false,
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+        http.resolve_dynamic_vars(&vars);
+        let AssertionConfig::HttpCheck { endpoint, .. } = &http else {
+            panic!("expected http_check");
+        };
+        assert_eq!(endpoint, "http://10.0.0.5:8125/health");
+
+        let mut file = AssertionConfig::FileContains {
+            path: "/run/{{PANORAMIC_DYNAMIC_IP}}.pid".to_string(),
+            pattern: Some("addr={{PANORAMIC_DYNAMIC_IP}}".to_string()),
+            regex: false,
+            timeout: HumanDuration(Duration::from_secs(1)),
+        };
+        file.resolve_dynamic_vars(&vars);
+        let AssertionConfig::FileContains { path, pattern, .. } = &file else {
+            panic!("expected file_contains");
+        };
+        assert_eq!(path, "/run/10.0.0.5.pid");
+        assert_eq!(pattern.as_deref(), Some("addr=10.0.0.5"));
+    }
+
+    #[test]
+    fn unresolved_placeholders_reports_a_reference_with_no_matching_variable() {
+        // A variant that references a variable that was never provided must still report the leftover
+        // placeholder — this is how the runner fails a test that used an undefined dynamic variable.
+        let mut assertion = AssertionConfig::LogContains {
+            pattern: "value={{PANORAMIC_DYNAMIC_MISSING}}".to_string(),
+            regex: false,
+            timeout: HumanDuration(Duration::from_secs(1)),
+            stream: LogStream::default(),
+        };
+
+        assertion.resolve_dynamic_vars(&dynamic_vars(&[("PRESENT", "x")]));
+
+        assert_eq!(
+            assertion.unresolved_placeholders(),
+            vec!["{{PANORAMIC_DYNAMIC_MISSING}}".to_string()]
+        );
     }
 
     struct TestCaseDir {

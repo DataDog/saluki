@@ -43,6 +43,7 @@ pub(super) fn encode_series_metric(
     let mut points = Vec::new();
     for (timestamp, value) in points_iter {
         let value = maybe_interval
+            .filter(|interval| !interval.is_zero())
             .map(|interval| value / interval.as_secs_f64())
             .unwrap_or(value);
         if !emittable(value) {
@@ -188,6 +189,15 @@ mod tests {
         // Rate value scaled by interval seconds: 30 / 10 = 3.
         let rate_points = rate_json["points"].as_array().expect("rate points is array");
         assert_eq!(rate_points[0][1], 3.0);
+
+        let unnormalized_rate = Metric::rate("my.unnormalized.rate", 42.0, Duration::ZERO);
+        let unnormalized_rate_json = encode_one(&unnormalized_rate);
+        assert_eq!(unnormalized_rate_json["type"], "rate");
+        assert_eq!(unnormalized_rate_json["interval"], 0);
+        let unnormalized_rate_points = unnormalized_rate_json["points"]
+            .as_array()
+            .expect("unnormalized rate points is array");
+        assert_eq!(unnormalized_rate_points[0][1], 42.0);
 
         let gauge = Metric::gauge("my.gauge", 42.0);
         let gauge_json = encode_one(&gauge);

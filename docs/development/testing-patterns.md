@@ -98,6 +98,20 @@ a reviewer into thinking the behavior is covered. Watch for these shapes when yo
   percentage, a byte count, a status mapping) throws away the one thing worth testing. If the doc comment gives you an
   exact expected number, assert that number.
 
+### Verify production reachability
+
+Every unit test **MUST** exercise a production behavior or branch. Before accepting a test, identify both the
+production contract it protects and a plausible change to production code that would make the test fail. A test that
+only executes test-local helpers provides no production coverage, regardless of how realistic its setup appears.
+
+Test helpers **MAY** construct inputs, drive production code, or centralize assertions. A test helper **MUST NOT** be the
+sole subject of a test. If a helper itself needs independent behavioral coverage, promote that behavior into production
+code with its own public or crate-private contract before testing it directly.
+
+During self-review, apply a counterfactual check: choose the production line or branch the test claims to protect, then
+consider deleting it or changing its result. If the test would still pass, strengthen the test to observe that
+production behavior or remove the test.
+
 ### Match tests to documented behavior
 
 When a function's doc comment enumerates specific branches, error variants, or worked examples, treat that enumeration

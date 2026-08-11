@@ -262,6 +262,7 @@ impl Config {
             command: target_config.command.clone(),
             additional_env_vars: target_config.additional_env_vars.clone(),
             container_os: ContainerOs::Linux,
+            host_cgroup_namespace: false,
         };
 
         let mut driver_config = DriverConfig::target("target", airlock_target_config).await?;

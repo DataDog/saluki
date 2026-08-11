@@ -40,7 +40,7 @@ pub enum EndpointType {
     /// The unprivileged (plain HTTP) API endpoint.
     Unprivileged,
 
-    /// The privileged (TLS-protected) API endpoint.
+    /// The privileged API endpoint, protected by mutually authenticated TLS with mandatory client certificates.
     Privileged,
 }
 

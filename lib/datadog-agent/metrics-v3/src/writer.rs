@@ -198,6 +198,61 @@ impl V3Writer {
         Self::default()
     }
 
+    /// Returns the number of metrics written so far.
+    pub fn metric_count(&self) -> usize {
+        self.types.len()
+    }
+
+    /// Returns an estimate, in bytes, of the uncompressed size of the payload this writer would currently finalize to.
+    ///
+    /// This exists so callers can decide when to stop adding metrics to a batch, rather than encoding an oversized
+    /// batch and discovering afterwards that it has to be split and re-encoded. It is deliberately cheap: it inspects
+    /// only the lengths of the accumulated columns, so it is O(1) and safe to call after every metric.
+    ///
+    /// The figure is an estimate, not the exact finalized size. Dictionary string buffers are counted exactly, since
+    /// they dominate for the high-cardinality workloads this guards against, while packed integer columns are counted
+    /// at a fixed per-entry allowance because their true varint widths are only known once delta encoding runs during
+    /// [`V3Writer::finalize`]. The allowance errs on the high side, so batches are cut slightly early rather than
+    /// slightly late; callers **MUST** still check the finalized payload against their real size limits.
+    pub fn estimated_uncompressed_len(&self) -> usize {
+        // Upper-bound allowance for a delta-encoded varint entry. Delta-encoded values are small in practice (a
+        // varint byte or two), so this leaves headroom without being as pessimistic as the 10-byte worst case.
+        const VARINT_LEN_ALLOWANCE: usize = 4;
+
+        // Dictionary string buffers, counted exactly.
+        let dict_bytes = self.dict_name_bytes.len()
+            + self.dict_tags_bytes.len()
+            + self.dict_resource_str_bytes.len()
+            + self.dict_source_type_bytes.len()
+            + self.dict_unit_bytes.len();
+
+        // Packed integer columns, counted at the per-entry allowance.
+        let varint_entries = self.dict_tagsets.len()
+            + self.dict_resource_len.len()
+            + self.dict_resource_type.len()
+            + self.dict_resource_name.len()
+            + self.dict_origin_info.len()
+            + self.types.len()
+            + self.names.len()
+            + self.tags.len()
+            + self.resources.len()
+            + self.intervals.len()
+            + self.num_points.len()
+            + self.source_type_names.len()
+            + self.origin_infos.len()
+            + self.unit_refs.len()
+            + self.timestamps.len()
+            + self.vals_sint64.len()
+            + self.sketch_num_bins.len()
+            + self.sketch_bin_keys.len()
+            + self.sketch_bin_cnts.len();
+
+        // Fixed-width float columns, counted exactly.
+        let float_bytes = (self.vals_float32.len() * size_of::<f32>()) + (self.vals_float64.len() * size_of::<f64>());
+
+        dict_bytes + (varint_entries * VARINT_LEN_ALLOWANCE) + float_bytes
+    }
+
     /// Begins writing a new metric.
     ///
     /// Returns a [`V3MetricBuilder`] that must be used to set the metric's
@@ -911,6 +966,67 @@ mod tests {
         let mut data = vec![100, 110, 130, 145];
         delta_encode(&mut data);
         assert_eq!(data, vec![100, 10, 20, 15]);
+    }
+
+    #[test]
+    fn estimated_uncompressed_len_grows_and_brackets_finalized_size() {
+        let mut writer = V3Writer::new();
+        assert_eq!(0, writer.metric_count());
+        let empty_estimate = writer.estimated_uncompressed_len();
+
+        for idx in 0..16 {
+            let mut builder = writer.write(V3MetricType::Count, &format!("estimate.metric.{idx}"));
+            builder.set_tags([format!("tag_key_{idx}:tag_value_{idx}")].into_iter());
+            builder.add_point(1_700_000_000 + idx as i64, idx as f64);
+            builder.close();
+        }
+
+        assert_eq!(16, writer.metric_count());
+        let estimate = writer.estimated_uncompressed_len();
+        assert!(
+            estimate > empty_estimate,
+            "estimate should grow as metrics are written: {estimate} vs {empty_estimate}"
+        );
+
+        // The estimate exists to bound batch sizes, so it must not undershoot the real payload: cutting a batch on an
+        // undershooting estimate is what forces the expensive re-encode path.
+        let encoded = writer.finalize().expect("metrics should encode");
+        assert!(
+            estimate >= encoded.payload.len(),
+            "estimate {estimate} should not undershoot finalized payload {}",
+            encoded.payload.len()
+        );
+    }
+
+    #[test]
+    fn estimated_uncompressed_len_tracks_dictionary_growth() {
+        // A metric whose tags are already interned should add far less to the estimate than one introducing new tag
+        // strings, since dictionary bytes are counted exactly.
+        let mut writer = V3Writer::new();
+        let mut builder = writer.write(V3MetricType::Count, "dict.growth");
+        builder.set_tags(["shared_key:shared_value".to_string()].into_iter());
+        builder.add_point(1_700_000_000, 1.0);
+        builder.close();
+        let after_first = writer.estimated_uncompressed_len();
+
+        let mut builder = writer.write(V3MetricType::Count, "dict.growth");
+        builder.set_tags(["shared_key:shared_value".to_string()].into_iter());
+        builder.add_point(1_700_000_001, 2.0);
+        builder.close();
+        let after_deduped = writer.estimated_uncompressed_len();
+
+        let mut builder = writer.write(V3MetricType::Count, "dict.growth.novel");
+        builder.set_tags(["a_completely_different_key:a_completely_different_value".to_string()].into_iter());
+        builder.add_point(1_700_000_002, 3.0);
+        builder.close();
+        let after_novel = writer.estimated_uncompressed_len();
+
+        let deduped_growth = after_deduped - after_first;
+        let novel_growth = after_novel - after_deduped;
+        assert!(
+            novel_growth > deduped_growth,
+            "new dictionary entries should grow the estimate more than deduplicated ones: {novel_growth} vs {deduped_growth}"
+        );
     }
 
     #[test]

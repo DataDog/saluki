@@ -61,4 +61,7 @@ pub struct TargetConfig {
 
     /// Operating system defaults to use when creating the target container.
     pub container_os: ContainerOs,
+
+    /// Whether the Linux target joins the Docker host's cgroup namespace.
+    pub host_cgroup_namespace: bool,
 }

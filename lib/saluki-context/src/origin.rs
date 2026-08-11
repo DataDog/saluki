@@ -450,4 +450,118 @@ mod tests {
             assert_eq!(external_data_hash, external_data_ref_hash);
         }
     }
+
+    /// Parses `raw` and projects the result into a comparable tuple of its fields.
+    fn parsed(raw: &str) -> Option<(&str, &str, bool)> {
+        RawExternalData::try_from_str(raw).map(|data| (data.pod_uid, data.container_name, data.init_container))
+    }
+
+    #[test]
+    fn try_from_str_parses_valid_and_malformed_external_data() {
+        let cases: &[(&str, Option<(&str, &str, bool)>)] = &[
+            // Empty input is the only case that yields no data at all.
+            ("", None),
+            // All three keys, in any order, populate their respective fields.
+            ("pu-podid,cn-web,it-true", Some(("podid", "web", true))),
+            ("it-false,cn-web,pu-podid", Some(("podid", "web", false))),
+            // A single key populates just that field; the others keep their empty/false defaults.
+            ("pu-podid", Some(("podid", "", false))),
+            ("cn-web", Some(("", "web", false))),
+            // The `it-` value is parsed as a bool; any non-bool value falls back to false.
+            ("it-true", Some(("", "", true))),
+            ("it-notabool", Some(("", "", false))),
+            // Parts shorter than four characters (no room for an `xx-` prefix plus a value) are
+            // skipped, but a non-empty input still parses to defaults rather than `None`.
+            ("x", Some(("", "", false))),
+            ("abc", Some(("", "", false))),
+            // Unknown keys are ignored.
+            ("zz-whatever", Some(("", "", false))),
+            // Short/garbage parts are skipped while valid parts are still parsed.
+            ("pu-podid,z,cn-web", Some(("podid", "web", false))),
+            // Duplicate keys: the last occurrence wins.
+            ("pu-first,pu-second", Some(("second", "", false))),
+        ];
+
+        for (raw, expected) in cases {
+            assert_eq!(parsed(raw), *expected, "input: {raw:?}");
+        }
+    }
+
+    #[test]
+    fn origin_tag_cardinality_displays_lowercase_name() {
+        let cases = [
+            (OriginTagCardinality::None, "none"),
+            (OriginTagCardinality::Low, "low"),
+            (OriginTagCardinality::Orchestrator, "orchestrator"),
+            (OriginTagCardinality::High, "high"),
+        ];
+
+        for (cardinality, expected) in cases {
+            assert_eq!(cardinality.to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn raw_external_data_display_lists_all_fields() {
+        let data = RawExternalData::try_from_str("pu-podid,cn-web,it-true").unwrap();
+        assert_eq!(data.to_string(), "pu-podid,cn-web,it-true");
+    }
+
+    #[test]
+    fn raw_external_data_display_round_trips_through_parser() {
+        // Display always emits the canonical `pu-,cn-,it-` form, which the parser accepts verbatim,
+        // regardless of the field order in the original input.
+        let original = RawExternalData::try_from_str("cn-web,pu-podid,it-true").unwrap();
+        let rendered = original.to_string();
+        let reparsed = RawExternalData::try_from_str(&rendered).unwrap();
+        assert_eq!(reparsed, original);
+    }
+
+    #[test]
+    fn raw_origin_display_empty() {
+        assert_eq!(RawOrigin::default().to_string(), "RawOrigin()");
+    }
+
+    #[test]
+    fn raw_origin_display_individual_fields() {
+        let mut process_id = RawOrigin::default();
+        process_id.set_process_id(1234);
+        assert_eq!(process_id.to_string(), "RawOrigin(process_id=1234)");
+
+        let mut local_data = RawOrigin::default();
+        local_data.set_local_data("abc");
+        assert_eq!(local_data.to_string(), "RawOrigin(local_data=abc)");
+
+        let mut pod_uid = RawOrigin::default();
+        pod_uid.set_pod_uid("pod-1");
+        assert_eq!(pod_uid.to_string(), "RawOrigin(pod_uid=pod-1)");
+
+        let mut cardinality = RawOrigin::default();
+        cardinality.set_cardinality(OriginTagCardinality::Low);
+        assert_eq!(cardinality.to_string(), "RawOrigin(cardinality=low)");
+
+        let mut external_data = RawOrigin::default();
+        external_data.set_external_data("pu-podid,cn-web,it-true");
+        assert_eq!(
+            external_data.to_string(),
+            "RawOrigin(external_data=pu-podid,cn-web,it-true)"
+        );
+    }
+
+    #[test]
+    fn raw_origin_display_combines_present_fields() {
+        let mut origin = RawOrigin::default();
+        origin.set_process_id(1234);
+        origin.set_local_data("abc");
+        origin.set_pod_uid("pod-1");
+        origin.set_cardinality(OriginTagCardinality::Low);
+
+        // NOTE: the `process_id` branch does not set the internal `has_written` flag, so the first
+        // separator space is dropped and `process_id` runs directly into `local_data`. This asserts
+        // the current (buggy) spacing so a future fix has to update the expectation deliberately.
+        assert_eq!(
+            origin.to_string(),
+            "RawOrigin(process_id=1234local_data=abc pod_uid=pod-1 cardinality=low)"
+        );
+    }
 }

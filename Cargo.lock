@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-data-plane"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "agent-data-plane-config",
  "agent-data-plane-config-system",
@@ -47,6 +47,7 @@ dependencies = [
  "process-memory",
  "prost",
  "prost-types",
+ "rcgen",
  "saluki-antithesis",
  "saluki-api",
  "saluki-app",
@@ -60,16 +61,20 @@ dependencies = [
  "saluki-io",
  "saluki-metadata",
  "saluki-metrics",
+ "saluki-tls",
  "serde",
  "serde_json",
  "serde_with",
  "stringtheory",
+ "tempfile",
  "tikv-jemallocator",
  "tokio",
  "tokio-util",
  "tonic",
+ "tower",
  "tracing",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
@@ -89,6 +94,8 @@ dependencies = [
  "arc-swap",
  "bytesize",
  "datadog-agent-config",
+ "datadog-agent-config-overlay-model",
+ "figment",
  "saluki-config",
  "serde",
  "serde_json",
@@ -201,12 +208,13 @@ dependencies = [
  "clap",
  "datadog-protos",
  "headers",
+ "http-body-util",
  "mime",
  "proptest",
  "protobuf",
  "serde",
  "serde_json",
- "stele",
+ "serde_yaml",
  "tokio",
  "tower",
  "tower-http 0.7.0",
@@ -1211,6 +1219,7 @@ dependencies = [
  "datadog-protos",
  "futures",
  "pin-project-lite",
+ "rcgen",
  "rustls",
  "rustls-pki-types",
  "saluki-config",
@@ -1220,7 +1229,9 @@ dependencies = [
  "saluki-tls",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-vsock",
  "tonic",
  "tracing",
@@ -1260,13 +1271,13 @@ version = "0.1.0"
 dependencies = [
  "datadog-agent-config",
  "datadog-agent-config-overlay-model",
- "figment",
  "indexmap",
  "saluki-config",
  "serde",
  "serde_json",
  "serde_yaml",
  "tinytemplate",
+ "tokio",
 ]
 
 [[package]]
@@ -1309,6 +1320,7 @@ dependencies = [
  "protobuf-codegen",
  "serde",
  "serde_bytes",
+ "serde_json",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -2611,7 +2623,7 @@ dependencies = [
 [[package]]
 name = "lading-payload"
 version = "0.1.0"
-source = "git+https://github.com/DataDog/lading?rev=576129489df44ae0e71c4871c51910837c919b90#576129489df44ae0e71c4871c51910837c919b90"
+source = "git+https://github.com/DataDog/lading?rev=c61c51c5fbb1d0ebcf1b12de847c042522c8c7a7#c61c51c5fbb1d0ebcf1b12de847c042522c8c7a7"
 dependencies = [
  "byte-unit",
  "bytes",
@@ -4236,6 +4248,7 @@ dependencies = [
  "bytesize",
  "chrono",
  "chrono-tz",
+ "futures",
  "http",
  "http-body-util",
  "hyper",
@@ -4280,6 +4293,7 @@ dependencies = [
  "indexmap",
  "itoa",
  "libc",
+ "metrics",
  "papaya",
  "pin-project",
  "proptest",
@@ -4524,6 +4538,7 @@ dependencies = [
  "libc",
  "memchr",
  "metrics",
+ "metrics-util",
  "nom 8.0.0",
  "pin-project",
  "pin-project-lite",
@@ -4570,8 +4585,18 @@ name = "saluki-metrics"
 version = "0.1.0"
 dependencies = [
  "metrics",
- "pastey",
+ "papaya",
+ "saluki-metrics-macros",
  "trybuild",
+]
+
+[[package]]
+name = "saluki-metrics-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -5135,6 +5160,7 @@ dependencies = [
  "protobuf",
  "saluki-antithesis",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

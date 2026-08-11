@@ -351,7 +351,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     fn test_default_log_file_path() -> PathBuf {
         PathBuf::from("/tmp/default-dogstatsd-stats.log")
@@ -430,17 +429,10 @@ mod tests {
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                DogStatsDDebugLogConfiguration::from_configuration(&cfg, test_default_log_file_path())
-                    .expect("DogStatsDDebugLogConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
+        run_config_smoke_tests(structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION, &[], json!({}), |cfg| {
+            DogStatsDDebugLogConfiguration::from_configuration(&cfg, test_default_log_file_path())
+                .expect("DogStatsDDebugLogConfiguration should deserialize")
+        })
         .await
     }
 

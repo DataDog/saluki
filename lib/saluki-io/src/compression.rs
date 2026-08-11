@@ -315,6 +315,9 @@ impl CompressionEstimator {
 
 #[cfg(test)]
 mod tests {
+    use async_compression::tokio::bufread::{GzipDecoder, ZlibDecoder, ZstdDecoder};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
     use super::*;
 
     struct MockCompressor {
@@ -437,5 +440,143 @@ mod tests {
         // We use the compressed length when calling `would_write_exceed_threshold` because it uses the uncompressed length as the worst-case
         // scenario, which is that the write would not be compressed at all.
         assert!(!estimator.would_write_exceed_threshold(THIRD_WRITE_LEN, MAX_COMPRESSED_LEN));
+    }
+
+    // A payload that's long and repetitive enough that every real compression scheme actually shrinks it.
+    const COMPRESSIBLE_PAYLOAD: &[u8] =
+        b"the quick brown fox jumps over the lazy dog. the quick brown fox jumps over the lazy dog. \
+          the quick brown fox jumps over the lazy dog. the quick brown fox jumps over the lazy dog.";
+
+    async fn compress_all(scheme: CompressionScheme, data: &[u8]) -> (Vec<u8>, Option<HeaderValue>) {
+        // Drive the compressor exactly like the request-builder does: write, flush, shutdown, then recover the writer.
+        let mut compressor = Compressor::from_scheme(scheme, Vec::new());
+        compressor.write_all(data).await.expect("write should succeed");
+        compressor.flush().await.expect("flush should succeed");
+        compressor.shutdown().await.expect("shutdown should succeed");
+
+        let encoding = compressor.content_encoding();
+        (compressor.into_inner(), encoding)
+    }
+
+    async fn decompress(scheme: CompressionScheme, compressed: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        match scheme {
+            CompressionScheme::Noop => return compressed.to_vec(),
+            CompressionScheme::Gzip(_) => GzipDecoder::new(compressed)
+                .read_to_end(&mut out)
+                .await
+                .expect("gzip decode should succeed"),
+            CompressionScheme::Zlib(_) => ZlibDecoder::new(compressed)
+                .read_to_end(&mut out)
+                .await
+                .expect("zlib decode should succeed"),
+            CompressionScheme::Zstd(_) => ZstdDecoder::new(compressed)
+                .read_to_end(&mut out)
+                .await
+                .expect("zstd decode should succeed"),
+        };
+        out
+    }
+
+    #[test]
+    fn compression_scheme_constructors_select_expected_variant() {
+        assert!(matches!(CompressionScheme::noop(), CompressionScheme::Noop));
+        assert!(matches!(
+            CompressionScheme::gzip_default(),
+            CompressionScheme::Gzip(Level::Default)
+        ));
+        assert!(matches!(
+            CompressionScheme::zlib_default(),
+            CompressionScheme::Zlib(Level::Default)
+        ));
+        assert!(matches!(
+            CompressionScheme::zstd_default(),
+            CompressionScheme::Zstd(Level::Default)
+        ));
+    }
+
+    #[test]
+    fn compression_scheme_new_maps_string_and_level() {
+        // gzip and zstd carry the caller-provided precise level...
+        match CompressionScheme::new("gzip", 5) {
+            CompressionScheme::Gzip(Level::Precise(level)) => assert_eq!(level, 5),
+            other => panic!("expected gzip with precise level, got {other:?}"),
+        }
+        match CompressionScheme::new("zstd", 7) {
+            CompressionScheme::Zstd(Level::Precise(level)) => assert_eq!(level, 7),
+            other => panic!("expected zstd with precise level, got {other:?}"),
+        }
+
+        // ...zlib ignores the level and uses its default...
+        assert!(matches!(
+            CompressionScheme::new("zlib", 9),
+            CompressionScheme::Zlib(Level::Default)
+        ));
+
+        // ...and any unrecognized scheme falls back to zstd at the default level.
+        assert!(matches!(
+            CompressionScheme::new("brotli", 9),
+            CompressionScheme::Zstd(Level::Default)
+        ));
+    }
+
+    #[tokio::test]
+    async fn compressor_round_trips_and_reports_encoding_for_each_scheme() {
+        // Each scheme must round-trip byte-for-byte and advertise its documented `Content-Encoding`.
+        let cases: [(CompressionScheme, Option<&str>); 4] = [
+            (CompressionScheme::noop(), None),
+            (CompressionScheme::gzip_default(), Some("gzip")),
+            (CompressionScheme::zlib_default(), Some("deflate")),
+            (CompressionScheme::zstd_default(), Some("zstd")),
+        ];
+
+        for (scheme, expected_encoding) in cases {
+            let (compressed, encoding) = compress_all(scheme, COMPRESSIBLE_PAYLOAD).await;
+            assert_eq!(
+                encoding.as_ref().map(|value| value.to_str().unwrap()),
+                expected_encoding,
+                "unexpected content-encoding for {scheme:?}"
+            );
+
+            if matches!(scheme, CompressionScheme::Noop) {
+                // No-op compression emits the input verbatim.
+                assert_eq!(compressed, COMPRESSIBLE_PAYLOAD);
+            } else {
+                // A real scheme against a compressible payload must actually shrink it.
+                assert!(
+                    compressed.len() < COMPRESSIBLE_PAYLOAD.len(),
+                    "{scheme:?} did not shrink the payload ({} >= {})",
+                    compressed.len(),
+                    COMPRESSIBLE_PAYLOAD.len()
+                );
+            }
+
+            let decompressed = decompress(scheme, &compressed).await;
+            assert_eq!(decompressed, COMPRESSIBLE_PAYLOAD, "round-trip mismatch for {scheme:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn counting_writer_tracks_total_bytes_written() {
+        let mut writer = CountingWriter::new(Vec::new());
+        assert_eq!(writer.total_written(), 0);
+
+        writer.write_all(b"hello").await.expect("write should succeed");
+        assert_eq!(writer.total_written(), 5);
+
+        writer.write_all(b"!!!").await.expect("write should succeed");
+        assert_eq!(writer.total_written(), 8);
+
+        // The counter is pure bookkeeping: the wrapped writer still holds the actual bytes.
+        assert_eq!(writer.into_inner(), b"hello!!!");
+    }
+
+    #[tokio::test]
+    async fn noop_compressor_write_statistics_count_all_bytes() {
+        // The no-op compressor writes bytes through unchanged, so its `WriteStatistics` total is the input length.
+        let mut compressor = Compressor::from_scheme(CompressionScheme::noop(), Vec::new());
+        compressor.write_all(b"1234567890").await.expect("write should succeed");
+
+        assert_eq!(WriteStatistics::total_written(&compressor), 10);
     }
 }

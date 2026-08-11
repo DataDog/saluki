@@ -113,7 +113,7 @@ pub struct SalukiAnnotation {
     /// Overrides the schema's `env_vars` list entirely when `Some`.
     pub env_var_override: Option<&'static [&'static str]>,
 
-    /// Config structs that incorporate this key, as [`structs`] constants.
+    /// Configuration consumers that incorporate this key, as [`structs`] constants.
     pub used_by: &'static [&'static str],
 
     /// Overrides the schema's `value_type` when `Some`.
@@ -164,7 +164,7 @@ pub struct ConfigKey {
     /// Shape of the value.
     pub value_type: ValueType,
 
-    /// Config structs that incorporate this key, as [`structs`] constants.
+    /// Configuration consumers that incorporate this key, as [`structs`] constants.
     pub used_by: &'static [&'static str],
 }
 

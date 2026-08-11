@@ -27,4 +27,8 @@ comparison:
     - DD_DATA_PLANE_ENABLED=true
     - DD_DATA_PLANE_STANDALONE_MODE=true
     - DD_DATA_PLANE_OTLP_ENABLED=true
+    # ADP must bind the generator's `4317` target; container initialization moves the Core Agent.
+    # TODO(#2177): Replace this ADP-only override with the canonical schema-provided endpoint key
+    # once endpoint ownership prevents both processes from attempting to bind the same port.
+    - ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY=0.0.0.0:4317
     - DD_APM_ERROR_TRACKING_STANDALONE_ENABLED=true

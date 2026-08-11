@@ -16,6 +16,8 @@ comparison:
     - DD_DATA_PLANE_ENABLED=true
     - DD_DATA_PLANE_STANDALONE_MODE=false
     - DD_DATA_PLANE_OTLP_ENABLED=true
-    - ADP_DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_GRPC_ENDPOINT=0.0.0.0:54317
-    - ADP_DD_DATA_PLANE_OTLP_RECEIVER_PROTOCOLS_HTTP_ENDPOINT=0.0.0.0:54318
+    # TODO(#2177): Replace these ADP-only overrides with canonical schema-provided endpoint keys
+    # once endpoint ownership prevents both processes from attempting to bind the same ports.
+    - ADP_DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY=0.0.0.0:54317
+    - ADP_DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY=0.0.0.0:54318
     - DD_AGGREGATE_CONTEXT_LIMIT=500000

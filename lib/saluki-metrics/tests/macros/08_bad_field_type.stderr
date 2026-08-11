@@ -1,0 +1,5 @@
+error: metric field type must be `Counter`, `Gauge`, or `Histogram`
+ --> tests/macros/08_bad_field_type.rs:6:19
+  |
+6 |     not_a_metric: String,
+  |                   ^^^^^^

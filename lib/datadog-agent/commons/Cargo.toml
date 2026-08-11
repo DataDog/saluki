@@ -26,8 +26,17 @@ tracing = { workspace = true }
 windows-registry = "0.6.1"
 
 [dev-dependencies]
+rcgen = { workspace = true, features = ["crypto", "pem"] }
 saluki-config = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio-rustls = { workspace = true }
+
+[target.'cfg(not(windows))'.dev-dependencies]
+rcgen = { workspace = true, features = ["aws_lc_rs"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+rcgen = { workspace = true, features = ["ring"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-vsock = { workspace = true }

@@ -30,6 +30,7 @@ apis
 inlined
 json
 backoff
+batcher(s?)
 proxied
 linux
 darwin
@@ -247,4 +248,9 @@ varint
 serializer
 backreference(s)?
 Miri
-proptest
+proptest(s?)
+subtransform(s?)
+reimplemented
+hoc
+rss
+waker

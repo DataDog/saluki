@@ -25,7 +25,7 @@ impl ResolvedProvider {
         Ok(Self { data, metadata })
     }
 
-    pub fn from_yaml<P>(path: P, key_aliases: &[(&str, &str)]) -> Result<Self, GenericError>
+    pub fn from_yaml<P>(path: P) -> Result<Self, GenericError>
     where
         P: AsRef<Path>,
     {
@@ -47,12 +47,10 @@ impl ResolvedProvider {
             raw_yaml_value = YamlValue::Mapping(YamlMapping::new());
         }
 
-        apply_key_aliases_yaml(&mut raw_yaml_value, key_aliases);
-
         Self::from_serialized(raw_yaml_value, metadata)
     }
 
-    pub fn from_json<P>(path: P, key_aliases: &[(&str, &str)]) -> Result<Self, GenericError>
+    pub fn from_json<P>(path: P) -> Result<Self, GenericError>
     where
         P: AsRef<Path>,
     {
@@ -73,8 +71,6 @@ impl ResolvedProvider {
         if raw_json_value.is_null() {
             raw_json_value = JsonValue::Object(JsonMap::new());
         }
-
-        apply_key_aliases(&mut raw_json_value, key_aliases);
 
         Self::from_serialized(raw_json_value, metadata)
     }
@@ -105,47 +101,6 @@ where
     let metadata = Metadata::from(format!("{} file", name), path.as_ref());
 
     Ok((file_data, metadata))
-}
-
-/// Adds a flat top-level key for each alias entry whose nested path exists in `value`.
-///
-/// For each `(from_path, to_key)` pair: if `from_path` (dot-separated) resolves to a value,
-/// that value is written under `to_key` at the top level—but only if `to_key` isn't already
-/// present. This lets both `proxy: http: <url>` (YAML-nested) and `proxy_http: <url>` (flat)
-/// produce the same canonical Figment key without dropping either representation.
-fn apply_key_aliases(value: &mut JsonValue, aliases: &[(&str, &str)]) {
-    for &(from_path, to_key) in aliases {
-        if let Some(nested_val) = get_nested(value, from_path).cloned() {
-            if let Some(obj) = value.as_object_mut() {
-                obj.entry(to_key.to_string()).or_insert(nested_val);
-            }
-        }
-    }
-}
-
-fn get_nested<'a>(value: &'a JsonValue, path: &str) -> Option<&'a JsonValue> {
-    path.split('.').try_fold(value, |v, key| v.get(key))
-}
-
-fn apply_key_aliases_yaml(value: &mut YamlValue, aliases: &[(&str, &str)]) {
-    for &(from_path, to_key) in aliases {
-        if let Some(nested_val) = get_nested_yaml(value, from_path).cloned() {
-            if let YamlValue::Mapping(mapping) = value {
-                let key = YamlValue::String(to_key.to_string());
-                mapping.entry(key).or_insert(nested_val);
-            }
-        }
-    }
-}
-
-fn get_nested_yaml<'a>(value: &'a YamlValue, path: &str) -> Option<&'a YamlValue> {
-    path.split('.').try_fold(value, |v, key| {
-        if let YamlValue::Mapping(m) = v {
-            m.get(key)
-        } else {
-            None
-        }
-    })
 }
 
 fn drop_nested_nulls_yaml(value: &mut YamlValue) {
@@ -206,92 +161,116 @@ fn drop_nested_nulls_json(value: &mut JsonValue) {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
+    use figment::Figment;
     use serde_json::json;
+    use tempfile::NamedTempFile;
 
     use super::*;
 
-    #[test]
-    fn alias_nested_path_to_flat_key() {
-        let mut value = json!({ "proxy": { "http": "http://proxy.example.com" } });
-        apply_key_aliases(&mut value, &[("proxy.http", "proxy_http")]);
-        assert_eq!(value["proxy_http"], "http://proxy.example.com");
+    fn write_temp_file(contents: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().expect("should create temp file");
+        file.write_all(contents.as_bytes()).expect("should write temp file");
+        file.flush().expect("should flush temp file");
+        file
     }
 
     #[test]
-    fn alias_does_not_overwrite_existing_flat_key() {
-        let mut value = json!({ "proxy": { "http": "from-nested" }, "proxy_http": "from-flat" });
-        apply_key_aliases(&mut value, &[("proxy.http", "proxy_http")]);
-        assert_eq!(value["proxy_http"], "from-flat");
-    }
+    fn drop_nested_nulls_json_removes_null_leaves_recursively() {
+        let mut value = json!({
+            "keep": "yes",
+            "drop": null,
+            "nested": { "keep": 1, "drop": null },
+            "list": [ { "keep": true, "drop": null } ],
+        });
 
-    #[test]
-    fn alias_missing_nested_path_adds_nothing() {
-        let mut value = json!({ "other_key": "value" });
-        apply_key_aliases(&mut value, &[("proxy.http", "proxy_http")]);
-        assert!(value.get("proxy_http").is_none());
-    }
+        drop_nested_nulls_json(&mut value);
 
-    #[test]
-    fn alias_multiple_entries() {
-        let mut value = json!({ "proxy": { "http": "http://h", "https": "http://s" } });
-        apply_key_aliases(
-            &mut value,
-            &[("proxy.http", "proxy_http"), ("proxy.https", "proxy_https")],
+        assert_eq!(
+            value,
+            json!({
+                "keep": "yes",
+                "nested": { "keep": 1 },
+                "list": [ { "keep": true } ],
+            })
         );
-        assert_eq!(value["proxy_http"], "http://h");
-        assert_eq!(value["proxy_https"], "http://s");
     }
 
     #[test]
-    fn get_nested_single_level() {
-        let value = json!({ "key": "val" });
-        assert_eq!(get_nested(&value, "key"), Some(&json!("val")));
+    fn drop_nested_nulls_yaml_removes_null_leaves_recursively() {
+        let mut value: YamlValue =
+            serde_yaml::from_str("keep: kept\ndrop: null\nnested:\n  keep: 1\n  drop: null\n").unwrap();
+
+        drop_nested_nulls_yaml(&mut value);
+
+        let expected: YamlValue = serde_yaml::from_str("keep: kept\nnested:\n  keep: 1\n").unwrap();
+        assert_eq!(value, expected);
     }
 
     #[test]
-    fn get_nested_multi_level() {
-        let value = json!({ "a": { "b": { "c": 42 } } });
-        assert_eq!(get_nested(&value, "a.b.c"), Some(&json!(42)));
+    fn from_yaml_loads_nested_values_and_drops_nulls() {
+        let file = write_temp_file("proxy:\n  http: http://proxy.example.com\nempty:\nkept: value\n");
+
+        let provider = ResolvedProvider::from_yaml(file.path()).expect("valid YAML should load");
+        let figment = Figment::new().merge(provider);
+
+        // A nested value keeps its nesting; nothing is copied to a flattened spelling.
+        assert_eq!(
+            figment.extract_inner::<String>("proxy.http").unwrap(),
+            "http://proxy.example.com"
+        );
+        assert!(figment.find_value("proxy_http").is_err());
+        // A non-null value is preserved.
+        assert_eq!(figment.extract_inner::<String>("kept").unwrap(), "value");
+        // A null value is dropped entirely.
+        assert!(figment.find_value("empty").is_err());
     }
 
     #[test]
-    fn get_nested_missing_returns_none() {
-        let value = json!({ "a": { "b": "val" } });
-        assert!(get_nested(&value, "a.x").is_none());
-        assert!(get_nested(&value, "z").is_none());
+    fn from_json_loads_nested_values_and_drops_nested_nulls() {
+        let file = write_temp_file(r#"{"outer": {"kept": 1, "empty": null}, "top": null}"#);
+
+        let provider = ResolvedProvider::from_json(file.path()).expect("valid JSON should load");
+        let figment = Figment::new().merge(provider);
+
+        assert_eq!(figment.extract_inner::<i64>("outer.kept").unwrap(), 1);
+        assert!(figment.find_value("outer.empty").is_err());
+        assert!(figment.find_value("top").is_err());
     }
 
     #[test]
-    fn yaml_alias_nested_path_to_flat_key() {
-        let mut value: YamlValue = serde_yaml::from_str("proxy:\n  http: http://proxy.example.com").unwrap();
-        apply_key_aliases_yaml(&mut value, &[("proxy.http", "proxy_http")]);
-        assert_eq!(value["proxy_http"].as_str(), Some("http://proxy.example.com"));
+    fn from_yaml_empty_file_yields_empty_map() {
+        let file = write_temp_file("");
+
+        let provider = ResolvedProvider::from_yaml(file.path()).expect("empty YAML should normalize to an empty map");
+        let figment = Figment::new().merge(provider);
+
+        assert!(figment.find_value("anything").is_err());
     }
 
     #[test]
-    fn yaml_alias_does_not_overwrite_existing_flat_key() {
-        let mut value: YamlValue = serde_yaml::from_str("proxy:\n  http: from-nested\nproxy_http: from-flat").unwrap();
-        apply_key_aliases_yaml(&mut value, &[("proxy.http", "proxy_http")]);
-        assert_eq!(value["proxy_http"].as_str(), Some("from-flat"));
+    fn from_yaml_returns_error_for_invalid_yaml() {
+        let file = write_temp_file("foo: [unclosed");
+
+        let result = ResolvedProvider::from_yaml(file.path());
+        assert!(result.is_err(), "invalid YAML should fail to load");
     }
 
     #[test]
-    fn yaml_alias_missing_nested_path_adds_nothing() {
-        let mut value: YamlValue = serde_yaml::from_str("other_key: value").unwrap();
-        apply_key_aliases_yaml(&mut value, &[("proxy.http", "proxy_http")]);
-        assert!(value.get("proxy_http").is_none());
+    fn from_json_returns_error_for_invalid_json() {
+        let file = write_temp_file("{ not valid json ");
+
+        let result = ResolvedProvider::from_json(file.path());
+        assert!(result.is_err(), "invalid JSON should fail to load");
     }
 
     #[test]
-    fn yaml_get_nested_multi_level() {
-        let value: YamlValue = serde_yaml::from_str("a:\n  b:\n    c: 42").unwrap();
-        assert_eq!(get_nested_yaml(&value, "a.b.c").and_then(|v| v.as_i64()), Some(42));
-    }
+    fn from_json_returns_error_for_non_object_root() {
+        // A scalar root can't be represented as a configuration map, so `from_serialized` rejects it.
+        let file = write_temp_file(r#""just a string""#);
 
-    #[test]
-    fn yaml_get_nested_missing_returns_none() {
-        let value: YamlValue = serde_yaml::from_str("a:\n  b: val").unwrap();
-        assert!(get_nested_yaml(&value, "a.x").is_none());
-        assert!(get_nested_yaml(&value, "z").is_none());
+        let result = ResolvedProvider::from_json(file.path());
+        assert!(result.is_err(), "a non-object JSON root should fail to load");
     }
 }

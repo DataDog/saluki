@@ -7,29 +7,23 @@ pub mod env_decode;
 mod list_de;
 mod string_de;
 
+/// A Figment provider that reads the schema's environment variables into their canonical shape.
+pub mod env_provider;
+
 /// Builds the typed configuration base by reading environment variables directly and decoding them
 /// into the nested configuration shape.
 pub mod env_reader;
 
-/// Relocates underscore-joined environment keys into the nested Datadog configuration shape.
-// TODO: remove when all callers use the direct typed environment reader.
-pub mod env_overlay;
-
 /// Build-time generated code, produced from `core_schema.yaml` plus `schema_overlay.yaml`.
 mod generated;
-
-/// Compatibility support for the by-key configuration path (key aliases and environment remapping).
-// TODO: remove when all callers use the typed configuration path.
-pub mod remapper;
 
 /// The translation error type recorded by the translator and surfaced by the witness driver.
 mod translate_error;
 
 pub use env_decode::EnvDecode;
-pub use env_overlay::{apply_env_overlay, EnvOverlayMode};
-pub use env_reader::{apply_datadog_env, apply_env_at_path, datadog_leaf_paths, EnvKey};
+pub use env_provider::DatadogEnvProvider;
+pub use env_reader::{apply_datadog_env, apply_datadog_env_vars, apply_env_at_path, datadog_leaf_paths, EnvKey};
 pub use generated::{drive, DatadogConfigWitness, DatadogConfiguration};
-pub use remapper::{DatadogRemapper, KEY_ALIASES};
 pub use translate_error::{TranslateError, TranslateErrors};
 
 #[cfg(test)]
@@ -56,6 +50,41 @@ mod string_list_shape_tests {
             serde_json::from_value(serde_json::json!({ "dogstatsd_tags": ["env:prod", "team:core"] }))
                 .expect("sequence deserializes into the string-list leaf");
         assert_eq!(config.dogstatsd_tags, vec!["env:prod", "team:core"]);
+    }
+}
+
+#[cfg(test)]
+mod string_map_list_shape_tests {
+    use super::DatadogConfiguration;
+
+    #[test]
+    fn additional_endpoints_accept_scalar_values() {
+        let config: DatadogConfiguration = serde_json::from_value(serde_json::json!({
+            "additional_endpoints": {
+                "https://agent.datadoghq.com.": "ENC[vault://api-key]"
+            }
+        }))
+        .expect("scalar additional endpoint API key deserializes");
+
+        assert_eq!(
+            config.additional_endpoints["https://agent.datadoghq.com."],
+            ["ENC[vault://api-key]"]
+        );
+    }
+
+    #[test]
+    fn additional_endpoints_accept_sequence_values() {
+        let config: DatadogConfiguration = serde_json::from_value(serde_json::json!({
+            "additional_endpoints": {
+                "https://agent.datadoghq.com.": ["first", "second"]
+            }
+        }))
+        .expect("additional endpoint API key sequence deserializes");
+
+        assert_eq!(
+            config.additional_endpoints["https://agent.datadoghq.com."],
+            ["first", "second"]
+        );
     }
 }
 

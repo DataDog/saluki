@@ -1,9 +1,14 @@
-//! Traces domain: APM trace processing (env, sampling, obfuscation) plus OTLP trace ingestion.
+//! Traces domain: APM trace processing, including environment, sampling, and obfuscation.
 
 use serde::Serialize;
 
+use crate::defaults::{
+    DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY, DEFAULT_RARE_SAMPLER_COOLDOWN_SECS,
+    DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
+};
+
 /// Resolved traces configuration.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Domain {
     /// Environment tag applied to traces.
     pub env: String,
@@ -46,9 +51,6 @@ pub struct Domain {
     /// Per-subsystem trace obfuscation settings.
     pub obfuscation: Obfuscation,
 
-    /// OTLP trace ingestion settings.
-    pub otlp: OtlpTraces,
-
     /// OTTL span-drop filter settings.
     pub ottl_filter: OttlFilter,
 
@@ -56,8 +58,32 @@ pub struct Domain {
     pub ottl_transform: OttlTransform,
 }
 
+impl Default for Domain {
+    fn default() -> Self {
+        Self {
+            // Witnessed fields start as placeholders and are overwritten by Datadog `drive`.
+            env: String::new(),
+            compute_stats_by_span_kind: false,
+            peer_tags: Vec::new(),
+            peer_tags_aggregation: false,
+            error_tracking_standalone_enabled: false,
+            errors_per_second: 0.0,
+            target_traces_per_second: 0.0,
+            enable_rare_sampler: false,
+            probabilistic_sampler: ProbabilisticSampler::default(),
+            obfuscation: Obfuscation::default(),
+            // Saluki-only fields own their absent-key behavior here.
+            default_env: DEFAULT_TRACE_ENV.to_owned(),
+            error_sampling_enabled: DEFAULT_ERROR_SAMPLING_ENABLED,
+            rare_sampler: RareSampler::default(),
+            ottl_filter: OttlFilter::default(),
+            ottl_transform: OttlTransform::default(),
+        }
+    }
+}
+
 /// Rare-span sampler.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct RareSampler {
     /// Maximum number of distinct span signatures tracked. (not in Datadog Agent config schema)
     pub cardinality: usize,
@@ -70,6 +96,16 @@ pub struct RareSampler {
     pub tps: f64,
 }
 
+impl Default for RareSampler {
+    fn default() -> Self {
+        Self {
+            cardinality: DEFAULT_RARE_SAMPLER_CARDINALITY,
+            cooldown: DEFAULT_RARE_SAMPLER_COOLDOWN_SECS,
+            tps: DEFAULT_RARE_SAMPLER_TPS,
+        }
+    }
+}
+
 /// APM probabilistic sampler.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ProbabilisticSampler {
@@ -78,31 +114,6 @@ pub struct ProbabilisticSampler {
 
     /// Percentage of traces the probabilistic sampler keeps.
     pub sampling_percentage: f64,
-}
-
-/// OTLP trace ingestion specifics.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct OtlpTraces {
-    /// Whether OTLP trace ingestion is enabled.
-    pub enabled: bool,
-
-    /// Internal port the OTLP trace receiver forwards to.
-    pub internal_port: u16,
-
-    /// Percentage of OTLP traces the probabilistic sampler keeps.
-    pub probabilistic_sampler_sampling_percentage: f64,
-
-    /// Number of entries the OTLP trace context interner holds. (not in Datadog Agent config
-    /// schema)
-    pub string_interner_size: u64,
-
-    /// Whether top-level spans are computed from span kind on OTLP traces. (not in Datadog Agent
-    /// config schema)
-    pub enable_compute_top_level_by_span_kind: bool,
-
-    /// Whether spans missing intake-required fields are ingested rather than rejected. (not in
-    /// Datadog Agent config schema)
-    pub ignore_missing_datadog_fields: bool,
 }
 
 /// Trace obfuscation, one group per supported subsystem.

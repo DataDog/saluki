@@ -12,7 +12,7 @@ use saluki_core::health::Health;
 use saluki_env::workload::{collectors::MetadataCollector, EntityId, MetadataAction, MetadataOperation};
 use saluki_error::GenericError;
 use saluki_io::net::util::tonic::StatusError;
-use saluki_metrics::static_metrics;
+use saluki_metrics::{static_metrics, Counter};
 use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     MetaString,
@@ -20,17 +20,15 @@ use stringtheory::{
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
 
-static_metrics!(
-   name => Telemetry,
-   prefix => remote_tagger_metadata_collector,
-   metrics => [
-       counter(rpc_errors_total),
-       counter(intern_failed_total),
-       counter(events_added_total),
-       counter(events_modified_total),
-       counter(events_deleted_total),
-   ],
-);
+#[static_metrics(prefix = remote_tagger_metadata_collector)]
+#[derive(Clone)]
+struct Telemetry {
+    rpc_errors_total: Counter,
+    intern_failed_total: Counter,
+    events_added_total: Counter,
+    events_modified_total: Counter,
+    events_deleted_total: Counter,
+}
 
 /// A workload provider that uses the remote tagger API from a Datadog Agent to provide workload information.
 pub struct RemoteAgentTaggerMetadataCollector {
@@ -224,7 +222,13 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
     // convert the owned `String`s to `MetaString`s so it's not a huge deal.
     match remote_entity_id.prefix.as_str() {
         "container_id" => Some(EntityId::Container(remote_entity_id.uid.into())),
+        "container_image_metadata" => Some(EntityId::ContainerImageMetadata(remote_entity_id.uid.into())),
+        "ecs_task" => Some(EntityId::EcsTask(remote_entity_id.uid.into())),
+        "deployment" => Some(EntityId::KubernetesDeployment(remote_entity_id.uid.into())),
+        "kubernetes_metadata" => Some(EntityId::KubernetesMetadata(remote_entity_id.uid.into())),
+        "kubernetes_node" => Some(EntityId::KubernetesNode(remote_entity_id.uid.into())),
         "kubernetes_pod_uid" => Some(EntityId::PodUid(remote_entity_id.uid.into())),
+        "process" => Some(EntityId::Process(remote_entity_id.uid.into())),
         "internal" => match remote_entity_id.uid.as_str() {
             "global-entity-id" => Some(EntityId::Global),
             uid => {
@@ -232,11 +236,53 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
                 None
             }
         },
-        // We don't care about these, so we just ignore them.
-        "container_image_metadata" | "process" | "gpu" => None,
+        // We don't care about this, so we just ignore it.
+        "gpu" => None,
         prefix => {
             warn!("Unhandled entity ID prefix: {}://{}", prefix, remote_entity_id.uid);
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn converts_all_otlp_metric_entity_prefixes_from_the_remote_tagger() {
+        let cases = [
+            ("container_id", "container", EntityId::Container("container".into())),
+            (
+                "container_image_metadata",
+                "sha256:image",
+                EntityId::ContainerImageMetadata("sha256:image".into()),
+            ),
+            ("ecs_task", "task", EntityId::EcsTask("task".into())),
+            (
+                "deployment",
+                "default/api",
+                EntityId::KubernetesDeployment("default/api".into()),
+            ),
+            (
+                "kubernetes_metadata",
+                "/namespaces//default",
+                EntityId::KubernetesMetadata("/namespaces//default".into()),
+            ),
+            ("kubernetes_node", "node", EntityId::KubernetesNode("node".into())),
+            ("kubernetes_pod_uid", "pod", EntityId::PodUid("pod".into())),
+            ("process", "42", EntityId::Process("42".into())),
+        ];
+
+        for (prefix, uid, expected) in cases {
+            assert_eq!(
+                remote_entity_id_to_entity_id(RemoteEntityId {
+                    prefix: prefix.to_owned(),
+                    uid: uid.to_owned(),
+                }),
+                Some(expected),
+                "{prefix}://{uid}"
+            );
         }
     }
 }

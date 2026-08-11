@@ -18,8 +18,9 @@ use url::Url;
 
 use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
 
-static DD_URL_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^app(\.mrf)?(\.[a-z]{2}\d)?\.(datad(oghq|0g)\.(com|eu)|ddog-gov\.com)$").unwrap());
+static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^app(\.mrf)?\.([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
+});
 static DD_SITE_FROM_HOSTNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|\.)([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)\.?$").unwrap()
 });
@@ -32,7 +33,7 @@ pub const DEFAULT_SITE: &str = "datadoghq.com";
 /// A `dd_url` equal to this constant carries no override intent and must not shadow `site`.
 const DEFAULT_PRIMARY_ENDPOINT: &str = "https://app.datadoghq.com";
 
-fn default_site() -> String {
+pub(crate) fn default_site() -> String {
     DEFAULT_SITE.to_owned()
 }
 
@@ -43,7 +44,7 @@ fn default_site() -> String {
 /// value equal to the default is treated as `None`, allowing `site` to determine the endpoint. This
 /// only affects the serde path; programmatic callers such as `set_dd_url` bypass serde and are
 /// unaffected.
-fn deserialize_dd_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+pub(crate) fn deserialize_dd_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -82,8 +83,6 @@ pub(crate) struct V3EndpointConfig<'a> {
     pub(crate) resolved_endpoint: &'a Url,
     /// Optional primary endpoint name used by serializer V3 endpoint-list matching.
     pub(crate) serializer_v3_configured_endpoint: Option<&'a str>,
-    /// Whether the ADP V3 series safety gate is enabled.
-    pub(crate) data_plane_v3_series_enabled: bool,
     /// Agent-compatible V3 series config.
     pub(crate) series_config: &'a UseV3ApiSeriesConfig,
     /// OPW/Vector route-specific V3 override.
@@ -137,7 +136,7 @@ impl EndpointV3Settings {
         }
     }
 
-    /// Creates V3 settings using Agent-compatible series V3 configuration plus the ADP safety gate.
+    /// Creates V3 settings using Agent-compatible series V3 configuration.
     ///
     /// `V3EndpointConfig::serializer_v3_configured_endpoint` lets metrics-primary OPW/Vector routes match
     /// `serializer_experimental_use_v3_api.series.endpoints` against the normal primary endpoint name, matching the
@@ -148,26 +147,23 @@ impl EndpointV3Settings {
                 || config.serializer_v3_configured_endpoint.is_some_and(|endpoint| {
                     serializer_v3_config_matches_endpoint(endpoint, config.serializer_v3_series_endpoints)
                 });
-        let use_v3_series = config.data_plane_v3_series_enabled
-            && if serializer_use_v3_series {
-                true
-            } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
-                metrics_primary_use_v3
-            } else if let Some(endpoint_value) = config.series_config.endpoints.get(config.configured_endpoint) {
-                evaluate_series_v3_mode(
-                    "use_v3_api.series.endpoints",
-                    endpoint_value,
-                    config.configured_endpoint,
-                    Some(config.resolved_endpoint),
-                )
-            } else {
-                evaluate_series_v3_mode(
-                    "use_v3_api.series.enabled",
-                    &config.series_config.enabled,
-                    config.configured_endpoint,
-                    Some(config.resolved_endpoint),
-                )
-            };
+        let use_v3_series = if serializer_use_v3_series {
+            true
+        } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
+            metrics_primary_use_v3
+        } else if let Some(endpoint_value) = config.series_config.endpoints.get(config.configured_endpoint) {
+            evaluate_series_v3_mode(
+                "use_v3_api.series.endpoints",
+                endpoint_value,
+                config.configured_endpoint,
+            )
+        } else {
+            evaluate_series_v3_mode(
+                "use_v3_api.series.enabled",
+                &config.series_config.enabled,
+                config.configured_endpoint,
+            )
+        };
 
         let use_v3_sketches = config
             .serializer_v3_sketches_endpoints
@@ -292,27 +288,14 @@ fn parse_series_v3_mode(value: &str) -> SeriesV3Mode {
 }
 
 fn configured_endpoint_is_datadog_url(configured_endpoint: &str) -> bool {
-    let endpoint = configured_endpoint.trim();
-    if endpoint.is_empty() {
-        return false;
-    }
-
-    if Url::parse(endpoint).is_ok_and(|url| is_datadog_url(&url)) {
-        return true;
-    }
-
-    Authority::from_str(endpoint).is_ok_and(|authority| is_datadog_host(authority.host()))
+    Url::parse(configured_endpoint.trim()).is_ok_and(|url| is_datadog_url(&url))
 }
 
-pub(crate) fn evaluate_series_v3_mode(
-    config_key: &'static str, value: &str, configured_endpoint: &str, resolved_endpoint: Option<&Url>,
-) -> bool {
+pub(crate) fn evaluate_series_v3_mode(config_key: &'static str, value: &str, configured_endpoint: &str) -> bool {
     match parse_series_v3_mode(value) {
         SeriesV3Mode::Enabled => true,
         SeriesV3Mode::Disabled => false,
-        SeriesV3Mode::DatadogOnly => {
-            configured_endpoint_is_datadog_url(configured_endpoint) || resolved_endpoint.is_some_and(is_datadog_url)
-        }
+        SeriesV3Mode::DatadogOnly => configured_endpoint_is_datadog_url(configured_endpoint),
         SeriesV3Mode::Invalid => {
             warn!(
                 config_key,
@@ -327,7 +310,7 @@ pub(crate) fn series_v3_config_can_enable_v3(series_config: &UseV3ApiSeriesConfi
     if series_config
         .endpoints
         .iter()
-        .any(|(endpoint, value)| evaluate_series_v3_mode("use_v3_api.series.endpoints", value, endpoint, None))
+        .any(|(endpoint, value)| evaluate_series_v3_mode("use_v3_api.series.endpoints", value, endpoint))
     {
         return true;
     }
@@ -500,7 +483,7 @@ pub struct EndpointConfiguration {
     /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
     ///
     /// Defaults to unset.
-    #[serde(default, alias = "url", deserialize_with = "deserialize_dd_url")]
+    #[serde(default, deserialize_with = "deserialize_dd_url")]
     dd_url: Option<String>,
 
     /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
@@ -895,7 +878,7 @@ fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError
 ///
 /// If an override URL is provided and can't be parsed, or if a valid endpoint can't be constructed from the given
 /// site, an error will be returned.
-fn calculate_resolved_endpoint(
+pub(crate) fn calculate_resolved_endpoint(
     override_url: Option<&str>, site: &str, api_key: &str,
 ) -> Result<ResolvedEndpoint, EndpointError> {
     let raw_endpoint = match override_url {
@@ -982,61 +965,48 @@ mod tests {
     }
 
     #[test]
-    fn deser_additional_endpoints_json_direct_mapping() {
-        let raw_input = r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#;
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
-
-        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_json_multiple_api_keys() {
-        let raw_input = r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#;
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from JSON string");
-
-        let expected = vec![
+    fn deser_additional_endpoints_accepts_json_string_and_native_yaml_forms() {
+        // `AdditionalEndpoints` accepts either a JSON-encoded string (what the Core Agent emits) or a
+        // native YAML mapping, and each endpoint may map to a single API key or a list of keys.
+        let single = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
+        let multiple = vec![
             "app.datadoghq.com:fake-api-key-1a",
             "app.datadoghq.com:fake-api-key-1b",
             "app.datadoghq.eu:fake-api-key-2a",
             "app.datadoghq.eu:fake-api-key-2b",
         ];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_direct_mapping() {
-        let raw_input = "app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2";
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
-
-        let expected = vec!["app.datadoghq.com:fake-api-key-1", "app.datadoghq.eu:fake-api-key-2"];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
-    }
-
-    #[test]
-    fn deser_additional_endpoints_multiple_api_keys() {
-        let raw_input = "app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b";
-
-        let result = serde_yaml::from_str::<AdditionalEndpoints>(raw_input)
-            .expect("should not fail to deserialize AdditionalEndpoints from YAML string");
-
-        let expected = vec![
-            "app.datadoghq.com:fake-api-key-1a",
-            "app.datadoghq.com:fake-api-key-1b",
-            "app.datadoghq.eu:fake-api-key-2a",
-            "app.datadoghq.eu:fake-api-key-2b",
+        let cases: [(&str, &str, &[&str]); 4] = [
+            (
+                "JSON string, single key per endpoint",
+                r#""{\"app.datadoghq.com\":\"fake-api-key-1\",\"app.datadoghq.eu\":\"fake-api-key-2\"}""#,
+                &single,
+            ),
+            (
+                "JSON string, multiple keys per endpoint",
+                r#""{\"app.datadoghq.com\":[\"fake-api-key-1a\",\"fake-api-key-1b\"],\"app.datadoghq.eu\":[\"fake-api-key-2a\",\"fake-api-key-2b\"]}""#,
+                &multiple,
+            ),
+            (
+                "native YAML mapping, single key per endpoint",
+                "app.datadoghq.com: fake-api-key-1\napp.datadoghq.eu: fake-api-key-2",
+                &single,
+            ),
+            (
+                "native YAML mapping, multiple keys per endpoint",
+                "app.datadoghq.com:\n  - fake-api-key-1a\n  - fake-api-key-1b\napp.datadoghq.eu:\n  - fake-api-key-2a\n  - fake-api-key-2b",
+                &multiple,
+            ),
         ];
-        let actual = additional_endpoints_to_sorted_strings(&result);
-        assert_eq!(expected, actual);
+
+        for (name, raw_input, expected) in cases {
+            let result =
+                serde_yaml::from_str::<AdditionalEndpoints>(raw_input).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert_eq!(
+                expected,
+                additional_endpoints_to_sorted_strings(&result).as_slice(),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -1185,43 +1155,42 @@ mod tests {
     }
 
     #[test]
-    fn calculate_api_endpoint_no_override_no_site() {
+    fn calculate_resolved_endpoint_resolves_override_and_site() {
+        // A `dd_url` override is used verbatim (dogpound.io is not a Datadog domain, so it is not
+        // version-prefixed) and always wins over `site`; with no override, the endpoint is derived from
+        // `site` (falling back to the default US site when empty) and gains the data plane version prefix.
         let prefix = get_data_plane_version_prefix();
-        let expected_endpoint = format!("https://{}.{}/", prefix, DEFAULT_SITE);
+        let cases = [
+            (
+                "no override, no site falls back to default site",
+                None,
+                "",
+                format!("https://{prefix}.{DEFAULT_SITE}/"),
+            ),
+            (
+                "no override, custom site",
+                None,
+                "us3.datadoghq.com",
+                format!("https://{prefix}.us3.datadoghq.com/"),
+            ),
+            (
+                "override, no site uses override verbatim",
+                Some("https://dogpound.io/"),
+                "",
+                "https://dogpound.io/".to_string(),
+            ),
+            (
+                "override wins over site",
+                Some("https://dogpound.io/"),
+                "us3.datadoghq.com",
+                "https://dogpound.io/".to_string(),
+            ),
+        ];
 
-        let resolved = calculate_resolved_endpoint(None, "", "").expect("error calculating default API endpoint");
-        assert_eq!(expected_endpoint, resolved.endpoint().to_string());
-    }
-
-    #[test]
-    fn calculate_api_endpoint_no_override() {
-        let site = "us3.datadoghq.com";
-        let prefix = get_data_plane_version_prefix();
-        let expected_endpoint = format!("https://{}.{}/", prefix, site);
-
-        let resolved =
-            calculate_resolved_endpoint(None, "us3.datadoghq.com", "").expect("error calculating custom API endpoint");
-        assert_eq!(expected_endpoint, resolved.endpoint().to_string());
-    }
-
-    #[test]
-    fn calculate_api_endpoint_no_site() {
-        let override_url = "https://dogpound.io/";
-        let expected_endpoint = override_url;
-
-        let resolved =
-            calculate_resolved_endpoint(Some(override_url), "", "").expect("error calculating override API endpoint");
-        assert_eq!(expected_endpoint, resolved.endpoint().to_string());
-    }
-
-    #[test]
-    fn calculate_api_endpoint_override_and_site() {
-        let override_url = "https://dogpound.io/";
-        let expected_endpoint = override_url;
-
-        let resolved = calculate_resolved_endpoint(Some(override_url), "us3.datadoghq.com", "")
-            .expect("error calculating override API endpoint");
-        assert_eq!(expected_endpoint, resolved.endpoint().to_string());
+        for (name, override_url, site, expected_endpoint) in cases {
+            let resolved = calculate_resolved_endpoint(override_url, site, "").expect(name);
+            assert_eq!(expected_endpoint, resolved.endpoint().to_string(), "{name}");
+        }
     }
 
     #[test]
@@ -1239,6 +1208,112 @@ mod tests {
         assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_sketches())));
         assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_sketches())));
         assert!(!settings.should_receive_validation_headers(None));
+    }
+
+    #[test]
+    fn should_receive_payload_covers_all_documented_branches() {
+        // Walks every branch enumerated in `should_receive_payload`'s doc comment:
+        // - V2 series: accept if series V3 is disabled OR series validation mode is enabled
+        // - V2 sketches: accept if sketches V3 is disabled OR sketches validation mode is enabled
+        // - V3 series: accept if series V3 is enabled
+        // - V3 sketches: accept if sketches V3 is enabled
+        // - Non-metrics payloads (None): always accept
+        let cases: [(&str, EndpointV3Settings, Option<MetricsPayloadInfo>, bool); 11] = [
+            (
+                "v2 series accepted when series v3 disabled",
+                EndpointV3Settings::disabled(),
+                Some(MetricsPayloadInfo::v2_series()),
+                true,
+            ),
+            (
+                "v2 series rejected when series v3 enabled without validation",
+                EndpointV3Settings {
+                    use_v3_series: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v2_series()),
+                false,
+            ),
+            (
+                "v2 series accepted when series validation mode duplicates to v2",
+                EndpointV3Settings {
+                    use_v3_series: true,
+                    series_validation_mode: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v2_series()),
+                true,
+            ),
+            (
+                "v2 sketches accepted when sketches v3 disabled",
+                EndpointV3Settings::disabled(),
+                Some(MetricsPayloadInfo::v2_sketches()),
+                true,
+            ),
+            (
+                "v2 sketches rejected when sketches v3 enabled without validation",
+                EndpointV3Settings {
+                    use_v3_sketches: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v2_sketches()),
+                false,
+            ),
+            (
+                "v2 sketches accepted when sketches validation mode duplicates to v2",
+                EndpointV3Settings {
+                    use_v3_sketches: true,
+                    sketches_validation_mode: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v2_sketches()),
+                true,
+            ),
+            (
+                "v3 series accepted when series v3 enabled",
+                EndpointV3Settings {
+                    use_v3_series: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v3_series()),
+                true,
+            ),
+            (
+                "v3 series rejected when series v3 disabled",
+                EndpointV3Settings::disabled(),
+                Some(MetricsPayloadInfo::v3_series()),
+                false,
+            ),
+            (
+                "v3 sketches accepted when sketches v3 enabled",
+                EndpointV3Settings {
+                    use_v3_sketches: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                Some(MetricsPayloadInfo::v3_sketches()),
+                true,
+            ),
+            (
+                "v3 sketches rejected when sketches v3 disabled",
+                EndpointV3Settings::disabled(),
+                Some(MetricsPayloadInfo::v3_sketches()),
+                false,
+            ),
+            (
+                "non-metrics payload always accepted",
+                EndpointV3Settings {
+                    use_v3_series: true,
+                    use_v3_sketches: true,
+                    ..EndpointV3Settings::disabled()
+                },
+                None,
+                true,
+            ),
+        ];
+
+        for (name, settings, payload_info, expected) in cases {
+            assert_eq!(settings.should_receive_payload(payload_info), expected, "{name}");
+        }
     }
 
     #[test]
@@ -1343,7 +1418,6 @@ mod tests {
             configured_endpoint: endpoint.configured_endpoint(),
             resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint: None,
-            data_plane_v3_series_enabled: true,
             series_config,
             metrics_primary_v3_override: None,
             serializer_v3_series_endpoints: &[],
@@ -1355,20 +1429,10 @@ mod tests {
     }
 
     #[test]
-    fn agent_v3_default_requires_data_plane_gate() {
+    fn agent_v3_default_enables_authoritative_v3() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
             .expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig::default();
-
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            data_plane_v3_series_enabled: false,
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
-        assert!(!settings.use_v3_series);
-        assert!(settings.series_shadow_mode);
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_series())));
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
             series_shadow_sites: &["datadoghq.com".to_string()],
@@ -1427,41 +1491,30 @@ mod tests {
     }
 
     #[test]
-    fn agent_v3_datadog_only_config_viability_accepts_schemeless_datadog_endpoints() {
+    fn agent_v3_datadog_only_config_viability_matches_core_agent_url_rules() {
         let mut series_config = UseV3ApiSeriesConfig {
             enabled: "false".to_string(),
             endpoints: HashMap::new(),
         };
-        series_config
-            .endpoints
-            .insert("app.datadoghq.com".to_string(), "datadog_only".to_string());
+        for endpoint in [
+            "https://app.datadoghq.com",
+            "https://APP.DATADOGHQ.COM",
+            "https://app.datadoghq.com.:443",
+            "https://app.us12.datadoghq.com",
+            "https://app.apne1.datadoghq.com",
+        ] {
+            series_config.endpoints = HashMap::from([(endpoint.to_string(), "datadog_only".to_string())]);
+            assert!(series_v3_config_can_enable_v3(&series_config), "{endpoint}");
+        }
 
-        assert!(series_v3_config_can_enable_v3(&series_config));
-
-        series_config.endpoints.clear();
-        series_config
-            .endpoints
-            .insert("app.datadoghq.com:443".to_string(), "datadog_only".to_string());
-
-        assert!(series_v3_config_can_enable_v3(&series_config));
-
-        series_config.endpoints.clear();
-        series_config
-            .endpoints
-            .insert("APP.DATADOGHQ.COM".to_string(), "datadog_only".to_string());
-
-        assert!(series_v3_config_can_enable_v3(&series_config));
-
-        series_config.endpoints.clear();
-        series_config
-            .endpoints
-            .insert("example.com".to_string(), "datadog_only".to_string());
-
-        assert!(!series_v3_config_can_enable_v3(&series_config));
+        for endpoint in ["app.datadoghq.com", "app.datadoghq.com:443", "example.com"] {
+            series_config.endpoints = HashMap::from([(endpoint.to_string(), "datadog_only".to_string())]);
+            assert!(!series_v3_config_can_enable_v3(&series_config), "{endpoint}");
+        }
     }
 
     #[test]
-    fn agent_v3_datadog_only_endpoint_override_matches_schemeless_host_port() {
+    fn agent_v3_datadog_only_endpoint_override_rejects_schemeless_host_port() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("app.datadoghq.com:443", "fake-api-key")
             .expect("endpoint should resolve");
         let mut series_config = UseV3ApiSeriesConfig {
@@ -1474,7 +1527,7 @@ mod tests {
 
         let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
 
-        assert!(settings.use_v3_series);
+        assert!(!settings.use_v3_series);
     }
 
     #[test]
@@ -1514,7 +1567,7 @@ mod tests {
     }
 
     #[test]
-    fn serializer_v3_endpoint_list_wins_when_data_plane_gate_enabled() {
+    fn serializer_v3_endpoint_list_wins_over_other_agent_settings() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
             .expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig {

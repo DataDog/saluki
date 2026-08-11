@@ -1,104 +1,24 @@
-//! Overlay flat environment-variable keys onto the nested `SalukiOnly` shape.
+//! Reads Saluki-only configuration keys from the environment into the nested `SalukiOnly` shape.
 //!
-//! Environment variables reach the merged map as flat, underscore-joined keys:
-//! `DD_DATA_PLANE_STANDALONE_MODE` lands as `data_plane_standalone_mode`, not as the nested
-//! `data_plane.standalone_mode` object `SalukiOnly` reads, so without help the value is silently
-//! lost. This is the Saluki-only twin of the Datadog `apply_env_overlay`, which repairs the same
-//! gap for the Datadog source model.
-//!
-//! The two differ in where the mapping comes from. The Datadog side relocates keys named in a
-//! generated table. Here there is no table and no alias: a Saluki-only key's flat env spelling is
-//! its canonical path with the dots replaced by underscores (`path.join("_")`), so the nested slot
-//! and its env form stay in lockstep with the struct by construction. The set of canonical paths is
-//! read straight off `SalukiOnly` (see the discovery section below), so it cannot drift from the
-//! fields the deserializer actually reads.
+//! This is the Saluki-only counterpart to `datadog_agent_config::apply_datadog_env`. The Datadog
+//! side drives a generated table of declared variable names; here there is no table and no alias. A
+//! Saluki-only key's environment name is its canonical path in upper case, with the segments joined
+//! by underscores and a `DD_` prefix, so the nested slot and its environment form stay in lockstep with
+//! the struct by construction. The set of canonical paths is read straight off `SalukiOnly` (see the
+//! discovery section below), so it cannot drift from the fields the deserializer actually reads.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use datadog_agent_config::{apply_env_at_path, EnvDecode, EnvOverlayMode};
+use datadog_agent_config::{apply_env_at_path, EnvDecode};
 use serde::de::value::{Error as ValueError, StrDeserializer};
-use serde::de::{DeserializeSeed, Deserializer, IntoDeserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{
+    DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor,
+};
 use serde::Deserialize;
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::saluki_only::SalukiOnly;
-
-/// Relocates flat environment-variable keys in `merged` into the nested slots `SalukiOnly` reads,
-/// according to `mode`.
-///
-/// Operates on the caller's owned `merged` value. Only multi-segment paths are relocated;
-/// single-segment keys are already flat and need no move.
-pub(crate) fn apply(merged: &mut Value, mode: EnvOverlayMode) {
-    let clobber = match mode {
-        EnvOverlayMode::Disabled => return,
-        EnvOverlayMode::Override => true,
-        EnvOverlayMode::Fallback => false,
-    };
-
-    let Some(root) = merged.as_object_mut() else {
-        return;
-    };
-
-    for (path, _decode) in leaf_specs() {
-        if path.len() < 2 {
-            continue;
-        }
-        let flat = path.join("_");
-        let Some(value) = root.get(&flat).cloned() else {
-            continue;
-        };
-
-        let segments: Vec<&str> = path.iter().map(String::as_str).collect();
-        if !clobber && path_present(root, &segments) {
-            continue;
-        }
-        set_at_path(root, &segments, value);
-    }
-}
-
-// `path_present` and `set_at_path` are copied from the Datadog `apply_env_overlay` rather than
-// shared, so exposing them across the crate boundary is not forced for a few lines of JSON walking.
-
-/// Returns whether a leaf already exists at `path`, walking object nodes from `root`.
-fn path_present(root: &Map<String, Value>, path: &[&str]) -> bool {
-    let Some((first, rest)) = path.split_first() else {
-        return false;
-    };
-    let mut current = match root.get(*first) {
-        Some(v) => v,
-        None => return false,
-    };
-    for segment in rest {
-        match current.get(*segment) {
-            Some(v) => current = v,
-            None => return false,
-        }
-    }
-    true
-}
-
-/// Sets `value` at `path`, creating intermediate object nodes as needed and clobbering the leaf. An
-/// intermediate that exists but is not an object is replaced; a Saluki-only key's parents are always
-/// sections, so this cannot lose a real value.
-fn set_at_path(root: &mut Map<String, Value>, path: &[&str], value: Value) {
-    let Some((leaf, sections)) = path.split_last() else {
-        return;
-    };
-
-    let mut current = root;
-    for segment in sections {
-        let node = current
-            .entry((*segment).to_string())
-            .or_insert_with(|| Value::Object(Map::new()));
-        if !node.is_object() {
-            *node = Value::Object(Map::new());
-        }
-        current = node.as_object_mut().expect("node was just ensured to be an object");
-    }
-
-    current.insert((*leaf).to_string(), value);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Path discovery: the canonical leaf paths, read off `SalukiOnly` itself.
@@ -202,8 +122,9 @@ impl PathRecorder<'_, '_> {
 // `PathRecorder` records a leaf at every scalar (and scalar-like) method, descends at `option` and
 // `newtype_struct`, and recurses at `struct`. The visited value is thrown away, so each leaf feeds
 // the visitor a throwaway of the right shape purely to let deserialization complete. `deserialize_any`
-// is a leaf: it is where `DurationString` and `ByteSize` land. `tuple`, `tuple_struct`, and `enum`
-// are unused by `SalukiOnly` and fail loudly if that ever changes.
+// is a leaf: it is where `DurationString` and `ByteSize` land. A fieldless (unit-variant) `enum` is
+// also a leaf, recorded as `RawString` since its environment and JSON forms are both a plain string.
+// `tuple`, `tuple_struct`, and enum variants carrying data return an error.
 macro_rules! record_scalar {
     ($method:ident, $visit:ident, $dummy:expr, $decode:expr) => {
         fn $method<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
@@ -251,9 +172,10 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
         V: Visitor<'de>,
     {
         // `DurationString` and `ByteSize` land here; both accept a raw string, so the environment
-        // value is carried through verbatim for the leaf's own `deserialize_any` to interpret.
+        // value is carried through verbatim for the leaf's own `deserialize_any` to interpret. Use
+        // a non-zero throwaway so constrained byte-size fields can complete discovery.
         self.record_leaf(EnvDecode::RawString);
-        visitor.visit_u64(0)
+        visitor.visit_u64(1)
     }
 
     fn deserialize_option<V>(self, visitor: V) -> Result<V::Value, Self::Error>
@@ -309,12 +231,17 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
     }
 
     fn deserialize_enum<V>(
-        self, _name: &'static str, _variants: &'static [&'static str], _visitor: V,
+        mut self, _name: &'static str, variants: &'static [&'static str], visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        Err(unsupported("enum"))
+        // A fieldless enum is a leaf: its environment and JSON forms are both the variant's plain
+        // string spelling. Which variant is fed to the visitor does not matter; the recorder
+        // discards the result once the leaf is noted.
+        self.record_leaf(EnvDecode::RawString);
+        let variant = variants.first().copied().unwrap_or_default();
+        visitor.visit_enum(UnitVariantAccess { variant })
     }
 
     fn deserialize_struct<V>(
@@ -348,6 +275,57 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
 
 fn unsupported(kind: &str) -> ValueError {
     serde::de::Error::custom(format!("SalukiOnly env tracer does not support {kind} leaves"))
+}
+
+/// Feeds a fixed variant name to a fieldless-enum visitor during leaf discovery.
+///
+/// Only unit variants are supported. A variant carrying data would need its own path recording, so
+/// those forms return an error instead of guessing.
+struct UnitVariantAccess {
+    variant: &'static str,
+}
+
+impl<'de> EnumAccess<'de> for UnitVariantAccess {
+    type Error = ValueError;
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Self::Error>
+    where
+        V: DeserializeSeed<'de>,
+    {
+        let key: StrDeserializer<'_, ValueError> = self.variant.into_deserializer();
+        let value = seed.deserialize(key)?;
+        Ok((value, self))
+    }
+}
+
+impl<'de> VariantAccess<'de> for UnitVariantAccess {
+    type Error = ValueError;
+
+    fn unit_variant(self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn newtype_variant_seed<T>(self, _seed: T) -> Result<T::Value, Self::Error>
+    where
+        T: DeserializeSeed<'de>,
+    {
+        Err(unsupported("enum newtype variant"))
+    }
+
+    fn tuple_variant<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(unsupported("enum tuple variant"))
+    }
+
+    fn struct_variant<V>(self, _fields: &'static [&'static str], _visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        Err(unsupported("enum struct variant"))
+    }
 }
 
 /// Feeds every field name to the derived struct visitor in turn, so serde requests each field's
@@ -472,62 +450,41 @@ mod tests {
     }
 
     #[test]
-    fn top_level_key_is_not_relocated_and_still_deserializes() {
-        let mut v = json!({ "aggregate_context_limit": 250000 });
-        apply(&mut v, EnvOverlayMode::Fallback);
-
-        assert_eq!(v.get("aggregate_context_limit"), Some(&json!(250000)));
+    fn a_top_level_key_deserializes_from_its_own_name() {
+        let v = json!({ "aggregate_context_limit": 250000 });
         let parsed: SalukiOnly = serde_json::from_value(v).expect("deserializes");
         assert_eq!(parsed.aggregate_context_limit, Some(250000));
     }
 
     #[test]
-    fn flat_env_key_reaches_nested_slot() {
-        let mut v = json!({ "data_plane_standalone_mode": true });
-        apply(&mut v, EnvOverlayMode::Fallback);
-
-        assert_eq!(
-            v.get("data_plane").and_then(|d| d.get("standalone_mode")),
-            Some(&Value::Bool(true)),
-        );
+    fn a_nested_key_deserializes_from_its_canonical_path() {
+        let v = json!({ "data_plane": { "standalone_mode": true, "checks": { "enabled": true } } });
         let parsed: SalukiOnly = serde_json::from_value(v).expect("deserializes");
         assert_eq!(parsed.data_plane.standalone_mode, Some(true));
-    }
-
-    #[test]
-    fn deep_flat_env_key_reaches_nested_slot() {
-        let mut v = json!({ "data_plane_checks_enabled": true });
-        apply(&mut v, EnvOverlayMode::Fallback);
-
-        assert_eq!(
-            v.get("data_plane")
-                .and_then(|d| d.get("checks"))
-                .and_then(|c| c.get("enabled")),
-            Some(&Value::Bool(true)),
-        );
-        let parsed: SalukiOnly = serde_json::from_value(v).expect("deserializes");
         assert_eq!(parsed.data_plane.checks.enabled, Some(true));
     }
 
+    /// Every nested Saluki-only key in the canonical inventory must exist as a `SalukiOnly` leaf.
+    ///
+    /// A flat key survives without one: Figment's prefix scan turns `DD_FOO_BAR` into the key
+    /// `foo_bar`, which is already the canonical spelling. A *nested* key has no such fallback. The
+    /// scan would produce the flat `foo_bar` and nothing places it at `foo.bar`, so discovery off
+    /// `SalukiOnly` is the only thing that makes `DD_FOO_BAR` reach it. An inventory key with no
+    /// field here is therefore unreachable from the environment, and silently so. That is exactly how
+    /// `data_plane.serializer_zstd_compressor_level` lost its documented override.
     #[test]
-    fn mode_governs_relocation() {
-        let seed = || json!({ "data_plane_standalone_mode": true, "data_plane": { "standalone_mode": false } });
-        let nested = |v: &Value| v.get("data_plane").and_then(|d| d.get("standalone_mode")).cloned();
+    fn every_nested_inventory_key_is_a_leaf() {
+        let missing: Vec<&str> = datadog_agent_config_overlay_model::saluki_keys::SALUKI_KEYS
+            .iter()
+            .map(|key| key.yaml_path)
+            .filter(|path| path.contains('.'))
+            .filter(|path| !has_path(&path.split('.').collect::<Vec<_>>()))
+            .collect();
 
-        let mut disabled = seed();
-        apply(&mut disabled, EnvOverlayMode::Disabled);
-        assert_eq!(nested(&disabled), Some(Value::Bool(false)));
-
-        let mut fallback = seed();
-        apply(&mut fallback, EnvOverlayMode::Fallback);
-        assert_eq!(nested(&fallback), Some(Value::Bool(false)));
-
-        let mut over = seed();
-        apply(&mut over, EnvOverlayMode::Override);
-        assert_eq!(nested(&over), Some(Value::Bool(true)));
-
-        let mut fill = json!({ "data_plane_standalone_mode": true });
-        apply(&mut fill, EnvOverlayMode::Fallback);
-        assert_eq!(nested(&fill), Some(Value::Bool(true)));
+        assert!(
+            missing.is_empty(),
+            "nested Saluki-only key(s) have no `SalukiOnly` field, so no environment variable \
+             reaches them: {missing:?}",
+        );
     }
 }

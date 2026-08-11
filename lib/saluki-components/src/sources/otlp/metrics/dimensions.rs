@@ -1,7 +1,11 @@
 //! OTLP metric dimensions.
 
 use otlp_protos::opentelemetry::proto::common::v1 as otlp_common;
-use saluki_context::tags::{SharedTagSet, Tag, TagSet};
+use saluki_context::{
+    hash_context_with_host,
+    tags::{SharedTagSet, Tag, TagSet},
+    ContextKey,
+};
 use stringtheory::MetaString;
 
 use super::internal::utils::format_key_value_tag;
@@ -12,7 +16,6 @@ pub struct Dimensions {
     pub name: String,
     pub tags: SharedTagSet,
     pub host: Option<MetaString>,
-    #[allow(dead_code)]
     pub origin_id: Option<String>,
 }
 
@@ -95,6 +98,7 @@ impl Dimensions {
     }
 
     /// Creates a canonical cache key for the dimension set.
+    #[cfg(test)]
     pub fn get_cache_key(&self) -> String {
         let mut dimensions: Vec<String> = self.tags.into_iter().map(|t| t.to_string()).collect();
 
@@ -112,6 +116,16 @@ impl Dimensions {
 
         // Join with a null character separator.
         dimensions.join("\0")
+    }
+
+    /// Creates a compact context key for the dimension set.
+    ///
+    /// The host remains a distinct scalar dimension, while the origin ID is hashed as an origin tag.
+    pub fn context_key(&self) -> ContextKey {
+        let (context_key, _) =
+            hash_context_with_host(&self.name, self.host.as_deref(), &self.tags, self.origin_id.as_deref());
+
+        context_key
     }
 }
 
@@ -132,6 +146,25 @@ mod tests {
     }
 
     #[test]
+    fn with_suffix_and_add_tags_preserve_origin_id() {
+        let dimensions = Dimensions {
+            name: "http.request.duration".to_string(),
+            tags: TagSet::default().into_shared(),
+            host: None,
+            origin_id: Some("container_id://container-123".to_string()),
+        };
+
+        assert_eq!(
+            dimensions.with_suffix("count").origin_id.as_deref(),
+            Some("container_id://container-123")
+        );
+        assert_eq!(
+            dimensions.add_tags(["env:prod".to_string()]).origin_id.as_deref(),
+            Some("container_id://container-123")
+        );
+    }
+
+    #[test]
     fn add_tags_preserves_order_deduplication_and_base() {
         let base = dims_with_tags("http.request.duration", &["env:prod", "service:web", "lower_bound:1.0"]);
         let extended = base.add_tags(["lower_bound:1.0".to_string(), "upper_bound:2.0".to_string()]);
@@ -144,6 +177,22 @@ mod tests {
 
         let base_tags: Vec<&str> = base.tags.into_iter().map(|t| t.as_str()).collect();
         assert_eq!(base_tags, vec!["env:prod", "service:web", "lower_bound:1.0"]);
+    }
+
+    #[test]
+    fn cache_key_is_independent_of_tag_order() {
+        let first = dims_with_tags("http.request.duration", &["service:web", "env:prod"]);
+        let second = dims_with_tags("http.request.duration", &["env:prod", "service:web"]);
+
+        assert_eq!(first.get_cache_key(), second.get_cache_key());
+    }
+
+    #[test]
+    fn context_key_is_independent_of_tag_order() {
+        let first = dims_with_tags("http.request.duration", &["service:web", "env:prod"]);
+        let second = dims_with_tags("http.request.duration", &["env:prod", "service:web"]);
+
+        assert_eq!(first.context_key(), second.context_key());
     }
 
     #[test]
