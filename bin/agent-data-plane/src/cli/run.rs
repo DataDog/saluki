@@ -681,26 +681,23 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     let trace_obfuscation_config =
         TraceObfuscationConfiguration::from_configuration(&config.domains.traces.obfuscation);
 
-    // The remaining trace-enrichment components still read from the raw compatibility map.
-    let raw_config = config_system.raw_map();
-    let ottl_filter_config = OttlFilterConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure OTTL filter processor.")?;
-    let ottl_transform_config = OttlTransformConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure OTTL transform processor.")?;
+    let ottl_filter_config = OttlFilterConfiguration::from_configuration(&config.domains.traces.ottl_filter);
+
+    let ottl_transform_config = OttlTransformConfiguration::from_configuration(&config.domains.traces.ottl_transform);
+
     let dd_traces_enrich_config = ChainedConfiguration::default()
         .with_transform_builder("ottl_filter", ottl_filter_config)
         .with_transform_builder("ottl_transform", ottl_transform_config)
         .with_transform_builder("apm_onboarding", ApmOnboardingConfiguration)
         .with_transform_builder("trace_obfuscation", trace_obfuscation_config)
         .with_transform_builder("trace_sampler", trace_sampler_config);
-    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure APM Stats transform.")?
+    let apm_stats_transform_config = ApmStatsTransformConfiguration::from_configuration(&config.domains.traces)
         .with_environment_provider(env_provider.clone())
         .await?;
-    let dd_apm_stats_encoder = DatadogApmStatsEncoderConfiguration::from_configuration(&raw_config)
-        .error_context("Failed to configure Datadog APM Stats encoder.")?
-        .with_environment_provider(env_provider.clone())
-        .await?;
+    let dd_apm_stats_encoder =
+        DatadogApmStatsEncoderConfiguration::from_configuration(&config.domains.traces, &config.shared)
+            .with_environment_provider(env_provider.clone())
+            .await?;
 
     blueprint
         .add_transform("traces_enrich", dd_traces_enrich_config)?
@@ -908,9 +905,8 @@ async fn add_otlp_pipeline_to_blueprint(
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
         let config = config_system.config();
-        let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp)
-            .with_default_hostname(default_hostname)
-            .with_workload_provider(env_provider.workload().clone());
+        let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
+            .with_default_hostname(default_hostname);
 
         blueprint
             // Components.
