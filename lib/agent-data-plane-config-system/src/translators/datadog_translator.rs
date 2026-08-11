@@ -28,7 +28,7 @@ use agent_data_plane_config::domains::otlp::{
     DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
-use agent_data_plane_config::{ConfigValue, Provenance, SalukiConfiguration};
+use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use bytesize::ByteSize;
 use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
 
@@ -72,18 +72,6 @@ impl<'a> DatadogTranslator<'a> {
     /// Records a translation error encountered while consuming.
     fn record_error(&mut self, error: TranslateError) {
         self.errors.push(error);
-    }
-
-    /// Returns whether an input set `key`'s value explicitly, treating an empty value as a default.
-    ///
-    /// An empty string expresses no intent: it names no site and no URL. Recording it as a default
-    /// keeps a consumer from having to re-check for emptiness before honoring an override.
-    fn provenance_if_non_empty(&self, key: &str, value: &str) -> Provenance {
-        if value.is_empty() {
-            Provenance::Default
-        } else {
-            self.sources.provenance(key)
-        }
     }
 }
 
@@ -458,11 +446,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dd_url(&mut self, value: String) {
-        // The Core Agent streams this key at its schema default even when the operator configured
-        // only `site`, so the URL is carried through as-is and provenance records whether it is an
-        // override anyone set. Programmatic overrides via `EndpointConfiguration::set_dd_url`
-        // (MRF, cluster-agent forwarder) bypass this translator entirely.
-        let provenance = self.provenance_if_non_empty("dd_url", &value);
+        // The Agent may send its default URL even when the operator configured only `site`; retain
+        // the value and use provenance to decide whether it overrides `site`. Programmatic
+        // overrides via `EndpointConfiguration::set_dd_url` bypass this translator.
+        let provenance = self.sources.provenance("dd_url");
         self.config.shared.endpoints.dd_url = ConfigValue::new(value, provenance);
     }
 
@@ -1062,7 +1049,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_site(&mut self, value: String) {
-        let provenance = self.provenance_if_non_empty("site", &value);
+        let provenance = self.sources.provenance("site");
         self.config.shared.endpoints.site = ConfigValue::new(value, provenance);
     }
 
@@ -1368,10 +1355,18 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_endpoint_value_is_not_explicit() {
-        // An empty string names no site and no URL, so it expresses no intent no matter which source
-        // supplied it.
+    fn an_empty_endpoint_value_keeps_its_provenance() {
+        // Empty endpoint strings retain the provenance of the source that supplied them.
         let (config, errors) = translate_explicit(json!({ "site": "", "dd_url": "" }));
+
+        assert!(errors.is_none());
+        assert_explicit(&config.shared.endpoints.site, "");
+        assert_explicit(&config.shared.endpoints.dd_url, "");
+
+        let (config, errors) = translate_stream(&[
+            ("site", json!(""), StreamProvenance::Default),
+            ("dd_url", json!(""), StreamProvenance::Default),
+        ]);
 
         assert!(errors.is_none());
         assert_defaulted(&config.shared.endpoints.site, "");
