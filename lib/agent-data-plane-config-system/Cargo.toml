@@ -10,6 +10,7 @@ agent-data-plane-config = { workspace = true }
 arc-swap = { workspace = true }
 bytesize = { workspace = true }
 datadog-agent-config = { workspace = true }
+figment = { workspace = true }
 saluki-config = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
@@ -19,6 +20,7 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+datadog-agent-config-overlay-model = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt", "time"] }
 

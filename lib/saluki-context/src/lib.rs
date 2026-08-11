@@ -6,6 +6,7 @@ mod context;
 pub use self::context::{Context, TagSetMutView, TagSetMutViewState};
 
 mod hash;
+pub use self::hash::{hash_context_with_host, ContextKey};
 
 pub mod origin;
 

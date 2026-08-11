@@ -92,11 +92,36 @@ fn get_type_name(value: &serde_json::Value) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use crate::dynamic::event::ConfigUpdate;
+    use std::time::Duration;
+
+    use serde_json::json;
+    use tokio::sync::broadcast;
+
+    use super::FieldUpdateWatcher;
+    use crate::dynamic::event::{ConfigChangeEvent, ConfigUpdate};
     use crate::ConfigurationLoader;
 
+    fn change_event(key: &str, new_value: serde_json::Value) -> ConfigChangeEvent {
+        ConfigChangeEvent {
+            key: key.to_string(),
+            old_value: None,
+            new_value: Some(new_value),
+        }
+    }
+
+    fn watcher_over(key: &str, capacity: usize) -> (broadcast::Sender<ConfigChangeEvent>, FieldUpdateWatcher) {
+        let (tx, rx) = broadcast::channel(capacity);
+        (
+            tx,
+            FieldUpdateWatcher {
+                key: key.to_string(),
+                rx: Some(rx),
+            },
+        )
+    }
+
     #[tokio::test]
-    async fn test_basic_field_update_watcher() {
+    async fn changed_returns_partial_update_for_watched_key() {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
             None,
@@ -130,7 +155,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_field_update_watcher_nested_key() {
+    async fn changed_returns_nested_key_update() {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
             None,
@@ -169,7 +194,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_field_update_watcher_parent_update() {
+    async fn changed_returns_update_when_parent_object_changes() {
         let (cfg, sender) = ConfigurationLoader::for_tests(
             Some(serde_json::json!({ "foobar": { "a": false, "b": "c" } })),
             None,
@@ -205,5 +230,64 @@ mod tests {
 
         // Existing nested key not updated is still present
         assert_eq!(cfg.get_typed::<String>("foobar.b").unwrap(), "c");
+    }
+
+    #[tokio::test]
+    async fn changed_waits_forever_when_dynamic_configuration_disabled() {
+        // With no receiver (dynamic configuration disabled), `changed` must never resolve.
+        let mut watcher = FieldUpdateWatcher {
+            key: "watched_key".to_string(),
+            rx: None,
+        };
+
+        let result = tokio::time::timeout(Duration::from_millis(250), watcher.changed::<String>()).await;
+        assert!(
+            result.is_err(),
+            "changed() must stay pending when dynamic config is disabled"
+        );
+    }
+
+    #[tokio::test]
+    async fn changed_waits_forever_after_channel_closes() {
+        // Once the broadcast sender is dropped, `recv` yields `Closed`; the watcher then matches "might never fire"
+        // semantics by staying pending rather than returning.
+        let (tx, mut watcher) = watcher_over("watched_key", 4);
+        drop(tx);
+
+        let result = tokio::time::timeout(Duration::from_millis(250), watcher.changed::<String>()).await;
+        assert!(result.is_err(), "changed() must stay pending after the channel closes");
+    }
+
+    #[tokio::test]
+    async fn changed_skips_lagged_errors_and_returns_next_event() {
+        // A capacity-1 channel with three unread sends forces the receiver to lag: the first `recv` returns
+        // `Lagged`, which the watcher skips before returning the most recent retained event.
+        let (tx, mut watcher) = watcher_over("watched_key", 1);
+        tx.send(change_event("watched_key", json!("first"))).unwrap();
+        tx.send(change_event("watched_key", json!("second"))).unwrap();
+        tx.send(change_event("watched_key", json!("third"))).unwrap();
+
+        let (old, new) = tokio::time::timeout(Duration::from_secs(2), watcher.changed::<String>())
+            .await
+            .expect("changed() should resolve after skipping the lagged error");
+
+        assert_eq!(old, None);
+        assert_eq!(new, Some("third".to_string()));
+    }
+
+    #[tokio::test]
+    async fn changed_skips_events_that_fail_to_deserialize() {
+        // A value that can't be deserialized into the requested type is skipped (neither old nor new deserializes),
+        // and the watcher keeps waiting until a well-typed value for the same key arrives.
+        let (tx, mut watcher) = watcher_over("watched_key", 8);
+        tx.send(change_event("watched_key", json!("not-a-number"))).unwrap();
+        tx.send(change_event("watched_key", json!(42))).unwrap();
+
+        let (old, new) = tokio::time::timeout(Duration::from_secs(2), watcher.changed::<u32>())
+            .await
+            .expect("changed() should resolve once a well-typed value arrives");
+
+        assert_eq!(old, None);
+        assert_eq!(new, Some(42));
     }
 }

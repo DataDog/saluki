@@ -184,7 +184,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_exact_metric_name_matching() {
+    fn exact_metric_name_matching() {
         let router = MetricRouter::new(MetricRouterConfiguration {
             metric_names: vec!["test.counter".to_string(), "another.metric".to_string()],
         })
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_metric_names_list() {
+    fn empty_metric_names_list() {
         let router = MetricRouter::new(MetricRouterConfiguration { metric_names: vec![] })
             .expect("Should create router successfully");
 

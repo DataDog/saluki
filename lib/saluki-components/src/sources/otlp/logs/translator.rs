@@ -28,9 +28,7 @@ pub struct OtlpLogsTranslator {
 }
 
 impl OtlpLogsTranslator {
-    pub fn from_resource_logs(
-        resource_logs: OtlpResourceLogs, origin_tag_resolver: Option<&OtlpOriginTagResolver>,
-    ) -> Self {
+    pub fn from_resource_logs(resource_logs: OtlpResourceLogs, origin_tag_resolver: &OtlpOriginTagResolver) -> Self {
         let resource = resource_logs.resource.unwrap_or_default();
         let source = resource_to_source(&resource);
         let host = match &source {
@@ -44,10 +42,8 @@ impl OtlpLogsTranslator {
         let mut attribute_tags = tags_from_attributes(&resource.attributes, ResourceAttributeTagMode::Mapped);
         attribute_tags.insert_tag(OTEL_SOURCE_TAG.clone());
         let origin = raw_origin_from_attributes(&resource.attributes);
-        if let Some(resolver) = origin_tag_resolver {
-            let origin_tags = resolver.resolve_origin_tags(origin);
-            attribute_tags.merge_shared(&origin_tags);
-        }
+        let origin_tags = origin_tag_resolver.resolve_origin_tags(origin);
+        attribute_tags.merge_shared(&origin_tags);
 
         Self {
             resource,
@@ -122,6 +118,7 @@ mod tests {
 
     use super::OtlpLogsTranslator;
     use super::SERVICE_NAME;
+    use crate::common::otlp::origin::OtlpOriginTagResolver;
     use crate::sources::otlp::logs::transform::DDTAGS_ATTR;
 
     const TRACE_ID: [u8; 16] = [
@@ -181,7 +178,12 @@ mod tests {
             schema_url: String::new(),
         };
 
-        let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, None);
+        let translator = OtlpLogsTranslator::from_resource_logs(
+            resource_logs,
+            &OtlpOriginTagResolver::new(std::sync::Arc::new(
+                saluki_env::workload::providers::NoopWorkloadProvider,
+            )),
+        );
 
         let mut events = translator.collect::<Vec<_>>();
         assert_eq!(events.len(), 1);

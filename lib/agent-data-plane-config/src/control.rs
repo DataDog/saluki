@@ -4,14 +4,9 @@
 //! components. It carries pipeline activation gates, topology-shaping decisions, listen addresses,
 //! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 
-use serde::Serialize;
+use std::time::Duration;
 
-/// A network listen address (for example, `tcp://127.0.0.1:5000`, `unix:///var/run/dsd.sock`).
-///
-/// Held as the source string; the orchestration layer parses it when binding. Source-agnostic and
-/// `Default`-able (unlike `std::net::SocketAddr`), so the model can derive `Default`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct ListenAddress(pub String);
+use serde::Serialize;
 
 /// Topology gates and orchestration decisions. Static for the process lifetime.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -40,10 +35,11 @@ pub struct ControlConfiguration {
     pub use_new_config_stream_endpoint: bool,
 
     /// Address the unsecured control API listens on.
-    pub api_listen_address: ListenAddress,
+    pub api_listen_address: String,
 
-    /// Address the TLS-secured control API listens on.
-    pub secure_api_listen_address: ListenAddress,
+    /// Address the mutually authenticated control API listens on. Every HTTP and gRPC client must
+    /// present the exact configured Agent IPC certificate during the TLS handshake.
+    pub secure_api_listen_address: String,
 
     /// Logging configuration, read before runtime authority exists.
     pub logging: Logging,
@@ -51,12 +47,14 @@ pub struct ControlConfiguration {
     /// Bootstrap IPC and remote-agent connection parameters.
     pub ipc: ControlIpc,
 
-    /// Grace period, in seconds, the aggregator is given to flush before shutdown.
-    pub aggregator_stop_timeout: u64,
+    /// Grace period the aggregator is given to flush before shutdown.
+    pub aggregator_stop_timeout: Duration,
 
-    /// Grace period, in seconds, for the whole topology to shut down. (not in Datadog Agent config
-    /// schema)
-    pub stop_timeout: u64,
+    /// Override for the topology shutdown grace period.
+    ///
+    /// Defaults to `None`. When absent, the topology timeout is the sum of
+    /// `aggregator_stop_timeout` and `forwarder_stop_timeout`.
+    pub stop_timeout: Option<Duration>,
 
     /// Process memory ceiling, in bytes. (not in Datadog Agent config schema)
     pub memory_limit: u64,

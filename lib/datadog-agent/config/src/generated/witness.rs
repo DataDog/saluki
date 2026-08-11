@@ -49,6 +49,7 @@ pub trait DatadogConfigWitness {
     fn consume_apm_config_target_traces_per_second(&mut self, value: f64);
     fn consume_autoscaling_failover_enabled(&mut self, value: bool);
     fn consume_autoscaling_failover_metrics(&mut self, value: Vec<String>);
+    fn consume_basic_telemetry_add_container_tags(&mut self, value: bool);
     fn consume_bind_host(&mut self, value: String);
     fn consume_cluster_agent_auth_token(&mut self, value: String);
     fn consume_cluster_agent_enabled(&mut self, value: bool);
@@ -104,6 +105,7 @@ pub trait DatadogConfigWitness {
     fn consume_dogstatsd_tag_cardinality(&mut self, value: String);
     fn consume_dogstatsd_tags(&mut self, value: Vec<String>);
     fn consume_dogstatsd_windows_pipe_security_descriptor(&mut self, value: String);
+    fn consume_dogstatsd_workers_count(&mut self, value: i64);
     fn consume_enable_payloads_events(&mut self, value: bool);
     fn consume_enable_payloads_series(&mut self, value: bool);
     fn consume_enable_payloads_service_checks(&mut self, value: bool);
@@ -163,8 +165,10 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_metrics_histograms_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_histograms_send_aggregation_metrics(&mut self, value: bool);
     fn consume_otlp_config_metrics_resource_attributes_as_tags(&mut self, value: bool);
+    fn consume_otlp_config_metrics_summaries_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_sums_cumulative_monotonic_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_sums_initial_cumulative_monotonic_value(&mut self, value: String);
+    fn consume_otlp_config_metrics_tag_cardinality(&mut self, value: String);
     fn consume_otlp_config_metrics_tags(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
@@ -295,6 +299,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_apm_config_target_traces_per_second(config.apm_config.target_traces_per_second.clone());
     consumer.consume_autoscaling_failover_enabled(config.autoscaling.failover.enabled.clone());
     consumer.consume_autoscaling_failover_metrics(config.autoscaling.failover.metrics.clone());
+    consumer.consume_basic_telemetry_add_container_tags(config.basic_telemetry_add_container_tags.clone());
     consumer.consume_bind_host(config.bind_host.clone());
     consumer.consume_cluster_agent_auth_token(config.cluster_agent.auth_token.clone());
     consumer.consume_cluster_agent_enabled(config.cluster_agent.enabled.clone());
@@ -356,6 +361,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_dogstatsd_tags(config.dogstatsd_tags.clone());
     consumer
         .consume_dogstatsd_windows_pipe_security_descriptor(config.dogstatsd_windows_pipe_security_descriptor.clone());
+    consumer.consume_dogstatsd_workers_count(config.dogstatsd_workers_count.clone());
     consumer.consume_enable_payloads_events(config.enable_payloads.events.clone());
     consumer.consume_enable_payloads_series(config.enable_payloads.series.clone());
     consumer.consume_enable_payloads_service_checks(config.enable_payloads.service_checks.clone());
@@ -426,6 +432,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_otlp_config_metrics_resource_attributes_as_tags(
         config.otlp_config.metrics.resource_attributes_as_tags.clone(),
     );
+    consumer.consume_otlp_config_metrics_summaries_mode(config.otlp_config.metrics.summaries.mode.clone());
     consumer.consume_otlp_config_metrics_sums_cumulative_monotonic_mode(
         config.otlp_config.metrics.sums.cumulative_monotonic_mode.clone(),
     );
@@ -437,6 +444,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .initial_cumulative_monotonic_value
             .clone(),
     );
+    consumer.consume_otlp_config_metrics_tag_cardinality(config.otlp_config.metrics.tag_cardinality.clone());
     consumer.consume_otlp_config_metrics_tags(config.otlp_config.metrics.tags.clone());
     consumer.consume_otlp_config_receiver_protocols_grpc_endpoint(
         config.otlp_config.receiver.protocols.grpc.endpoint.clone(),

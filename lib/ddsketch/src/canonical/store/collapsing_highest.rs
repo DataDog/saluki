@@ -273,8 +273,12 @@ impl Default for CollapsingHighestDenseStore {
 mod tests {
     use super::*;
 
+    // Shared `Store` trait conformance suite. The default 2048-bin capacity is far larger than the small index
+    // ranges these cases use, so no collapsing occurs and the standard `Store` contract holds.
+    crate::canonical::store::store_conformance_tests!(CollapsingHighestDenseStore);
+
     #[test]
-    fn test_within_limit() {
+    fn within_limit_does_not_collapse() {
         let mut store = CollapsingHighestDenseStore::new(10);
         for i in 0..10 {
             store.add(i, 1);
@@ -286,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collapse_on_low_index() {
+    fn collapse_on_low_index() {
         let mut store = CollapsingHighestDenseStore::new(5);
 
         // Add bins 5-9
@@ -304,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collapse_on_high_index() {
+    fn collapse_on_high_index() {
         let mut store = CollapsingHighestDenseStore::new(5);
 
         // Add bins 0-4
@@ -321,7 +325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_key_at_rank_after_collapse() {
+    fn key_at_rank_after_collapse() {
         let mut store = CollapsingHighestDenseStore::new(3);
 
         store.add(0, 1);
@@ -340,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_respects_collapse() {
+    fn merge_respects_collapse() {
         let mut store1 = CollapsingHighestDenseStore::new(5);
         store1.add(0, 1);
 

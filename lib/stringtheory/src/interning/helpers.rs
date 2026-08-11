@@ -270,6 +270,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn packed_length_capacity_round_trips_independent_fields() {
+        // Capacity lives in the upper half of the word and length in the lower half; the two must be recoverable
+        // independently, so pack a variety of pairs (including asymmetric and zero values) and read both back.
+        for (cap, len) in [
+            (0, 0),
+            (1, 0),
+            (0, 1),
+            (16, 13),
+            (0xABCD, 0x1234),
+            (0x1234_5678, 0x00FF),
+        ] {
+            let packed = PackedLengthCapacity::new(cap, len);
+            assert_eq!(packed.capacity(), cap, "capacity for ({cap}, {len})");
+            assert_eq!(packed.len(), len, "length for ({cap}, {len})");
+        }
+    }
+
+    #[test]
+    fn packed_length_capacity_fields_do_not_bleed_into_each_other() {
+        // A maximal capacity with a zero length must not set any length bits, and vice versa.
+        let max = PackedLengthCapacity::maximum_value();
+
+        let cap_only = PackedLengthCapacity::new(max, 0);
+        assert_eq!(cap_only.capacity(), max);
+        assert_eq!(cap_only.len(), 0);
+
+        let len_only = PackedLengthCapacity::new(0, max);
+        assert_eq!(len_only.capacity(), 0);
+        assert_eq!(len_only.len(), max);
+
+        // Both halves saturated at once stay independent.
+        let both = PackedLengthCapacity::new(max, max);
+        assert_eq!(both.capacity(), max);
+        assert_eq!(both.len(), max);
+    }
+
+    #[test]
+    fn packed_length_capacity_maximum_value_is_half_the_word() {
+        // The packed representation splits a `usize` in half, so the maximum storable value is `2^(usize::BITS/2) - 1`
+        // (4 GiB - 1 on the 64-bit platforms this crate supports).
+        assert_eq!(PackedLengthCapacity::maximum_value(), (1usize << (usize::BITS / 2)) - 1);
+        assert_eq!(PackedLengthCapacity::maximum_value(), u32::MAX as usize);
+    }
+
+    #[test]
     fn reclamation_merges_previous_and_current() {
         // NOTE: The order of how we insert entries matters here, because what we're testing is that the reclamation logic can properly
         // merge adjacent entries regardless of whether we're merging with an existing reclaimed entry that comes before

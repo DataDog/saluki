@@ -12,11 +12,17 @@ env:
   DD_DATA_PLANE_OTLP_ENABLED: "true"
   DD_DATA_PLANE_OTLP_PROXY_ENABLED: "true"
   DD_DATA_PLANE_OTLP_PROXY_TRACES_ENABLED: "false"
+  # Bind ADP to framework-isolated addresses reachable through the container port mapping.
+  #
+  # TODO(#2177): Replace these temporary keys and ports with the canonical schema keys and the
+  # framework's `54317`/`54318` ports once OTLP listener ownership prevents contention.
+  DD_DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY: "0.0.0.0:56317"
+  DD_DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY: "0.0.0.0:56318"
 
 container:
   exposed_ports:
-    - "54317/tcp"
-    - "54318/tcp"
+    - "56317/tcp"
+    - "56318/tcp"
 
 procedure:
   # Make sure the process becomes healthy, and stays up without errors, listening for OTLP (HTTP and gRPC),
@@ -25,11 +31,11 @@ procedure:
       - assertion: process_stable_for
         duration: 10s
       - assertion: port_listening
-        port: 54317
+        port: 56317
         protocol: tcp
         timeout: 60s
       - assertion: port_listening
-        port: 54318
+        port: 56318
         protocol: tcp
         timeout: 60s
       - assertion: log_not_contains

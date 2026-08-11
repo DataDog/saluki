@@ -16,6 +16,9 @@ services:
       DD_HOSTNAME: "antithesis-differential"
       AGENT_LISTEN_ADDR: "0.0.0.0:2049"
       ADP_LISTEN_ADDR: "0.0.0.0:2050"
+    volumes:
+      # The sampled datadog.yaml, so the intake can hold each target to what its config asked for.
+      - agent-config:/agent-config:ro
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2049'"]
       interval: 2s

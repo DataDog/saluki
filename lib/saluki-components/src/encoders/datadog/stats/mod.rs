@@ -2,15 +2,14 @@
 
 use std::time::Duration;
 
+use agent_data_plane_config::{defaults::DEFAULT_TRACE_ENV, domains, shared::SharedConfiguration};
 use async_trait::async_trait;
 use datadog_protos::traces::{
     ClientGroupedStats as ProtoClientGroupedStats, ClientStatsBucket as ProtoClientStatsBucket,
     ClientStatsPayload as ProtoClientStatsPayload, StatsPayload as ProtoStatsPayload, Trilean,
 };
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_common::task::HandleExt as _;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{encoders::*, ComponentContext},
@@ -28,7 +27,6 @@ use saluki_env::{host::providers::BoxedHostProvider, EnvironmentProvider, HostPr
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::compression::CompressionScheme;
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::{
     pin, select,
@@ -47,46 +45,28 @@ use crate::common::datadog::{
 const MAX_STATS_PER_PAYLOAD: usize = 4000;
 static CONTENT_TYPE_MSGPACK: HeaderValue = HeaderValue::from_static("application/msgpack");
 
-const fn default_flush_timeout_secs() -> u64 {
-    2
-}
-
-fn default_env() -> String {
-    "none".to_string()
-}
-
 /// Configuration for the Datadog APM Stats encoder.
-#[derive(Deserialize, Facet)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogApmStatsEncoderConfiguration {
-    /// Flush timeout for pending requests, in seconds.
-    ///
-    /// When the encoder has written traces to the in-flight request payload, but it hasn't yet reached the
-    /// payload size limits that would force the payload to be flushed, the encoder will wait for a period of time
-    /// before flushing the in-flight request payload.
-    ///
-    /// Defaults to 2 seconds.
-    #[serde(default = "default_flush_timeout_secs")]
-    flush_timeout_secs: u64,
-
-    #[serde(skip)]
+    flush_timeout: Duration,
     agent_hostname: Option<String>,
-
-    #[serde(skip)]
     agent_version: String,
-
-    #[serde(default = "default_env")]
     env: String,
 }
 
 impl DatadogApmStatsEncoderConfiguration {
-    /// Creates a new `DatadogApmStatsEncoderConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let mut stats_config: Self = config.as_typed()?;
+    /// Creates a new `DatadogApmStatsEncoderConfiguration` from the resolved configuration.
+    pub fn from_configuration(traces: &domains::traces::Domain, shared: &SharedConfiguration) -> Self {
         let app_details = saluki_metadata::get_app_details();
-        stats_config.agent_version = format!("agent-data-plane/{}", app_details.version().raw());
-
-        Ok(stats_config)
+        Self {
+            flush_timeout: shared.metrics_encoding.flush_timeout,
+            agent_hostname: None,
+            agent_version: format!("agent-data-plane/{}", app_details.version().raw()),
+            env: if traces.env.is_empty() {
+                DEFAULT_TRACE_ENV.to_owned()
+            } else {
+                traces.env.clone()
+            },
+        }
     }
 
     /// Sets the agent hostname using the environment provider.
@@ -128,11 +108,12 @@ impl EncoderBuilder for DatadogApmStatsEncoderConfiguration {
         .await?;
         stats_rb.with_max_inputs_per_payload(MAX_STATS_PER_PAYLOAD);
 
-        let flush_timeout = match self.flush_timeout_secs {
+        let flush_timeout = if self.flush_timeout.is_zero() {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
             // batching, while still practically flushing things almost immediately.
-            0 => Duration::from_millis(10),
-            secs => Duration::from_secs(secs),
+            Duration::from_millis(10)
+        } else {
+            self.flush_timeout
         };
 
         Ok(Box::new(DatadogStats {
@@ -464,31 +445,5 @@ impl EndpointEncoder for StatsEndpointEncoder {
 
     fn content_type(&self) -> HeaderValue {
         CONTENT_TYPE_MSGPACK.clone()
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DatadogApmStatsEncoderConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_APM_STATS_ENCODER_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogApmStatsEncoderConfiguration>()
-                    .expect("DatadogApmStatsEncoderConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
-        .await
     }
 }

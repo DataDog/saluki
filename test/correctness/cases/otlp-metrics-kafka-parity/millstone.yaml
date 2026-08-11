@@ -1,0 +1,10 @@
+seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+target: "grpc://$GROUP:54317/opentelemetry.proto.collector.metrics.v1.MetricsService/Export"
+aggregation_bucket_width_secs: 10
+volume: 1
+corpus:
+  size: 1
+  payload:
+    # ExportMetricsServiceRequest with Kafka metric names that historically triggered remapping,
+    # tag copying, filter fan-out, and collision renaming. Direct ADP ingest must match Core Agent output.
+    static_base64: "CtQEEtEEEk4KG2thZmthLnByb2R1Y2VyLnJlcXVlc3QtcmF0ZSovCi06GQoJY2xpZW50LWlkEgwKCnByb2R1Y2VyLTEZAAAqNv6clxchAAAAAAAA8D8SSwoYa2Fma2EucHJvZHVjZXIuYnl0ZS1yYXRlKi8KLToZCgljbGllbnQtaWQSDAoKcHJvZHVjZXItMRkAACo2/pyXFyEAAAAAAADwPxKDAQoQa2Fma2EubmV0d29yay5pbypvCiI6DgoFc3RhdGUSBQoDb3V0GQAAKjb+nJcXIQAAAAAAAPA/CiE6DQoFc3RhdGUSBAoCaW4ZAAAqNv6clxchAAAAAAAAAEAKJjoSCgVzdGF0ZRIJCgd1bmtub3duGQAAKjb+nJcXIQAAAAAAAAhAEpwBChZrYWZrYS5yZXF1ZXN0LnRpbWUuYXZnKoEBCiU6EQoEdHlwZRIJCgdwcm9kdWNlGQAAKjb+nJcXIQAAAAAAAPA/Cis6FwoEdHlwZRIPCg1mZXRjaGNvbnN1bWVyGQAAKjb+nJcXIQAAAAAAAABACis6FwoEdHlwZRIPCg1mZXRjaGZvbGxvd2VyGQAAKjb+nJcXIQAAAAAAAAhAEkIKFGthZmthLnB1cmdhdG9yeS5zaXplKioKKDoUCgR0eXBlEgwKCnVuZXhwZWN0ZWQZAAAqNv6clxchAAAAAAAA8D8SSQoba2Fma2EuY29uc3VtZXJfZ3JvdXAub2Zmc2V0KioKKDoUCgVncm91cBILCglhbmFseXRpY3MZAAAqNv6clxchAAAAAAAA8D8="

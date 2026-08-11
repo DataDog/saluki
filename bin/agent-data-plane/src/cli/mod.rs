@@ -18,7 +18,7 @@ mod run;
 pub use self::run::handle_run_command;
 use self::run::RunCommand;
 
-mod utils;
+pub(super) mod utils;
 
 mod version;
 pub use self::version::handle_version_command;

@@ -1,3 +1,7 @@
+use std::path::PathBuf;
+
+use agent_data_plane_config_system::LoadedConfiguration;
+use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config};
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::BodyExt as _;
@@ -8,17 +12,31 @@ use hyper::body::Bytes;
 use hyper::body::Incoming;
 #[cfg(target_os = "linux")]
 use prost::Message as _;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::{client::http::HttpClient, ListenAddress};
+use saluki_io::net::{
+    client::http::{HttpClient, HttpClientBuilder},
+    ListenAddress,
+};
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
-use crate::config::DataPlaneConfiguration;
+use crate::{config::DataPlaneConfiguration, dogstatsd_contexts::CONTEXT_DUMP_ROUTE};
 
 /// Typed API client for interacting with the APIs exposed by ADP.
 pub struct DataPlaneAPIClient {
     client: HttpClient,
     authority: String,
+}
+
+/// Builds a data plane API client or exits after logging the error.
+pub(super) async fn get_api_client_or_exit(local_config: &LoadedConfiguration) -> DataPlaneAPIClient {
+    match DataPlaneAPIClient::from_configuration(local_config).await {
+        Ok(client) => client,
+        Err(e) => {
+            error!("Failed to create data plane API client: {:#}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -41,19 +59,35 @@ struct DogStatsDReplaySessionResponseBody {
 }
 
 impl DataPlaneAPIClient {
-    /// Creates a new `DataPlaneAPIClient` from the given generic configuration.
+    /// Creates a new `DataPlaneAPIClient` from the typed data plane configuration.
     ///
     /// # Errors
     ///
-    /// If the data plane configuration can't be deserialized, or the data plane API endpoints can't be
-    /// determined, an error will be returned.
-    pub fn from_config(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let dp_config = DataPlaneConfiguration::from_configuration(config)?;
+    /// If the IPC authentication configuration can't be loaded, the IPC certificate can't be read or parsed into a
+    /// client TLS configuration, the privileged API endpoint isn't connection-oriented, or the HTTP client can't be
+    /// constructed, an error is returned.
+    pub async fn from_configuration(loaded_config: &LoadedConfiguration) -> Result<Self, GenericError> {
+        let config = loaded_config.local();
+        let raw_config = loaded_config.raw_config();
+        let dp = DataPlaneConfiguration::from_configuration(config);
+        let listen_address = dp.secure_api_listen_address()?;
+        let ipc_config = IpcAuthConfiguration::from_configuration(&raw_config)
+            .error_context("Failed to load IPC authentication configuration for privileged API client.")?;
 
-        let listen_address = dp_config.secure_api_listen_address();
+        let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
+        let client_tls_config = build_ipc_client_ipc_tls_config(&ipc_cert_file_path)
+            .await
+            .with_error_context(|| {
+                format!(
+                    "Failed to load IPC TLS certificate and construct client TLS configuration from '{}'.",
+                    ipc_cert_file_path.display()
+                )
+            })?;
+        let builder = HttpClient::builder().with_client_tls_config(client_tls_config);
+        Self::from_builder(builder, &listen_address)
+    }
 
-        let builder = HttpClient::builder().with_tls_config(|b| b.danger_accept_invalid_certs());
-
+    fn from_builder(builder: HttpClientBuilder, listen_address: &ListenAddress) -> Result<Self, GenericError> {
         let (builder, authority) = match listen_address {
             ListenAddress::Tcp(_) => {
                 let local_address = listen_address
@@ -75,7 +109,7 @@ impl DataPlaneAPIClient {
 
         let client = builder
             .build()
-            .error_context("Failed to construct API client for privileged API endpoint.")?;
+            .error_context("Failed to construct mTLS API client for privileged API endpoint.")?;
 
         Ok(Self { client, authority })
     }
@@ -193,6 +227,26 @@ impl DataPlaneAPIClient {
             .and_then(body_when_success)
     }
 
+    /// Requests a DogStatsD context dump and returns its path on the server.
+    ///
+    /// The response contains only the server-local artifact path; this method does not download the dump contents.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, the server rejects it, or the successful response does not contain a JSON string path, an
+    /// error is returned.
+    pub async fn dogstatsd_contexts_dump(&mut self) -> Result<PathBuf, GenericError> {
+        let uri = self.build_uri(CONTEXT_DUMP_ROUTE, None);
+        let request = build_dogstatsd_contexts_dump_request(uri);
+        let response = self
+            .client
+            .send(request)
+            .await
+            .error_context("Failed to request a DogStatsD context dump from the privileged API endpoint.")?;
+        let response = process_response_body(response).await?;
+        path_when_context_dump_success(response)
+    }
+
     /// Starts a DogStatsD traffic capture.
     ///
     /// # Errors
@@ -290,6 +344,26 @@ impl DataPlaneAPIClient {
             .and_then(body_when_success)
     }
 
+    /// Retrieves the translated runtime configuration of the process.
+    ///
+    /// This is a point-in-time snapshot of the configuration used by the runtime, which could change over time if
+    /// dynamic configuration is enabled.
+    ///
+    /// The response body is returned as a plain string with no decoding or modification performed.
+    ///
+    /// # Errors
+    ///
+    /// If the request fails, or if the server responds with an unexpected status code, an error is returned.
+    pub async fn config_runtime(&mut self) -> Result<String, GenericError> {
+        let uri = self.build_uri("/config/runtime", None);
+        let req = Request::get(uri).body(String::new()).expect("valid request");
+        self.client
+            .send(req)
+            .and_then(process_response_body)
+            .await
+            .and_then(body_when_success)
+    }
+
     /// Retrieves the tags from the workload provider.
     ///
     /// The response body is returned as a plain string with no decoding or modification performed.
@@ -328,6 +402,24 @@ impl DataPlaneAPIClient {
         }
 
         Ok(resp.into_body())
+    }
+}
+
+fn build_dogstatsd_contexts_dump_request(uri: Uri) -> Request<String> {
+    Request::post(uri)
+        .body(String::new())
+        .expect("valid DogStatsD context dump request")
+}
+
+fn path_when_context_dump_success(resp: Response<String>) -> Result<PathBuf, GenericError> {
+    match resp.status() {
+        status if status.is_success() => serde_json::from_str::<PathBuf>(resp.body())
+            .error_context("Failed to decode DogStatsD context dump path from response JSON."),
+        status => Err(generic_error!(
+            "Failed to create DogStatsD context dump ({}): {}.",
+            status,
+            resp.into_body()
+        )),
     }
 }
 
@@ -416,11 +508,14 @@ fn empty_when_replay_session_success(resp: Response<String>) -> Result<(), Gener
 
 #[cfg(test)]
 mod tests {
-    use http::{Response, StatusCode};
+    use std::path::PathBuf;
 
-    use super::body_when_capture_success;
+    use http::{Method, Response, StatusCode, Uri};
+
+    use super::{body_when_capture_success, build_dogstatsd_contexts_dump_request, path_when_context_dump_success};
     #[cfg(target_os = "linux")]
     use super::{body_when_replay_session_success, empty_when_replay_session_success};
+    use crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
     #[test]
     fn dogstatsd_capture_failed_precondition_surfaces_server_message() {
@@ -479,5 +574,64 @@ mod tests {
         let error = empty_when_replay_session_success(response).expect_err("conflict should be an error");
 
         assert_eq!(error.to_string(), "session does not own active replay");
+    }
+
+    #[test]
+    fn dogstatsd_contexts_request_is_empty_post() {
+        let uri = Uri::from_static("https://127.0.0.1:5101/agent/dogstatsd-contexts-dump");
+
+        let request = build_dogstatsd_contexts_dump_request(uri);
+
+        assert_eq!(request.method(), Method::POST);
+        assert_eq!(request.uri().path(), CONTEXT_DUMP_ROUTE);
+        assert!(request.body().is_empty());
+        assert!(request.headers().is_empty());
+    }
+
+    #[test]
+    fn dogstatsd_contexts_success_decodes_json_path() {
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body(r#""/var/run/datadog/dogstatsd_contexts.json.zstd""#.to_string())
+            .expect("valid response");
+
+        let path = path_when_context_dump_success(response).expect("successful response should decode");
+
+        assert_eq!(path, PathBuf::from("/var/run/datadog/dogstatsd_contexts.json.zstd"));
+    }
+
+    #[test]
+    fn dogstatsd_contexts_malformed_success_is_actionable() {
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .body("not-json".to_string())
+            .expect("valid response");
+
+        let error = path_when_context_dump_success(response).expect_err("malformed JSON should fail");
+
+        assert!(error.to_string().contains("DogStatsD context dump path"));
+    }
+
+    #[test]
+    fn dogstatsd_contexts_server_errors_include_status_and_body() {
+        for status in [
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            let response = Response::builder()
+                .status(status)
+                .body("dump unavailable".to_string())
+                .expect("valid response");
+
+            let error = path_when_context_dump_success(response).expect_err("server error should fail");
+            let message = error.to_string();
+
+            assert!(message.contains(status.as_str()), "missing status in: {message}");
+            assert!(
+                message.contains("dump unavailable"),
+                "missing response body in: {message}"
+            );
+        }
     }
 }

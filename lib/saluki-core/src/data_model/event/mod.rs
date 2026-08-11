@@ -284,4 +284,29 @@ mod tests {
         assert_size_budget!(Trace, 336);
         assert_size_budget!(TraceStats, 24);
     }
+
+    #[test]
+    fn event_type_display_renders_each_single_flag() {
+        // Note that a couple of the rendered names deliberately differ from the variant identifiers.
+        assert_eq!(EventType::Metric.to_string(), "Metric");
+        assert_eq!(EventType::EventD.to_string(), "DatadogEvent");
+        assert_eq!(EventType::ServiceCheck.to_string(), "ServiceCheck");
+        assert_eq!(EventType::Log.to_string(), "Log");
+        assert_eq!(EventType::Trace.to_string(), "Trace");
+        assert_eq!(EventType::TraceStats.to_string(), "TraceStats");
+    }
+
+    #[test]
+    fn event_type_display_joins_combined_flags_in_declaration_order() {
+        // Combined flags render in the fixed declaration order joined by `|`, regardless of how they were OR'd together.
+        assert_eq!((EventType::Log | EventType::Metric).to_string(), "Metric|Log");
+        assert_eq!(
+            EventType::all_bits().to_string(),
+            "Metric|DatadogEvent|ServiceCheck|Log|Trace|TraceStats"
+        );
+
+        // The empty bitmask (also the `Default`) renders as an empty string.
+        assert_eq!(EventType::none().to_string(), "");
+        assert_eq!(EventType::default().to_string(), "");
+    }
 }

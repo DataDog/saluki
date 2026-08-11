@@ -167,178 +167,95 @@ impl OriginResolver {
     }
 }
 
-/*
 #[cfg(test)]
 mod tests {
+    // These tests were restored from a module that was commented out in mid-2025 (commit 6635adbf9f) and never
+    // brought back. In the interim, `OriginResolver` was reworked: it no longer performs process-ID -> container-ID
+    // alias redirection (that behavior moved to `TagStoreQuerier::get_entity_tags`, whose alias handling is now
+    // covered in `stores/tag.rs`), and the old `resolve_origin`/`get_resolved_origin_by_key`/`ResolvedOrigin::container_id`
+    // API was replaced by `get_resolved_origin` returning a cached `ResolvedOrigin`. These tests therefore cover the
+    // current documented contract of `OriginResolver`: field-to-entity resolution and its caching behavior.
     use std::num::NonZeroUsize;
 
-    use stringtheory::MetaString;
-
     use super::*;
-    use crate::workload::{
-        aggregator::MetadataStore as _,
-        stores::{ExternalDataStore, TagStore},
-        MetadataOperation,
-    };
+    use crate::workload::stores::ExternalDataStore;
 
-    const PROCESS_ID_A_RAW: u32 = 1;
-    const PROCESS_ID_B_RAW: u32 = 2;
-    const CONTAINER_ID_A_RAW: &str = "container-a";
-    const CONTAINER_ID_B_RAW: &str = "container-b";
-    const CONTAINER_ID_C_RAW: &str = "container-c";
-    const PROCESS_ID_A: EntityId = EntityId::ContainerPid(PROCESS_ID_A_RAW);
-    const PROCESS_ID_B: EntityId = EntityId::ContainerPid(PROCESS_ID_B_RAW);
-    const CONTAINER_ID_A: EntityId = EntityId::Container(MetaString::from_static(CONTAINER_ID_A_RAW));
-    const CONTAINER_ID_B: EntityId = EntityId::Container(MetaString::from_static(CONTAINER_ID_B_RAW));
-    const CONTAINER_ID_C: EntityId = EntityId::Container(MetaString::from_static(CONTAINER_ID_C_RAW));
-
-    fn create_raw_origin(process_id: u32, container_id: Option<&'static str>) -> RawOrigin<'static> {
-        let mut raw_origin = RawOrigin::default();
-        raw_origin.set_process_id(process_id);
-        raw_origin.set_container_id(container_id);
-        raw_origin
-    }
-
-    #[track_caller]
-    fn create_origin_resolver<const N: usize>(aliases: [(EntityId, EntityId); N]) -> OriginResolver {
-        // Create our tag store and seed it with any provided aliases.
-        let mut tag_store = TagStore::with_entity_limit(NonZeroUsize::new(usize::MAX).unwrap());
-        let tag_store_querier = tag_store.querier();
-
-        for (entity_id, alias) in aliases {
-            tag_store.process_operation(MetadataOperation::add_alias(entity_id.clone(), alias.clone()));
-            assert_eq!(tag_store_querier.get_entity_alias(&entity_id), Some(alias));
-        }
-
+    fn origin_resolver() -> OriginResolver {
         let external_data_store = ExternalDataStore::with_entity_limit(NonZeroUsize::new(usize::MAX).unwrap());
-
         OriginResolver::new(external_data_store.resolver())
     }
 
-    #[test]
-    fn resolve_origin_no_aliases_different_process_id_no_container_id() {
-        // Create our origin resolver with no aliases pre-loaded, so we're just resolving the raw origins based on only
-        // the data they contain.
-        let origin_resolver = create_origin_resolver([]);
-
-        // Assert that the two resulting resolved origins are equal.
-        //
-        // While the raw origins should be different (different process IDs, no container ID), the resolved origins
-        // should end up with no container ID, as the raw origins don't have one and no aliases were present, which
-        // should resulting in both origins being the same due to effectively being empty.
-        let raw_origin_a = create_raw_origin(PROCESS_ID_A_RAW, None);
-        let raw_origin_b = create_raw_origin(PROCESS_ID_B_RAW, None);
-        assert_ne!(raw_origin_a, raw_origin_b);
-
-        let origin_key_a = origin_resolver.resolve_origin(raw_origin_a).unwrap();
-        let origin_key_b = origin_resolver.resolve_origin(raw_origin_b).unwrap();
-        assert_eq!(origin_key_a, origin_key_b);
-
-        let resolved_origin_a = origin_resolver.get_resolved_origin_by_key(&origin_key_a).unwrap();
-        let resolved_origin_b = origin_resolver.get_resolved_origin_by_key(&origin_key_b).unwrap();
-        assert_eq!(resolved_origin_a, resolved_origin_b);
-        assert_eq!(resolved_origin_a.container_id(), None);
-        assert_eq!(resolved_origin_b.container_id(), None);
+    fn raw_origin(
+        process_id: Option<u32>, local_data: Option<&'static str>, pod_uid: Option<&'static str>,
+    ) -> RawOrigin<'static> {
+        let mut origin = RawOrigin::default();
+        if let Some(process_id) = process_id {
+            origin.set_process_id(process_id);
+        }
+        origin.set_local_data(local_data);
+        origin.set_pod_uid(pod_uid);
+        origin
     }
 
-    #[test]
-    fn resolve_origin_no_aliases_different_process_id_different_container_id() {
-        // Create our origin resolver with no aliases pre-loaded, so we're just resolving the raw origins based on only
-        // the data they contain.
-        let origin_resolver = create_origin_resolver([]);
+    #[tokio::test]
+    async fn get_resolved_origin_returns_none_for_empty_origin() {
+        // An origin with no information at all can't be keyed off of, so resolution yields `None`.
+        let resolver = origin_resolver();
 
-        // Assert that the two resulting resolved origins are not equal.
-        //
-        // The raw origins should be different (different process IDs, different container IDs), and the resolved
-        // origins should be different, given that even after resolving the process ID, the resulting origins should
-        // have different container IDs.
-        let raw_origin_a = create_raw_origin(PROCESS_ID_A_RAW, Some(CONTAINER_ID_A_RAW));
-        let raw_origin_b = create_raw_origin(PROCESS_ID_B_RAW, Some(CONTAINER_ID_B_RAW));
-        assert_ne!(raw_origin_a, raw_origin_b);
-
-        let origin_key_a = origin_resolver.resolve_origin(raw_origin_a).unwrap();
-        let origin_key_b = origin_resolver.resolve_origin(raw_origin_b).unwrap();
-        assert_ne!(origin_key_a, origin_key_b);
-
-        let resolved_origin_a = origin_resolver.get_resolved_origin_by_key(&origin_key_a).unwrap();
-        let resolved_origin_b = origin_resolver.get_resolved_origin_by_key(&origin_key_b).unwrap();
-        assert_ne!(resolved_origin_a, resolved_origin_b);
-        assert_eq!(resolved_origin_a.container_id(), Some(&CONTAINER_ID_A));
-        assert_eq!(resolved_origin_b.container_id(), Some(&CONTAINER_ID_B));
+        assert!(resolver.get_resolved_origin(RawOrigin::default()).is_none());
     }
 
-    #[test]
-    fn resolve_origin_same_alias_different_process_ids_no_container_id() {
-        // Create our original resolver with two aliases pre-loaded: process ID A to container ID B, and process ID B to
-        // container ID B.
-        let origin_resolver = create_origin_resolver([(PROCESS_ID_A, CONTAINER_ID_B), (PROCESS_ID_B, CONTAINER_ID_B)]);
+    #[tokio::test]
+    async fn get_resolved_origin_maps_process_id_and_local_data_to_entities() {
+        // Resolution derives entity IDs directly from the raw origin's fields: the process ID becomes a `ContainerPid`
+        // entity, and the Local Data (here, a bare container ID) becomes a `Container` entity.
+        let resolver = origin_resolver();
 
-        // Assert that the two resulting resolved origins are equal.
-        //
-        // While the raw origins should be different (different process IDs, no container ID), the resolved origins
-        // should use the aliased container ID for each process ID, which is the same for both origins.
-        let raw_origin_a = create_raw_origin(PROCESS_ID_A_RAW, None);
-        let raw_origin_b = create_raw_origin(PROCESS_ID_B_RAW, None);
-        assert_ne!(raw_origin_a, raw_origin_b);
+        let resolved = resolver
+            .get_resolved_origin(raw_origin(Some(1234), Some("container-a"), None))
+            .expect("non-empty origin should resolve");
 
-        let origin_key_a = origin_resolver.resolve_origin(raw_origin_a).unwrap();
-        let origin_key_b = origin_resolver.resolve_origin(raw_origin_b).unwrap();
-        assert_eq!(origin_key_a, origin_key_b);
-
-        let resolved_origin_a = origin_resolver.get_resolved_origin_by_key(&origin_key_a).unwrap();
-        let resolved_origin_b = origin_resolver.get_resolved_origin_by_key(&origin_key_b).unwrap();
-        assert_eq!(resolved_origin_a.container_id(), Some(&CONTAINER_ID_B));
-        assert_eq!(resolved_origin_b.container_id(), Some(&CONTAINER_ID_B));
+        assert_eq!(resolved.process_id(), Some(&EntityId::ContainerPid(1234)));
+        assert_eq!(resolved.local_data(), Some(&EntityId::Container("container-a".into())));
+        assert_eq!(resolved.pod_uid(), None);
     }
 
-    #[test]
-    fn resolve_origin_same_alias_different_process_ids_same_container_id() {
-        // Create our origin resolver with two aliases pre-loaded: process ID A to container ID B, and process ID B to
-        // container B.
-        let origin_resolver = create_origin_resolver([(PROCESS_ID_A, CONTAINER_ID_B), (PROCESS_ID_B, CONTAINER_ID_B)]);
+    #[tokio::test]
+    async fn get_resolved_origin_caches_identical_raw_origins() {
+        // Two lookups for equal raw origins must return the very same cached `ResolvedOrigin` instance rather than a
+        // freshly rebuilt one -- the documented caching contract.
+        let resolver = origin_resolver();
 
-        // Assert that the two resulting resolved origins are equal.
-        //
-        // While the raw origins should be different (different process IDs, same container ID), the resolved origins
-        // should ignore the process IDs and their aliases and use the provided container ID, which is the same for both
-        // origins.
-        let raw_origin_a = create_raw_origin(PROCESS_ID_A_RAW, Some(CONTAINER_ID_A_RAW));
-        let raw_origin_b = create_raw_origin(PROCESS_ID_B_RAW, Some(CONTAINER_ID_A_RAW));
-        assert_ne!(raw_origin_a, raw_origin_b);
+        let origin = raw_origin(Some(1234), Some("container-a"), None);
+        let first = resolver.get_resolved_origin(origin.clone()).expect("should resolve");
+        let second = resolver.get_resolved_origin(origin).expect("should resolve");
 
-        let origin_key_a = origin_resolver.resolve_origin(raw_origin_a).unwrap();
-        let origin_key_b = origin_resolver.resolve_origin(raw_origin_b).unwrap();
-        assert_eq!(origin_key_a, origin_key_b);
-
-        let resolved_origin_a = origin_resolver.get_resolved_origin_by_key(&origin_key_a).unwrap();
-        let resolved_origin_b = origin_resolver.get_resolved_origin_by_key(&origin_key_b).unwrap();
-        assert_eq!(resolved_origin_a.container_id(), Some(&CONTAINER_ID_A));
-        assert_eq!(resolved_origin_b.container_id(), Some(&CONTAINER_ID_A));
+        assert!(
+            Arc::ptr_eq(&first.inner, &second.inner),
+            "identical raw origins should resolve to the same cached instance"
+        );
     }
 
-    #[test]
-    fn resolve_origin_same_alias_different_process_ids_different_container_id() {
-        // Create our origin resolver with two aliases pre-loaded: process ID A to container ID C, and process ID B to
-        // container C.
-        let origin_resolver = create_origin_resolver([(PROCESS_ID_A, CONTAINER_ID_C), (PROCESS_ID_B, CONTAINER_ID_C)]);
+    #[tokio::test]
+    async fn get_resolved_origin_distinguishes_different_local_data() {
+        // Raw origins that differ only in their Local Data resolve to distinct, non-equal resolved origins.
+        let resolver = origin_resolver();
 
-        // Assert that the two resulting resolved origins are not equal.
-        //
-        // The raw origins should be different (different process IDs, different container IDs), and the resolved
-        // origins should be different, given that the process ID resolution should not affect the explicitly provided
-        // container IDs, which are different.
-        let raw_origin_a = create_raw_origin(PROCESS_ID_A_RAW, Some(CONTAINER_ID_A_RAW));
-        let raw_origin_b = create_raw_origin(PROCESS_ID_B_RAW, Some(CONTAINER_ID_B_RAW));
-        assert_ne!(raw_origin_a, raw_origin_b);
+        let resolved_a = resolver
+            .get_resolved_origin(raw_origin(Some(1234), Some("container-a"), None))
+            .expect("should resolve");
+        let resolved_b = resolver
+            .get_resolved_origin(raw_origin(Some(1234), Some("container-b"), None))
+            .expect("should resolve");
 
-        let origin_key_a = origin_resolver.resolve_origin(raw_origin_a).unwrap();
-        let origin_key_b = origin_resolver.resolve_origin(raw_origin_b).unwrap();
-        assert_ne!(origin_key_a, origin_key_b);
-
-        let resolved_origin_a = origin_resolver.get_resolved_origin_by_key(&origin_key_a).unwrap();
-        let resolved_origin_b = origin_resolver.get_resolved_origin_by_key(&origin_key_b).unwrap();
-        assert_eq!(resolved_origin_a.container_id(), Some(&CONTAINER_ID_A));
-        assert_eq!(resolved_origin_b.container_id(), Some(&CONTAINER_ID_B));
+        assert_ne!(resolved_a, resolved_b);
+        assert_eq!(
+            resolved_a.local_data(),
+            Some(&EntityId::Container("container-a".into()))
+        );
+        assert_eq!(
+            resolved_b.local_data(),
+            Some(&EntityId::Container("container-b".into()))
+        );
     }
 }
-*/

@@ -106,7 +106,113 @@ pub fn with_version_info<B>() -> impl Fn(Request<B>) -> Request<B> + Clone {
 mod tests {
     use http::Request;
 
-    use super::with_allow_arbitrary_tags;
+    use super::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info};
+    use crate::common::datadog::endpoints::ResolvedEndpoint;
+
+    #[test]
+    fn for_resolved_endpoint_rewrites_scheme_authority_and_sets_api_key() {
+        // A non-Datadog endpoint is used verbatim (no version prefix, no intake-authority markers), so
+        // the request's scheme/host/port are replaced with the endpoint's and the API key is attached.
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("http://proxy.example.com:8080", "secret-api-key")
+            .expect("endpoint should resolve");
+        let mut middleware = for_resolved_endpoint(endpoint);
+
+        let request = Request::builder()
+            .uri("/api/v2/series")
+            .body(())
+            .expect("request should build");
+        let request = middleware(request);
+
+        assert_eq!(request.uri().to_string(), "http://proxy.example.com:8080/api/v2/series");
+        assert_eq!(
+            request.headers().get("dd-api-key"),
+            Some(&http::HeaderValue::from_static("secret-api-key"))
+        );
+    }
+
+    #[test]
+    fn for_resolved_endpoint_routes_by_path_to_intake_authorities() {
+        // A resolved Datadog endpoint carries pre-computed logs/traces intake authorities (its host gains
+        // the `.agent.` marker via version-prefixing). Logs go to the logs intake host, traces and APM
+        // stats go to the traces intake host, and everything else goes to the endpoint's own authority.
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let default_authority = endpoint.endpoint().authority().to_string();
+        let mut middleware = for_resolved_endpoint(endpoint);
+
+        let cases = [
+            ("/api/v2/logs", "agent-http-intake.logs.datadoghq.com"),
+            ("/api/v0.2/traces", "trace.agent.datadoghq.com"),
+            ("/api/v0.2/stats", "trace.agent.datadoghq.com"),
+            ("/api/v2/series", default_authority.as_str()),
+        ];
+
+        for (path, expected_authority) in cases {
+            let request = Request::builder().uri(path).body(()).expect("request should build");
+            let request = middleware(request);
+
+            assert_eq!(request.uri().scheme_str(), Some("https"), "{path}");
+            assert_eq!(
+                request.uri().authority().map(|authority| authority.as_str()),
+                Some(expected_authority),
+                "{path}"
+            );
+            assert_eq!(request.uri().path(), path, "{path}");
+        }
+    }
+
+    #[test]
+    fn for_resolved_endpoint_falls_back_to_endpoint_authority_without_intake_markers() {
+        // A custom endpoint has no logs/traces intake authorities, so logs and traces paths fall back to
+        // the endpoint's own authority instead of a derived intake host.
+        let endpoint = ResolvedEndpoint::from_raw_endpoint("https://custom.example.com", "fake-api-key")
+            .expect("endpoint should resolve");
+        let mut middleware = for_resolved_endpoint(endpoint);
+
+        for path in ["/api/v2/logs", "/api/v0.2/traces"] {
+            let request = Request::builder().uri(path).body(()).expect("request should build");
+            let request = middleware(request);
+
+            assert_eq!(
+                request.uri().authority().map(|authority| authority.as_str()),
+                Some("custom.example.com"),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_version_info_sets_agent_version_and_user_agent_headers() {
+        let app_details = saluki_metadata::get_app_details();
+        let expected_version = app_details.version().raw();
+        let expected_user_agent = format!(
+            "{}/{}",
+            app_details.full_name().replace([' ', '_'], "-").to_lowercase(),
+            expected_version,
+        );
+
+        let middleware = with_version_info();
+        let request = Request::builder()
+            .uri("/api/v2/series")
+            .body(())
+            .expect("request should build");
+        let request = middleware(request);
+
+        assert_eq!(
+            request
+                .headers()
+                .get("dd-agent-version")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_version)
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(http::header::USER_AGENT)
+                .and_then(|value| value.to_str().ok()),
+            Some(expected_user_agent.as_str())
+        );
+    }
 
     #[test]
     fn allow_arbitrary_tags_header_is_added_when_enabled() {

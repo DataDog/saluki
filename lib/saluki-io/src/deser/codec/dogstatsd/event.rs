@@ -366,6 +366,28 @@ mod tests {
     }
 
     #[test]
+    fn event_rejects_empty_title_or_text() {
+        use nom::error::ErrorKind;
+
+        // Title and text are the two required fields of an event: a declared length of zero for either one is a
+        // structural error, so the parser rejects the frame with a `Verify` error rather than emitting an event with
+        // an empty title/text.
+        let config = DogStatsDCodecConfiguration::default();
+
+        match parse_dogstatsd_event(b"_e{0,4}:|text", &config) {
+            Err(nom::Err::Error(e)) => assert_eq!(e.code, ErrorKind::Verify),
+            Err(other) => panic!("expected Verify error for empty title, got {other:?}"),
+            Ok(_) => panic!("empty title must be rejected"),
+        }
+
+        match parse_dogstatsd_event(b"_e{5,0}:title|", &config) {
+            Err(nom::Err::Error(e)) => assert_eq!(e.code, ErrorKind::Verify),
+            Err(other) => panic!("expected Verify error for empty text, got {other:?}"),
+            Ok(_) => panic!("empty text must be rejected"),
+        }
+    }
+
+    #[test]
     fn client_origin_fields_ignored_when_disabled() {
         let local_data = "abcdef123456";
         let external_data = "it-false,cn-redis,pu-810fe89d-da47-410b-8979-9154a40f8183";

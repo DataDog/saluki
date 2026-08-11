@@ -24,6 +24,7 @@ use tracing::{debug, error, warn};
 
 use crate::common::datadog::{
     clamp_payload_limits,
+    data_plane::EncoderDataPlaneConfiguration,
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
     resolve_zstd_compressor_level,
@@ -94,8 +95,8 @@ pub struct DatadogEventsConfiguration {
 
     /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
     /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
-    #[serde(rename = "data_plane_serializer_zstd_compressor_level", default)]
-    data_plane_zstd_compressor_level: Option<i32>,
+    #[serde(default)]
+    data_plane: EncoderDataPlaneConfiguration,
 
     /// The Core Agent's zstd compression level, used only when set to a non-default value (not 1).
     /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
@@ -134,7 +135,7 @@ impl IncrementalEncoderBuilder for DatadogEventsConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let zstd_compressor_level = resolve_zstd_compressor_level(
-            self.data_plane_zstd_compressor_level,
+            self.data_plane.serializer_zstd_compressor_level,
             self.serializer_zstd_compressor_level,
         );
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
@@ -412,21 +413,13 @@ mod config_smoke {
     use serde_json::json;
 
     use super::DatadogEventsConfiguration;
-    use crate::config::{DatadogRemapper, KEY_ALIASES};
 
     #[tokio::test]
     async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_EVENTS_CONFIGURATION,
-            &[],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogEventsConfiguration>()
-                    .expect("DatadogEventsConfiguration should deserialize")
-            },
-            KEY_ALIASES,
-            DatadogRemapper::new,
-        )
+        run_config_smoke_tests(structs::DATADOG_EVENTS_CONFIGURATION, &[], json!({}), |cfg| {
+            cfg.as_typed::<DatadogEventsConfiguration>()
+                .expect("DatadogEventsConfiguration should deserialize")
+        })
         .await
     }
 }

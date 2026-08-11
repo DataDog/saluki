@@ -48,3 +48,47 @@ where
 {
     deserialize_space_separated_or_seq(deserializer).map(Some)
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+    use serde_json::json;
+
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct Holder {
+        #[serde(deserialize_with = "deserialize_space_separated_or_seq")]
+        values: Vec<String>,
+    }
+
+    #[test]
+    fn deserializes_space_separated_strings_and_sequences() {
+        // The `DD_PROXY_NO_PROXY="host1 host2"` env-var form arrives as a single space-separated string, while the same
+        // key in a YAML/JSON config file arrives as a sequence; both must produce the same `Vec<String>`.
+        let cases: &[(&str, serde_json::Value, Vec<&str>)] = &[
+            (
+                "space-separated string",
+                json!("host1 host2 host3"),
+                vec!["host1", "host2", "host3"],
+            ),
+            (
+                "surrounding and repeated whitespace collapses",
+                json!("  host1   host2  "),
+                vec!["host1", "host2"],
+            ),
+            ("empty string yields an empty list", json!(""), vec![]),
+            (
+                "sequence form is preserved verbatim",
+                json!(["host1", "host2"]),
+                vec!["host1", "host2"],
+            ),
+        ];
+
+        for (description, input, expected) in cases {
+            let holder: Holder =
+                serde_json::from_value(json!({ "values": input })).unwrap_or_else(|e| panic!("{description}: {e}"));
+            assert_eq!(holder.values, *expected, "case: {description}");
+        }
+    }
+}

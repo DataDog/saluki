@@ -280,11 +280,11 @@ where
 mod tests {
     use std::collections::VecDeque;
 
-    use bytes::Buf as _;
+    use bytes::{Buf as _, Bytes};
     use http::Request;
-    use saluki_io::net::util::retry::EventContainer as _;
+    use saluki_io::net::util::retry::{EventContainer as _, Retryable as _};
 
-    use super::{Metadata, Transaction};
+    use super::{Metadata, Transaction, TransactionBody};
 
     #[test]
     fn basic_transaction_ser_deser_roundtrip() {
@@ -309,5 +309,43 @@ mod tests {
         let req_body_raw = deserialized.request.body().clone();
         let req_body = VecDeque::from(req_body_raw.chunk().to_vec());
         assert_eq!(req_body, body);
+    }
+
+    #[test]
+    fn size_bytes_reflects_remaining_body_bytes() {
+        // `size_bytes` (via `Retryable`) reports the number of remaining bytes in the request body, which
+        // is what the retry queue uses for capacity accounting.
+        let metadata = Metadata::from_event_and_data_point_count(1, 1);
+        let body = VecDeque::from(b"hello, world!".to_vec());
+        let request = Request::builder().uri("http://example.com").body(body).unwrap();
+
+        let mut transaction = Transaction::from_original(metadata, request);
+        transaction.request.body_mut().advance(7);
+
+        assert_eq!(transaction.size_bytes(), 6);
+    }
+
+    #[test]
+    #[should_panic(expected = "attempted to advance a rehydrated body that was consumed")]
+    fn advancing_a_consumed_rehydrated_body_panics() {
+        // A rehydrated body is consumed once its bytes are taken; advancing it afterwards is a documented
+        // programming error and panics.
+        let mut body: TransactionBody<Bytes> = TransactionBody::Rehydrated(None);
+        body.advance(1);
+    }
+
+    #[test]
+    fn serializing_a_consumed_rehydrated_body_errors() {
+        // Serializing a rehydrated body whose bytes were already taken returns an error rather than
+        // silently writing an empty payload.
+        let body: TransactionBody<Bytes> = TransactionBody::Rehydrated(None);
+
+        let error = serde_json::to_string(&body).expect_err("serializing a consumed rehydrated body should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("attempted to serialize a rehydrated body that was consumed"),
+            "unexpected error: {error}"
+        );
     }
 }

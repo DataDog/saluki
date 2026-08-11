@@ -188,6 +188,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::StringList,
     },
     EnvKey {
+        env_vars: &["DD_BASIC_TELEMETRY_ADD_CONTAINER_TAGS"],
+        path: &["basic_telemetry_add_container_tags"],
+        decode: EnvDecode::Bool,
+    },
+    EnvKey {
         env_vars: &["DD_BIND_HOST"],
         path: &["bind_host"],
         decode: EnvDecode::RawString,
@@ -469,6 +474,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_DOGSTATSD_WINDOWS_PIPE_SECURITY_DESCRIPTOR"],
         path: &["dogstatsd_windows_pipe_security_descriptor"],
         decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_DOGSTATSD_WORKERS_COUNT"],
+        path: &["dogstatsd_workers_count"],
+        decode: EnvDecode::Integer,
     },
     EnvKey {
         env_vars: &["DD_ENABLE_PAYLOADS_EVENTS"],
@@ -766,6 +776,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_METRICS_SUMMARIES_MODE"],
+        path: &["otlp_config", "metrics", "summaries", "mode"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_METRICS_SUMS_CUMULATIVE_MONOTONIC_MODE"],
         path: &["otlp_config", "metrics", "sums", "cumulative_monotonic_mode"],
         decode: EnvDecode::RawString,
@@ -773,6 +788,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_METRICS_SUMS_INITIAL_CUMULATIVE_MONOTONIC_VALUE"],
         path: &["otlp_config", "metrics", "sums", "initial_cumulative_monotonic_value"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_METRICS_TAG_CARDINALITY", "DD_OTLP_TAG_CARDINALITY"],
+        path: &["otlp_config", "metrics", "tag_cardinality"],
         decode: EnvDecode::RawString,
     },
     EnvKey {
