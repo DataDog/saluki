@@ -147,6 +147,7 @@ fn type_to_string(ty: &Type) -> String {
     let alias: syn::ItemType = syn::parse_quote!(type __WitnessType = #ty;);
     let file = syn::File {
         shebang: None,
+        frontmatter: None,
         attrs: Vec::new(),
         items: vec![Item::Type(alias)],
     };
