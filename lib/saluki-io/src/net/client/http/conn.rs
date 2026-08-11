@@ -445,7 +445,7 @@ impl Service<Uri> for HttpsCapableConnector {
 /// Strips the surrounding brackets from a bracketed IPv6 host, as found in a URI authority.
 ///
 /// [`rustls::pki_types::ServerName`] accepts unbracketed IPv6 addresses but rejects the bracketed form that
-/// [`http::Uri::host`] returns (e.g. `[::1]`), so this normalizes the host before constructing the server name.
+/// [`http::Uri::host`] returns (for example, `[::1]`), so this normalizes the host before constructing the server name.
 fn strip_ipv6_brackets(host: &str) -> &str {
     host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
 }
