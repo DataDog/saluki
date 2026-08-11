@@ -405,21 +405,14 @@ impl Service<Uri> for HttpsCapableConnector {
                     .to_owned();
 
                 let handshake = TlsConnector::from(tls_config).connect(server_name, TokioIo::new(transport));
-                match tokio::time::timeout(tls_handshake_timeout, handshake).await {
-                    Ok(Ok(stream)) => MaybeHttpsStream::from(stream),
-                    Ok(Err(error)) => {
+
+                match await_handshake_with_deadline(tls_handshake_timeout, handshake).await {
+                    Ok(stream) => MaybeHttpsStream::from(stream),
+                    Err(error) => {
                         if let Some(error_telemetry) = &error_telemetry {
                             error_telemetry.increment_tls_error();
                         }
-                        return Err(Box::new(error) as BoxError);
-                    }
-                    Err(_) => {
-                        if let Some(error_telemetry) = &error_telemetry {
-                            error_telemetry.increment_tls_error();
-                        }
-                        return Err(
-                            Box::new(io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out")) as BoxError,
-                        );
+                        return Err(error);
                     }
                 }
             } else {
@@ -433,6 +426,26 @@ impl Service<Uri> for HttpsCapableConnector {
                 conn_age_limit,
             })
         })
+    }
+}
+
+/// Awaits a TLS handshake future, bounding it by `timeout` unless `timeout` is zero.
+///
+/// A zero duration means the handshake deadline is disabled, matching the core Agent convention for this setting.
+/// `tokio::time::timeout` with a zero duration fires immediately rather than never, so that case is handled by
+/// awaiting the handshake directly instead of wrapping it in a timeout.
+async fn await_handshake_with_deadline<F, T, E>(timeout: Duration, handshake: F) -> Result<T, BoxError>
+where
+    F: Future<Output = Result<T, E>>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    if timeout.is_zero() {
+        return handshake.await.map_err(|error| Box::new(error) as BoxError);
+    }
+
+    match tokio::time::timeout(timeout, handshake).await {
+        Ok(result) => result.map_err(|error| Box::new(error) as BoxError),
+        Err(_) => Err(Box::new(io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out")) as BoxError),
     }
 }
 
@@ -615,7 +628,40 @@ pub(super) fn check_connection_state(captured_conn: CaptureConnection) {
 
 #[cfg(test)]
 mod tests {
-    use super::{configure_alpn_for_http_protocol, HttpProtocol};
+    use std::{io, time::Duration};
+
+    use super::{await_handshake_with_deadline, configure_alpn_for_http_protocol, HttpProtocol};
+
+    #[tokio::test(start_paused = true)]
+    async fn handshake_deadline_of_zero_disables_the_timeout() {
+        let handshake = async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<_, io::Error>(())
+        };
+
+        let result = await_handshake_with_deadline(Duration::ZERO, handshake).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn handshake_deadline_times_out_when_exceeded() {
+        let handshake = async {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            Ok::<_, io::Error>(())
+        };
+
+        let result = await_handshake_with_deadline(Duration::from_secs(10), handshake).await;
+        let error = result.expect_err("expected handshake to time out");
+        assert!(error.to_string().contains("TLS handshake timed out"));
+    }
+
+    #[tokio::test]
+    async fn handshake_deadline_propagates_success() {
+        let handshake = async { Ok::<_, io::Error>(42) };
+
+        let result = await_handshake_with_deadline(Duration::from_secs(10), handshake).await;
+        assert_eq!(result.unwrap(), 42);
+    }
 
     #[test]
     fn auto_protocol_advertises_h2_and_http1_alpn() {

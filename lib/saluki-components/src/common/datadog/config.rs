@@ -357,7 +357,8 @@ pub struct ForwarderConfiguration {
     /// Timeout for completing the TLS handshake after a connection is established, for Datadog intake forwarding.
     ///
     /// Defaults to 10 seconds. This bounds only the TLS handshake step, distinct from `forwarder_timeout`, which
-    /// bounds the entire request.
+    /// bounds the entire request. A value of `0` disables the handshake deadline entirely, matching the core Agent
+    /// convention for this setting.
     #[serde(default = "default_tls_handshake_timeout")]
     #[facet(opaque)]
     tls_handshake_timeout: DurationString,
