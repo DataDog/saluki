@@ -373,7 +373,7 @@ impl VisitMut for DurationDefaultInit<'_> {
 
 /// If `node` is `impl Default for <Struct>`, return `<Struct>`'s name.
 fn default_impl_target(node: &syn::ItemImpl) -> Option<String> {
-    let (_, trait_path, _) = node.trait_.as_ref()?;
+    let (trait_path, _) = node.trait_.as_ref()?;
     if trait_path.segments.last()?.ident != "Default" {
         return None;
     }
