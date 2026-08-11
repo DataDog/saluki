@@ -2,13 +2,14 @@
 //!
 //! A configuration layer is a tree of sections ending in leaves, where a leaf is one schema setting's
 //! entire value. Each leaf records the [`Provenance`] of its value, so a layer can say not just what
-//! a setting is but whether anything set it. That is what lets the Agent's own defaults be layered
-//! over local configuration without shadowing it, and what lets translation resolve a setting whose
-//! meaning depends on being set explicitly (`dd_url` over `site`, for example).
+//! a setting is but whether it has been set by a user or by default. This allows us to determine
+//! whether an Agent value should overwrite a locally set value. There are also cases where it is
+//! important for to know whether a held value is a default or was provided explicitly by
+//! configuration (`dd_url` over `site`, for example).
 //!
 //! Provenance crosses the crate boundary here: [`saluki_config::dynamic::Provenance`] describes a
 //! setting in transit on a configuration stream, and [`Provenance`] describes a value in the ADP
-//! model. [`SourceTree::set`] is the one place the two meet.
+//! model. [`SourceTree::set`] is where the two meet.
 
 use std::collections::BTreeMap;
 use std::collections::HashSet;

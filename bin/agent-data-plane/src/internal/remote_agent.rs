@@ -342,11 +342,12 @@ async fn run_config_stream_event_loop(
 /// schema default value, and `schema` is a declared key that has no value at all.
 const AGENT_UNSET_SOURCES: [&str; 2] = ["default", "schema"];
 
-/// Converts one setting from the Agent's config stream.
+/// Converts a setting from the Agent's RPC wire protocol to our `ConfigSetting` type.
 ///
-/// An unrecognized source is treated as explicit: a source name we do not know is far more likely to
-/// be a new kind of real input than a new way of saying nobody configured the setting, and treating a
-/// real input as a default would silently discard an operator's value.
+///
+/// An unrecognized `source` is treated as `Provenance::Explicit` because it is safer.
+/// `Provenance::Default` values can be overwritten downstream so we want to be sure when labeling a
+/// value as such.
 fn setting_to_config_setting(setting: &AgentConfigSetting) -> ConfigSetting {
     let provenance = if AGENT_UNSET_SOURCES.contains(&setting.source.as_str()) {
         Provenance::Default

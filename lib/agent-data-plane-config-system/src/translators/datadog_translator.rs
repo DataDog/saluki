@@ -9,14 +9,12 @@
 //! Most keys assign a single field directly. The endpoint keys (`api_key`, `dd_url`, `site`,
 //! `additional_endpoints`) are copied into the model without selecting a primary endpoint here.
 //!
-//! A key whose meaning depends on whether its value was set explicitly, rather than on the value
-//! alone, is assigned as a [`ConfigValue`]. A schema key with a default is always present in
-//! `DatadogConfiguration`, so the value cannot answer that question; the translator reads the answer
-//! from the merged source layer instead.
+//! A key whose meaning depends on whether its value was set explicitly or set by default is typed
+//! as a [`ConfigValue`] which preserves that provenance.
 //!
 //! Conversions that can fail (enum parsing, byte-size parsing, JSON structure parsing) record a
-//! [`TranslateError`] via `record_error` and either retain a recoverable value or leave the field
-//! at its default; `drive` returns all recorded errors as a [`TranslateErrors`].
+//! [`TranslateError`] via `record_error` and should leave the resolved value unchanged (last known
+//! good). `drive` returns all recorded errors as a [`TranslateErrors`].
 
 use std::collections::HashMap;
 use std::path::PathBuf;
