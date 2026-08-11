@@ -86,6 +86,14 @@
       "prBodyNotes": [
         "**Cargo major update** — Before merging, verify the workspace compiles and check upstream release notes for removed features or API changes."
       ]
+    },
+    // We deliberately hold the Rust toolchain (rust-toolchain.toml `channel`) well
+    // below the latest stable release to preserve broader platform support for
+    // consumers on older compilers. Disable Renovate's `rust-toolchain` manager so it
+    // stops proposing bumps here; the toolchain version is a manual decision.
+    {
+      "matchManagers": ["rust-toolchain"],
+      "enabled": false
     }
   ],
 
