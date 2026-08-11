@@ -46,11 +46,19 @@ RUN --mount=type=bind,from=ci-scripts,target=/scripts \
 # Pre-install the Python dependencies our tooling needs (requirements.txt), so jobs don't pay to
 # download them on every run. They go to the system interpreter, which is what the Makefile falls
 # back to when there is no local virtualenv, and the versions stay pinned to the same file
-# developers install from. `--break-system-packages` is needed because the Ubuntu base marks its
-# interpreter as externally managed; in a single-purpose CI image that is exactly what we want.
+# developers install from.
+#
+# Two flags earn their place here:
+#
+# - `--break-system-packages`, because the Ubuntu base marks its interpreter as externally
+#   managed. In a single-purpose CI image that is exactly what we want.
+# - `--ignore-installed`, because the base ships some of these as dpkg packages (PyYAML, today).
+#   pip cannot uninstall those -- they have no RECORD file -- and fails the build rather than
+#   upgrading them. This skips the removal and installs our pinned versions alongside, into
+#   /usr/local/lib, which precedes the distro's dist-packages on `sys.path` and so wins at import.
 RUN --mount=type=bind,source=requirements.txt,target=/tmp/requirements.txt \
     --mount=type=bind,from=ci-scripts,target=/scripts \
-    pip3 install --break-system-packages --requirement /tmp/requirements.txt && \
+    pip3 install --break-system-packages --ignore-installed --requirement /tmp/requirements.txt && \
     /scripts/clean-temporary-caches.sh
 
 # Install the Docker CLI directly, as well as the CI-specific credential helper.
