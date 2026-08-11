@@ -597,7 +597,7 @@ impl HttpsCapableConnectorBuilder {
             vsock_addr: self.vsock_addr,
         };
 
-        tls_config.alpn_protocols = configure_alpn_for_http_protocol(self.http_protocol);
+        tls_config.alpn_protocols = http_protocol_alpns(self.http_protocol);
 
         Ok(HttpsCapableConnector {
             inner: inner_connector,
@@ -611,7 +611,7 @@ impl HttpsCapableConnectorBuilder {
 }
 
 /// Selects the ALPN protocols to advertise for the given HTTP protocol.
-fn configure_alpn_for_http_protocol(protocol: HttpProtocol) -> Vec<Vec<u8>> {
+fn http_protocol_alpns(protocol: HttpProtocol) -> Vec<Vec<u8>> {
     match protocol {
         HttpProtocol::Auto => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
         HttpProtocol::Http1 => Vec::new(),
@@ -651,7 +651,7 @@ pub(super) fn check_connection_state(captured_conn: CaptureConnection) {
 mod tests {
     use std::{io, time::Duration};
 
-    use super::{await_handshake_with_deadline, configure_alpn_for_http_protocol, HttpProtocol};
+    use super::{await_handshake_with_deadline, http_protocol_alpns, HttpProtocol};
 
     #[tokio::test(start_paused = true)]
     async fn handshake_deadline_of_zero_disables_the_timeout() {
@@ -742,14 +742,14 @@ mod tests {
 
     #[test]
     fn auto_protocol_advertises_h2_and_http1_alpn() {
-        let alpn_protocols = configure_alpn_for_http_protocol(HttpProtocol::Auto);
+        let alpn_protocols = http_protocol_alpns(HttpProtocol::Auto);
 
         assert_eq!(alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
     }
 
     #[test]
     fn http1_protocol_leaves_alpn_empty() {
-        let alpn_protocols = configure_alpn_for_http_protocol(HttpProtocol::Http1);
+        let alpn_protocols = http_protocol_alpns(HttpProtocol::Http1);
 
         assert!(alpn_protocols.is_empty());
     }
