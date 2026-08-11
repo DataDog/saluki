@@ -385,7 +385,19 @@ impl Service<Uri> for HttpsCapableConnector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
-        let is_https = dst.scheme_str() == Some("https");
+        let is_https = match dst.scheme_str() {
+            Some("https") => true,
+            Some("http") => false,
+            scheme => {
+                let scheme = scheme.map(str::to_owned);
+                return Box::pin(async move {
+                    Err(Box::new(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("unsupported URI scheme: {scheme:?}"),
+                    )) as BoxError)
+                });
+            }
+        };
         let transport_fut = self.inner.call(dst.clone());
         let tls_config = Arc::clone(&self.tls_config);
         let tls_handshake_timeout = self.tls_handshake_timeout;
@@ -400,6 +412,7 @@ impl Service<Uri> for HttpsCapableConnector {
                 let host = dst.host().ok_or_else(|| -> BoxError {
                     Box::new(io::Error::new(io::ErrorKind::InvalidInput, "URI has no host"))
                 })?;
+                let host = strip_ipv6_brackets(host);
                 let server_name = ServerName::try_from(host)
                     .map_err(|error| -> BoxError { Box::new(error) })?
                     .to_owned();
@@ -427,6 +440,14 @@ impl Service<Uri> for HttpsCapableConnector {
             })
         })
     }
+}
+
+/// Strips the surrounding brackets from a bracketed IPv6 host, as found in a URI authority.
+///
+/// [`rustls::pki_types::ServerName`] accepts unbracketed IPv6 addresses but rejects the bracketed form that
+/// [`http::Uri::host`] returns (e.g. `[::1]`), so this normalizes the host before constructing the server name.
+fn strip_ipv6_brackets(host: &str) -> &str {
+    host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
 }
 
 /// Awaits a TLS handshake future, bounding it by `timeout` unless `timeout` is zero.
@@ -661,6 +682,62 @@ mod tests {
 
         let result = await_handshake_with_deadline(Duration::from_secs(10), handshake).await;
         assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn strip_ipv6_brackets_unwraps_bracketed_addresses() {
+        use super::strip_ipv6_brackets;
+
+        assert_eq!(strip_ipv6_brackets("[::1]"), "::1");
+        assert_eq!(strip_ipv6_brackets("[2001:db8::1]"), "2001:db8::1");
+    }
+
+    #[test]
+    fn strip_ipv6_brackets_leaves_unbracketed_hosts_alone() {
+        use super::strip_ipv6_brackets;
+
+        assert_eq!(strip_ipv6_brackets("example.com"), "example.com");
+        assert_eq!(strip_ipv6_brackets("::1"), "::1");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn call_rejects_unsupported_uri_scheme() {
+        use std::sync::Arc;
+
+        use rustls::{ClientConfig, RootCertStore};
+        use tower::Service as _;
+
+        use super::{HttpsCapableConnector, InnerConnector};
+        use crate::net::dns::SystemResolver;
+
+        let inner = InnerConnector {
+            http: SystemResolver::new().into_http_connector(),
+            connect_timeout: Duration::from_secs(1),
+            error_telemetry: None,
+            unix_socket_path: None,
+            #[cfg(target_os = "linux")]
+            vsock_addr: None,
+        };
+
+        let tls_config = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(RootCertStore::empty())
+                .with_no_client_auth(),
+        );
+
+        let mut connector = HttpsCapableConnector {
+            inner,
+            tls_config,
+            tls_handshake_timeout: Duration::from_secs(1),
+            bytes_sent: None,
+            error_telemetry: None,
+            conn_age_limit: None,
+        };
+
+        let uri: http::Uri = "ftp://example.com/".parse().unwrap();
+        let error = connector.call(uri).await.err().expect("expected scheme to be rejected");
+        assert!(error.to_string().contains("unsupported URI scheme"));
     }
 
     #[test]

@@ -122,6 +122,9 @@ pub struct Tls {
     pub sslkeylogfile: String,
 
     /// Timeout for completing the TLS handshake after a connection is established.
+    ///
+    /// Defaults to 10 seconds. Bounds only the handshake step, distinct from the overall request timeout. A value
+    /// of zero disables the handshake-specific deadline, leaving the overall request timeout as the only bound.
     pub handshake_timeout: Duration,
 }
 
