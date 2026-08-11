@@ -478,6 +478,43 @@ mod tests {
         assert_eq!(negotiated_alpn, None);
     }
 
+    #[tokio::test]
+    async fn tls_handshake_timeout_fires_against_a_stalled_server() {
+        initialize_crypto_provider();
+        let server_cert = SelfSignedCert::localhost();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("should bind listener");
+        let port = listener.local_addr().expect("should have local address").port();
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("server should accept a connection");
+            // Accept the TCP connection but never complete the TLS handshake, so the client's handshake
+            // deadline is the only thing that can end the connection attempt.
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(stream);
+        });
+
+        let mut client = HttpClient::builder()
+            .with_tls_config(|builder| builder.with_root_cert_store(root_store(&server_cert)))
+            .with_tls_handshake_timeout(Duration::from_millis(200))
+            .with_http_protocol(HttpProtocol::Http1)
+            .build()
+            .expect("client should build");
+        let request = Request::get(format!("https://localhost:{port}/"))
+            .body(Empty::<Bytes>::new())
+            .expect("request should build");
+
+        let error = timeout(Duration::from_secs(5), client.send(request))
+            .await
+            .expect("request should not hit the outer test timeout")
+            .expect_err("handshake should time out before completing");
+        assert!(
+            format!("{error:#}").contains("TLS handshake timed out"),
+            "expected a TLS handshake timeout, got: {error:#}"
+        );
+
+        server_task.abort();
+    }
+
     fn mutual_tls_configs() -> (ServerConfig, ClientConfig) {
         let server_cert = SelfSignedCert::localhost();
         let client_cert = SelfSignedCert::new(["saluki-client"]);
