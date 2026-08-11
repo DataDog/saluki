@@ -196,9 +196,8 @@ async fn agent_loop(
             Err(e) => warn!(
                 error = %e,
                 "Rejected configuration update; keeping the last-known-good typed configuration. The \
-                 compatibility map still receives this update, so the two representations may now \
-                 differ, so that divergence indicates a defect in the typed configuration system, not \
-                 in the configuration itself."
+                 compatibility map still receives this update, so an un-migrated component may act on \
+                 a value the typed model rejected."
             ),
         }
         // The compatibility map receives every update faithfully, whether or not the typed path
@@ -212,7 +211,8 @@ async fn agent_loop(
 /// Folds one update into the accumulating Agent layer.
 ///
 /// `Snapshot` replaces the layer; `Partial` applies one (possibly dotted) key, the same handling the
-/// `saluki-config` updater uses, so the typed model and the compatibility map stay consistent.
+/// `saluki-config` updater uses, so this layer applies Agent updates the same way as the compatibility
+/// view.
 ///
 /// Each setting's provenance is retained, which is what lets a later update that demotes a value to
 /// an Agent default stop shadowing the local value it had been overriding.
