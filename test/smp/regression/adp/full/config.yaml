@@ -1,11 +1,6 @@
 lading:
-  # 0.32.0 or newer is required: the tag filtering experiments configure their metric and tag
-  # corpora as `{{X-Y}}` range patterns, which lading only expands from that release on. On an
-  # older lading each pattern would be taken as a single literal name.
   version: 0.32.0
 
 target:
-  # ADP is dynamically linked against glibc, so SMP can load ddprof into it with LD_PRELOAD and
-  # profile it directly. That replaces the wrapper script the target command used to run under.
   ddprof_replicas: 2
   internal_profiling_replicas: 0

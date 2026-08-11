@@ -20,7 +20,6 @@ target:
     DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: 64MiB
   profiling_environment:
     DD_SERVICE: agent-data-plane
-    DD_TRACE_AGENT_URL: unix:///smp-host/apm.socket
     DD_PROFILING_NATIVE_PRESET: cpu_live_heap
     DD_PROFILING_INLINED_FUNCTIONS: "true"
 checks:

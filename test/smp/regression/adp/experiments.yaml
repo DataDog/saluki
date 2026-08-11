@@ -12,11 +12,9 @@ global:
   erratic: false
 
   target:
-    # Every experiment runs against the converged Datadog Agent image, which carries both the Core
-    # Agent and ADP. Most experiments ignore the Core Agent entirely: the command below starts ADP
-    # by itself, in standalone mode, exactly as it ran when the target was the ADP image. The tag
-    # filtering experiments at the bottom of this file instead boot the image's own entrypoint, so
-    # ADP comes up under the Core Agent and takes its configuration over the config stream.
+    # Most experiments ignore the Core Agent entirely: this base configuration runs ADP directly in
+    # standalone mode. Some other experiments (like tag filtering) may end up using the "full" Agent
+    # entrypoint.
     name: agent-data-plane
     command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/empty.yaml run
     cpu_allotment: 4
@@ -54,7 +52,6 @@ global:
     # LD_PRELOAD, so these are read by that profiler rather than by anything we run.
     profiling_environment:
       DD_SERVICE: "agent-data-plane"
-      DD_TRACE_AGENT_URL: "unix:///smp-host/apm.socket"
       DD_PROFILING_NATIVE_PRESET: "cpu_live_heap"
       DD_PROFILING_INLINED_FUNCTIONS: "true"
 
@@ -145,13 +142,9 @@ templates:
       filterlist_metrics: 0
 
     target:
-      # SMP mounts the case's `datadog-agent/` directory at /etc/datadog-agent, where both
-      # processes read `datadog.yaml`. The standalone target files don't apply here.
       name: datadog-agent
       command: /bin/entrypoint.sh
 
-      # Headroom for two processes, both of which hold the filterlist: the 10,000-entry variant is
-      # ~12 MiB of YAML that the Core Agent parses, streams, and ADP then materializes.
       memory_allotment: 4GiB
 
       files:
@@ -161,17 +154,10 @@ templates:
           source: shared/tagfilter-datadog.yaml.j2
 
       environment:
-        # Run ADP alongside the Core Agent, owning the DogStatsD pipeline.
-        # `DD_DATA_PLANE_ENABLED` has to be in the environment (rather than only in `datadog.yaml`)
-        # because the image's cont-init.d hook keys off it to set up ADP's environment directory.
+        # Run in the standard control plane/data plane mode.
+        DD_DATA_PLANE_STANDALONE_MODE: "false"
         DD_DATA_PLANE_ENABLED: "true"
         DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
-
-        # The point of these experiments. Standalone mode would decouple ADP from the Core Agent,
-        # and so from the filterlist; instead ADP registers as a remote agent and subscribes to the
-        # Core Agent's configuration. Remote agent and config stream are already the defaults, and
-        # are explicit here because they're the subject of the experiment.
-        DD_DATA_PLANE_STANDALONE_MODE: "false"
         DD_DATA_PLANE_REMOTE_AGENT_ENABLED: "true"
         DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
 
@@ -207,18 +193,18 @@ templates:
             tags:
               sub_agent: core
 
-  # Tag filtering with no traffic at all: the target starts, takes the filterlist over the config
-  # stream, and sits there. What this measures is the standing cost of holding a filterlist.
+  # Tag filtering with no traffic at all.
+  #
+  # Meant to measure the overhead of tag filtering being enabled/configured at all.
   tagfilter_idle:
     extends: tagfilter_base
     lading:
       generator: []
 
-  # Tag filtering under 100 MB/s of DogStatsD over UDS, with wide tagsets -- the shape tag
-  # filtering exists for.
+  # Tag filtering with 100MB/s of traffic.
   #
-  # `contexts`, `tags_per_msg` and `bytes_per_second` are identical across every traffic variant;
-  # only the filterlist changes.
+  # Meant to measure the actual overhead of the tag filtering feature itself given a fixed throughput of DogStatsD
+  # metrics.
   tagfilter_dsd_uds_100mb:
     extends: tagfilter_base
 
