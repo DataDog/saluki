@@ -7,8 +7,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use agent_data_plane_config::domains;
 use async_trait::async_trait;
-use saluki_config::GenericConfiguration;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -28,7 +28,7 @@ use stringtheory::MetaString;
 use tokio::{select, time::interval};
 use tracing::{debug, error};
 
-use crate::common::{datadog::apm::ApmConfig, otlp::util::extract_container_tags_from_attributes_map};
+use crate::common::otlp::util::extract_container_tags_from_attributes_map;
 
 mod aggregation;
 pub(crate) use self::aggregation::{process_tags_hash, PayloadAggregationKey};
@@ -55,20 +55,25 @@ const MAX_STATS_GROUPS_PER_EVENT: usize = 4000;
 /// Aggregates incoming `Trace` events into time-bucketed statistics, emitting
 /// `TraceStats` events.
 pub struct ApmStatsTransformConfiguration {
-    apm_config: ApmConfig,
+    compute_stats_by_span_kind: bool,
+    peer_tags_aggregation: bool,
+    peer_tags: Vec<MetaString>,
+    default_env: MetaString,
     default_hostname: Option<String>,
     workload_provider: Option<Arc<dyn WorkloadProvider + Send + Sync>>,
 }
 
 impl ApmStatsTransformConfiguration {
-    /// Creates a new `ApmStatsTransformConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let apm_config = ApmConfig::from_configuration(config)?;
-        Ok(Self {
-            apm_config,
+    /// Creates a new `ApmStatsTransformConfiguration` from the resolved traces configuration.
+    pub fn from_configuration(config: &domains::traces::Domain) -> Self {
+        Self {
+            compute_stats_by_span_kind: config.compute_stats_by_span_kind,
+            peer_tags_aggregation: config.peer_tags_aggregation,
+            peer_tags: config.peer_tags.iter().cloned().map(MetaString::from).collect(),
+            default_env: MetaString::from(config.default_env.clone()),
             default_hostname: None,
             workload_provider: None,
-        })
+        }
     }
 
     /// Sets the default hostname using the environment provider.
@@ -96,24 +101,19 @@ impl ApmStatsTransformConfiguration {
 #[async_trait]
 impl TransformBuilder for ApmStatsTransformConfiguration {
     async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let mut apm_config = self.apm_config.clone();
-
-        if let Some(hostname) = &self.default_hostname {
-            apm_config.set_hostname_if_empty(hostname.as_str());
-        }
-
+        let agent_hostname = MetaString::from(self.default_hostname.clone().unwrap_or_default());
         let concentrator = SpanConcentrator::new(
-            apm_config.compute_stats_by_span_kind(),
-            apm_config.peer_tags_aggregation(),
-            apm_config.peer_tags(),
+            self.compute_stats_by_span_kind,
+            self.peer_tags_aggregation,
+            &self.peer_tags,
             now_nanos(),
         );
 
         Ok(Box::new(ApmStats {
             concentrator,
             flush_interval: DEFAULT_FLUSH_INTERVAL,
-            agent_env: apm_config.default_env().clone(),
-            agent_hostname: apm_config.hostname().clone(),
+            agent_env: self.default_env.clone(),
+            agent_hostname,
             workload_provider: self.workload_provider.clone(),
         }))
     }
@@ -1484,30 +1484,28 @@ mod tests {
         );
     }
 
-    #[test_strategy::proptest]
-    #[cfg_attr(miri, ignore)]
-    fn property_test_split_respects_max_entries(
-        #[strategy(arb_split_inputs())] inputs: (Vec<ClientStatsPayload>, usize),
-    ) {
-        let (payloads, max_entries_per_event) = inputs;
+    proptest! {
+        #[test]
+        #[cfg_attr(miri, ignore)]
+        fn property_test_split_respects_max_entries((payloads, max_entries_per_event) in arb_split_inputs()) {
+            let input_total: usize = payloads.iter().flat_map(|p| p.stats()).map(|b| b.stats().len()).sum();
 
-        let input_total: usize = payloads.iter().flat_map(|p| p.stats()).map(|b| b.stats().len()).sum();
+            let result = split_into_trace_stats(payloads, max_entries_per_event);
 
-        let result = split_into_trace_stats(payloads, max_entries_per_event);
+            // Property 1: No TraceStats should exceed max_entries_per_event
+            for trace_stats in &result {
+                let count = count_grouped_stats(trace_stats);
+                prop_assert!(
+                    count <= max_entries_per_event,
+                    "TraceStats has {} grouped stats, exceeds max of {}",
+                    count,
+                    max_entries_per_event
+                );
+            }
 
-        // Property 1: No TraceStats should exceed max_entries_per_event
-        for trace_stats in &result {
-            let count = count_grouped_stats(trace_stats);
-            prop_assert!(
-                count <= max_entries_per_event,
-                "TraceStats has {} grouped stats, exceeds max of {}",
-                count,
-                max_entries_per_event
-            );
+            // Property 2: Total stats should be preserved
+            let output_total: usize = result.iter().map(count_grouped_stats).sum();
+            prop_assert_eq!(input_total, output_total, "Total stats count should be preserved");
         }
-
-        // Property 2: Total stats should be preserved
-        let output_total: usize = result.iter().map(count_grouped_stats).sum();
-        prop_assert_eq!(input_total, output_total, "Total stats count should be preserved");
     }
 }

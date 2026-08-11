@@ -1,0 +1,2 @@
+# NDJSON fixtures are byte-compared with compressed streams and must not be translated to CRLF.
+*.ndjson text eol=lf

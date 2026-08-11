@@ -8,3 +8,4 @@ pub(crate) mod metric_payload;
 pub(crate) mod point;
 pub(crate) mod resource;
 pub(crate) mod series;
+pub(crate) mod sketch;

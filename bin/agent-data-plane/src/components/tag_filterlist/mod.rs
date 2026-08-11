@@ -343,14 +343,30 @@ pub fn filter_metric_tags(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
     use saluki_context::{
         tags::{Tag, TagSet},
         Context, TagSetMutViewState,
     };
-    use saluki_core::data_model::event::metric::Metric;
+    use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
+    use saluki_core::components::{
+        transforms::{TransformBuilder, TransformContext},
+        ComponentContext,
+    };
+    use saluki_core::data_model::event::{
+        metric::{Metric, MetricValues},
+        Event,
+    };
+    use saluki_core::health::HealthRegistry;
+    use saluki_core::runtime::{state::DataspaceRegistry, Supervisor};
+    use saluki_core::topology::interconnect::{Consumer, Dispatcher};
+    use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
     use serde_json::json;
+    use tokio::runtime::Handle;
+    use tokio::sync::mpsc;
 
     use super::*;
 
@@ -384,51 +400,82 @@ mod tests {
     }
 
     #[test]
-    fn exclude_removes_listed_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.dist".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["env".to_string(), "host".to_string()],
-        }];
-        let filters = compile_filters(&entries);
+    fn filter_metric_tags_treats_distribution_and_count_metrics_identically() {
+        // `filter_metric_tags` applies the same rule logic to distribution (sketch) and count metrics. The
+        // run-loop type guard (exercised by `run_loop_enforces_type_guard_and_exercises_context_cache`) is what
+        // restricts which metric types ever reach this function; the function itself never branches on the type.
+        // Each case is asserted against both a distribution and a counter, and against both the resulting tags
+        // and the returned outcome, so the two paths can't silently drift apart.
+        struct Case {
+            name: &'static str,
+            action: FilterAction,
+            filter_metric_name: &'static str,
+            filter_tags: &'static [&'static str],
+            input_tags: &'static [&'static str],
+            expected_tags: &'static [&'static str],
+            expected_outcome: FilterMetricTagsOutcome,
+        }
 
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
+        let cases = [
+            Case {
+                name: "exclude removes the listed tags",
+                action: FilterAction::Exclude,
+                filter_metric_name: "my.metric",
+                filter_tags: &["env", "host"],
+                input_tags: &["env:prod", "service:web", "host:h1"],
+                expected_tags: &["service:web"],
+                expected_outcome: FilterMetricTagsOutcome::Modified { removed_tags: 2 },
+            },
+            Case {
+                name: "include keeps only the listed tags",
+                action: FilterAction::Include,
+                filter_metric_name: "my.metric",
+                filter_tags: &["env"],
+                input_tags: &["env:prod", "service:web", "host:h1"],
+                expected_tags: &["env:prod"],
+                expected_outcome: FilterMetricTagsOutcome::Modified { removed_tags: 2 },
+            },
+            Case {
+                name: "a rule for a different metric name is a miss",
+                action: FilterAction::Exclude,
+                filter_metric_name: "other.metric",
+                filter_tags: &["env"],
+                input_tags: &["env:prod", "service:web"],
+                expected_tags: &["env:prod", "service:web"],
+                expected_outcome: FilterMetricTagsOutcome::RuleMiss,
+            },
+            Case {
+                name: "a matching rule that removes no tags is a no-op",
+                action: FilterAction::Exclude,
+                filter_metric_name: "my.metric",
+                filter_tags: &["region"],
+                input_tags: &["env:prod", "service:web"],
+                expected_tags: &["env:prod", "service:web"],
+                expected_outcome: FilterMetricTagsOutcome::NoChange,
+            },
+        ];
 
-        assert_eq!(tag_names(&metric), vec!["service:web"]);
-    }
+        type MetricBuilder = fn(&'static str, &[&'static str]) -> Metric;
+        let builders: [(&str, MetricBuilder); 2] = [("distribution", distribution_metric), ("counter", counter_metric)];
 
-    #[test]
-    fn include_keeps_only_listed_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.dist".to_string(),
-            action: FilterAction::Include,
-            tags: vec!["env".to_string()],
-        }];
-        let filters = compile_filters(&entries);
+        for case in &cases {
+            let entries = vec![MetricTagFilterEntry {
+                metric_name: case.filter_metric_name.to_string(),
+                action: case.action,
+                tags: case.filter_tags.iter().map(|s| s.to_string()).collect(),
+            }];
+            let filters = compile_filters(&entries);
 
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web", "host:h1"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
+            for (kind, build) in builders {
+                let mut metric = build("my.metric", case.input_tags);
+                let mut state = TagSetMutViewState::default();
+                let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
 
-        assert_eq!(tag_names(&metric), vec!["env:prod"]);
-    }
-
-    #[test]
-    fn non_matching_metric_unchanged() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "other.dist".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["env".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = distribution_metric("my.dist", &["env:prod", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
+                let expected_tags: Vec<String> = case.expected_tags.iter().map(|s| s.to_string()).collect();
+                assert_eq!(tag_names(&metric), expected_tags, "{kind}: {}", case.name);
+                assert_eq!(outcome, case.expected_outcome, "{kind}: {}", case.name);
+            }
+        }
     }
 
     #[test]
@@ -436,74 +483,6 @@ mod tests {
         let metric = counter_metric("my.counter", &["env:prod", "service:web"]);
         assert!(!metric.values().is_sketch(), "counter should not be a sketch");
         assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-    }
-
-    #[test]
-    fn count_exclude_removes_listed_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.counter".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["env".to_string(), "host".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = counter_metric("my.counter", &["env:prod", "service:web", "host:h1"]);
-        let mut state = TagSetMutViewState::default();
-        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["service:web"]);
-        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 2 });
-    }
-
-    #[test]
-    fn count_include_keeps_only_listed_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.counter".to_string(),
-            action: FilterAction::Include,
-            tags: vec!["env".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = counter_metric("my.counter", &["env:prod", "service:web", "host:h1"]);
-        let mut state = TagSetMutViewState::default();
-        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["env:prod"]);
-        assert_eq!(outcome, FilterMetricTagsOutcome::Modified { removed_tags: 2 });
-    }
-
-    #[test]
-    fn count_non_matching_metric_unchanged() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "other.counter".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["env".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = counter_metric("my.counter", &["env:prod", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-        assert_eq!(outcome, FilterMetricTagsOutcome::RuleMiss);
-    }
-
-    #[test]
-    fn count_no_change_outcome_when_filter_matches_no_tags() {
-        let entries = vec![MetricTagFilterEntry {
-            metric_name: "my.counter".to_string(),
-            action: FilterAction::Exclude,
-            tags: vec!["region".to_string()],
-        }];
-        let filters = compile_filters(&entries);
-
-        let mut metric = counter_metric("my.counter", &["env:prod", "service:web"]);
-        let mut state = TagSetMutViewState::default();
-        let outcome = filter_metric_tags(&mut metric, &mut state, &filters);
-
-        assert_eq!(tag_names(&metric), vec!["env:prod", "service:web"]);
-        assert_eq!(outcome, FilterMetricTagsOutcome::NoChange);
     }
 
     #[test]
@@ -653,26 +632,91 @@ mod tests {
     }
 
     #[test]
-    fn missing_action_defaults_to_exclude() {
-        let entry: MetricTagFilterEntry = serde_json::from_value(json!({
-            "metric_name": "my.dist",
-            "tags": ["env"]
-        }))
-        .unwrap();
+    fn filter_action_deserialize_maps_each_documented_branch() {
+        // `FilterAction`'s custom `Deserialize` recognizes exactly `"include"`; the empty string, an explicit
+        // null, and any unrecognized value all resolve to the documented `Exclude` default, and an omitted key
+        // falls back to `Exclude` via `#[serde(default)]`. One case per branch.
+        enum Action {
+            Missing,
+            Null,
+            Value(&'static str),
+        }
 
-        assert_eq!(entry.action, FilterAction::Exclude);
+        struct Case {
+            name: &'static str,
+            action: Action,
+            expected: FilterAction,
+        }
+
+        let cases = [
+            Case {
+                name: "explicit include",
+                action: Action::Value("include"),
+                expected: FilterAction::Include,
+            },
+            Case {
+                name: "explicit exclude",
+                action: Action::Value("exclude"),
+                expected: FilterAction::Exclude,
+            },
+            Case {
+                name: "empty string",
+                action: Action::Value(""),
+                expected: FilterAction::Exclude,
+            },
+            Case {
+                name: "unrecognized value",
+                action: Action::Value("invalid"),
+                expected: FilterAction::Exclude,
+            },
+            Case {
+                name: "explicit null",
+                action: Action::Null,
+                expected: FilterAction::Exclude,
+            },
+            Case {
+                name: "omitted key",
+                action: Action::Missing,
+                expected: FilterAction::Exclude,
+            },
+        ];
+
+        for case in cases {
+            let mut value = json!({ "metric_name": "my.dist", "tags": ["env"] });
+            match case.action {
+                Action::Missing => {}
+                Action::Null => value["action"] = serde_json::Value::Null,
+                Action::Value(action) => value["action"] = json!(action),
+            }
+
+            let entry: MetricTagFilterEntry =
+                serde_json::from_value(value).unwrap_or_else(|e| panic!("{}: deserialize failed: {e}", case.name));
+
+            assert_eq!(entry.action, case.expected, "{}", case.name);
+        }
     }
 
-    #[test]
-    fn invalid_action_defaults_to_exclude() {
-        let entry: MetricTagFilterEntry = serde_json::from_value(json!({
-            "metric_name": "my.dist",
-            "action": "invalid",
-            "tags": ["env"]
-        }))
-        .unwrap();
+    #[tokio::test]
+    async fn context_cache_capacity_defaults_to_100k_and_can_be_overridden() {
+        // With no `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity` key present, the capacity falls
+        // back to the documented default of 100,000.
+        let (default_config, _) = ConfigurationLoader::for_tests(Some(json!({})), None, false).await;
+        let default_builder =
+            TagFilterlistConfiguration::from_configuration(&default_config).expect("config should parse");
+        assert_eq!(default_builder.context_cache_capacity, 100_000);
 
-        assert_eq!(entry.action, FilterAction::Exclude);
+        // Setting the key overrides the default with the configured value.
+        let (override_config, _) = ConfigurationLoader::for_tests(
+            Some(json!({
+                "data_plane": { "dogstatsd": { "aggregator_tag_filter_cache_capacity": 512 } }
+            })),
+            None,
+            false,
+        )
+        .await;
+        let override_builder =
+            TagFilterlistConfiguration::from_configuration(&override_config).expect("config should parse");
+        assert_eq!(override_builder.context_cache_capacity, 512);
     }
 
     #[test]
@@ -1037,5 +1081,128 @@ mod tests {
         assert_eq!(tag_names(&metric), vec!["env:prod", "host:h1"]);
         assert!(!metric.context().tags().is_modified());
         assert!(!metric.context().origin_tags().is_modified());
+    }
+
+    #[tokio::test]
+    async fn run_loop_enforces_type_guard_and_exercises_context_cache() {
+        // The other tests call `filter_metric_tags` directly; this one drives the real `Transform::run()` loop to
+        // cover two behaviors those can't reach:
+        //   1. the run-loop type guard filters only distribution (sketch) and count metrics, leaving other metric
+        //      types (a gauge here) completely untouched even when a rule matches their name; and
+        //   2. the per-context dedup cache is exercised end-to-end -- the cache is keyed by `Context`, so metrics
+        //      that share a (name, tags) context resolve to a single cache entry, and every metric sharing that
+        //      context is filtered identically (the second and later occurrences take the cache-hit branch).
+
+        let cfg_json = json!({
+            "metric_tag_filterlist": [
+                { "metric_name": "svc.latency", "action": "exclude", "tags": ["host"] }
+            ]
+        });
+        let (config, _sender) = ConfigurationLoader::for_tests(Some(cfg_json), None, false).await;
+        let builder = TagFilterlistConfiguration::from_configuration(&config).expect("config should parse");
+
+        let component_context = ComponentContext::test_transform("tag_filterlist");
+        let transform = builder
+            .build(component_context.clone())
+            .await
+            .expect("tag filterlist should build");
+
+        // Wire a dispatcher whose default output we can drain after the run loop completes.
+        let mut dispatcher = Dispatcher::new(component_context.clone());
+        dispatcher.add_output(OutputName::Default).expect("add default output");
+        let (out_tx, mut out_rx) = mpsc::channel(4);
+        dispatcher
+            .attach_sender_to_output(&OutputName::Default, out_tx)
+            .expect("attach default sender");
+
+        // A distribution, a counter, and a gauge that all share the same (name, tags) context, followed by a repeat
+        // of the distribution. The counter and the repeated distribution hit the cache entry created by the first
+        // distribution.
+        let tags = &["host:h1", "env:prod"];
+        let mut input = EventsBuffer::default();
+        for event in [
+            Event::Metric(Metric::distribution(
+                Context::from_static_parts("svc.latency", tags),
+                1.0,
+            )),
+            Event::Metric(Metric::counter(Context::from_static_parts("svc.latency", tags), 1.0)),
+            Event::Metric(Metric::gauge(Context::from_static_parts("svc.latency", tags), 1.0)),
+            Event::Metric(Metric::distribution(
+                Context::from_static_parts("svc.latency", tags),
+                1.0,
+            )),
+        ] {
+            assert!(input.try_push(event).is_none(), "input buffer should have capacity");
+        }
+
+        let (in_tx, in_rx) = mpsc::channel(4);
+        let consumer = Consumer::new(component_context.clone(), in_rx);
+        in_tx.send(input).await.expect("send input buffer");
+        drop(in_tx); // Closing the input makes the run loop terminate deterministically.
+
+        let topology_context = TopologyContext::new(
+            Arc::from("test"),
+            MemoryLimiter::noop(),
+            HealthRegistry::new(),
+            Handle::current(),
+            DataspaceRegistry::new(),
+        );
+        let health = HealthRegistry::new()
+            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
+            .expect("component was not previously registered");
+        let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
+
+        let context = TransformContext::new(
+            &topology_context,
+            &component_context,
+            ComponentRegistry::default(),
+            health,
+            dispatcher,
+            consumer,
+            supervisor_handle,
+        );
+
+        transform.run(context).await.expect("tag filterlist run should succeed");
+
+        let mut dispatched: Vec<Metric> = Vec::new();
+        while let Ok(buffer) = out_rx.try_recv() {
+            for event in buffer {
+                if let Event::Metric(metric) = event {
+                    dispatched.push(metric);
+                }
+            }
+        }
+
+        // Nothing is dropped by the transform; order is preserved.
+        assert_eq!(dispatched.len(), 4, "all four metrics should be dispatched");
+
+        let sorted_tags = |metric: &Metric| {
+            let mut names: Vec<String> = metric
+                .context()
+                .tags()
+                .into_iter()
+                .map(|t| t.as_str().to_owned())
+                .collect();
+            names.sort();
+            names
+        };
+
+        // Distribution (sketch) -> filtered on the cache-miss path.
+        assert!(dispatched[0].values().is_sketch());
+        assert_eq!(sorted_tags(&dispatched[0]), vec!["env:prod"]);
+        // Counter (count metric) -> filtered via the cache-hit branch (shares the distribution's context entry).
+        assert!(matches!(dispatched[1].values(), MetricValues::Counter(_)));
+        assert_eq!(sorted_tags(&dispatched[1]), vec!["env:prod"]);
+        // Gauge -> NOT a sketch and NOT a counter, so the type guard skips it and it passes through untouched.
+        assert!(!dispatched[2].values().is_sketch());
+        assert!(!matches!(dispatched[2].values(), MetricValues::Counter(_)));
+        assert_eq!(
+            sorted_tags(&dispatched[2]),
+            vec!["env:prod", "host:h1"],
+            "gauge metrics must not be filtered by the type guard"
+        );
+        // Repeated distribution -> filtered via the cache-hit branch, identical to the first distribution.
+        assert!(dispatched[3].values().is_sketch());
+        assert_eq!(sorted_tags(&dispatched[3]), vec!["env:prod"]);
     }
 }

@@ -12,9 +12,9 @@
 //! - adding missing samplers (priority, nopriority)
 //! - add error tracking standalone mode
 
+use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use saluki_common::collections::FastHashMap;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{transforms::*, ComponentContext},
@@ -39,10 +39,9 @@ mod signature;
 
 use self::probabilistic::PROB_RATE_KEY;
 use crate::common::datadog::{
-    apm::ApmConfig, sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
+    sample_by_rate, DECISION_MAKER_MANUAL, DECISION_MAKER_PROBABILISTIC, OTEL_TRACE_ID_META_KEY,
     SAMPLING_PRIORITY_METRIC_KEY, TAG_DECISION_MAKER,
 };
-use crate::common::otlp::config::TracesConfig;
 
 // Sampling priority constants (matching datadog-agent)
 const PRIORITY_AUTO_DROP: i32 = 0;
@@ -68,20 +67,41 @@ fn normalize_sampling_rate(rate: f64) -> f64 {
 /// Configuration for the trace sampler transform.
 #[derive(Debug)]
 pub struct TraceSamplerConfiguration {
-    apm_config: ApmConfig,
+    probabilistic_sampler_enabled: bool,
+    sampling_percentage: f64,
+    error_sampling_enabled: bool,
+    error_tracking_standalone: bool,
+    errors_per_second: f64,
+    target_traces_per_second: f64,
+    default_env: MetaString,
+    rare_sampler_enabled: bool,
+    rare_sampler_tps: f64,
+    rare_sampler_cooldown_secs: f64,
+    rare_sampler_cardinality: usize,
     otlp_sampling_rate: f64,
 }
 
 impl TraceSamplerConfiguration {
-    /// Creates a new `TraceSamplerConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let apm_config = ApmConfig::from_configuration(config)?;
-        let otlp_traces: TracesConfig = config.try_get_typed("otlp_config.traces")?.unwrap_or_default();
-        let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler.sampling_percentage / 100.0);
-        Ok(Self {
-            apm_config,
+    /// Creates a new `TraceSamplerConfiguration` from the resolved traces domain.
+    ///
+    /// The OTLP trace settings live in their own domain, so they arrive as a separate slice rather
+    /// than through the traces domain.
+    pub fn from_configuration(traces: &domains::traces::Domain, otlp_traces: &domains::otlp::Traces) -> Self {
+        let otlp_sampling_rate = normalize_sampling_rate(otlp_traces.probabilistic_sampler_sampling_percentage / 100.0);
+        Self {
+            probabilistic_sampler_enabled: traces.probabilistic_sampler.enabled,
+            sampling_percentage: traces.probabilistic_sampler.sampling_percentage,
+            error_sampling_enabled: traces.error_sampling_enabled,
+            error_tracking_standalone: traces.error_tracking_standalone_enabled,
+            errors_per_second: traces.errors_per_second,
+            target_traces_per_second: traces.target_traces_per_second,
+            default_env: MetaString::from(traces.default_env.clone()),
+            rare_sampler_enabled: traces.enable_rare_sampler,
+            rare_sampler_tps: traces.rare_sampler.tps,
+            rare_sampler_cooldown_secs: traces.rare_sampler.cooldown,
+            rare_sampler_cardinality: traces.rare_sampler.cardinality,
             otlp_sampling_rate,
-        })
+        }
     }
 }
 
@@ -91,26 +111,26 @@ impl SynchronousTransformBuilder for TraceSamplerConfiguration {
         // TODO: Need to support remote configuration changing these at runtime
         // See https://github.com/DataDog/saluki/issues/1326
         let sampler = TraceSampler {
-            sampling_rate: self.apm_config.probabilistic_sampler_sampling_percentage() / 100.0,
-            error_sampling_enabled: self.apm_config.error_sampling_enabled(),
-            error_tracking_standalone: self.apm_config.error_tracking_standalone_enabled(),
-            probabilistic_sampler_enabled: self.apm_config.probabilistic_sampler_enabled(),
+            sampling_rate: self.sampling_percentage / 100.0,
+            error_sampling_enabled: self.error_sampling_enabled,
+            error_tracking_standalone: self.error_tracking_standalone,
+            probabilistic_sampler_enabled: self.probabilistic_sampler_enabled,
             otlp_sampling_rate: self.otlp_sampling_rate,
-            error_sampler: errors::ErrorsSampler::new(self.apm_config.errors_per_second(), ERROR_SAMPLE_RATE),
+            error_sampler: errors::ErrorsSampler::new(self.errors_per_second, ERROR_SAMPLE_RATE),
             priority_sampler: priority_sampler::PrioritySampler::new(
-                self.apm_config.default_env().clone(),
+                self.default_env.clone(),
                 ERROR_SAMPLE_RATE,
-                self.apm_config.target_traces_per_second(),
+                self.target_traces_per_second,
             ),
             no_priority_sampler: score_sampler::NoPrioritySampler::new(
-                self.apm_config.target_traces_per_second(),
+                self.target_traces_per_second,
                 ERROR_SAMPLE_RATE,
             ),
             rare_sampler: rare_sampler::RareSampler::new(
-                self.apm_config.rare_sampler_enabled(),
-                self.apm_config.rare_sampler_tps(),
-                std::time::Duration::from_secs_f64(self.apm_config.rare_sampler_cooldown_period_secs()),
-                self.apm_config.rare_sampler_cardinality(),
+                self.rare_sampler_enabled,
+                self.rare_sampler_tps,
+                std::time::Duration::from_secs_f64(self.rare_sampler_cooldown_secs),
+                self.rare_sampler_cardinality,
             ),
         };
 
@@ -606,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn test_user_priority_detection() {
+    fn user_priority_detection() {
         let sampler = create_test_sampler();
 
         // Test trace with user-set priority = 2 (UserKeep)
@@ -636,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn test_trace_level_priority_takes_precedence() {
+    fn trace_level_priority_takes_precedence() {
         let sampler = create_test_sampler();
 
         // Test trace-level priority overrides span priorities (last-seen priority)
@@ -671,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn test_manual_keep_with_trace_level_priority() {
+    fn manual_keep_with_trace_level_priority() {
         let mut sampler = create_test_sampler();
         sampler.probabilistic_sampler_enabled = false; // Use legacy path that checks user priority
 
@@ -706,18 +726,97 @@ mod tests {
     }
 
     #[test]
-    fn test_probabilistic_sampling_determinism() {
-        let sampler = create_test_sampler();
+    fn probabilistic_sampling_known_decisions() {
+        // The bucketed probabilistic sampler is fully deterministic: it hashes the trace ID into one of 0x4000
+        // buckets and keeps the trace when `bucket < (rate * 0x4000)`. These cases pin the exact keep/drop decision
+        // for known trace IDs at known rates, so a regression in the hash, the bucket mask, or the comparison is
+        // caught (a determinism-only check would not catch any of those).
+        //
+        // Expected values were computed directly from the FNV-1a bucket math in `ProbabilisticSampler::sample`
+        // (mirrors datadog-agent/pkg/trace/sampler/probabilistic.go). For reference, the trace IDs below hash to
+        // these buckets (out of 0x4000 = 16384): 0x1234567890ABCDEF -> 1764, 0x0 -> 9301, u64::MAX -> 12365.
+        struct Case {
+            trace_id: u64,
+            rate: f64,
+            expected_keep: bool,
+        }
 
-        // Same trace ID should always produce same decision
-        let trace_id = 0x1234567890ABCDEF_u64;
-        let result1 = sampler.sample_probabilistic(trace_id);
-        let result2 = sampler.sample_probabilistic(trace_id);
-        assert_eq!(result1, result2);
+        let cases = [
+            // rate 1.0 keeps every trace (the maximum bucket, 16383, is always below 16384).
+            Case {
+                trace_id: 0x1234567890ABCDEF,
+                rate: 1.0,
+                expected_keep: true,
+            },
+            // rate 0.0 drops every trace (no bucket is below 0).
+            Case {
+                trace_id: 0x1234567890ABCDEF,
+                rate: 0.0,
+                expected_keep: false,
+            },
+            // Same trace ID (bucket 1764) flips from drop to keep as the rate crosses its bucket ratio (~0.108).
+            Case {
+                trace_id: 0x1234567890ABCDEF,
+                rate: 0.10,
+                expected_keep: false,
+            },
+            Case {
+                trace_id: 0x1234567890ABCDEF,
+                rate: 0.20,
+                expected_keep: true,
+            },
+            // Trace ID 0 (bucket 9301) straddles rate 0.5 (scaled bucket 8192) vs 0.6 (scaled bucket 9830).
+            Case {
+                trace_id: 0,
+                rate: 0.50,
+                expected_keep: false,
+            },
+            Case {
+                trace_id: 0,
+                rate: 0.60,
+                expected_keep: true,
+            },
+            // u64::MAX (bucket 12365) straddles rate 0.5 vs 0.8.
+            Case {
+                trace_id: u64::MAX,
+                rate: 0.50,
+                expected_keep: false,
+            },
+            Case {
+                trace_id: u64::MAX,
+                rate: 0.80,
+                expected_keep: true,
+            },
+        ];
+
+        for case in cases {
+            let mut sampler = create_test_sampler();
+            sampler.sampling_rate = case.rate;
+            assert_eq!(
+                sampler.sample_probabilistic(case.trace_id),
+                case.expected_keep,
+                "trace_id={:#018x} rate={}",
+                case.trace_id,
+                case.rate
+            );
+        }
     }
 
     #[test]
-    fn test_error_detection() {
+    fn probabilistic_sampling_is_deterministic() {
+        // Determinism is a documented property of `ProbabilisticSampler::sample` (same trace ID + rate always yields
+        // the same decision). This is intentionally a determinism-only check; correctness is covered by
+        // `test_probabilistic_sampling_known_decisions`.
+        let sampler = create_test_sampler();
+        let trace_id = 0x1234567890ABCDEF_u64;
+        assert_eq!(
+            sampler.sample_probabilistic(trace_id),
+            sampler.sample_probabilistic(trace_id)
+        );
+    }
+
+    #[test]
+    fn error_detection() {
         let sampler = create_test_sampler();
 
         // Test trace with error field set
@@ -732,7 +831,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sampling_priority_order() {
+    fn sampling_priority_order() {
         // Test modern path: error sampler overrides probabilistic drop
         let mut sampler = create_test_sampler();
         sampler.sampling_rate = 0.5; // 50% sampling rate
@@ -765,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_trace_handling() {
+    fn empty_trace_handling() {
         let mut sampler = create_test_sampler();
         let mut trace = create_test_trace(vec![]);
 
@@ -775,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn test_root_span_detection() {
+    fn root_span_detection() {
         let sampler = create_test_sampler();
 
         // Test 1: Root span with parent_id = 0 (common case)
@@ -832,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single_span_sampling() {
+    fn single_span_sampling() {
         let mut sampler = create_test_sampler();
 
         // Test 1: Trace with SSS tags should be kept even when probabilistic would drop it
@@ -870,7 +969,7 @@ mod tests {
     }
 
     #[test]
-    fn test_analytics_events() {
+    fn analytics_events() {
         let sampler = create_test_sampler();
 
         // Test 1: Trace with analyzed spans
@@ -913,7 +1012,7 @@ mod tests {
     }
 
     #[test]
-    fn test_probabilistic_sampling_with_prob_rate_key() {
+    fn probabilistic_sampling_with_prob_rate_key() {
         let mut sampler = create_test_sampler();
         sampler.sampling_rate = 0.75; // 75% sampling rate
         sampler.probabilistic_sampler_enabled = true;

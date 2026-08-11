@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_client::LogsServiceClient;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceRequest;
@@ -10,7 +11,6 @@ use otlp_protos::opentelemetry::proto::collector::trace::v1::{
 };
 use prost::Message;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::payload::Payload;
 use saluki_core::{
@@ -36,17 +36,12 @@ pub struct OtlpForwarderConfiguration {
 }
 
 impl OtlpForwarderConfiguration {
-    /// Creates a new `OtlpForwarderConfiguration` from the given configuration.
-    pub fn from_configuration(
-        config: &GenericConfiguration, core_agent_otlp_grpc_endpoint: String,
-    ) -> Result<Self, GenericError> {
-        let core_agent_traces_internal_port = config
-            .try_get_typed("otlp_config.traces.internal_port")?
-            .unwrap_or(5003);
-        Ok(Self {
+    /// Creates a new `OtlpForwarderConfiguration` from the resolved OTLP trace configuration.
+    pub fn from_configuration(traces: &domains::otlp::Traces, core_agent_otlp_grpc_endpoint: String) -> Self {
+        Self {
             core_agent_otlp_grpc_endpoint,
-            core_agent_traces_internal_port,
-        })
+            core_agent_traces_internal_port: traces.internal_port,
+        }
     }
 }
 
@@ -265,7 +260,9 @@ fn normalize_endpoint(endpoint: &str) -> String {
     if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
         endpoint.to_string()
     } else {
-        format!("https://{}", endpoint)
+        // Agent configuration defaults to 127.0.0.1:4319 intending http://localhost:4319, so http:// is the right
+        // fallback protocol.
+        format!("http://{}", endpoint)
     }
 }
 
@@ -274,14 +271,14 @@ mod tests {
     use super::normalize_endpoint;
 
     #[test]
-    fn normalize_endpoint_prepends_https_only_when_scheme_missing() {
-        // Endpoints that already carry an `http://`/`https://` scheme are passed through untouched; anything else
-        // (a bare host:port, as the Core Agent gRPC endpoint is typically configured) gets an `https://` prefix.
+    fn normalize_endpoint_defaults_to_plaintext_when_scheme_is_missing() {
+        // Preserve explicit transport security. Bare endpoints use plaintext; TLS callers must
+        // provide an `https://` scheme.
         let cases = [
             ("http://localhost:4317", "http://localhost:4317"),
             ("https://api.datadoghq.com:443", "https://api.datadoghq.com:443"),
-            ("localhost:4317", "https://localhost:4317"),
-            ("127.0.0.1:5003", "https://127.0.0.1:5003"),
+            ("localhost:4317", "http://localhost:4317"),
+            ("127.0.0.1:4319", "http://127.0.0.1:4319"),
         ];
 
         for (input, expected) in cases {

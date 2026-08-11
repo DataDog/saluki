@@ -126,4 +126,38 @@ mod tests {
         assert!(MemoryGrant::with_slop_factor(2usize.pow(f64::MANTISSA_DIGITS), 0.25).is_ok());
         assert!(MemoryGrant::with_slop_factor(2usize.pow(f64::MANTISSA_DIGITS) + 1, 0.25).is_err());
     }
+
+    #[test]
+    fn effective_limit_applies_documented_slop_percentage() {
+        // The doc comment on `with_slop_factor` promises specific arithmetic: the effective limit is
+        // `initial * (1 - slop_factor)`, so a slop factor of 0.25 leaves 75% usable and 0.1 leaves 90% usable. Assert
+        // the actual byte math (and the informational accessors), not just that construction succeeds.
+        let grant = MemoryGrant::with_slop_factor(1000, 0.25).expect("0.25 is a valid slop factor");
+        assert_eq!(grant.initial_limit_bytes(), 1000);
+        assert_eq!(grant.slop_factor(), 0.25);
+        assert_eq!(
+            grant.effective_limit_bytes(),
+            750,
+            "0.25 slop factor should leave 75% of 1000 bytes"
+        );
+
+        let grant = MemoryGrant::with_slop_factor(1000, 0.1).expect("0.1 is a valid slop factor");
+        assert_eq!(
+            grant.effective_limit_bytes(),
+            900,
+            "0.1 slop factor should leave 90% of 1000 bytes"
+        );
+
+        let grant = MemoryGrant::with_slop_factor(64_000_000, 0.25).expect("0.25 is a valid slop factor");
+        assert_eq!(
+            grant.effective_limit_bytes(),
+            48_000_000,
+            "0.25 slop factor should leave 75% of 64MB"
+        );
+
+        // A zero slop factor (the `effective` constructor's behavior) leaves the entire limit usable.
+        let grant = MemoryGrant::with_slop_factor(1000, 0.0).expect("0.0 is a valid slop factor");
+        assert_eq!(grant.slop_factor(), 0.0);
+        assert_eq!(grant.effective_limit_bytes(), 1000);
+    }
 }

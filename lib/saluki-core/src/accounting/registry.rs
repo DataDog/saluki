@@ -564,4 +564,45 @@ mod tests {
 
         assert_eq!(registry.root().as_bounds().total_minimum_required_bytes(), 64);
     }
+
+    #[test]
+    fn with_array_accounts_for_element_size_times_length() {
+        // `with_array` builds a `product(struct_size::<T>, len)` expression, so a 10-element array of `u64` should
+        // account for exactly `size_of::<u64>() * 10` bytes.
+        let mut builder = MemoryBoundsBuilder::for_test();
+        builder.firm().with_array::<u64>("array", 10);
+
+        let bounds = builder.as_bounds();
+        assert_eq!(bounds.total_firm_limit_bytes(), std::mem::size_of::<u64>() * 10);
+        assert_eq!(bounds.total_minimum_required_bytes(), 0);
+    }
+
+    #[test]
+    fn with_map_accounts_for_entry_size_times_length() {
+        // `with_map` builds a `product(sum(struct_size::<K>, struct_size::<V>), len)` expression, so a 5-entry map
+        // of `u32 -> u64` should account for exactly `(size_of::<u32>() + size_of::<u64>()) * 5` bytes.
+        let mut builder = MemoryBoundsBuilder::for_test();
+        builder.firm().with_map::<u32, u64>("map", 5);
+
+        let bounds = builder.as_bounds();
+        let expected = (std::mem::size_of::<u32>() + std::mem::size_of::<u64>()) * 5;
+        assert_eq!(bounds.total_firm_limit_bytes(), expected);
+        assert_eq!(bounds.total_minimum_required_bytes(), 0);
+    }
+
+    #[test]
+    fn minimum_bounds_are_included_in_the_firm_total() {
+        // The firm limit is documented as additive with the minimum required bytes, so an array added to `minimum`
+        // and a map added to `firm` should both roll up into `total_firm_limit_bytes`.
+        let mut builder = MemoryBoundsBuilder::for_test();
+        builder.minimum().with_array::<u64>("array", 10);
+        builder.firm().with_map::<u32, u64>("map", 5);
+
+        let bounds = builder.as_bounds();
+        let array_bytes = std::mem::size_of::<u64>() * 10;
+        let map_bytes = (std::mem::size_of::<u32>() + std::mem::size_of::<u64>()) * 5;
+
+        assert_eq!(bounds.total_minimum_required_bytes(), array_bytes);
+        assert_eq!(bounds.total_firm_limit_bytes(), array_bytes + map_bytes);
+    }
 }

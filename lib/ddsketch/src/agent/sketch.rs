@@ -1171,3 +1171,268 @@ mod property_tests {
         }
     }
 }
+
+/// Direct unit tests for the agent `DDSketch`'s public API.
+///
+/// The `tests`/`property_tests` modules above only cover the internal `trim_left` collapse helper; this module
+/// exercises the public surface (insert/insert_n/insert_many, quantile, merge, the basic-statistics accessors,
+/// clear, histogram-bucket interpolation, and `Dogsketch` conversion) that all production callers actually use.
+#[cfg(test)]
+mod public_api_tests {
+    use datadog_protos::metrics::Dogsketch;
+
+    use super::*;
+    // `remap_mapping` returns a `LogarithmicMapping`; bring the trait into scope so its `gamma()` accessor is callable.
+    use crate::canonical::mapping::IndexMapping as _;
+
+    // The agent sketch is configured with eps = 1/128, giving gamma_v = 1.015625 and a per-bin relative accuracy of
+    // ~1.56%. Interior quantiles are therefore approximate; min/max/sum/avg are tracked exactly.
+    const QUANTILE_ABS_TOLERANCE: f64 = 2.0;
+
+    #[test]
+    fn default_sketch_is_empty() {
+        let sketch = DDSketch::default();
+
+        assert!(sketch.is_empty());
+        assert_eq!(sketch.count(), 0);
+        assert_eq!(sketch.bin_count(), 0);
+        assert_eq!(sketch.min(), None);
+        assert_eq!(sketch.max(), None);
+        assert_eq!(sketch.sum(), None);
+        assert_eq!(sketch.avg(), None);
+        assert_eq!(sketch.quantile(0.5), None);
+    }
+
+    #[test]
+    fn insert_tracks_exact_basic_statistics() {
+        let mut sketch = DDSketch::default();
+        sketch.insert(1.0);
+        sketch.insert(2.0);
+        sketch.insert(3.0);
+
+        assert!(!sketch.is_empty());
+        assert_eq!(sketch.count(), 3);
+        // min/max/sum/avg are recorded from the raw samples, so they're exact (not bucketed).
+        assert_eq!(sketch.min(), Some(1.0));
+        assert_eq!(sketch.max(), Some(3.0));
+        assert_eq!(sketch.sum(), Some(6.0));
+        assert_eq!(sketch.avg(), Some(2.0));
+    }
+
+    #[test]
+    fn insert_n_applies_the_weight_to_every_statistic() {
+        let mut sketch = DDSketch::default();
+        sketch.insert_n(10.0, 5);
+
+        assert_eq!(sketch.count(), 5);
+        assert_eq!(sketch.min(), Some(10.0));
+        assert_eq!(sketch.max(), Some(10.0));
+        assert_eq!(sketch.sum(), Some(50.0));
+        assert_eq!(sketch.avg(), Some(10.0));
+    }
+
+    #[test]
+    fn insert_many_matches_repeated_single_inserts() {
+        let mut many = DDSketch::default();
+        many.insert_many(&[1.0, 2.0, 3.0, 4.0]);
+
+        let mut single = DDSketch::default();
+        for v in [1.0, 2.0, 3.0, 4.0] {
+            single.insert(v);
+        }
+
+        assert_eq!(many.count(), 4);
+        // Feeding identical samples through either entry point must produce an identical sketch.
+        assert_eq!(many, single);
+    }
+
+    #[test]
+    fn quantile_at_extremes_returns_exact_min_and_max() {
+        let mut sketch = DDSketch::default();
+        for i in 1..=100 {
+            sketch.insert(f64::from(i));
+        }
+
+        // q <= 0 and q >= 1 short-circuit to the exactly-tracked min/max.
+        assert_eq!(sketch.quantile(0.0), Some(1.0));
+        assert_eq!(sketch.quantile(-1.0), Some(1.0));
+        assert_eq!(sketch.quantile(1.0), Some(100.0));
+        assert_eq!(sketch.quantile(2.0), Some(100.0));
+    }
+
+    #[test]
+    fn quantile_estimates_interior_percentiles_within_relative_accuracy() {
+        let mut sketch = DDSketch::default();
+        for i in 1..=100 {
+            sketch.insert(f64::from(i));
+        }
+
+        let median = sketch.quantile(0.5).expect("non-empty sketch has a median");
+        assert!(
+            (median - 50.0).abs() <= QUANTILE_ABS_TOLERANCE,
+            "median {} should be within {} of 50",
+            median,
+            QUANTILE_ABS_TOLERANCE
+        );
+
+        let p90 = sketch.quantile(0.9).expect("non-empty sketch has a p90");
+        assert!(
+            (p90 - 90.0).abs() <= QUANTILE_ABS_TOLERANCE,
+            "p90 {} should be near 90",
+            p90
+        );
+    }
+
+    #[test]
+    fn merge_combines_counts_bounds_and_sums() {
+        let mut sketch1 = DDSketch::default();
+        sketch1.insert(1.0);
+        sketch1.insert(2.0);
+
+        let mut sketch2 = DDSketch::default();
+        sketch2.insert(3.0);
+        sketch2.insert(4.0);
+
+        sketch1.merge(&sketch2);
+
+        assert_eq!(sketch1.count(), 4);
+        assert_eq!(sketch1.min(), Some(1.0));
+        assert_eq!(sketch1.max(), Some(4.0));
+        assert_eq!(sketch1.sum(), Some(10.0));
+        assert_eq!(sketch1.avg(), Some(2.5));
+    }
+
+    #[test]
+    fn merge_produces_same_sketch_as_inserting_all_samples() {
+        let mut merged = DDSketch::default();
+        let mut left = DDSketch::default();
+        let mut right = DDSketch::default();
+        for i in 1..=50 {
+            left.insert(f64::from(i));
+        }
+        for i in 51..=100 {
+            right.insert(f64::from(i));
+        }
+        merged.merge(&left);
+        merged.merge(&right);
+
+        let mut all_at_once = DDSketch::default();
+        for i in 1..=100 {
+            all_at_once.insert(f64::from(i));
+        }
+
+        assert_eq!(merged.count(), all_at_once.count());
+        assert_eq!(merged.bins(), all_at_once.bins());
+    }
+
+    #[test]
+    fn clear_resets_the_sketch_to_empty() {
+        let mut sketch = DDSketch::default();
+        sketch.insert(1.0);
+        sketch.insert(2.0);
+
+        sketch.clear();
+
+        assert!(sketch.is_empty());
+        assert_eq!(sketch.count(), 0);
+        assert_eq!(sketch.bin_count(), 0);
+        assert_eq!(sketch.min(), None);
+    }
+
+    #[test]
+    fn setters_override_the_tracked_statistics() {
+        let mut sketch = DDSketch::default();
+        sketch.insert(1.0);
+
+        sketch.set_count(100);
+        sketch.set_sum(42.0);
+        sketch.set_avg(0.42);
+        sketch.set_min(-5.0);
+        sketch.set_max(500.0);
+
+        assert_eq!(sketch.count(), 100);
+        assert_eq!(sketch.sum(), Some(42.0));
+        assert_eq!(sketch.avg(), Some(0.42));
+        assert_eq!(sketch.min(), Some(-5.0));
+        assert_eq!(sketch.max(), Some(500.0));
+    }
+
+    #[test]
+    fn insert_interpolate_buckets_preserves_total_count() {
+        let mut sketch = DDSketch::default();
+        sketch
+            .insert_interpolate_buckets(vec![
+                Bucket {
+                    upper_limit: 10.0,
+                    count: 4,
+                },
+                Bucket {
+                    upper_limit: 20.0,
+                    count: 6,
+                },
+            ])
+            .expect("well-formed buckets should interpolate successfully");
+
+        // Every observation from the histogram buckets must be represented in the sketch.
+        assert_eq!(sketch.count(), 10);
+        let median = sketch.quantile(0.5).expect("non-empty sketch has a median");
+        assert!(
+            (5.0..=25.0).contains(&median),
+            "median {} should land within the interpolated 10..20 range",
+            median
+        );
+    }
+
+    #[test]
+    fn insert_interpolate_buckets_rejects_oversized_buckets() {
+        let mut sketch = DDSketch::default();
+        let result = sketch.insert_interpolate_buckets(vec![Bucket {
+            upper_limit: 10.0,
+            count: u64::from(u32::MAX) + 1,
+        }]);
+
+        assert_eq!(result, Err("bucket size greater than u32::MAX"));
+    }
+
+    #[test]
+    fn dogsketch_round_trip_preserves_the_sketch() {
+        let mut sketch = DDSketch::default();
+        for i in 1..=25 {
+            sketch.insert(f64::from(i));
+        }
+
+        let mut dogsketch = Dogsketch::new();
+        sketch.merge_to_dogsketch(&mut dogsketch);
+        let recovered = DDSketch::try_from(dogsketch).expect("dogsketch produced by merge_to_dogsketch is valid");
+
+        assert_eq!(sketch, recovered);
+    }
+
+    #[test]
+    fn try_from_dogsketch_rejects_mismatched_bin_vectors() {
+        let mut dogsketch = Dogsketch::new();
+        dogsketch.set_cnt(3);
+        dogsketch.set_k(vec![1, 2]);
+        dogsketch.set_n(vec![1]); // fewer counts than keys
+
+        let result = DDSketch::try_from(dogsketch);
+        assert_eq!(result, Err("k and n bin vectors have differing lengths"));
+    }
+
+    #[test]
+    fn value_for_key_is_zero_at_the_origin_and_monotonic() {
+        assert_eq!(DDSketch::value_for_key(0), 0.0);
+
+        // Higher keys map to strictly larger representative values within the positive range.
+        let low = DDSketch::value_for_key(100);
+        let high = DDSketch::value_for_key(200);
+        assert!(low > 0.0, "positive key should map to a positive value, got {}", low);
+        assert!(high > low, "value_for_key should be monotonic: {} !> {}", high, low);
+    }
+
+    #[test]
+    fn remap_mapping_uses_the_agent_gamma() {
+        let mapping = DDSketch::remap_mapping();
+        assert!(crate::common::float_eq(mapping.gamma(), DDSKETCH_CONF_GAMMA_V));
+    }
+}

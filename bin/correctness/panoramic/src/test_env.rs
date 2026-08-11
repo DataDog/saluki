@@ -14,14 +14,8 @@ use std::collections::HashMap;
 /// Naming convention: every default port that's 4 digits gets a `5` prepended (8125 -> 58125,
 /// 5001 -> 55001, etc.). The GUI is disabled outright since we don't exercise it.
 ///
-/// Note on env-var nesting: saluki-config (and figment) split env-var names on `__` to map to
-/// nested config keys. The ADP listen-address fields accept both the single-underscore Agent
-/// viper form (for example, `DD_DATA_PLANE_API_LISTEN_ADDRESS`, which the Core Agent propagates
-/// to ADP via the config stream in converged mode, and ADP falls back to directly in standalone
-/// mode) and the double-underscore figment form (for example,
-/// `DD_DATA_PLANE__API_LISTEN_ADDRESS`). Other deep ADP / OTLP keys still require `__` at every
-/// dot boundary. The top-level Agent env vars (`DD_CMD_PORT` etc.) are explicitly queried by the
-/// Agent so they don't need it.
+/// Environment variables use the Agent's canonical `DD_` form, with `_` replacing configuration
+/// path separators. The typed configuration system does not read the nested `__` form.
 pub fn port_isolation_env() -> HashMap<String, String> {
     HashMap::from([
         // ----- Core Agent ports -----
@@ -58,13 +52,19 @@ pub fn port_isolation_env() -> HashMap<String, String> {
             "DD_DATA_PLANE_TELEMETRY_LISTEN_ADDR".to_string(),
             "tcp://0.0.0.0:55102".to_string(),
         ),
-        // ----- OTLP receiver endpoints ----- (same shape as the Datadog Agent's OTLP env vars)
+        // ----- Core Agent OTLP receiver endpoints -----
+        //
+        // ADP uses separate temporary endpoint settings, so these schema-backed keys configure
+        // only the Core Agent's ingress.
+        //
+        // TODO(#2177): Remove the ADP-only endpoint keys and restore the schema-provided
+        // `4317`/`4318` defaults when endpoint ownership prevents both processes from binding them.
         (
-            "DD_OTLP_CONFIG__RECEIVER__PROTOCOLS__GRPC__ENDPOINT".to_string(),
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_ENDPOINT".to_string(),
             "0.0.0.0:54317".to_string(),
         ),
         (
-            "DD_OTLP_CONFIG__RECEIVER__PROTOCOLS__HTTP__ENDPOINT".to_string(),
+            "DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT".to_string(),
             "0.0.0.0:54318".to_string(),
         ),
     ])

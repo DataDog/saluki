@@ -7,6 +7,7 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::time::Instant;
 
+use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
 #[cfg(any(target_os = "linux", test))]
@@ -16,10 +17,12 @@ use saluki_components::sources::TrafficCaptureReader;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
-use saluki_config::{DurationString, GenericConfiguration};
+use saluki_config::DurationString;
+// The Linux replay path resolves the DogStatsD socket through the by-key view. Its resolver is also
+// compiled for tests, so this import carries the same gate the resolver does.
 #[cfg(any(target_os = "linux", test))]
-use saluki_error::generic_error;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_config::GenericConfiguration;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 #[cfg(target_os = "linux")]
 use saluki_io::net::{unix::uds_sendmsg_with_creds, ProcessCredentials};
 use serde::Deserialize;
@@ -32,7 +35,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::{error, info};
 
-use crate::cli::utils::DataPlaneAPIClient;
+use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
+
+mod top;
+use self::top::{handle_dogstatsd_dump_contexts, handle_dogstatsd_top, DumpContextsCommand, TopCommand};
 
 /// DogStatsD-specific debugging commands.
 #[derive(FromArgs, Debug)]
@@ -48,6 +54,8 @@ enum DogstatsdSubcommand {
     Stats(StatsCommand),
     Capture(CaptureCommand),
     Replay(ReplayCommand),
+    Top(TopCommand),
+    DumpContexts(DumpContextsCommand),
 }
 
 /// Prints basic statistics about the metrics received by the data plane.
@@ -167,35 +175,35 @@ struct StatsResponse<'a> {
 }
 
 /// Entrypoint for the `dogstatsd` commands.
-pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, cmd: DogstatsdCommand) {
-    let mut api_client = match DataPlaneAPIClient::from_config(bootstrap_config) {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create data plane API client: {:#}", e);
-            std::process::exit(1);
-        }
-    };
+pub async fn handle_dogstatsd_command(local_config: LoadedConfiguration, cmd: DogstatsdCommand) {
+    if let Err(error) = run_dogstatsd_command(&local_config, cmd).await {
+        error!("{:#}", error);
+        std::process::exit(1);
+    }
+}
 
+async fn run_dogstatsd_command(local_config: &LoadedConfiguration, cmd: DogstatsdCommand) -> Result<(), GenericError> {
     match cmd.subcommand {
         DogstatsdSubcommand::Stats(config) => {
-            if let Err(e) = handle_dogstatsd_stats(&mut api_client, config).await {
-                error!("Failed to run stats subcommand: {:#}", e);
-                std::process::exit(1);
-            }
+            let mut api_client = get_api_client_or_exit(local_config).await;
+            handle_dogstatsd_stats(&mut api_client, config)
+                .await
+                .error_context("Failed to run stats subcommand")
         }
         DogstatsdSubcommand::Capture(config) => {
-            if let Err(e) = handle_dogstatsd_capture(&mut api_client, config).await {
-                error!("Failed to start DogStatsD capture: {:#}", e);
-                std::process::exit(1);
-            }
+            let mut api_client = get_api_client_or_exit(local_config).await;
+            handle_dogstatsd_capture(&mut api_client, config)
+                .await
+                .error_context("Failed to start DogStatsD capture")
         }
         DogstatsdSubcommand::Replay(config) => {
             #[cfg(target_os = "linux")]
             {
-                if let Err(e) = handle_dogstatsd_replay(&mut api_client, bootstrap_config, config).await {
-                    error!("Failed to replay DogStatsD traffic: {:#}", e);
-                    std::process::exit(1);
-                }
+                let mut api_client = get_api_client_or_exit(local_config).await;
+                let raw_config = local_config.raw_config();
+                handle_dogstatsd_replay(&mut api_client, &raw_config, config)
+                    .await
+                    .error_context("Failed to replay DogStatsD traffic")
             }
 
             #[cfg(not(target_os = "linux"))]
@@ -205,9 +213,23 @@ pub async fn handle_dogstatsd_command(bootstrap_config: &GenericConfiguration, c
                     loops,
                 } = config;
                 let _ = (replay_file_path, loops);
-                error!("DogStatsD replay is only supported on Linux.");
-                std::process::exit(1);
+                Err(generic_error!("DogStatsD replay is only supported on Linux."))
             }
+        }
+        DogstatsdSubcommand::Top(config) => {
+            let config = config.validate();
+            let mut output = std::io::stdout();
+            if config.is_offline() {
+                handle_dogstatsd_top(None, config, &mut output).await
+            } else {
+                let mut api_client = get_api_client_or_exit(local_config).await;
+                handle_dogstatsd_top(Some(&mut api_client), config, &mut output).await
+            }
+        }
+        DogstatsdSubcommand::DumpContexts(_) => {
+            let mut api_client = get_api_client_or_exit(local_config).await;
+            let mut output = std::io::stdout();
+            handle_dogstatsd_dump_contexts(&mut api_client, &mut output).await
         }
     }
 }

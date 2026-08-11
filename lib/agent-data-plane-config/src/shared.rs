@@ -6,6 +6,8 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
+
 /// Cross-cutting configuration shared across domains.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SharedConfiguration {
@@ -14,6 +16,9 @@ pub struct SharedConfiguration {
 
     /// Global and host-level tagging.
     pub tags: GlobalTags,
+
+    /// Tags attached to basic liveness telemetry.
+    pub basic_telemetry: BasicTelemetry,
 
     /// Metrics-encoder settings reused across the metrics-emitting pipelines.
     pub metrics_encoding: MetricsEncoding,
@@ -123,8 +128,23 @@ pub struct Compression {
     /// Which compression algorithm the encoder uses.
     pub compressor_kind: String,
 
-    /// Compression level used when the algorithm is zstd.
+    /// Compression level used when the algorithm is zstd, as the Core Agent configures it.
+    ///
+    /// Defaults to the Agent's own default of `1`. ADP does not use this value directly: an encoder
+    /// resolves the effective level from this and [`zstd_compressor_level_override`], preferring the
+    /// override and otherwise honoring this value only when it differs from the Agent default.
+    ///
+    /// [`zstd_compressor_level_override`]: Compression::zstd_compressor_level_override
     pub zstd_compressor_level: i32,
+
+    /// ADP-specific zstd compression level, taking precedence over [`zstd_compressor_level`].
+    ///
+    /// Defaults to unset, in which case the encoder falls back to [`zstd_compressor_level`] (when
+    /// changed from the Agent default) and otherwise to its own default of `3`. ADP compresses more
+    /// cheaply than the Agent, so it can afford a higher level; operators rarely need to set this.
+    ///
+    /// [`zstd_compressor_level`]: Compression::zstd_compressor_level
+    pub zstd_compressor_level_override: Option<i32>,
 }
 
 /// HTTP protocol the forwarder negotiates with the intake.
@@ -186,8 +206,8 @@ pub struct Forwarder {
     /// Maximum total size, in bytes, of payloads held in the retry queue.
     pub retry_queue_payloads_max_size: Option<u64>,
 
-    /// Grace period, in seconds, the forwarder is given to drain before shutdown.
-    pub stop_timeout: u64,
+    /// Grace period the forwarder is given to drain before shutdown.
+    pub stop_timeout: Duration,
 
     /// Fraction of available disk the on-disk retry store may use.
     pub storage_max_disk_ratio: f64,
@@ -209,12 +229,26 @@ pub struct GlobalTags {
     pub expected_tags_duration: Duration,
 }
 
+/// Tagging options for basic liveness telemetry.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct BasicTelemetry {
+    /// Whether liveness signals include the process container's low-cardinality tags.
+    ///
+    /// Defaults to `false`. Enable this for containerized deployments that need to associate basic
+    /// telemetry with the running container. If the container cannot be resolved, liveness signals
+    /// are emitted without these tags.
+    pub add_container_tags: bool,
+}
+
 /// Metrics-encoder settings reused across the metrics-emitting pipelines (DogStatsD, checks, and
 /// OTLP): histogram settings, payload limits, and the encoder flush timeout.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct MetricsEncoding {
     /// How long the encoder waits before flushing a partially filled payload. (not in Datadog Agent
     /// config schema)
+    ///
+    /// Shared by the metrics-emitting pipelines and the traces encoder, all of which read the
+    /// `flush_timeout_secs` key. Defaults to 2 seconds.
     pub flush_timeout: Duration,
 
     /// Maximum number of metrics packed into a single payload. (not in Datadog Agent config schema)
@@ -249,10 +283,27 @@ pub struct MetricsEncoding {
 
     /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
     pub v3_series_mode: V3SeriesMode,
+}
 
-    /// ADP-only safety gate that authorizes V3 series (`data_plane.metrics.v3.series.enabled`, not
-    /// in the Datadog Agent config schema).
-    pub v3_series_enabled: bool,
+impl Default for MetricsEncoding {
+    fn default() -> Self {
+        Self {
+            // The `flush_timeout_secs` key is Saluki-only, so its default belongs to the ADP config
+            // crate rather than a source schema.
+            flush_timeout: DEFAULT_ENCODER_FLUSH_TIMEOUT,
+            max_metrics_per_payload: 0,
+            max_payload_size: 0,
+            max_series_payload_size: 0,
+            max_series_points_per_payload: 0,
+            max_series_uncompressed_payload_size: 0,
+            max_uncompressed_payload_size: 0,
+            use_v2_series_api: false,
+            log_payloads: false,
+            histogram: HistogramEncoding::default(),
+            v3_api: V3ApiEncoding::default(),
+            v3_series_mode: V3SeriesMode::default(),
+        }
+    }
 }
 
 /// V3 metrics-intake protocol settings for the series and sketches payloads
@@ -308,7 +359,10 @@ impl Default for V3ApiSettings {
 /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct V3SeriesMode {
-    /// Global V3 series mode. TODO: consider modeling as an enum.
+    /// Global V3 series mode.
+    ///
+    /// Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
+    /// TODO: consider modeling as an enum.
     pub mode: String,
 
     /// Per-endpoint V3 series mode overrides, keyed by endpoint URL.
@@ -318,7 +372,7 @@ pub struct V3SeriesMode {
 impl Default for V3SeriesMode {
     fn default() -> Self {
         Self {
-            mode: "true".to_string(),
+            mode: "datadog_only".to_string(),
             endpoint_modes: HashMap::new(),
         }
     }

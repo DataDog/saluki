@@ -8,12 +8,15 @@ use std::{
     time::Duration,
 };
 
+use backon::{Backoff, BackoffBuilder as _, ExponentialBuilder, Retryable as _};
 use prost::bytes::Bytes;
 use saluki_error::{ErrorContext as _, GenericError};
 use tonic::{client::Grpc, transport::Channel};
 use tracing::warn;
 
 use crate::config::{Config, TargetAddress};
+
+const MAX_RETRIES: usize = 5;
 
 enum TargetBackend {
     Tcp(TcpStream),
@@ -174,7 +177,7 @@ async fn try_grpc_unary(channel: Channel, service_method_path: &str, payload: &[
 /// The payload is sent as raw bytes without encoding, using a no-op codec.
 /// This is necessary because millstone receives already-encoded protobuf messages.
 ///
-/// `UNAVAILABLE` responses are retried with exponential backoff (up to `MAX_RETRIES` attempts)
+/// `UNAVAILABLE` responses are retried with exponential backoff (up to `MAX_RETRIES` retries)
 /// because gRPC semantics define `UNAVAILABLE` as a transient, retriable condition. The most
 /// common cause in correctness tests is a momentary "sending queue is full" response from the
 /// target's pipeline when the millstone burst briefly outpaces the downstream consumer.
@@ -186,39 +189,34 @@ async fn try_grpc_unary(channel: Channel, service_method_path: &str, payload: &[
 fn send_grpc_payload(
     runtime: &tokio::runtime::Runtime, channel: Channel, service_method_path: &str, payload: &[u8],
 ) -> Result<(), GenericError> {
-    const MAX_RETRIES: u32 = 5;
-    const BASE_DELAY_MS: u64 = 100;
+    let result = runtime.block_on(
+        (|| try_grpc_unary(channel.clone(), service_method_path, payload))
+            .retry(grpc_retry_backoff())
+            .when(|status| status.code() == tonic::Code::Unavailable)
+            .notify(|status, delay| {
+                warn!(
+                    delay_ms = delay.as_millis(),
+                    status = %status,
+                    "Retriable gRPC error, retrying after backoff."
+                );
+            }),
+    );
 
-    let mut last_status: Option<tonic::Status> = None;
-
-    for attempt in 0..=MAX_RETRIES {
-        if let Some(ref status) = last_status {
-            let delay_ms = BASE_DELAY_MS * (1u64 << attempt.saturating_sub(1));
-            warn!(
-                attempt,
-                delay_ms,
-                status = %status,
-                "Retriable gRPC error, retrying after backoff."
-            );
-            std::thread::sleep(Duration::from_millis(delay_ms));
+    result.map_err(|status| {
+        if status.code() == tonic::Code::Unavailable {
+            saluki_error::generic_error!("gRPC call failed after {} retries: {}", MAX_RETRIES, status)
+        } else {
+            saluki_error::generic_error!("gRPC call failed: {}", status)
         }
+    })
+}
 
-        match runtime.block_on(try_grpc_unary(channel.clone(), service_method_path, payload)) {
-            Ok(()) => return Ok(()),
-            Err(status) if status.code() == tonic::Code::Unavailable => {
-                last_status = Some(status);
-            }
-            Err(status) => {
-                return Err(saluki_error::generic_error!("gRPC call failed: {}", status));
-            }
-        }
-    }
-
-    Err(saluki_error::generic_error!(
-        "gRPC call failed after {} retries: {}",
-        MAX_RETRIES,
-        last_status.unwrap()
-    ))
+fn grpc_retry_backoff() -> impl Backoff {
+    ExponentialBuilder::default()
+        .with_min_delay(Duration::from_millis(100))
+        .with_max_delay(Duration::from_millis(1600))
+        .with_max_times(MAX_RETRIES)
+        .build()
 }
 
 /// Creates a generic gRPC backend with a tokio runtime for the given gRPC URL.
@@ -227,8 +225,15 @@ fn send_grpc_payload(
 ///
 /// # Errors
 ///
-/// Returns an error if the runtime can't be created or the connection can't be established.
+/// Returns an error if the runtime can't be created or the connection can't be established after exhausting the
+/// configured retries.
 fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
+    create_grpc_client_with_backoff(url, grpc_retry_backoff())
+}
+
+fn create_grpc_client_with_backoff(
+    url: &str, backoff: impl Backoff,
+) -> Result<(TargetBackend, Option<tokio::runtime::Runtime>), GenericError> {
     // Split the URL into host:port and service/method path
     let (host_and_port, path) = url
         .split_once('/')
@@ -238,14 +243,21 @@ fn create_grpc_client(url: &str) -> Result<(TargetBackend, Option<tokio::runtime
     let runtime = tokio::runtime::Runtime::new().error_context("Failed to create tokio runtime for gRPC client.")?;
     let endpoint = format!("http://{}", host_and_port);
 
+    let grpc_endpoint = Channel::from_shared(endpoint.clone())
+        .map_err(|e| saluki_error::generic_error!("Invalid gRPC endpoint: {}", e))?;
+    let connect = || {
+        let grpc_endpoint = grpc_endpoint.clone();
+        async move { grpc_endpoint.connect().await }
+    };
     let channel = runtime
-        .block_on(async {
-            Channel::from_shared(endpoint.clone())
-                .map_err(|e| saluki_error::generic_error!("Invalid gRPC endpoint: {}", e))?
-                .connect()
-                .await
-                .map_err(|e| saluki_error::generic_error!("Failed to connect to gRPC endpoint: {}", e))
-        })
+        .block_on(connect.retry(backoff).notify(|error, delay| {
+            warn!(
+                delay_ms = delay.as_millis(),
+                error = %error,
+                "Failed to connect to gRPC endpoint. Retrying after backoff."
+            );
+        }))
+        .error_context("Failed to connect to gRPC endpoint.")
         .with_error_context(|| format!("Failed to connect to gRPC target '{}'.", endpoint))?;
 
     let backend = GrpcBackend {
@@ -304,5 +316,31 @@ impl tonic::codec::Decoder for NoopDecoder {
         let mut bytes = vec![0u8; len];
         buf.copy_to_slice(&mut bytes);
         Ok(Some(Bytes::from(bytes)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{create_grpc_client_with_backoff, grpc_retry_backoff};
+
+    #[test]
+    fn preserves_the_final_grpc_connection_error() {
+        let error = match create_grpc_client_with_backoff("127.0.0.1:0/test.Service/Call", std::iter::empty()) {
+            Ok(_) => panic!("connection should fail"),
+            Err(error) => error,
+        };
+        let error_chain = error.chain().map(ToString::to_string).collect::<Vec<_>>();
+
+        assert!(
+            error_chain.iter().any(|cause| cause.contains("tcp connect error")),
+            "expected TCP connection failure in error chain, got: {error_chain:?}"
+        );
+    }
+
+    #[test]
+    fn grpc_retry_backoff_uses_bounded_exponential_delays() {
+        let delays_ms = grpc_retry_backoff().map(|delay| delay.as_millis()).collect::<Vec<_>>();
+
+        assert_eq!(delays_ms, [100, 200, 400, 800, 1600]);
     }
 }

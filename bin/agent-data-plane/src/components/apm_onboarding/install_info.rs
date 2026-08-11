@@ -95,3 +95,52 @@ fn infer_install_type_from_environment() -> MetaString {
         _ => INSTALL_TYPE_DEFAULT.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_type_inference_maps_each_documented_env_combination() {
+        // `infer_install_type_from_environment` keys off DOCKER_DD_AGENT and DD_APM_ENABLED. These are
+        // process-global env vars; nextest isolates every test in its own process, and this test restores the
+        // original values when it finishes.
+        let orig_docker = std::env::var("DOCKER_DD_AGENT").ok();
+        let orig_apm = std::env::var("DD_APM_ENABLED").ok();
+
+        fn set(key: &str, value: Option<&str>) {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+
+        // Not containerized -> "manual", regardless of the APM flag.
+        set("DOCKER_DD_AGENT", None);
+        set("DD_APM_ENABLED", None);
+        assert_eq!(infer_install_type_from_environment(), MetaString::from("manual"));
+
+        set("DD_APM_ENABLED", Some("true"));
+        assert_eq!(infer_install_type_from_environment(), MetaString::from("manual"));
+
+        // Containerized without single-step APM -> "docker_manual".
+        set("DOCKER_DD_AGENT", Some("true"));
+        set("DD_APM_ENABLED", None);
+        assert_eq!(infer_install_type_from_environment(), MetaString::from("docker_manual"));
+
+        // Containerized with single-step APM -> "docker_single_step".
+        set("DD_APM_ENABLED", Some("true"));
+        assert_eq!(
+            infer_install_type_from_environment(),
+            MetaString::from("docker_single_step")
+        );
+
+        // An empty DOCKER_DD_AGENT counts as unset -> "manual".
+        set("DOCKER_DD_AGENT", Some(""));
+        set("DD_APM_ENABLED", None);
+        assert_eq!(infer_install_type_from_environment(), MetaString::from("manual"));
+
+        set("DOCKER_DD_AGENT", orig_docker.as_deref());
+        set("DD_APM_ENABLED", orig_apm.as_deref());
+    }
+}

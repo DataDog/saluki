@@ -253,23 +253,60 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "only used to get struct sizes for core event data types"]
-    fn sizes() {
-        println!("Event: {} bytes", std::mem::size_of::<Event>());
-        println!("Metric: {} bytes", std::mem::size_of::<Metric>());
-        println!("  Context: {} bytes", std::mem::size_of::<saluki_context::Context>());
-        println!(
-            "  MetricValues: {} bytes",
-            std::mem::size_of::<super::metric::MetricValues>()
+    fn core_event_types_stay_within_size_budget() {
+        // `Event` and its variants are moved by value through the entire pipeline on every single data point, so
+        // accidental growth (an extra field, a large inline buffer, a widened enum discriminant) is a real performance
+        // regression rather than a cosmetic one.
+        //
+        // The budgets below are the current 64-bit layout sizes; if you intentionally change the layout of one of these
+        // types, update the corresponding budget in the same change.
+        macro_rules! assert_size_budget {
+            ($ty:ty, $budget:expr) => {{
+                let actual = std::mem::size_of::<$ty>();
+                assert!(
+                    actual <= $budget,
+                    "{} is {} bytes, exceeding its {}-byte budget",
+                    stringify!($ty),
+                    actual,
+                    $budget,
+                );
+            }};
+        }
+
+        assert_size_budget!(Event, 336);
+        assert_size_budget!(Metric, 160);
+        assert_size_budget!(saluki_context::Context, 8);
+        assert_size_budget!(super::metric::MetricValues, 104);
+        assert_size_budget!(super::metric::MetricMetadata, 48);
+        assert_size_budget!(EventD, 200);
+        assert_size_budget!(ServiceCheck, 160);
+        assert_size_budget!(Log, 192);
+        assert_size_budget!(Trace, 336);
+        assert_size_budget!(TraceStats, 24);
+    }
+
+    #[test]
+    fn event_type_display_renders_each_single_flag() {
+        // Note that a couple of the rendered names deliberately differ from the variant identifiers.
+        assert_eq!(EventType::Metric.to_string(), "Metric");
+        assert_eq!(EventType::EventD.to_string(), "DatadogEvent");
+        assert_eq!(EventType::ServiceCheck.to_string(), "ServiceCheck");
+        assert_eq!(EventType::Log.to_string(), "Log");
+        assert_eq!(EventType::Trace.to_string(), "Trace");
+        assert_eq!(EventType::TraceStats.to_string(), "TraceStats");
+    }
+
+    #[test]
+    fn event_type_display_joins_combined_flags_in_declaration_order() {
+        // Combined flags render in the fixed declaration order joined by `|`, regardless of how they were OR'd together.
+        assert_eq!((EventType::Log | EventType::Metric).to_string(), "Metric|Log");
+        assert_eq!(
+            EventType::all_bits().to_string(),
+            "Metric|DatadogEvent|ServiceCheck|Log|Trace|TraceStats"
         );
-        println!(
-            "  MetricMetadata: {} bytes",
-            std::mem::size_of::<super::metric::MetricMetadata>()
-        );
-        println!("EventD: {} bytes", std::mem::size_of::<EventD>());
-        println!("ServiceCheck: {} bytes", std::mem::size_of::<ServiceCheck>());
-        println!("Log: {} bytes", std::mem::size_of::<Log>());
-        println!("Trace: {} bytes", std::mem::size_of::<Trace>());
-        println!("TraceStats: {} bytes", std::mem::size_of::<TraceStats>());
+
+        // The empty bitmask (also the `Default`) renders as an empty string.
+        assert_eq!(EventType::none().to_string(), "");
+        assert_eq!(EventType::default().to_string(), "");
     }
 }

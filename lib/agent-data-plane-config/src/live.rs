@@ -16,9 +16,13 @@ type Projection<T> = Arc<dyn for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send
 /// A typed view of one projection of the current configuration.
 ///
 /// A never-dynamic consumer can hold a plain `T`; a dynamic one holds `Live<T>` and never learns
-/// whether it is fixed or tracking the live config. Read with `Deref`/`current`; react with
-/// `changed`. The projection is over `SalukiConfiguration`, so this is a config view, not a
-/// general-purpose watcher.
+/// whether it is fixed or tracking the live config. Read the view's cached snapshot with `Deref`;
+/// wait for and receive the next selected update with `changed`.
+///
+/// For a dynamic view, `Deref` does not perform a fresh read from the shared configuration. It
+/// returns the last snapshot processed by this view. If the configuration advances before this
+/// view awaits `changed`, `Deref` continues to return the older snapshot until `changed` processes
+/// the notification.
 pub struct Live<T> {
     inner: Inner<T>,
 }
@@ -26,24 +30,30 @@ pub struct Live<T> {
 enum Inner<T> {
     Fixed(T),
     Dynamic {
+        // The shared source. It can advance independently of this view's snapshot.
         cell: Arc<ArcSwap<SalukiConfiguration>>,
+
+        // A wake-up signal, not the configuration value itself. The view re-projects the source
+        // after receiving it and ignores notifications that do not change T.
         tick: watch::Receiver<()>,
+
+        // Re-applied to the shared source whenever the view processes a notification.
         project: Projection<T>,
-        // Last observed projected value; backs `Deref` and the change comparison.
+
+        // This value belongs to this Live<T>. It is what Deref returns and what changed() compares
+        // against; a newer value in `cell` does not replace it until changed() processes a tick.
         snapshot: T,
     },
 }
 
 impl<T: Clone + PartialEq + 'static> Live<T> {
-    /// A view that never changes (local mode, tests).
-    pub fn fixed(value: T) -> Self {
-        Self {
-            inner: Inner::Fixed(value),
-        }
-    }
-
-    /// A view projected from the live configuration. Called by the config system.
-    pub fn dynamic(
+    /// Creates a view that re-projects the shared configuration after accepted updates.
+    ///
+    /// The projection selects the subtree this view owns. The initial projected value is captured
+    /// immediately; later calls to `changed` load and project the shared configuration, then update
+    /// this view's local snapshot. Until `changed` processes a notification, `Deref` continues to
+    /// return the previous snapshot even if the shared configuration has advanced.
+    pub fn new_dynamic(
         cell: Arc<ArcSwap<SalukiConfiguration>>, tick: watch::Receiver<()>,
         project: impl for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send + Sync + 'static,
     ) -> Self {
@@ -58,20 +68,24 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
         }
     }
 
-    /// A fresh clone of the current projected value.
-    pub fn current(&self) -> T {
-        match &self.inner {
-            Inner::Fixed(value) => value.clone(),
-            Inner::Dynamic { cell, project, .. } => project(&cell.load()).clone(),
+    /// Creates a view with a value that never changes.
+    pub fn new_fixed(value: T) -> Self {
+        Self {
+            inner: Inner::Fixed(value),
         }
     }
 
-    /// Resolves when the projected value changes. Parks forever when `Fixed` or the channel closed,
-    /// so a caller can `select!` on it unconditionally; a bare `.await` on a fixed view hangs. On
-    /// return, `Deref` reflects the new value.
-    pub async fn changed(&mut self) {
+    /// Waits for the projected value to change and returns the new value.
+    ///
+    /// The notification only says that the shared source may have changed. This method loads the
+    /// source, applies the projection, compares it with this view's snapshot, and keeps waiting if
+    /// the selected value is unchanged. It parks forever when `Fixed` or the channel is closed, so
+    /// a caller can `select!` on it unconditionally. The returned value and `Deref` reflect the
+    /// same processed snapshot. This is a state-change watcher, not a fresh-read API or an event
+    /// history: multiple source updates may be coalesced before this view processes them.
+    pub async fn changed(&mut self) -> T {
         match &mut self.inner {
-            Inner::Fixed(_) => std::future::pending().await,
+            Inner::Fixed(_) => std::future::pending::<T>().await,
             Inner::Dynamic {
                 cell,
                 tick,
@@ -79,31 +93,36 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
                 snapshot,
             } => loop {
                 if tick.changed().await.is_err() {
-                    std::future::pending::<()>().await;
+                    std::future::pending::<T>().await;
                 }
                 let guard = cell.load();
                 let latest = project(&guard);
                 if *latest != *snapshot {
                     *snapshot = latest.clone();
-                    return;
+                    return snapshot.clone();
                 }
             },
         }
     }
 
-    /// Narrows this view to a child node or a single field. The child shares the same source and
-    /// notification and wakes only when the child value changes.
+    /// Creates a child view by composing this view's projection with `f`.
+    ///
+    /// Use this when code already has a broad `Live<T>` but does not have the
+    /// `ConfigurationSystem` needed to create a narrower view
+    /// directly. A dynamic child shares the source and receives its own notification cursor and
+    /// snapshot; it wakes only when the selected child value changes. A fixed child is projected
+    /// once and remains fixed.
     pub fn project<U>(&self, f: impl for<'a> Fn(&'a T) -> &'a U + Send + Sync + 'static) -> Live<U>
     where
         U: Clone + PartialEq + 'static,
     {
         match &self.inner {
-            Inner::Fixed(value) => Live::fixed(f(value).clone()),
+            Inner::Fixed(value) => Live::new_fixed(f(value).clone()),
             Inner::Dynamic {
                 cell, tick, project, ..
             } => {
                 let parent = Arc::clone(project);
-                Live::dynamic(Arc::clone(cell), tick.clone(), move |c| f(parent(c)))
+                Live::new_dynamic(Arc::clone(cell), tick.clone(), move |c| f(parent(c)))
             }
         }
     }

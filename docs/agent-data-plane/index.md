@@ -9,3 +9,6 @@ This section of the documentation covers specific areas related to the developme
 code lives within the Saluki repository. It won't be relevant to those simply looking to contribute to or utilize
 Saluki for their own purposes, but is meant to live alongside the ADP codebase to ensure that all relevant information
 is quickly and easily accessible.
+
+Use [Inspect retained DogStatsD contexts](dogstatsd-top.md) to snapshot retained aggregation contexts, investigate
+cardinality, and analyze sensitive dump artifacts offline.

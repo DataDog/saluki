@@ -1133,4 +1133,222 @@ mod tests {
         let dict_tagsets = vec![1, -5];
         assert!(parse_tagsets(&dict_tagsets, &tags_dict).is_err());
     }
+
+    /// Builds a V3 payload with a single scalar (non-sketch) metric carrying a single point at timestamp
+    /// 1000. The point value is read from whichever of the three value columns matches `value_type`.
+    fn single_scalar_payload(type_field: u64, sint64: Vec<i64>, float32: Vec<f32>, float64: Vec<f64>) -> V3Payload {
+        use datadog_protos::metrics::v3::{MetricData, Payload};
+
+        let mut data = MetricData::new();
+        data.dictNameStr = length_prefixed_strings(["m"]);
+        data.types = vec![type_field];
+        data.nameRefs = vec![1];
+        data.tagsetRefs = vec![0];
+        data.resourcesRefs = vec![0];
+        data.intervals = vec![10];
+        data.numPoints = vec![1];
+        data.timestamps = vec![1000];
+        data.valsSint64 = sint64;
+        data.valsFloat32 = float32;
+        data.valsFloat64 = float64;
+
+        let mut payload = Payload::new();
+        payload.metricData = Some(data).into();
+        payload
+    }
+
+    #[test]
+    fn try_from_v3_decodes_all_scalar_type_and_value_combinations() {
+        // The 12 non-sketch branches: {COUNT, RATE, GAUGE} x {ZERO, SINT64, FLOAT32, FLOAT64}. The metric
+        // type selects the `MetricValue` variant, the value type selects the source column (ZERO is an
+        // implicit 0.0 stored in no column). RATE additionally carries the interval (10, from `intervals`).
+        // FLOAT32 uses 1.5 and FLOAT64 uses 2.25 — both exactly representable — so widening is lossless.
+        struct Case {
+            name: &'static str,
+            value_type: u64,
+            sint64: Vec<i64>,
+            float32: Vec<f32>,
+            float64: Vec<f64>,
+            value: f64,
+        }
+
+        let value_cases = [
+            Case {
+                name: "zero",
+                value_type: V3_VALUE_TYPE_ZERO,
+                sint64: vec![],
+                float32: vec![],
+                float64: vec![],
+                value: 0.0,
+            },
+            Case {
+                name: "sint64",
+                value_type: V3_VALUE_TYPE_SINT64,
+                sint64: vec![7],
+                float32: vec![],
+                float64: vec![],
+                value: 7.0,
+            },
+            Case {
+                name: "float32",
+                value_type: V3_VALUE_TYPE_FLOAT32,
+                sint64: vec![],
+                float32: vec![1.5],
+                float64: vec![],
+                value: 1.5,
+            },
+            Case {
+                name: "float64",
+                value_type: V3_VALUE_TYPE_FLOAT64,
+                sint64: vec![],
+                float32: vec![],
+                float64: vec![2.25],
+                value: 2.25,
+            },
+        ];
+
+        for case in &value_cases {
+            let expectations: [(&str, u64, MetricValue); 3] = [
+                ("count", V3_METRIC_TYPE_COUNT, MetricValue::Count { value: case.value }),
+                (
+                    "rate",
+                    V3_METRIC_TYPE_RATE,
+                    MetricValue::Rate {
+                        interval: 10,
+                        value: case.value,
+                    },
+                ),
+                ("gauge", V3_METRIC_TYPE_GAUGE, MetricValue::Gauge { value: case.value }),
+            ];
+
+            for (metric_name, metric_type, expected) in expectations {
+                let label = format!("{metric_name}/{}", case.name);
+                let payload = single_scalar_payload(
+                    metric_type | case.value_type,
+                    case.sint64.clone(),
+                    case.float32.clone(),
+                    case.float64.clone(),
+                );
+                let metrics =
+                    Metric::try_from_v3(payload).unwrap_or_else(|e| panic!("{label}: decode should succeed: {e}"));
+                assert_eq!(metrics.len(), 1, "{label}: metric count");
+                assert_eq!(metrics[0].values.len(), 1, "{label}: point count");
+                assert_eq!(metrics[0].values[0].0, 1000, "{label}: timestamp");
+                assert_eq!(metrics[0].values[0].1, expected, "{label}: value");
+            }
+        }
+    }
+
+    #[test]
+    fn try_from_v3_decodes_sketch_summaries_across_value_encodings() {
+        // Sketch decoding reads sum/min/max via the same value-type dispatch as scalars (SINT64 is covered
+        // by `try_from_v3_decodes_integer_sketch_summary_order`); this covers the remaining ZERO, FLOAT32,
+        // and FLOAT64 encodings. The count is always read from `valsSint64` regardless of value type.
+        use datadog_protos::metrics::v3::{MetricData, Payload};
+
+        struct SketchCase {
+            name: &'static str,
+            value_type: u64,
+            sint64: Vec<i64>,
+            float32: Vec<f32>,
+            float64: Vec<f64>,
+            expected_sum: f64,
+            expected_min: f64,
+            expected_max: f64,
+        }
+
+        let cases = [
+            SketchCase {
+                name: "zero",
+                value_type: V3_VALUE_TYPE_ZERO,
+                sint64: vec![4], // count only; sum/min/max are implicit 0.0
+                float32: vec![],
+                float64: vec![],
+                expected_sum: 0.0,
+                expected_min: 0.0,
+                expected_max: 0.0,
+            },
+            SketchCase {
+                name: "float32",
+                value_type: V3_VALUE_TYPE_FLOAT32,
+                sint64: vec![4],               // count
+                float32: vec![10.0, 1.0, 4.0], // sum, min, max
+                float64: vec![],
+                expected_sum: 10.0,
+                expected_min: 1.0,
+                expected_max: 4.0,
+            },
+            SketchCase {
+                name: "float64",
+                value_type: V3_VALUE_TYPE_FLOAT64,
+                sint64: vec![4], // count
+                float32: vec![],
+                float64: vec![10.0, 1.0, 4.0], // sum, min, max
+                expected_sum: 10.0,
+                expected_min: 1.0,
+                expected_max: 4.0,
+            },
+        ];
+
+        for case in &cases {
+            let mut data = MetricData::new();
+            data.dictNameStr = length_prefixed_strings(["s"]);
+            data.types = vec![V3_METRIC_TYPE_SKETCH | case.value_type];
+            data.nameRefs = vec![1];
+            data.tagsetRefs = vec![0];
+            data.resourcesRefs = vec![0];
+            data.intervals = vec![0];
+            data.numPoints = vec![1];
+            data.timestamps = vec![123];
+            data.valsSint64 = case.sint64.clone();
+            data.valsFloat32 = case.float32.clone();
+            data.valsFloat64 = case.float64.clone();
+            data.sketchNumBins = vec![1];
+            data.sketchBinKeys = vec![0];
+            data.sketchBinCnts = vec![4];
+
+            let mut payload = Payload::new();
+            payload.metricData = Some(data).into();
+
+            let metrics =
+                Metric::try_from_v3(payload).unwrap_or_else(|e| panic!("{}: decode should succeed: {e}", case.name));
+            assert_eq!(metrics.len(), 1, "{}: metric count", case.name);
+
+            let MetricValue::Sketch { sketch } = &metrics[0].values[0].1 else {
+                panic!("{}: expected a sketch value", case.name);
+            };
+            assert_eq!(sketch.count(), 4, "{}: count", case.name);
+            assert_eq!(sketch.sum(), Some(case.expected_sum), "{}: sum", case.name);
+            assert_eq!(sketch.min(), Some(case.expected_min), "{}: min", case.name);
+            assert_eq!(sketch.max(), Some(case.expected_max), "{}: max", case.name);
+        }
+    }
+
+    #[test]
+    fn metric_value_equality_honors_the_documented_ratio_tolerance() {
+        // `MetricValue` compares floats by ratio: two values are equal iff `(larger - smaller) / larger`
+        // is strictly less than 0.00000001 (1e-8). This checks just inside and just outside that boundary.
+        const RATIO: f64 = 0.00000001;
+        let base = 1_000.0;
+        let within = base * (1.0 - RATIO / 2.0); // relative difference 0.5e-8 -> within tolerance
+        let outside = base * (1.0 - RATIO * 2.0); // relative difference 2e-8 -> outside tolerance
+
+        assert_eq!(
+            MetricValue::Count { value: base },
+            MetricValue::Count { value: within },
+            "difference just inside the ratio tolerance must compare equal"
+        );
+        assert_ne!(
+            MetricValue::Count { value: base },
+            MetricValue::Count { value: outside },
+            "difference just outside the ratio tolerance must compare not-equal"
+        );
+
+        // The same ratio tolerance governs gauges (and rates, whose intervals must additionally match).
+        assert_eq!(MetricValue::Gauge { value: base }, MetricValue::Gauge { value: within });
+        assert_ne!(
+            MetricValue::Gauge { value: base },
+            MetricValue::Gauge { value: outside }
+        );
+    }
 }

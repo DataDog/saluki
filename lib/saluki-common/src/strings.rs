@@ -333,4 +333,53 @@ mod tests {
             "hello, world! it's me, steve from blues clues. i've got 5 apples."
         );
     }
+
+    #[test]
+    fn unsigned_integer_to_string_formats_decimal_value() {
+        let cases = [
+            (0u64, "0"),
+            (7, "7"),
+            (42, "42"),
+            (1_000_000, "1000000"),
+            (u64::MAX, "18446744073709551615"),
+        ];
+
+        for (value, expected) in cases {
+            assert_eq!(unsigned_integer_to_string(value), expected, "value: {value}");
+        }
+    }
+
+    #[test]
+    fn to_meta_string_inlines_short_strings() {
+        // Short strings are inlined by `MetaString::from_interner` before the interner is even
+        // consulted, so the result matches the buffer contents regardless of interner capacity.
+        let mut builder = build_interned_string_builder(128);
+        assert_eq!(builder.push_str("short"), Some(()));
+
+        assert_eq!(builder.to_meta_string(), "short");
+    }
+
+    #[test]
+    fn to_meta_string_interns_long_strings_when_capacity_allows() {
+        // A string too long to inline is interned when the interner has room for it.
+        let long = "this string is far too long to ever be inlined into a MetaString";
+        let mut builder = build_interned_string_builder(256);
+        assert_eq!(builder.push_str(long), Some(()));
+
+        assert_eq!(builder.to_meta_string(), long);
+    }
+
+    #[test]
+    fn to_meta_string_falls_back_to_owned_when_interner_full() {
+        // A string too long to inline and too large for the interner falls back to an owned
+        // allocation, which still yields the same string contents.
+        let long = "this string is far too long to ever be inlined into a MetaString";
+        let mut builder = build_interned_string_builder_with_limit(8, long.len() + 1);
+        assert_eq!(builder.push_str(long), Some(()));
+
+        // The interner cannot hold the string, but `to_meta_string` still returns it (unlike
+        // `try_intern`, which would return `None`).
+        assert_eq!(builder.try_intern(), None);
+        assert_eq!(builder.to_meta_string(), long);
+    }
 }

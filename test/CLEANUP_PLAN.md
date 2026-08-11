@@ -161,7 +161,7 @@ otherwise keep hand-rolling the thing it replaces.
     tests in `sources/otlp/metrics/translator.rs` and `cache.rs`, but those are otlp-metrics-translation work and
     were deferred to G13 (noted there) to keep all otlp-metrics test cleanup in one branch rather than splitting it._
 
-- [ ] **G10 — Fix vacuous/weak/tautological assertions and assertion-free proptests repo-wide**
+- [x] **G10 — Fix vacuous/weak/tautological assertions and assertion-free proptests repo-wide**
   (`tobz/test-cleanup-fix-vacuous-assertions-sweep`, `test(repo)`)
   - [medium/small] The only coverage for `ProbabilisticSampler::sample` is a tautological determinism test that
     asserts nothing about correctness.
@@ -180,8 +180,12 @@ otherwise keep hand-rolling the thing it replaces.
     `decode_packet`/event/service-check parsers (KI-16).
   - [low/trivial] `with_slop_factor`'s test checks `Ok`/`Err` only, never the documented percentage arithmetic.
 
-- [ ] **G11 — Repo-wide test naming and proptest-authoring-style consistency sweep**
+- [x] **G11 — Repo-wide test naming and proptest-authoring-style consistency sweep**
   (`tobz/test-cleanup-test-naming-style-sweep`, `chore(repo)`)
+  _Scope note: KI-15 `test_`-prefix conversion was applied to the mixed-style files (47 fns across 8 files) rather
+  than swept repo-wide, matching testing-patterns.md's incremental-as-touched convention. The `translator.rs` and
+  `dogstatsd_prefix_filter` renames were deferred to G13/G14 respectively, since those groups rebuild those exact
+  tests — renaming them here would be throwaway churn._
   - [low/small] Inconsistent test function naming convention across the repo: `test_` prefix vs. bare descriptive
     names (KI-15) — see `docs/development/testing-patterns.md` for the now-documented convention.
   - [low/trivial] Two proptest authoring styles coexist with no prior documented convention: `#[test_strategy::proptest]`
@@ -190,7 +194,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/trivial] A typo in a proptest function name (`dispoint` instead of `disjoint`) and one integration test
     file whose name diverges from its test function name (saluki-tls).
 
-- [ ] **G12 — datadog-common config/endpoints/request-pipeline test cleanup** (AU-01/AU-02)
+- [x] **G12 — datadog-common config/endpoints/request-pipeline test cleanup** (AU-01/AU-02)
   (`tobz/test-cleanup-datadog-common-config-tests`, `test(components)`)
   - [low/small] Near-identical single-variant config-flag tests, and formulaic input/output variant tests in
     `endpoints.rs`, should collapse into table-driven tests (KI-10, KI-11).
@@ -205,7 +209,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] `PendingTransactions::flush`'s shutdown/disk-persistence path, and `transaction.rs`'s `size_bytes`
     and consumed-body panic/error paths, are untested.
 
-- [ ] **G13 — otlp traces & metrics translation test cleanup** (AU-03/AU-06)
+- [x] **G13 — otlp traces & metrics translation test cleanup** (AU-03/AU-06)
   (`tobz/test-cleanup-otlp-translation-test-cleanup`, `test(components)`)
   - [medium/medium] `traces/transform.rs`'s ported Go-agent branching translation logic is largely untested;
     `otlp/traces/translator.rs`'s documented single-fallback hostname resolution and trace-grouping entry point are
@@ -227,7 +231,7 @@ otherwise keep hand-rolling the thing it replaces.
     `Point`-table + `monotonic_diff` loop harness. Split the multi-case bodies into focused tests and extract the
     shared driver.
 
-- [ ] **G14 — agent-data-plane filter components & OTTL processors test cleanup** (AU-25/AU-26)
+- [x] **G14 — agent-data-plane filter components & OTTL processors test cleanup** (AU-25/AU-26)
   (`tobz/test-cleanup-adp-filters-ottl-processors-tests`, `test(agent-data-plane)`)
   - [medium/small] `tag_filterlist`'s `count_*` tests duplicate the distribution-metric tests, differing only by
     metric type and one extra assertion — these should be merged, not kept as separate near-duplicates (KI-10).
@@ -245,7 +249,7 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/trivial] A module doc comment overstates implemented capability (span-event filtering is documented but
     not implemented, hence untestable) — fix the doc, not the test.
 
-- [ ] **G15 — saluki-io test cleanup: dogstatsd codec/compression/framing + unix-socket credentials/retry** (AU-28/AU-29)
+- [x] **G15 — saluki-io test cleanup: dogstatsd codec/compression/framing + unix-socket credentials/retry** (AU-28/AU-29)
   (`tobz/test-cleanup-saluki-io-test-cleanup`, `test(io)`)
   - [medium/medium] `Compressor`, `CompressionScheme`, and `CountingWriter` are fully documented but have zero
     direct test coverage in saluki-io's compression module.
@@ -257,8 +261,14 @@ otherwise keep hand-rolling the thing it replaces.
   - [medium/small] `RollingExponentialBackoffRetryPolicy`'s documented recovery-error-decrease-factor behavior, and
     `StandardHttpRetryLifecycle`'s documented error-categorization/`Display` logic, are both untested.
 
-- [ ] **G16 — saluki-common & saluki-context test cleanup** (AU-30/AU-31)
+- [x] **G16 — saluki-common & saluki-context test cleanup** (AU-30/AU-31)
   (`tobz/test-cleanup-saluki-common-context-test-cleanup`, `test(common)`)
+  _Surfaced 4 latent production defects (pinned by characterization tests + NOTE comments, NOT fixed — a test
+  cleanup pass doesn't change production behavior): `RawOrigin::Display` drops a separator space between
+  `process_id` and `local_data`; `get_caller_location_as_string` doc says `file:line:column` but emits
+  `file-<file>@<line>-<column>`; `task/instrument.rs`'s `poll_count` debug counter is registered but never
+  incremented; `RawExternalData::try_from_str` byte-slices `part[0..3]` which would panic on a non-ASCII char
+  boundary. Worth follow-up production fixes outside this test effort._
   - [high/medium] Cache time-to-idle eviction (`cache/expiry.rs`) and its underlying timestamp primitives
     (`time.rs`) are both untested, including the documented eviction-counter side effects.
   - [medium/medium] `spawn_traced` task-spawning helpers and poll-duration instrumentation
@@ -276,7 +286,7 @@ otherwise keep hand-rolling the thing it replaces.
     is unverified. `Context::with_tag_sets_mut`'s documented single-rehash guarantee is never exercised, and
     `TagSet::merge_shared`/`SharedTagSet::extend_from_shared`'s documented dedup/no-dedup contracts are unexercised.
 
-- [ ] **G17 — ddsketch, stringtheory, ottl crate test cleanup** (`tobz/test-cleanup-ddsketch-stringtheory-ottl-tests`, `test(ddsketch)`)
+- [x] **G17 — ddsketch, stringtheory, ottl crate test cleanup** (`tobz/test-cleanup-ddsketch-stringtheory-ottl-tests`, `test(ddsketch)`)
   - [medium/large] Sibling `Store`/`IndexMapping` trait implementations in ddsketch hand-duplicate parallel test
     suites instead of using a generic conformance helper (also present, smaller scale, per KI-4 in stringtheory).
   - [high/medium] The agent DDSketch's public API has no direct unit tests, despite the sibling canonical DDSketch
@@ -296,7 +306,13 @@ otherwise keep hand-rolling the thing it replaces.
     are a table-driven consolidation candidate, not distinct coverage. The `Lexer` struct's `Iterator` impl is
     unreachable dead code with no path to test coverage.
 
-- [ ] **G18 — saluki-app, saluki-config, saluki-env test cleanup** (`tobz/test-cleanup-app-config-env-test-cleanup`, `test(app)`)
+- [x] **G18 — saluki-app, saluki-config, saluki-env test cleanup** (`tobz/test-cleanup-app-config-env-test-cleanup`, `test(app)`)
+  _Item 8 (commented-out entity-alias tests, removed in `6635adbf9f`) restored via hybrid: the old
+  `OriginResolver` alias-redirection API is gone, so adapted tests cover its current field-map/cache contract and
+  fresh `TagStoreQuerier` tests cover alias redirection in its new home. Flagged (not fixed) latent defects:
+  `extract_container_id`'s `.mount`/`crio-conmon-` exclusion filters never fire (applied to the bare-hex regex
+  match, not the full cgroup name); `deserialize_opt_space_separated_or_seq` has zero callers (dead); a dead
+  `if let Schedule` assertion in autodiscovery `local.rs`. Each pinned by a characterization test + NOTE._
   - [high/medium] `metrics/api.rs`'s override/reset worker is untested despite being a structural twin of the
     well-tested `logging/api.rs`.
   - [medium/small] `CgroupMemoryParser` and `MemoryBoundsConfiguration` parsing/validation logic has no unit tests.
@@ -316,8 +332,12 @@ otherwise keep hand-rolling the thing it replaces.
   - [low/small] Multiple `ProtoConfig`-construction tests hand-build near-identical 17-field struct literals.
   - [low/trivial] `copy_test_file` duplicates `copy_test_file_as`'s body instead of delegating to it.
 
-- [ ] **G19 — resource-accounting, process-memory, prometheus-exposition, saluki-metrics, data_model test cleanup**
+- [x] **G19 — resource-accounting, process-memory, prometheus-exposition, saluki-metrics, data_model test cleanup**
   (`tobz/test-cleanup-resource-accounting-misc-crate-tests`, `test(resource-accounting)`)
+  _process-memory required a minimal behavior-preserving refactor (extracting the inline `/proc` RSS parsing into
+  pure `first_rss_value`/`sum_rss_values`/`parse_statm_rss_bytes`/`select_stat_source` functions) to make the
+  branches testable against synthetic input — permitted per contributing.md's "add abstractions to make code
+  testable." The cross-platform Querier `basic` smoke-test dedup was declined as unverifiable on a single host._
   - [high/small] `resource-accounting`'s `calculate_backoff` has zero tests despite a fully worked numeric example
     in its own doc comment.
   - [high/medium] The core tracking mechanism (`Track` trait, `Tracked` future, group enter/exit, CPU attribution)

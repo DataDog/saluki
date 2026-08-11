@@ -3,7 +3,7 @@
 //! [`DatadogTranslator`] implements [`DatadogConfigWitness`], so the generated `drive` calls each
 //! `consume_<key>` exactly once with the corresponding value from `DatadogConfiguration`. Each
 //! method converts the Datadog value (`i64`, `String`, `Vec<serde_json::Value>`, ...) into the
-//! refined model type (`u16`, `Duration`, `PathBuf`, `ListenAddress`, an enum, ...) and assigns it
+//! refined model type (`u16`, `Duration`, `PathBuf`, an enum, ...) and assigns it
 //! to its `SalukiConfiguration` destination.
 //!
 //! Most keys assign a single field directly. The endpoint keys (`api_key`, `dd_url`, `site`,
@@ -19,11 +19,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use agent_data_plane_config::control::ListenAddress;
 use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
-use agent_data_plane_config::domains::otlp::{CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue};
+use agent_data_plane_config::domains::otlp::{
+    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+    DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+};
 use agent_data_plane_config::shared::ForwarderHttpProtocol;
 use agent_data_plane_config::SalukiConfiguration;
 use bytesize::ByteSize;
@@ -40,6 +42,8 @@ pub(crate) struct DatadogTranslator<'a> {
     config: SalukiConfiguration,
     errors: Vec<TranslateError>,
 }
+
+type Result<T> = std::result::Result<T, TranslateError>;
 
 impl<'a> DatadogTranslator<'a> {
     /// Creates a translator that will read from `datadog`.
@@ -117,7 +121,7 @@ fn to_port(value: i64) -> u16 {
 /// `Vec<serde_json::Value>`. This parser imposes the typed model shape via a local
 /// `#[derive(Deserialize)]` shim, mirroring how the `saluki-components` `dogstatsd_mapper`
 /// deserializes profiles.
-fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfile, TranslateError> {
+fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfile> {
     #[derive(serde::Deserialize)]
     struct RawMapping {
         #[serde(rename = "match")]
@@ -225,7 +229,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_aggregator_stop_timeout(&mut self, value: i64) {
-        self.config.control.aggregator_stop_timeout = value.max(0) as u64;
+        // The schema explicitly says this value is denominated in seconds. We disambiguate here at
+        // the earliest possible opportunity.
+        match parse_seconds("aggregator_stop_timeout", value) {
+            Ok(duration) => self.config.control.aggregator_stop_timeout = duration,
+            Err(e) => self.record_error(e),
+        }
     }
 
     fn consume_allow_arbitrary_tags(&mut self, value: bool) {
@@ -365,6 +374,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.autoscaling_failover.metrics = value;
     }
 
+    fn consume_basic_telemetry_add_container_tags(&mut self, value: bool) {
+        self.config.shared.basic_telemetry.add_container_tags = value;
+    }
+
     fn consume_bind_host(&mut self, value: String) {
         self.config.domains.dogstatsd.listeners.bind_host = non_empty(value);
     }
@@ -398,7 +411,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_api_listen_address(&mut self, value: String) {
-        self.config.control.api_listen_address = ListenAddress(value);
+        self.config.control.api_listen_address = value;
     }
 
     fn consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(&mut self, value: i64) {
@@ -450,7 +463,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_secure_api_listen_address(&mut self, value: String) {
-        self.config.control.secure_api_listen_address = ListenAddress(value);
+        self.config.control.secure_api_listen_address = value;
     }
 
     fn consume_data_plane_use_new_config_stream_endpoint(&mut self, value: bool) {
@@ -592,21 +605,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_tag_cardinality(&mut self, value: String) {
-        // TODO: consider moving the enum to agent-data-plane-config
-        let cardinality = match value.to_ascii_lowercase().as_str() {
-            "low" => OriginTagCardinality::Low,
-            "orchestrator" => OriginTagCardinality::Orchestrator,
-            "high" => OriginTagCardinality::High,
-            "none" => OriginTagCardinality::None,
-            other => {
-                self.record_error(TranslateError::new_with_message(
-                    "dogstatsd_tag_cardinality",
-                    format!("unknown tag cardinality `{other}`"),
-                ));
-                return;
-            }
-        };
-        self.config.domains.dogstatsd.origin.tag_cardinality = cardinality;
+        match value.parse::<OriginTagCardinality>() {
+            Ok(cardinality) => self.config.domains.dogstatsd.origin.tag_cardinality = cardinality,
+            Err(error) => self.record_error(TranslateError::new("dogstatsd_tag_cardinality", error)),
+        }
     }
 
     fn consume_dogstatsd_tags(&mut self, value: Vec<String>) {
@@ -615,6 +617,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_dogstatsd_windows_pipe_security_descriptor(&mut self, value: String) {
         self.config.domains.dogstatsd.listeners.windows_pipe_security_descriptor = value;
+    }
+
+    fn consume_dogstatsd_workers_count(&mut self, value: i64) {
+        match usize::try_from(value) {
+            Ok(worker_count) => self.config.domains.dogstatsd.listeners.workers_count = worker_count,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_workers_count",
+                "worker count must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_enable_payloads_events(&mut self, value: bool) {
@@ -715,7 +727,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_forwarder_stop_timeout(&mut self, value: i64) {
-        self.config.shared.endpoints.forwarder.stop_timeout = value.max(0) as u64;
+        // The schema explicitly says this value is denominated in seconds. We disambiguate here at
+        // the earliest possible opportunity.
+        match parse_seconds("forwarder_stop_timeout", value) {
+            Ok(duration) => self.config.shared.endpoints.forwarder.stop_timeout = duration,
+            Err(e) => self.record_error(e),
+        }
     }
 
     fn consume_forwarder_storage_max_disk_ratio(&mut self, value: f64) {
@@ -911,6 +928,20 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_otlp_config_metrics_summaries_mode(&mut self, value: String) {
+        match value.parse::<SummaryMode>() {
+            Ok(mode) => self.config.domains.otlp.metrics.summaries.mode = mode,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.metrics.summaries.mode", error)),
+        }
+    }
+
+    fn consume_otlp_config_metrics_tag_cardinality(&mut self, value: String) {
+        match value.parse::<OriginTagCardinality>() {
+            Ok(cardinality) => self.config.domains.otlp.metrics.tag_cardinality = cardinality,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.metrics.tag_cardinality", error)),
+        }
+    }
+
     fn consume_otlp_config_metrics_tags(&mut self, value: String) {
         self.config.domains.otlp.metrics.tags = value;
     }
@@ -920,7 +951,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64) {
-        self.config.domains.otlp.receiver.grpc.max_recv_msg_size_mib = value.max(0) as u64;
+        // A configured `0` selects grpc-go's built-in limit; carry the effective value in the model.
+        let mib = value.max(0) as u64;
+        self.config.domains.otlp.receiver.grpc.max_recv_msg_size_mib = if mib == 0 {
+            DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB
+        } else {
+            mib
+        };
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String) {
@@ -932,18 +969,21 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_traces_enabled(&mut self, value: bool) {
-        self.config.domains.traces.otlp.enabled = value;
+        self.config.domains.otlp.traces.enabled = value;
     }
 
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64) {
-        self.config.domains.traces.otlp.internal_port = to_port(value);
+        match u16::try_from(value) {
+            Ok(port) => self.config.domains.otlp.traces.internal_port = port,
+            Err(error) => self.record_error(TranslateError::new("otlp_config.traces.internal_port", error)),
+        }
     }
 
     fn consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(&mut self, value: f64) {
         self.config
             .domains
-            .traces
             .otlp
+            .traces
             .probabilistic_sampler_sampling_percentage = value;
     }
 
@@ -1123,13 +1163,23 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 }
 
+/// A helper to parse values in the schema that are denominated in seconds (per documentation) but
+/// represented as i64 values.
+fn parse_seconds(key: &str, value: i64) -> Result<Duration> {
+    let seconds =
+        u64::try_from(value).map_err(|e| TranslateError::new_with_context(key, "invalid duration seconds value", e))?;
+    Ok(Duration::from_secs(seconds))
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::domains::{
         dogstatsd::OriginTagCardinality,
-        otlp::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue},
+        otlp::{
+            CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+        },
     };
     use datadog_agent_config::DatadogConfiguration;
     use serde_json::json;
@@ -1145,7 +1195,9 @@ mod tests {
             "api_key": "abc",
             "dd_url": "https://custom.example.com",
             "dogstatsd_port": 9125,
+            "dogstatsd_workers_count": 3,
             "dogstatsd_tag_cardinality": "high",
+            "otlp_config": { "metrics": { "tag_cardinality": "orchestrator" } },
             "expected_tags_duration": "15s",
             "telemetry": { "dogstatsd_origin": true },
         }))
@@ -1163,10 +1215,15 @@ mod tests {
 
         // Driven scalar conversion: i64 -> u16.
         assert_eq!(config.domains.dogstatsd.listeners.port, 9125);
+        assert_eq!(config.domains.dogstatsd.listeners.workers_count, 3);
         // Driven enum parse.
         assert_eq!(
             config.domains.dogstatsd.origin.tag_cardinality,
             OriginTagCardinality::High
+        );
+        assert_eq!(
+            config.domains.otlp.metrics.tag_cardinality,
+            OriginTagCardinality::Orchestrator
         );
         // Driven `format: duration` parse: a Go duration string becomes a `Duration`.
         assert_eq!(config.shared.tags.expected_tags_duration, Duration::from_secs(15));
@@ -1180,6 +1237,50 @@ mod tests {
         );
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
+    }
+
+    #[test]
+    fn basic_telemetry_container_tags_default_and_translation() {
+        let defaulted: DatadogConfiguration = serde_json::from_value(json!({})).expect("datadog source deserializes");
+        assert_eq!(
+            serde_json::to_value(&defaulted).expect("source serializes")["basic_telemetry_add_container_tags"],
+            false
+        );
+
+        let (config, errors) = DatadogTranslator::new(&defaulted).translate();
+        assert!(errors.is_none());
+        assert_eq!(
+            serde_json::to_value(&config).expect("typed configuration serializes")["shared"]["basic_telemetry"]
+                ["add_container_tags"],
+            false
+        );
+
+        let enabled: DatadogConfiguration = serde_json::from_value(json!({
+            "basic_telemetry_add_container_tags": true,
+        }))
+        .expect("datadog source deserializes");
+        let (config, errors) = DatadogTranslator::new(&enabled).translate();
+        assert!(errors.is_none());
+        assert_eq!(
+            serde_json::to_value(&config).expect("typed configuration serializes")["shared"]["basic_telemetry"]
+                ["add_container_tags"],
+            true
+        );
+    }
+
+    #[test]
+    fn negative_dogstatsd_workers_count_records_translation_error() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "dogstatsd_workers_count": -1,
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert_eq!(config.domains.dogstatsd.listeners.workers_count, 0);
+        let errors = errors.expect("negative worker count should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_workers_count"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
     }
 
     #[test]
@@ -1280,6 +1381,77 @@ mod tests {
 
         // The error is still surfaced, so startup's strict gate rejects the config.
         assert!(errors.is_some(), "an unknown action must record a translation error");
+    }
+
+    #[test]
+    fn otlp_trace_internal_port_preserves_u16_validation() {
+        // The typed forwarder receives this value after translation. Rejecting conversion here
+        // preserves the u16 validation formerly provided by GenericConfiguration instead of
+        // clamping invalid ports.
+        for value in [0, 5003, u16::MAX as i64] {
+            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+                "otlp_config": { "traces": { "internal_port": value } }
+            }))
+            .expect("datadog source deserializes");
+
+            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+            assert!(errors.is_none());
+            assert_eq!(config.domains.otlp.traces.internal_port, value as u16);
+        }
+
+        for value in [-1, u16::MAX as i64 + 1] {
+            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+                "otlp_config": { "traces": { "internal_port": value } }
+            }))
+            .expect("datadog source deserializes");
+
+            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+            assert_eq!(config.domains.otlp.traces.internal_port, 0);
+            let errors = errors.expect("an out-of-range port should record a translation error");
+            assert!(errors.to_string().contains("otlp_config.traces.internal_port"));
+        }
+    }
+
+    #[test]
+    fn summary_mode_translates_known_values() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "summaries": {
+                        "mode": "noquantiles"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.metrics.summaries.mode, SummaryMode::NoQuantiles);
+    }
+
+    #[test]
+    fn invalid_summary_mode_records_error_and_keeps_default() {
+        let datadog: DatadogConfiguration = serde_json::from_value(json!({
+            "otlp_config": {
+                "metrics": {
+                    "summaries": {
+                        "mode": "unsupported"
+                    }
+                }
+            }
+        }))
+        .expect("datadog source deserializes");
+
+        let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+        assert_eq!(config.domains.otlp.metrics.summaries.mode, SummaryMode::Gauges);
+        let errors = errors.expect("invalid mode should record a translation error");
+        assert!(errors.to_string().contains("otlp_config.metrics.summaries.mode"));
+        assert!(errors.to_string().contains("unknown summary mode `unsupported`"));
     }
 
     #[test]
@@ -1386,5 +1558,29 @@ mod tests {
         assert!(errors
             .to_string()
             .contains("unknown initial cumulative monotonic value `unsupported`"));
+    }
+
+    #[test]
+    fn grpc_max_recv_msg_size_zero_translates_to_grpc_go_default() {
+        // The schema default of `0` selects grpc-go's built-in 4 MiB limit, so translation must
+        // substitute the default; any positive value is carried through unchanged.
+        for (configured, expected) in [
+            (json!({}), DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB),
+            (
+                json!({ "max_recv_msg_size_mib": 0 }),
+                DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+            ),
+            (json!({ "max_recv_msg_size_mib": 8 }), 8),
+        ] {
+            let datadog: DatadogConfiguration = serde_json::from_value(json!({
+                "otlp_config": { "receiver": { "protocols": { "grpc": configured } } }
+            }))
+            .expect("datadog source deserializes");
+
+            let (config, errors) = DatadogTranslator::new(&datadog).translate();
+
+            assert!(errors.is_none());
+            assert_eq!(config.domains.otlp.receiver.grpc.max_recv_msg_size_mib, expected);
+        }
     }
 }

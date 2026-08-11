@@ -305,6 +305,29 @@ mod tests {
     }
 
     #[test]
+    fn test_round_stochastic_rounding() {
+        // `round` performs stochastic rounding: a value with truncated integer part `i` and fractional part `frac`
+        // rounds up to `i + 1` with probability `frac`, and down to `i` otherwise. `test_round_deterministic_cases`
+        // only feeds integer inputs (frac == 0), which can never take the round-up branch, so it leaves the stochastic
+        // half of `round` unexercised.
+        //
+        // The round-up decision draws from a thread-local RNG, so we can't pin a single outcome. Instead we assert the
+        // invariant that holds on every draw (the result is always one of the two nearest integers), and that over
+        // many draws of a `frac == 0.5` value both the round-down and round-up branches are actually reached.
+        let mut saw_floor = false;
+        let mut saw_ceil = false;
+        for _ in 0..1000 {
+            match round(5.5) {
+                5 => saw_floor = true,
+                6 => saw_ceil = true,
+                other => panic!("stochastic rounding of 5.5 must yield 5 or 6, got {other}"),
+            }
+        }
+        assert!(saw_floor, "round-down branch was never exercised across 1000 draws");
+        assert!(saw_ceil, "round-up branch was never exercised across 1000 draws");
+    }
+
+    #[test]
     fn test_grouped_stats_new() {
         let gs = GroupedStats::new();
         assert_eq!(gs.hits, 0.0);

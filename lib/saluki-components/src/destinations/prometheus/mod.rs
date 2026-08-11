@@ -579,9 +579,47 @@ mod tests {
     }
 
     #[test]
-    fn bucket_print() {
-        println!("time buckets: {:?}", *TIME_HISTOGRAM_BUCKETS);
-        println!("non-time buckets: {:?}", *NON_TIME_HISTOGRAM_BUCKETS);
+    fn histogram_buckets_are_monotonic_finite_and_labeled() {
+        // The pre-computed log-linear bucket tables back every Prometheus histogram we expose, so their invariants are
+        // load-bearing: exactly N upper bounds, strictly increasing, finite and positive, starting at the configured
+        // base, each paired with a string label that renders (and parses back to) its own float value. A regression
+        // producing NaN/inf bounds, non-monotonic spacing, or a mismatched label would silently corrupt the exposition
+        // output, so assert the contract rather than just printing the tables.
+        fn assert_bucket_table(buckets: &[(f64, &'static str)], base: f64) {
+            assert!(!buckets.is_empty(), "bucket table must not be empty");
+            assert_eq!(
+                buckets[0].0, base,
+                "first bucket upper bound must equal the configured base"
+            );
+
+            let mut previous = f64::NEG_INFINITY;
+            for (upper_bound, label) in buckets {
+                assert!(
+                    upper_bound.is_finite(),
+                    "bucket upper bound must be finite, got {upper_bound}"
+                );
+                assert!(
+                    *upper_bound > 0.0,
+                    "bucket upper bound must be positive, got {upper_bound}"
+                );
+                assert!(
+                    *upper_bound > previous,
+                    "bucket upper bounds must be strictly increasing ({upper_bound} !> {previous})"
+                );
+                previous = *upper_bound;
+
+                let parsed: f64 = label.parse().expect("bucket label must parse as an f64");
+                assert_eq!(
+                    parsed, *upper_bound,
+                    "bucket label {label:?} must render its own upper bound {upper_bound}"
+                );
+            }
+        }
+
+        assert_eq!(TIME_HISTOGRAM_BUCKETS.len(), TIME_HISTOGRAM_BUCKET_COUNT);
+        assert_eq!(NON_TIME_HISTOGRAM_BUCKETS.len(), NON_TIME_HISTOGRAM_BUCKET_COUNT);
+        assert_bucket_table(&TIME_HISTOGRAM_BUCKETS[..], 0.000000128);
+        assert_bucket_table(&NON_TIME_HISTOGRAM_BUCKETS[..], 1.0);
     }
 
     #[test]

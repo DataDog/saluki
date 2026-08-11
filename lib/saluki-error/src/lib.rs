@@ -83,3 +83,112 @@ where
         <Self as anyhow::Context<T, E>>::with_context(self, context)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::fmt;
+
+    use super::ErrorContext as _;
+
+    /// A leaf error with no source of its own.
+    #[derive(Debug)]
+    struct LeafError;
+
+    impl fmt::Display for LeafError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "leaf failure")
+        }
+    }
+
+    impl std::error::Error for LeafError {}
+
+    /// An error that carries [`LeafError`] as its source.
+    #[derive(Debug)]
+    struct WrappingError {
+        source: LeafError,
+    }
+
+    impl fmt::Display for WrappingError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "wrapping failure")
+        }
+    }
+
+    impl std::error::Error for WrappingError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.source)
+        }
+    }
+
+    #[test]
+    fn generic_error_from_string_literal_uses_message_as_display() {
+        let err = generic_error!("boom");
+        assert_eq!(err.to_string(), "boom");
+    }
+
+    #[test]
+    fn generic_error_from_format_string_interpolates_arguments() {
+        let err = generic_error!("value {} out of range {}", 42, "here");
+        assert_eq!(err.to_string(), "value 42 out of range here");
+    }
+
+    #[test]
+    fn generic_error_from_error_value_forwards_source_chain() {
+        // Documented contract: when the value implements `std::error::Error`, the source of that error
+        // becomes part of the constructed `GenericError`'s chain, so the root cause is the wrapped
+        // error's own source rather than the wrapper itself.
+        let err = generic_error!(WrappingError { source: LeafError });
+        assert_eq!(err.to_string(), "wrapping failure");
+        assert_eq!(err.root_cause().to_string(), "leaf failure");
+    }
+
+    #[test]
+    fn error_context_passes_through_ok_unchanged() {
+        let result: Result<i32, std::io::Error> = Ok(7);
+        let contextualized = result.error_context("this context should never appear");
+        assert_eq!(contextualized.unwrap(), 7);
+    }
+
+    #[test]
+    fn error_context_wraps_err_with_context_and_preserves_source() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let result: Result<(), std::io::Error> = Err(io_err);
+
+        let err = result.error_context("while loading config").unwrap_err();
+        assert_eq!(err.to_string(), "while loading config");
+        assert_eq!(err.root_cause().to_string(), "permission denied");
+    }
+
+    #[test]
+    fn with_error_context_is_not_evaluated_on_ok() {
+        let called = Cell::new(false);
+        let result: Result<i32, std::io::Error> = Ok(1);
+
+        let contextualized = result.with_error_context(|| {
+            called.set(true);
+            "lazy context"
+        });
+
+        assert_eq!(contextualized.unwrap(), 1);
+        assert!(!called.get(), "context closure must not run on the Ok path");
+    }
+
+    #[test]
+    fn with_error_context_is_evaluated_and_applied_on_err() {
+        let called = Cell::new(false);
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "missing");
+        let result: Result<(), std::io::Error> = Err(io_err);
+
+        let err = result
+            .with_error_context(|| {
+                called.set(true);
+                "lazy context"
+            })
+            .unwrap_err();
+
+        assert!(called.get(), "context closure must run on the Err path");
+        assert_eq!(err.to_string(), "lazy context");
+        assert_eq!(err.root_cause().to_string(), "missing");
+    }
+}

@@ -7,10 +7,12 @@ repository = { workspace = true }
 
 [dependencies]
 datadog-agent-config = { workspace = true }
-figment = { workspace = true }
 saluki-config = { workspace = true, features = ["test-util"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [build-dependencies]
 datadog-agent-config-overlay-model = { workspace = true }

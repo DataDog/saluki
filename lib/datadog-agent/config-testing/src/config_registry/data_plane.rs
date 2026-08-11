@@ -4,12 +4,20 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
-static DATA_PLANE_METRICS_V3_SERIES_ENABLED_SCHEMA: SchemaEntry = SchemaEntry {
+static DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
-    yaml_path: "data_plane.metrics.v3.series.enabled",
+    yaml_path: "data_plane.otlp.receiver_grpc_endpoint_temporary",
     env_vars: &[],
-    value_type: ValueType::Bool,
-    default: Some("false"),
+    value_type: ValueType::String,
+    default: Some("localhost:6317"),
+};
+
+static DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "data_plane.otlp.receiver_http_endpoint_temporary",
+    env_vars: &[],
+    value_type: ValueType::String,
+    default: Some("localhost:6318"),
 };
 
 static DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL_SCHEMA: SchemaEntry = SchemaEntry {
@@ -29,6 +37,17 @@ static DATA_PLANE_STOP_TIMEOUT_SCHEMA: SchemaEntry = SchemaEntry {
 };
 
 crate::declare_annotations! {
+    /// `basic_telemetry_add_container_tags`-Add container tags to basic telemetry signals
+    BASIC_TELEMETRY_ADD_CONTAINER_TAGS = SalukiAnnotation {
+        schema: &schema::BASIC_TELEMETRY_ADD_CONTAINER_TAGS,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: Some("true"),
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `data_plane.api_listen_address`-Unprivileged API listen address
     DATA_PLANE_API_LISTEN_ADDRESS = SalukiAnnotation {
         schema: &schema::DATA_PLANE_API_LISTEN_ADDRESS,
@@ -50,17 +69,6 @@ crate::declare_annotations! {
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `data_plane.metrics.v3.series.enabled`
-    DATA_PLANE_METRICS_V3_SERIES_ENABLED = SalukiAnnotation {
-        schema: &DATA_PLANE_METRICS_V3_SERIES_ENABLED_SCHEMA,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
     /// `data_plane.otlp.proxy.logs.enabled`-Proxy OTLP logs to Core Agent
     DATA_PLANE_OTLP_PROXY_LOGS_ENABLED = SalukiAnnotation {
@@ -95,6 +103,28 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `data_plane.otlp.receiver_grpc_endpoint_temporary`
+    DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY = SalukiAnnotation {
+        schema: &DATA_PLANE_OTLP_RECEIVER_GRPC_ENDPOINT_TEMPORARY_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `data_plane.otlp.receiver_http_endpoint_temporary`
+    DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY = SalukiAnnotation {
+        schema: &DATA_PLANE_OTLP_RECEIVER_HTTP_ENDPOINT_TEMPORARY_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `data_plane.remote_agent_enabled`-Enable remote agent mode
     DATA_PLANE_REMOTE_AGENT_ENABLED = SalukiAnnotation {
         schema: &schema::DATA_PLANE_REMOTE_AGENT_ENABLED,
@@ -106,7 +136,7 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `data_plane.secure_api_listen_address`-Privileged API listen address
+    /// `data_plane.secure_api_listen_address`-mTLS-authenticated privileged API address
     DATA_PLANE_SECURE_API_LISTEN_ADDRESS = SalukiAnnotation {
         schema: &schema::DATA_PLANE_SECURE_API_LISTEN_ADDRESS,
         support_level: SupportLevel::Full,
@@ -123,7 +153,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::DATADOG_TRACE_CONFIGURATION],
+        used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,

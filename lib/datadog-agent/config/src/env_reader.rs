@@ -40,10 +40,28 @@ pub struct EnvKey {
 /// Returns a message naming the environment variable when its value is malformed for the key's
 /// declared shape. At startup this aborts the boot rather than silently dropping the value.
 pub fn apply_datadog_env(base: &mut Value, overwrite: bool) -> Result<(), String> {
+    apply_env_snapshot(base, EnvSnapshot::capture(), overwrite)
+}
+
+/// Reads every modeled Datadog key from explicitly provided environment variable name/value pairs.
+///
+/// Identical to [`apply_datadog_env`] except for where the variables come from. Tests use this to
+/// avoid depending on the ambient process environment.
+///
+/// # Errors
+///
+/// Returns a message naming the environment variable when its value is malformed for the key's
+/// declared shape.
+pub fn apply_datadog_env_vars(
+    base: &mut Value, vars: impl IntoIterator<Item = (String, String)>, overwrite: bool,
+) -> Result<(), String> {
+    apply_env_snapshot(base, EnvSnapshot::from_vars(vars), overwrite)
+}
+
+fn apply_env_snapshot(base: &mut Value, env: EnvSnapshot, overwrite: bool) -> Result<(), String> {
     let Some(root) = base.as_object_mut() else {
         return Ok(());
     };
-    let env = EnvSnapshot::capture();
     for key in DATADOG_ENV_KEYS {
         apply_one(root, &env, key.env_vars, key.path, key.decode, overwrite)?;
     }
@@ -122,11 +140,10 @@ fn apply_one(
 
 /// A case-insensitive snapshot of the process environment.
 ///
-/// The legacy figment loader reads environment variables case-insensitively (via `uncased`), and
-/// the compatibility `DatadogRemapper` converts names to lowercase before matching. Because
-/// `std::env::var` is case-sensitive, the typed reader captures the environment with lowercase
-/// names to preserve parity. `DD_DOGSTATSD_PORT`, `dd_dogstatsd_port`, and `Dd_Dogstatsd_Port` all
-/// resolve to the same key.
+/// The figment loader reads environment variables case-insensitively (via `uncased`). Because
+/// `std::env::var` is case-sensitive, this reader captures the environment with lowercase names to
+/// preserve parity. `DD_DOGSTATSD_PORT`, `dd_dogstatsd_port`, and `Dd_Dogstatsd_Port` all resolve to
+/// the same key.
 struct EnvSnapshot {
     /// Environment values keyed by lowercase variable name. Only non-empty values are kept.
     vars: HashMap<String, String>,
@@ -141,8 +158,7 @@ impl EnvSnapshot {
     /// Builds a snapshot from environment variable pairs.
     ///
     /// An empty string counts as unset, matching the Agent (`os.LookupEnv` plus an emptiness
-    /// check). If several case variants of one name are set, the first seen wins, mirroring the
-    /// remapper.
+    /// check). If several case variants of one name are set, the first seen wins.
     fn from_vars(vars: impl IntoIterator<Item = (String, String)>) -> Self {
         let mut snapshot = HashMap::new();
         for (name, value) in vars {
@@ -308,14 +324,9 @@ mod tests {
 
     #[test]
     fn lowercase_proxy_env_is_honored() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-
-        // The common lowercase Unix convention must fill the proxy slot, matching the legacy
-        // case-insensitive remapper.
-        std::env::set_var("http_proxy", "http://lower:3128");
+        let env = EnvSnapshot::from_vars([("http_proxy".to_string(), "http://lower:3128".to_string())]);
         let mut base = json!({});
-        apply_datadog_env(&mut base, true).unwrap();
-        std::env::remove_var("http_proxy");
+        apply_proxy_env(base.as_object_mut().unwrap(), &env, true);
 
         assert_eq!(at(&base, &["proxy", "http"]), Some(&json!("http://lower:3128")));
     }

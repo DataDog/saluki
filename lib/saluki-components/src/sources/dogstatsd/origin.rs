@@ -4,7 +4,10 @@ use saluki_context::{
     origin::{OriginTagCardinality, OriginTagsResolver, RawOrigin},
     tags::SharedTagSet,
 };
-use saluki_env::{workload::origin::ResolvedOrigin, WorkloadProvider};
+use saluki_env::{
+    workload::{origin::ResolvedOrigin, EntityId},
+    WorkloadProvider,
+};
 use saluki_io::deser::codec::dogstatsd::{EventPacket, MetricPacket, ServiceCheckPacket};
 use serde::Deserialize;
 use tracing::trace;
@@ -12,6 +15,22 @@ use tracing::trace;
 use super::{replay::CapturedTaggerHandle, tags::WellKnownTags};
 
 const REPLAY_PROCESS_ID_MARKER: u32 = 1u32 << 31;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ProcessOrigin {
+    Pinned(Option<EntityId>),
+    Unpinned(u32),
+    Replay(u32),
+}
+
+impl ProcessOrigin {
+    pub(super) fn container_entity_id(&self) -> Option<&EntityId> {
+        match self {
+            Self::Pinned(entity_id) => entity_id.as_ref(),
+            Self::Unpinned(_) | Self::Replay(_) => None,
+        }
+    }
+}
 
 pub(super) fn mark_replay_process_id(process_id: u32) -> u32 {
     process_id | REPLAY_PROCESS_ID_MARKER
@@ -137,7 +156,9 @@ impl DogStatsDOriginTagResolver {
         }
     }
 
-    fn collect_origin_tags(&self, origin: ResolvedOrigin) -> SharedTagSet {
+    fn collect_origin_tags_with_process_entity(
+        &self, origin: &ResolvedOrigin, process_entity_id: Option<&EntityId>,
+    ) -> SharedTagSet {
         let mut collected_tags = SharedTagSet::default();
 
         if !self.config.enabled {
@@ -147,12 +168,12 @@ impl DogStatsDOriginTagResolver {
         // Examine the various possible entity ID values, and based on their state, use one or more of them to grab any
         // enriched tags attached to the entities. We evalulate a number of possible entity IDs:
         //
-        // - process ID (extracted via UDS socket credentials and mapped to a container ID)
+        // - sender entity (resolved from UDS socket credentials when the packet is received)
         // - Local Data-based container ID (extracted from special "container ID" extension in DogStatsD protocol; also known as Local Data)
         // - Local Data-based pod UID (extracted from `dd.internal.entity_id` tag)
         // - External Data-based container ID (derived from pod UID and container name in External Data)
         // - External Data-based pod UID (raw pod UID from External Data)
-        let maybe_process_id = origin.process_id();
+        let maybe_process_entity_id = process_entity_id;
         let maybe_local_container_id = origin.local_data();
         let maybe_local_pod_uid = origin.pod_uid();
         let maybe_external_container_id = origin.resolved_external_data().map(|red| red.container_entity_id());
@@ -166,9 +187,9 @@ impl DogStatsDOriginTagResolver {
                 return collected_tags;
             }
 
-            // If we discovered an entity ID via origin detection, and no client-provided entity ID was provided (or it
-            // was, but entity ID precedence is disabled), then try to get tags for the detected entity ID.
-            if let Some(entity_id) = maybe_process_id {
+            // If we discovered an entity ID from socket credentials, and no client-provided entity ID was provided (or
+            // it was, but entity ID precedence is disabled), then try to get tags for the detected entity ID.
+            if let Some(entity_id) = maybe_process_entity_id {
                 if maybe_local_pod_uid.is_none() || !self.config.entity_id_precedence {
                     if let Some(tags) = self.workload_provider.get_tags_for_entity(entity_id, tag_cardinality) {
                         collected_tags.extend_from_shared(&tags);
@@ -202,13 +223,13 @@ impl DogStatsDOriginTagResolver {
                 return collected_tags;
             }
 
-            // Evaluate all available entity IDs in order of priority: Local Data-based container ID, process ID,
+            // Evaluate all available entity IDs in order of priority: Local Data-based container ID, sender entity,
             // External Data-based container ID, Local Data-based pod UID, and External Data-based pod UID.
             //
             // As soon as the first set of tags for an entity ID is found, we skip the remaining entity IDs.
             let maybe_entity_ids = &[
                 maybe_local_container_id,
-                maybe_process_id,
+                maybe_process_entity_id,
                 maybe_external_container_id,
                 maybe_local_pod_uid,
                 maybe_external_pod_uid,
@@ -231,6 +252,33 @@ impl DogStatsDOriginTagResolver {
 
         collected_tags
     }
+
+    fn collect_origin_tags(&self, origin: &ResolvedOrigin) -> SharedTagSet {
+        self.collect_origin_tags_with_process_entity(origin, origin.process_id())
+    }
+
+    pub(super) fn resolve_origin_tags_with_process_origin(
+        &self, mut origin: RawOrigin<'_>, process_origin: Option<&ProcessOrigin>,
+    ) -> SharedTagSet {
+        match process_origin {
+            Some(ProcessOrigin::Replay(process_id)) => {
+                origin.set_process_id(mark_replay_process_id(*process_id));
+                self.resolve_origin_tags(origin)
+            }
+            Some(ProcessOrigin::Unpinned(process_id)) => {
+                origin.set_process_id(*process_id);
+                self.resolve_origin_tags(origin)
+            }
+            Some(ProcessOrigin::Pinned(process_entity_id)) => {
+                let resolved_origin = self
+                    .workload_provider
+                    .get_resolved_origin(origin.clone())
+                    .unwrap_or_else(|| ResolvedOrigin::from_parts(origin.cardinality(), None, None, None, None));
+                self.collect_origin_tags_with_process_entity(&resolved_origin, process_entity_id.as_ref())
+            }
+            None => self.resolve_origin_tags(origin),
+        }
+    }
 }
 
 impl OriginTagsResolver for DogStatsDOriginTagResolver {
@@ -250,7 +298,7 @@ impl OriginTagsResolver for DogStatsDOriginTagResolver {
         }
 
         match self.workload_provider.get_resolved_origin(origin.clone()) {
-            Some(resolved_origin) => self.collect_origin_tags(resolved_origin),
+            Some(resolved_origin) => self.collect_origin_tags(&resolved_origin),
             None => {
                 trace!(?origin, "No resolved origin found for origin.");
                 SharedTagSet::default()
@@ -577,7 +625,7 @@ mod tests {
 
             let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
 
-            let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin.clone());
+            let actual_tags = origin_tags_resolver.collect_origin_tags(&resolved_origin);
             assert_eq!(
                 actual_tags, expected_tags,
                 "failed to resolve the expected tags for origin {:?}",
@@ -658,7 +706,7 @@ mod tests {
         ];
 
         for (resolved_origin, expected_tags) in cases {
-            let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin.clone());
+            let actual_tags = origin_tags_resolver.collect_origin_tags(&resolved_origin);
             assert_eq!(
                 actual_tags, expected_tags,
                 "failed to resolve the expected tags for origin {:?}",
@@ -677,7 +725,7 @@ mod tests {
         let origin_tags_resolver = build_tags_resolver_with_default_tags(tag_resolver_config);
 
         let resolved_origin = origin(Some(&EID_PID), None, None, None);
-        let actual_tags = origin_tags_resolver.collect_origin_tags(resolved_origin);
+        let actual_tags = origin_tags_resolver.collect_origin_tags(&resolved_origin);
         assert!(actual_tags.is_empty());
     }
 
@@ -771,6 +819,25 @@ mod tests {
 
         let tags = resolver.resolve_origin_tags(origin);
         assert_eq!(tags, single_tag("tag_source:live-pid"));
+    }
+
+    #[test]
+    fn resolve_origin_tags_uses_pinned_process_entity() {
+        let pinned_entity = EntityId::Container(MetaString::from_static("original-container"));
+        let config = OriginEnrichmentConfiguration {
+            enabled: true,
+            tag_cardinality: OriginTagCardinality::High,
+            ..Default::default()
+        };
+        let workload_provider =
+            TestWorkloadProvider::with_entity(pinned_entity.clone(), &["tag_source:pinned-container"]);
+        let resolver =
+            DogStatsDOriginTagResolver::new(config, Arc::new(workload_provider), CapturedTaggerHandle::new());
+        let process_origin = ProcessOrigin::Pinned(Some(pinned_entity));
+
+        let tags = resolver.resolve_origin_tags_with_process_origin(RawOrigin::default(), Some(&process_origin));
+
+        assert_eq!(tags, single_tag("tag_source:pinned-container"));
     }
 
     #[test]

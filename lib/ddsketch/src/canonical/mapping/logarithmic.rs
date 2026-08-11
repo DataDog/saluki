@@ -182,66 +182,32 @@ impl Default for LogarithmicMapping {
 mod tests {
     use super::*;
 
+    // Shared `IndexMapping` conformance suite (round-trip, bound ordering, gamma/accuracy consistency, proto
+    // self-validation).
     #[test]
-    fn test_new_valid_accuracy() {
+    fn conforms_to_index_mapping_contract() {
         let mapping = LogarithmicMapping::new(0.01).unwrap();
-        assert!((mapping.relative_accuracy() - 0.01).abs() < 1e-10);
+        crate::canonical::mapping::conformance::assert_index_mapping_conformance(&mapping, 0.01);
     }
 
+    // Constructor accuracy-bound validation is specific to the runtime-configured `LogarithmicMapping`.
     #[test]
-    fn test_new_invalid_accuracy_zero() {
+    fn new_rejects_accuracy_of_zero() {
         assert!(LogarithmicMapping::new(0.0).is_err());
     }
 
     #[test]
-    fn test_new_invalid_accuracy_one() {
+    fn new_rejects_accuracy_of_one() {
         assert!(LogarithmicMapping::new(1.0).is_err());
     }
 
     #[test]
-    fn test_new_invalid_accuracy_negative() {
+    fn new_rejects_negative_accuracy() {
         assert!(LogarithmicMapping::new(-0.1).is_err());
     }
 
     #[test]
-    fn test_index_value_roundtrip() {
-        let mapping = LogarithmicMapping::new(0.01).unwrap();
-
-        // For any index, the value at that index should map back to the same index
-        for i in -100..100 {
-            let value = mapping.value(i);
-            let recovered_index = mapping.index(value);
-            // Due to floating-point, we might be off by 1
-            assert!(
-                (recovered_index - i).abs() <= 1,
-                "index {} -> value {} -> index {}",
-                i,
-                value,
-                recovered_index
-            );
-        }
-    }
-
-    #[test]
-    fn test_bounds_ordering() {
-        let mapping = LogarithmicMapping::new(0.01).unwrap();
-
-        for i in -100..100 {
-            let lower = mapping.lower_bound(i);
-            let value = mapping.value(i);
-
-            assert!(
-                lower < value,
-                "lower {} should be < value {} for index {}",
-                lower,
-                value,
-                i
-            );
-        }
-    }
-
-    #[test]
-    fn test_gamma_calculation() {
+    fn gamma_is_derived_from_accuracy() {
         let mapping = LogarithmicMapping::new(0.01).unwrap();
         // gamma = (1 + 0.01) / (1 - 0.01) = 1.01 / 0.99
         let expected_gamma = 1.01 / 0.99;

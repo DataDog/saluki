@@ -4,7 +4,7 @@
   needs:
     - calculate-build-metadata
   retry: 2
-  timeout: 15m
+  timeout: 25m
   variables:
     APP_BUILD_TIME: ${CI_PIPELINE_CREATED_AT}
     DDCI_CONFIGURE_OTEL_EXPORTER: true
@@ -273,8 +273,8 @@ display-image-tags:
       # Image Tags
 
       ## Agent Data Plane (suitable for internal deployments, GBI-based, Nydus-compatible)
-      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG}
-      FIPS:     ${IMAGE_REGISTRY}/${ADP_IMAGE_TAG_FIPS}
+      Non-FIPS: ${IMAGE_REGISTRY}/${ADP_INTERNAL_IMAGE_TAG}
+      FIPS:     ${IMAGE_REGISTRY}/${ADP_INTERNAL_IMAGE_TAG_FIPS}
       EOF
 
 # Builds the darwin release tarball natively on a macOS runner and exposes it as a GitLab job

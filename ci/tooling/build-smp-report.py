@@ -407,7 +407,7 @@ def build_failure_report(reason: str) -> str:
     return (
         "## Optimization Goals: ⚠️ Report unavailable\n\n"
         f"The benchmark run did not produce a usable report: {reason}\n\n"
-        "Check the `run-benchmarks-adp` job logs for details.\n"
+        "Check the benchmark job logs for details.\n"
     )
 
 

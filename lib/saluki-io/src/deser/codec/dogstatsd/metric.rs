@@ -768,7 +768,20 @@ mod tests {
             // As this is a property test, it is _not_ exhaustive but generally should catch simple issues that manage
             // to escape the unit tests. This is left here for the sole reason of incrementally running this every time
             // all tests are run, in the hopes of potentially catching an issue that might have been missed.
-            let _ = parse_dsd_metric(&input);
+            //
+            // Beyond "does not panic", we also encode the structural guarantee the parser makes on success: the metric
+            // name is matched with `take_while1` (so it is always non-empty) and the name parser stops at the `:`
+            // value delimiter (so the name can never contain one). Whenever the parser accepts an input, the produced
+            // metric must satisfy both.
+            if let Ok(Some(metric)) = parse_dsd_metric(&input) {
+                let name = metric.context().name();
+                let name = name.as_ref();
+                prop_assert!(!name.is_empty(), "parsed metric name must be non-empty for input {input:?}");
+                prop_assert!(
+                    !name.contains(':'),
+                    "parsed metric name must not contain the ':' value delimiter, got {name:?}"
+                );
+            }
         }
     }
 }
