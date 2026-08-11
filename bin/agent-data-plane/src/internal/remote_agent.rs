@@ -310,21 +310,10 @@ async fn run_config_stream_event_loop(
                         Some(config_event::Event::Snapshot(snapshot)) => {
                             Some(ConfigUpdate::Snapshot(snapshot_to_settings(&snapshot)))
                         }
-                        Some(config_event::Event::Update(update)) => {
-                            update.setting.as_ref().and_then(|setting| {
-                                match setting_to_config_setting(setting) {
-                                    Some(converted) => Some(ConfigUpdate::Partial(converted)),
-                                    None => {
-                                        // Do not inject JSON null: typed fields interpret it as an invalid value.
-                                        debug!(
-                                            key = %setting.key,
-                                            "Ignoring a configuration update for a declared key with no value."
-                                        );
-                                        None
-                                    }
-                                }
-                            })
-                        }
+                        Some(config_event::Event::Update(update)) => update
+                            .setting
+                            .as_ref()
+                            .map(|setting| ConfigUpdate::Partial(setting_to_config_setting(setting))),
                         None => {
                             error!("Received a configuration update event with no data.");
                             None
@@ -349,35 +338,30 @@ async fn run_config_stream_event_loop(
     }
 }
 
-// Source for a value supplied by the Agent's schema default.
+/// Sources that indicate the Agent supplied the value rather than an operator.
 const AGENT_DEFAULT_SOURCE: &str = "default";
-
-// Source for a schema-declared key with no configured value.
+/// It is unclear whether we can ever receive this, but if we do it was not set by the user.
 const AGENT_DECLARED_ONLY_SOURCE: &str = "schema";
+const AGENT_UNSET_SOURCES: [&str; 2] = [AGENT_DEFAULT_SOURCE, AGENT_DECLARED_ONLY_SOURCE];
 
-// Omit settings without values; JSON null is not a missing-value sentinel for typed fields.
-fn setting_to_config_setting(setting: &AgentConfigSetting) -> Option<ConfigSetting> {
-    if setting.source == AGENT_DECLARED_ONLY_SOURCE {
-        return None;
-    }
-
-    let value = proto_value_to_serde_value(&setting.value);
-    if value.is_null() {
-        return None;
-    }
-
-    let provenance = if setting.source == AGENT_DEFAULT_SOURCE {
+/// Converts a setting from the Agent's RPC wire protocol to our `ConfigSetting` type.
+fn setting_to_config_setting(setting: &AgentConfigSetting) -> ConfigSetting {
+    let provenance = if AGENT_UNSET_SOURCES.contains(&setting.source.as_str()) {
         Provenance::Default
     } else {
         Provenance::Explicit
     };
 
-    Some(ConfigSetting::new(setting.key.clone(), value, provenance))
+    ConfigSetting::new(
+        setting.key.clone(),
+        proto_value_to_serde_value(&setting.value),
+        provenance,
+    )
 }
 
-// A snapshot must not pass valueless settings to the typed configuration layer.
+/// Converts a `ConfigSnapshot` into the settings it carries.
 fn snapshot_to_settings(snapshot: &ConfigSnapshot) -> Vec<ConfigSetting> {
-    snapshot.settings.iter().filter_map(setting_to_config_setting).collect()
+    snapshot.settings.iter().map(setting_to_config_setting).collect()
 }
 
 /// Recursively converts a `google::protobuf::Value` into a `serde_json::Value`.
@@ -926,8 +910,7 @@ mod tests {
             AGENT_DEFAULT_SOURCE,
             "dd_url",
             "https://app.datadoghq.com",
-        ))
-        .expect("a defaulted setting has a value");
+        ));
 
         assert_eq!(setting.key, "dd_url");
         assert_eq!(setting.value, Value::from("https://app.datadoghq.com"));
@@ -935,49 +918,51 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_key_with_no_value_is_absent() {
-        // Both an omitted protobuf value and the schema-only source represent an unset key.
-        assert!(setting_to_config_setting(&AgentConfigSetting {
-            source: AGENT_DECLARED_ONLY_SOURCE.to_string(),
+    fn a_schema_setting_is_marked_as_a_default() {
+        let setting = setting_to_config_setting(&AgentConfigSetting {
+            source: "schema".to_string(),
             key: "api_key".to_string(),
             value: None,
-        })
-        .is_none());
+        });
 
-        assert!(setting_to_config_setting(&agent_setting(AGENT_DECLARED_ONLY_SOURCE, "api_key", "")).is_none());
+        assert_eq!(setting.value, Value::Null);
+        assert_eq!(setting.provenance, Provenance::Default);
     }
 
     #[test]
-    fn a_valueless_setting_is_absent_whatever_its_source() {
-        for source in [AGENT_DEFAULT_SOURCE, "file", "remote-config"] {
-            assert!(
-                setting_to_config_setting(&AgentConfigSetting {
-                    source: source.to_string(),
-                    key: "api_key".to_string(),
-                    value: Some(prost_types::Value {
-                        kind: Some(Kind::NullValue(0)),
-                    }),
-                })
-                .is_none(),
-                "source {source} with a null value should be absent"
-            );
+    fn null_values_are_preserved_with_their_provenance() {
+        for source in [AGENT_DEFAULT_SOURCE, "schema", "file", "remote-config"] {
+            let setting = setting_to_config_setting(&AgentConfigSetting {
+                source: source.to_string(),
+                key: "api_key".to_string(),
+                value: Some(prost_types::Value {
+                    kind: Some(Kind::NullValue(0)),
+                }),
+            });
+
+            let expected_provenance = if [AGENT_DEFAULT_SOURCE, "schema"].contains(&source) {
+                Provenance::Default
+            } else {
+                Provenance::Explicit
+            };
+            assert_eq!(setting.value, Value::Null);
+            assert_eq!(setting.provenance, expected_provenance, "source {source}");
         }
     }
 
     #[test]
     fn an_empty_string_value_is_kept_with_its_provenance() {
         // An empty string is still a value; provenance comes from its source, not its content.
-        let setting =
-            setting_to_config_setting(&agent_setting("file", "site", "")).expect("an empty string is still a value");
+        for (source, provenance) in [
+            ("file", Provenance::Explicit),
+            ("default", Provenance::Default),
+            ("schema", Provenance::Default),
+        ] {
+            let setting = setting_to_config_setting(&agent_setting(source, "site", ""));
 
-        assert_eq!(setting.value, Value::from(""));
-        assert_eq!(setting.provenance, Provenance::Explicit);
-
-        let setting = setting_to_config_setting(&agent_setting(AGENT_DEFAULT_SOURCE, "site", ""))
-            .expect("an empty string is still a value");
-
-        assert_eq!(setting.value, Value::from(""));
-        assert_eq!(setting.provenance, Provenance::Default);
+            assert_eq!(setting.value, Value::from(""));
+            assert_eq!(setting.provenance, provenance);
+        }
     }
 
     #[test]
@@ -990,8 +975,7 @@ mod tests {
             "cli",
             "source-from-the-future",
         ] {
-            let setting = setting_to_config_setting(&agent_setting(source, "dd_url", "https://app.datadoghq.eu"))
-                .expect("an explicit setting has a value");
+            let setting = setting_to_config_setting(&agent_setting(source, "dd_url", "https://app.datadoghq.eu"));
 
             assert_eq!(
                 setting.provenance,
@@ -1002,7 +986,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_settings_keep_order_values_and_provenance_and_drop_valueless_keys() {
+    fn snapshot_settings_keep_order_values_and_provenance() {
         let snapshot = ConfigSnapshot {
             origin: "core-agent".to_string(),
             sequence_id: 1,
@@ -1020,6 +1004,7 @@ mod tests {
             vec![
                 ConfigSetting::explicit("site", Value::from("datadoghq.eu")),
                 ConfigSetting::new("dd_url", Value::from("https://app.datadoghq.com"), Provenance::Default),
+                ConfigSetting::new("api_key", Value::from(""), Provenance::Default),
             ]
         );
     }
