@@ -316,8 +316,8 @@ impl HttpClientBuilder {
     ///
     /// Any ALPN protocols already present in `config` are discarded before the configuration is passed to
     /// `hyper-rustls`. [`Self::with_http_protocol`] remains the sole source of HTTP protocol selection:
-    /// [`HttpProtocol::Auto`] advertises HTTP/2 with HTTP/1.1 fallback, while [`HttpProtocol::Http1`] advertises
-    /// only HTTP/1.1 via ALPN.
+    /// [`HttpProtocol::Auto`] advertises HTTP/2 with HTTP/1.1 fallback, while [`HttpProtocol::Http1`] enables only
+    /// HTTP/1.1 and does not advertise ALPN.
     ///
     /// The supplied configuration is validated for FIPS compliance during [`Self::build`].
     pub fn with_client_tls_config(mut self, config: ClientConfig) -> Self {
@@ -469,15 +469,13 @@ mod tests {
         let (mut server_config, mut client_config) = mutual_tls_configs();
         server_config.alpn_protocols = vec![b"custom".to_vec(), b"http/1.1".to_vec()];
         client_config.alpn_protocols = vec![b"custom".to_vec()];
-        let builder = HttpClient::builder()
-            .with_http_protocol(HttpProtocol::Http1)
-            .with_client_tls_config(client_config);
+        let builder = HttpClient::builder().with_client_tls_config(client_config);
 
         let negotiated_alpn = send_request_to_tls_server(builder, server_config)
             .await
             .expect("client should normalize ALPN and complete an HTTP/1.1 request");
 
-        assert_eq!(negotiated_alpn, Some(b"http/1.1".to_vec()));
+        assert_eq!(negotiated_alpn, None);
     }
 
     fn mutual_tls_configs() -> (ServerConfig, ClientConfig) {

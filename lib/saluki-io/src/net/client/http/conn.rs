@@ -614,7 +614,7 @@ impl HttpsCapableConnectorBuilder {
 fn configure_alpn_for_http_protocol(protocol: HttpProtocol) -> Vec<Vec<u8>> {
     match protocol {
         HttpProtocol::Auto => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-        HttpProtocol::Http1 => vec![b"http/1.1".to_vec()],
+        HttpProtocol::Http1 => Vec::new(),
     }
 }
 
@@ -748,10 +748,10 @@ mod tests {
     }
 
     #[test]
-    fn http1_protocol_advertises_http1_alpn() {
+    fn http1_protocol_leaves_alpn_empty() {
         let alpn_protocols = configure_alpn_for_http_protocol(HttpProtocol::Http1);
 
-        assert_eq!(alpn_protocols, vec![b"http/1.1".to_vec()]);
+        assert!(alpn_protocols.is_empty());
     }
 
     // vsock takes priority over unix when both are configured, matching Agent behavior.
