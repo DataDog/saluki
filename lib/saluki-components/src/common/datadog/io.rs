@@ -206,6 +206,7 @@ where
             .with_request_timeout(config.request_timeout())
             .with_max_idle_conns_per_host(config.max_idle_connections_per_host())
             .with_min_tls_version(config.min_tls_version())
+            .with_tls_handshake_timeout(config.tls_handshake_timeout())
             .with_http_protocol(config.http_protocol())
             .with_bytes_sent_counter(telemetry.bytes_sent().clone())
             .with_endpoint_telemetry(

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use facet::Facet;
-use saluki_config::GenericConfiguration;
+use saluki_config::{DurationString, GenericConfiguration};
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
 use serde::Deserialize;
@@ -50,6 +50,10 @@ const MIN_TLS_VERSION_TLS13: &str = "tlsv1.3";
 
 fn default_min_tls_version() -> String {
     MIN_TLS_VERSION_TLS12.to_string()
+}
+
+fn default_tls_handshake_timeout() -> DurationString {
+    DurationString::new(Duration::from_secs(10))
 }
 
 fn min_tls_version_from_config_value(value: &str) -> TlsMinimumVersion {
@@ -308,6 +312,14 @@ pub struct ForwarderConfiguration {
     #[facet(opaque)]
     parsed_min_tls_version: TlsMinimumVersion,
 
+    /// Timeout for completing the TLS handshake after a connection is established, for Datadog intake forwarding.
+    ///
+    /// Defaults to 10 seconds. This bounds only the TLS handshake step, distinct from `forwarder_timeout`, which
+    /// bounds the entire request.
+    #[serde(default = "default_tls_handshake_timeout")]
+    #[facet(opaque)]
+    tls_handshake_timeout: DurationString,
+
     /// Whether to signal that the backend should allow arbitrary tag values.
     ///
     /// Defaults to `false`. If set to `true`, the Datadog forwarder adds `Allow-Arbitrary-Tag-Value: true` to every
@@ -373,6 +385,11 @@ impl ForwarderConfiguration {
     /// Returns the request timeout.
     pub const fn request_timeout(&self) -> Duration {
         Duration::from_secs(self.request_timeout_secs)
+    }
+
+    /// Returns the TLS handshake timeout.
+    pub const fn tls_handshake_timeout(&self) -> Duration {
+        self.tls_handshake_timeout.as_duration()
     }
 
     /// Returns the maximum number of pending requests for an individual endpoint.

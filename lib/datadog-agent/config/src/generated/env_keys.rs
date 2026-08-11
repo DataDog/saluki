@@ -976,6 +976,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Bool,
     },
     EnvKey {
+        env_vars: &["DD_TLS_HANDSHAKE_TIMEOUT"],
+        path: &["tls_handshake_timeout"],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
         env_vars: &["DD_USE_PROXY_FOR_CLOUD_METADATA"],
         path: &["use_proxy_for_cloud_metadata"],
         decode: EnvDecode::Bool,

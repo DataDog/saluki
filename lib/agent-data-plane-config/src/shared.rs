@@ -115,6 +115,9 @@ pub struct Tls {
 
     /// Path to which TLS session keys are logged, for debugging.
     pub sslkeylogfile: String,
+
+    /// Timeout for completing the TLS handshake after a connection is established.
+    pub handshake_timeout: Duration,
 }
 
 /// Payload compression settings applied before transmission.

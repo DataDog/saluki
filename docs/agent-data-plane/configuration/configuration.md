@@ -29,7 +29,6 @@ tracking.
 | -------------------------------------------- | ----------------------------------------------- | ------- |
 | `dogstatsd_experimental_http.enabled`        | Enable experimental HTTP/H2C DSD listener       | [#1682] |
 | `dogstatsd_experimental_http.listen_address` | Bind address for experimental HTTP DSD listener | [#1682] |
-| `tls_handshake_timeout`                      | HTTP TLS handshake timeout                      | [#178]  |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -735,6 +734,7 @@ compressed wire payload bytes.
 | `syslog_rfc`                                                   | Use RFC-style syslog header                        |
 | `syslog_uri`                                                   | Syslog destination URI                             |
 | `telemetry.dogstatsd_origin`                                   | Per-origin processed-metrics telemetry             |
+| `tls_handshake_timeout`                                        | HTTP TLS handshake timeout                         |
 | `use_proxy_for_cloud_metadata`                                 | Proxy cloud metadata endpoints                     |
 | `use_v2_api.series`                                            | Send series via V2 protobuf endpoint               |
 | `use_v3_api.series.enabled`                                    | Global V3 series mode                              |

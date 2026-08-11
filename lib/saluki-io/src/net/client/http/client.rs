@@ -179,6 +179,17 @@ impl HttpClientBuilder {
         self
     }
 
+    /// Sets the timeout for completing the TLS handshake after a connection is established.
+    ///
+    /// This bounds only the TLS handshake step, distinct from the connect timeout, which bounds the underlying TCP
+    /// (or other transport) connection setup that precedes it.
+    ///
+    /// Defaults to 10 seconds.
+    pub fn with_tls_handshake_timeout(mut self, timeout: Duration) -> Self {
+        self.connector_builder = self.connector_builder.with_tls_handshake_timeout(timeout);
+        self
+    }
+
     /// Sets the per-request timeout.
     ///
     /// The request timeout applies to each individual request made to the remote host, including each request made when

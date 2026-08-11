@@ -205,6 +205,7 @@ pub trait DatadogConfigWitness {
     fn consume_syslog_rfc(&mut self, value: bool);
     fn consume_syslog_uri(&mut self, value: String);
     fn consume_telemetry_dogstatsd_origin(&mut self, value: bool);
+    fn consume_tls_handshake_timeout(&mut self, value: std::time::Duration);
     fn consume_use_proxy_for_cloud_metadata(&mut self, value: bool);
     fn consume_use_v2_api_series(&mut self, value: bool);
     fn consume_use_v3_api_series_enabled(&mut self, value: String);
@@ -516,6 +517,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_syslog_rfc(config.syslog_rfc.clone());
     consumer.consume_syslog_uri(config.syslog_uri.clone());
     consumer.consume_telemetry_dogstatsd_origin(config.telemetry.dogstatsd_origin.clone());
+    consumer.consume_tls_handshake_timeout(config.tls_handshake_timeout.clone());
     consumer.consume_use_proxy_for_cloud_metadata(config.use_proxy_for_cloud_metadata.clone());
     consumer.consume_use_v2_api_series(config.use_v2_api.series.clone());
     consumer.consume_use_v3_api_series_enabled(config.use_v3_api.series.enabled.clone());
