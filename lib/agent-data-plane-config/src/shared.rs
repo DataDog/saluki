@@ -44,19 +44,15 @@ pub struct Endpoints {
 
     /// Base site domain for the primary intake (for example, `datadoghq.com`).
     ///
-    /// The Datadog schema supplies `datadoghq.com` when nothing sets this key. Provenance is
-    /// `Explicit` only when an input set a non-empty site, so a consumer resolving an endpoint can
-    /// tell a configured site from one nobody chose.
+    /// The Datadog schema supplies a default value when nothing sets this key. Provenance is
+    /// `Explicit` only when the value was explicitly configured.
     pub site: ConfigValue<String>,
 
     /// Full primary intake URL, which overrides [`site`](Self::site) when set explicitly.
     ///
-    /// The Core Agent supplies this key at its schema default even when the operator configured only
-    /// `site`, so the URL alone cannot say whether it should override the site. Resolve the endpoint
-    /// from this value only when it is explicit; see
-    /// [`ConfigValue::is_explicit`](crate::ConfigValue::is_explicit). An empty value expresses no
-    /// intent and is therefore never explicit. Programmatic overrides bypass translation and are
-    /// always explicit.
+    /// The Core Agent supplies this key at its schema default even when not set by the user or
+    /// operator. Provenance is preserved so that we know when this was explicitly set and should
+    /// override `site`.
     pub dd_url: ConfigValue<String>,
 
     /// Additional dual-shipping endpoints, keyed by intake URL with their API keys.
