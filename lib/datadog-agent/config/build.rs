@@ -15,8 +15,8 @@ fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let files = Files::default();
 
-    let schema_dir = files.schema.parent().expect("schema file must have a parent directory");
-    println!("cargo:rerun-if-changed={}", schema_dir.display());
+    println!("cargo:rerun-if-changed={}", files.datadog_schema_dir.display());
+    println!("cargo:rerun-if-changed={}", files.otel_schema_dir.display());
     println!("cargo:rerun-if-changed={}", files.overlay.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build/classifier_gen.rs");
@@ -24,9 +24,9 @@ fn main() {
     println!("cargo:rerun-if-changed=build/env_reader_gen.rs");
     println!("cargo:rerun-if-changed=build/witness_gen.rs");
 
-    let schema_path = files.schema.clone();
+    let schema_path = files.datadog_schema_dir.join("core_schema.yaml");
+    let schema_map = schema_gen::load_schema(&files.datadog_schema_dir, &files.otel_schema_dir);
     let overlay = SchemaOverlay::load(files).unwrap_or_else(|e| panic!("{e}"));
-    let schema_map = schema_gen::load_schema(&schema_path);
 
     classifier_gen::generate(&overlay, &schema_map, &manifest_dir);
     datadog_config_gen::generate(&overlay, &schema_path, &schema_map, &manifest_dir);

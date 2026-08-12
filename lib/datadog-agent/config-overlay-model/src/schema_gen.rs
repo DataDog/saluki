@@ -91,8 +91,9 @@ pub struct FieldInfo {
 ///
 /// Resolves `$ref: <filename>` entries by loading the referenced files from the same directory.
 /// The map is sorted by key. Panics if the file cannot be read or parsed.
-pub fn load_schema(schema_path: &Path) -> IndexMap<String, FieldInfo> {
-    let doc = crate::load_resolved_schema(schema_path).unwrap_or_else(|e| panic!("failed to load schema: {e}"));
+pub fn load_schema(datadog_schema_dir: &Path, otel_schema_dir: &Path) -> IndexMap<String, FieldInfo> {
+    let doc = crate::load_composed_schema(datadog_schema_dir, otel_schema_dir)
+        .unwrap_or_else(|e| panic!("failed to load composed schema: {e}"));
     let properties = doc
         .get("properties")
         .and_then(|v| v.as_mapping())
