@@ -707,10 +707,23 @@ fn resolve_otel_refs(
         }
     }
 
-    // 3. Recurse into properties, stripping auth and middlewares.
+    // 3. Recurse into properties, stripping auth and middlewares that reference excluded packages.
     if let Some(props) = map.get_mut("properties").and_then(|v| v.as_mapping_mut()) {
-        props.remove(serde_yaml::Value::String("auth".to_string()));
-        props.remove(serde_yaml::Value::String("middlewares".to_string()));
+        // Strip auth/middlewares if they have a $ref (direct or via allOf/items) that
+        // transitively references configauth/configmiddleware. A plain `auth` field
+        // (like tpm_config.auth: type: string) has no $ref and must be kept.
+        if let Some(auth) = props.get("auth") {
+            let auth_str = serde_yaml::to_string(auth).unwrap_or_default();
+            if auth_str.contains("$ref") {
+                props.remove(serde_yaml::Value::String("auth".to_string()));
+            }
+        }
+        if let Some(middlewares) = props.get("middlewares") {
+            let mw_str = serde_yaml::to_string(middlewares).unwrap_or_default();
+            if mw_str.contains("$ref") {
+                props.remove(serde_yaml::Value::String("middlewares".to_string()));
+            }
+        }
         for (_, v) in props.iter_mut() {
             resolve_otel_refs(v, otel_dir, current_defs)?;
         }
