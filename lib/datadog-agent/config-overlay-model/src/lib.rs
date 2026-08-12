@@ -241,7 +241,7 @@ pub enum ValueType {
 pub struct Files {
     /// The Datadog Agent core schema file (`schema/core/core_schema.yaml`).
     pub datadog_schema: PathBuf,
-    /// Directory containing the vendored OTEL receiver schema (`schema/otel/`).
+    /// Directory containing the vendored OTel receiver schema (`schema/otel/`).
     pub otel_schema_dir: PathBuf,
     /// The schema overlay (`schema/schema_overlay.yaml`).
     pub overlay: PathBuf,
@@ -545,24 +545,24 @@ fn resolve_refs(value: &mut serde_yaml::Value, schema_dir: &Path) -> Result<(), 
     Ok(())
 }
 
-// ─── OTEL Schema Resolution ─────────────────────────────────────────────────
+// ─── OTel Schema Resolution ─────────────────────────────────────────────────
 //
-// The OTEL Collector schemas use a different JSON Schema dialect than the Datadog schema:
+// The OTel Collector schemas use a different JSON Schema dialect than the Datadog schema:
 // - `$ref: <name>` resolves against the current file's `$defs` (local reference)
 // - `$ref: /config/<package>.<def_name>` loads another package's `config.schema.yaml`
 //   and resolves against its `$defs` (package-qualified reference)
 // - `allOf` merges multiple fragments into a single object
 //
-// These functions load the vendored OTEL schemas from `schema/otel/`, resolve all references
+// These functions load the vendored OTel schemas from `schema/otel/`, resolve all references
 // into a flat tree, strip excluded properties (`auth`, `middlewares`), convert to the Datadog
 // schema dialect (`node_type: section` / `node_type: setting`), and patch the result into the
 // Datadog schema's `otlp_config.receiver` subtree.
 
-/// Load the Datadog schema with the OTEL receiver schema patched in.
+/// Load the Datadog schema with the OTel receiver schema patched in.
 ///
 /// This loads the pristine Datadog schema (`core_schema.yaml`), loads and resolves the pristine
-/// OTEL receiver schema (`otel/config.schema.yaml`), and replaces the `otlp_config.receiver`
-/// subtree in the Datadog schema with the resolved OTEL subtree.
+/// OTel receiver schema (`otel/config.schema.yaml`), and replaces the `otlp_config.receiver`
+/// subtree in the Datadog schema with the resolved OTel subtree.
 pub fn load_composed_schema(datadog_schema: &Path, otel_schema_dir: &Path) -> Result<serde_yaml::Value, Error> {
     let mut datadog_schema = load_resolved_schema(datadog_schema)?;
     let otel_receiver = load_otel_receiver(otel_schema_dir)?;
@@ -570,7 +570,7 @@ pub fn load_composed_schema(datadog_schema: &Path, otel_schema_dir: &Path) -> Re
     Ok(datadog_schema)
 }
 
-/// Load and fully resolve the OTEL receiver schema into a Datadog-dialect subtree.
+/// Load and fully resolve the OTel receiver schema into a Datadog-dialect subtree.
 fn load_otel_receiver(otel_dir: &Path) -> Result<serde_yaml::Value, Error> {
     let schema_path = otel_dir.join("config.schema.yaml");
     let doc = read_yaml(&schema_path)?;
@@ -578,7 +578,7 @@ fn load_otel_receiver(otel_dir: &Path) -> Result<serde_yaml::Value, Error> {
     let defs = doc
         .get("$defs")
         .and_then(|v| v.as_mapping())
-        .ok_or_else(|| Error::Validation("OTEL schema missing $defs".to_string()))?
+        .ok_or_else(|| Error::Validation("OTel schema missing $defs".to_string()))?
         .clone();
 
     // Start from properties.protocols (the root of the receiver config).
@@ -586,7 +586,7 @@ fn load_otel_receiver(otel_dir: &Path) -> Result<serde_yaml::Value, Error> {
         .get("properties")
         .and_then(|v| v.get("protocols"))
         .cloned()
-        .ok_or_else(|| Error::Validation("OTEL schema missing properties.protocols".to_string()))?;
+        .ok_or_else(|| Error::Validation("OTel schema missing properties.protocols".to_string()))?;
 
     // Resolve all $ref, $defs, and allOf.
     resolve_otel_refs(&mut protocols, otel_dir, &defs)?;
@@ -614,9 +614,9 @@ fn load_otel_receiver(otel_dir: &Path) -> Result<serde_yaml::Value, Error> {
     Ok(serde_yaml::Value::Mapping(receiver_section))
 }
 
-/// Replace the `otlp_config.receiver` subtree in the Datadog schema with the resolved OTEL subtree.
+/// Replace the `otlp_config.receiver` subtree in the Datadog schema with the resolved OTel subtree.
 ///
-/// If the Datadog schema does not have an `otlp_config.receiver` subtree (e.g. test schemas),
+/// If the Datadog schema does not have an `otlp_config.receiver` subtree (for example test schemas),
 /// this is a no-op.
 fn patch_receiver(datadog_schema: &mut serde_yaml::Value, otel_receiver: serde_yaml::Value) -> Result<(), Error> {
     let Some(otlp_config) = datadog_schema
@@ -634,12 +634,12 @@ fn patch_receiver(datadog_schema: &mut serde_yaml::Value, otel_receiver: serde_y
     Ok(())
 }
 
-/// Resolve OTEL schema references into a flat tree.
+/// Resolve OTel schema references into a flat tree.
 ///
-/// Handles three OTEL schema features:
-/// - `$ref: <name>` — local lookup in the current file's `$defs`
-/// - `$ref: /config/<package>.<def_name>` — load another package's schema file
-/// - `allOf` — merge fragments into the parent
+/// Handles three OTel schema features:
+/// - `$ref: <name>`: local lookup in the current file's `$defs`
+/// - `$ref: /config/<package>.<def_name>`: load another package's schema file
+/// - `allOf`: merge fragments into the parent
 ///
 /// Also strips `auth` and `middlewares` properties (excluded from the receiver keyspace).
 fn resolve_otel_refs(
@@ -649,9 +649,9 @@ fn resolve_otel_refs(
         return Ok(());
     };
 
-    // 1. Handle $ref — replace this node with the resolved definition.
+    // 1. Handle $ref: replace this node with the resolved definition.
     if let Some(ref_str) = map.get("$ref").and_then(|v| v.as_str()) {
-        // Save sibling keys (everything except $ref) — e.g. x-optional, description.
+        // Save sibling keys (everything except $ref): for example x-optional, description.
         let siblings: Vec<(serde_yaml::Value, serde_yaml::Value)> = map
             .iter()
             .filter(|(k, _)| k.as_str() != Some("$ref"))
@@ -682,7 +682,7 @@ fn resolve_otel_refs(
         return Ok(());
     }
 
-    // 2. Handle allOf — merge each fragment's properties into this node.
+    // 2. Handle allOf: merge each fragment's properties into this node.
     if let Some(allof) = map.remove("allOf") {
         if let Some(allof_seq) = allof.as_sequence() {
             for fragment in allof_seq {
@@ -722,14 +722,14 @@ fn resolve_otel_refs(
 /// Resolve a single `$ref` target, returning the definition value and its source `$defs`.
 ///
 /// For local refs (`$ref: protocols`), looks up `current_defs`.
-/// For package-qualified refs (`$ref: /config/configgrpc.server_config`), loads the
+/// For package-qualified refs (`$ref: /config/`configgrpc`.server_config`), loads the
 /// corresponding vendored schema file and looks up its `$defs`.
 /// For `configopaque` refs (not vendored), returns an inline type definition.
 fn resolve_otel_ref_target(
     ref_str: &str, otel_dir: &Path, current_defs: &serde_yaml::Mapping,
 ) -> Result<(serde_yaml::Value, serde_yaml::Mapping), Error> {
     if let Some(stripped) = ref_str.strip_prefix('/') {
-        // Package-qualified ref: /config/configgrpc.server_config
+        // Package-qualified ref: /config/`configgrpc`.server_config
         let last_dot = stripped
             .rfind('.')
             .ok_or_else(|| Error::Validation(format!("invalid package-qualified ref (no dot): {ref_str}")))?;
@@ -766,7 +766,7 @@ fn resolve_otel_ref_target(
         let file_defs = file_doc
             .get("$defs")
             .and_then(|v| v.as_mapping())
-            .ok_or_else(|| Error::Validation(format!("OTEL schema {file_path:?} missing $defs")))?
+            .ok_or_else(|| Error::Validation(format!("OTel schema {file_path:?} missing $defs")))?
             .clone();
         let def_value = file_defs
             .get(def_name)
@@ -784,16 +784,16 @@ fn resolve_otel_ref_target(
     }
 }
 
-/// Convert an OTEL schema tree to the Datadog schema dialect.
+/// Convert an OTel schema tree to the Datadog schema dialect.
 ///
 /// Adds `node_type: section` to objects with `properties` and `node_type: setting` to leaves.
-/// Removes OTEL-specific extensions (`x-optional`, `x-customType`).
+/// Removes OTel-specific extensions (`x-optional`, `x-customType`).
 fn convert_to_datadog_dialect(value: &mut serde_yaml::Value) {
     let Some(map) = value.as_mapping_mut() else {
         return;
     };
 
-    // Remove OTEL-specific extensions.
+    // Remove OTel-specific extensions.
     map.remove(serde_yaml::Value::String("x-optional".to_string()));
     map.remove(serde_yaml::Value::String("x-customType".to_string()));
 
@@ -863,7 +863,7 @@ impl std::error::Error for Error {
 mod tests {
     use super::*;
 
-    /// Returns the OTEL schema directory for tests that need the composed schema.
+    /// Returns the OTel schema directory for tests that need the composed schema.
     fn otel_schema_dir_for_tests() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -1090,7 +1090,7 @@ excluded: {}
 
     // The per-entry validation rules (`validate_entries`) are documented in `VALIDATION_RULES` and
     // enforced independently of the schema cross-check, so these tests deserialize an overlay in
-    // isolation (via `from_yaml`) and run only that pass — no matching core schema is needed.
+    // isolation (via `from_yaml`) and run only that pass: no matching core schema is needed.
     fn validate_entries_of(overlay: &str) -> Result<(), Error> {
         SchemaOverlay::from_yaml(overlay)
             .expect("overlay should deserialize")

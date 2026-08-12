@@ -260,3 +260,10 @@ subprocess(es)?
 (non-?)?interruptible
 PR
 uninterrupible
+keepalive
+recurse
+recurses
+otlpreceiver
+configgrpc
+configtls
+keyspace
