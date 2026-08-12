@@ -2138,8 +2138,9 @@ dependencies = [
 
 [[package]]
 name = "hyper-http-proxy"
-version = "1.1.0"
-source = "git+https://github.com/tobz/hyper-http-proxy.git?branch=main#c7c5aad8b0cba98dd3ca404b45031473ef2d03b6"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd1d471ea2f65ba45eddb1d6ab7d58ac2671d2d4ac14da5c6516ae1d97e1327a"
 dependencies = [
  "bytes",
  "futures-util",

@@ -375,6 +375,13 @@ pub struct HttpsCapableConnector {
     conn_age_limit: Option<Duration>,
 }
 
+impl HttpsCapableConnector {
+    /// Returns the timeout applied to the TLS handshake for HTTPS connections.
+    pub(crate) fn tls_handshake_timeout(&self) -> Duration {
+        self.tls_handshake_timeout
+    }
+}
+
 impl Service<Uri> for HttpsCapableConnector {
     type Response = HttpsCapableConnection;
     type Error = BoxError;
