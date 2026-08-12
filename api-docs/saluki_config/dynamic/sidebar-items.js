@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["ConfigUpdate"],"fn":["diff_config"],"struct":["ConfigChangeEvent","FieldUpdateWatcher"]};
+window.SIDEBAR_ITEMS = {"enum":["ConfigUpdate","Provenance"],"fn":["diff_config","settings_to_state"],"struct":["ConfigChangeEvent","ConfigSetting","FieldUpdateWatcher"]};

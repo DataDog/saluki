@@ -501,14 +501,14 @@
 <a href=#501 id=501 data-nosnippet>501</a>    </span><span class="kw">async fn </span>policy_403_gate_reflects_dynamic_secrets_config_change() {
 <a href=#502 id=502 data-nosnippet>502</a>        <span class="kw">use </span>std::time::Duration <span class="kw">as </span>StdDuration;
 <a href=#503 id=503 data-nosnippet>503</a>
-<a href=#504 id=504 data-nosnippet>504</a>        <span class="kw">use </span>saluki_config::dynamic::ConfigUpdate;
+<a href=#504 id=504 data-nosnippet>504</a>        <span class="kw">use </span>saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
 <a href=#505 id=505 data-nosnippet>505</a>
 <a href=#506 id=506 data-nosnippet>506</a>        <span class="kw">let </span>(config, sender) = ConfigurationLoader::for_tests(<span class="prelude-val">Some</span>(<span class="macro">json!</span>({})), <span class="prelude-val">None</span>, <span class="bool-val">true</span>).<span class="kw">await</span>;
 <a href=#507 id=507 data-nosnippet>507</a>        <span class="kw">let </span>sender = sender.expect(<span class="string">"dynamic configuration sender should be present"</span>);
 <a href=#508 id=508 data-nosnippet>508</a>
 <a href=#509 id=509 data-nosnippet>509</a>        <span class="comment">// Apply an empty initial snapshot and wait for readiness.
 <a href=#510 id=510 data-nosnippet>510</a>        </span>sender
-<a href=#511 id=511 data-nosnippet>511</a>            .send(ConfigUpdate::Snapshot(<span class="macro">json!</span>({})))
+<a href=#511 id=511 data-nosnippet>511</a>            .send(ConfigUpdate::snapshot([]))
 <a href=#512 id=512 data-nosnippet>512</a>            .<span class="kw">await
 <a href=#513 id=513 data-nosnippet>513</a>            </span>.expect(<span class="string">"should send initial snapshot"</span>);
 <a href=#514 id=514 data-nosnippet>514</a>        config.ready().<span class="kw">await</span>;
@@ -522,10 +522,10 @@
 <a href=#522 id=522 data-nosnippet>522</a>        <span class="comment">// Push a config update that enables secrets management.
 <a href=#523 id=523 data-nosnippet>523</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>watcher = config.watch_for_updates(<span class="string">"secret_backend_command"</span>);
 <a href=#524 id=524 data-nosnippet>524</a>        sender
-<a href=#525 id=525 data-nosnippet>525</a>            .send(ConfigUpdate::Partial {
-<a href=#526 id=526 data-nosnippet>526</a>                key: <span class="string">"secret_backend_command"</span>.to_string(),
-<a href=#527 id=527 data-nosnippet>527</a>                value: <span class="macro">json!</span>(<span class="string">"/bin/true"</span>),
-<a href=#528 id=528 data-nosnippet>528</a>            })
+<a href=#525 id=525 data-nosnippet>525</a>            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+<a href=#526 id=526 data-nosnippet>526</a>                <span class="string">"secret_backend_command"</span>,
+<a href=#527 id=527 data-nosnippet>527</a>                <span class="macro">json!</span>(<span class="string">"/bin/true"</span>),
+<a href=#528 id=528 data-nosnippet>528</a>            )))
 <a href=#529 id=529 data-nosnippet>529</a>            .<span class="kw">await
 <a href=#530 id=530 data-nosnippet>530</a>            </span>.expect(<span class="string">"should send partial update"</span>);
 <a href=#531 id=531 data-nosnippet>531</a>
