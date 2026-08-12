@@ -74,6 +74,12 @@ pub async fn handle_run_command(
     started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
     bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
+    // Install our shutdown signal handler(s) before doing any other startup work: the underlying OS handler is
+    // installed synchronously here, so a shutdown signal delivered anywhere during the rest of startup (which can
+    // block for a while, e.g. waiting on the Datadog Agent's initial configuration) is caught rather than falling
+    // through to the OS's default disposition.
+    let shutdown_signal = ShutdownSignal::install();
+
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -233,7 +239,7 @@ pub async fn handle_run_command(
     });
 
     info!("Agent Data Plane running.");
-    match root_supervisor.run_with_shutdown(wait_for_shutdown_signal()).await {
+    match root_supervisor.run_with_shutdown(shutdown_signal.wait()).await {
         Ok(()) => {
             info!("Agent Data Plane shut down successfully.");
             Ok(())
@@ -254,43 +260,84 @@ pub async fn handle_run_command(
     }
 }
 
-/// Waits for a shutdown signal.
+/// A shutdown signal listener with its underlying OS handler(s) installed eagerly.
 ///
-/// On Unix, this waits for either `SIGINT` or `SIGTERM`, either of which are used to request a graceful shutdown:
-/// `SIGINT` interactively (`Ctrl+C`), and `SIGTERM` by process supervisors (systemd, container runtimes,
-/// Kubernetes) during rollouts, evictions, node drains, and container shutdown.
-///
-/// On Windows, this waits for either `CTRL_C_EVENT` (interactively) or `CTRL_BREAK_EVENT`, the latter being what
-/// `dd-procmgr` (which manages ADP as a subprocess on Windows) sends via `GenerateConsoleCtrlEvent` to request a
-/// graceful stop.
-async fn wait_for_shutdown_signal() {
+/// `ShutdownSignal::install` must be called as early as possible in startup -- before any `.await` point -- because
+/// installing a signal handler happens synchronously when the registration function is called, not when the
+/// resulting listener is later awaited. `tokio::signal::ctrl_c()` is an `async fn`, so calling it inline at the
+/// point where we're ready to wait (as this used to) defers that registration until first polled: any `SIGTERM` (or
+/// `SIGINT`/`CTRL_BREAK`) delivered during bootstrap -- for example, while waiting on the initial configuration from
+/// the Datadog Agent -- falls through to the OS's default disposition and kills the process immediately, skipping
+/// cleanup like PID file removal.
+struct ShutdownSignal {
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-
-        let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
-
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => info!("Received SIGINT, shutting down..."),
-            _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
-        }
-    }
+    sigint: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    sigterm: tokio::signal::unix::Signal,
 
     #[cfg(windows)]
-    {
-        let mut ctrl_break = tokio::signal::windows::ctrl_break().expect("failed to install CTRL_BREAK handler");
+    ctrl_c: tokio::signal::windows::CtrlC,
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+}
 
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => info!("Received CTRL_C, shutting down..."),
-            _ = ctrl_break.recv() => info!("Received CTRL_BREAK, shutting down..."),
+impl ShutdownSignal {
+    /// Installs the platform's shutdown signal handler(s).
+    fn install() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+
+            Self {
+                sigint: signal(SignalKind::interrupt()).expect("failed to install SIGINT handler"),
+                sigterm: signal(SignalKind::terminate()).expect("failed to install SIGTERM handler"),
+            }
         }
+
+        #[cfg(windows)]
+        {
+            Self {
+                ctrl_c: tokio::signal::windows::ctrl_c().expect("failed to install CTRL_C handler"),
+                ctrl_break: tokio::signal::windows::ctrl_break().expect("failed to install CTRL_BREAK handler"),
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        Self {}
     }
 
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+    /// Waits for a shutdown signal.
+    ///
+    /// On Unix, this waits for either `SIGINT` or `SIGTERM`, either of which are used to request a graceful shutdown:
+    /// `SIGINT` interactively (`Ctrl+C`), and `SIGTERM` by process supervisors (systemd, container runtimes,
+    /// Kubernetes) during rollouts, evictions, node drains, and container shutdown.
+    ///
+    /// On Windows, this waits for either `CTRL_C_EVENT` (interactively) or `CTRL_BREAK_EVENT`, the latter being what
+    /// `dd-procmgr` (which manages ADP as a subprocess on Windows) sends via `GenerateConsoleCtrlEvent` to request a
+    /// graceful stop.
+    async fn wait(mut self) {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.sigint.recv() => info!("Received SIGINT, shutting down..."),
+                _ = self.sigterm.recv() => info!("Received SIGTERM, shutting down..."),
+            }
+        }
 
-        info!("Received SIGINT, shutting down...");
+        #[cfg(windows)]
+        {
+            tokio::select! {
+                _ = self.ctrl_c.recv() => info!("Received CTRL_C, shutting down..."),
+                _ = self.ctrl_break.recv() => info!("Received CTRL_BREAK, shutting down..."),
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+
+            info!("Received SIGINT, shutting down...");
+        }
     }
 }
 
