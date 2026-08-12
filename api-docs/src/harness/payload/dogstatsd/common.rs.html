@@ -1,233 +1,310 @@
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `test/antithesis/harness/src/payload/dogstatsd/common.rs`."><title>common.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="harness" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">harness/payload/dogstatsd/</div>common.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Shared `DogStatsD` payload sampling: vibe, segment and number builders, tags.
-<a href=#2 id=2 data-nosnippet>2</a>
-<a href=#3 id=3 data-nosnippet>3</a></span><span class="kw">use </span>rand::distr::Distribution;
-<a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>rand::seq::IndexedRandom;
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>rand::{Rng, RngExt};
-<a href=#6 id=6 data-nosnippet>6</a>
-<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span><span class="kw">crate</span>::rand::Boundary;
-<a href=#8 id=8 data-nosnippet>8</a>
-<a href=#9 id=9 data-nosnippet>9</a><span class="doccomment">/// Clean by-the-book output, or feral.
-<a href=#10 id=10 data-nosnippet>10</a></span><span class="attr">#[derive(Clone, Copy, Debug)]
-<a href=#11 id=11 data-nosnippet>11</a></span><span class="kw">pub enum </span>Vibe {
-<a href=#12 id=12 data-nosnippet>12</a>    <span class="doccomment">/// Well-formed.
-<a href=#13 id=13 data-nosnippet>13</a>    </span>Clean,
-<a href=#14 id=14 data-nosnippet>14</a>    <span class="doccomment">/// Aberrant.
-<a href=#15 id=15 data-nosnippet>15</a>    </span>Feral,
-<a href=#16 id=16 data-nosnippet>16</a>}
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Source of the Rust file `test/antithesis/harness/src/payload/dogstatsd/common.rs`."><title>common.rs - source</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../../../static.files/rustdoc-77263533.css"><meta name="rustdoc-vars" data-root-path="../../../../" data-static-root-path="../../../../static.files/" data-current-crate="harness" data-themes="" data-resource-suffix="" data-rustdoc-version="1.94.0-nightly (fe98ddcfc 2026-01-17)" data-channel="nightly" data-search-js="search-9e2438ea.js" data-stringdex-js="stringdex-b897f86f.js" data-settings-js="settings-c38705f0.js" ><script src="../../../../static.files/storage-e2aeef58.js"></script><script defer src="../../../../static.files/src-script-813739b1.js"></script><script defer src="../../../../src-files.js"></script><script defer src="../../../../static.files/main-7bab91a1.js"></script><noscript><link rel="stylesheet" href="../../../../static.files/noscript-ffcac47a.css"></noscript><link rel="alternate icon" type="image/png" href="../../../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../../../static.files/favicon-044be391.svg"></head><body class="rustdoc src"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><nav class="sidebar"><div class="src-sidebar-title"><h2>Files</h2></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><section id="main-content" class="content"><div class="main-heading"><h1><div class="sub-heading">harness/payload/dogstatsd/</div>common.rs</h1><rustdoc-toolbar></rustdoc-toolbar></div><div class="example-wrap digits-3"><pre class="rust"><code><a href=#1 id=1 data-nosnippet>1</a><span class="doccomment">//! Shared `DogStatsD` content sampling: alphabets, field and value builders, tags.
+<a href=#2 id=2 data-nosnippet>2</a>//!
+<a href=#3 id=3 data-nosnippet>3</a>//! There is no clean/feral split. Every content field ranges over the full forwarded byte alphabet:
+<a href=#4 id=4 data-nosnippet>4</a>//! ASCII words, exotic and non-UTF-8 bytes, AND the message delimiters `:` `|` `,` `#` `@`. Including
+<a href=#5 id=5 data-nosnippet>5</a>//! the delimiters is deliberate. It reaches the context-dependent forwarded cases the Agent keeps,
+<a href=#6 id=6 data-nosnippet>6</a>//! such as a `:` inside a set value or a `:` in a tag value, and the ones it drops. The generator does
+<a href=#7 id=7 data-nosnippet>7</a>//! not decide which is which. It serializes and lets [`crate::dogstatsd::is_malformed`] sort and
+<a href=#8 id=8 data-nosnippet>8</a>//! repair.
+<a href=#9 id=9 data-nosnippet>9</a>
+<a href=#10 id=10 data-nosnippet>10</a></span><span class="kw">use </span>rand::distr::Distribution;
+<a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>rand::{Rng, RngExt};
+<a href=#12 id=12 data-nosnippet>12</a>
+<a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span><span class="kw">crate</span>::rand::Wide;
+<a href=#14 id=14 data-nosnippet>14</a>
+<a href=#15 id=15 data-nosnippet>15</a><span class="doccomment">/// The Agent's name-legal separators, for joining segments.
+<a href=#16 id=16 data-nosnippet>16</a></span><span class="kw">const </span>NAME_SEPARATORS: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"._- "</span>;
 <a href=#17 id=17 data-nosnippet>17</a>
-<a href=#18 id=18 data-nosnippet>18</a><span class="doccomment">/// Sample a per-line vibe, evenly, from `rng`.
-<a href=#19 id=19 data-nosnippet>19</a></span><span class="kw">pub fn </span>sample_vibe&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R) -&gt; Vibe {
-<a href=#20 id=20 data-nosnippet>20</a>    <span class="kw">match </span>[Vibe::Clean, Vibe::Feral].choose(rng) {
-<a href=#21 id=21 data-nosnippet>21</a>        <span class="prelude-val">Some</span>(Vibe::Feral) =&gt; Vibe::Feral,
-<a href=#22 id=22 data-nosnippet>22</a>        <span class="kw">_ </span>=&gt; Vibe::Clean,
-<a href=#23 id=23 data-nosnippet>23</a>    }
-<a href=#24 id=24 data-nosnippet>24</a>}
-<a href=#25 id=25 data-nosnippet>25</a>
-<a href=#26 id=26 data-nosnippet>26</a><span class="doccomment">/// The Agent's name-legal separators, for joining name-like segments.
-<a href=#27 id=27 data-nosnippet>27</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>NAME_SEPARATORS: <span class="kw-2">&amp;</span>[u8] = <span class="string">b"._- "</span>;
-<a href=#28 id=28 data-nosnippet>28</a>
-<a href=#29 id=29 data-nosnippet>29</a><span class="doccomment">/// Compliant identifier segments: names, hosts, keys, source types.
-<a href=#30 id=30 data-nosnippet>30</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>COMPLIANT_WORD: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
-<a href=#31 id=31 data-nosnippet>31</a>    <span class="string">b"adp"</span>,
-<a href=#32 id=32 data-nosnippet>32</a>    <span class="string">b"dogstatsd"</span>,
-<a href=#33 id=33 data-nosnippet>33</a>    <span class="string">b"requests"</span>,
-<a href=#34 id=34 data-nosnippet>34</a>    <span class="string">b"latency"</span>,
-<a href=#35 id=35 data-nosnippet>35</a>    <span class="string">b"errors"</span>,
-<a href=#36 id=36 data-nosnippet>36</a>    <span class="string">b"count"</span>,
-<a href=#37 id=37 data-nosnippet>37</a>    <span class="string">b"total"</span>,
-<a href=#38 id=38 data-nosnippet>38</a>    <span class="string">b"bytes"</span>,
-<a href=#39 id=39 data-nosnippet>39</a>    <span class="string">b"queue"</span>,
-<a href=#40 id=40 data-nosnippet>40</a>    <span class="string">b"workers"</span>,
-<a href=#41 id=41 data-nosnippet>41</a>];
-<a href=#42 id=42 data-nosnippet>42</a>
-<a href=#43 id=43 data-nosnippet>43</a><span class="doccomment">/// Aberrant identifier segments: whitespace, NUL, ill-formed and non-conforming
-<a href=#44 id=44 data-nosnippet>44</a>/// UTF-8, and exotic Unicode. Omits the framing breakers `:` `|` `,` `#` `@`,
-<a href=#45 id=45 data-nosnippet>45</a>/// the message-type prefixes and the empty segment.
-<a href=#46 id=46 data-nosnippet>46</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>ABERRANT_WORD: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
-<a href=#47 id=47 data-nosnippet>47</a>    <span class="string">b" "</span>,
-<a href=#48 id=48 data-nosnippet>48</a>    <span class="string">b"\t"</span>,
-<a href=#49 id=49 data-nosnippet>49</a>    <span class="string">b"\0"</span>,
-<a href=#50 id=50 data-nosnippet>50</a>    <span class="string">b"\x80"</span>,                <span class="comment">// lone continuation byte
-<a href=#51 id=51 data-nosnippet>51</a>    </span><span class="string">b"\xc3"</span>,                <span class="comment">// truncated two-byte lead
-<a href=#52 id=52 data-nosnippet>52</a>    </span><span class="string">b"\xed\xa0\x80"</span>,        <span class="comment">// UTF-16 surrogate, ill-formed UTF-8
-<a href=#53 id=53 data-nosnippet>53</a>    </span><span class="string">b"\xc0\x80"</span>,            <span class="comment">// overlong NUL
-<a href=#54 id=54 data-nosnippet>54</a>    </span><span class="string">b"\xff\xfe"</span>,            <span class="comment">// non-character bytes
-<a href=#55 id=55 data-nosnippet>55</a>    </span><span class="string">"café"</span>.as_bytes(),      <span class="comment">// non-conforming but valid UTF-8
-<a href=#56 id=56 data-nosnippet>56</a>    </span><span class="string">"Ωμέγα"</span>.as_bytes(),     <span class="comment">// Greek
-<a href=#57 id=57 data-nosnippet>57</a>    </span><span class="string">"日本語"</span>.as_bytes(),    <span class="comment">// CJK
-<a href=#58 id=58 data-nosnippet>58</a>    </span><span class="string">"🦆"</span>.as_bytes(),        <span class="comment">// emoji, non-ASCII multi-byte
-<a href=#59 id=59 data-nosnippet>59</a>    </span><span class="string">"a\u{0301}"</span>.as_bytes(), <span class="comment">// combining acute accent
-<a href=#60 id=60 data-nosnippet>60</a>    </span><span class="string">"\u{200d}"</span>.as_bytes(),  <span class="comment">// zero-width joiner
-<a href=#61 id=61 data-nosnippet>61</a>    </span><span class="string">"\u{202e}"</span>.as_bytes(),  <span class="comment">// right-to-left override
-<a href=#62 id=62 data-nosnippet>62</a>    </span><span class="string">"\u{feff}"</span>.as_bytes(),  <span class="comment">// byte-order mark / zero-width no-break space
-<a href=#63 id=63 data-nosnippet>63</a></span>];
-<a href=#64 id=64 data-nosnippet>64</a>
-<a href=#65 id=65 data-nosnippet>65</a><span class="doccomment">/// Aberrant metric values: confirmed to parse with Go's `ParseFloat`.
-<a href=#66 id=66 data-nosnippet>66</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">const </span>ABERRANT_VALUE: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
-<a href=#67 id=67 data-nosnippet>67</a>    <span class="string">b"0"</span>,
-<a href=#68 id=68 data-nosnippet>68</a>    <span class="string">b"-0"</span>,
-<a href=#69 id=69 data-nosnippet>69</a>    <span class="string">b"inf"</span>,
-<a href=#70 id=70 data-nosnippet>70</a>    <span class="string">b"-inf"</span>,
-<a href=#71 id=71 data-nosnippet>71</a>    <span class="string">b"+inf"</span>,
-<a href=#72 id=72 data-nosnippet>72</a>    <span class="string">b"nan"</span>,
-<a href=#73 id=73 data-nosnippet>73</a>    <span class="string">b"infinity"</span>,
-<a href=#74 id=74 data-nosnippet>74</a>    <span class="string">b"0x1p4"</span>,
-<a href=#75 id=75 data-nosnippet>75</a>    <span class="string">b"1_000"</span>,
-<a href=#76 id=76 data-nosnippet>76</a>    <span class="string">b"1."</span>,
-<a href=#77 id=77 data-nosnippet>77</a>    <span class="string">b".5"</span>,
-<a href=#78 id=78 data-nosnippet>78</a>    <span class="string">b"00000000000000000000000000000000000000000000000000000001.5"</span>,
-<a href=#79 id=79 data-nosnippet>79</a>    <span class="string">b"3.141592653589793115997963468544185161590576171875000000000000000000000000"</span>,
-<a href=#80 id=80 data-nosnippet>80</a>];
+<a href=#18 id=18 data-nosnippet>18</a><span class="doccomment">/// Compliant identifier segments: names, hosts, keys, source types.
+<a href=#19 id=19 data-nosnippet>19</a></span><span class="kw">const </span>COMPLIANT_WORD: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
+<a href=#20 id=20 data-nosnippet>20</a>    <span class="string">b"adp"</span>,
+<a href=#21 id=21 data-nosnippet>21</a>    <span class="string">b"dogstatsd"</span>,
+<a href=#22 id=22 data-nosnippet>22</a>    <span class="string">b"requests"</span>,
+<a href=#23 id=23 data-nosnippet>23</a>    <span class="string">b"latency"</span>,
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="string">b"errors"</span>,
+<a href=#25 id=25 data-nosnippet>25</a>    <span class="string">b"count"</span>,
+<a href=#26 id=26 data-nosnippet>26</a>    <span class="string">b"total"</span>,
+<a href=#27 id=27 data-nosnippet>27</a>    <span class="string">b"bytes"</span>,
+<a href=#28 id=28 data-nosnippet>28</a>    <span class="string">b"queue"</span>,
+<a href=#29 id=29 data-nosnippet>29</a>    <span class="string">b"workers"</span>,
+<a href=#30 id=30 data-nosnippet>30</a>];
+<a href=#31 id=31 data-nosnippet>31</a>
+<a href=#32 id=32 data-nosnippet>32</a><span class="doccomment">/// Aberrant identifier segments: whitespace, NUL, ill-formed and non-conforming UTF-8, and exotic
+<a href=#33 id=33 data-nosnippet>33</a>/// Unicode. Omits `\n` and `\r`, which are datagram framing rather than content.
+<a href=#34 id=34 data-nosnippet>34</a></span><span class="kw">const </span>ABERRANT_WORD: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
+<a href=#35 id=35 data-nosnippet>35</a>    <span class="string">b" "</span>,
+<a href=#36 id=36 data-nosnippet>36</a>    <span class="string">b"\t"</span>,
+<a href=#37 id=37 data-nosnippet>37</a>    <span class="string">b"\0"</span>,
+<a href=#38 id=38 data-nosnippet>38</a>    <span class="string">b"\x80"</span>,                <span class="comment">// lone continuation byte
+<a href=#39 id=39 data-nosnippet>39</a>    </span><span class="string">b"\xc3"</span>,                <span class="comment">// truncated two-byte lead
+<a href=#40 id=40 data-nosnippet>40</a>    </span><span class="string">b"\xed\xa0\x80"</span>,        <span class="comment">// UTF-16 surrogate, ill-formed UTF-8
+<a href=#41 id=41 data-nosnippet>41</a>    </span><span class="string">b"\xc0\x80"</span>,            <span class="comment">// overlong NUL
+<a href=#42 id=42 data-nosnippet>42</a>    </span><span class="string">b"\xff\xfe"</span>,            <span class="comment">// non-character bytes
+<a href=#43 id=43 data-nosnippet>43</a>    </span><span class="string">"café"</span>.as_bytes(),      <span class="comment">// non-conforming but valid UTF-8
+<a href=#44 id=44 data-nosnippet>44</a>    </span><span class="string">"Ωμέγα"</span>.as_bytes(),     <span class="comment">// Greek
+<a href=#45 id=45 data-nosnippet>45</a>    </span><span class="string">"日本語"</span>.as_bytes(),    <span class="comment">// CJK
+<a href=#46 id=46 data-nosnippet>46</a>    </span><span class="string">"🦆"</span>.as_bytes(),        <span class="comment">// emoji, non-ASCII multi-byte
+<a href=#47 id=47 data-nosnippet>47</a>    </span><span class="string">"a\u{0301}"</span>.as_bytes(), <span class="comment">// combining acute accent
+<a href=#48 id=48 data-nosnippet>48</a>    </span><span class="string">"\u{200d}"</span>.as_bytes(),  <span class="comment">// zero-width joiner
+<a href=#49 id=49 data-nosnippet>49</a>    </span><span class="string">"\u{202e}"</span>.as_bytes(),  <span class="comment">// right-to-left override
+<a href=#50 id=50 data-nosnippet>50</a>    </span><span class="string">"\u{feff}"</span>.as_bytes(),  <span class="comment">// byte-order mark
+<a href=#51 id=51 data-nosnippet>51</a></span>];
+<a href=#52 id=52 data-nosnippet>52</a>
+<a href=#53 id=53 data-nosnippet>53</a><span class="doccomment">/// Message delimiters, mixed into content so the generator explores delimiter-bearing fields. Most
+<a href=#54 id=54 data-nosnippet>54</a>/// land the message in the drop set and are repaired away. The survivors are the forwarded oddities.
+<a href=#55 id=55 data-nosnippet>55</a></span><span class="kw">const </span>DELIMITERS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[<span class="string">b":"</span>, <span class="string">b"|"</span>, <span class="string">b","</span>, <span class="string">b"#"</span>, <span class="string">b"@"</span>];
+<a href=#56 id=56 data-nosnippet>56</a>
+<a href=#57 id=57 data-nosnippet>57</a><span class="doccomment">/// The full content alphabet for identifier-like fields.
+<a href=#58 id=58 data-nosnippet>58</a></span><span class="kw">const </span>WORD_POOLS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]]] = <span class="kw-2">&amp;</span>[COMPLIANT_WORD, ABERRANT_WORD, DELIMITERS];
+<a href=#59 id=59 data-nosnippet>59</a>
+<a href=#60 id=60 data-nosnippet>60</a><span class="doccomment">/// Tag keys. `host` is excluded. `DogStatsD` promotes a `host` tag to the metric host resource, and
+<a href=#61 id=61 data-nosnippet>61</a>/// varying host instances break the intake host-consistency check.
+<a href=#62 id=62 data-nosnippet>62</a></span><span class="kw">const </span>COMPLIANT_TAG_KEYS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[<span class="string">b"env"</span>, <span class="string">b"service"</span>, <span class="string">b"region"</span>, <span class="string">b"version"</span>, <span class="string">b"team"</span>, <span class="string">b"shard"</span>];
+<a href=#63 id=63 data-nosnippet>63</a>
+<a href=#64 id=64 data-nosnippet>64</a><span class="doccomment">/// Tag values.
+<a href=#65 id=65 data-nosnippet>65</a></span><span class="kw">const </span>COMPLIANT_TAG_VALUES: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
+<a href=#66 id=66 data-nosnippet>66</a>    <span class="string">b"prod"</span>,
+<a href=#67 id=67 data-nosnippet>67</a>    <span class="string">b"staging"</span>,
+<a href=#68 id=68 data-nosnippet>68</a>    <span class="string">b"adp"</span>,
+<a href=#69 id=69 data-nosnippet>69</a>    <span class="string">b"us-east-1"</span>,
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="string">b"eu-west-1"</span>,
+<a href=#71 id=71 data-nosnippet>71</a>    <span class="string">b"1.2.3"</span>,
+<a href=#72 id=72 data-nosnippet>72</a>    <span class="string">b"web01"</span>,
+<a href=#73 id=73 data-nosnippet>73</a>    <span class="string">b"0"</span>,
+<a href=#74 id=74 data-nosnippet>74</a>];
+<a href=#75 id=75 data-nosnippet>75</a>
+<a href=#76 id=76 data-nosnippet>76</a><span class="doccomment">/// The full content alphabet for tag keys.
+<a href=#77 id=77 data-nosnippet>77</a></span><span class="kw">const </span>TAG_KEY_POOLS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]]] = <span class="kw-2">&amp;</span>[COMPLIANT_TAG_KEYS, ABERRANT_WORD, DELIMITERS];
+<a href=#78 id=78 data-nosnippet>78</a>
+<a href=#79 id=79 data-nosnippet>79</a><span class="doccomment">/// The full content alphabet for tag values.
+<a href=#80 id=80 data-nosnippet>80</a></span><span class="kw">const </span>TAG_VALUE_POOLS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]]] = <span class="kw-2">&amp;</span>[COMPLIANT_TAG_VALUES, ABERRANT_WORD, DELIMITERS];
 <a href=#81 id=81 data-nosnippet>81</a>
-<a href=#82 id=82 data-nosnippet>82</a><span class="comment">// NOTE I have intentionally avoided TS for the time being.
-<a href=#83 id=83 data-nosnippet>83</a>
-<a href=#84 id=84 data-nosnippet>84</a>// NOTE `host` is excluded. `DogStatsD` promotes a `host` tag to the metric host
-<a href=#85 id=85 data-nosnippet>85</a>// resource, emitting varying `host` instances plays hell with Pyld17
-<a href=#86 id=86 data-nosnippet>86</a>// host-consistency check.
-<a href=#87 id=87 data-nosnippet>87</a></span><span class="kw">const </span>COMPLIANT_TAG_KEYS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[<span class="string">b"env"</span>, <span class="string">b"service"</span>, <span class="string">b"region"</span>, <span class="string">b"version"</span>, <span class="string">b"team"</span>, <span class="string">b"shard"</span>];
-<a href=#88 id=88 data-nosnippet>88</a><span class="kw">const </span>ABERRANT_TAG_KEYS: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[<span class="string">b" "</span>, <span class="string">b"\0"</span>, <span class="string">b"\x80"</span>, <span class="string">b"\xc3"</span>, <span class="string">"café"</span>.as_bytes(), <span class="string">"🦆"</span>.as_bytes()];
-<a href=#89 id=89 data-nosnippet>89</a><span class="kw">const </span>COMPLIANT_TAG_VALUES: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
-<a href=#90 id=90 data-nosnippet>90</a>    <span class="string">b"prod"</span>,
-<a href=#91 id=91 data-nosnippet>91</a>    <span class="string">b"staging"</span>,
-<a href=#92 id=92 data-nosnippet>92</a>    <span class="string">b"adp"</span>,
-<a href=#93 id=93 data-nosnippet>93</a>    <span class="string">b"us-east-1"</span>,
-<a href=#94 id=94 data-nosnippet>94</a>    <span class="string">b"eu-west-1"</span>,
-<a href=#95 id=95 data-nosnippet>95</a>    <span class="string">b"1.2.3"</span>,
-<a href=#96 id=96 data-nosnippet>96</a>    <span class="string">b"web01"</span>,
-<a href=#97 id=97 data-nosnippet>97</a>    <span class="string">b"0"</span>,
-<a href=#98 id=98 data-nosnippet>98</a>];
-<a href=#99 id=99 data-nosnippet>99</a><span class="kw">const </span>ABERRANT_TAG_VALUES: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
-<a href=#100 id=100 data-nosnippet>100</a>    <span class="string">b""</span>,
-<a href=#101 id=101 data-nosnippet>101</a>    <span class="string">b":"</span>,
-<a href=#102 id=102 data-nosnippet>102</a>    <span class="string">b"\xff"</span>,
-<a href=#103 id=103 data-nosnippet>103</a>    <span class="string">b"\xed\xa0\x80"</span>,
-<a href=#104 id=104 data-nosnippet>104</a>    <span class="string">"café"</span>.as_bytes(),
-<a href=#105 id=105 data-nosnippet>105</a>    <span class="string">"🦆"</span>.as_bytes(),
-<a href=#106 id=106 data-nosnippet>106</a>    <span class="string">"\u{202e}"</span>.as_bytes(),
-<a href=#107 id=107 data-nosnippet>107</a>];
+<a href=#82 id=82 data-nosnippet>82</a><span class="doccomment">/// Metric values confirmed to parse with Go's `ParseFloat`.
+<a href=#83 id=83 data-nosnippet>83</a></span><span class="kw">const </span>SPECIAL_VALUE: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
+<a href=#84 id=84 data-nosnippet>84</a>    <span class="string">b"0"</span>,
+<a href=#85 id=85 data-nosnippet>85</a>    <span class="string">b"-0"</span>,
+<a href=#86 id=86 data-nosnippet>86</a>    <span class="string">b"inf"</span>,
+<a href=#87 id=87 data-nosnippet>87</a>    <span class="string">b"-inf"</span>,
+<a href=#88 id=88 data-nosnippet>88</a>    <span class="string">b"+inf"</span>,
+<a href=#89 id=89 data-nosnippet>89</a>    <span class="string">b"nan"</span>,
+<a href=#90 id=90 data-nosnippet>90</a>    <span class="string">b"infinity"</span>,
+<a href=#91 id=91 data-nosnippet>91</a>    <span class="string">b"0x1p4"</span>,
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="string">b"1_000"</span>,
+<a href=#93 id=93 data-nosnippet>93</a>    <span class="string">b"1."</span>,
+<a href=#94 id=94 data-nosnippet>94</a>    <span class="string">b".5"</span>,
+<a href=#95 id=95 data-nosnippet>95</a>    <span class="string">b"00000000000000000000000000000000000000000000000000000001.5"</span>,
+<a href=#96 id=96 data-nosnippet>96</a>    <span class="string">b"3.141592653589793115997963468544185161590576171875000000000000000000000000"</span>,
+<a href=#97 id=97 data-nosnippet>97</a>];
+<a href=#98 id=98 data-nosnippet>98</a>
+<a href=#99 id=99 data-nosnippet>99</a><span class="doccomment">/// Sample-rate tokens for the `@` field, all Go-`ParseFloat`-able.
+<a href=#100 id=100 data-nosnippet>100</a></span><span class="kw">const </span>RATE_TOKEN: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]] = <span class="kw-2">&amp;</span>[
+<a href=#101 id=101 data-nosnippet>101</a>    <span class="string">b"1"</span>, <span class="string">b"0.5"</span>, <span class="string">b"0.25"</span>, <span class="string">b"0.1"</span>, <span class="string">b"0.001"</span>, <span class="string">b"+0.5"</span>, <span class="string">b"1."</span>, <span class="string">b".5"</span>, <span class="string">b"0x1p-1"</span>, <span class="string">b"1_000"</span>, <span class="string">b"2"</span>, <span class="string">b"inf"</span>, <span class="string">b"+inf"</span>,
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="string">b"-inf"</span>, <span class="string">b"nan"</span>,
+<a href=#103 id=103 data-nosnippet>103</a>];
+<a href=#104 id=104 data-nosnippet>104</a>
+<a href=#105 id=105 data-nosnippet>105</a><span class="doccomment">/// Segment counts for a required field: at least one, with a large-boundary tail so huge fields stay
+<a href=#106 id=106 data-nosnippet>106</a>/// in the explored surface.
+<a href=#107 id=107 data-nosnippet>107</a></span><span class="kw">const </span>COUNTS_REQUIRED: <span class="kw-2">&amp;</span>[usize] = <span class="kw-2">&amp;</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">5</span>, <span class="number">6</span>, <span class="number">127</span>, <span class="number">255</span>];
 <a href=#108 id=108 data-nosnippet>108</a>
-<a href=#109 id=109 data-nosnippet>109</a><span class="doccomment">/// Compact, or a cursed-but-equivalent padded encoding.
-<a href=#110 id=110 data-nosnippet>110</a></span><span class="attr">#[derive(Clone, Copy)]
-<a href=#111 id=111 data-nosnippet>111</a></span><span class="kw">enum </span>Form {
-<a href=#112 id=112 data-nosnippet>112</a>    Compact,
-<a href=#113 id=113 data-nosnippet>113</a>    Expanded,
-<a href=#114 id=114 data-nosnippet>114</a>}
-<a href=#115 id=115 data-nosnippet>115</a>
-<a href=#116 id=116 data-nosnippet>116</a><span class="doccomment">/// Extend `buf` with one item sampled from `rng`. Clean draws from `compliant`;
-<a href=#117 id=117 data-nosnippet>117</a>/// feral chooses between compliant and aberrant.
-<a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>extend_choice&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(
-<a href=#119 id=119 data-nosnippet>119</a>    rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, vibe: Vibe, compliant: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]], aberrant: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]],
-<a href=#120 id=120 data-nosnippet>120</a>) {
-<a href=#121 id=121 data-nosnippet>121</a>    <span class="kw">let </span>pools: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]]] = <span class="kw">match </span>vibe {
-<a href=#122 id=122 data-nosnippet>122</a>        Vibe::Clean =&gt; <span class="kw-2">&amp;</span>[compliant],
-<a href=#123 id=123 data-nosnippet>123</a>        Vibe::Feral =&gt; <span class="kw-2">&amp;</span>[compliant, aberrant],
-<a href=#124 id=124 data-nosnippet>124</a>    };
-<a href=#125 id=125 data-nosnippet>125</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>pool) = pools.choose(rng) {
-<a href=#126 id=126 data-nosnippet>126</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>item) = pool.choose(rng) {
-<a href=#127 id=127 data-nosnippet>127</a>            buf.extend_from_slice(item);
-<a href=#128 id=128 data-nosnippet>128</a>        }
-<a href=#129 id=129 data-nosnippet>129</a>    }
-<a href=#130 id=130 data-nosnippet>130</a>}
-<a href=#131 id=131 data-nosnippet>131</a>
-<a href=#132 id=132 data-nosnippet>132</a><span class="doccomment">/// Repeated-element counts (segments, tags) for clean payloads: a small body, no boundary cases.
-<a href=#133 id=133 data-nosnippet>133</a></span><span class="kw">const </span>ELEMENT_COUNTS_CLEAN: <span class="kw-2">&amp;</span>[u8] = <span class="kw-2">&amp;</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">5</span>, <span class="number">6</span>];
-<a href=#134 id=134 data-nosnippet>134</a>
-<a href=#135 id=135 data-nosnippet>135</a><span class="doccomment">/// Repeated-element counts for feral payloads: the clean body plus a `0`/large boundary tail.
-<a href=#136 id=136 data-nosnippet>136</a></span><span class="kw">const </span>ELEMENT_COUNTS_FERAL: <span class="kw-2">&amp;</span>[u8] = <span class="kw-2">&amp;</span>[<span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">5</span>, <span class="number">6</span>, <span class="number">0</span>, <span class="number">127</span>, <span class="number">255</span>];
-<a href=#137 id=137 data-nosnippet>137</a>
-<a href=#138 id=138 data-nosnippet>138</a><span class="kw">fn </span>sample_count&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R, vibe: Vibe) -&gt; u8 {
-<a href=#139 id=139 data-nosnippet>139</a>    <span class="kw">let </span>counts = <span class="kw">match </span>vibe {
-<a href=#140 id=140 data-nosnippet>140</a>        Vibe::Clean =&gt; ELEMENT_COUNTS_CLEAN,
-<a href=#141 id=141 data-nosnippet>141</a>        Vibe::Feral =&gt; ELEMENT_COUNTS_FERAL,
-<a href=#142 id=142 data-nosnippet>142</a>    };
-<a href=#143 id=143 data-nosnippet>143</a>    counts[rng.random_range(<span class="number">0</span>..counts.len())]
-<a href=#144 id=144 data-nosnippet>144</a>}
-<a href=#145 id=145 data-nosnippet>145</a>
-<a href=#146 id=146 data-nosnippet>146</a><span class="doccomment">/// Sample a count of segments and join them with sampled `separators`. A pool of
-<a href=#147 id=147 data-nosnippet>147</a>/// `N` segments over a count `c` gives `N^c` results.
-<a href=#148 id=148 data-nosnippet>148</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>write_segments&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(
-<a href=#149 id=149 data-nosnippet>149</a>    rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, vibe: Vibe, compliant: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]], aberrant: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]], separators: <span class="kw-2">&amp;</span>[u8],
-<a href=#150 id=150 data-nosnippet>150</a>) {
-<a href=#151 id=151 data-nosnippet>151</a>    <span class="kw">let </span>count = sample_count(rng, vibe);
-<a href=#152 id=152 data-nosnippet>152</a>    <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..count {
-<a href=#153 id=153 data-nosnippet>153</a>        <span class="kw">if </span>i &gt; <span class="number">0 </span>{
-<a href=#154 id=154 data-nosnippet>154</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>sep) = separators.choose(rng) {
-<a href=#155 id=155 data-nosnippet>155</a>                buf.push(sep);
-<a href=#156 id=156 data-nosnippet>156</a>            }
-<a href=#157 id=157 data-nosnippet>157</a>        }
-<a href=#158 id=158 data-nosnippet>158</a>        extend_choice(rng, buf, vibe, compliant, aberrant);
-<a href=#159 id=159 data-nosnippet>159</a>    }
-<a href=#160 id=160 data-nosnippet>160</a>}
-<a href=#161 id=161 data-nosnippet>161</a>
-<a href=#162 id=162 data-nosnippet>162</a><span class="doccomment">/// An identifier (name, host, key, source) built from word segments. Always at
-<a href=#163 id=163 data-nosnippet>163</a>/// least one segment: a zero-segment count would yield an empty identifier, and
-<a href=#164 id=164 data-nosnippet>164</a>/// the Agent rejects an empty metric name.
-<a href=#165 id=165 data-nosnippet>165</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>write_words&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, vibe: Vibe) {
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="kw">let </span>start = buf.len();
-<a href=#167 id=167 data-nosnippet>167</a>    write_segments(rng, buf, vibe, COMPLIANT_WORD, ABERRANT_WORD, NAME_SEPARATORS);
-<a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">if </span>buf.len() == start {
-<a href=#169 id=169 data-nosnippet>169</a>        extend_choice(rng, buf, vibe, COMPLIANT_WORD, ABERRANT_WORD);
-<a href=#170 id=170 data-nosnippet>170</a>    }
-<a href=#171 id=171 data-nosnippet>171</a>}
-<a href=#172 id=172 data-nosnippet>172</a>
-<a href=#173 id=173 data-nosnippet>173</a><span class="doccomment">/// Append `|&lt;prefix&gt;&lt;item&gt;`, the item chosen from `rng` for the vibe.
-<a href=#174 id=174 data-nosnippet>174</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>write_field&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(
-<a href=#175 id=175 data-nosnippet>175</a>    rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, vibe: Vibe, prefix: <span class="kw-2">&amp;</span>[u8], compliant: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]], aberrant: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]],
-<a href=#176 id=176 data-nosnippet>176</a>) {
-<a href=#177 id=177 data-nosnippet>177</a>    buf.push(<span class="string">b'|'</span>);
-<a href=#178 id=178 data-nosnippet>178</a>    buf.extend_from_slice(prefix);
-<a href=#179 id=179 data-nosnippet>179</a>    extend_choice(rng, buf, vibe, compliant, aberrant);
-<a href=#180 id=180 data-nosnippet>180</a>}
-<a href=#181 id=181 data-nosnippet>181</a>
-<a href=#182 id=182 data-nosnippet>182</a><span class="doccomment">/// A vibe-sampled count of `key:value` tags joined by ','. Feral can sample a
-<a href=#183 id=183 data-nosnippet>183</a>/// count of zero (no tags) or a large boundary count; clean stays in the small
-<a href=#184 id=184 data-nosnippet>184</a>/// body. Clean draws compliant keys and values; feral mixes aberrant ones in,
-<a href=#185 id=185 data-nosnippet>185</a>/// key and value independently.
-<a href=#186 id=186 data-nosnippet>186</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>write_tags&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, vibe: Vibe) {
-<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">let </span>count = sample_count(rng, vibe);
-<a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">for </span>t <span class="kw">in </span><span class="number">0</span>..count {
-<a href=#189 id=189 data-nosnippet>189</a>        <span class="kw">if </span>t == <span class="number">0 </span>{
-<a href=#190 id=190 data-nosnippet>190</a>            buf.extend_from_slice(<span class="string">b"|#"</span>);
-<a href=#191 id=191 data-nosnippet>191</a>        } <span class="kw">else </span>{
-<a href=#192 id=192 data-nosnippet>192</a>            buf.push(<span class="string">b','</span>);
-<a href=#193 id=193 data-nosnippet>193</a>        }
-<a href=#194 id=194 data-nosnippet>194</a>        write_segments(rng, buf, vibe, COMPLIANT_TAG_KEYS, ABERRANT_TAG_KEYS, NAME_SEPARATORS);
-<a href=#195 id=195 data-nosnippet>195</a>        buf.push(<span class="string">b':'</span>);
-<a href=#196 id=196 data-nosnippet>196</a>        write_segments(
-<a href=#197 id=197 data-nosnippet>197</a>            rng,
-<a href=#198 id=198 data-nosnippet>198</a>            buf,
-<a href=#199 id=199 data-nosnippet>199</a>            vibe,
-<a href=#200 id=200 data-nosnippet>200</a>            COMPLIANT_TAG_VALUES,
-<a href=#201 id=201 data-nosnippet>201</a>            ABERRANT_TAG_VALUES,
-<a href=#202 id=202 data-nosnippet>202</a>            NAME_SEPARATORS,
-<a href=#203 id=203 data-nosnippet>203</a>        );
-<a href=#204 id=204 data-nosnippet>204</a>    }
-<a href=#205 id=205 data-nosnippet>205</a>}
-<a href=#206 id=206 data-nosnippet>206</a>
-<a href=#207 id=207 data-nosnippet>207</a><span class="doccomment">/// Write `digits` to `buf` as-is, or padded with equivalent leading zeros (and
-<a href=#208 id=208 data-nosnippet>208</a>/// trailing zeros when there is a fractional part). Same value, cursed encoding.
-<a href=#209 id=209 data-nosnippet>209</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>write_number&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;, digits: <span class="kw-2">&amp;</span>[u8]) {
-<a href=#210 id=210 data-nosnippet>210</a>    <span class="kw">match </span>[Form::Compact, Form::Expanded].choose(rng) {
-<a href=#211 id=211 data-nosnippet>211</a>        <span class="prelude-val">Some</span>(Form::Expanded) =&gt; {
-<a href=#212 id=212 data-nosnippet>212</a>            <span class="kw">let </span>(sign, rest) = <span class="kw">match </span>digits.first() {
-<a href=#213 id=213 data-nosnippet>213</a>                <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>(<span class="string">b'-' </span>| <span class="string">b'+'</span>)) =&gt; (<span class="kw-2">&amp;</span>digits[..<span class="number">1</span>], <span class="kw-2">&amp;</span>digits[<span class="number">1</span>..]),
-<a href=#214 id=214 data-nosnippet>214</a>                <span class="kw">_ </span>=&gt; (<span class="kw-2">&amp;</span>digits[..<span class="number">0</span>], digits),
-<a href=#215 id=215 data-nosnippet>215</a>            };
-<a href=#216 id=216 data-nosnippet>216</a>            buf.extend_from_slice(sign);
-<a href=#217 id=217 data-nosnippet>217</a>            pad_zeros(rng, buf);
-<a href=#218 id=218 data-nosnippet>218</a>            buf.extend_from_slice(rest);
-<a href=#219 id=219 data-nosnippet>219</a>            <span class="kw">let </span>fractional = rest.contains(<span class="kw-2">&amp;</span><span class="string">b'.'</span>) &amp;&amp; !rest.iter().any(|<span class="kw-2">&amp;</span>c| c == <span class="string">b'e' </span>|| c == <span class="string">b'E'</span>);
-<a href=#220 id=220 data-nosnippet>220</a>            <span class="kw">if </span>fractional {
-<a href=#221 id=221 data-nosnippet>221</a>                pad_zeros(rng, buf);
-<a href=#222 id=222 data-nosnippet>222</a>            }
-<a href=#223 id=223 data-nosnippet>223</a>        }
-<a href=#224 id=224 data-nosnippet>224</a>        <span class="kw">_ </span>=&gt; buf.extend_from_slice(digits),
-<a href=#225 id=225 data-nosnippet>225</a>    }
-<a href=#226 id=226 data-nosnippet>226</a>}
-<a href=#227 id=227 data-nosnippet>227</a>
-<a href=#228 id=228 data-nosnippet>228</a><span class="doccomment">/// Append a boundary-sampled run of '0' bytes to `buf`.
-<a href=#229 id=229 data-nosnippet>229</a></span><span class="kw">fn </span>pad_zeros&lt;R: Rng + <span class="question-mark">?</span>Sized&gt;(rng: <span class="kw-2">&amp;mut </span>R, buf: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;) {
-<a href=#230 id=230 data-nosnippet>230</a>    <span class="kw">let </span>zeros = usize::from(Boundary::&lt;u8&gt;::new().sample(rng));
-<a href=#231 id=231 data-nosnippet>231</a>    buf.resize(buf.len() + zeros, <span class="string">b'0'</span>);
-<a href=#232 id=232 data-nosnippet>232</a>}
+<a href=#109 id=109 data-nosnippet>109</a><span class="doccomment">/// Segment counts for an optional field: the required body plus zero.
+<a href=#110 id=110 data-nosnippet>110</a></span><span class="kw">const </span>COUNTS_OPTIONAL: <span class="kw-2">&amp;</span>[usize] = <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">1</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">2</span>, <span class="number">3</span>, <span class="number">3</span>, <span class="number">4</span>, <span class="number">5</span>, <span class="number">6</span>, <span class="number">127</span>, <span class="number">255</span>];
+<a href=#111 id=111 data-nosnippet>111</a>
+<a href=#112 id=112 data-nosnippet>112</a><span class="doccomment">/// Pick one item from a static, non-empty pool by index.
+<a href=#113 id=113 data-nosnippet>113</a></span><span class="kw">fn </span>pick&lt;<span class="lifetime">'a</span>&gt;(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), pool: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8]]) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8] {
+<a href=#114 id=114 data-nosnippet>114</a>    pool[rng.random_range(<span class="number">0</span>..pool.len())]
+<a href=#115 id=115 data-nosnippet>115</a>}
+<a href=#116 id=116 data-nosnippet>116</a>
+<a href=#117 id=117 data-nosnippet>117</a><span class="doccomment">/// The shortest item `pools` can yield, which is the floor cost of one more segment.
+<a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>min_item(pools: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]]]) -&gt; usize {
+<a href=#119 id=119 data-nosnippet>119</a>    pools
+<a href=#120 id=120 data-nosnippet>120</a>        .iter()
+<a href=#121 id=121 data-nosnippet>121</a>        .flat_map(|pool| pool.iter())
+<a href=#122 id=122 data-nosnippet>122</a>        .map(|item| item.len())
+<a href=#123 id=123 data-nosnippet>123</a>        .min()
+<a href=#124 id=124 data-nosnippet>124</a>        .unwrap_or(<span class="number">0</span>)
+<a href=#125 id=125 data-nosnippet>125</a>}
+<a href=#126 id=126 data-nosnippet>126</a>
+<a href=#127 id=127 data-nosnippet>127</a><span class="doccomment">/// Pick an item no longer than `budget`, or `None` when the pools hold nothing that small. Counts the
+<a href=#128 id=128 data-nosnippet>128</a>/// affordable items and walks to the chosen one, so a segment that would not fit is never built.
+<a href=#129 id=129 data-nosnippet>129</a></span><span class="kw">fn </span>pick_within&lt;<span class="lifetime">'a</span>&gt;(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), pools: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8]]], budget: usize) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span><span class="lifetime">'a </span>[u8]&gt; {
+<a href=#130 id=130 data-nosnippet>130</a>    <span class="kw">let </span>affordable = pools
+<a href=#131 id=131 data-nosnippet>131</a>        .iter()
+<a href=#132 id=132 data-nosnippet>132</a>        .flat_map(|pool| pool.iter())
+<a href=#133 id=133 data-nosnippet>133</a>        .filter(|item| item.len() &lt;= budget)
+<a href=#134 id=134 data-nosnippet>134</a>        .count();
+<a href=#135 id=135 data-nosnippet>135</a>    <span class="kw">if </span>affordable == <span class="number">0 </span>{
+<a href=#136 id=136 data-nosnippet>136</a>        <span class="kw">return </span><span class="prelude-val">None</span>;
+<a href=#137 id=137 data-nosnippet>137</a>    }
+<a href=#138 id=138 data-nosnippet>138</a>    <span class="kw">let </span>nth = rng.random_range(<span class="number">0</span>..affordable);
+<a href=#139 id=139 data-nosnippet>139</a>    pools
+<a href=#140 id=140 data-nosnippet>140</a>        .iter()
+<a href=#141 id=141 data-nosnippet>141</a>        .flat_map(|pool| pool.iter())
+<a href=#142 id=142 data-nosnippet>142</a>        .filter(|item| item.len() &lt;= budget)
+<a href=#143 id=143 data-nosnippet>143</a>        .nth(nth)
+<a href=#144 id=144 data-nosnippet>144</a>        .copied()
+<a href=#145 id=145 data-nosnippet>145</a>}
+<a href=#146 id=146 data-nosnippet>146</a>
+<a href=#147 id=147 data-nosnippet>147</a><span class="doccomment">/// Build a field of separator-joined segments within `budget` bytes. The segment count comes from
+<a href=#148 id=148 data-nosnippet>148</a>/// `counts`, each segment is drawn from the items that still fit, and the run stops once nothing fits.
+<a href=#149 id=149 data-nosnippet>149</a>/// Sampling against the room left is what keeps the generator from building a field it would have to
+<a href=#150 id=150 data-nosnippet>150</a>/// throw away.
+<a href=#151 id=151 data-nosnippet>151</a></span><span class="kw">fn </span>field_within(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), pools: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>[u8]]], counts: <span class="kw-2">&amp;</span>[usize], budget: usize) -&gt; Vec&lt;u8&gt; {
+<a href=#152 id=152 data-nosnippet>152</a>    <span class="kw">let </span>count = counts[rng.random_range(<span class="number">0</span>..counts.len())];
+<a href=#153 id=153 data-nosnippet>153</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = Vec::new();
+<a href=#154 id=154 data-nosnippet>154</a>    <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..count {
+<a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>separator = usize::from(i &gt; <span class="number">0</span>);
+<a href=#156 id=156 data-nosnippet>156</a>        <span class="kw">let </span>room = budget.saturating_sub(out.len() + separator);
+<a href=#157 id=157 data-nosnippet>157</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(item) = pick_within(rng, pools, room) <span class="kw">else </span>{
+<a href=#158 id=158 data-nosnippet>158</a>            <span class="kw">break</span>;
+<a href=#159 id=159 data-nosnippet>159</a>        };
+<a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">if </span>i &gt; <span class="number">0 </span>{
+<a href=#161 id=161 data-nosnippet>161</a>            out.push(NAME_SEPARATORS[rng.random_range(<span class="number">0</span>..NAME_SEPARATORS.len())]);
+<a href=#162 id=162 data-nosnippet>162</a>        }
+<a href=#163 id=163 data-nosnippet>163</a>        out.extend_from_slice(item);
+<a href=#164 id=164 data-nosnippet>164</a>    }
+<a href=#165 id=165 data-nosnippet>165</a>    out
+<a href=#166 id=166 data-nosnippet>166</a>}
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a><span class="doccomment">/// A required identifier within `budget`. Empty when the budget cannot hold one segment, which the
+<a href=#169 id=169 data-nosnippet>169</a>/// caller must treat as "no line fits" rather than emitting an invalid name.
+<a href=#170 id=170 data-nosnippet>170</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>identifier_within(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), budget: usize) -&gt; Vec&lt;u8&gt; {
+<a href=#171 id=171 data-nosnippet>171</a>    field_within(rng, WORD_POOLS, COUNTS_REQUIRED, budget)
+<a href=#172 id=172 data-nosnippet>172</a>}
+<a href=#173 id=173 data-nosnippet>173</a>
+<a href=#174 id=174 data-nosnippet>174</a><span class="doccomment">/// An optional free-text field within `budget`.
+<a href=#175 id=175 data-nosnippet>175</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>optional_text_within(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), budget: usize) -&gt; Vec&lt;u8&gt; {
+<a href=#176 id=176 data-nosnippet>176</a>    field_within(rng, WORD_POOLS, COUNTS_OPTIONAL, budget)
+<a href=#177 id=177 data-nosnippet>177</a>}
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a><span class="doccomment">/// A tag set serialized within `budget` bytes, `|#` and separating commas included. Each tag is built
+<a href=#180 id=180 data-nosnippet>180</a>/// against the room left, and the run stops when the next one cannot fit.
+<a href=#181 id=181 data-nosnippet>181</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>tags_within(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), budget: usize) -&gt; Vec&lt;Vec&lt;u8&gt;&gt; {
+<a href=#182 id=182 data-nosnippet>182</a>    <span class="kw">let </span>count = COUNTS_OPTIONAL[rng.random_range(<span class="number">0</span>..COUNTS_OPTIONAL.len())];
+<a href=#183 id=183 data-nosnippet>183</a>    <span class="comment">// `|#` before the first tag, then a comma before each later one.
+<a href=#184 id=184 data-nosnippet>184</a>    </span><span class="kw">let </span><span class="prelude-val">Some</span>(<span class="kw-2">mut </span>room) = budget.checked_sub(<span class="number">2</span>) <span class="kw">else </span>{
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">return </span>Vec::new();
+<a href=#186 id=186 data-nosnippet>186</a>    };
+<a href=#187 id=187 data-nosnippet>187</a>    <span class="kw">let </span><span class="kw-2">mut </span>out: Vec&lt;Vec&lt;u8&gt;&gt; = Vec::new();
+<a href=#188 id=188 data-nosnippet>188</a>    <span class="kw">for _ in </span><span class="number">0</span>..count {
+<a href=#189 id=189 data-nosnippet>189</a>        <span class="kw">let </span>separator = usize::from(!out.is_empty());
+<a href=#190 id=190 data-nosnippet>190</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(tag_room) = room.checked_sub(separator) <span class="kw">else </span>{
+<a href=#191 id=191 data-nosnippet>191</a>            <span class="kw">break</span>;
+<a href=#192 id=192 data-nosnippet>192</a>        };
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="comment">// A tag is `key:value` with a required key, so it needs a segment plus the colon.
+<a href=#194 id=194 data-nosnippet>194</a>        </span><span class="kw">if </span>tag_room &lt; min_item(TAG_KEY_POOLS) + <span class="number">1 </span>{
+<a href=#195 id=195 data-nosnippet>195</a>            <span class="kw">break</span>;
+<a href=#196 id=196 data-nosnippet>196</a>        }
+<a href=#197 id=197 data-nosnippet>197</a>        <span class="kw">let </span>key = field_within(rng, TAG_KEY_POOLS, COUNTS_REQUIRED, tag_room - <span class="number">1</span>);
+<a href=#198 id=198 data-nosnippet>198</a>        <span class="kw">if </span>key.is_empty() {
+<a href=#199 id=199 data-nosnippet>199</a>            <span class="kw">break</span>;
+<a href=#200 id=200 data-nosnippet>200</a>        }
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span><span class="kw-2">mut </span>tag = key;
+<a href=#202 id=202 data-nosnippet>202</a>        tag.push(<span class="string">b':'</span>);
+<a href=#203 id=203 data-nosnippet>203</a>        <span class="kw">let </span>value = field_within(rng, TAG_VALUE_POOLS, COUNTS_OPTIONAL, tag_room - tag.len());
+<a href=#204 id=204 data-nosnippet>204</a>        tag.extend_from_slice(<span class="kw-2">&amp;</span>value);
+<a href=#205 id=205 data-nosnippet>205</a>        room -= separator + tag.len();
+<a href=#206 id=206 data-nosnippet>206</a>        out.push(tag);
+<a href=#207 id=207 data-nosnippet>207</a>    }
+<a href=#208 id=208 data-nosnippet>208</a>    out
+<a href=#209 id=209 data-nosnippet>209</a>}
+<a href=#210 id=210 data-nosnippet>210</a>
+<a href=#211 id=211 data-nosnippet>211</a><span class="doccomment">/// Serialize a tag set as `|#key:value,key:value`. An empty set appends nothing.
+<a href=#212 id=212 data-nosnippet>212</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>serialize_tags(tags: <span class="kw-2">&amp;</span>[Vec&lt;u8&gt;], out: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;) {
+<a href=#213 id=213 data-nosnippet>213</a>    <span class="kw">for </span>(i, tag) <span class="kw">in </span>tags.iter().enumerate() {
+<a href=#214 id=214 data-nosnippet>214</a>        <span class="kw">if </span>i == <span class="number">0 </span>{
+<a href=#215 id=215 data-nosnippet>215</a>            out.extend_from_slice(<span class="string">b"|#"</span>);
+<a href=#216 id=216 data-nosnippet>216</a>        } <span class="kw">else </span>{
+<a href=#217 id=217 data-nosnippet>217</a>            out.push(<span class="string">b','</span>);
+<a href=#218 id=218 data-nosnippet>218</a>        }
+<a href=#219 id=219 data-nosnippet>219</a>        out.extend_from_slice(tag);
+<a href=#220 id=220 data-nosnippet>220</a>    }
+<a href=#221 id=221 data-nosnippet>221</a>}
+<a href=#222 id=222 data-nosnippet>222</a>
+<a href=#223 id=223 data-nosnippet>223</a><span class="doccomment">/// A metric value token guaranteed to parse with Go's `ParseFloat`: a special literal, or a wide
+<a href=#224 id=224 data-nosnippet>224</a>/// float or integer rendered compactly or in a cursed-but-equivalent zero-padded form.
+<a href=#225 id=225 data-nosnippet>225</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>float_token(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized)) -&gt; Vec&lt;u8&gt; {
+<a href=#226 id=226 data-nosnippet>226</a>    <span class="kw">match </span>rng.random_range(<span class="number">0</span>..<span class="number">3u8</span>) {
+<a href=#227 id=227 data-nosnippet>227</a>        <span class="number">0 </span>=&gt; pick(rng, SPECIAL_VALUE).to_vec(),
+<a href=#228 id=228 data-nosnippet>228</a>        <span class="number">1 </span>=&gt; {
+<a href=#229 id=229 data-nosnippet>229</a>            <span class="kw">let </span>v: f64 = Wide.sample(rng);
+<a href=#230 id=230 data-nosnippet>230</a>            <span class="kw">let </span><span class="kw-2">mut </span>ryu = ryu::Buffer::new();
+<a href=#231 id=231 data-nosnippet>231</a>            render_number(rng, ryu.format(v).as_bytes())
+<a href=#232 id=232 data-nosnippet>232</a>        }
+<a href=#233 id=233 data-nosnippet>233</a>        <span class="kw">_ </span>=&gt; {
+<a href=#234 id=234 data-nosnippet>234</a>            <span class="kw">let </span>v: i64 = Wide.sample(rng);
+<a href=#235 id=235 data-nosnippet>235</a>            <span class="kw">let </span><span class="kw-2">mut </span>itoa = itoa::Buffer::new();
+<a href=#236 id=236 data-nosnippet>236</a>            render_number(rng, itoa.format(v).as_bytes())
+<a href=#237 id=237 data-nosnippet>237</a>        }
+<a href=#238 id=238 data-nosnippet>238</a>    }
+<a href=#239 id=239 data-nosnippet>239</a>}
+<a href=#240 id=240 data-nosnippet>240</a>
+<a href=#241 id=241 data-nosnippet>241</a><span class="doccomment">/// The floor cost of a value token, the shortest `SPECIAL_VALUE` entry.
+<a href=#242 id=242 data-nosnippet>242</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>min_value_token() -&gt; usize {
+<a href=#243 id=243 data-nosnippet>243</a>    SPECIAL_VALUE.iter().map(|item| item.len()).min().unwrap_or(<span class="number">1</span>)
+<a href=#244 id=244 data-nosnippet>244</a>}
+<a href=#245 id=245 data-nosnippet>245</a>
+<a href=#246 id=246 data-nosnippet>246</a><span class="doccomment">/// A float value token within `budget`. Falls back to the shortest affordable literal rather than
+<a href=#247 id=247 data-nosnippet>247</a>/// rendering a number that would not fit, and is empty only when nothing fits.
+<a href=#248 id=248 data-nosnippet>248</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>float_token_within(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), budget: usize) -&gt; Vec&lt;u8&gt; {
+<a href=#249 id=249 data-nosnippet>249</a>    <span class="kw">let </span>token = float_token(rng);
+<a href=#250 id=250 data-nosnippet>250</a>    <span class="kw">if </span>token.len() &lt;= budget {
+<a href=#251 id=251 data-nosnippet>251</a>        <span class="kw">return </span>token;
+<a href=#252 id=252 data-nosnippet>252</a>    }
+<a href=#253 id=253 data-nosnippet>253</a>    pick_within(rng, <span class="kw-2">&amp;</span>[SPECIAL_VALUE], budget)
+<a href=#254 id=254 data-nosnippet>254</a>        .map(&lt;[u8]&gt;::to_vec)
+<a href=#255 id=255 data-nosnippet>255</a>        .unwrap_or_default()
+<a href=#256 id=256 data-nosnippet>256</a>}
+<a href=#257 id=257 data-nosnippet>257</a>
+<a href=#258 id=258 data-nosnippet>258</a><span class="doccomment">/// A sample-rate token within `budget`, or `None` when no rate literal fits.
+<a href=#259 id=259 data-nosnippet>259</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>rate_token_within(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), budget: usize) -&gt; <span class="prelude-ty">Option</span>&lt;Vec&lt;u8&gt;&gt; {
+<a href=#260 id=260 data-nosnippet>260</a>    pick_within(rng, <span class="kw-2">&amp;</span>[RATE_TOKEN], budget).map(&lt;[u8]&gt;::to_vec)
+<a href=#261 id=261 data-nosnippet>261</a>}
+<a href=#262 id=262 data-nosnippet>262</a>
+<a href=#263 id=263 data-nosnippet>263</a><span class="doccomment">/// A set-type value within `budget`.
+<a href=#264 id=264 data-nosnippet>264</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>opaque_value_within(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), budget: usize) -&gt; Vec&lt;u8&gt; {
+<a href=#265 id=265 data-nosnippet>265</a>    field_within(rng, WORD_POOLS, COUNTS_REQUIRED, budget)
+<a href=#266 id=266 data-nosnippet>266</a>}
+<a href=#267 id=267 data-nosnippet>267</a>
+<a href=#268 id=268 data-nosnippet>268</a><span class="doccomment">/// The serialized length of a tag set, `|#` and separating commas included.
+<a href=#269 id=269 data-nosnippet>269</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>tags_len(tags: <span class="kw-2">&amp;</span>[Vec&lt;u8&gt;]) -&gt; usize {
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">if </span>tags.is_empty() {
+<a href=#271 id=271 data-nosnippet>271</a>        <span class="number">0
+<a href=#272 id=272 data-nosnippet>272</a>    </span>} <span class="kw">else </span>{
+<a href=#273 id=273 data-nosnippet>273</a>        <span class="number">2 </span>+ tags.iter().map(Vec::len).sum::&lt;usize&gt;() + tags.len() - <span class="number">1
+<a href=#274 id=274 data-nosnippet>274</a>    </span>}
+<a href=#275 id=275 data-nosnippet>275</a>}
+<a href=#276 id=276 data-nosnippet>276</a>
+<a href=#277 id=277 data-nosnippet>277</a><span class="doccomment">/// Render `digits` as-is, or padded with equivalent leading zeros, and trailing zeros for a
+<a href=#278 id=278 data-nosnippet>278</a>/// fractional part. Same value, cursed encoding.
+<a href=#279 id=279 data-nosnippet>279</a></span><span class="kw">fn </span>render_number(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), digits: <span class="kw-2">&amp;</span>[u8]) -&gt; Vec&lt;u8&gt; {
+<a href=#280 id=280 data-nosnippet>280</a>    <span class="kw">if </span>rng.random_range(<span class="number">0</span>..<span class="number">2u8</span>) == <span class="number">0 </span>{
+<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">return </span>digits.to_vec();
+<a href=#282 id=282 data-nosnippet>282</a>    }
+<a href=#283 id=283 data-nosnippet>283</a>    <span class="kw">let </span>(sign, rest) = <span class="kw">match </span>digits.first() {
+<a href=#284 id=284 data-nosnippet>284</a>        <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>(<span class="string">b'-' </span>| <span class="string">b'+'</span>)) =&gt; (<span class="kw-2">&amp;</span>digits[..<span class="number">1</span>], <span class="kw-2">&amp;</span>digits[<span class="number">1</span>..]),
+<a href=#285 id=285 data-nosnippet>285</a>        <span class="kw">_ </span>=&gt; (<span class="kw-2">&amp;</span>digits[..<span class="number">0</span>], digits),
+<a href=#286 id=286 data-nosnippet>286</a>    };
+<a href=#287 id=287 data-nosnippet>287</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = Vec::new();
+<a href=#288 id=288 data-nosnippet>288</a>    out.extend_from_slice(sign);
+<a href=#289 id=289 data-nosnippet>289</a>    pad_zeros(rng, <span class="kw-2">&amp;mut </span>out);
+<a href=#290 id=290 data-nosnippet>290</a>    out.extend_from_slice(rest);
+<a href=#291 id=291 data-nosnippet>291</a>    <span class="kw">let </span>fractional = rest.contains(<span class="kw-2">&amp;</span><span class="string">b'.'</span>) &amp;&amp; !rest.iter().any(|<span class="kw-2">&amp;</span>c| c == <span class="string">b'e' </span>|| c == <span class="string">b'E'</span>);
+<a href=#292 id=292 data-nosnippet>292</a>    <span class="kw">if </span>fractional {
+<a href=#293 id=293 data-nosnippet>293</a>        pad_zeros(rng, <span class="kw-2">&amp;mut </span>out);
+<a href=#294 id=294 data-nosnippet>294</a>    }
+<a href=#295 id=295 data-nosnippet>295</a>    out
+<a href=#296 id=296 data-nosnippet>296</a>}
+<a href=#297 id=297 data-nosnippet>297</a>
+<a href=#298 id=298 data-nosnippet>298</a><span class="doccomment">/// Append a boundary-sampled run of `0` bytes.
+<a href=#299 id=299 data-nosnippet>299</a></span><span class="kw">fn </span>pad_zeros(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized), out: <span class="kw-2">&amp;mut </span>Vec&lt;u8&gt;) {
+<a href=#300 id=300 data-nosnippet>300</a>    <span class="comment">// A short run of leading/trailing zeros: enough to exercise padded encodings without bloating.
+<a href=#301 id=301 data-nosnippet>301</a>    </span><span class="kw">let </span>zeros = usize::from(pick_padding_run(rng));
+<a href=#302 id=302 data-nosnippet>302</a>    out.resize(out.len() + zeros, <span class="string">b'0'</span>);
+<a href=#303 id=303 data-nosnippet>303</a>}
+<a href=#304 id=304 data-nosnippet>304</a>
+<a href=#305 id=305 data-nosnippet>305</a><span class="doccomment">/// A boundary-biased zero-run length.
+<a href=#306 id=306 data-nosnippet>306</a></span><span class="kw">fn </span>pick_padding_run(rng: <span class="kw-2">&amp;mut </span>(<span class="kw">impl </span>Rng + <span class="question-mark">?</span>Sized)) -&gt; u8 {
+<a href=#307 id=307 data-nosnippet>307</a>    <span class="kw">const </span>RUNS: <span class="kw-2">&amp;</span>[u8] = <span class="kw-2">&amp;</span>[<span class="number">0</span>, <span class="number">1</span>, <span class="number">2</span>, <span class="number">8</span>, <span class="number">16</span>, <span class="number">32</span>, <span class="number">64</span>, <span class="number">127</span>];
+<a href=#308 id=308 data-nosnippet>308</a>    RUNS[rng.random_range(<span class="number">0</span>..RUNS.len())]
+<a href=#309 id=309 data-nosnippet>309</a>}
 </code></pre></div></section></main></body></html>

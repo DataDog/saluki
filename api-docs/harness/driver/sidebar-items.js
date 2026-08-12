@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["connect_with_retry","run","sample"],"struct":["Stats"]};
+window.SIDEBAR_ITEMS = {"fn":["connect_with_retry","run"],"struct":["Stats"]};

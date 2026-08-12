@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["PAYLOAD_BYTE_LIMIT"],"enum":["Batch","Vibe"],"fn":["sample_vibe","write_line","write_payload"],"struct":["Payload"]};
+window.SIDEBAR_ITEMS = {"constant":["PAYLOAD_BYTE_LIMIT"],"fn":["write_payload"],"struct":["Payload"]};

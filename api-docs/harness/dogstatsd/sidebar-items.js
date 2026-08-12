@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["PayloadError"],"fn":["is_malformed"]};
