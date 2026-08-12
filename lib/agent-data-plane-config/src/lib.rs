@@ -11,6 +11,9 @@
 //! Every field is plain, source-agnostic data. There are no source key names in identifiers and no
 //! source serde (these structs are serialized for the `/config/runtime` view but never
 //! deserialized from a source language; that is the source adapter's job).
+//!
+//! A field whose meaning depends on whether its value was set explicitly, rather than on the value
+//! alone, is a [`ConfigValue<T>`] instead of a plain `T`.
 
 use std::fmt;
 
@@ -20,11 +23,13 @@ pub mod control;
 pub mod defaults;
 pub mod domains;
 pub mod live;
+pub mod provenance;
 pub mod shared;
 
 pub use control::{ControlConfiguration, Logging};
 pub use domains::DomainConfiguration;
 pub use live::Live;
+pub use provenance::{ConfigValue, Provenance};
 pub use shared::SharedConfiguration;
 
 /// The complete ADP-native runtime configuration after translation.

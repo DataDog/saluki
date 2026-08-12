@@ -365,7 +365,10 @@ mod tests {
     };
 
     use axum::{routing::get, Router};
-    use saluki_config::{dynamic::ConfigUpdate, ConfigurationLoader};
+    use saluki_config::{
+        dynamic::{ConfigSetting, ConfigUpdate},
+        ConfigurationLoader,
+    };
     use saluki_tls::initialize_default_crypto_provider;
     use serde_json::json;
     use tokio::net::TcpListener;
@@ -512,13 +515,14 @@ mod tests {
         let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
         let sender = sender.expect("dynamic sender should exist");
         sender
-            .send(ConfigUpdate::Snapshot(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["old-additional-key"]
-                }
-            })))
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("api_key", json!("primary-key")),
+                ConfigSetting::explicit("dd_url", json!("http://primary.example.com")),
+                ConfigSetting::explicit(
+                    "additional_endpoints",
+                    json!({ "http://additional.example.com": ["old-additional-key"] }),
+                ),
+            ]))
             .await
             .expect("initial snapshot should send");
         config.ready().await;
@@ -529,14 +533,17 @@ mod tests {
             .expect("endpoints should resolve");
 
         sender
-            .send(ConfigUpdate::Snapshot(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["new-additional-key"],
-                    "http://new.example.com": ["ignored-new-domain-key"]
-                }
-            })))
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("api_key", json!("primary-key")),
+                ConfigSetting::explicit("dd_url", json!("http://primary.example.com")),
+                ConfigSetting::explicit(
+                    "additional_endpoints",
+                    json!({
+                        "http://additional.example.com": ["new-additional-key"],
+                        "http://new.example.com": ["ignored-new-domain-key"]
+                    }),
+                ),
+            ]))
             .await
             .expect("updated snapshot should send");
 
