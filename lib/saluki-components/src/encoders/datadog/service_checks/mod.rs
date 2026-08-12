@@ -1,5 +1,4 @@
 use async_trait::async_trait;
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -52,7 +51,7 @@ const fn default_log_payloads() -> bool {
 /// Datadog Service Checks incremental encoder.
 ///
 /// Generates Datadog Service Checks payloads for the Datadog platform.
-#[derive(Deserialize, Facet)]
+#[derive(Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogServiceChecksConfiguration {
     /// Maximum compressed size, in bytes, of a service check payload.

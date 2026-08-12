@@ -5,7 +5,6 @@ use std::collections::HashMap;
 use agent_data_plane_config::shared::{
     V3ApiEncoding as TypedV3ApiEncoding, V3ApiSettings as TypedV3ApiSettings, V3SeriesMode as TypedV3SeriesMode,
 };
-use facet::Facet;
 use serde::{Deserialize, Serialize};
 
 use super::METRICS_SERIES_V3_BETA_PATH;
@@ -182,7 +181,7 @@ impl MetricsPayloadInfo {
 }
 
 /// V3 API settings for a specific metric type (series or sketches).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Facet)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct V3ApiSettings {
     /// Endpoints that should receive V3 payloads for this metric type.
     ///
@@ -248,7 +247,7 @@ impl V3ApiSettings {
 }
 
 /// V3 API configuration for per-endpoint V3 support.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct V3ApiConfig {
     /// V3 settings for series metrics (counters, gauges, rates, sets).
     #[serde(default)]
@@ -301,7 +300,7 @@ impl From<&TypedV3ApiEncoding> for V3ApiConfig {
 }
 
 /// The Datadog Agent's `use_v3_api` configuration section.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UseV3ApiConfig {
     /// Agent-compatible V3 API configuration for series metrics.
     #[serde(default)]
@@ -309,7 +308,7 @@ pub struct UseV3ApiConfig {
 }
 
 /// Agent-compatible `use_v3_api.series` configuration.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Facet)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UseV3ApiSeriesConfig {
     /// Global V3 series mode.
     ///

@@ -6,7 +6,6 @@ use agent_data_plane_config::{
 };
 use async_trait::async_trait;
 use ddsketch::DDSketch;
-use facet::Facet;
 use http::{HeaderValue, Method, Request};
 use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_common::{
@@ -108,7 +107,7 @@ const fn default_flush_timeout_secs() -> u64 {
 }
 
 /// The Datadog Agent's `use_v2_api` configuration section.
-#[derive(Clone, Deserialize, Facet)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 struct UseV2ApiConfig {
     /// Whether to use the V2 API for series metrics.
@@ -227,7 +226,7 @@ fn series_v3_can_be_enabled_for_config(
 /// Datadog Metrics encoder.
 ///
 /// Generates Datadog metrics payloads for the Datadog platform.
-#[derive(Clone, Deserialize, Facet)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogMetricsConfiguration {
     /// Maximum number of input metrics to encode into a single request payload.
@@ -366,7 +365,6 @@ pub struct DatadogMetricsConfiguration {
 
     /// Additional tags to apply to all forwarded metrics.
     #[serde(default, skip)]
-    #[facet(opaque)]
     additional_tags: Option<SharedTagSet>,
 
     /// V3 API configuration for per-endpoint V3 support.

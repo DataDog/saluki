@@ -1,7 +1,6 @@
 //! Obfuscation configuration types.
 
 use agent_data_plane_config::domains::traces;
-use facet::Facet;
 use saluki_config::deserialize_space_separated_or_seq;
 use serde::Deserialize;
 
@@ -9,7 +8,7 @@ use serde::Deserialize;
 ///
 /// This is the Datadog Agent's `apm_config.obfuscation` section: each field is one of its
 /// subsections, named exactly as the Agent names it.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct ObfuscationConfig {
     /// Credit card obfuscation settings.
@@ -100,7 +99,7 @@ impl From<&traces::Obfuscation> for ObfuscationConfig {
 }
 
 /// HTTP URL obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct HttpObfuscationConfig {
     /// Whether to remove query strings from HTTP URLs.
@@ -113,7 +112,7 @@ pub struct HttpObfuscationConfig {
 }
 
 /// Memcached obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct MemcachedObfuscationConfig {
     /// Whether memcached obfuscation is enabled.
@@ -126,7 +125,7 @@ pub struct MemcachedObfuscationConfig {
 }
 
 /// Credit card obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct CreditCardObfuscationConfig {
     /// Whether credit card obfuscation is enabled.
@@ -143,7 +142,7 @@ pub struct CreditCardObfuscationConfig {
 }
 
 /// Redis obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct RedisObfuscationConfig {
     /// Whether Redis obfuscation is enabled.
@@ -156,7 +155,7 @@ pub struct RedisObfuscationConfig {
 }
 
 /// Valkey obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct ValkeyObfuscationConfig {
     /// Whether Valkey obfuscation is enabled.
@@ -169,7 +168,7 @@ pub struct ValkeyObfuscationConfig {
 }
 
 /// SQL obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct SqlObfuscationConfig {
     /// DBMS type (for example, `postgresql`, `mysql`, `mssql`, `sqlite`).
@@ -211,7 +210,7 @@ impl SqlObfuscationConfig {
 }
 
 /// Elasticsearch obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct EsObfuscationConfig {
     /// Whether Elasticsearch obfuscation is enabled.
@@ -228,7 +227,7 @@ pub struct EsObfuscationConfig {
 }
 
 /// MongoDB obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct MongoObfuscationConfig {
     /// Whether MongoDB obfuscation is enabled.
@@ -245,7 +244,7 @@ pub struct MongoObfuscationConfig {
 }
 
 /// OpenSearch obfuscation configuration.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct OpenSearchObfuscationConfig {
     /// Whether OpenSearch obfuscation is enabled.

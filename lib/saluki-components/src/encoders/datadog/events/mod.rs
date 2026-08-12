@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use datadog_protos::events as proto;
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_common::iter::ReusableDeduplicator;
@@ -58,7 +57,7 @@ const fn default_log_payloads() -> bool {
 /// Datadog Events incremental encoder.
 ///
 /// Generates Datadog Events payloads for the Datadog platform.
-#[derive(Deserialize, Facet)]
+#[derive(Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DatadogEventsConfiguration {
     /// Maximum compressed size, in bytes, of an events payload.

@@ -29,7 +29,6 @@ datadog-agent-config = { workspace = true }
 datadog-agent-metrics-v3 = { workspace = true }
 datadog-protos = { workspace = true }
 ddsketch = { workspace = true }
-facet = { workspace = true }
 faster-hex = { workspace = true }
 figment = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }

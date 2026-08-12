@@ -4,7 +4,6 @@ use std::{
     time::Duration,
 };
 
-use facet::Facet;
 use http::StatusCode;
 use saluki_config::GenericConfiguration;
 use saluki_io::net::util::retry::{
@@ -60,7 +59,7 @@ const fn default_retry_queue_capacity_time_interval_secs() -> u64 {
 }
 
 /// Datadog Agent-specific forwarder retry configuration.
-#[derive(Clone, Deserialize, Facet)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct RetryConfiguration {
     /// The minimum backoff factor to use when retrying requests.

@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
-use facet::Facet;
 use saluki_config::{DurationString, GenericConfiguration};
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
@@ -83,7 +82,7 @@ fn min_tls_version_from_config_value(value: &str) -> TlsMinimumVersion {
 
 /// HTTP protocol selection for the Datadog forwarder.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Facet)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "lowercase")]
 #[cfg_attr(test, derive(serde::Serialize))]
 pub enum ForwarderHttpProtocol {
@@ -109,7 +108,7 @@ impl From<ForwarderHttpProtocol> for HttpProtocol {
 /// The Agent exposes this override under two top-level sections -- `observability_pipelines_worker`
 /// and its deprecated `vector` predecessor -- so this struct is flattened by its owner to read both
 /// from the same root.
-#[derive(Clone, Default, Deserialize, Facet)]
+#[derive(Clone, Default, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub(crate) struct OpwMetricsConfiguration {
     /// Observability Pipelines Worker routing settings.
@@ -124,7 +123,7 @@ pub(crate) struct OpwMetricsConfiguration {
 }
 
 /// One routing target's `metrics` section.
-#[derive(Clone, Default, Deserialize, Facet)]
+#[derive(Clone, Default, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub(crate) struct OpwMetricsSection {
     /// Metrics routing settings for this target.
@@ -133,7 +132,7 @@ pub(crate) struct OpwMetricsSection {
 }
 
 /// The routing settings themselves.
-#[derive(Clone, Default, Deserialize, Facet)]
+#[derive(Clone, Default, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub(crate) struct OpwMetricsSettings {
     /// Enables routing all metrics to this target.
@@ -154,7 +153,7 @@ pub(crate) struct OpwMetricsSettings {
 }
 
 /// The `use_v3_api` sub-section of a routing target's metrics settings.
-#[derive(Clone, Default, Deserialize, Facet)]
+#[derive(Clone, Default, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub(crate) struct OpwUseV3ApiSettings {
     /// Enables V3 series metrics when routing to this target.
@@ -235,7 +234,7 @@ impl OpwMetricsConfiguration {
 /// This adapter provides a simple way to utilize the existing configuration values that are passed to the Datadog
 /// Agent, which are used to control the behavior of its forwarder, such as retries and concurrency, in conjunction with
 /// with existing primitives, as such retry policies in [`saluki_io::util::retry`].
-#[derive(Clone, Deserialize, Facet)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ForwarderConfiguration {
     /// Maximum number of concurrent requests for an individual endpoint.
@@ -351,7 +350,6 @@ pub struct ForwarderConfiguration {
 
     /// Parsed minimum TLS protocol version for Datadog intake forwarding.
     #[serde(skip)]
-    #[facet(opaque)]
     parsed_min_tls_version: TlsMinimumVersion,
 
     /// Timeout for completing the TLS handshake after a connection is established, for Datadog intake forwarding.
@@ -360,7 +358,6 @@ pub struct ForwarderConfiguration {
     /// bounds the entire request. A value of `0` disables the handshake deadline entirely, matching the core Agent
     /// convention for this setting.
     #[serde(default = "default_tls_handshake_timeout")]
-    #[facet(opaque)]
     tls_handshake_timeout: DurationString,
 
     /// Whether to signal that the backend should allow arbitrary tag values.
