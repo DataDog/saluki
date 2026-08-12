@@ -43,36 +43,36 @@ impl TransformContext {
         self.health_handle.take().expect("health handle already taken")
     }
 
-    /// Gets a reference to the topology context.
+    /// Returns a reference to the topology context.
     pub fn topology_context(&self) -> &TopologyContext {
         &self.topology_context
     }
 
-    /// Gets a reference to the component context.
+    /// Returns a reference to the component context.
     pub fn component_context(&self) -> &ComponentContext {
         &self.component_context
     }
 
-    /// Gets a reference to the events dispatcher.
+    /// Returns a reference to the events dispatcher.
     pub fn dispatcher(&self) -> &EventsDispatcher {
         &self.dispatcher
     }
 
-    /// Gets a mutable reference to the events consumer.
+    /// Returns a mutable reference to the events consumer.
     pub fn events(&mut self) -> &mut EventsConsumer {
         &mut self.consumer
     }
 
-    /// Gets a mutable reference to the component registry.
+    /// Returns a mutable reference to the component registry.
     pub fn component_registry(&self) -> &ComponentRegistry {
         &self.component_registry
     }
 
     /// Returns a spawner for supervised child tasks belonging to this component.
     ///
-    /// Children spawned through it have their lifecycle coupled to the component itself: if the
-    /// component restarts, or the component's supervisor dies, its children are terminated too.
-    pub fn spawn_handle(&self) -> &ComponentSpawner {
+    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
+    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
+    pub fn spawner(&self) -> &ComponentSpawner {
         &self.spawner
     }
 }

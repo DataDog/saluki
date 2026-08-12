@@ -259,3 +259,4 @@ rollout(s?)
 subprocess(es)?
 (non-?)?interruptible
 PR
+uninterrupible

@@ -33,6 +33,12 @@ struct ProcessState {
     /// aborted.
     worker_name: String,
     shutdown_strategy: ShutdownStrategy,
+    /// Whether this child is subject to the supervisor's shutdown budget.
+    ///
+    /// False for a nested supervisor, which bounds itself through its own children. Aborting one would cut its subtree
+    /// off mid-drain, and -- for a supervisor on a dedicated runtime, whose work lives on another OS thread -- would
+    /// not even stop it, while still reporting it as stopped.
+    budget_applies: bool,
     shutdown_coordinator: ShutdownCoordinator,
     abort_handle: AbortHandle,
 }
@@ -76,9 +82,10 @@ impl WorkerState {
             .shutdown_strategy()
             .unwrap_or_else(|| child_spec.shutdown_strategy());
 
-        // Task instrumentation is keyed on the fully qualified process name, matching what `spawn_traced_named` would
-        // have recorded for an unsupervised task. Names are per-process-name rather than per-task, so a supervisor with
-        // many identically-named children (one per connection, say) still reports a single series.
+        // Every worker's task is timed, keyed on its fully qualified process name -- the same name
+        // `spawn_traced_named` would have recorded for an equivalent standalone task. A worker is a top-level task, so
+        // it is polled once per wake-up rather than once per unit of work, which keeps the two clock reads per poll well
+        // amortized against whatever the poll actually does.
         let task = worker_future
             .into_process_future(process)
             .with_task_instrumentation(worker_name.clone());
@@ -92,6 +99,7 @@ impl WorkerState {
                 worker_id,
                 worker_name,
                 shutdown_strategy,
+                budget_applies: !child_spec.is_supervisor(),
                 shutdown_coordinator,
                 abort_handle,
             },
@@ -177,7 +185,7 @@ impl WorkerState {
         //
         // A shutdown budget, if set, bounds the sequence as a whole rather than each worker in turn: it is measured
         // from the start of the drain, so the workers shut down later in the order inherit whatever is left of it.
-        let budget_deadline = self.shutdown_budget.map(|budget| tokio::time::Instant::now() + budget);
+        let budget_deadline = resolve_budget_deadline(tokio::time::Instant::now(), self.shutdown_budget);
 
         let mut aborted_total = 0;
         while let Some((current_worker_task_id, process_state)) = self.worker_map.pop() {
@@ -185,9 +193,12 @@ impl WorkerState {
                 worker_id,
                 worker_name,
                 shutdown_strategy,
+                budget_applies,
                 shutdown_coordinator,
                 abort_handle,
             } = process_state;
+
+            let budget_deadline = budget_applies.then_some(budget_deadline).flatten();
 
             // Trigger the process to shutdown based on the configured shutdown strategy.
             let shutdown_deadline = match shutdown_strategy {
@@ -280,7 +291,7 @@ impl WorkerState {
         // graceful worker and immediately abort brutal ones, recording a per-worker abort deadline so each is held to
         // its own timeout rather than a single shared one.
         let now = tokio::time::Instant::now();
-        let budget_deadline = self.shutdown_budget.map(|budget| now + budget);
+        let budget_deadline = resolve_budget_deadline(now, self.shutdown_budget);
         let mut pending: FastIndexMap<Id, (u64, String, AbortHandle, Option<tokio::time::Instant>)> =
             FastIndexMap::default();
         for (task_id, process_state) in std::mem::take(&mut self.worker_map) {
@@ -288,6 +299,7 @@ impl WorkerState {
                 worker_id,
                 worker_name,
                 shutdown_strategy,
+                budget_applies,
                 shutdown_coordinator,
                 abort_handle,
             } = process_state;
@@ -296,6 +308,7 @@ impl WorkerState {
                 ShutdownStrategy::Graceful(timeout) => {
                     debug!(worker_id, shutdown_timeout = ?timeout, "Gracefully shutting down process.");
                     shutdown_coordinator.shutdown();
+                    let budget_deadline = budget_applies.then_some(budget_deadline).flatten();
                     let deadline = resolve_abort_deadline(now, timeout, budget_deadline);
                     pending.insert(task_id, (worker_id, worker_name, abort_handle, deadline));
                 }
@@ -367,11 +380,21 @@ impl WorkerState {
 fn resolve_abort_deadline(
     now: tokio::time::Instant, timeout: Duration, budget_deadline: Option<tokio::time::Instant>,
 ) -> Option<tokio::time::Instant> {
-    let own_deadline = (timeout != Duration::MAX).then(|| now + timeout);
+    // `checked_add` rather than `+`: adding a large duration to an instant panics on overflow, and both the sentinel
+    // (`Duration::MAX`) and any duration near it are reachable from caller-supplied configuration. A deadline too far
+    // out to represent is indistinguishable from no deadline at all, so both become `None`.
+    let own_deadline = now.checked_add(timeout);
     match (own_deadline, budget_deadline) {
         (Some(own), Some(budget)) => Some(own.min(budget)),
         (deadline, None) | (None, deadline) => deadline,
     }
+}
+
+/// Resolves the instant at which a supervisor's whole shutdown must be cut off, if it configured a budget.
+///
+/// Overflows the same way as [`resolve_abort_deadline`]: a budget too large to represent is treated as no budget.
+fn resolve_budget_deadline(now: tokio::time::Instant, budget: Option<Duration>) -> Option<tokio::time::Instant> {
+    budget.and_then(|budget| now.checked_add(budget))
 }
 
 /// Extracts the number of force-aborts a reaped child reported.
@@ -392,5 +415,86 @@ fn reported_abort_count(output: &Result<(), WorkerError>) -> usize {
             _ => 0,
         },
         _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instant() -> tokio::time::Instant {
+        tokio::time::Instant::now()
+    }
+
+    #[tokio::test]
+    async fn abort_deadline_uses_the_workers_own_timeout_when_unbudgeted() {
+        let now = instant();
+        assert_eq!(
+            resolve_abort_deadline(now, Duration::from_secs(3), None),
+            Some(now + Duration::from_secs(3))
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_deadline_is_none_for_an_unbounded_worker_without_a_budget() {
+        // `Duration::MAX` is the "no deadline of its own" sentinel: a nested supervisor, or a child whose supervisor
+        // holds the budget. With no budget in play there is nothing to bound it.
+        assert_eq!(resolve_abort_deadline(instant(), Duration::MAX, None), None);
+    }
+
+    #[tokio::test]
+    async fn abort_deadline_falls_back_to_the_budget_for_an_unbounded_worker() {
+        let now = instant();
+        let budget = now + Duration::from_secs(10);
+        assert_eq!(resolve_abort_deadline(now, Duration::MAX, Some(budget)), Some(budget));
+    }
+
+    #[tokio::test]
+    async fn abort_deadline_takes_whichever_of_worker_and_budget_is_sooner() {
+        let now = instant();
+        let budget = now + Duration::from_secs(10);
+
+        // Worker sooner than the budget.
+        assert_eq!(
+            resolve_abort_deadline(now, Duration::from_secs(2), Some(budget)),
+            Some(now + Duration::from_secs(2))
+        );
+
+        // Budget sooner than the worker: a worker cannot buy itself more time than its supervisor allows.
+        assert_eq!(
+            resolve_abort_deadline(now, Duration::from_secs(30), Some(budget)),
+            Some(budget)
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_deadline_does_not_overflow_on_a_near_max_timeout() {
+        // Only `Duration::MAX` exactly used to be special-cased, so anything just under it panicked when added to an
+        // instant. A deadline too far out to represent is treated as no deadline.
+        let now = instant();
+        assert_eq!(
+            resolve_abort_deadline(now, Duration::MAX - Duration::from_nanos(1), None),
+            None
+        );
+
+        // Even then, a budget still bounds the worker.
+        let budget = now + Duration::from_secs(5);
+        assert_eq!(
+            resolve_abort_deadline(now, Duration::MAX - Duration::from_nanos(1), Some(budget)),
+            Some(budget)
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_deadline_is_overflow_safe() {
+        let now = instant();
+        assert_eq!(resolve_budget_deadline(now, None), None);
+        assert_eq!(
+            resolve_budget_deadline(now, Some(Duration::from_secs(7))),
+            Some(now + Duration::from_secs(7))
+        );
+
+        // `Duration::MAX` is the natural spelling of "no ceiling", and used to panic the supervisor task.
+        assert_eq!(resolve_budget_deadline(now, Some(Duration::MAX)), None);
     }
 }

@@ -958,7 +958,7 @@ mod tests {
             let shutdown = context.take_shutdown_handle();
             if let Some(started) = self.spawned_child {
                 context
-                    .spawn_handle()
+                    .spawner()
                     .spawn_supervisable(CountingChild { started })
                     .await
                     .expect("should spawn dynamic child");

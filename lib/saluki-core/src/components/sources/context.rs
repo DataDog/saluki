@@ -46,8 +46,8 @@ impl SourceContext {
 
     /// Installs the shutdown handle for this source context.
     ///
-    /// Called once by the runtime, before the component runs, with the shutdown signal of the
-    /// component's dedicated supervisor.
+    /// Called once by the runtime, before the component runs, with the shutdown signal of the component's dedicated
+    /// supervisor.
     pub(crate) fn set_shutdown_handle(&mut self, shutdown_handle: ShutdownHandle) {
         self.shutdown_handle = Some(shutdown_handle);
     }
@@ -70,31 +70,31 @@ impl SourceContext {
         self.health_handle.take().expect("health handle already taken")
     }
 
-    /// Gets a reference to the topology context.
+    /// Returns a reference to the topology context.
     pub fn topology_context(&self) -> &TopologyContext {
         &self.inner.topology_context
     }
 
-    /// Gets a reference to the component context.
+    /// Returns a reference to the component context.
     pub fn component_context(&self) -> &ComponentContext {
         &self.inner.component_context
     }
 
-    /// Gets a reference to the component registry.
+    /// Returns a reference to the component registry.
     pub fn component_registry(&self) -> &ComponentRegistry {
         &self.inner.component_registry
     }
 
-    /// Gets a reference to the events dispatcher.
+    /// Returns a reference to the events dispatcher.
     pub fn dispatcher(&self) -> &EventsDispatcher {
         &self.inner.dispatcher
     }
 
     /// Returns a spawner for supervised child tasks belonging to this component.
     ///
-    /// Children spawned through it have their lifecycle coupled to the component itself: if the
-    /// component restarts, or the component's supervisor dies, its children are terminated too.
-    pub fn spawn_handle(&self) -> &ComponentSpawner {
+    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
+    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
+    pub fn spawner(&self) -> &ComponentSpawner {
         &self.inner.spawner
     }
 }

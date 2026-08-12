@@ -70,31 +70,31 @@ impl RelayContext {
         self.health_handle.take().expect("health handle already taken")
     }
 
-    /// Gets a reference to the topology context.
+    /// Returns a reference to the topology context.
     pub fn topology_context(&self) -> &TopologyContext {
         &self.inner.topology_context
     }
 
-    /// Gets a reference to the component context.
+    /// Returns a reference to the component context.
     pub fn component_context(&self) -> &ComponentContext {
         &self.inner.component_context
     }
 
-    /// Gets a reference to the component registry.
+    /// Returns a reference to the component registry.
     pub fn component_registry(&self) -> &ComponentRegistry {
         &self.inner.component_registry
     }
 
-    /// Gets a reference to the payloads dispatcher.
+    /// Returns a reference to the payloads dispatcher.
     pub fn dispatcher(&self) -> &PayloadsDispatcher {
         &self.inner.dispatcher
     }
 
     /// Returns a spawner for supervised child tasks belonging to this component.
     ///
-    /// Children spawned through it have their lifecycle coupled to the component itself: if the
-    /// component restarts, or the component's supervisor dies, its children are terminated too.
-    pub fn spawn_handle(&self) -> &ComponentSpawner {
+    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
+    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
+    pub fn spawner(&self) -> &ComponentSpawner {
         &self.inner.spawner
     }
 }
