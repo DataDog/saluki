@@ -35,6 +35,7 @@ figment = { workspace = true }
 float-cmp = { workspace = true, features = ["ratio"] }
 fnv = { workspace = true }
 foldhash = { workspace = true }
+foldspace-core = { workspace = true }
 futures = { workspace = true }
 hashbrown = { workspace = true }
 headers = { workspace = true }
@@ -85,6 +86,7 @@ tokio = { workspace = true, features = [
   "signal",
   "sync",
 ] }
+tokio-stream = { workspace = true }
 tonic = { workspace = true, features = ["router", "server"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tracing = { workspace = true }

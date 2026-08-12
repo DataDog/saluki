@@ -171,6 +171,11 @@ where
         self.pending.len() + self.persisted_pending.as_ref().map_or(0, |p| p.len())
     }
 
+    /// Returns whether the queue has entries persisted on disk.
+    pub fn has_persisted_entries(&self) -> bool {
+        self.persisted_pending.as_ref().is_some_and(|queue| !queue.is_empty())
+    }
+
     /// Returns the maximum in-memory capacity, in bytes.
     pub const fn max_in_memory_bytes(&self) -> u64 {
         self.max_in_memory_bytes
@@ -336,6 +341,17 @@ where
         }
 
         Ok(None)
+    }
+
+    /// Consumes the oldest persisted entry without first draining in-memory retries.
+    ///
+    /// This lets fair schedulers make bounded progress on restart-era disk entries even while
+    /// newer retry traffic continues to arrive in memory.
+    pub async fn pop_persisted(&mut self) -> Result<Option<T>, GenericError> {
+        match &mut self.persisted_pending {
+            Some(persisted_pending) => persisted_pending.pop().await,
+            None => Ok(None),
+        }
     }
 
     /// Flushes all entries, potentially persisting them to disk.

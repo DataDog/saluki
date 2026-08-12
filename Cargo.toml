@@ -103,6 +103,7 @@ serde = { version = "1", default-features = false, features = [
 snafu = { version = "0.9", default-features = false, features = ["std"] }
 tinytemplate = { version = "1", default-features = false }
 tokio = { version = "1.52.2", default-features = false }
+tokio-stream = { version = "0.1", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 async-compression = { version = "0.4.42", default-features = false, features = [
   "gzip",
@@ -114,6 +115,7 @@ bitmask-enum = { version = "2.2", default-features = false }
 facet = { version = "0.46.0", default-features = false, features = ["std"] }
 figment = { version = "0.10", default-features = false }
 foldhash = { version = "0.2", default-features = false, features = ["std"] }
+foldspace-core = { git = "https://github.com/DataDog/foldspace.git", rev = "7a5feff72311a66e8b6ce004f78b578f733a2b8f" }
 headers = { version = "0.4", default-features = false }
 http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }

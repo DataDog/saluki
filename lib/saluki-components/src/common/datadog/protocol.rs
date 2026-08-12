@@ -250,6 +250,10 @@ impl V3ApiSettings {
 /// V3 API configuration for per-endpoint V3 support.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Facet)]
 pub struct V3ApiConfig {
+    /// Whether authoritative V3 series use Foldspace stateful transport.
+    #[serde(default)]
+    pub stateful_metrics_enabled: bool,
+
     /// V3 settings for series metrics (counters, gauges, rates, sets).
     #[serde(default)]
     pub series: V3ApiSettings,
@@ -266,6 +270,11 @@ pub struct V3ApiConfig {
 }
 
 impl V3ApiConfig {
+    /// Returns whether authoritative V3 series use Foldspace stateful transport.
+    pub const fn stateful_metrics_enabled(&self) -> bool {
+        self.stateful_metrics_enabled
+    }
+
     /// Returns true if V3 is enabled for series metrics.
     pub fn use_v3_series(&self) -> bool {
         self.series.is_enabled()
@@ -293,6 +302,7 @@ impl From<&TypedV3ApiSettings> for V3ApiSettings {
 impl From<&TypedV3ApiEncoding> for V3ApiConfig {
     fn from(config: &TypedV3ApiEncoding) -> Self {
         Self {
+            stateful_metrics_enabled: false,
             series: (&config.series).into(),
             sketches: (&config.sketches).into(),
             compression_level: config.compression_level,

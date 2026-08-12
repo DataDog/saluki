@@ -6,7 +6,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, ComponentContext},
-    data_model::payload::{PayloadMetadata, PayloadType},
+    data_model::payload::{Payload, PayloadMetadata, PayloadType},
     observability::ComponentMetricsExt as _,
 };
 use saluki_error::GenericError;
@@ -15,6 +15,7 @@ use stringtheory::MetaString;
 use tokio::select;
 use tracing::debug;
 
+use crate::common::datadog::stateful_metrics::StatefulMetricsForwarder;
 use crate::common::datadog::{
     config::ForwarderConfiguration,
     io::TransactionForwarder,
@@ -89,12 +90,23 @@ impl DatadogForwarderConfiguration {
 #[async_trait]
 impl ForwarderBuilder for DatadogForwarderConfiguration {
     fn input_payload_type(&self) -> PayloadType {
-        PayloadType::Http
+        if self.forwarder_config.stateful_metrics_enabled() {
+            PayloadType::Http | PayloadType::MetricSeries
+        } else {
+            PayloadType::Http
+        }
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
+        let stateful_metrics = StatefulMetricsForwarder::from_config(
+            context.clone(),
+            self.forwarder_config.clone(),
+            self.configuration.clone(),
+            telemetry.clone(),
+            metrics_builder.clone(),
+        );
         let forwarder = TransactionForwarder::from_config(
             context,
             self.forwarder_config.clone(),
@@ -104,7 +116,10 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
             metrics_builder,
         )?;
 
-        Ok(Box::new(Datadog { forwarder }))
+        Ok(Box::new(Datadog {
+            forwarder,
+            stateful_metrics,
+        }))
     }
 }
 
@@ -145,12 +160,16 @@ impl MemoryBounds for DatadogForwarderConfiguration {
 
 pub struct Datadog {
     forwarder: TransactionForwarder<FrozenChunkedBytesBuffer>,
+    stateful_metrics: Option<StatefulMetricsForwarder>,
 }
 
 #[async_trait]
 impl Forwarder for Datadog {
     async fn run(mut self: Box<Self>, mut context: ForwarderContext) -> Result<(), GenericError> {
-        let Self { forwarder } = *self;
+        let Self {
+            forwarder,
+            stateful_metrics,
+        } = *self;
 
         let mut health = context.take_health_handle();
 
@@ -158,6 +177,10 @@ impl Forwarder for Datadog {
 
         // Spawn our forwarder task to handle sending requests.
         let forwarder = forwarder.spawn().await;
+        let stateful_metrics = match stateful_metrics {
+            Some(stateful_metrics) => Some(stateful_metrics.spawn().await?),
+            None => None,
+        };
 
         debug!("Datadog forwarder started.");
 
@@ -169,13 +192,17 @@ impl Forwarder for Datadog {
                     ValidationReadiness::NotReady => health.mark_not_ready(),
                 },
                 maybe_payload = context.payloads().next() => match maybe_payload {
-                    Some(payload) => if let Some(http_payload) = payload.try_into_http_payload() {
+                    Some(Payload::Http(http_payload)) => {
                         let (payload_meta, request) = http_payload.into_parts();
                         let transaction_meta = transaction_metadata_from_payload_metadata(&payload_meta);
                         let transaction = Transaction::from_original(transaction_meta, request);
 
                         forwarder.send_transaction(transaction).await?;
-                    }
+                    },
+                    Some(Payload::MetricSeries(payload)) => if let Some(stateful_metrics) = &stateful_metrics {
+                        stateful_metrics.send(payload).await?;
+                    },
+                    Some(_) => {},
                     None => break,
                 },
             }
@@ -184,6 +211,9 @@ impl Forwarder for Datadog {
         // Shutdown the forwarder gracefully.
         validation.abort();
         forwarder.shutdown().await;
+        if let Some(stateful_metrics) = stateful_metrics {
+            stateful_metrics.shutdown().await;
+        }
 
         debug!("Datadog forwarder stopped.");
 

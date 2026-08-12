@@ -4,6 +4,14 @@ use super::schema;
 #[allow(unused_imports)]
 use super::*;
 
+static STATEFUL_METRICS_MAX_INFLIGHT_PAYLOADS_SCHEMA: SchemaEntry = SchemaEntry {
+    schema: Schema::Saluki,
+    yaml_path: "stateful_metrics_max_inflight_payloads",
+    env_vars: &[],
+    value_type: ValueType::Integer,
+    default: Some("32"),
+};
+
 crate::declare_annotations! {
     /// `api_key`-API key for endpoint auth
     API_KEY = SalukiAnnotation {
@@ -364,6 +372,17 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: Some(&["DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES"]),
         used_by: &[structs::DATADOG_METRICS_CONFIGURATION, structs::FORWARDER_CONFIGURATION],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
+    };
+    /// `stateful_metrics_max_inflight_payloads`
+    STATEFUL_METRICS_MAX_INFLIGHT_PAYLOADS = SalukiAnnotation {
+        schema: &STATEFUL_METRICS_MAX_INFLIGHT_PAYLOADS_SCHEMA,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::FORWARDER_CONFIGURATION],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),

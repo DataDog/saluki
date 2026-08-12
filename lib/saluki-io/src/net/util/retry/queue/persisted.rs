@@ -86,6 +86,7 @@ impl DiskUsageRetrieverWrapper {
 }
 
 /// Arguments for constructing a persisted retry queue.
+#[derive(Clone)]
 pub struct PersistedQueueArgs {
     /// Root path under which the queue directory is created.
     pub root_path: PathBuf,

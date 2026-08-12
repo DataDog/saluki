@@ -9,6 +9,7 @@ mod proxy;
 pub mod request_builder;
 mod retry;
 mod retry_capacity;
+pub(crate) mod stateful_metrics;
 pub mod telemetry;
 pub mod transaction;
 pub mod validation;

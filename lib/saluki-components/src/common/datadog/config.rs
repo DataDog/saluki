@@ -44,6 +44,10 @@ const fn default_api_key_validation_interval_config_mins() -> i64 {
     default_api_key_validation_interval_mins() as i64
 }
 
+const fn default_stateful_metrics_max_inflight_payloads() -> usize {
+    32
+}
+
 const MIN_TLS_VERSION_TLS10: &str = "tlsv1.0";
 const MIN_TLS_VERSION_TLS11: &str = "tlsv1.1";
 const MIN_TLS_VERSION_TLS12: &str = "tlsv1.2";
@@ -234,6 +238,13 @@ impl OpwMetricsConfiguration {
 #[derive(Clone, Deserialize, Facet)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ForwarderConfiguration {
+    /// Maximum ordered unacknowledged metric batches per endpoint/API-key stream.
+    #[serde(
+        default = "default_stateful_metrics_max_inflight_payloads",
+        rename = "stateful_metrics_max_inflight_payloads"
+    )]
+    stateful_metrics_max_inflight_payloads: usize,
+
     /// Maximum number of concurrent requests for an individual endpoint.
     ///
     /// Defaults to 10. If set to 0, request concurrency is clamped to 1.
@@ -393,6 +404,7 @@ impl ForwarderConfiguration {
 
     /// Applies authoritative typed metrics-routing configuration.
     pub(crate) fn apply_typed_metrics_configuration(&mut self, metrics: &MetricsEncoding, endpoints: &Endpoints) {
+        let stateful_metrics_enabled = self.v3_api.stateful_metrics_enabled;
         self.opw_metrics = OpwMetricsConfiguration::new(
             OpwMetricsSettings::new(
                 endpoints.opw_intake.enabled,
@@ -406,6 +418,7 @@ impl ForwarderConfiguration {
             ),
         );
         self.v3_api = (&metrics.v3_api).into();
+        self.v3_api.stateful_metrics_enabled = stateful_metrics_enabled;
         self.use_v3_api.series = (&metrics.v3_series_mode).into();
         self.serializer_compressor_kind = endpoints.compression.compressor_kind.clone();
     }
@@ -424,6 +437,16 @@ impl ForwarderConfiguration {
         };
 
         endpoint_concurrency.saturating_mul(endpoint_concurrency_multiplier)
+    }
+
+    /// Returns whether Foldspace series transport is enabled.
+    pub const fn stateful_metrics_enabled(&self) -> bool {
+        self.v3_api.stateful_metrics_enabled()
+    }
+
+    /// Returns the endpoint-local ordered Foldspace in-flight window.
+    pub const fn stateful_metrics_max_inflight_payloads(&self) -> usize {
+        self.stateful_metrics_max_inflight_payloads
     }
 
     /// Returns the maximum number of idle HTTP connections per host.
@@ -1051,6 +1074,9 @@ mod tests {
         let mut config = forwarder_config_from(
             config_with(serde_json::json!({
                 "serializer_compressor_kind": "zlib",
+                "serializer_experimental_use_v3_api": {
+                    "stateful_metrics_enabled": true
+                },
                 "use_v3_api_series_enabled": "true",
                 "observability_pipelines_worker_metrics_enabled": false,
             })),
@@ -1073,6 +1099,7 @@ mod tests {
 
         assert_eq!(config.serializer_compressor_kind, "zstd");
         assert_eq!(config.v3_api.compression_level, 7);
+        assert!(config.stateful_metrics_enabled());
         assert!(config.v3_api.series.validate);
         assert_eq!(config.use_v3_api_series().enabled, "false");
         assert_eq!(

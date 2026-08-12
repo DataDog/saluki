@@ -545,7 +545,9 @@ fn is_metrics_request_uri(uri: &Uri, v3_beta_series_route: &str) -> bool {
     METRIC_INTAKE_PATHS.contains(&uri.path()) || uri.path() == v3_beta_series_route
 }
 
-fn should_route_to_endpoint(is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute) -> bool {
+pub(super) fn should_route_to_endpoint(
+    is_metrics_request: bool, has_metrics_primary: bool, route: EndpointRoute,
+) -> bool {
     match (is_metrics_request, has_metrics_primary, route) {
         (true, true, EndpointRoute::Primary) => false,
         (true, true, EndpointRoute::MetricsPrimary) => true,
@@ -819,7 +821,7 @@ where
     Transaction::reassemble(metadata, request)
 }
 
-fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
+pub(super) fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {
     // For additional endpoints we hash over the api_key_index (the stable position of this key in
     // the additional_endpoints config list) rather than the raw API key value. This means the queue
     // ID survives API key rotations pushed via the config stream — previously-persisted transactions
@@ -840,7 +842,7 @@ fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoin
     format!("{}/{}/{:x}", context.component_id(), endpoint_host, hash)
 }
 
-fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
+pub(super) fn track_queue_drops(telemetry: &ComponentTelemetry, domain: &str, push_result: PushResult) {
     if push_result.had_drops() {
         saluki_antithesis::sometimes!(
             true,

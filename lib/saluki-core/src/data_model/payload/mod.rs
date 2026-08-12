@@ -14,6 +14,9 @@ use crate::topology::interconnect::Dispatchable;
 mod metadata;
 pub use self::metadata::PayloadMetadata;
 
+mod metric_series;
+pub use self::metric_series::MetricSeriesPayload;
+
 mod raw;
 pub use self::raw::RawPayload;
 
@@ -32,6 +35,9 @@ pub enum PayloadType {
 
     /// gRPC.
     Grpc,
+
+    /// Logical metric series.
+    MetricSeries,
 }
 
 impl Default for PayloadType {
@@ -56,6 +62,10 @@ impl fmt::Display for PayloadType {
             types.push("gRPC");
         }
 
+        if self.contains(Self::MetricSeries) {
+            types.push("MetricSeries");
+        }
+
         write!(f, "{}", types.join("|"))
     }
 }
@@ -78,6 +88,9 @@ pub enum Payload {
     ///
     /// Includes the gRPC endpoint, service path, and protobuf-encoded request body.
     Grpc(GrpcPayload),
+
+    /// A versioned, compressed logical metric series batch.
+    MetricSeries(MetricSeriesPayload),
 }
 
 impl Payload {
@@ -87,6 +100,7 @@ impl Payload {
             Payload::Raw(_) => PayloadType::Raw,
             Payload::Http(_) => PayloadType::Http,
             Payload::Grpc(_) => PayloadType::Grpc,
+            Payload::MetricSeries(_) => PayloadType::MetricSeries,
         }
     }
 
@@ -119,6 +133,14 @@ impl Payload {
             _ => None,
         }
     }
+
+    /// Returns the inner payload value when this is a logical metric series payload.
+    pub fn try_into_metric_series_payload(self) -> Option<MetricSeriesPayload> {
+        match self {
+            Payload::MetricSeries(payload) => Some(payload),
+            _ => None,
+        }
+    }
 }
 
 impl Dispatchable for Payload {
@@ -143,7 +165,7 @@ mod tests {
     fn payload_type_display_joins_combined_flags_in_declaration_order() {
         // Combined flags render in the fixed declaration order joined by `|`, regardless of how they were OR'd together.
         assert_eq!((PayloadType::Grpc | PayloadType::Raw).to_string(), "Raw|gRPC");
-        assert_eq!(PayloadType::all_bits().to_string(), "Raw|HTTP|gRPC");
+        assert_eq!(PayloadType::all_bits().to_string(), "Raw|HTTP|gRPC|MetricSeries");
 
         // The empty bitmask (also the `Default`) renders as an empty string.
         assert_eq!(PayloadType::none().to_string(), "");
