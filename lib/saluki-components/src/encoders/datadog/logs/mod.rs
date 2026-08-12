@@ -1,6 +1,5 @@
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
-use facet::Facet;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_common::iter::ReusableDeduplicator;
 use saluki_config::GenericConfiguration;
@@ -41,7 +40,7 @@ fn default_serializer_compressor_kind() -> String {
 }
 
 /// Datadog Logs incremental encoder.
-#[derive(Deserialize, Debug, Facet)]
+#[derive(Deserialize, Debug)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub struct DatadogLogsConfiguration {
     /// Compression kind for Logs payloads. Defaults to `zstd`.

@@ -1,7 +1,6 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use facet::Facet;
 use headers::Authorization;
 use hyper_http_proxy::{Intercept, Proxy};
 use saluki_common::deser::empty_string_as_none;
@@ -15,7 +14,7 @@ use url::Url;
 /// The proxy servers themselves live in the Datadog Agent's nested `proxy` section, while the two
 /// matching-behavior settings are top-level Agent keys. The nesting is therefore split across two
 /// structs, and this one is flattened by its owner so both levels are read from the same root.
-#[derive(Clone, Deserialize, Facet)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct ProxyConfiguration {
     /// The proxy servers and their bypass list, from the Agent's `proxy` section.
@@ -37,7 +36,7 @@ pub struct ProxyConfiguration {
 }
 
 /// The Datadog Agent's `proxy` configuration section.
-#[derive(Clone, Default, Deserialize, Facet)]
+#[derive(Clone, Default, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 struct ProxyServers {
     /// The proxy server for HTTP requests.

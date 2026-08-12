@@ -4,7 +4,6 @@ use std::{
     sync::LazyLock,
 };
 
-use facet::Facet;
 use http::uri::Authority;
 use regex::Regex;
 use saluki_config::GenericConfiguration;
@@ -359,11 +358,11 @@ pub(crate) enum EndpointError {
 }
 
 #[serde_as]
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
 
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 struct MappedAPIKeys(HashMap<String, APIKeys>);
 
@@ -397,7 +396,7 @@ impl std::fmt::Display for MappedAPIKeys {
 ///
 /// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
 #[serde_as]
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
@@ -457,7 +456,7 @@ impl AdditionalEndpoints {
 }
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
-#[derive(Clone, Deserialize, Facet)]
+#[derive(Clone, Deserialize)]
 #[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct EndpointConfiguration {
     /// The API key to use.

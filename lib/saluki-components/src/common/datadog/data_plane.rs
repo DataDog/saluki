@@ -5,11 +5,10 @@
 //! actually reads: a struct that also accepted unrelated `data_plane` keys would silently change
 //! shape when one of them is set, which the configuration smoke tests treat as a defect.
 
-use facet::Facet;
 use serde::Deserialize;
 
 /// The `data_plane` keys read by a payload encoder.
-#[derive(Clone, Debug, Default, Deserialize, Facet)]
+#[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub(crate) struct EncoderDataPlaneConfiguration {
     /// ADP-specific zstd compression level, taking precedence over the Core Agent's
