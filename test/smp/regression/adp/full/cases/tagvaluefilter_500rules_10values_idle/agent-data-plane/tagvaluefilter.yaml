@@ -1,0 +1,7501 @@
+metric_tag_value_allowlist:
+  - metric_prefix: tagvalue.metric.10000
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10001
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10002
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10003
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10004
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10005
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10006
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10007
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10008
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10009
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10010
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10011
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10012
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10013
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10014
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10015
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10016
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10017
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10018
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10019
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10020
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10021
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10022
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10023
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10024
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10025
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10026
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10027
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10028
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10029
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10030
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10031
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10032
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10033
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10034
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10035
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10036
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10037
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10038
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10039
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10040
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10041
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10042
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10043
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10044
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10045
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10046
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10047
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10048
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10049
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10050
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10051
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10052
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10053
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10054
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10055
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10056
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10057
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10058
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10059
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10060
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10061
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10062
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10063
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10064
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10065
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10066
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10067
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10068
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10069
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10070
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10071
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10072
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10073
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10074
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10075
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10076
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10077
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10078
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10079
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10080
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10081
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10082
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10083
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10084
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10085
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10086
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10087
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10088
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10089
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10090
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10091
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10092
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10093
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10094
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10095
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10096
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10097
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10098
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10099
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10100
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10101
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10102
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10103
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10104
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10105
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10106
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10107
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10108
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10109
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10110
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10111
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10112
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10113
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10114
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10115
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10116
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10117
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10118
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10119
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10120
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10121
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10122
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10123
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10124
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10125
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10126
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10127
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10128
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10129
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10130
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10131
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10132
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10133
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10134
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10135
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10136
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10137
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10138
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10139
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10140
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10141
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10142
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10143
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10144
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10145
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10146
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10147
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10148
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10149
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10150
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10151
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10152
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10153
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10154
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10155
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10156
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10157
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10158
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10159
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10160
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10161
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10162
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10163
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10164
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10165
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10166
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10167
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10168
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10169
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10170
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10171
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10172
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10173
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10174
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10175
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10176
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10177
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10178
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10179
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10180
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10181
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10182
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10183
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10184
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10185
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10186
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10187
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10188
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10189
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10190
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10191
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10192
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10193
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10194
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10195
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10196
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10197
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10198
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10199
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10200
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10201
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10202
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10203
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10204
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10205
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10206
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10207
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10208
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10209
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10210
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10211
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10212
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10213
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10214
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10215
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10216
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10217
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10218
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10219
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10220
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10221
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10222
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10223
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10224
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10225
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10226
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10227
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10228
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10229
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10230
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10231
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10232
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10233
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10234
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10235
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10236
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10237
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10238
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10239
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10240
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10241
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10242
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10243
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10244
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10245
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10246
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10247
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10248
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10249
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10250
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10251
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10252
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10253
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10254
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10255
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10256
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10257
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10258
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10259
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10260
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10261
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10262
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10263
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10264
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10265
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10266
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10267
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10268
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10269
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10270
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10271
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10272
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10273
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10274
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10275
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10276
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10277
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10278
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10279
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10280
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10281
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10282
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10283
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10284
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10285
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10286
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10287
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10288
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10289
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10290
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10291
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10292
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10293
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10294
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10295
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10296
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10297
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10298
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10299
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10300
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10301
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10302
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10303
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10304
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10305
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10306
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10307
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10308
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10309
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10310
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10311
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10312
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10313
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10314
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10315
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10316
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10317
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10318
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10319
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10320
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10321
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10322
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10323
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10324
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10325
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10326
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10327
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10328
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10329
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10330
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10331
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10332
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10333
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10334
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10335
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10336
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10337
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10338
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10339
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10340
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10341
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10342
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10343
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10344
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10345
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10346
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10347
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10348
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10349
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10350
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10351
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10352
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10353
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10354
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10355
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10356
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10357
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10358
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10359
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10360
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10361
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10362
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10363
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10364
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10365
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10366
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10367
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10368
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10369
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10370
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10371
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10372
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10373
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10374
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10375
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10376
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10377
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10378
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10379
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10380
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10381
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10382
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10383
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10384
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10385
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10386
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10387
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10388
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10389
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10390
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10391
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10392
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10393
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10394
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10395
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10396
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10397
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10398
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10399
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10400
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10401
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10402
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10403
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10404
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10405
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10406
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10407
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10408
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10409
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10410
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10411
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10412
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10413
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10414
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10415
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10416
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10417
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10418
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10419
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10420
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10421
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10422
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10423
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10424
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10425
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10426
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10427
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10428
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10429
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10430
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10431
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10432
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10433
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10434
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10435
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10436
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10437
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10438
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10439
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10440
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10441
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10442
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10443
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10444
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10445
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10446
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10447
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10448
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10449
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10450
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10451
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10452
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10453
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10454
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10455
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10456
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10457
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10458
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10459
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10460
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10461
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10462
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10463
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10464
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10465
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10466
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10467
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10468
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10469
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10470
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10471
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10472
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10473
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10474
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10475
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10476
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10477
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10478
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10479
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10480
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10481
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10482
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10483
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10484
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10485
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10486
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10487
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10488
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10489
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10490
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10491
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10492
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10493
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10494
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10495
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10496
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10497
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10498
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
+  - metric_prefix: tagvalue.metric.10499
+    tag_name: tagvalue_tag_00
+    values:
+      - value00
+      - value01
+      - value02
+      - value03
+      - value04
+      - value05
+      - value06
+      - value07
+      - value08
+      - value09
+    on_miss: remove
+    replacement: other
