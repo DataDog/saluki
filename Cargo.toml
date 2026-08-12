@@ -119,7 +119,7 @@ http = { version = "1", default-features = false }
 http-body = { version = "1", default-features = false }
 http-body-util = { version = "0.1", default-features = false }
 hyper = { version = "1", default-features = false }
-hyper-http-proxy = { version = "1.1", default-features = false, features = [
+hyper-http-proxy = { version = "1.2", default-features = false, features = [
   "rustls-tls-native-roots",
 ] }
 hyper-rustls = { version = "0.27", default-features = false, features = [
@@ -257,13 +257,6 @@ lru-slab = { version = "0.1.2", default-features = false }
 antithesis-instrumentation = { version = "0.1" }
 antithesis_sdk = { git = "https://github.com/antithesishq/antithesis-sdk-rust", rev = "78c9db56771f0f6b01cb5404765c5a96852c159c", default-features = false } # 0.2.8 is pinned to rand 0.8, rev version allows us to select workspace rand
 mime = "0.3"
-
-[patch.crates-io]
-# Forked version of `hyper-http-proxy` that adds a timeout for the TLS handshake performed when
-# tunneling to an HTTPS destination through a proxy. Tracked upstream at
-# https://github.com/metalbear-co/hyper-http-proxy/pull/9; switch back to the upstream crate once
-# that merges.
-hyper-http-proxy = { git = "https://github.com/jszwedko/hyper-http-proxy.git", branch = "jszwedko/tls-handshake-timeout" }
 
 [profile.devel]
 inherits = "dev"

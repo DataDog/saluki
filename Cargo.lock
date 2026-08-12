@@ -2137,8 +2137,9 @@ dependencies = [
 
 [[package]]
 name = "hyper-http-proxy"
-version = "1.1.1"
-source = "git+https://github.com/jszwedko/hyper-http-proxy.git?branch=jszwedko%2Ftls-handshake-timeout#f273b440d64841836c771a36ce2b2efd8a3408e0"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd1d471ea2f65ba45eddb1d6ab7d58ac2671d2d4ac14da5c6516ae1d97e1327a"
 dependencies = [
  "bytes",
  "futures-util",
