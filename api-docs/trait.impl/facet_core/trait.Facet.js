@@ -1,9 +1,0 @@
-(function() {
-    const implementors = Object.fromEntries([["saluki_components",[["impl&lt;'ʄ&gt; <a class=\"trait\" href=\"https://docs.rs/facet-core/0.46.5/facet_core/trait.Facet.html\" title=\"trait facet_core::Facet\">Facet</a>&lt;'ʄ&gt; for <a class=\"struct\" href=\"saluki_components/encoders/struct.DatadogEventsConfiguration.html\" title=\"struct saluki_components::encoders::DatadogEventsConfiguration\">DatadogEventsConfiguration</a>",0],["impl&lt;'ʄ&gt; <a class=\"trait\" href=\"https://docs.rs/facet-core/0.46.5/facet_core/trait.Facet.html\" title=\"trait facet_core::Facet\">Facet</a>&lt;'ʄ&gt; for <a class=\"struct\" href=\"saluki_components/encoders/struct.DatadogLogsConfiguration.html\" title=\"struct saluki_components::encoders::DatadogLogsConfiguration\">DatadogLogsConfiguration</a>",0],["impl&lt;'ʄ&gt; <a class=\"trait\" href=\"https://docs.rs/facet-core/0.46.5/facet_core/trait.Facet.html\" title=\"trait facet_core::Facet\">Facet</a>&lt;'ʄ&gt; for <a class=\"struct\" href=\"saluki_components/encoders/struct.DatadogMetricsConfiguration.html\" title=\"struct saluki_components::encoders::DatadogMetricsConfiguration\">DatadogMetricsConfiguration</a>",0],["impl&lt;'ʄ&gt; <a class=\"trait\" href=\"https://docs.rs/facet-core/0.46.5/facet_core/trait.Facet.html\" title=\"trait facet_core::Facet\">Facet</a>&lt;'ʄ&gt; for <a class=\"struct\" href=\"saluki_components/encoders/struct.DatadogServiceChecksConfiguration.html\" title=\"struct saluki_components::encoders::DatadogServiceChecksConfiguration\">DatadogServiceChecksConfiguration</a>",0]]]]);
-    if (window.register_implementors) {
-        window.register_implementors(implementors);
-    } else {
-        window.pending_implementors = implementors;
-    }
-})()
-//{"start":59,"fragment_lengths":[1521]}
