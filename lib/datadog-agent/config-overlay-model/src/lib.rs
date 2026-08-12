@@ -597,7 +597,8 @@ fn load_otel_receiver(otel_dir: &Path) -> Result<serde_yaml::Value, Error> {
     Ok(serde_yaml::Value::Mapping(receiver_section))
 }
 
-/// Replace the `otlp_config.receiver` subtree in the Datadog schema with the resolved OTel subtree.
+/// Merge the resolved OTel receiver subtree into the Datadog schema's `otlp_config.receiver` while
+/// honoring default values not native to OTel.
 fn patch_receiver(datadog_schema: &mut serde_yaml::Value, otel_receiver: serde_yaml::Value) -> Result<(), Error> {
     let Some(otlp_config) = datadog_schema
         .get_mut("properties")
@@ -610,8 +611,50 @@ fn patch_receiver(datadog_schema: &mut serde_yaml::Value, otel_receiver: serde_y
         return Ok(());
     };
 
-    *receiver = otel_receiver;
+    let datadog_receiver = std::mem::take(receiver);
+    let mut merged = otel_receiver;
+    merge_receiver_node(&mut merged, &datadog_receiver);
+    *receiver = merged;
     Ok(())
+}
+
+/// Recursively overlay Datadog-specific metadata from the core schema onto the resolved OTel node.
+fn merge_receiver_node(otel: &mut serde_yaml::Value, datadog: &serde_yaml::Value) {
+    let Some(otel_map) = otel.as_mapping_mut() else { return };
+    let Some(datadog_map) = datadog.as_mapping() else {
+        return;
+    };
+
+    // Overlay all Datadog metadata fields onto the OTel node, except `properties`
+    // which is merged recursively to preserve OTel's additional keys.
+    for (key, val) in datadog_map.iter() {
+        if key.as_str() == Some("properties") {
+            continue;
+        }
+        otel_map.insert(key.clone(), val.clone());
+    }
+
+    // Recursively merge `properties` containers.
+    if let (Some(otel_props), Some(datadog_props)) = (
+        otel_map.get_mut("properties").and_then(|v| v.as_mapping_mut()),
+        datadog_map.get("properties").and_then(|v| v.as_mapping()),
+    ) {
+        // Merge overlapping OTEL properties with corresponding Datadog properties.
+        let otel_keys: Vec<serde_yaml::Value> = otel_props.keys().cloned().collect();
+        for key in &otel_keys {
+            if let Some(datadog_val) = datadog_props.get(key) {
+                if let Some(otel_val) = otel_props.get_mut(key) {
+                    merge_receiver_node(otel_val, datadog_val);
+                }
+            }
+        }
+        // Add Datadog-only properties that don't exist in OTEL.
+        for (key, val) in datadog_props.iter() {
+            if !otel_props.contains_key(key) {
+                otel_props.insert(key.clone(), val.clone());
+            }
+        }
+    }
 }
 
 /// Resolve OTel schema references into a flat tree.

@@ -33,7 +33,11 @@ fn main() {
 
     let files = Files::default();
 
-    println!("cargo:rerun-if-changed={}", files.datadog_schema.display());
+    let core_schema_dir = files
+        .datadog_schema
+        .parent()
+        .expect("core schema file must have a parent directory");
+    println!("cargo:rerun-if-changed={}", core_schema_dir.display());
     println!("cargo:rerun-if-changed={}", files.otel_schema_dir.display());
     println!("cargo:rerun-if-changed={}", files.overlay.display());
     println!("cargo:rerun-if-changed={}", template_path.display());
