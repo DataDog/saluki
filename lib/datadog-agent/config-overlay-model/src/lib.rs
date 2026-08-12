@@ -239,8 +239,8 @@ pub enum ValueType {
 ///
 /// Defaults to the canonical location of the required schema files in this library.
 pub struct Files {
-    /// Directory containing the Datadog Agent core schema (`schema/core/`).
-    pub datadog_schema_dir: PathBuf,
+    /// The Datadog Agent core schema file (`schema/core/core_schema.yaml`).
+    pub datadog_schema: PathBuf,
     /// Directory containing the vendored OTEL receiver schema (`schema/otel/`).
     pub otel_schema_dir: PathBuf,
     /// The schema overlay (`schema/schema_overlay.yaml`).
@@ -254,7 +254,7 @@ impl Default for Files {
             .join("config")
             .join("schema");
         Files {
-            datadog_schema_dir: dir.join("core"),
+            datadog_schema: dir.join("core").join("core_schema.yaml"),
             otel_schema_dir: dir.join("otel"),
             overlay: dir.join("schema_overlay.yaml"),
         }
@@ -264,7 +264,7 @@ impl Default for Files {
 impl SchemaOverlay {
     pub fn load(files: Files) -> Result<Self, Error> {
         let loaded = Self::from_file(&files.overlay)?;
-        loaded.validate(&files.datadog_schema_dir, &files.otel_schema_dir)?;
+        loaded.validate(&files.datadog_schema, &files.otel_schema_dir)?;
         Ok(loaded)
     }
 
@@ -279,8 +279,8 @@ impl SchemaOverlay {
         Self::from_yaml(&contents)
     }
 
-    fn validate(&self, datadog_schema_dir: &Path, otel_schema_dir: &Path) -> Result<(), Error> {
-        self.validate_keys_match(datadog_schema_dir, otel_schema_dir)?;
+    fn validate(&self, datadog_schema: &Path, otel_schema_dir: &Path) -> Result<(), Error> {
+        self.validate_keys_match(datadog_schema, otel_schema_dir)?;
         self.validate_entries()?;
         Ok(())
     }
@@ -331,8 +331,8 @@ impl SchemaOverlay {
     }
 
     /// Ensure that each core schema key appears exactly once across the overlay sections.
-    fn validate_keys_match(&self, datadog_schema_dir: &Path, otel_schema_dir: &Path) -> Result<(), Error> {
-        let schema_keys = Self::schema_keys(datadog_schema_dir, otel_schema_dir)?;
+    fn validate_keys_match(&self, datadog_schema: &Path, otel_schema_dir: &Path) -> Result<(), Error> {
+        let schema_keys = Self::schema_keys(datadog_schema, otel_schema_dir)?;
 
         for key in self.excluded.keys() {
             if self.inventory.contains_key(key.as_str()) {
@@ -370,8 +370,8 @@ impl SchemaOverlay {
         Ok(())
     }
 
-    fn schema_keys(datadog_schema_dir: &Path, otel_schema_dir: &Path) -> Result<HashSet<String>, Error> {
-        let schema = load_composed_schema(datadog_schema_dir, otel_schema_dir)?;
+    fn schema_keys(datadog_schema: &Path, otel_schema_dir: &Path) -> Result<HashSet<String>, Error> {
+        let schema = load_composed_schema(datadog_schema, otel_schema_dir)?;
         let props = schema
             .get("properties")
             .and_then(|v| v.as_mapping())
@@ -520,9 +520,9 @@ fn read_yaml(path: &Path) -> Result<serde_yaml::Value, Error> {
 ///
 /// Returns [`Error::Io`] if `schema_path` or any referenced file cannot be read, and
 /// [`Error::Yaml`] if any file fails to parse. The offending path is carried in the error.
-pub fn load_resolved_schema(schema_dir: &Path) -> Result<serde_yaml::Value, Error> {
-    let schema_path = schema_dir.join("core_schema.yaml");
-    let mut doc = read_yaml(&schema_path)?;
+pub fn load_resolved_schema(schema_path: &Path) -> Result<serde_yaml::Value, Error> {
+    let schema_dir = schema_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut doc = read_yaml(schema_path)?;
     resolve_refs(&mut doc, schema_dir)?;
     Ok(doc)
 }
@@ -563,8 +563,8 @@ fn resolve_refs(value: &mut serde_yaml::Value, schema_dir: &Path) -> Result<(), 
 /// This loads the pristine Datadog schema (`core_schema.yaml`), loads and resolves the pristine
 /// OTEL receiver schema (`otel/config.schema.yaml`), and replaces the `otlp_config.receiver`
 /// subtree in the Datadog schema with the resolved OTEL subtree.
-pub fn load_composed_schema(datadog_schema_dir: &Path, otel_schema_dir: &Path) -> Result<serde_yaml::Value, Error> {
-    let mut datadog_schema = load_resolved_schema(datadog_schema_dir)?;
+pub fn load_composed_schema(datadog_schema: &Path, otel_schema_dir: &Path) -> Result<serde_yaml::Value, Error> {
+    let mut datadog_schema = load_resolved_schema(datadog_schema)?;
     let otel_receiver = load_otel_receiver(otel_schema_dir)?;
     patch_receiver(&mut datadog_schema, otel_receiver)?;
     Ok(datadog_schema)
@@ -875,7 +875,9 @@ mod tests {
     #[test]
     fn overlay_loads() {
         let test_files = Files {
-            datadog_schema_dir: Path::new(env!("CARGO_MANIFEST_DIR")).join("test"),
+            datadog_schema: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test")
+                .join("fake_schema.yaml"),
             otel_schema_dir: otel_schema_dir_for_tests(),
             overlay: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("test")
@@ -926,13 +928,13 @@ mod tests {
 
     fn load_from_strs(schema: &str, overlay: &str) -> Result<SchemaOverlay, Error> {
         let dir = tempfile::tempdir().unwrap();
-        let schema_path = dir.path().join("core_schema.yaml");
+        let schema_path = dir.path().join("fake_schema.yaml");
         let overlay_path = dir.path().join("overlay.yaml");
         std::fs::write(&schema_path, schema).unwrap();
         std::fs::write(&overlay_path, overlay).unwrap();
         let otel_schema_dir = otel_schema_dir_for_tests();
         SchemaOverlay::load(Files {
-            datadog_schema_dir: dir.path().to_path_buf(),
+            datadog_schema: schema_path,
             otel_schema_dir,
             overlay: overlay_path,
         })
@@ -1030,7 +1032,7 @@ excluded:
         let schema_path = dir.path().join("core_schema.yaml");
         std::fs::write(&schema_path, "properties:\n  feature:\n    $ref: sub.yaml\n").unwrap();
 
-        let keys = SchemaOverlay::schema_keys(dir.path(), &otel_schema_dir_for_tests()).unwrap();
+        let keys = SchemaOverlay::schema_keys(&schema_path, &otel_schema_dir_for_tests()).unwrap();
         assert_eq!(
             keys,
             HashSet::from(["feature.enabled".to_string()]),
@@ -1046,7 +1048,7 @@ excluded:
         let schema_path = dir.path().join("core_schema.yaml");
         std::fs::write(&schema_path, "properties:\n  feature:\n    $ref: does_not_exist.yaml\n").unwrap();
 
-        let err = SchemaOverlay::schema_keys(dir.path(), &otel_schema_dir_for_tests()).unwrap_err();
+        let err = SchemaOverlay::schema_keys(&schema_path, &otel_schema_dir_for_tests()).unwrap_err();
         assert!(matches!(err, Error::Io(_)), "expected Io error, got: {err}");
         assert!(
             err.to_string().contains("does_not_exist.yaml"),

@@ -33,7 +33,7 @@ fn main() {
 
     let files = Files::default();
 
-    println!("cargo:rerun-if-changed={}", files.datadog_schema_dir.display());
+    println!("cargo:rerun-if-changed={}", files.datadog_schema.display());
     println!("cargo:rerun-if-changed={}", files.otel_schema_dir.display());
     println!("cargo:rerun-if-changed={}", files.overlay.display());
     println!("cargo:rerun-if-changed={}", template_path.display());
@@ -43,7 +43,7 @@ fn main() {
 
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
-    let schema_map = schema_gen::load_schema(&files.datadog_schema_dir, &files.otel_schema_dir);
+    let schema_map = schema_gen::load_schema(&files.datadog_schema, &files.otel_schema_dir);
     let overlay = SchemaOverlay::load(files).unwrap_or_else(|e| panic!("{e}"));
 
     // schema.rs is ~480KB — stays in OUT_DIR, never committed.

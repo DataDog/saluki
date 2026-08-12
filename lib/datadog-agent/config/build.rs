@@ -15,7 +15,7 @@ fn main() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let files = Files::default();
 
-    println!("cargo:rerun-if-changed={}", files.datadog_schema_dir.display());
+    println!("cargo:rerun-if-changed={}", files.datadog_schema.display());
     println!("cargo:rerun-if-changed={}", files.otel_schema_dir.display());
     println!("cargo:rerun-if-changed={}", files.overlay.display());
     println!("cargo:rerun-if-changed=build.rs");
@@ -24,8 +24,8 @@ fn main() {
     println!("cargo:rerun-if-changed=build/env_reader_gen.rs");
     println!("cargo:rerun-if-changed=build/witness_gen.rs");
 
-    let schema_path = files.datadog_schema_dir.join("core_schema.yaml");
-    let schema_map = schema_gen::load_schema(&files.datadog_schema_dir, &files.otel_schema_dir);
+    let schema_path = files.datadog_schema.clone();
+    let schema_map = schema_gen::load_schema(&files.datadog_schema, &files.otel_schema_dir);
     let overlay = SchemaOverlay::load(files).unwrap_or_else(|e| panic!("{e}"));
 
     classifier_gen::generate(&overlay, &schema_map, &manifest_dir);
