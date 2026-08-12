@@ -13,6 +13,7 @@ Usage:
 
 import argparse
 import copy
+import json
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import jinja2
 import yaml
 
 SCRIPT_DIR = Path(__file__).parent
@@ -41,6 +43,31 @@ SUITES = {
     "full": lambda experiment: True,
     "quality-gates": lambda experiment: "checks" in experiment,
 }
+
+# Suffix marking a target file `source:` as a Jinja template rather than a file to copy verbatim.
+JINJA_TEMPLATE_SUFFIX = ".j2"
+
+# Loader used to check that rendered templates still parse. PyYAML's pure-Python parser dominates
+# the runtime of this script when a template renders megabytes of configuration -- around 25
+# seconds for a 12 MiB filterlist, against 4 with libyaml -- so use libyaml's parser wherever the
+# runtime was built with it, and fall back to the pure-Python one where it wasn't.
+SafeLoader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+# Keys of the resolved configuration that are handed to SMP with their own `{{ ... }}` templating
+# intact, and so must not be rendered here. SMP substitutes the job ID, experiment name and time
+# range into report links itself, long after we're done.
+UNRENDERED_KEYS = frozenset(("report_links",))
+
+# Maximum number of strings lading expands a pattern pool into. Beyond this it silently truncates
+# (`.take(max_expansions)` in its `StringListPool`), so `lading_range` refuses to go over.
+LADING_MAX_EXPANSIONS = 15_000
+
+# A lading range pattern written out literally, for example `{{0-499}}`. Jinja shares lading's
+# delimiters and would evaluate one of these as arithmetic before lading ever saw it, so we reject
+# them and point at `lading_range` instead.
+LITERAL_LADING_RANGE = re.compile(
+    r"\{\{\s*(?:\d+\s*-\s*\d+|[A-Za-z]\s*-\s*[A-Za-z])\s*\}\}"
+)
 
 # Mapping from optimization goal to directory name suffix
 GOAL_SUFFIXES = {
@@ -194,6 +221,97 @@ def resolve_experiment(experiment: dict, global_config: dict, templates: dict) -
     result = deep_merge(result, experiment_config)
 
     return result
+
+
+def range_bounds(first: int, count: int) -> tuple[int, int, int]:
+    """Resolve a `first`/`count` range into its last value and the width lading renders it at.
+
+    lading left-pads numeric range patterns to the width of the range's end, so every name it
+    expands from one pattern is the same length. Anything we generate that has to line up with
+    those names has to pad identically, which is why both helpers below share this.
+    """
+    if count < 1:
+        raise ValueError(f"range count must be at least 1, got {count}")
+
+    last = first + count - 1
+    return first, last, len(str(last))
+
+
+def lading_range(first: int, count: int) -> str:
+    """Render a lading range pattern, for example, `lading_range(10000, 500)` -> `{{10000-10499}}`.
+
+    Use this instead of writing the pattern out: Jinja and lading share `{{ ... }}` delimiters, so
+    a literal pattern is evaluated as arithmetic during generation and never reaches lading.
+    """
+    first, last, _ = range_bounds(first, count)
+    if count > LADING_MAX_EXPANSIONS:
+        raise ValueError(
+            f"lading_range({first}, {count}) exceeds lading's {LADING_MAX_EXPANSIONS} expansion "
+            "limit, which it enforces by silently truncating the pool"
+        )
+
+    return f"{{{{{first}-{last}}}}}"
+
+
+def lading_names(prefix: str, first: int, count: int) -> list[str]:
+    """Expand a range into the list of names lading would generate for the matching pattern.
+
+    This is the other half of `lading_range`: it produces the same strings, padded the same way,
+    for the places we have to write them out in full rather than hand a pattern to lading. Slice
+    the result to take a subset, so the padding still follows the full range's width.
+    """
+    first, last, width = range_bounds(first, count)
+    return [f"{prefix}{value:0{width}d}" for value in range(first, last + 1)]
+
+
+def build_jinja_env(base_path: Path) -> jinja2.Environment:
+    """Build the Jinja environment that renders experiment values and target file templates."""
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(base_path),
+        undefined=jinja2.StrictUndefined,
+        keep_trailing_newline=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    env.globals["lading_range"] = lading_range
+    env.globals["lading_names"] = lading_names
+
+    return env
+
+
+def render_value(value: str, env: jinja2.Environment, variables: dict) -> str:
+    """Render one string through Jinja, with the experiment's variables in scope."""
+    if LITERAL_LADING_RANGE.search(value):
+        raise ValueError(
+            f"{value!r} contains a literal lading range pattern. Jinja shares lading's "
+            "`{{ ... }}` delimiters and evaluates it as arithmetic during generation, so lading "
+            "never sees the pattern. Use `{{ lading_range(first, count) }}` instead."
+        )
+
+    return env.from_string(value).render(exp_vars=variables)
+
+
+def render_config(config: dict, env: jinja2.Environment, variables: dict) -> dict:
+    """Render every Jinja expression in a resolved experiment configuration.
+
+    Strings anywhere in the configuration may reference `exp_vars` and the helpers above, which is
+    what keeps a template's expressions and an experiment's numbers in one place. Keys in
+    UNRENDERED_KEYS are passed through untouched.
+    """
+
+    def render(value):
+        if isinstance(value, dict):
+            return {key: render(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [render(item) for item in value]
+        if isinstance(value, str) and "{{" in value:
+            return render_value(value, env, variables)
+        return value
+
+    return {
+        key: value if key in UNRENDERED_KEYS else render(value)
+        for key, value in config.items()
+    }
 
 
 def expand_optimization_goals(experiment: dict) -> list[tuple[str, str]]:
@@ -357,7 +475,55 @@ def dump_yaml(data: dict) -> str:
     )
 
 
-def write_target_files(target_dir: Path, files_config: dict, base_path: Path) -> None:
+def render_target_template(
+    source: str,
+    filename: str,
+    env: jinja2.Environment,
+    variables: dict,
+    cache: dict,
+) -> str:
+    """Render a target file from a Jinja template, and check that it still parses as YAML.
+
+    A template is how a file gets structure that would be unreadable written out by hand, such as
+    a `metric_tag_filterlist` with thousands of entries. Rendering it here rather than at run time
+    means a broken template fails generation instead of an SMP job twenty minutes in.
+
+    Experiments routinely share a rendering -- an idle variant and a traffic variant of the same
+    scenario differ in their load generation, not in their target configuration -- and both
+    rendering and parsing megabytes of YAML is the bulk of this script's runtime, so results are
+    cached against the template and the variables that produced them.
+    """
+    key = (source, json.dumps(variables, sort_keys=True, default=str))
+    if key in cache:
+        return cache[key]
+
+    rendered = env.get_template(source).render(exp_vars=variables)
+
+    if filename.endswith((".yaml", ".yml")):
+        try:
+            # Scan the event stream rather than loading the document: the check is for a template
+            # that renders malformed YAML, and every syntax error surfaces during parsing, without
+            # paying to build Python objects out of megabytes of configuration. The one thing this
+            # gives up is resolving aliases, which these templates deliberately never emit.
+            for _ in yaml.parse(rendered, Loader=SafeLoader):
+                pass
+        except yaml.YAMLError as error:
+            raise ValueError(
+                f"Template '{source}' rendered invalid YAML for '{filename}': {error}"
+            ) from error
+
+    cache[key] = rendered
+    return rendered
+
+
+def write_target_files(
+    target_dir: Path,
+    files_config: dict,
+    base_path: Path,
+    env: jinja2.Environment,
+    variables: dict,
+    render_cache: dict,
+) -> None:
     """
     Write target configuration files.
 
@@ -365,17 +531,28 @@ def write_target_files(target_dir: Path, files_config: dict, base_path: Path) ->
         target_dir: Directory to write files to (for example, cases/exp/agent-data-plane/)
         files_config: Dict mapping filename to file spec (content or source)
         base_path: Base path for resolving relative source paths (directory containing experiments.yaml)
+        env: Jinja environment used to render `.j2` sources
+        variables: The experiment's `variables`, exposed to templates as `exp_vars`
+        render_cache: Renderings shared across experiments, keyed by template and variables
     """
     for filename, file_spec in files_config.items():
         file_path = target_dir / filename
 
         if "source" in file_spec:
-            # Copy source file
-            source_path = base_path / file_spec["source"]
+            source = file_spec["source"]
+            source_path = base_path / source
             if not source_path.exists():
                 raise ValueError(f"Source file not found: {source_path}")
 
-            shutil.copy2(source_path, file_path)
+            if source_path.suffix == JINJA_TEMPLATE_SUFFIX:
+                # Render the template rather than copying it verbatim.
+                file_path.write_text(
+                    render_target_template(
+                        source, filename, env, variables, render_cache
+                    )
+                )
+            else:
+                shutil.copy2(source_path, file_path)
 
         elif "content" in file_spec:
             # Write content directly
@@ -395,7 +572,13 @@ def write_target_files(target_dir: Path, files_config: dict, base_path: Path) ->
 
 
 def write_experiment(
-    name: str, config: dict, output_dir: Path, base_path: Path
+    name: str,
+    config: dict,
+    output_dir: Path,
+    base_path: Path,
+    env: jinja2.Environment,
+    variables: dict,
+    render_cache: dict,
 ) -> None:
     """Write the experiment files to the output directory."""
     experiment_dir = output_dir / name
@@ -420,7 +603,9 @@ def write_experiment(
     files_config = config.get("target", {}).get(
         "files", {"empty.yaml": {"content": "{}"}}
     )
-    write_target_files(target_dir, files_config, base_path)
+    write_target_files(
+        target_dir, files_config, base_path, env, variables, render_cache
+    )
 
 
 def generate_experiments(
@@ -436,6 +621,8 @@ def generate_experiments(
     templates = config.get("templates", {})
     experiments = config.get("experiments", [])
 
+    env = build_jinja_env(base_path)
+    render_cache = {}
     generated = {suite: [] for suite in SUITES}
 
     for experiment in experiments:
@@ -450,8 +637,23 @@ def generate_experiments(
             resolved = copy.deepcopy(resolved_base)
             if goal is not None:
                 resolved["optimization_goal"] = goal
+
+            # `variables` drives both the Jinja expressions in the configuration itself and the
+            # target file templates, so the two can't disagree about, say, how many metrics an
+            # experiment generates. It is an input to generation, not part of the output.
+            variables = resolved.pop("variables", {})
+            resolved = render_config(resolved, env, variables)
+
             for suite in suites:
-                write_experiment(name, resolved, base_dir / suite / "cases", base_path)
+                write_experiment(
+                    name,
+                    resolved,
+                    base_dir / suite / "cases",
+                    base_path,
+                    env,
+                    variables,
+                    render_cache,
+                )
                 generated[suite].append(name)
 
     # Copy the shared SMP config.yaml into each suite's target-config directory.

@@ -8,7 +8,29 @@
   - export SMP_ECR_HOST="${SMP_ACCOUNT_ID}.dkr.ecr.us-west-2.amazonaws.com"
   - export ADP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-${CI_PIPELINE_ID}"
   - export ADP_CHECKS_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:adp-checks-${CI_PIPELINE_ID}"
+  - export SMP_IMG_BASE="${SMP_ECR_HOST}/${SMP_TEAM_ID}-saluki:agent-adp-${CI_PIPELINE_ID}"
   - git fetch --verbose --deepen=999 origin ${CI_COMMIT_BRANCH} main
+
+# Layer the ADP image at ${ADP_IMG} into the converged Datadog Agent image and push it as
+# ${SMP_IMG}. Both the baseline and comparison build jobs end with this.
+#
+# SMP fixes one target image per job, and the tag filtering experiments need the Core Agent in the
+# picture: a `metric_tag_filterlist` is Agent configuration, and only reaches ADP over the config
+# stream. So every experiment runs against the converged image; the ones that don't care about the
+# Core Agent simply override the command to run ADP by itself, as they always have.
+.build-smp-target-image: &build-smp-target-image
+  - docker buildx build
+    --file ./docker/Dockerfile.datadog-agent
+    --tag ${SMP_IMG}
+    --build-arg DD_AGENT_IMAGE=registry.datadoghq.com/agent:${PUBLIC_DD_AGENT_VERSION}
+    --build-arg ADP_IMAGE=${ADP_IMG}
+    --label git.repository=${CI_PROJECT_NAME}
+    --label git.branch=${CI_COMMIT_REF_NAME}
+    --label git.commit=${CI_COMMIT_SHA}
+    --label ci.pipeline_id=${CI_PIPELINE_ID}
+    --label ci.job_id=${CI_JOB_ID}
+    --push
+    .
 
 build-adp-baseline-image:
   extends: .build-common-variables
@@ -50,7 +72,6 @@ build-adp-baseline-image:
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${BASELINE_ADP_SHA}
-      --build-arg INTERNAL_BUILD=true
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -58,9 +79,15 @@ build-adp-baseline-image:
       --label ci.job_id=${CI_JOB_ID}
       --push
       .
+    # Bundle that ADP build into the converged Datadog Agent image, which is the image SMP
+    # actually runs.
+    - export ADP_IMG="${BASELINE_ADP_IMG}"
+    - export SMP_IMG="${SMP_IMG_BASE}-${BASELINE_ADP_SHA}"
+    - *build-smp-target-image
     # Generate our image SHA/path for the runner job to use.
     - echo "BASELINE_ADP_SHA=${BASELINE_ADP_SHA}" >> smp-vars.env
     - echo "BASELINE_ADP_IMG=${BASELINE_ADP_IMG}" >> smp-vars.env
+    - echo "BASELINE_SMP_IMG=${SMP_IMG}" >> smp-vars.env
   artifacts:
     reports:
       dotenv: smp-vars.env
@@ -102,7 +129,6 @@ build-adp-comparison-image:
       --build-arg SPDX_LICENSES_IMAGE=${SPDX_LICENSES_IMAGE}
       --build-arg APP_IMAGE=${GBI_BASE_IMAGE}
       --build-arg APP_GIT_HASH=${COMPARISON_ADP_SHA}
-      --build-arg INTERNAL_BUILD=true
       --label git.repository=${CI_PROJECT_NAME}
       --label git.branch=${CI_COMMIT_REF_NAME}
       --label git.commit=${CI_COMMIT_SHA}
@@ -110,9 +136,15 @@ build-adp-comparison-image:
       --label ci.job_id=${CI_JOB_ID}
       --push
       .
+    # Bundle that ADP build into the converged Datadog Agent image, which is the image SMP
+    # actually runs.
+    - export ADP_IMG="${COMPARISON_ADP_IMG}"
+    - export SMP_IMG="${SMP_IMG_BASE}-${COMPARISON_ADP_SHA}"
+    - *build-smp-target-image
     # Generate our image SHA/path for the runner job to use.
     - echo "COMPARISON_ADP_SHA=${COMPARISON_ADP_SHA}" >> smp-vars.env
     - echo "COMPARISON_ADP_IMG=${COMPARISON_ADP_IMG}" >> smp-vars.env
+    - echo "COMPARISON_SMP_IMG=${SMP_IMG}" >> smp-vars.env
   artifacts:
     reports:
       dotenv: smp-vars.env
@@ -149,8 +181,8 @@ run-benchmarks-adp:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
-      --baseline-image ${BASELINE_ADP_IMG}
-      --comparison-image ${COMPARISON_ADP_IMG}
+      --baseline-image ${BASELINE_SMP_IMG}
+      --comparison-image ${COMPARISON_SMP_IMG}
       --baseline-sha ${BASELINE_ADP_SHA}
       --comparison-sha ${COMPARISON_ADP_SHA}
       --target-config-dir ./test/smp/regression/adp/quality-gates/
@@ -241,8 +273,8 @@ run-benchmarks-adp-full:
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
       --warmup-seconds 0
-      --baseline-image ${BASELINE_ADP_IMG}
-      --comparison-image ${COMPARISON_ADP_IMG}
+      --baseline-image ${BASELINE_SMP_IMG}
+      --comparison-image ${COMPARISON_SMP_IMG}
       --baseline-sha ${BASELINE_ADP_SHA}
       --comparison-sha ${COMPARISON_ADP_SHA}
       --target-config-dir ./test/smp/regression/adp/full/

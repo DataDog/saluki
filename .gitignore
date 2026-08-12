@@ -10,6 +10,7 @@ dhat-heap.json
 .DS_Store
 dist/
 checks_venv/
+.venv/
 # JavaScript-y things related to documentation generation.
 yarn.lock
 /.vitepress/
