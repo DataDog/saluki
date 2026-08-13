@@ -666,7 +666,7 @@ inventory:
     pipelines: [cross_cutting]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -690,7 +690,7 @@ inventory:
     pipelines: [cross_cutting]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded:
   key_b: \"not in schema\"
 ";
@@ -717,7 +717,7 @@ inventory:
     pipelines: [cross_cutting]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded:
   key_a: \"duplicate\"
   key_b: \"ok\"
@@ -782,13 +782,13 @@ inventory:
     pipelines: [cross_cutting]
     description: \"Key B\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
   key_a:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -818,7 +818,7 @@ inventory:
     pipelines: [dogstatsd]
     description: \"Fully supported key\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [full_alias]
   partial_key:
     support: partial
@@ -826,7 +826,7 @@ inventory:
     description: \"Partially supported key\"
     documentation: \"Behaves differently from the core agent.\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
   unknown_key:
     support: unknown
     description: \"Not yet classified\"
@@ -852,7 +852,7 @@ excluded: {}
                 "full",
                 format!(
                     "inventory:\n  key_a:\n    support: full\n    pipelines: [dogstatsd]\n    \
-                     description: \"{long}\"\n    test_support:\n      used_by: [ForwarderConfiguration]\nexcluded: {{}}\n"
+                     description: \"{long}\"\n    test_support:\n      used_by: [TypedConfigSystem]\nexcluded: {{}}\n"
                 ),
             ),
             (
@@ -860,7 +860,7 @@ excluded: {}
                 format!(
                     "inventory:\n  key_a:\n    support: partial\n    pipelines: [dogstatsd]\n    \
                      description: \"{long}\"\n    documentation: \"diverges\"\n    test_support:\n      \
-                     used_by: [ForwarderConfiguration]\nexcluded: {{}}\n"
+                     used_by: [TypedConfigSystem]\nexcluded: {{}}\n"
                 ),
             ),
             (
@@ -951,7 +951,7 @@ inventory:
     pipelines: [dogstatsd]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [dup_alias, dup_alias]
 excluded: {}
 ";
@@ -974,7 +974,7 @@ inventory:
     pipelines: [dogstatsd]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [\"nested.alias\"]
 excluded: {}
 ";
@@ -997,14 +997,14 @@ inventory:
     pipelines: [dogstatsd]
     description: \"Alpha\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [beta]
   beta:
     support: full
     pipelines: [dogstatsd]
     description: \"Beta\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = validate_entries_of(overlay).expect_err("aliasing a canonical key should be rejected");

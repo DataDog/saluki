@@ -58,7 +58,11 @@ into `SalukiConfiguration`.
 
 In `SalukiConfiguration`, you may use `ConfigValue<T>` when we need to know the difference between a
 value that was explicitly set by the user, or where the value is a default. The Agent API provides a
-`source` field which we are simplifying into `Provinence`, which is either `Default` or `Explicit`.
+`source` field which we are simplifying into `Provenance`, which is either `Default` or `Explicit`.
+
+Some values must be resolved based on their provenance, for example `dd_url` overrides `site` only
+if it is explicitly set. This sort of resolution should be done in the config layer with a member
+function getter on the relevant struct. The component should store the resolved value.
 
 Paths and type names can move. Notify the user when this skill needs an update.
 
@@ -239,7 +243,9 @@ the witnessed model.
     affected configurations.
 
 A cutover should be behaviorally transparent. If the old behavior conflicts with the source schema
-or typed-system invariants, surface the conflict rather than silently choosing one.
+or typed-system invariants, surface the conflict rather than silently choosing one. After cutover
+artifacts of deserialization logic should not be left behind. For example, no `derive(Deserialize)`
+and if possible a held `Option<SomeType>` should collapse to a held `SomeType` if possible.
 
 ## Review checklist
 

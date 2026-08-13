@@ -4,7 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
+use agent_data_plane_config::{domains::multi_region_failover, shared::SharedConfiguration};
 use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use datadog_agent_commons::platform::PlatformSettings;
@@ -394,8 +394,7 @@ async fn create_topology(
     let dp = DataPlaneConfiguration::from_configuration(&config);
     let mut blueprint = TopologyBlueprint::new("primary", component_registry);
     blueprint.with_shutdown_timeout(dp.stop_timeout());
-    let metrics_encoding = config.shared.metrics_encoding.clone();
-    let endpoints = config.shared.endpoints.clone();
+    let shared = config.shared.clone();
 
     let mut control_surfaces = TopologyControlSurfaces::default();
 
@@ -420,24 +419,12 @@ async fn create_topology(
         || dp.service_checks_pipeline_required()
         || dp.traces_pipeline_required()
     {
-        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration_with_metrics_routing(
-            &config_system.raw_map(),
-            &metrics_encoding,
-            &endpoints,
-        )
-        .error_context("Failed to configure Datadog forwarder.")?;
+        let dd_forwarder_config = DatadogForwarderConfiguration::from_configuration(&shared, &config_system.raw_map());
         blueprint.add_forwarder("dd_out", dd_forwarder_config)?;
     }
 
     if dp.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(
-            &mut blueprint,
-            config_system,
-            &metrics_encoding,
-            &endpoints,
-            env_provider,
-        )
-        .await?;
+        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, config_system, &shared, env_provider).await?;
     }
 
     if dp.logs_pipeline_required() {
@@ -518,8 +505,8 @@ async fn add_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, metrics: &MetricsEncoding,
-    endpoints: &Endpoints, env_provider: &ADPEnvironmentProvider,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
+    env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
     let host_enrichment_config = HostEnrichmentConfiguration::from_environment_provider(env_provider.clone());
@@ -535,12 +522,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         }
     }
 
-    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration_with_metrics_routing(
-        &config_system.raw_map(),
-        metrics,
-        endpoints,
-    )
-    .error_context("Failed to configure Datadog Metrics encoder.")?;
+    let dd_metrics_config = DatadogMetricsConfiguration::from_configuration(shared);
 
     blueprint
         // Components.
@@ -549,17 +531,22 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
-    add_mrf_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map(), metrics, endpoints)?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map(), metrics, endpoints)?;
+    add_mrf_metrics_pipeline_to_blueprint(
+        blueprint,
+        &config_system.raw_map(),
+        shared,
+        &config.domains.multi_region_failover,
+    )?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map(), shared)?;
 
     Ok(())
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
+    mrf: &multi_region_failover::Domain,
 ) -> Result<(), GenericError> {
-    let mrf_config = MrfConfiguration::from_configuration(config)
-        .error_context("Failed to configure Multi-Region Failover metrics pipeline.")?;
+    let mrf_config = MrfConfiguration::from_configuration(mrf);
 
     let Some((mrf_dd_url, mrf_api_key)) = mrf_config.metrics_endpoint_override() else {
         if mrf_config.is_enabled() {
@@ -576,20 +563,15 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 
     let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
     let mrf_metrics_config =
-        DatadogMetricsConfiguration::from_configuration_with_metrics_routing(config, metrics, endpoints)
-            .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?
-            .with_metrics_endpoint_override(mrf_dd_url.clone());
+        DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
 
-    let mrf_forwarder_config =
-        DatadogForwarderConfiguration::from_configuration_with_metrics_routing(config, metrics, endpoints)
-            .map(|config| {
-                config.with_endpoint_override_and_api_key_refresh_config_path(
-                    mrf_dd_url,
-                    mrf_api_key,
-                    "multi_region_failover.api_key",
-                )
-            })
-            .error_context("Failed to configure Multi-Region Failover Datadog forwarder.")?;
+    let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
+        shared,
+        config,
+        mrf_dd_url,
+        mrf_api_key,
+        "multi_region_failover.api_key",
+    );
 
     blueprint
         .add_transform("mrf_metrics_gateway", mrf_gateway_config)?
@@ -606,7 +588,7 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 }
 
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
     let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
         .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
@@ -631,14 +613,10 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     }
 
     let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
-    let af_metrics_config =
-        DatadogMetricsConfiguration::from_configuration_with_metrics_routing(config, metrics, endpoints)
-            .error_context("Failed to configure autoscaling failover metrics encoder.")?
-            .with_v2_series_only();
-    let cluster_agent_forwarder_config = ClusterAgentForwarderConfiguration::from_configuration_with_metrics_routing(
-        config, metrics, endpoints, ca_url, ca_token,
-    )
-    .error_context("Failed to configure Cluster Agent forwarder.")?;
+    let af_metrics_config = DatadogMetricsConfiguration::from_configuration(shared).with_v2_series_only();
+    let cluster_agent_forwarder_config =
+        ClusterAgentForwarderConfiguration::from_configuration(shared, config, ca_url, ca_token)
+            .error_context("Failed to configure Cluster Agent forwarder.")?;
 
     blueprint
         .add_transform("af_metrics_gateway", af_gateway_config)?

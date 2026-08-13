@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use crate::env_provider::EnvironmentProvider;
 use crate::saluki_env_overlay;
 use crate::source::SourceTree;
-use crate::system::{translate_strict, ConfigurationSystem, Error};
+use crate::system::{translate_strict, validate, ConfigurationSystem, Error};
 
 // The environment-variable prefix ADP reads (`DD_`). Mirrors
 // `PlatformSettings::get_env_var_prefix()`; hardcoded so the configuration system need not depend on
@@ -61,6 +61,11 @@ pub struct LoadedConfiguration {
 
 impl LoadedConfiguration {
     /// Loads and strictly translates the local file and environment using the requested precedence.
+    ///
+    /// The snapshot is translated but not validated: it is not yet authoritative. Under the Datadog
+    /// Agent the stream still has settings to contribute, so a local snapshot that could not run on
+    /// its own is normal here. Whichever authority [`run`](Self::run) or
+    /// [`standalone`](Self::standalone) selects applies validation.
     ///
     /// # Errors
     ///
@@ -107,12 +112,16 @@ impl LoadedConfiguration {
 
     /// Uses the translated local configuration as the runtime authority.
     ///
-    /// No configuration stream or update task is created.
+    /// No configuration stream or update task is created. Because nothing further will be layered on,
+    /// the local snapshot is validated here, where [`run`](Self::run) instead validates the merged
+    /// result of the Agent's initial snapshot.
     ///
     /// # Errors
     ///
-    /// Returns an error if the compatibility map cannot be built from the local sources.
+    /// Returns an error if the compatibility map cannot be built from the local sources, or if the
+    /// local configuration fails validation.
     pub async fn standalone(self) -> Result<ConfigurationSystem, Error> {
+        validate(&self.local)?;
         let compat_map = self.loader.into_generic().await?;
         Ok(ConfigurationSystem::standalone(compat_map, self.local))
     }
@@ -255,6 +264,26 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
         assert!(matches!(result, Err(Error::Translate { .. })));
+    }
+
+    #[tokio::test]
+    async fn load_leaves_an_incomplete_local_snapshot_to_the_selected_authority() {
+        // A local snapshot with no API key is normal: under the Datadog Agent the key arrives over the
+        // configuration stream, and the CLI subcommands read this snapshot without submitting
+        // anything. Validation therefore belongs to whichever authority the caller then selects.
+        let path = std::env::temp_dir().join(format!("adp_no_api_key_{}.yaml", std::process::id()));
+        std::fs::write(&path, "log_level: warn\n").unwrap();
+
+        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::Disabled)
+            .await
+            .expect("a local snapshot without an API key loads");
+        assert_eq!("", loaded.local().shared.endpoints.api_key);
+
+        // Standalone mode makes that same snapshot authoritative, so the missing key is fatal there.
+        let result = loaded.standalone().await;
+
+        std::fs::remove_file(&path).ok();
+        assert!(matches!(result, Err(Error::MissingApiKey)));
     }
 
     // `LoadedConfiguration::load` is `async` only for symmetry with the rest of the API; it awaits
