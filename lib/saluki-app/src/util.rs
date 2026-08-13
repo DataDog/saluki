@@ -1,3 +1,5 @@
+//! General-purpose application utilities.
+
 use tracing::info;
 
 /// Waits for a shutdown signal.
@@ -6,9 +8,8 @@ use tracing::info;
 /// `SIGINT` interactively (`Ctrl+C`), and `SIGTERM` by process supervisors (systemd, container runtimes,
 /// Kubernetes) during rollouts, evictions, node drains, and container shutdown.
 ///
-/// On Windows, this waits for either `CTRL_C_EVENT` (interactively) or `CTRL_BREAK_EVENT`, the latter being what
-/// `dd-procmgr` (which manages ADP as a subprocess on Windows) sends via `GenerateConsoleCtrlEvent` to request a
-/// graceful stop.
+/// On Windows, this waits for either `CTRL_C_EVENT` (interactively) or `CTRL_BREAK_EVENT`, the latter being what a
+/// parent process supervisor sends via `GenerateConsoleCtrlEvent` to request a graceful stop.
 pub async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {

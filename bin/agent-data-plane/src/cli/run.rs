@@ -13,6 +13,7 @@ use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
     bootstrap::BootstrapGuard,
     metrics::emit_startup_metrics,
+    util::wait_for_shutdown_signal,
 };
 use saluki_components::{
     config::{AutoscalingFailoverConfiguration, ClusterAgentConfiguration, MrfConfiguration},
@@ -45,7 +46,6 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    cli::shutdown_signal::wait_for_shutdown_signal,
     components::{
         apm_onboarding::ApmOnboardingConfiguration,
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,

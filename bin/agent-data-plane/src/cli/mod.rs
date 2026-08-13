@@ -18,8 +18,6 @@ mod run;
 pub use self::run::handle_run_command;
 use self::run::RunCommand;
 
-mod shutdown_signal;
-
 pub(super) mod utils;
 
 mod version;

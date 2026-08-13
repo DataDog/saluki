@@ -10,6 +10,8 @@ use std::time::Instant;
 use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
+#[cfg(target_os = "linux")]
+use saluki_app::util::wait_for_shutdown_signal;
 #[cfg(any(target_os = "linux", test))]
 use saluki_components::sources::TimestampResolution;
 #[cfg(target_os = "linux")]
@@ -35,8 +37,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::{error, info};
 
-#[cfg(target_os = "linux")]
-use crate::cli::shutdown_signal::wait_for_shutdown_signal;
 use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
 
 mod top;
