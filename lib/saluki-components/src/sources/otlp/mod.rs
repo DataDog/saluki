@@ -63,6 +63,13 @@ fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
     tags.into_shared()
 }
 
+/// Applies resolved static tags using replacement semantics.
+fn apply_static_metric_tags(otlp: &mut domains::otlp::Domain, static_tags: Vec<String>) {
+    if !static_tags.is_empty() {
+        otlp.metrics.tags = static_tags.join(",");
+    }
+}
+
 /// Configuration for the OTLP source.
 pub struct OtlpConfiguration {
     default_hostname: MetaString,
@@ -85,6 +92,12 @@ impl OtlpConfiguration {
             otlp: otlp.clone(),
             workload_provider: Arc::new(workload_provider),
         }
+    }
+
+    /// Replaces the configured metric tags when static tags are required.
+    pub fn with_static_metric_tags(mut self, static_tags: Vec<String>) -> Self {
+        apply_static_metric_tags(&mut self.otlp, static_tags);
+        self
     }
 
     fn metrics_translator_config(&self) -> metrics::config::OtlpMetricsTranslatorConfig {
@@ -465,7 +478,7 @@ mod tests {
         CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     };
 
-    use super::{parse_configured_metric_tags, OtlpConfiguration};
+    use super::{apply_static_metric_tags, parse_configured_metric_tags, OtlpConfiguration};
 
     fn tags(raw: &str) -> Vec<String> {
         parse_configured_metric_tags(raw)
@@ -480,6 +493,26 @@ mod tests {
             ..Default::default()
         };
         OtlpConfiguration::from_configuration(&otlp, saluki_env::workload::providers::NoopWorkloadProvider)
+    }
+
+    #[test]
+    fn empty_static_tags_preserve_explicit_otlp_metric_tags() {
+        let mut otlp = domains::otlp::Domain::default();
+        otlp.metrics.tags = "configured:true".to_string();
+
+        apply_static_metric_tags(&mut otlp, Vec::new());
+
+        assert_eq!(otlp.metrics.tags, "configured:true");
+    }
+
+    #[test]
+    fn static_metric_tags_replace_explicit_otlp_metric_tags() {
+        let mut otlp = domains::otlp::Domain::default();
+        otlp.metrics.tags = "configured:true".to_string();
+
+        apply_static_metric_tags(&mut otlp, vec!["provider_kind:autopilot".to_string()]);
+
+        assert_eq!(otlp.metrics.tags, "provider_kind:autopilot");
     }
 
     #[test]

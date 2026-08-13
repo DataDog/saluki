@@ -21,6 +21,7 @@ mod get_typed;
 mod mrf;
 mod otlp;
 mod proxy;
+mod shared;
 mod tag_filterlist;
 mod trace_obfuscation;
 
@@ -43,6 +44,7 @@ pub static SUPPORTED_ANNOTATIONS: LazyLock<Vec<&'static SalukiAnnotation>> = Laz
     v.extend_from_slice(mrf::ALL);
     v.extend_from_slice(otlp::ALL);
     v.extend_from_slice(proxy::ALL);
+    v.extend_from_slice(shared::ALL);
     v.extend_from_slice(tag_filterlist::ALL);
     v.extend_from_slice(trace_obfuscation::ALL);
     v

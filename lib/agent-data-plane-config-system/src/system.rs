@@ -846,6 +846,10 @@ mod tests {
             "dogstatsd_port": 9125,
             "dogstatsd_tag_cardinality": "high",
             "expected_tags_duration": "15s",
+            "provider_kind": "gke-autopilot",
+            "eks_fargate": true,
+            "kubernetes_kubelet_nodename": "fargate-node",
+            "cluster_name": "fargate-cluster",
             "telemetry": { "dogstatsd_origin": true },
             "dogstatsd_tcp_port": 8126,
         }));
@@ -865,6 +869,11 @@ mod tests {
         );
         // Driven `format: duration` parse: a Go duration string becomes a `Duration`.
         assert_eq!(config.shared.tags.expected_tags_duration, Duration::from_secs(15));
+        // Shared deployment inputs used to derive static tags for both DogStatsD and OTLP.
+        assert_eq!(config.shared.static_tags.provider_kind, "gke-autopilot");
+        assert!(config.shared.static_tags.eks_fargate);
+        assert_eq!(config.shared.static_tags.kubernetes_kubelet_nodename, "fargate-node");
+        assert_eq!(config.shared.static_tags.cluster_name, "fargate-cluster");
         // Driven bool in a nested Datadog section.
         assert!(config.domains.dogstatsd.telemetry.origin_breakdown);
         // Raw endpoint inputs: carried through without selecting a primary endpoint here.

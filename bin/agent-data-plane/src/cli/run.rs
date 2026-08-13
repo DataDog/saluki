@@ -40,7 +40,7 @@ use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
 use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
-use saluki_env::{EnvironmentProvider as _, HostProvider as _};
+use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use tracing::{debug, error, info, trace, warn};
 
@@ -50,7 +50,8 @@ use crate::{
         dogstatsd_post_aggregate_filter::DogStatsDPostAggregateFilterConfiguration,
         dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, host_tags::HostTagsConfiguration,
         liveness::LivenessConfiguration, ottl_filter_processor::OttlFilterConfiguration,
-        ottl_transform_processor::OttlTransformConfiguration, tag_filterlist::TagFilterlistConfiguration,
+        ottl_transform_processor::OttlTransformConfiguration, static_tags::resolve_static_tags,
+        tag_filterlist::TagFilterlistConfiguration,
     },
     dogstatsd_contexts::DogStatsDContextDumpAPIHandler,
     internal::{
@@ -74,12 +75,6 @@ pub async fn handle_run_command(
     started: Instant, local_config: LoadedConfiguration, bootstrap_guard: &mut BootstrapGuard,
     bootstrap_supervisor: Supervisor,
 ) -> Result<(), GenericError> {
-    // Install our shutdown signal handler(s) before doing any other startup work: the underlying OS handler is
-    // installed synchronously here, so a shutdown signal delivered anywhere during the rest of startup (which can
-    // block for a while, e.g. waiting on the Datadog Agent's initial configuration) is caught rather than falling
-    // through to the OS's default disposition.
-    let shutdown_signal = ShutdownSignal::install();
-
     let app_details = saluki_metadata::get_app_details();
     info!(
         version = app_details.version().raw(),
@@ -239,7 +234,7 @@ pub async fn handle_run_command(
     });
 
     info!("Agent Data Plane running.");
-    match root_supervisor.run_with_shutdown(shutdown_signal.wait()).await {
+    match root_supervisor.run_with_shutdown(wait_for_shutdown_signal()).await {
         Ok(()) => {
             info!("Agent Data Plane shut down successfully.");
             Ok(())
@@ -260,84 +255,43 @@ pub async fn handle_run_command(
     }
 }
 
-/// A shutdown signal listener with its underlying OS handler(s) installed eagerly.
+/// Waits for a shutdown signal.
 ///
-/// `ShutdownSignal::install` must be called as early as possible in startup -- before any `.await` point -- because
-/// installing a signal handler happens synchronously when the registration function is called, not when the
-/// resulting listener is later awaited. `tokio::signal::ctrl_c()` is an `async fn`, so calling it inline at the
-/// point where we're ready to wait (as this used to) defers that registration until first polled: any `SIGTERM` (or
-/// `SIGINT`/`CTRL_BREAK`) delivered during bootstrap -- for example, while waiting on the initial configuration from
-/// the Datadog Agent -- falls through to the OS's default disposition and kills the process immediately, skipping
-/// cleanup like PID file removal.
-struct ShutdownSignal {
+/// On Unix, this waits for either `SIGINT` or `SIGTERM`, either of which are used to request a graceful shutdown:
+/// `SIGINT` interactively (`Ctrl+C`), and `SIGTERM` by process supervisors (systemd, container runtimes,
+/// Kubernetes) during rollouts, evictions, node drains, and container shutdown.
+///
+/// On Windows, this waits for either `CTRL_C_EVENT` (interactively) or `CTRL_BREAK_EVENT`, the latter being what
+/// `dd-procmgr` (which manages ADP as a subprocess on Windows) sends via `GenerateConsoleCtrlEvent` to request a
+/// graceful stop.
+async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
-    sigint: tokio::signal::unix::Signal,
-    #[cfg(unix)]
-    sigterm: tokio::signal::unix::Signal,
+    {
+        use tokio::signal::unix::{signal, SignalKind};
 
-    #[cfg(windows)]
-    ctrl_c: tokio::signal::windows::CtrlC,
-    #[cfg(windows)]
-    ctrl_break: tokio::signal::windows::CtrlBreak,
-}
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
 
-impl ShutdownSignal {
-    /// Installs the platform's shutdown signal handler(s).
-    fn install() -> Self {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{signal, SignalKind};
-
-            Self {
-                sigint: signal(SignalKind::interrupt()).expect("failed to install SIGINT handler"),
-                sigterm: signal(SignalKind::terminate()).expect("failed to install SIGTERM handler"),
-            }
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => info!("Received SIGINT, shutting down..."),
+            _ = sigterm.recv() => info!("Received SIGTERM, shutting down..."),
         }
-
-        #[cfg(windows)]
-        {
-            Self {
-                ctrl_c: tokio::signal::windows::ctrl_c().expect("failed to install CTRL_C handler"),
-                ctrl_break: tokio::signal::windows::ctrl_break().expect("failed to install CTRL_BREAK handler"),
-            }
-        }
-
-        #[cfg(not(any(unix, windows)))]
-        Self {}
     }
 
-    /// Waits for a shutdown signal.
-    ///
-    /// On Unix, this waits for either `SIGINT` or `SIGTERM`, either of which are used to request a graceful shutdown:
-    /// `SIGINT` interactively (`Ctrl+C`), and `SIGTERM` by process supervisors (systemd, container runtimes,
-    /// Kubernetes) during rollouts, evictions, node drains, and container shutdown.
-    ///
-    /// On Windows, this waits for either `CTRL_C_EVENT` (interactively) or `CTRL_BREAK_EVENT`, the latter being what
-    /// `dd-procmgr` (which manages ADP as a subprocess on Windows) sends via `GenerateConsoleCtrlEvent` to request a
-    /// graceful stop.
-    async fn wait(mut self) {
-        #[cfg(unix)]
-        {
-            tokio::select! {
-                _ = self.sigint.recv() => info!("Received SIGINT, shutting down..."),
-                _ = self.sigterm.recv() => info!("Received SIGTERM, shutting down..."),
-            }
-        }
+    #[cfg(windows)]
+    {
+        let mut ctrl_break = tokio::signal::windows::ctrl_break().expect("failed to install CTRL_BREAK handler");
 
-        #[cfg(windows)]
-        {
-            tokio::select! {
-                _ = self.ctrl_c.recv() => info!("Received CTRL_C, shutting down..."),
-                _ = self.ctrl_break.recv() => info!("Received CTRL_BREAK, shutting down..."),
-            }
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => info!("Received CTRL_C, shutting down..."),
+            _ = ctrl_break.recv() => info!("Received CTRL_BREAK, shutting down..."),
         }
+    }
 
-        #[cfg(not(any(unix, windows)))]
-        {
-            let _ = tokio::signal::ctrl_c().await;
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
 
-            info!("Received SIGINT, shutting down...");
-        }
+        info!("Received SIGINT, shutting down...");
     }
 }
 
@@ -806,9 +760,8 @@ fn build_dogstatsd_context_dump_api_handler(
 async fn add_dsd_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint,
     config: &GenericConfiguration,
-    // Threaded in ready for the typed-config component cutover (aggregate/debug-log); unused until
-    // those components read from it, hence the leading underscore.
-    _config_system: &ConfigurationSystem,
+    // Supplies the typed configuration used to resolve source-wide static tags.
+    config_system: &ConfigurationSystem,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
@@ -851,8 +804,15 @@ async fn add_dsd_pipeline_to_blueprint(
         .get_hostname()
         .await
         .error_context("Failed to get default hostname for DogStatsD source.")?;
+    let typed = config_system.config();
+    let static_tags = resolve_static_tags(
+        &typed.shared.static_tags,
+        &typed.shared.tags,
+        features::is_ecs_fargate(),
+    );
     let dsd_config = DogStatsDConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD source.")?
+        .with_static_tags(static_tags)
         .with_default_hostname(default_hostname)
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
@@ -986,7 +946,13 @@ async fn add_otlp_pipeline_to_blueprint(
             .await
             .error_context("Failed to get default hostname for OTLP source.")?;
         let config = config_system.config();
+        let static_tags = resolve_static_tags(
+            &config.shared.static_tags,
+            &config.shared.tags,
+            features::is_ecs_fargate(),
+        );
         let otlp_config = OtlpConfiguration::from_configuration(&config.domains.otlp, env_provider.workload().clone())
+            .with_static_metric_tags(static_tags)
             .with_default_hostname(default_hostname);
 
         blueprint
