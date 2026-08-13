@@ -59,9 +59,6 @@ pub struct FullSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
-    /// Accepted input shape when it is wider than the schema's declared type (see [`InputShape`]).
-    #[serde(default)]
-    pub input_shape: Option<InputShape>,
     /// Fields to support the `config_registry` and configuration smoke tests.
     pub test_support: TestSupport,
 }
@@ -82,9 +79,6 @@ pub struct PartialSupport {
     /// GitHub issue tracking number.
     #[serde(default)]
     pub issue: Option<String>,
-    /// Accepted input shape when it is wider than the schema's declared type (see [`InputShape`]).
-    #[serde(default)]
-    pub input_shape: Option<InputShape>,
     /// Fields to support the `config_registry` and configuration smoke tests.
     pub test_support: TestSupport,
 }
@@ -239,19 +233,6 @@ pub enum ValueType {
     Float,
     String,
     StringList,
-}
-
-/// A widened input shape a schema `string` leaf accepts beyond a bare string.
-///
-/// The vendored schema types some settings as `string` but documents an equivalent numeric form
-/// (for example a byte size given as `10485760` instead of `"10MB"`). The schema cannot express that
-/// union, so the overlay names it and codegen attaches a tolerant deserializer to the generated
-/// field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InputShape {
-    /// Accept a string unchanged, or a non-negative integer normalized to its decimal string.
-    StringOrInteger,
 }
 
 /// File paths to the two YAML files required as input by this library.
@@ -685,7 +666,7 @@ inventory:
     pipelines: [cross_cutting]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -709,7 +690,7 @@ inventory:
     pipelines: [cross_cutting]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded:
   key_b: \"not in schema\"
 ";
@@ -736,7 +717,7 @@ inventory:
     pipelines: [cross_cutting]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded:
   key_a: \"duplicate\"
   key_b: \"ok\"
@@ -801,13 +782,13 @@ inventory:
     pipelines: [cross_cutting]
     description: \"Key B\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
   key_a:
     support: full
     pipelines: [cross_cutting]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = load_from_strs(schema, overlay).unwrap_err();
@@ -837,7 +818,7 @@ inventory:
     pipelines: [dogstatsd]
     description: \"Fully supported key\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [full_alias]
   partial_key:
     support: partial
@@ -845,7 +826,7 @@ inventory:
     description: \"Partially supported key\"
     documentation: \"Behaves differently from the core agent.\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
   unknown_key:
     support: unknown
     description: \"Not yet classified\"
@@ -871,7 +852,7 @@ excluded: {}
                 "full",
                 format!(
                     "inventory:\n  key_a:\n    support: full\n    pipelines: [dogstatsd]\n    \
-                     description: \"{long}\"\n    test_support:\n      used_by: [ForwarderConfiguration]\nexcluded: {{}}\n"
+                     description: \"{long}\"\n    test_support:\n      used_by: [TypedConfigSystem]\nexcluded: {{}}\n"
                 ),
             ),
             (
@@ -879,7 +860,7 @@ excluded: {}
                 format!(
                     "inventory:\n  key_a:\n    support: partial\n    pipelines: [dogstatsd]\n    \
                      description: \"{long}\"\n    documentation: \"diverges\"\n    test_support:\n      \
-                     used_by: [ForwarderConfiguration]\nexcluded: {{}}\n"
+                     used_by: [TypedConfigSystem]\nexcluded: {{}}\n"
                 ),
             ),
             (
@@ -970,7 +951,7 @@ inventory:
     pipelines: [dogstatsd]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [dup_alias, dup_alias]
 excluded: {}
 ";
@@ -993,7 +974,7 @@ inventory:
     pipelines: [dogstatsd]
     description: \"Key A\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [\"nested.alias\"]
 excluded: {}
 ";
@@ -1016,14 +997,14 @@ inventory:
     pipelines: [dogstatsd]
     description: \"Alpha\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [beta]
   beta:
     support: full
     pipelines: [dogstatsd]
     description: \"Beta\"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
 excluded: {}
 ";
         let err = validate_entries_of(overlay).expect_err("aliasing a canonical key should be rejected");

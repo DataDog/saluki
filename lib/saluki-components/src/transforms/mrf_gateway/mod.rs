@@ -217,6 +217,7 @@ impl Transform for MrfMetricsGateway {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::domains::multi_region_failover;
     use saluki_config::{
         dynamic::{ConfigSetting, ConfigUpdate},
         ConfigurationLoader,
@@ -226,8 +227,13 @@ mod tests {
 
     use super::*;
 
+    /// Builds a gateway from resolved failover configuration, plus the live configuration it watches.
+    ///
+    /// The gateway tracks `multi_region_failover.failover_metrics` and
+    /// `multi_region_failover.metric_allowlist` through the live configuration, so a test that exercises
+    /// an update needs both views to describe the same starting state.
     async fn dynamic_gateway_from_config(
-        value: serde_json::Value,
+        mrf: multi_region_failover::Domain, value: serde_json::Value,
     ) -> (MrfMetricsGateway, tokio::sync::mpsc::Sender<ConfigUpdate>) {
         let (config, sender) = ConfigurationLoader::for_tests(Some(value), None, true).await;
         let sender = sender.expect("dynamic sender should exist");
@@ -237,20 +243,29 @@ mod tests {
             .expect("initial dynamic snapshot should be sent");
         config.ready().await;
 
-        let mrf_config = MrfConfiguration::from_configuration(&config).expect("MRF configuration should deserialize");
+        let mrf_config = MrfConfiguration::from_configuration(&mrf);
         (MrfMetricsGateway::new(mrf_config, config), sender)
     }
 
     #[tokio::test]
     async fn failover_metrics_dynamic_update_toggles_forwarding() {
-        let (mut gw, sender) = dynamic_gateway_from_config(json!({
-            "multi_region_failover": {
-                "enabled": true,
-                "failover_metrics": false,
-                "api_key": "mrf-api-key",
-                "dd_url": "https://mrf.example.com"
-            }
-        }))
+        let (mut gw, sender) = dynamic_gateway_from_config(
+            multi_region_failover::Domain {
+                enabled: true,
+                failover_metrics: false,
+                api_key: Some("mrf-api-key".to_string()),
+                dd_url: Some("https://mrf.example.com".to_string()),
+                ..Default::default()
+            },
+            json!({
+                "multi_region_failover": {
+                    "enabled": true,
+                    "failover_metrics": false,
+                    "api_key": "mrf-api-key",
+                    "dd_url": "https://mrf.example.com"
+                }
+            }),
+        )
         .await;
         let mut watcher = gw
             .configuration
@@ -289,14 +304,23 @@ mod tests {
 
     #[tokio::test]
     async fn metric_allowlist_dynamic_update_changes_filtering() {
-        let (mut gw, sender) = dynamic_gateway_from_config(json!({
-            "multi_region_failover": {
-                "enabled": true,
-                "failover_metrics": true,
-                "api_key": "mrf-api-key",
-                "dd_url": "https://mrf.example.com"
-            }
-        }))
+        let (mut gw, sender) = dynamic_gateway_from_config(
+            multi_region_failover::Domain {
+                enabled: true,
+                failover_metrics: true,
+                api_key: Some("mrf-api-key".to_string()),
+                dd_url: Some("https://mrf.example.com".to_string()),
+                ..Default::default()
+            },
+            json!({
+                "multi_region_failover": {
+                    "enabled": true,
+                    "failover_metrics": true,
+                    "api_key": "mrf-api-key",
+                    "dd_url": "https://mrf.example.com"
+                }
+            }),
+        )
         .await;
         let mut watcher = gw
             .configuration

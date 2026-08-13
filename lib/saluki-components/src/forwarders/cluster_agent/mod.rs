@@ -1,6 +1,6 @@
 //! Cluster Agent forwarder.
 
-use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
+use agent_data_plane_config::shared::SharedConfiguration;
 use async_trait::async_trait;
 use http::{
     header::AUTHORIZATION,
@@ -23,7 +23,7 @@ use tracing::debug;
 
 use crate::common::datadog::{
     config::ForwarderConfiguration,
-    endpoints::ResolvedEndpoint,
+    endpoints::{ResolvedEndpoint, SingleDestination},
     io::{EndpointRequestMapper, EndpointRequestMapperFactory, TransactionForwarder},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction, TransactionBody},
@@ -45,37 +45,32 @@ pub struct ClusterAgentForwarderConfiguration {
 
 impl ClusterAgentForwarderConfiguration {
     /// Creates a new `ClusterAgentForwarderConfiguration` from the given Cluster Agent endpoint and bearer token.
+    ///
+    /// The Cluster Agent is the only destination this forwarder sends to: the configured Datadog
+    /// intake endpoints, the alternate metrics intakes, and dual shipping do not apply to it, and it
+    /// accepts only V2 series payloads. Because the destination is part of construction, no later
+    /// step can overwrite it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the bearer token cannot be represented in an HTTP header.
     pub fn from_configuration(
-        config: &GenericConfiguration, endpoint_url: String, auth_token: String,
+        shared: &SharedConfiguration, config: &GenericConfiguration, endpoint_url: String, auth_token: String,
     ) -> Result<Self, GenericError> {
         let auth_header_value = bearer_auth_header_value(&auth_token)?;
-        let mut forwarder_config = ForwarderConfiguration::from_configuration(config)?.with_allow_arbitrary_tags(false);
-
-        let endpoint = forwarder_config.endpoint_mut();
-        endpoint.clear_additional_endpoints();
-        endpoint.set_dd_url(endpoint_url);
-        endpoint.set_api_key(auth_token);
-        forwarder_config.clear_opw_metrics_endpoint();
-        forwarder_config.force_v2_series();
+        let destination = SingleDestination {
+            url: endpoint_url,
+            api_key: auth_token,
+            api_key_refresh_config_path: None,
+            accepts_v3_series: false,
+        };
+        let forwarder_config = ForwarderConfiguration::for_single_destination(shared, config, &destination)
+            .with_allow_arbitrary_tags(false);
 
         Ok(Self {
             forwarder_config,
             auth_header_value,
         })
-    }
-
-    /// Creates a Cluster Agent forwarder using authoritative typed metrics-routing configuration.
-    pub fn from_configuration_with_metrics_routing(
-        config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints, endpoint_url: String,
-        auth_token: String,
-    ) -> Result<Self, GenericError> {
-        let mut config = Self::from_configuration(config, endpoint_url, auth_token)?;
-        config
-            .forwarder_config
-            .apply_typed_metrics_configuration(metrics, endpoints);
-        config.forwarder_config.clear_opw_metrics_endpoint();
-        config.forwarder_config.force_v2_series();
-        Ok(config)
     }
 }
 
@@ -213,12 +208,17 @@ fn get_cluster_agent_endpoint_name(_uri: &Uri) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use agent_data_plane_config::{
+        shared::{AltMetricsIntake, V3SeriesMode},
+        ConfigValue,
+    };
     use http::Method;
     use saluki_config::ConfigurationLoader;
-    use serde_json::json;
 
     use super::*;
-    use crate::common::datadog::endpoints::EndpointRoute;
+    use crate::common::datadog::{endpoints::EndpointRoute, test_util::shared_configuration};
 
     #[test]
     fn request_mapper_preserves_cluster_agent_series_identity_and_sets_bearer_auth() {
@@ -254,50 +254,39 @@ mod tests {
 
     #[tokio::test]
     async fn configuration_uses_only_cluster_agent_endpoint() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-api-key",
-                "dd_url": "https://app.datadoghq.com",
-                "additional_endpoints": {
-                    "https://additional.example.com": ["additional-api-key"]
-                },
-                "observability_pipelines_worker": {
-                    "metrics": {
-                        "enabled": true,
-                        "url": "https://opw.example.com"
-                    }
-                },
-                "use_v3_api": {
-                    "series": {
-                        "enabled": "true"
-                    }
-                },
-                "serializer_experimental_use_v3_api": {
-                    "series": {
-                        "shadow_sites": ["example.com"]
-                    }
-                }
-            })),
-            None,
-            false,
-        )
-        .await;
+        // Every configured Datadog intake setting here conflicts with the Cluster Agent destination:
+        // a different API key, an explicit `dd_url`, a `site`, an additional endpoint, an alternate
+        // metrics intake, and V3 series routing. None of them may reach the built forwarder.
+        let (raw_config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        let mut shared = shared_configuration();
+        shared.endpoints.api_key = "primary-api-key".to_string();
+        shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
+        shared.endpoints.dd_url = ConfigValue::explicit("https://app.datadoghq.com".to_string());
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "https://additional.example.com".to_string(),
+            vec!["additional-api-key".to_string()],
+        )]);
+        shared.endpoints.opw_intake = AltMetricsIntake {
+            enabled: true,
+            url: "https://opw.example.com".to_string(),
+            use_v3_series: true,
+        };
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
+        shared.metrics_encoding.v3_series_endpoint_modes =
+            HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
+        shared.metrics_encoding.v3_api.series.shadow_sites = vec!["example.com".to_string()];
 
-        let unmodified_forwarder =
-            ForwarderConfiguration::from_configuration(&config).expect("forwarder configuration should parse");
-        assert_eq!("true", unmodified_forwarder.use_v3_api_series().enabled);
+        // The same configuration drives a plain Datadog forwarder, which does honor all of it.
+        let datadog_forwarder = ForwarderConfiguration::from_configuration(&shared, &raw_config);
+        assert_eq!(V3SeriesMode::Enabled, datadog_forwarder.use_v3_api_series().enabled);
         assert_eq!(
             &["example.com".to_string()],
-            unmodified_forwarder.v3_api().series.shadow_sites.as_slice()
+            datadog_forwarder.v3_api().series.shadow_sites.as_slice()
         );
 
-        let mut metrics = MetricsEncoding::default();
-        metrics.v3_series_mode.mode = "true".to_string();
-        metrics.v3_api.series.shadow_sites = vec!["example.com".to_string()];
-        let config = ClusterAgentForwarderConfiguration::from_configuration_with_metrics_routing(
-            &config,
-            &metrics,
-            &Endpoints::default(),
+        let config = ClusterAgentForwarderConfiguration::from_configuration(
+            &shared,
+            &raw_config,
             "https://cluster-agent.example.com".to_string(),
             "secret-token".to_string(),
         )
@@ -314,9 +303,13 @@ mod tests {
             "https://cluster-agent.example.com/"
         );
         assert_eq!(endpoints[0].endpoint().cached_api_key(), "secret-token");
-        assert_eq!("false", config.forwarder_config.use_v3_api_series().enabled);
+        assert_eq!(
+            V3SeriesMode::Disabled,
+            config.forwarder_config.use_v3_api_series().enabled
+        );
         assert!(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
         assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
         assert!(config.forwarder_config.v3_api().series.shadow_sites.is_empty());
+        assert!(!config.forwarder_config.allow_arbitrary_tags());
     }
 }

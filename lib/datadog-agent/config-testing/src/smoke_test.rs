@@ -313,12 +313,12 @@ mod tests {
 
     #[tokio::test]
     async fn flags_a_supported_key_that_never_changes_the_struct() {
-        // `PROXY_CONFIGURATION` has registered (supported) keys. A factory that ignores the config
+        // `DATADOG_LOGS_CONFIGURATION` has registered (supported) keys. A factory that ignores the config
         // entirely means each supported key "produces the default struct", violating the supported-key
         // guarantee, which the harness must flag.
         let outcome = tokio::spawn(async {
             run_config_smoke_tests(
-                structs::PROXY_CONFIGURATION,
+                structs::DATADOG_LOGS_CONFIGURATION,
                 &[],
                 json!({}),
                 |_cfg: GenericConfiguration| json!({}),

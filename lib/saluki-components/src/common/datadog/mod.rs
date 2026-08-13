@@ -10,6 +10,8 @@ pub mod request_builder;
 mod retry;
 mod retry_capacity;
 pub mod telemetry;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub mod transaction;
 pub mod validation;
 
@@ -30,14 +32,6 @@ pub const DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT: usize = 2_621_440; // 2.5 Mi
 
 /// Datadog Agent default uncompressed size limit for generic payloads.
 pub const DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT: usize = 4_194_304; // 4 MiB
-
-/// Datadog Agent default serializer compressor.
-pub(crate) const DEFAULT_SERIALIZER_COMPRESSOR_KIND: &str = "zstd";
-
-/// Returns the Datadog Agent default serializer compressor.
-pub(crate) fn default_serializer_compressor_kind() -> String {
-    DEFAULT_SERIALIZER_COMPRESSOR_KIND.to_owned()
-}
 
 /// The Datadog Agent's default zstd compression level. Because the Agent forwards its full config
 /// (including this default) over the config stream, this is indistinguishable from a user who

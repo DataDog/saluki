@@ -1,6 +1,6 @@
 type: integration
 name: "adp-config-stream"
-description: "Verify ADP receives configuration from Core Agent via config stream"
+description: "Verify ADP receives configuration from Core Agent via config stream, and resolves its primary endpoint from the streamed site"
 timeout: 120s
 runtimes: [linux, mac, windows]
 
@@ -11,15 +11,39 @@ env:
   DD_DATA_PLANE_STANDALONE_MODE: "false"
   DD_DATA_PLANE_USE_NEW_CONFIG_STREAM_ENDPOINT: "true"
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  # No dd_url is set, so the config stream supplies it at its schema default. The primary endpoint
+  # must still be derived from this site rather than from that defaulted URL.
+  DD_SITE: "datadoghq.eu"
+  # The resolved endpoint is reported when each endpoint I/O task starts, which is a debug record.
+  DD_LOG_LEVEL: "debug"
 
 container:
   exposed_ports:
     - "58125/udp"
+    # Serves the privileged configuration API that the runtime configuration assertion reads.
+    - "55101/tcp"
 
 procedure:
   # Make sure we initially see ADP try to reach out to the Core Agent for its configuration.
   - assertion: log_contains
     pattern: "Waiting for initial configuration from Datadog Agent"
+    timeout: 60s
+  # The forwarder starts one endpoint I/O task per resolved endpoint before any payload is sent, and
+  # each one reports the endpoint it resolved from configuration. Matching that endpoint confirms the
+  # streamed site reached endpoint resolution, and that the defaulted dd_url did not silently take
+  # its place. This depends on the configured_endpoint field of the "Starting endpoint I/O task."
+  # record, which is the endpoint before the version prefix is applied. The sibling endpoint_url
+  # field carries that prefix, so it embeds the ADP version and is not matched here.
+  - assertion: log_contains
+    pattern: 'configured_endpoint:"https://app\.datadoghq\.eu"'
+    regex: true
+    timeout: 60s
+  # The same site, read back from the translated runtime configuration that components are built
+  # from. This separates a translation failure from an endpoint resolution failure.
+  - assertion: adp_config_key_equals
+    endpoint: "https://localhost:55101/config/runtime"
+    key: shared.endpoints.site
+    value: datadoghq.eu
     timeout: 60s
   # Make sure the process becomes healthy, and stays up without errors, for ~10 seconds after.
   - parallel:

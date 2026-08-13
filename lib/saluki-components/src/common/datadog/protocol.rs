@@ -3,79 +3,10 @@
 use std::collections::HashMap;
 
 use agent_data_plane_config::shared::{
-    V3ApiEncoding as TypedV3ApiEncoding, V3ApiSettings as TypedV3ApiSettings, V3SeriesMode as TypedV3SeriesMode,
+    MetricsEncoding as TypedMetricsEncoding, V3ApiEncoding as TypedV3ApiEncoding, V3ApiSettings as TypedV3ApiSettings,
+    V3SeriesMode,
 };
 use serde::{Deserialize, Serialize};
-
-use super::METRICS_SERIES_V3_BETA_PATH;
-
-fn default_v3_beta_series_route() -> String {
-    METRICS_SERIES_V3_BETA_PATH.to_owned()
-}
-
-const fn default_v3_series_shadow_sample_rate() -> f64 {
-    0.0
-}
-
-fn default_v3_series_shadow_sites() -> Vec<String> {
-    vec!["datadoghq.com".to_string()]
-}
-
-fn default_use_v3_api_series_enabled() -> String {
-    "datadog_only".to_string()
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum V3SeriesModeValue {
-    String(String),
-    Bool(bool),
-}
-
-impl V3SeriesModeValue {
-    fn into_string(self) -> String {
-        match self {
-            Self::String(value) => value,
-            Self::Bool(value) => value.to_string(),
-        }
-    }
-}
-
-/// Deserializes an Agent V3 series mode value.
-///
-/// The Datadog Agent accepts string values such as `true`, `false`, and `datadog_only`, while YAML values may also be
-/// written as booleans. Normalize those supported forms into the string form used by the evaluator.
-pub fn deserialize_v3_series_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    V3SeriesModeValue::deserialize(deserializer).map(V3SeriesModeValue::into_string)
-}
-
-/// Deserializes per-endpoint Agent V3 series mode overrides.
-pub fn deserialize_v3_series_endpoint_modes<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum EndpointModes {
-        JsonString(String),
-        Map(HashMap<String, V3SeriesModeValue>),
-    }
-
-    let values = match EndpointModes::deserialize(deserializer)? {
-        EndpointModes::JsonString(raw) => {
-            serde_json::from_str::<HashMap<String, V3SeriesModeValue>>(&raw).map_err(serde::de::Error::custom)?
-        }
-        EndpointModes::Map(values) => values,
-    };
-
-    Ok(values
-        .into_iter()
-        .map(|(endpoint, value)| (endpoint, value.into_string()))
-        .collect())
-}
 
 /// The type of metrics payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -181,62 +112,37 @@ impl MetricsPayloadInfo {
 }
 
 /// V3 API settings for a specific metric type (series or sketches).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct V3ApiSettings {
     /// Endpoints that should receive V3 payloads for this metric type.
     ///
     /// Each entry should be a configured endpoint name, such as `https://app.datadoghq.com`.
     /// If empty, no V3 payloads are generated for this metric type.
-    #[serde(default)]
     pub endpoints: Vec<String>,
 
     /// Whether to also send V2 payloads to V3-enabled endpoints (validation mode).
     ///
     /// When true, endpoints in the `endpoints` list receive both V2 and V3 payloads.
     /// When false, endpoints in the `endpoints` list receive only V3 payloads.
-    #[serde(default)]
     pub validate: bool,
 
     /// Whether to use the beta V3 route for this metric type.
     ///
     /// This only applies to series metrics. Sketches always use the standard V3 sketches route.
-    #[serde(default)]
     pub use_beta: bool,
 
     /// Beta V3 route to use when `use_beta` is enabled for series metrics.
-    ///
-    /// Defaults to `/api/intake/metrics/v3beta/series`.
-    #[serde(default = "default_v3_beta_series_route")]
     pub beta_route: String,
 
     /// Per-flush probability of sending a sampled V3 beta shadow payload.
     ///
     /// This only applies to series metrics when V3 is not authoritative.
-    ///
-    /// Defaults to `0`.
-    #[serde(default = "default_v3_series_shadow_sample_rate")]
     pub shadow_sample_rate: f64,
 
     /// Datadog sites eligible for sampled V3 beta shadow payloads.
     ///
     /// This only applies to series metrics when V3 is not authoritative.
-    ///
-    /// Defaults to `["datadoghq.com"]`.
-    #[serde(default = "default_v3_series_shadow_sites")]
     pub shadow_sites: Vec<String>,
-}
-
-impl Default for V3ApiSettings {
-    fn default() -> Self {
-        Self {
-            endpoints: Vec::new(),
-            validate: false,
-            use_beta: false,
-            beta_route: default_v3_beta_series_route(),
-            shadow_sample_rate: default_v3_series_shadow_sample_rate(),
-            shadow_sites: default_v3_series_shadow_sites(),
-        }
-    }
 }
 
 impl V3ApiSettings {
@@ -247,20 +153,17 @@ impl V3ApiSettings {
 }
 
 /// V3 API configuration for per-endpoint V3 support.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct V3ApiConfig {
     /// V3 settings for series metrics (counters, gauges, rates, sets).
-    #[serde(default)]
     pub series: V3ApiSettings,
 
     /// V3 settings for sketch metrics (histograms, distributions).
-    #[serde(default)]
     pub sketches: V3ApiSettings,
 
     /// Override compression level for V3 payloads.
     ///
-    /// Defaults to `0`, which uses the normal serializer compression level.
-    #[serde(default)]
+    /// A value of `0` uses the normal serializer compression level.
     pub compression_level: i32,
 }
 
@@ -300,86 +203,27 @@ impl From<&TypedV3ApiEncoding> for V3ApiConfig {
 }
 
 /// The Datadog Agent's `use_v3_api` configuration section.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct UseV3ApiConfig {
     /// Agent-compatible V3 API configuration for series metrics.
-    #[serde(default)]
     pub series: UseV3ApiSeriesConfig,
 }
 
 /// Agent-compatible `use_v3_api.series` configuration.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct UseV3ApiSeriesConfig {
     /// Global V3 series mode.
-    ///
-    /// Valid Agent values are truthy strings, falsy strings, and `datadog_only`. Invalid values are treated as false by
-    /// the evaluator. Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
-    #[serde(
-        default = "default_use_v3_api_series_enabled",
-        deserialize_with = "deserialize_v3_series_mode"
-    )]
-    pub enabled: String,
+    pub enabled: V3SeriesMode,
 
     /// Per-endpoint V3 series mode overrides.
-    #[serde(default, deserialize_with = "deserialize_v3_series_endpoint_modes")]
-    pub endpoints: HashMap<String, String>,
+    pub endpoints: HashMap<String, V3SeriesMode>,
 }
 
-impl Default for UseV3ApiSeriesConfig {
-    fn default() -> Self {
+impl From<&TypedMetricsEncoding> for UseV3ApiSeriesConfig {
+    fn from(config: &TypedMetricsEncoding) -> Self {
         Self {
-            enabled: default_use_v3_api_series_enabled(),
-            endpoints: HashMap::new(),
+            enabled: config.v3_series_mode,
+            endpoints: config.v3_series_endpoint_modes.clone(),
         }
-    }
-}
-
-impl From<&TypedV3SeriesMode> for UseV3ApiSeriesConfig {
-    fn from(config: &TypedV3SeriesMode) -> Self {
-        Self {
-            enabled: config.mode.clone(),
-            endpoints: config.endpoint_modes.clone(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde::Deserialize;
-
-    use super::{deserialize_v3_series_mode, UseV3ApiSeriesConfig};
-
-    #[derive(Deserialize)]
-    struct Wrapper {
-        #[serde(deserialize_with = "deserialize_v3_series_mode")]
-        mode: String,
-    }
-
-    fn parse_mode(value: serde_json::Value) -> String {
-        serde_json::from_value::<Wrapper>(serde_json::json!({ "mode": value }))
-            .expect("mode should deserialize")
-            .mode
-    }
-
-    #[test]
-    fn deserialize_v3_series_mode_normalizes_accepted_forms() {
-        // Documented accepted forms: the string values `true`, `false`, and `datadog_only` pass through
-        // unchanged, and YAML/JSON booleans are normalized to their string form for the evaluator.
-        let cases = [
-            (serde_json::json!("true"), "true"),
-            (serde_json::json!("false"), "false"),
-            (serde_json::json!("datadog_only"), "datadog_only"),
-            (serde_json::json!(true), "true"),
-            (serde_json::json!(false), "false"),
-        ];
-
-        for (input, expected) in cases {
-            assert_eq!(parse_mode(input.clone()), expected, "{input}");
-        }
-    }
-
-    #[test]
-    fn v3_series_mode_defaults_to_datadog_only() {
-        assert_eq!(UseV3ApiSeriesConfig::default().enabled, "datadog_only");
     }
 }

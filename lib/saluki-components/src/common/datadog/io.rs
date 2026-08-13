@@ -341,9 +341,7 @@ where
         if let Some(path) = config.ssl_key_log_file_path() {
             client_builder = client_builder.with_tls_config(|builder| builder.with_key_log_file(path));
         }
-        if let Some(proxy) = config.proxy() {
-            client_builder = client_builder.with_proxies(proxy.build()?);
-        }
+        client_builder = client_builder.with_proxies(config.proxy().build()?);
 
         if config.connection_reset_interval() > Duration::ZERO {
             client_builder = client_builder.with_connection_age_limit(config.connection_reset_interval());
@@ -604,7 +602,7 @@ async fn run_endpoint_io_loop<B>(
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: &configured_endpoint,
             resolved_endpoint: endpoint.endpoint(),
-            serializer_v3_configured_endpoint: serializer_v3_configured_endpoint.as_deref(),
+            serializer_v3_configured_endpoint,
             series_config: config.use_v3_api_series(),
             metrics_primary_v3_override,
             serializer_v3_series_endpoints: &v3_api.series.endpoints,
@@ -1128,6 +1126,7 @@ impl<T: Retryable> PendingTransactions<T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::{
         future::{pending, Pending},
         sync::{
@@ -1136,12 +1135,13 @@ mod tests {
         },
     };
 
+    use agent_data_plane_config::{shared::SharedConfiguration, ConfigValue};
     use bytes::Bytes;
     use http::StatusCode;
     use http_body_util::Empty;
     use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::config_from;
+    use saluki_config::{config_from, ConfigurationLoader};
     use saluki_core::{
         observability::ComponentMetricsExt as _,
         runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
@@ -1160,8 +1160,8 @@ mod tests {
     use tower::{retry::Policy, service_fn};
 
     use super::*;
-    use crate::common::datadog::endpoints::AdditionalEndpoints;
     use crate::common::datadog::transaction::{Metadata as TxnMetadata, Transaction};
+    use crate::common::datadog::{endpoints::resolve_additional_endpoints, test_util::shared_configuration};
     use crate::common::datadog::{
         METRICS_SERIES_V1_PATH, METRICS_SERIES_V2_PATH, METRICS_SERIES_V3_BETA_PATH, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_PATH, METRICS_SKETCHES_V3_PATH,
@@ -1179,8 +1179,9 @@ mod tests {
         is_metrics_request_uri(&uri(path), METRICS_SERIES_V3_BETA_PATH)
     }
 
-    fn forwarder_config_from_value(value: serde_json::Value) -> ForwarderConfiguration {
-        serde_json::from_value(value).expect("ForwarderConfiguration should deserialize")
+    async fn forwarder_config_from(shared: SharedConfiguration) -> ForwarderConfiguration {
+        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
+        ForwarderConfiguration::from_configuration(&shared, &config)
     }
 
     #[test]
@@ -1231,14 +1232,13 @@ mod tests {
     #[test]
     fn retry_queue_id_uses_raw_additional_endpoint_url() {
         let context = test_component_context();
-        let additional: AdditionalEndpoints = serde_yaml::from_str(
-            r#"
-app.datadoghq.com: [key-a]
-https://app.datadoghq.com: [key-b]
-"#,
-        )
-        .expect("additional endpoints should deserialize");
-        let endpoints = additional.resolved_endpoints(None).expect("endpoints should resolve");
+        let additional = HashMap::from([
+            ("app.datadoghq.com".to_string(), vec!["key-a".to_string()]),
+            ("https://app.datadoghq.com".to_string(), vec!["key-b".to_string()]),
+        ]);
+        let mut endpoints = resolve_additional_endpoints(&additional, None).expect("endpoints should resolve");
+        // The configured endpoints are a map, so fix an order to compare queue IDs against.
+        endpoints.sort_by(|left, right| left.configured_endpoint().cmp(right.configured_endpoint()));
 
         assert_eq!(endpoints.len(), 2);
         assert_eq!(endpoints[0].endpoint(), endpoints[1].endpoint());
@@ -1252,13 +1252,11 @@ https://app.datadoghq.com: [key-b]
     #[test]
     fn retry_queue_id_uses_additional_endpoint_api_key_index() {
         let context = test_component_context();
-        let additional: AdditionalEndpoints = serde_yaml::from_str(
-            r#"
-app.datadoghq.com: [key-a, key-b]
-"#,
-        )
-        .expect("additional endpoints should deserialize");
-        let endpoints = additional.resolved_endpoints(None).expect("endpoints should resolve");
+        let additional = HashMap::from([(
+            "app.datadoghq.com".to_string(),
+            vec!["key-a".to_string(), "key-b".to_string()],
+        )]);
+        let endpoints = resolve_additional_endpoints(&additional, None).expect("endpoints should resolve");
 
         assert_eq!(endpoints.len(), 2);
         assert_eq!(endpoints[0].endpoint(), endpoints[1].endpoint());
@@ -1858,9 +1856,9 @@ app.datadoghq.com: [key-a, key-b]
         );
     }
 
-    #[test]
-    fn tls_certificate_validation_enabled_by_default() {
-        let config = forwarder_config_from_value(serde_json::json!({ "api_key": "test-api-key" }));
+    #[tokio::test]
+    async fn tls_certificate_validation_enabled_by_default() {
+        let config = forwarder_config_from(shared_configuration()).await;
 
         assert_eq!(
             TlsCertificateValidation::from_forwarder_config(&config),
@@ -1868,12 +1866,11 @@ app.datadoghq.com: [key-a, key-b]
         );
     }
 
-    #[test]
-    fn tls_certificate_validation_disabled_when_skip_ssl_validation_enabled() {
-        let config = forwarder_config_from_value(serde_json::json!({
-            "api_key": "test-api-key",
-            "skip_ssl_validation": true,
-        }));
+    #[tokio::test]
+    async fn tls_certificate_validation_disabled_when_skip_ssl_validation_enabled() {
+        let mut shared = shared_configuration();
+        shared.endpoints.tls.skip_ssl_validation = true;
+        let config = forwarder_config_from(shared).await;
 
         assert_eq!(
             TlsCertificateValidation::from_forwarder_config(&config),
@@ -2052,7 +2049,7 @@ app.datadoghq.com: [key-a, key-b]
         None
     }
 
-    fn build_test_forwarder(
+    async fn build_test_forwarder(
         forwarder_url: &str, live_config: Option<GenericConfiguration>,
     ) -> (DataspaceRegistry, TransactionForwarder<FrozenChunkedBytesBuffer>) {
         // The HTTP client builder requires the process-wide TLS crypto provider to be initialized, even when the
@@ -2060,22 +2057,20 @@ app.datadoghq.com: [key-a, key-b]
         init_tls_crypto_provider();
 
         // Tight timeouts and small backoffs keep the test under a couple seconds even with retries.
-        let value = serde_json::json!({
-            "api_key": "test-api-key",
-            "dd_url": forwarder_url,
-            "forwarder_timeout": 1u64,
-            "forwarder_max_concurrent_requests": 1usize,
-            "forwarder_high_prio_buffer_size": 4usize,
-            "forwarder_backoff_base": 0.001,
-            "forwarder_backoff_max": 0.01,
-            "forwarder_backoff_factor": 2.0,
-            "forwarder_recovery_interval": 1u32,
-            "forwarder_recovery_reset": false,
-            // The HTTP client builder otherwise requires the process-wide default root certificate store to be
-            // populated. We are talking to a plain HTTP endpoint anyway, so disable validation to skip that path.
-            "skip_ssl_validation": true,
-        });
-        let forwarder_config = forwarder_config_from_value(value);
+        let mut shared = shared_configuration();
+        shared.endpoints.dd_url = ConfigValue::explicit(forwarder_url.to_string());
+        shared.endpoints.forwarder.timeout = 1;
+        shared.endpoints.forwarder.max_concurrent_requests = 1;
+        shared.endpoints.forwarder.high_prio_buffer_size = 4;
+        shared.endpoints.forwarder.backoff_base = 0.001;
+        shared.endpoints.forwarder.backoff_max = 0.01;
+        shared.endpoints.forwarder.backoff_factor = 2.0;
+        shared.endpoints.forwarder.recovery_interval = 1;
+        shared.endpoints.forwarder.recovery_reset = false;
+        // The HTTP client builder otherwise requires the process-wide default root certificate store to be
+        // populated. We are talking to a plain HTTP endpoint anyway, so disable validation to skip that path.
+        shared.endpoints.tls.skip_ssl_validation = true;
+        let forwarder_config = forwarder_config_from(shared).await;
         let context = test_component_context();
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
@@ -2138,7 +2133,7 @@ app.datadoghq.com: [key-a, key-b]
             StatusCode::OK,
         ])
         .await;
-        let (_, forwarder) = build_test_forwarder(&server_url, None);
+        let (_, forwarder) = build_test_forwarder(&server_url, None).await;
 
         let handle = forwarder.spawn().await;
         handle
@@ -2180,7 +2175,7 @@ app.datadoghq.com: [key-a, key-b]
         // at least one retry to observe the second request.
         let (server_url, counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN, StatusCode::OK]).await;
         let live_config = config_with(json!({ "secret_backend_command": "/bin/true" })).await;
-        let (_, forwarder) = build_test_forwarder(&server_url, Some(live_config));
+        let (_, forwarder) = build_test_forwarder(&server_url, Some(live_config)).await;
 
         let handle = forwarder.spawn().await;
         handle
@@ -2205,7 +2200,7 @@ app.datadoghq.com: [key-a, key-b]
         let (server_url, _counter) = start_recording_http_server(vec![StatusCode::FORBIDDEN]).await;
 
         // Build a forwarder and then subscribe to diagnostic events from the dataspace it's attached to.
-        let (dataspace, forwarder) = build_test_forwarder(&server_url, None);
+        let (dataspace, forwarder) = build_test_forwarder(&server_url, None).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
         let handle = forwarder.spawn().await;
@@ -2235,7 +2230,7 @@ app.datadoghq.com: [key-a, key-b]
         let live_config = config_with(json!({ "secret_backend_command": "/bin/true" })).await;
 
         // Build a forwarder and then subscribe to diagnostic events from the dataspace it's attached to.
-        let (dataspace, forwarder) = build_test_forwarder(&server_url, Some(live_config));
+        let (dataspace, forwarder) = build_test_forwarder(&server_url, Some(live_config)).await;
         let mut events = dataspace.subscribe::<DiagnosticEvent>(IdentifierFilter::all());
 
         let handle = forwarder.spawn().await;

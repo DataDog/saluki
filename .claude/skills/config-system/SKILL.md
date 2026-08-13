@@ -58,7 +58,11 @@ into `SalukiConfiguration`.
 
 In `SalukiConfiguration`, you may use `ConfigValue<T>` when we need to know the difference between a
 value that was explicitly set by the user, or where the value is a default. The Agent API provides a
-`source` field which we are simplifying into `Provinence`, which is either `Default` or `Explicit`.
+`source` field which we are simplifying into `Provenance`, which is either `Default` or `Explicit`.
+
+Some values must be resolved based on their provenance, for example `dd_url` overrides `site` only
+if it is explicitly set. This sort of resolution should be done in the config layer with a member
+function getter on the relevant struct. The component should store the resolved value.
 
 Paths and type names can move. Notify the user when this skill needs an update.
 
@@ -122,6 +126,22 @@ deployment.
 Reserve `#[serde(flatten)]` for a struct that genuinely groups several *top-level* Agent keys (for
 example, the forwarder's `forwarder_*` retry settings). Name a Rust field after its canonical
 section rather than renaming it onto one.
+
+## Scalar leaf coercion
+
+`DatadogConfiguration` scalar leaves accept what the Agent's permissive casting accepts. Codegen
+attaches a `cast_de.rs` coercion per schema type. For example `dogstatsd_port: "8125.0"` is valid
+and coerced to the int `8125`. `1` or `"T"` is coerced to a `bool`.
+
+## Documented enum settings
+
+A `string` setting whose documentation names a closed set of values (`otlp_config.metrics.histograms.mode`)
+becomes an enum in `agent-data-plane-config` with `#[default]` on the schema default and a `FromStr`
+listing the accepted spellings. The translator parses it and records the error, recovering to the value
+the Agent uses. When the Agent defines that recovery itself rather than falling back to a default
+(`use_v3_api.series.enabled`: warn and route to v2), warn instead of recording an error, so the strict
+startup gate does not reject a configuration the Agent runs with. Serialize each variant to the
+spelling `FromStr` reads.
 
 ## Saluki-only values
 
@@ -223,7 +243,9 @@ the witnessed model.
     affected configurations.
 
 A cutover should be behaviorally transparent. If the old behavior conflicts with the source schema
-or typed-system invariants, surface the conflict rather than silently choosing one.
+or typed-system invariants, surface the conflict rather than silently choosing one. After cutover
+artifacts of deserialization logic should not be left behind. For example, no `derive(Deserialize)`
+and if possible a held `Option<SomeType>` should collapse to a held `SomeType` if possible.
 
 ## Review checklist
 

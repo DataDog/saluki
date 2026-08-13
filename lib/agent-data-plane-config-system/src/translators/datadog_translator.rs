@@ -14,7 +14,9 @@
 //!
 //! Conversions that can fail (enum parsing, byte-size parsing, JSON structure parsing) record a
 //! [`TranslateError`] via `record_error` and should leave the resolved value unchanged (last known
-//! good). `drive` returns all recorded errors as a [`TranslateErrors`].
+//! good). `drive` returns all recorded errors as a [`TranslateErrors`]. The exception is a setting
+//! whose recovery the Agent itself defines rather than leaving to a default: follow the Agent and
+//! warn, so the strict startup gate does not reject a configuration the Agent runs with.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,10 +29,13 @@ use agent_data_plane_config::domains::otlp::{
     CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
-use agent_data_plane_config::shared::ForwarderHttpProtocol;
+use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use bytesize::ByteSize;
-use datadog_agent_config::{drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors};
+use datadog_agent_config::{
+    cast_to_string, drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors,
+};
+use tracing::warn;
 
 use crate::source::SourceTree;
 
@@ -75,12 +80,43 @@ impl<'a> DatadogTranslator<'a> {
     }
 }
 
+/// Parses a V3 series mode, warning and disabling V3 for a value the Agent cannot interpret.
+///
+/// The Agent's evaluator defines this setting's recovery rather than leaving it to a default: it warns
+/// and routes series to the older intake. Recovering the same way keeps a typo from failing the strict
+/// startup gate on a configuration the Agent runs with.
+fn parse_v3_series_mode(key: &'static str, value: &str) -> V3SeriesMode {
+    value.parse().unwrap_or_else(|_| {
+        warn!(
+            config_key = key,
+            value, "Invalid V3 series mode value. Expected true, false, or datadog_only; treating as false."
+        );
+        V3SeriesMode::Disabled
+    })
+}
+
 /// Returns `None` for an empty `s`; otherwise returns `Some(s)`.
 fn non_empty(s: String) -> Option<String> {
     if s.is_empty() {
         None
     } else {
         Some(s)
+    }
+}
+
+/// Returns `None` for an `s` that is empty or entirely whitespace; otherwise returns `Some(s)` with
+/// the surrounding whitespace removed.
+///
+/// Use this for a setting whose consumer treats "absent" and "blank" alike. A value padded in a
+/// configuration file or an environment variable means the same thing as one that was never set, so
+/// normalizing here keeps the padding from reaching a consumer that would read it as meaningful: a
+/// credential that is really blank, or a site that composes into an intake URL nothing can parse.
+fn non_empty_trimmed(s: String) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 
@@ -843,11 +879,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_multi_region_failover_api_key(&mut self, value: String) {
-        self.config.domains.multi_region_failover.api_key = non_empty(value);
+        self.config.domains.multi_region_failover.api_key = non_empty_trimmed(value);
     }
 
     fn consume_multi_region_failover_dd_url(&mut self, value: String) {
-        self.config.domains.multi_region_failover.dd_url = non_empty(value);
+        self.config.domains.multi_region_failover.dd_url = non_empty_trimmed(value);
     }
 
     fn consume_multi_region_failover_enabled(&mut self, value: bool) {
@@ -863,7 +899,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_multi_region_failover_site(&mut self, value: String) {
-        self.config.domains.multi_region_failover.site = non_empty(value);
+        self.config.domains.multi_region_failover.site = non_empty_trimmed(value);
     }
 
     fn consume_no_proxy_nonexact_match(&mut self, value: bool) {
@@ -1134,18 +1170,26 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_use_v3_api_series_enabled(&mut self, value: String) {
-        // TODO: consider modeling as an enum.
-        self.config.shared.metrics_encoding.v3_series_mode.mode = value;
+        self.config.shared.metrics_encoding.v3_series_mode = parse_v3_series_mode("use_v3_api.series.enabled", &value);
     }
 
     fn consume_use_v3_api_series_endpoints(&mut self, value: ::serde_json::Map<String, ::serde_json::Value>) {
-        self.config.shared.metrics_encoding.v3_series_mode.endpoint_modes = value
-            .into_iter()
-            .map(|(endpoint, mode)| {
-                let mode = mode.as_str().map(str::to_string).unwrap_or_else(|| mode.to_string());
-                (endpoint, mode)
-            })
-            .collect();
+        // This key arrives as raw JSON, so each mode is rendered the way the Agent's own string cast
+        // renders it before it is parsed: a boolean, an integer, `1.0`, and a null all reach the
+        // parser as the Agent reads them.
+        let mut modes: HashMap<String, V3SeriesMode> = HashMap::with_capacity(value.len());
+        for (endpoint, mode) in value {
+            match cast_to_string(&mode) {
+                Ok(rendered) => {
+                    modes.insert(endpoint, parse_v3_series_mode("use_v3_api.series.endpoints", &rendered));
+                }
+                Err(reason) => {
+                    self.record_error(TranslateError::new_with_message("use_v3_api.series.endpoints", reason))
+                }
+            }
+        }
+
+        self.config.shared.metrics_encoding.v3_series_endpoint_modes = modes;
     }
 
     fn consume_vector_metrics_enabled(&mut self, value: bool) {
@@ -1188,6 +1232,7 @@ mod tests {
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
     };
+    use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
     use datadog_agent_config::{DatadogConfiguration, TranslateErrors};
     use saluki_config::dynamic::{ConfigSetting, Provenance as StreamProvenance};
@@ -1334,6 +1379,93 @@ mod tests {
         assert!(errors.to_string().contains("greater than or equal to 0"));
     }
 
+    #[test]
+    fn v3_series_modes_translate_from_every_form_the_agent_accepts() {
+        let (config, errors) = translate_explicit(json!({
+            "use_v3_api": {
+                "series": {
+                    "enabled": true,
+                    "endpoints": {
+                        "https://app.datadoghq.com": "datadog_only",
+                        "https://opw.example.com": false,
+                        "https://shadow.example.com": 1.0,
+                        "https://null.example.com": null,
+                    },
+                }
+            }
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.shared.metrics_encoding.v3_series_mode, V3SeriesMode::Enabled);
+        assert_eq!(
+            config
+                .shared
+                .metrics_encoding
+                .v3_series_endpoint_modes
+                .get("https://app.datadoghq.com"),
+            Some(&V3SeriesMode::DatadogOnly)
+        );
+        assert_eq!(
+            config
+                .shared
+                .metrics_encoding
+                .v3_series_endpoint_modes
+                .get("https://opw.example.com"),
+            Some(&V3SeriesMode::Disabled)
+        );
+        // The Agent's string cast renders `1.0` as `1`, which it reads as true, and a null as the
+        // empty string, which it reads as false.
+        assert_eq!(
+            config
+                .shared
+                .metrics_encoding
+                .v3_series_endpoint_modes
+                .get("https://shadow.example.com"),
+            Some(&V3SeriesMode::Enabled)
+        );
+        assert_eq!(
+            config
+                .shared
+                .metrics_encoding
+                .v3_series_endpoint_modes
+                .get("https://null.example.com"),
+            Some(&V3SeriesMode::Disabled)
+        );
+    }
+
+    #[test]
+    fn an_uninterpretable_v3_series_mode_disables_v3_without_failing_translation() {
+        // The Agent warns and routes to the older intake for a mode it cannot interpret, so the strict
+        // startup gate must not reject a configuration the Agent runs with. The recovered value is
+        // disabled rather than the `datadog_only` field default.
+        let (config, errors) = translate_explicit(json!({
+            "use_v3_api": { "series": { "enabled": "sometimes", "endpoints": { "https://app.datadoghq.com": "often" } } }
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.shared.metrics_encoding.v3_series_mode, V3SeriesMode::Disabled);
+        assert_eq!(
+            config
+                .shared
+                .metrics_encoding
+                .v3_series_endpoint_modes
+                .get("https://app.datadoghq.com"),
+            Some(&V3SeriesMode::Disabled)
+        );
+    }
+
+    #[test]
+    fn a_compound_v3_series_endpoint_mode_records_a_translation_error() {
+        // A mode written as a list or map is a structural error, not a mode the Agent interprets.
+        let (config, errors) = translate_explicit(json!({
+            "use_v3_api": { "series": { "endpoints": { "https://app.datadoghq.com": ["true"] } } }
+        }));
+
+        assert!(config.shared.metrics_encoding.v3_series_endpoint_modes.is_empty());
+        let errors = errors.expect("a compound mode should record a translation error");
+        assert!(errors.to_string().contains("use_v3_api.series.endpoints"));
+    }
+
     // Issue #1965: the Core Agent streams `dd_url` at its schema default even when the operator
     // configured only `site`. The translator used to compare the URL against that default and treat a
     // match as unset, which also discarded an operator's deliberate choice of the default intake.
@@ -1438,6 +1570,50 @@ mod tests {
 
         assert!(errors.is_none());
         assert_explicit(&config.shared.endpoints.forwarder.retry_queue_max_size, 0);
+    }
+
+    #[test]
+    fn padded_failover_endpoint_settings_are_trimmed() {
+        // A padded value must resolve to the same endpoint as a bare one. Carrying the whitespace
+        // through would compose an intake URL the forwarder cannot parse.
+        let (config, errors) = translate_explicit(json!({
+            "multi_region_failover": { "api_key": " mrf-key ", "site": " datadoghq.eu " }
+        }));
+
+        assert!(errors.is_none());
+        let mrf = &config.domains.multi_region_failover;
+        assert_eq!(Some("mrf-key"), mrf.api_key.as_deref());
+        assert_eq!(Some("datadoghq.eu"), mrf.site.as_deref());
+        assert_eq!(
+            Some("https://app.mrf.datadoghq.eu".to_string()),
+            mrf.metrics_endpoint_url()
+        );
+
+        let (config, errors) = translate_explicit(json!({
+            "multi_region_failover": { "dd_url": "  https://custom-mrf.example.com  " }
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            Some("https://custom-mrf.example.com"),
+            config.domains.multi_region_failover.dd_url.as_deref()
+        );
+    }
+
+    #[test]
+    fn a_blank_failover_endpoint_setting_is_unset() {
+        // A whitespace-only value says no more than an absent one. Retaining it would report the
+        // failover region as credentialed when its key is blank.
+        let (config, errors) = translate_explicit(json!({
+            "multi_region_failover": { "enabled": true, "api_key": "   ", "site": "\t", "dd_url": " " }
+        }));
+
+        assert!(errors.is_none());
+        let mrf = &config.domains.multi_region_failover;
+        assert_eq!(None, mrf.api_key);
+        assert_eq!(None, mrf.site);
+        assert_eq!(None, mrf.dd_url);
+        assert_eq!(None, mrf.metrics_endpoint_url());
     }
 
     #[test]

@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
-use crate::ConfigValue;
+use crate::defaults::{DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_MAX_METRICS_PER_PAYLOAD};
+use crate::{ConfigValue, Error};
 
 /// Cross-cutting configuration shared across domains.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -106,6 +107,22 @@ pub struct Endpoints {
 
     /// Alternate metrics intake for Vector, used in place of the default intake when enabled.
     pub vector_intake: AltMetricsIntake,
+}
+
+impl Endpoints {
+    /// Returns the primary intake endpoint, as configured and without normalization.
+    ///
+    /// An explicitly configured [`dd_url`](Self::dd_url) overrides [`site`](Self::site), even when
+    /// its value equals the schema default: the operator asked for that URL. Otherwise the endpoint
+    /// is derived from `site`. An empty `site` cannot produce an endpoint, so the effective `dd_url`
+    /// value is used instead; it already carries the source schema's default URL.
+    pub fn primary_endpoint(&self) -> String {
+        if self.dd_url.is_explicit() || self.site.value.is_empty() {
+            self.dd_url.value.clone()
+        } else {
+            format!("https://app.{}", self.site.value)
+        }
+    }
 }
 
 /// An alternate metrics intake (Observability Pipelines Worker or Vector) that replaces the Datadog
@@ -268,6 +285,23 @@ pub struct Forwarder {
     pub timeout: u64,
 }
 
+impl Forwarder {
+    /// Returns the effective maximum size, in bytes, of the in-memory retry queue.
+    ///
+    /// An explicit [`retry_queue_payloads_max_size`](Self::retry_queue_payloads_max_size) wins, then
+    /// an explicit [`retry_queue_max_size`](Self::retry_queue_max_size), and otherwise the effective
+    /// payload-size value, which carries the source schema's default. Selection cannot look at the
+    /// values themselves: `0` is both the deprecated setting's schema default and a value an
+    /// operator can mean.
+    pub fn effective_retry_queue_max_size_bytes(&self) -> u64 {
+        if !self.retry_queue_payloads_max_size.is_explicit() && self.retry_queue_max_size.is_explicit() {
+            self.retry_queue_max_size.value
+        } else {
+            self.retry_queue_payloads_max_size.value
+        }
+    }
+}
+
 /// Global / host tagging.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct GlobalTags {
@@ -304,6 +338,8 @@ pub struct MetricsEncoding {
     pub flush_timeout: Duration,
 
     /// Maximum number of metrics packed into a single payload. (not in Datadog Agent config schema)
+    ///
+    /// Defaults to [`DEFAULT_MAX_METRICS_PER_PAYLOAD`].
     pub max_metrics_per_payload: usize,
 
     /// Maximum compressed payload size, in bytes.
@@ -333,8 +369,12 @@ pub struct MetricsEncoding {
     /// V3 metrics-intake protocol settings (`serializer_experimental_use_v3_api.*`).
     pub v3_api: V3ApiEncoding,
 
-    /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
+    /// Global V3 series routing mode (`use_v3_api.series.enabled`).
     pub v3_series_mode: V3SeriesMode,
+
+    /// Per-endpoint V3 series routing overrides, keyed by endpoint URL
+    /// (`use_v3_api.series.endpoints`).
+    pub v3_series_endpoint_modes: HashMap<String, V3SeriesMode>,
 }
 
 impl Default for MetricsEncoding {
@@ -343,7 +383,7 @@ impl Default for MetricsEncoding {
             // The `flush_timeout_secs` key is Saluki-only, so its default belongs to the ADP config
             // crate rather than a source schema.
             flush_timeout: DEFAULT_ENCODER_FLUSH_TIMEOUT,
-            max_metrics_per_payload: 0,
+            max_metrics_per_payload: DEFAULT_MAX_METRICS_PER_PAYLOAD,
             max_payload_size: 0,
             max_series_payload_size: 0,
             max_series_points_per_payload: 0,
@@ -354,6 +394,7 @@ impl Default for MetricsEncoding {
             histogram: HistogramEncoding::default(),
             v3_api: V3ApiEncoding::default(),
             v3_series_mode: V3SeriesMode::default(),
+            v3_series_endpoint_modes: HashMap::new(),
         }
     }
 }
@@ -408,24 +449,38 @@ impl Default for V3ApiSettings {
     }
 }
 
-/// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct V3SeriesMode {
-    /// Global V3 series mode.
-    ///
-    /// Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
-    /// TODO: consider modeling as an enum.
-    pub mode: String,
+/// Whether series are routed to the V3 metrics intake (`use_v3_api.series.*`).
+///
+/// Each variant serializes to the spelling [`FromStr`] reads, so a serialized mode round-trips.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum V3SeriesMode {
+    /// Route series to the V3 intake.
+    #[serde(rename = "true")]
+    Enabled,
 
-    /// Per-endpoint V3 series mode overrides, keyed by endpoint URL.
-    pub endpoint_modes: HashMap<String, String>,
+    /// Route series to the older intake.
+    #[serde(rename = "false")]
+    Disabled,
+
+    /// Route series to the V3 intake only for endpoints that are Datadog intake URLs.
+    #[default]
+    #[serde(rename = "datadog_only")]
+    DatadogOnly,
 }
 
-impl Default for V3SeriesMode {
-    fn default() -> Self {
-        Self {
-            mode: "datadog_only".to_string(),
-            endpoint_modes: HashMap::new(),
+impl FromStr for V3SeriesMode {
+    type Err = Error;
+
+    // The Agent reads this setting as a string and then interprets it, accepting more spellings than
+    // `strconv.ParseBool` does, so the accepted set is wider than that of a `boolean` leaf.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "t" | "yes" | "on" => Ok(Self::Enabled),
+            "false" | "0" | "f" | "no" | "off" | "" => Ok(Self::Disabled),
+            "datadog_only" => Ok(Self::DatadogOnly),
+            other => Err(Error::new_without_source(format!(
+                "unknown V3 series mode `{other}`; expected a boolean or `datadog_only`"
+            ))),
         }
     }
 }
@@ -470,4 +525,141 @@ pub struct AutoscalingFailover {
 
     /// Metrics designated for failover.
     pub metrics: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Endpoints, Forwarder, V3SeriesMode};
+    use crate::ConfigValue;
+
+    #[test]
+    fn v3_series_mode_parses_every_form_the_agent_interprets() {
+        for (value, expected) in [
+            ("true", V3SeriesMode::Enabled),
+            ("TRUE", V3SeriesMode::Enabled),
+            ("1", V3SeriesMode::Enabled),
+            ("t", V3SeriesMode::Enabled),
+            ("yes", V3SeriesMode::Enabled),
+            ("on", V3SeriesMode::Enabled),
+            ("false", V3SeriesMode::Disabled),
+            ("0", V3SeriesMode::Disabled),
+            ("f", V3SeriesMode::Disabled),
+            ("no", V3SeriesMode::Disabled),
+            ("off", V3SeriesMode::Disabled),
+            ("", V3SeriesMode::Disabled),
+            (" datadog_only ", V3SeriesMode::DatadogOnly),
+        ] {
+            assert_eq!(
+                value.parse::<V3SeriesMode>().expect("mode should parse"),
+                expected,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn v3_series_mode_rejects_an_uninterpretable_value() {
+        let error = "sometimes"
+            .parse::<V3SeriesMode>()
+            .expect_err("an uninterpretable mode should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "unknown V3 series mode `sometimes`; expected a boolean or `datadog_only`"
+        );
+    }
+
+    #[test]
+    fn v3_series_mode_defaults_to_datadog_only() {
+        assert_eq!(V3SeriesMode::default(), V3SeriesMode::DatadogOnly);
+    }
+
+    #[test]
+    fn explicit_dd_url_overrides_site_even_at_the_schema_default() {
+        // The source supplies `dd_url` at its schema default even when nothing set it, so an
+        // explicit URL equal to that default still expresses an override.
+        let endpoints = Endpoints {
+            site: ConfigValue::explicit("datadoghq.eu".to_string()),
+            dd_url: ConfigValue::explicit("https://app.datadoghq.com".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!("https://app.datadoghq.com", endpoints.primary_endpoint());
+    }
+
+    #[test]
+    fn defaulted_dd_url_leaves_the_endpoint_to_site() {
+        let endpoints = Endpoints {
+            site: ConfigValue::explicit("datadoghq.eu".to_string()),
+            dd_url: ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!("https://app.datadoghq.eu", endpoints.primary_endpoint());
+    }
+
+    #[test]
+    fn an_override_url_is_used_verbatim() {
+        let endpoints = Endpoints {
+            site: ConfigValue::defaulted("datadoghq.com".to_string()),
+            dd_url: ConfigValue::explicit("https://proxy.internal.example.com:3128".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!("https://proxy.internal.example.com:3128", endpoints.primary_endpoint());
+    }
+
+    #[test]
+    fn an_empty_site_falls_back_to_the_effective_dd_url() {
+        // `https://app.` is not an endpoint, and the model does not restate the source schema's
+        // default site. The effective `dd_url` already carries the schema default URL.
+        let endpoints = Endpoints {
+            site: ConfigValue::explicit(String::new()),
+            dd_url: ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!("https://app.datadoghq.com", endpoints.primary_endpoint());
+    }
+
+    #[test]
+    fn retry_queue_size_prefers_the_explicit_payload_size() {
+        let forwarder = Forwarder {
+            retry_queue_payloads_max_size: ConfigValue::explicit(2048),
+            retry_queue_max_size: ConfigValue::explicit(1024),
+            ..Default::default()
+        };
+
+        assert_eq!(2048, forwarder.effective_retry_queue_max_size_bytes());
+    }
+
+    #[test]
+    fn retry_queue_size_falls_back_to_the_explicit_deprecated_size() {
+        let forwarder = Forwarder {
+            retry_queue_payloads_max_size: ConfigValue::defaulted(15 * 1024 * 1024),
+            retry_queue_max_size: ConfigValue::explicit(1024),
+            ..Default::default()
+        };
+
+        assert_eq!(1024, forwarder.effective_retry_queue_max_size_bytes());
+    }
+
+    #[test]
+    fn an_explicit_zero_retry_queue_size_is_honored() {
+        // Zero is the deprecated setting's schema default and also a value an operator can mean, so
+        // only provenance can tell the two apart.
+        let explicitly_zero = Forwarder {
+            retry_queue_payloads_max_size: ConfigValue::defaulted(15 * 1024 * 1024),
+            retry_queue_max_size: ConfigValue::explicit(0),
+            ..Default::default()
+        };
+        assert_eq!(0, explicitly_zero.effective_retry_queue_max_size_bytes());
+
+        let defaulted_zero = Forwarder {
+            retry_queue_payloads_max_size: ConfigValue::defaulted(15 * 1024 * 1024),
+            retry_queue_max_size: ConfigValue::defaulted(0),
+            ..Default::default()
+        };
+        assert_eq!(15 * 1024 * 1024, defaulted_zero.effective_retry_queue_max_size_bytes());
+    }
 }
