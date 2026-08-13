@@ -35,6 +35,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::{error, info};
 
+#[cfg(target_os = "linux")]
+use crate::cli::shutdown_signal::wait_for_shutdown_signal;
 use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
 
 mod top;
@@ -302,13 +304,8 @@ async fn handle_dogstatsd_replay(
     let cancel_on_signal = tokio::spawn({
         let cancel = cancel.clone();
         async move {
-            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to install SIGTERM handler");
-
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => cancel.cancel(),
-                _ = sigterm.recv() => cancel.cancel(),
-            }
+            wait_for_shutdown_signal().await;
+            cancel.cancel();
         }
     });
 
