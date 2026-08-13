@@ -302,8 +302,12 @@ async fn handle_dogstatsd_replay(
     let cancel_on_signal = tokio::spawn({
         let cancel = cancel.clone();
         async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                cancel.cancel();
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler");
+
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => cancel.cancel(),
+                _ = sigterm.recv() => cancel.cancel(),
             }
         }
     });
