@@ -94,9 +94,6 @@ pub struct Listeners {
     /// schema)
     pub autoscale_udp_listeners: bool,
 
-    /// Which listener implementation provides packets.
-    pub provider_kind: String,
-
     /// Path a traffic capture is written to or replayed from.
     pub capture_path: PathBuf,
 

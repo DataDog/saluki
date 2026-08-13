@@ -648,15 +648,6 @@ pub struct DogStatsDConfiguration {
     #[serde(skip, default)]
     #[cfg_attr(test, derive_where(skip))]
     replay_control: DogStatsDReplayControl,
-
-    /// Provider kind tag appended to all metrics as `provider_kind:<value>`.
-    ///
-    /// Set via `DD_PROVIDER_KIND` by the Helm chart on GKE Autopilot (`gke-autopilot`) and GKE on
-    /// Google Distributed Cloud (`gke-gdc`). When empty or absent, no tag is added.
-    ///
-    /// Defaults to `""` (disabled).
-    #[serde(default)]
-    provider_kind: String,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -719,14 +710,19 @@ impl DogStatsDConfiguration {
         Ok(dogstatsd_config)
     }
 
-    /// Gets both the `additional_tags` and any others specified by other configuration fields, such as `provider_kind`.
-    fn additional_tags(&self) -> Vec<String> {
-        if self.provider_kind.is_empty() {
-            return self.additional_tags.clone();
-        }
+    /// Adds static tags required by the running environment.
+    ///
+    /// These tags are appended to the configured `dogstatsd_tags`.
+    pub fn with_static_tags(mut self, static_tags: Vec<String>) -> Self {
+        self.additional_tags.extend(static_tags);
+        self
+    }
 
+    /// Gets the effective source-wide DogStatsD tags.
+    fn additional_tags(&self) -> Vec<String> {
         let mut tags = self.additional_tags.clone();
-        tags.push(format!("provider_kind:{}", self.provider_kind.clone()));
+        tags.sort_unstable();
+        tags.dedup();
         tags
     }
 
@@ -3212,6 +3208,29 @@ mod tests {
         assert_ne!(metrics[0].context(), metrics[1].context());
         assert_ne!(metrics[0].context(), metrics[3].context());
         assert_ne!(metrics[1].context(), metrics[3].context());
+    }
+
+    #[test]
+    fn static_tags_are_appended_to_configured_dogstatsd_tags() {
+        let config = DogStatsDConfiguration {
+            additional_tags: vec!["dogstatsd:configured".to_string()],
+            ..Default::default()
+        }
+        .with_static_tags(vec![
+            "env:prod".to_string(),
+            "provider_kind:autopilot".to_string(),
+            "kube_distribution:eks".to_string(),
+        ]);
+
+        assert_eq!(
+            config.additional_tags(),
+            [
+                "dogstatsd:configured",
+                "env:prod",
+                "kube_distribution:eks",
+                "provider_kind:autopilot",
+            ]
+        );
     }
 
     #[test]

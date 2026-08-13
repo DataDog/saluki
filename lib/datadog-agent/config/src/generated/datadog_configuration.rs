@@ -72,6 +72,9 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub cluster_agent: ClusterAgent,
 
+    #[serde(default)]
+    pub cluster_name: String,
+
     #[serde(default = "defaults::default_u64::<i64, 5001>")]
     pub cmd_port: i64,
 
@@ -194,6 +197,9 @@ pub struct DatadogConfiguration {
     pub dogstatsd_workers_count: i64,
 
     #[serde(default)]
+    pub eks_fargate: bool,
+
+    #[serde(default)]
     pub enable_payloads: EnablePayloads,
 
     #[serde(default)]
@@ -205,6 +211,10 @@ pub struct DatadogConfiguration {
         deserialize_with = "crate::duration_de::deserialize_go_duration"
     )]
     pub expected_tags_duration: std::time::Duration,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub extra_tags: Vec<String>,
 
     #[serde(default = "defaults::default_u64::<i64, 60>")]
     pub forwarder_apikey_validation_interval: i64,
@@ -286,6 +296,9 @@ pub struct DatadogConfiguration {
     #[serde(default = "defaults::datadog_configuration_histogram_percentiles")]
     #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
     pub histogram_percentiles: Vec<String>,
+
+    #[serde(default)]
+    pub kubernetes_kubelet_nodename: String,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
     pub log_file_max_rolls: i64,
@@ -409,6 +422,10 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub syslog_uri: String,
 
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub tags: Vec<String>,
+
     #[serde(default)]
     pub telemetry: Telemetry,
 
@@ -448,6 +465,7 @@ impl Default for DatadogConfiguration {
             basic_telemetry_add_container_tags: Default::default(),
             bind_host: Default::default(),
             cluster_agent: Default::default(),
+            cluster_name: Default::default(),
             cmd_port: defaults::default_u64::<i64, 5001>(),
             cri_connection_timeout: defaults::default_u64::<i64, 1>(),
             cri_query_timeout: defaults::default_u64::<i64, 5>(),
@@ -486,9 +504,11 @@ impl Default for DatadogConfiguration {
             dogstatsd_tags: Default::default(),
             dogstatsd_windows_pipe_security_descriptor: defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor(),
             dogstatsd_workers_count: Default::default(),
+            eks_fargate: Default::default(),
             enable_payloads: Default::default(),
             env: Default::default(),
             expected_tags_duration: duration_defaults::expected_tags_duration(),
+            extra_tags: Default::default(),
             forwarder_apikey_validation_interval: defaults::default_u64::<i64, 60>(),
             forwarder_backoff_base: defaults::default_u64::<i64, 2>(),
             forwarder_backoff_factor: defaults::default_u64::<i64, 2>(),
@@ -520,6 +540,7 @@ impl Default for DatadogConfiguration {
             histogram_copy_to_distribution: Default::default(),
             histogram_copy_to_distribution_prefix: Default::default(),
             histogram_percentiles: defaults::datadog_configuration_histogram_percentiles(),
+            kubernetes_kubelet_nodename: Default::default(),
             log_file_max_rolls: defaults::default_u64::<i64, 1>(),
             log_file_max_size: defaults::datadog_configuration_log_file_max_size(),
             log_format_json: Default::default(),
@@ -567,6 +588,7 @@ impl Default for DatadogConfiguration {
             statsd_metric_namespace_blacklist: defaults::datadog_configuration_statsd_metric_namespace_blacklist(),
             syslog_rfc: Default::default(),
             syslog_uri: Default::default(),
+            tags: Default::default(),
             telemetry: Default::default(),
             tls_handshake_timeout: duration_defaults::tls_handshake_timeout(),
             use_proxy_for_cloud_metadata: Default::default(),

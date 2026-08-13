@@ -53,6 +53,11 @@ fn is_env_var_present(name: &str) -> bool {
     !get_env_var_or_empty(name).is_empty()
 }
 
+/// Returns whether the process runs in an Amazon ECS Fargate environment.
+pub fn is_ecs_fargate() -> bool {
+    is_env_var_present("ECS_FARGATE") || get_env_var_or_empty("AWS_EXECUTION_ENV") == "AWS_ECS_FARGATE"
+}
+
 fn file_exists<P>(path: P) -> bool
 where
     P: AsRef<Path>,
