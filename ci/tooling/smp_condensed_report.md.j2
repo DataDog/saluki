@@ -1,0 +1,115 @@
+{#-
+  Condensed regression-detector report, sized for a PR comment.
+
+  A terser alternative to the built-in `report.md`: it drops the `Δ mean % CI`
+  and `trials` columns and folds the `perf` column into the `Δ mean %` cell as a
+  colored dot. Only regressions are shown up front; everything else is collapsed.
+
+  Render with:
+    smp report render --template-file condensed-report.md.j2 \
+      --report-json outputs/report.json \
+      --target-config-dir ./test/smp/regression/adp/ \
+      --output-file outputs/condensed-report.md
+
+  Bounds-check figures cover the comparison variant only.
+-#}
+{#- Terse goal label, and which sign of Δ mean % is the improving direction. -#}
+{%- set GOALS = {
+      "% cpu utilization":  ["cpu", "down"],
+      "memory utilization": ["memory", "down"],
+      "ingress throughput": ["throughput", "up"],
+      "egress throughput":  ["egress throughput", "up"],
+    } -%}
+{#- Decorate each goal row with its label, dot, tag and sort key. The regression
+    verdict itself comes from the report: `change_detected` already encodes the
+    effect-size, confidence-interval and configured-erratic criteria, so there is
+    no statistics to re-derive here. -#}
+{%- set ns = namespace(rows=[]) -%}
+{%- for g in optimization_goals -%}
+{%- set info = GOALS[g.goal] or [g.goal, "down"] -%}
+{%- set tag = " **(ignored)**" if g.ignores_regressions else (" **(erratic)**" if g.is_erratic else "") -%}
+{#- `rank` is the negated goal-relative change, so ascending order puts the
+    worst-for-this-goal first and a throughput drop sorts alongside a CPU rise
+    rather than at the opposite end of the table. -#}
+{%- set ns.rows = ns.rows + [dict(
+      experiment = g.experiment,
+      name = g.experiment ~ tag,
+      label = info[0],
+      delta = g.delta_mean_percent_display,
+      regressed = g.is_ci_fail,
+      dot = ("🟢" if (g.change_detected and g.is_improvement) else ("🔴" if g.is_ci_fail else "⚪")),
+      rank = ((0 - g.delta_mean_percent) if info[1] == "down" else g.delta_mean_percent),
+    )] -%}
+{%- endfor -%}
+{%- set rows = ns.rows | sort(attribute="rank,experiment") -%}
+{%- set regressions = rows | selectattr("regressed") | list -%}
+{%- set others = rows | rejectattr("regressed") | list -%}
+{%- set bounds = checks | selectattr("kind", "equalto", "bounds") | list -%}
+{#- Links come from each experiment's `report_links`; absent a target config dir
+    the cell renders empty rather than failing the whole report. -#}
+{%- macro links(experiment) -%}
+{%- set nsl = namespace(out="", sep="") -%}
+{%- if experiments and experiment in experiments -%}
+{%- for l in experiments[experiment].report_links -%}
+{%- set nsl.out = nsl.out ~ nsl.sep ~ "[" ~ l.text ~ "](" ~ (l.link | interpolate(experiment=experiment)) ~ ")" -%}
+{%- set nsl.sep = " " -%}
+{%- endfor -%}
+{%- endif -%}
+{{- nsl.out -}}
+{%- endmacro -%}
+{%- macro goal_table(rows) -%}
+| experiment | goal | Δ mean % | links |
+|---|---|---|---|
+{% for r in rows -%}
+| {{ r.name }} | {{ r.label }} | {{ r.dot }} {{ r.delta }} | {{ links(r.experiment) }} |
+{% endfor -%}
+{%- endmacro -%}
+_this test report is locally rendered_
+**Run ID:** `{{ job_id }}`
+**Baseline:** `{{ baseline_sha[:8] or "(unknown)" }}` &middot; **Comparison:** `{{ comparison_sha[:8] or "(unknown)" }}` &middot; {% if shas_are_shas %}[diff](../../compare/{{ baseline_sha }}..{{ comparison_sha }}){% else %}(diff unavailable){% endif %}
+{#- Data the report carries but the tables cannot show. One line each, and
+    nothing at all on a clean run, so the common case stays terse. -#}
+{%- set no_analysis = failed_replicates.experiments_with_no_analysis %}
+{%- set retried = failed_replicates.experiments_with_retried_replicates %}
+{%- if no_analysis %}
+&#9888; **{{ no_analysis | length }} experiment{{ "s" if no_analysis | length != 1 }} lost every replicate to target crashes** (no analysis): {{ no_analysis | join(", ") }}
+{%- endif %}
+{%- if missing_data %}
+&#9888; **{{ missing_data | length }} experiment{{ "s" if missing_data | length != 1 }} produced no optimization-goal data**: {{ missing_data | map(attribute="experiment") | join(", ") }}
+{%- endif %}
+{%- if retried %}
+&#9888; **{{ retried | length }} experiment{{ "s" if retried | length != 1 }} had replicates retried after a crash**: {{ retried | join(", ") }}
+{%- endif %}
+{%- if errors %}
+&#9888; **{{ errors | length }} analysis error{{ "s" if errors | length != 1 }}**: {% for e in errors %}{{ e.experiment }} ({{ e.check_name }}){{ ", " if not loop.last }}{% endfor %}
+{%- endif %}
+
+{% if regressions %}## Optimization Goals: ❌ {{ regressions | length }} regression{{ "s" if regressions | length != 1 }} detected
+
+{{ goal_table(regressions) }}
+{%- else %}## Optimization Goals: ✅ No significant changes detected
+{% endif %}
+{%- if others %}
+<details><summary><b>Fine details of change detection per experiment</b> ({{ others | length }})</summary>
+
+Experiments configured `erratic: true` are tagged <code>(ignored)</code> and skipped when determining which experiments regressed or improved. Experiments which are _detected_ as erratic at runtime are tagged <code>(erratic)</code> to flag that the run's sample dispersion was high, but their regression / improvement signal still counts.
+
+{{ goal_table(others) }}
+</details>
+{% endif %}
+{%- if bounds %}
+<details><summary><b>Bounds Checks:</b> {{ "✅ Passed" if bounds_checks_passed else "❌ Failed" }} ({{ bounds | length }})</summary>
+
+| experiment | check | replicates | observed | links |
+|---|---|---|---|---|
+{% for c in bounds -%}
+| {{ c.experiment }} | {{ c.check_name }} | {{ c.replicates_passed }} | {{ "✅" if c.passed else "❌" }} {{ c.observed_value }} | {{ links(c.experiment) }} |
+{% endfor -%}
+</details>
+{% endif %}
+<details><summary><b>Explanation</b></summary>
+
+A change is flagged as a regression when |Δ mean %| > **{{ effect_size | fmt2 }}%** in the regressing direction for its optimization goal AND SMP marks the experiment as a regression (`is_regression: true`). Improvements use the matching criteria for the improving direction. Experiments configured `erratic: true` (tagged <code>(ignored)</code>) are skipped outright; experiments detected as erratic at runtime (tagged <code>(erratic)</code>) still count, since that flag describes sample dispersion rather than directional certainty. The Δ mean % cell is colored accordingly: 🟢 = improvement, 🔴 = regression, ⚪ = neutral. Reduction in CPU or memory is an improvement; reduction in ingress throughput is a regression.
+
+</details>
+
