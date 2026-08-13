@@ -204,7 +204,7 @@ impl ComponentSpawner {
 
 /// A child task that has been described but not yet spawned.
 ///
-/// Created by [`ComponentSpawner::noninterruptible` or [`ComponentSpawner::interruptible`], and consumed by
+/// Created by [`ComponentSpawner::noninterruptible`] or [`ComponentSpawner::interruptible`], and consumed by
 /// [`spawn`][Self::spawn].
 #[must_use = "a child is only started when `spawn` is called"]
 pub struct ChildBuilder<'a> {
