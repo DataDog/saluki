@@ -577,6 +577,9 @@ fn load_otel_receiver(otel_dir: &Path) -> Result<serde_yaml::Value, Error> {
     // Convert to Datadog schema dialect.
     convert_to_datadog_dialect(&mut protocols);
 
+    // Tag env bindings. Only a subset is is registered and gets an explicit `env_vars` designation; the rest get `no-env`.
+    tag_otel_env_bindings(&mut protocols, &["protocols"]);
+
     // Wrap in a "receiver" section to match the Datadog schema structure.
     let mut receiver_section = serde_yaml::Mapping::new();
     receiver_section.insert(
@@ -639,7 +642,7 @@ fn merge_receiver_node(otel: &mut serde_yaml::Value, datadog: &serde_yaml::Value
         otel_map.get_mut("properties").and_then(|v| v.as_mapping_mut()),
         datadog_map.get("properties").and_then(|v| v.as_mapping()),
     ) {
-        // Merge overlapping OTEL properties with corresponding Datadog properties.
+        // Merge overlapping OTel properties with corresponding Datadog properties.
         let otel_keys: Vec<serde_yaml::Value> = otel_props.keys().cloned().collect();
         for key in &otel_keys {
             if let Some(datadog_val) = datadog_props.get(key) {
@@ -648,7 +651,7 @@ fn merge_receiver_node(otel: &mut serde_yaml::Value, datadog: &serde_yaml::Value
                 }
             }
         }
-        // Add Datadog-only properties that don't exist in OTEL.
+        // Add Datadog-only properties that don't exist in OTel.
         for (key, val) in datadog_props.iter() {
             if !otel_props.contains_key(key) {
                 otel_props.insert(key.clone(), val.clone());
@@ -834,6 +837,58 @@ fn convert_to_datadog_dialect(value: &mut serde_yaml::Value) {
     if let Some(props) = map.get_mut("properties").and_then(|v| v.as_mapping_mut()) {
         for (_, v) in props.iter_mut() {
             convert_to_datadog_dialect(v);
+        }
+    }
+}
+
+/// List of env-reachable `otlp_config.receiver` keys
+const ENV_REGISTERED_OTEL_KEYS: &[&str] = &[
+    "otlp_config.receiver.protocols.grpc.endpoint",
+    "otlp_config.receiver.protocols.grpc.transport",
+    "otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib",
+    "otlp_config.receiver.protocols.grpc.max_concurrent_streams",
+    "otlp_config.receiver.protocols.grpc.read_buffer_size",
+    "otlp_config.receiver.protocols.grpc.write_buffer_size",
+    "otlp_config.receiver.protocols.grpc.include_metadata",
+    "otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time",
+    "otlp_config.receiver.protocols.http.endpoint",
+    "otlp_config.receiver.protocols.http.max_request_body_size",
+    "otlp_config.receiver.protocols.http.include_metadata",
+    "otlp_config.receiver.protocols.http.cors.allowed_headers",
+    "otlp_config.receiver.protocols.http.cors.allowed_origins",
+];
+
+/// Walks the OTel receiver subtree and tags each setting with `env_vars` or `no-env`.
+fn tag_otel_env_bindings(value: &mut serde_yaml::Value, path_parts: &[&str]) {
+    let Some(map) = value.as_mapping_mut() else { return };
+
+    if map.get("node_type").and_then(|v| v.as_str()) == Some("setting") {
+        let full_path = format!("otlp_config.receiver.{}", path_parts.join("."));
+        if ENV_REGISTERED_OTEL_KEYS.contains(&full_path.as_str()) {
+            let env_var = format!("DD_{}", full_path.replace('.', "_").to_uppercase());
+            let env_vars = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(env_var)]);
+            map.insert(serde_yaml::Value::String("env_vars".to_string()), env_vars);
+        } else {
+            let tags_key = serde_yaml::Value::String("tags".to_string());
+            let mut tags = map
+                .get(&tags_key)
+                .and_then(|v| v.as_sequence().cloned())
+                .unwrap_or_default();
+            if !tags.iter().any(|t| t.as_str() == Some("no-env")) {
+                tags.push(serde_yaml::Value::String("no-env".to_string()));
+            }
+            map.insert(tags_key, serde_yaml::Value::Sequence(tags));
+        }
+        return;
+    }
+
+    if let Some(props) = map.get_mut("properties").and_then(|v| v.as_mapping_mut()) {
+        for (key, val) in props.iter_mut() {
+            if let Some(key_str) = key.as_str() {
+                let mut parts = path_parts.to_vec();
+                parts.push(key_str);
+                tag_otel_env_bindings(val, &parts);
+            }
         }
     }
 }
@@ -1324,5 +1379,36 @@ excluded: {}
                 .contains("additional_yaml_path 'beta' collides with a canonical"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn verify_otel_receiver_env_bindings() {
+        let schema_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("config")
+            .join("schema")
+            .join("core")
+            .join("core_schema.yaml");
+        let otel_schema_dir = otel_schema_dir_for_tests();
+        let schema_map = crate::schema_gen::load_schema(&schema_path, &otel_schema_dir);
+
+        let registered: HashSet<&str> = super::ENV_REGISTERED_OTEL_KEYS.iter().copied().collect();
+
+        for (key, info) in &schema_map {
+            if !key.starts_with("otlp_config.receiver.protocols.") {
+                continue;
+            }
+            if registered.contains(key.as_str()) {
+                assert!(
+                    matches!(info.env, crate::schema_gen::EnvBinding::Overridden(_)),
+                    "registered key `{key}` should have explicit env_vars"
+                );
+            } else {
+                assert!(
+                    matches!(info.env, crate::schema_gen::EnvBinding::None),
+                    "unregistered key `{key}` should be no-env"
+                );
+            }
+        }
     }
 }
