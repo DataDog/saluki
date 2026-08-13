@@ -9,6 +9,10 @@
 //! held behind a take-once [`Mutex`] and consumed by [`Supervisable::initialize`]. Sources and relays
 //! drive their own shutdown, so the supervisor-provided shutdown handle is installed into their context;
 //! the remaining component kinds stop when their upstream channels close and ignore it.
+//!
+//! A component carries no shutdown deadline of its own. Its supervisor holds one budget covering the
+//! component and every task it spawned, so the whole subtree is bounded by a single number rather than a
+//! guess per worker. See [`Supervisor::with_shutdown_budget`][crate::runtime::Supervisor::with_shutdown_budget].
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -47,24 +51,19 @@ pub(super) trait RunnableComponent: Send + 'static {
 /// A [`Supervisable`] adapter over a single built topology component.
 ///
 /// Holds the component behind a take-once [`Mutex`] -- a component is built and run exactly once -- and
-/// exposes it to a supervisor via [`Supervisable`]. The supervisor's shutdown grace period is bounded by
-/// [`shutdown_strategy`][Supervisable::shutdown_strategy], which carries the shutdown timeout configured
-/// for the topology.
+/// exposes it to a supervisor via [`Supervisable`].
 pub(super) struct ComponentWorker<C> {
     component_context: ComponentContext,
-    shutdown_timeout: Duration,
     inner: Mutex<Option<C>>,
 }
 
 impl<C: RunnableComponent> ComponentWorker<C> {
     /// Creates a new `ComponentWorker` for the given runnable component.
     ///
-    /// `component_context` identifies the component (its kind and id); `shutdown_timeout` bounds how long
-    /// the supervisor waits for the component to stop gracefully before aborting it.
-    pub(super) fn new(component_context: ComponentContext, shutdown_timeout: Duration, runnable: C) -> Self {
+    /// `component_context` identifies the component (its kind and id).
+    pub(super) fn new(component_context: ComponentContext, runnable: C) -> Self {
         Self {
             component_context,
-            shutdown_timeout,
             inner: Mutex::new(Some(runnable)),
         }
     }
@@ -77,7 +76,9 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
-        ShutdownStrategy::Graceful(self.shutdown_timeout)
+        // No deadline of its own: the component's supervisor holds a single budget covering the component
+        // and everything it spawned, and aborts whatever is still running when that budget elapses.
+        ShutdownStrategy::Graceful(Duration::MAX)
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {

@@ -4,9 +4,8 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 
 use crate::accounting::ComponentRegistry;
 use crate::health::Health;
-use crate::runtime::SupervisorHandle;
 use crate::{
-    components::ComponentContext,
+    components::{ComponentContext, ComponentSpawner},
     topology::{EventsDispatcher, TopologyContext},
 };
 
@@ -15,7 +14,7 @@ struct SourceContextInner {
     component_context: ComponentContext,
     component_registry: ComponentRegistry,
     dispatcher: EventsDispatcher,
-    supervisor_handle: SupervisorHandle,
+    spawner: ComponentSpawner,
 }
 
 /// Source context.
@@ -30,7 +29,7 @@ impl SourceContext {
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
         component_registry: ComponentRegistry, health_handle: Health, dispatcher: EventsDispatcher,
-        supervisor_handle: SupervisorHandle,
+        spawner: ComponentSpawner,
     ) -> Self {
         Self {
             shutdown_handle: None,
@@ -40,15 +39,15 @@ impl SourceContext {
                 component_context: component_context.clone(),
                 component_registry,
                 dispatcher,
-                supervisor_handle,
+                spawner,
             }),
         }
     }
 
     /// Installs the shutdown handle for this source context.
     ///
-    /// Called once by the runtime, before the component runs, with the shutdown signal of the
-    /// component's dedicated supervisor.
+    /// Called once by the runtime, before the component runs, with the shutdown signal of the component's dedicated
+    /// supervisor.
     pub(crate) fn set_shutdown_handle(&mut self, shutdown_handle: ShutdownHandle) {
         self.shutdown_handle = Some(shutdown_handle);
     }
@@ -71,33 +70,32 @@ impl SourceContext {
         self.health_handle.take().expect("health handle already taken")
     }
 
-    /// Gets a reference to the topology context.
+    /// Returns a reference to the topology context.
     pub fn topology_context(&self) -> &TopologyContext {
         &self.inner.topology_context
     }
 
-    /// Gets a reference to the component context.
+    /// Returns a reference to the component context.
     pub fn component_context(&self) -> &ComponentContext {
         &self.inner.component_context
     }
 
-    /// Gets a reference to the component registry.
+    /// Returns a reference to the component registry.
     pub fn component_registry(&self) -> &ComponentRegistry {
         &self.inner.component_registry
     }
 
-    /// Gets a reference to the events dispatcher.
+    /// Returns a reference to the events dispatcher.
     pub fn dispatcher(&self) -> &EventsDispatcher {
         &self.inner.dispatcher
     }
 
-    /// Returns a handle to the supervisor that this component is spawned on.
+    /// Returns a spawner for supervised child tasks belonging to this component.
     ///
-    /// Dynamic child processes can be spawned via the supervisor handle and thus have their lifecycle
-    /// coupled to the component itself: if the component restarts, or the component's supervisor dies,
-    /// the dynamic child processes will also be terminated automatically as well.
-    pub fn spawn_handle(&self) -> &SupervisorHandle {
-        &self.inner.supervisor_handle
+    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
+    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
+    pub fn spawner(&self) -> &ComponentSpawner {
+        &self.inner.spawner
     }
 }
 

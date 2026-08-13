@@ -4,9 +4,8 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 
 use crate::accounting::ComponentRegistry;
 use crate::health::Health;
-use crate::runtime::SupervisorHandle;
 use crate::{
-    components::ComponentContext,
+    components::{ComponentContext, ComponentSpawner},
     topology::{PayloadsDispatcher, TopologyContext},
 };
 
@@ -15,7 +14,7 @@ struct RelayContextInner {
     component_context: ComponentContext,
     component_registry: ComponentRegistry,
     dispatcher: PayloadsDispatcher,
-    supervisor_handle: SupervisorHandle,
+    spawner: ComponentSpawner,
 }
 
 /// Relay context.
@@ -30,7 +29,7 @@ impl RelayContext {
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
         component_registry: ComponentRegistry, health_handle: Health, dispatcher: PayloadsDispatcher,
-        supervisor_handle: SupervisorHandle,
+        spawner: ComponentSpawner,
     ) -> Self {
         Self {
             shutdown_handle: None,
@@ -40,7 +39,7 @@ impl RelayContext {
                 component_context: component_context.clone(),
                 component_registry,
                 dispatcher,
-                supervisor_handle,
+                spawner,
             }),
         }
     }
@@ -71,33 +70,32 @@ impl RelayContext {
         self.health_handle.take().expect("health handle already taken")
     }
 
-    /// Gets a reference to the topology context.
+    /// Returns a reference to the topology context.
     pub fn topology_context(&self) -> &TopologyContext {
         &self.inner.topology_context
     }
 
-    /// Gets a reference to the component context.
+    /// Returns a reference to the component context.
     pub fn component_context(&self) -> &ComponentContext {
         &self.inner.component_context
     }
 
-    /// Gets a reference to the component registry.
+    /// Returns a reference to the component registry.
     pub fn component_registry(&self) -> &ComponentRegistry {
         &self.inner.component_registry
     }
 
-    /// Gets a reference to the payloads dispatcher.
+    /// Returns a reference to the payloads dispatcher.
     pub fn dispatcher(&self) -> &PayloadsDispatcher {
         &self.inner.dispatcher
     }
 
-    /// Returns a handle to the supervisor that this component is spawned on.
+    /// Returns a spawner for supervised child tasks belonging to this component.
     ///
-    /// Dynamic child processes can be spawned via the supervisor handle and thus have their lifecycle
-    /// coupled to the component itself: if the component restarts, or the component's supervisor dies,
-    /// the dynamic child processes will also be terminated automatically as well.
-    pub fn spawn_handle(&self) -> &SupervisorHandle {
-        &self.inner.supervisor_handle
+    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
+    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
+    pub fn spawner(&self) -> &ComponentSpawner {
+        &self.inner.spawner
     }
 }
 

@@ -46,7 +46,6 @@ use crate::health::{Health, HealthRegistry};
 use crate::runtime::state::DataspaceRegistry;
 use crate::runtime::{
     AutoShutdown, ChildSpecification, RestartMode, RestartStrategy, RestartType, ShutdownMode, Supervisor,
-    SupervisorHandle,
 };
 use crate::support::SubsystemIdentifier;
 use crate::topology::ids::get_component_relative_identifier;
@@ -60,7 +59,7 @@ use crate::{
         relays::{Relay, RelayContext},
         sources::{Source, SourceContext},
         transforms::{Transform, TransformContext},
-        ComponentContext, ComponentType,
+        ComponentContext, ComponentSpawner, ComponentType,
     },
     topology::{context::TopologyContext, EventsDispatcher, PayloadsBuffer, PayloadsDispatcher},
 };
@@ -191,16 +190,18 @@ impl BuiltTopology {
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
             let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| SourceRunnable {
-                    component,
-                    context: SourceContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        handle,
-                    ),
+                build_component_supervisor(&component_context, &topology_context, shutdown_timeout, |spawner| {
+                    SourceRunnable {
+                        component,
+                        context: SourceContext::new(
+                            &topology_context,
+                            &component_context,
+                            component_registry,
+                            health_handle,
+                            dispatcher,
+                            spawner,
+                        ),
+                    }
                 })?;
             topology_sup.add_worker(component_sup);
         }
@@ -211,16 +212,18 @@ impl BuiltTopology {
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
             let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| RelayRunnable {
-                    component,
-                    context: RelayContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        handle,
-                    ),
+                build_component_supervisor(&component_context, &topology_context, shutdown_timeout, |spawner| {
+                    RelayRunnable {
+                        component,
+                        context: RelayContext::new(
+                            &topology_context,
+                            &component_context,
+                            component_registry,
+                            health_handle,
+                            dispatcher,
+                            spawner,
+                        ),
+                    }
                 })?;
             topology_sup.add_worker(component_sup);
         }
@@ -232,17 +235,19 @@ impl BuiltTopology {
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
             let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| DecoderRunnable {
-                    component,
-                    context: DecoderContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        consumer,
-                        handle,
-                    ),
+                build_component_supervisor(&component_context, &topology_context, shutdown_timeout, |spawner| {
+                    DecoderRunnable {
+                        component,
+                        context: DecoderContext::new(
+                            &topology_context,
+                            &component_context,
+                            component_registry,
+                            health_handle,
+                            dispatcher,
+                            consumer,
+                            spawner,
+                        ),
+                    }
                 })?;
             topology_sup.add_worker(component_sup);
         }
@@ -254,17 +259,19 @@ impl BuiltTopology {
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
             let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| TransformRunnable {
-                    component,
-                    context: TransformContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        consumer,
-                        handle,
-                    ),
+                build_component_supervisor(&component_context, &topology_context, shutdown_timeout, |spawner| {
+                    TransformRunnable {
+                        component,
+                        context: TransformContext::new(
+                            &topology_context,
+                            &component_context,
+                            component_registry,
+                            health_handle,
+                            dispatcher,
+                            consumer,
+                            spawner,
+                        ),
+                    }
                 })?;
             topology_sup.add_worker(component_sup);
         }
@@ -275,16 +282,18 @@ impl BuiltTopology {
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
             let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| DestinationRunnable {
-                    component,
-                    context: DestinationContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        consumer,
-                        handle,
-                    ),
+                build_component_supervisor(&component_context, &topology_context, shutdown_timeout, |spawner| {
+                    DestinationRunnable {
+                        component,
+                        context: DestinationContext::new(
+                            &topology_context,
+                            &component_context,
+                            component_registry,
+                            health_handle,
+                            consumer,
+                            spawner,
+                        ),
+                    }
                 })?;
             topology_sup.add_worker(component_sup);
         }
@@ -296,17 +305,19 @@ impl BuiltTopology {
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
             let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| EncoderRunnable {
-                    component,
-                    context: EncoderContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        dispatcher,
-                        consumer,
-                        handle,
-                    ),
+                build_component_supervisor(&component_context, &topology_context, shutdown_timeout, |spawner| {
+                    EncoderRunnable {
+                        component,
+                        context: EncoderContext::new(
+                            &topology_context,
+                            &component_context,
+                            component_registry,
+                            health_handle,
+                            dispatcher,
+                            consumer,
+                            spawner,
+                        ),
+                    }
                 })?;
             topology_sup.add_worker(component_sup);
         }
@@ -317,16 +328,18 @@ impl BuiltTopology {
             let health_handle = build_health_handle(health_registry, &component_context)?;
 
             let component_sup =
-                build_component_supervisor(&component_context, shutdown_timeout, |handle| ForwarderRunnable {
-                    component,
-                    context: ForwarderContext::new(
-                        &topology_context,
-                        &component_context,
-                        component_registry,
-                        health_handle,
-                        consumer,
-                        handle,
-                    ),
+                build_component_supervisor(&component_context, &topology_context, shutdown_timeout, |spawner| {
+                    ForwarderRunnable {
+                        component,
+                        context: ForwarderContext::new(
+                            &topology_context,
+                            &component_context,
+                            component_registry,
+                            health_handle,
+                            consumer,
+                            spawner,
+                        ),
+                    }
                 })?;
             topology_sup.add_worker(component_sup);
         }
@@ -557,20 +570,26 @@ fn build_consumer_pair<T: Dispatchable>(
 /// sole (initial) child process, set as a significant child such that when it terminates, the supervisor shuts down as
 /// well. This provides us with a decent approximation of structured concurrency for components and their subtasks.
 fn build_component_supervisor<C, F>(
-    context: &ComponentContext, shutdown_timeout: Duration, make_runnable: F,
+    context: &ComponentContext, topology_context: &TopologyContext, shutdown_timeout: Duration, make_runnable: F,
 ) -> Result<Supervisor, GenericError>
 where
     C: RunnableComponent,
-    F: FnOnce(SupervisorHandle) -> C,
+    F: FnOnce(ComponentSpawner) -> C,
 {
+    // The supervisor owns the shutdown deadline for its whole subtree: neither the component nor anything it spawns
+    // carries a timeout of its own, and the budget bounds all of them together. Whatever is still running when it
+    // elapses is aborted and named individually, so an overrun still says which task was responsible.
     let component_sup_id = get_component_relative_identifier(context.component_type(), context.component_id());
     let mut component_sup = Supervisor::new(component_sup_id.to_string())?
         .with_auto_shutdown(AutoShutdown::AnySignificant)
-        .with_shutdown_mode(ShutdownMode::Concurrent);
+        .with_shutdown_mode(ShutdownMode::Concurrent)
+        .with_shutdown_budget(shutdown_timeout);
 
-    let runnable = make_runnable(component_sup.handle());
+    let spawner = ComponentSpawner::new(component_sup.handle(), topology_context.global_thread_pool().clone());
+
+    let runnable = make_runnable(spawner);
     component_sup.add_worker(
-        ChildSpecification::worker(ComponentWorker::new(context.clone(), shutdown_timeout, runnable))
+        ChildSpecification::worker(ComponentWorker::new(context.clone(), runnable))
             .with_restart_type(RestartType::Temporary)
             .with_significant(true),
     );

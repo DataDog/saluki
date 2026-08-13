@@ -14,7 +14,9 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_error::GenericError;
 use snafu::{OptionExt as _, Snafu};
 use tokio::{
-    pin, select,
+    pin,
+    runtime::Handle,
+    select,
     sync::{mpsc, oneshot},
 };
 use tracing::{debug, error, warn};
@@ -129,6 +131,7 @@ impl From<GenericError> for InitializationError {
 }
 
 /// Strategy for shutting down a process.
+#[derive(Clone, Copy, Debug)]
 pub enum ShutdownStrategy {
     /// Waits for the configured duration for the process to exit, and then forcefully aborts it otherwise.
     Graceful(Duration),
@@ -294,6 +297,14 @@ impl ChildSpecification<WorkerSpec> {
         }
     }
 
+    /// Creates a specification for a worker that can only run once.
+    ///
+    /// This function is shorthand for calling [`worker`][Self::worker] followed by
+    /// [`with_restart_type`][Self::with_restart_type] set to [`RestartType::Temporary`][RestartType::Temporary].
+    pub fn one_shot_worker<T: Supervisable + 'static>(worker: T) -> Self {
+        Self::worker(worker).with_restart_type(RestartType::Temporary)
+    }
+
     /// Sets the restart policy for this worker.
     ///
     /// Defaults to [`RestartType::Permanent`].
@@ -311,6 +322,32 @@ impl ChildSpecification<WorkerSpec> {
     #[must_use]
     pub fn with_significant(mut self, significant: bool) -> Self {
         self.spec_inner.config.significant = significant;
+        self
+    }
+
+    /// Runs this worker on the given Tokio runtime rather than the supervisor's own runtime.
+    ///
+    /// By default, a worker runs on whatever runtime its supervisor runs on. Use this for compute-heavy workers that
+    /// shouldn't contend with the supervisor's runtime -- for example, a topology component offloading encoding work
+    /// onto a shared worker pool.
+    ///
+    /// Note that this only affects where the worker's task is spawned. Supervision itself -- shutdown signalling,
+    /// restart handling, and abort-on-timeout -- is unchanged, and is still driven from the supervisor's runtime.
+    #[must_use]
+    pub fn with_runtime(mut self, handle: Handle) -> Self {
+        self.spec_inner.config.runtime = Some(handle);
+        self
+    }
+
+    /// Overrides the shutdown strategy for this worker.
+    ///
+    /// By default, a worker's strategy comes from [`Supervisable::shutdown_strategy`], which itself defaults to
+    /// `Graceful(5s)`. Use this when the grace period depends on where the worker is used rather than on the worker
+    /// type: a worker that a component drains during its own shutdown needs at least as long as the component itself,
+    /// otherwise it is forcefully aborted while the component is still waiting on it.
+    #[must_use]
+    pub fn with_shutdown_strategy(mut self, strategy: ShutdownStrategy) -> Self {
+        self.spec_inner.config.shutdown_strategy = Some(strategy);
         self
     }
 
@@ -383,6 +420,11 @@ pub(super) enum SupervisedChild {
 }
 
 impl SupervisedChild {
+    /// Returns whether this child is a nested supervisor rather than a leaf worker.
+    pub(super) fn is_supervisor(&self) -> bool {
+        matches!(self, Self::Supervisor(_))
+    }
+
     fn process_type(&self) -> &'static str {
         match self {
             Self::Worker(_) => "worker",
@@ -473,14 +515,35 @@ impl Clone for SupervisedChild {
     }
 }
 
-/// Per-child configuration: its [`RestartType`] and whether it is _significant_ (see [`AutoShutdown`]).
+/// Per-child configuration: its [`RestartType`], whether it is _significant_ (see [`AutoShutdown`]), and any
+/// per-child overrides for runtime placement and shutdown strategy.
 ///
-/// Defaults to a permanent, non-significant child. On a worker, this is set through
-/// [`ChildSpecification::with_restart_type`] and [`ChildSpecification::with_significant`].
-#[derive(Clone, Copy, Debug)]
-struct ChildConfig {
+/// Defaults to a permanent, non-significant child that runs on the supervisor's own runtime and takes its shutdown
+/// strategy from [`Supervisable::shutdown_strategy`]. On a worker, this is set through
+/// [`ChildSpecification::with_restart_type`], [`ChildSpecification::with_significant`],
+/// [`ChildSpecification::with_runtime`], and [`ChildSpecification::with_shutdown_strategy`].
+#[derive(Clone, Debug)]
+pub(super) struct ChildConfig {
     restart: RestartType,
     significant: bool,
+
+    /// Runtime to spawn the child on. `None` means the supervisor's own runtime.
+    runtime: Option<Handle>,
+
+    /// Shutdown strategy override. `None` means defer to [`Supervisable::shutdown_strategy`].
+    shutdown_strategy: Option<ShutdownStrategy>,
+}
+
+impl ChildConfig {
+    /// Returns the runtime the child should be spawned on, if it isn't the supervisor's own.
+    pub(super) fn runtime(&self) -> Option<&Handle> {
+        self.runtime.as_ref()
+    }
+
+    /// Returns the child's shutdown strategy override, if one was configured.
+    pub(super) fn shutdown_strategy(&self) -> Option<ShutdownStrategy> {
+        self.shutdown_strategy
+    }
 }
 
 impl Default for ChildConfig {
@@ -488,6 +551,8 @@ impl Default for ChildConfig {
         Self {
             restart: RestartType::Permanent,
             significant: false,
+            runtime: None,
+            shutdown_strategy: None,
         }
     }
 }
@@ -660,9 +725,10 @@ impl SupervisorHandle {
 /// # Instrumentation
 ///
 /// Supervisors automatically create their own allocation group
-/// ([`TrackingAllocator`][saluki_common::resource_tracking::TrackingAllocator]), which is used to track both the memory usage of the
-/// supervisor itself and its children. Additionally, individual worker processes are wrapped in a dedicated
-/// [`tracing::Span`] to allow tracing the causal relationship between arbitrary code and the worker executing it.
+/// ([`TrackingAllocator`][saluki_common::resource_tracking::TrackingAllocator]), which is used to track both the memory
+/// usage of the supervisor itself and its children. Additionally, individual worker processes are wrapped in a
+/// dedicated [`tracing::Span`] to allow tracing the causal relationship between arbitrary code and the worker executing
+/// it, and statistics about task polls (poll count, poll duration) are collected.
 ///
 /// # Restart Strategies
 ///
@@ -678,6 +744,7 @@ pub struct Supervisor {
     restart_strategy: RestartStrategy,
     auto_shutdown: AutoShutdown,
     shutdown_mode: ShutdownMode,
+    shutdown_budget: Option<Duration>,
     runtime_mode: RuntimeMode,
     // Shared across clones (a nested supervisor is cloned each time it runs) and across all handles. While a run is
     // active it holds that run's spawn-command sender so handles can reach the live supervisor; it's `None` whenever no
@@ -706,6 +773,7 @@ impl Supervisor {
             restart_strategy: RestartStrategy::default(),
             auto_shutdown: AutoShutdown::default(),
             shutdown_mode: ShutdownMode::default(),
+            shutdown_budget: None,
             runtime_mode: RuntimeMode::default(),
             current_tx: Arc::new(Mutex::new(None)),
             id_counter: Arc::new(AtomicU64::new(0)),
@@ -736,6 +804,31 @@ impl Supervisor {
     /// Sets the supervisor's shutdown mode. See [`ShutdownMode`]. Defaults to [`ShutdownMode::Ordered`].
     pub fn with_shutdown_mode(mut self, mode: ShutdownMode) -> Self {
         self.shutdown_mode = mode;
+        self
+    }
+
+    /// Bounds how long this supervisor waits for its worker children during shutdown.
+    ///
+    /// Without a budget, a supervisor waits as long as each child's own [`ShutdownStrategy`] allows, and waits
+    /// indefinitely for any child that has no finite deadline of its own. A budget makes the supervisor responsible for
+    /// the deadline instead: children need no individual timeouts, and whatever is still running when the budget
+    /// elapses is forcefully aborted -- each one named in the logs, and counted in the resulting
+    /// [`SupervisorError::ShutdownTimedOut`].
+    ///
+    /// The budget is a ceiling, not a replacement: a child that also carries its own finite deadline is still held to
+    /// whichever elapses first.
+    ///
+    /// Two kinds of child are outside it. A nested supervisor is never cut off by its parent's budget -- it bounds its
+    /// own subtree, and aborting it would both truncate that drain and, for a supervisor running on a dedicated
+    /// runtime, fail to stop it at all. A [`ShutdownStrategy::Brutal`] child is aborted up front and never waited on.
+    /// Neither can a budget bound work that ignores cancellation, since an abort only takes effect at an await point.
+    ///
+    /// Use this where one deadline for a whole subtree is more meaningful than a guess per worker -- a topology
+    /// component and its background tasks, for instance, where what matters is that the component as a whole stops in
+    /// time.
+    #[must_use]
+    pub fn with_shutdown_budget(mut self, budget: Duration) -> Self {
+        self.shutdown_budget = Some(budget);
         self
     }
 
@@ -805,7 +898,7 @@ impl Supervisor {
         debug!(supervisor_id = %self.supervisor_id, "Spawning all static child processes.");
         for entry in &self.child_specs {
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
-            worker_state.add_worker(id, &entry.spec)?;
+            worker_state.add_worker(id, &entry.spec, &entry.config)?;
             children.insert(id, entry.clone());
         }
 
@@ -830,7 +923,7 @@ impl Supervisor {
                 continue;
             }
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
-            worker_state.add_worker(id, &entry.spec)?;
+            worker_state.add_worker(id, &entry.spec, &entry.config)?;
             children.insert(id, entry.clone());
         }
 
@@ -848,9 +941,9 @@ impl Supervisor {
             config,
             dynamic: true,
         };
-        match worker_state.add_worker(id, &entry.spec) {
+        match worker_state.add_worker(id, &entry.spec, &entry.config) {
             Ok(()) => {
-                if config.significant {
+                if entry.config.significant {
                     *significant_remaining += 1;
                 }
                 self.active.fetch_add(1, Ordering::Relaxed);
@@ -885,7 +978,7 @@ impl Supervisor {
         &self, process: Process, process_shutdown: ShutdownHandle, mut cmd_rx: mpsc::Receiver<PendingSpawn>,
     ) -> Result<(), SupervisorError> {
         let mut restart_state = RestartState::new(self.restart_strategy);
-        let mut worker_state = WorkerState::new(process, self.shutdown_mode);
+        let mut worker_state = WorkerState::new(process, self.shutdown_mode, self.shutdown_budget);
 
         // The live roster of children -- both static (seeded below) and dynamic (added via the handle) -- keyed by a
         // stable id. A restart re-runs a child by id; a child that isn't restarted is removed from the roster.
@@ -923,7 +1016,7 @@ impl Supervisor {
                     // Pull out what we need from the roster before we mutate it.
                     let (child_name, config, dynamic) = {
                         let entry = children.get(&child_id).expect("completed worker must be present in the roster");
-                        (entry.spec.name().to_string(), entry.config, entry.dynamic)
+                        (entry.spec.name().to_string(), entry.config.clone(), entry.dynamic)
                     };
 
                     // Initialization failures are not eligible for restart -- they propagate immediately.
@@ -959,7 +1052,15 @@ impl Supervisor {
                         // if it was dynamic. Crucially, we do NOT consult `evaluate_restart` here: non-restarts must not
                         // consume the restart-intensity budget, otherwise a steady stream of terminating temporary
                         // children would eventually trip the limit and tear the supervisor (and its siblings) down.
-                        debug!(supervisor_id = %self.supervisor_id, worker_name = %child_name, restart = ?config.restart, ?worker_result, "Child process exited and is not eligible for restart.");
+                        //
+                        // An abnormal exit is reported at `warn` rather than `debug`: a child that isn't restarted --
+                        // every dynamically-spawned child, in practice -- has no other path back to its owner, so this
+                        // is the only place its failure is surfaced.
+                        if abnormal {
+                            warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, restart = ?config.restart, ?worker_result, "Child process exited with an error and is not eligible for restart.");
+                        } else {
+                            debug!(supervisor_id = %self.supervisor_id, worker_name = %child_name, restart = ?config.restart, "Child process exited and is not eligible for restart.");
+                        }
                         children.remove(&child_id);
                         if dynamic {
                             self.active.fetch_sub(1, Ordering::Relaxed);
@@ -986,7 +1087,7 @@ impl Supervisor {
                                 RestartMode::OneForOne => {
                                     warn!(supervisor_id = %self.supervisor_id, worker_name = %child_name, ?worker_result, "Child process terminated, restarting.");
                                     let spec = children.get(&child_id).expect("present for restart").spec.clone();
-                                    if let Err(e) = worker_state.add_worker(child_id, &spec) {
+                                    if let Err(e) = worker_state.add_worker(child_id, &spec, &config) {
                                         break Err(e);
                                     }
                                 }
@@ -1140,6 +1241,7 @@ impl Supervisor {
             restart_strategy: self.restart_strategy,
             auto_shutdown: self.auto_shutdown,
             shutdown_mode: self.shutdown_mode,
+            shutdown_budget: self.shutdown_budget,
             runtime_mode: self.runtime_mode.clone(),
             current_tx: Arc::clone(&self.current_tx),
             id_counter: Arc::clone(&self.id_counter),
@@ -1152,10 +1254,12 @@ impl Supervisor {
 mod tests {
     use std::{
         future::pending,
-        sync::atomic::{AtomicUsize, Ordering},
+        sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     use async_trait::async_trait;
+    use saluki_common::sync::shutdown::ShutdownCoordinator;
+    use saluki_metrics::test::TestRecorder;
     use tokio::{
         sync::oneshot,
         task::JoinHandle,
@@ -1163,6 +1267,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::runtime::noninterruptible_worker;
     use crate::test_support::wait_until;
 
     /// Behavior for a mock worker during initialization.
@@ -2701,6 +2806,372 @@ mod tests {
         assert!(
             matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
             "a stuck worker in a dedicated runtime must surface as an unclean shutdown aggregated to the root, got {result:?}"
+        );
+    }
+
+    // -- Per-child override tests ----------------------------------------------------------
+
+    #[tokio::test]
+    async fn child_with_runtime_override_runs_on_that_runtime() {
+        // `with_runtime` places an individual child's task on a caller-provided runtime instead of the supervisor's
+        // own. The child reports the name of the thread it's actually running on, which must belong to that runtime.
+        let child_runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("child-rt-test")
+            .enable_all()
+            .build()
+            .expect("should build child runtime");
+
+        let (thread_tx, thread_rx) = oneshot::channel();
+        let worker = noninterruptible_worker("placed", move |shutdown| async move {
+            let thread_name = std::thread::current().name().unwrap_or_default().to_string();
+            let _ = thread_tx.send(thread_name);
+            shutdown.await;
+        });
+
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(
+            ChildSpecification::worker(worker)
+                .with_restart_type(RestartType::Temporary)
+                .with_runtime(child_runtime.handle().clone()),
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+
+        let thread_name = timeout(Duration::from_secs(2), thread_rx)
+            .await
+            .expect("child should report its thread promptly")
+            .expect("child should not be dropped before reporting");
+        assert!(
+            thread_name.starts_with("child-rt-test"),
+            "child must run on the runtime given to `with_runtime`, but ran on thread {thread_name:?}"
+        );
+
+        tx.send(()).unwrap();
+        assert!(join_supervisor(handle).await.is_ok());
+
+        // Dropping a `Runtime` from within an async context panics, so tear it down without blocking.
+        child_runtime.shutdown_background();
+    }
+
+    #[tokio::test]
+    async fn child_shutdown_strategy_override_takes_precedence_over_worker() {
+        // `with_shutdown_strategy` overrides what the worker reports for itself. The worker below asks for a 30-second
+        // grace period and then ignores shutdown entirely; the override cuts that to 50ms, so the supervisor must
+        // abort it and report an unclean shutdown well inside `join_supervisor`'s two-second bound. Without the
+        // override taking precedence, this test times out.
+        let worker = noninterruptible_worker("stuck", |_shutdown| std::future::pending::<()>())
+            .with_shutdown_timeout(Duration::from_secs(30));
+
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(
+            ChildSpecification::worker(worker)
+                .with_restart_type(RestartType::Temporary)
+                .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_millis(50))),
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+
+        let result = join_supervisor(handle).await;
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "the overridden 50ms deadline should have aborted the stuck child, got {result:?}"
+        );
+    }
+
+    /// Builds two children modelling an owner that drains a background task during shutdown.
+    ///
+    /// `stuck` holds a shutdown handle and never releases it voluntarily, so the only way it goes away is a forced
+    /// abort. `waiter` blocks on that handle being dropped, standing in for a component's `shutdown_and_wait`. The
+    /// returned flag records whether `waiter` ran to completion rather than being aborted itself.
+    fn build_drain_pair(
+        stuck_strategy: ShutdownStrategy, waiter_strategy: ShutdownStrategy,
+    ) -> (Supervisor, Arc<AtomicBool>) {
+        let mut coordinator = ShutdownCoordinator::default();
+        let held_handle = coordinator.register();
+
+        let stuck = noninterruptible_worker("stuck", move |_shutdown| async move {
+            // Hold the handle for as long as this future lives, and ignore shutdown entirely.
+            let _held = held_handle;
+            pending::<()>().await;
+        });
+
+        let waiter_finished = Arc::new(AtomicBool::new(false));
+        let finished = Arc::clone(&waiter_finished);
+        let waiter = noninterruptible_worker("waiter", move |shutdown| async move {
+            shutdown.await;
+            coordinator.shutdown_and_wait().await;
+            finished.store(true, Ordering::SeqCst);
+        });
+
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent);
+        sup.add_worker(
+            ChildSpecification::worker(stuck)
+                .with_restart_type(RestartType::Temporary)
+                .with_shutdown_strategy(stuck_strategy),
+        );
+        sup.add_worker(
+            ChildSpecification::worker(waiter)
+                .with_restart_type(RestartType::Temporary)
+                .with_shutdown_strategy(waiter_strategy),
+        );
+
+        (sup, waiter_finished)
+    }
+
+    #[tokio::test]
+    async fn shorter_child_deadline_releases_a_waiting_sibling() {
+        // Aborting a stuck child drops the shutdown handle it was holding, which is what releases anything waiting on
+        // it. A child bounded more tightly than its waiter therefore stays recoverable: the child is aborted, the
+        // waiter unblocks and finishes cleanly, and only one abort is reported.
+        let (sup, waiter_finished) = build_drain_pair(
+            ShutdownStrategy::Graceful(Duration::from_millis(100)),
+            ShutdownStrategy::Graceful(Duration::from_secs(1)),
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+
+        let result = join_supervisor(handle).await;
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "only the stuck child should have been aborted, got {result:?}"
+        );
+        assert!(
+            waiter_finished.load(Ordering::SeqCst),
+            "the waiter should have been released by the stuck child's abort and run to completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn equal_child_deadlines_abort_the_waiter_too() {
+        // The counterpart: concurrent shutdown computes every deadline from one shared instant, so identical timeouts
+        // elapse in the same pass and the waiter is aborted alongside the child it was waiting on. This is also what a
+        // shutdown budget does to a whole subtree, which is why the budget is set at a level where losing the entire
+        // group at once is the intended outcome.
+        let (sup, waiter_finished) = build_drain_pair(
+            ShutdownStrategy::Graceful(Duration::from_millis(100)),
+            ShutdownStrategy::Graceful(Duration::from_millis(100)),
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+
+        let result = join_supervisor(handle).await;
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
+            "both children should have been aborted together, got {result:?}"
+        );
+        assert!(
+            !waiter_finished.load(Ordering::SeqCst),
+            "the waiter should have been aborted mid-wait, not completed"
+        );
+    }
+
+    // -- Shutdown budget tests -------------------------------------------------------------
+
+    #[tokio::test]
+    async fn budget_bounds_children_that_have_no_deadline_of_their_own() {
+        // Without a budget, `Graceful(Duration::MAX)` children are waited on indefinitely and a stuck one hangs
+        // shutdown forever. A budget makes the supervisor responsible for the deadline instead, and each child it has
+        // to abort is still counted individually -- so an overrun says how many tasks were responsible, not merely
+        // that the group as a whole overran.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent)
+            .with_shutdown_budget(Duration::from_millis(100));
+
+        for name in ["stuck_one", "stuck_two"] {
+            sup.add_worker(
+                ChildSpecification::worker(noninterruptible_worker(name, |_shutdown| pending::<()>()))
+                    .with_restart_type(RestartType::Temporary)
+                    .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::MAX)),
+            );
+        }
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+
+        let result = join_supervisor(handle).await;
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 2 })),
+            "the budget should have aborted both deadline-less children, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_does_not_delay_children_that_stop_on_their_own() {
+        // The budget is a ceiling, not a wait. Asserting on elapsed time rather than merely on success is what makes
+        // this meaningful: a supervisor that waited out its budget regardless would still report `Ok`.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent)
+            .with_shutdown_budget(Duration::from_secs(30));
+        sup.add_worker(
+            ChildSpecification::one_shot_worker(noninterruptible_worker("prompt", |shutdown| shutdown))
+                .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::MAX)),
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        let started = tokio::time::Instant::now();
+        tx.send(()).unwrap();
+
+        assert!(join_supervisor(handle).await.is_ok());
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "shutdown should finish as soon as the child does, not burn the budget; took {elapsed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn child_deadline_shorter_than_budget_still_wins() {
+        // A child that carries its own finite deadline is held to whichever elapses first, so a component can still
+        // bound one particular task more tightly than the budget covering the rest.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent)
+            .with_shutdown_budget(Duration::from_secs(30));
+        sup.add_worker(
+            ChildSpecification::worker(noninterruptible_worker("stuck", |_shutdown| pending::<()>()))
+                .with_restart_type(RestartType::Temporary)
+                .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_millis(100))),
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+
+        // Again bounded at two seconds: if the 30-second budget had won, this would time out instead.
+        let result = join_supervisor(handle).await;
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 1 })),
+            "the child's own 100ms deadline should have won over the budget, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_worker_records_poll_metrics() {
+        // Poll timing is a property of being supervised, not something a child opts into, so a plain statically
+        // registered worker gets it too -- tagged with its fully qualified process name.
+        let recorder = TestRecorder::default();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+
+        // The recorder has to be installed before the worker spawns: its metric handles are resolved once, at spawn.
+        let mut sup = Supervisor::new("metrics_sup").unwrap();
+        sup.add_worker(ChildSpecification::one_shot_worker(noninterruptible_worker(
+            "timed",
+            |shutdown| shutdown,
+        )));
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+        assert!(join_supervisor(handle).await.is_ok());
+
+        let polls = recorder.counter(("runtime_task_poll_count", &[("task_name", "metrics_sup.timed")]));
+        assert!(
+            polls.is_some_and(|polls| polls > 0),
+            "a supervised worker should have recorded poll metrics, got {polls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_bounds_the_whole_drain_in_ordered_mode() {
+        // Ordered shutdown stops children one at a time, so a budget has to cover the sequence as a whole rather than
+        // resetting per child. Three children that each ignore a 10-second deadline must all be aborted at the shared
+        // 150ms budget, not 30 seconds later.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Ordered)
+            .with_shutdown_budget(Duration::from_millis(150));
+
+        for name in ["stuck_one", "stuck_two", "stuck_three"] {
+            sup.add_worker(
+                ChildSpecification::one_shot_worker(noninterruptible_worker(name, |_shutdown| pending::<()>()))
+                    .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_secs(10))),
+            );
+        }
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+
+        let result = join_supervisor(handle).await;
+        assert!(
+            matches!(result, Err(SupervisorError::ShutdownTimedOut { aborted: 3 })),
+            "the budget should have bounded the whole ordered drain, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn budget_of_duration_max_is_treated_as_no_budget() {
+        // `Duration::MAX` is the natural spelling of "no ceiling" and used to panic the supervisor task on an instant
+        // overflow.
+        let mut sup = Supervisor::new("test-sup")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent)
+            .with_shutdown_budget(Duration::MAX);
+        sup.add_worker(ChildSpecification::one_shot_worker(noninterruptible_worker(
+            "prompt",
+            |shutdown| shutdown,
+        )));
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+        assert!(join_supervisor(handle).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn near_max_child_timeout_does_not_panic_in_ordered_mode() {
+        // The ordered path used to pass the timeout straight to `sleep`, which clamps. Resolving it to an instant
+        // instead made anything just under `Duration::MAX` overflow.
+        let mut sup = Supervisor::new("test-sup").unwrap();
+        sup.add_worker(
+            ChildSpecification::one_shot_worker(noninterruptible_worker("prompt", |shutdown| shutdown))
+                .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::MAX - Duration::from_nanos(1))),
+        );
+
+        let (tx, handle) = run_supervisor_with_trigger(sup).await;
+        tx.send(()).unwrap();
+        assert!(join_supervisor(handle).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn budget_does_not_cut_off_a_nested_supervisor_mid_drain() {
+        // A nested supervisor bounds its own subtree, so a parent's budget must not abort it: doing so truncates the
+        // subtree's drain, discards its abort tally, and -- for a supervisor on a dedicated runtime, whose work is on
+        // another OS thread -- reports it as stopped without actually stopping it.
+        let drained = Arc::new(AtomicBool::new(false));
+        let child_drained = Arc::clone(&drained);
+
+        let mut nested = Supervisor::new("nested").unwrap();
+        nested.add_worker(
+            ChildSpecification::one_shot_worker(noninterruptible_worker("slow", move |shutdown| async move {
+                shutdown.await;
+                sleep(Duration::from_millis(300)).await;
+                child_drained.store(true, Ordering::SeqCst);
+            }))
+            .with_shutdown_strategy(ShutdownStrategy::Graceful(Duration::from_secs(10))),
+        );
+
+        let mut parent = Supervisor::new("parent")
+            .unwrap()
+            .with_shutdown_mode(ShutdownMode::Concurrent)
+            .with_shutdown_budget(Duration::from_millis(50));
+        parent.add_worker(nested);
+
+        let (tx, handle) = run_supervisor_with_trigger(parent).await;
+        tx.send(()).unwrap();
+
+        let result = join_supervisor(handle).await;
+        assert!(
+            drained.load(Ordering::SeqCst),
+            "the nested subtree should have drained rather than being cut off by the parent's budget: {result:?}"
+        );
+        assert!(
+            result.is_ok(),
+            "the nested drain finished in time, so shutdown was clean: {result:?}"
         );
     }
 }

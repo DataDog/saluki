@@ -12,6 +12,12 @@ pub mod relays;
 pub mod sources;
 pub mod transforms;
 
+mod spawner;
+pub use self::spawner::{ChildBuilder, ComponentSpawner};
+
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_util;
+
 /// Component type.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ComponentType {
@@ -234,9 +240,10 @@ mod tests {
     use super::transforms::TransformContext;
     use super::ComponentContext;
     use crate::accounting::{ComponentRegistry, MemoryLimiter};
+    use crate::components::ComponentSpawner;
     use crate::health::{Health, HealthRegistry};
     use crate::runtime::state::DataspaceRegistry;
-    use crate::runtime::{Supervisor, SupervisorHandle};
+    use crate::runtime::Supervisor;
     use crate::support::SubsystemIdentifier;
     use crate::topology::interconnect::{Consumer, Dispatcher};
     use crate::topology::{
@@ -281,8 +288,15 @@ mod tests {
             .expect("component was not previously registered")
     }
 
-    fn supervisor_handle() -> SupervisorHandle {
-        Supervisor::new("test").expect("valid supervisor name").handle()
+    /// Builds a spawner over a supervisor that is never run.
+    ///
+    /// The tests below only exercise handle-taking, so they never spawn anything -- which is the only reason this is
+    /// adequate. Spawning through this would fail with `SpawnError::SupervisorGone`; a test that needs a component to
+    /// actually spawn children wants
+    /// [`TestComponentSupervisor`][crate::components::test_util::TestComponentSupervisor] instead.
+    fn inert_spawner() -> ComponentSpawner {
+        let handle = Supervisor::new("test").expect("valid supervisor name").handle();
+        ComponentSpawner::new(handle, Handle::current())
     }
 
     fn events_dispatcher(component_context: &ComponentContext) -> EventsDispatcher {
@@ -311,7 +325,7 @@ mod tests {
             ComponentRegistry::default(),
             health_handle(),
             events_dispatcher(&cc),
-            supervisor_handle(),
+            inert_spawner(),
         )
     }
 
@@ -323,7 +337,7 @@ mod tests {
             ComponentRegistry::default(),
             health_handle(),
             payloads_dispatcher(&cc),
-            supervisor_handle(),
+            inert_spawner(),
         )
     }
 
@@ -336,7 +350,7 @@ mod tests {
             health_handle(),
             events_dispatcher(&cc),
             payloads_consumer(&cc),
-            supervisor_handle(),
+            inert_spawner(),
         )
     }
 
@@ -349,7 +363,7 @@ mod tests {
             health_handle(),
             events_dispatcher(&cc),
             events_consumer(&cc),
-            supervisor_handle(),
+            inert_spawner(),
         )
     }
 
@@ -361,7 +375,7 @@ mod tests {
             ComponentRegistry::default(),
             health_handle(),
             events_consumer(&cc),
-            supervisor_handle(),
+            inert_spawner(),
         )
     }
 
@@ -374,7 +388,7 @@ mod tests {
             health_handle(),
             payloads_dispatcher(&cc),
             events_consumer(&cc),
-            supervisor_handle(),
+            inert_spawner(),
         )
     }
 
@@ -386,7 +400,7 @@ mod tests {
             ComponentRegistry::default(),
             health_handle(),
             payloads_consumer(&cc),
-            supervisor_handle(),
+            inert_spawner(),
         )
     }
 
