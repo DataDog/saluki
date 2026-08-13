@@ -94,6 +94,14 @@ pub struct FieldInfo {
 pub fn load_schema(datadog_schema: &Path, otel_schema_dir: &Path) -> IndexMap<String, FieldInfo> {
     let doc = crate::load_composed_schema(datadog_schema, otel_schema_dir)
         .unwrap_or_else(|e| panic!("failed to load composed schema: {e}"));
+    load_schema_from_value(&doc)
+}
+
+/// Builds the flat `yaml_path → FieldInfo` map from a pre-loaded composed schema.
+///
+/// Callers that already hold the composed schema should use this instead of [`load_schema`] to
+/// avoid a redundant disk read and guarantee every consumer sees the same document.
+pub fn load_schema_from_value(doc: &serde_yaml::Value) -> IndexMap<String, FieldInfo> {
     let properties = doc
         .get("properties")
         .and_then(|v| v.as_mapping())

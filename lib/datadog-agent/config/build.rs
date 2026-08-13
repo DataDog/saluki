@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use datadog_agent_config_overlay_model::{schema_gen, Files, SchemaOverlay};
+use datadog_agent_config_overlay_model::{load_composed_schema, schema_gen, Files, SchemaOverlay};
 
 #[path = "build/classifier_gen.rs"]
 mod classifier_gen;
@@ -28,12 +28,14 @@ fn main() {
     println!("cargo:rerun-if-changed=build/env_reader_gen.rs");
     println!("cargo:rerun-if-changed=build/witness_gen.rs");
 
-    let schema_path = files.datadog_schema.clone();
-    let schema_map = schema_gen::load_schema(&files.datadog_schema, &files.otel_schema_dir);
+    // Load the composed schema once and pass the in-memory value to every consumer.
+    let composed_schema = load_composed_schema(&files.datadog_schema, &files.otel_schema_dir)
+        .unwrap_or_else(|e| panic!("failed to load composed schema: {e}"));
+    let schema_map = schema_gen::load_schema_from_value(&composed_schema);
     let overlay = SchemaOverlay::load(files).unwrap_or_else(|e| panic!("{e}"));
 
     classifier_gen::generate(&overlay, &schema_map, &manifest_dir);
-    datadog_config_gen::generate(&overlay, &schema_path, &schema_map, &manifest_dir);
+    datadog_config_gen::generate(&overlay, &composed_schema, &schema_map, &manifest_dir);
     env_reader_gen::generate(&overlay, &schema_map, &manifest_dir);
     // Must run after datadog_config_gen: it parses the freshly-written datadog_configuration.rs.
     witness_gen::generate(&overlay, &manifest_dir);
