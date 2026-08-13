@@ -4,7 +4,7 @@ use std::{
     sync::LazyLock,
 };
 
-use agent_data_plane_config::shared::V3SeriesMode;
+use agent_data_plane_config::shared::{self, V3SeriesMode};
 use http::uri::Authority;
 use regex::Regex;
 use saluki_config::GenericConfiguration;
@@ -24,33 +24,6 @@ static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static DD_SITE_FROM_HOSTNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:^|\.)([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)\.?$").unwrap()
 });
-
-pub const DEFAULT_SITE: &str = "datadoghq.com";
-
-/// The primary endpoint URL that is constructed when both `site` and `dd_url` are at their defaults.
-///
-/// The Core Agent sends `dd_url` at this value even when the operator only configured `site`.
-/// A `dd_url` equal to this constant carries no override intent and must not shadow `site`.
-const DEFAULT_PRIMARY_ENDPOINT: &str = "https://app.datadoghq.com";
-
-pub(crate) fn default_site() -> String {
-    DEFAULT_SITE.to_owned()
-}
-
-/// Deserializes an optional `dd_url`, treating the schema-default URL as absent.
-///
-/// The Core Agent always sends `dd_url` at its schema default (`https://app.datadoghq.com`) even
-/// when the operator only configured `site`. Filtering here, at deserialization, ensures that a
-/// value equal to the default is treated as `None`, allowing `site` to determine the endpoint. This
-/// only affects the serde path; programmatic callers such as `set_dd_url` bypass serde and are
-/// unaffected.
-pub(crate) fn deserialize_dd_url<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let val = Option::<String>::deserialize(deserializer)?;
-    Ok(val.filter(|url| url.as_str() != DEFAULT_PRIMARY_ENDPOINT))
-}
 
 /// Per-endpoint V3 protocol settings.
 ///
@@ -316,11 +289,8 @@ struct APIKeys(#[serde_as(as = "OneOrMany<_>")] Vec<String>);
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 struct MappedAPIKeys(HashMap<String, APIKeys>);
 
+#[cfg(test)]
 impl MappedAPIKeys {
-    fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     fn mappings(&self) -> impl Iterator<Item = (&str, &APIKeys)> {
         self.0.iter().map(|(k, v)| (k.as_str(), v))
     }
@@ -342,128 +312,129 @@ impl std::fmt::Display for MappedAPIKeys {
     }
 }
 
-/// A set of additional API endpoints to forward metrics to.
+/// A set of additional API endpoints to forward metrics to, as the raw configuration map spells them.
 ///
-/// Each endpoint can be associated with multiple API keys. Requests will be forwarded to each unique endpoint/API key pair.
+/// Each endpoint can be associated with multiple API keys. This type exists only to look an API key
+/// up in live configuration, which is value-only and still carries the source encoding: a
+/// JSON-encoded string or a native mapping, either of which may hold one key or a list of keys per
+/// endpoint. Static endpoint construction reads the resolved map instead.
 #[serde_as]
 #[derive(Clone, Debug, Default, Deserialize)]
 #[cfg_attr(test, derive(PartialEq, serde::Serialize))]
 pub(crate) struct AdditionalEndpoints(#[serde_as(as = "PickFirst<(DisplayFromStr, _)>")] MappedAPIKeys);
 
-impl AdditionalEndpoints {
-    /// Returns true if no additional endpoints are configured.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
+/// Returns the resolved endpoints for each configured additional endpoint and API key.
+///
+/// This generates a [`ResolvedEndpoint`] for each unique endpoint/API key pair, assigning each
+/// endpoint an `api_key_index` equal to the position of its key in the configured key list for that
+/// URL (the `enumerate()` index, not a post-dedup counter). Empty and duplicate keys are skipped;
+/// their positions are consumed but no endpoint is created.
+///
+/// # Errors
+///
+/// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
+/// the necessary normalization / modifications, an error will be returned.
+pub(crate) fn resolve_additional_endpoints(
+    additional_endpoints: &HashMap<String, Vec<String>>, configuration: Option<GenericConfiguration>,
+) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
+    let mut resolved = Vec::new();
 
-    /// Returns the resolved endpoints from the additional endpoint configuration.
-    ///
-    /// This will generate a [`ResolvedEndpoint`] for each unique endpoint/API key pair, assigning
-    /// each endpoint an `api_key_index` equal to the raw position of its key in the config's key
-    /// list for that URL (the `enumerate()` index, not a post-dedup counter). Empty and duplicate
-    /// keys are skipped; their positions are consumed but no endpoint is created.
-    ///
-    /// # Errors
-    ///
-    /// If any of the additional endpoints aren't valid URLs, or a valid URL couldn't be constructed after applying
-    /// the necessary normalization / modifications, an error will be returned.
-    pub fn resolved_endpoints(
-        &self, configuration: Option<GenericConfiguration>,
-    ) -> Result<Vec<ResolvedEndpoint>, EndpointError> {
-        let mut resolved = Vec::new();
+    for (raw_endpoint, api_keys) in additional_endpoints {
+        let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
+        let logs_authority = compute_logs_authority(&endpoint);
+        let traces_authority = compute_traces_authority(&endpoint);
 
-        for (raw_endpoint, api_keys) in self.0.mappings() {
-            let endpoint = parse_and_normalize_endpoint(raw_endpoint)?;
-            let logs_authority = compute_logs_authority(&endpoint);
-            let traces_authority = compute_traces_authority(&endpoint);
-
-            // Create a resolved endpoint for each unique, non-empty key. The index is the raw
-            // position in the config list so that live lookups can use `vec[index]` directly.
-            let mut seen = HashSet::new();
-            for (index, api_key) in api_keys.0.iter().enumerate() {
-                let trimmed_api_key = api_key.trim();
-                if trimmed_api_key.is_empty() || seen.contains(trimmed_api_key) {
-                    continue;
-                }
-
-                seen.insert(trimmed_api_key);
-                resolved.push(ResolvedEndpoint {
-                    endpoint: endpoint.clone(),
-                    configured_endpoint: raw_endpoint.to_string(),
-                    api_key: trimmed_api_key.to_string(),
-                    config: configuration.clone(),
-                    api_key_refresh_config_path: None,
-                    api_key_index: Some(index),
-                    raw_additional_url: Some(raw_endpoint.to_string()),
-                    logs_authority: logs_authority.clone(),
-                    traces_authority: traces_authority.clone(),
-                });
+        // Create a resolved endpoint for each unique, non-empty key. The index is the configured
+        // position in the key list so that live lookups can use `vec[index]` directly.
+        let mut seen = HashSet::new();
+        for (index, api_key) in api_keys.iter().enumerate() {
+            let trimmed_api_key = api_key.trim();
+            if trimmed_api_key.is_empty() || seen.contains(trimmed_api_key) {
+                continue;
             }
-        }
 
-        Ok(resolved)
+            seen.insert(trimmed_api_key);
+            resolved.push(ResolvedEndpoint {
+                endpoint: endpoint.clone(),
+                configured_endpoint: raw_endpoint.to_string(),
+                api_key: trimmed_api_key.to_string(),
+                config: configuration.clone(),
+                api_key_refresh_config_path: None,
+                api_key_index: Some(index),
+                raw_additional_url: Some(raw_endpoint.to_string()),
+                logs_authority: logs_authority.clone(),
+                traces_authority: traces_authority.clone(),
+            });
+        }
     }
+
+    Ok(resolved)
+}
+
+/// A single destination that replaces every configured Datadog intake endpoint.
+///
+/// Multi-Region Failover and the Cluster Agent each send to one destination that the operator did
+/// not configure as a Datadog intake, so the configured primary endpoint, additional endpoints, and
+/// OPW/Vector metrics override do not apply to them.
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
+pub(crate) struct SingleDestination {
+    /// Endpoint URL, used as provided.
+    pub(crate) url: String,
+
+    /// API key or token presented to the destination.
+    pub(crate) api_key: String,
+
+    /// Configuration path the API key refreshes from, when the destination has its own key.
+    ///
+    /// `None` refreshes from the primary `api_key` path.
+    pub(crate) api_key_refresh_config_path: Option<&'static str>,
+
+    /// Whether the destination accepts V3 series payloads.
+    pub(crate) accepts_v3_series: bool,
 }
 
 /// Endpoint configuration for sending payloads to the Datadog platform.
-#[derive(Clone, Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct EndpointConfiguration {
     /// The API key to use.
     api_key: String,
 
     /// Config path used to refresh the API key for primary-like endpoints.
-    #[serde(skip)]
     api_key_refresh_config_path: Option<&'static str>,
 
-    /// The site to send metrics to.
-    ///
-    /// This is the base domain for the Datadog site in which the API key originates from. This will generally be a
-    /// portion of the domain used to access the Datadog UI, such as `datadoghq.com` or `us5.datadoghq.com`.
-    ///
-    /// Defaults to `datadoghq.com`.
-    #[serde(default = "default_site")]
-    site: String,
+    /// The primary endpoint to send payloads to, as configured and not altered in any way.
+    primary_endpoint: String,
 
-    /// The full URL base to send metrics to.
-    ///
-    /// This takes precedence over `site`, and isn't altered in any way. This can be useful to specifying the exact
-    /// endpoint used, such as when looking to change the scheme (for example, `http` vs `https`) or specifying a custom port,
-    /// which are both useful when proxying traffic to an intermediate destination before forwarding to Datadog.
-    ///
-    /// Defaults to unset.
-    #[serde(default, deserialize_with = "deserialize_dd_url")]
-    dd_url: Option<String>,
-
-    /// Enables sending data to multiple endpoints and/or with multiple API keys via dual shipping.
-    ///
-    /// Defaults to empty.
-    #[serde(default)]
-    additional_endpoints: AdditionalEndpoints,
+    /// Additional endpoints to dual-ship to, keyed by endpoint URL with their API keys.
+    additional_endpoints: HashMap<String, Vec<String>>,
 }
 
 impl EndpointConfiguration {
-    /// Sets the full URL base to send metrics to.
-    pub fn set_dd_url(&mut self, url: String) {
-        self.dd_url = Some(url);
+    /// Creates a new `EndpointConfiguration` from the resolved endpoint configuration.
+    pub(crate) fn from_configuration(endpoints: &shared::Endpoints) -> Self {
+        Self {
+            api_key: endpoints.api_key.clone(),
+            api_key_refresh_config_path: None,
+            primary_endpoint: endpoints.primary_endpoint(),
+            additional_endpoints: endpoints.additional_endpoints.clone(),
+        }
     }
 
-    /// Sets the API key to use.
-    pub fn set_api_key(&mut self, api_key: String) {
-        self.api_key = api_key;
+    /// Creates a new `EndpointConfiguration` that targets a single destination.
+    ///
+    /// The destination is the only endpoint: dual shipping does not apply to it.
+    pub(crate) fn for_single_destination(destination: &SingleDestination) -> Self {
+        Self {
+            api_key: destination.api_key.clone(),
+            api_key_refresh_config_path: destination.api_key_refresh_config_path,
+            primary_endpoint: destination.url.clone(),
+            additional_endpoints: HashMap::new(),
+        }
     }
 
-    /// Sets the config path used to refresh the API key.
-    pub fn set_api_key_refresh_config_path(&mut self, path: &'static str) {
-        self.api_key_refresh_config_path = Some(path);
-    }
-
-    /// Clears all additional endpoints.
-    pub fn clear_additional_endpoints(&mut self) {
-        self.additional_endpoints = AdditionalEndpoints::default();
-    }
-
-    /// Builds the resolved primary endpoint from `site`/`dd_url`.
+    /// Builds the resolved primary endpoint.
     ///
     /// # Errors
     ///
@@ -472,28 +443,22 @@ impl EndpointConfiguration {
     pub(crate) fn build_primary_endpoint(
         &self, configuration: Option<GenericConfiguration>,
     ) -> Result<ResolvedEndpoint, GenericError> {
-        calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, &self.api_key)
+        ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, &self.api_key)
             .error_context("Failed parsing/resolving the primary destination endpoint.")
             .map(|endpoint| endpoint.with_configuration(configuration))
             .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
     }
 
     /// Returns the configured primary endpoint string without resolving or version-prefixing it.
-    pub(crate) fn configured_primary_endpoint(&self) -> String {
-        match self.dd_url.as_deref() {
-            Some(url) => url.to_string(),
-            None => {
-                let base_domain = if self.site.is_empty() { DEFAULT_SITE } else { &self.site };
-                format!("https://app.{base_domain}")
-            }
-        }
+    pub(crate) fn configured_primary_endpoint(&self) -> &str {
+        &self.primary_endpoint
     }
 
     /// Builds the resolved primary endpoint from a URL override.
     pub(crate) fn build_primary_endpoint_override(
         &self, url: &str, configuration: Option<GenericConfiguration>,
     ) -> Result<ResolvedEndpoint, EndpointError> {
-        calculate_resolved_endpoint(Some(url), &self.site, &self.api_key)
+        ResolvedEndpoint::from_raw_endpoint(url, &self.api_key)
             .map(|endpoint| endpoint.with_configuration(configuration))
             .map(|endpoint| endpoint.with_api_key_refresh_config_path(self.api_key_refresh_config_path))
     }
@@ -510,8 +475,7 @@ impl EndpointConfiguration {
     pub(crate) fn build_additional_endpoints(
         &self, configuration: Option<GenericConfiguration>,
     ) -> Result<Vec<ResolvedEndpoint>, GenericError> {
-        self.additional_endpoints
-            .resolved_endpoints(configuration)
+        resolve_additional_endpoints(&self.additional_endpoints, configuration)
             .error_context("Failed parsing/resolving the additional destination endpoints.")
     }
 }
@@ -821,30 +785,6 @@ fn add_data_plane_version_prefix(mut endpoint: Url) -> Result<Url, EndpointError
     Ok(endpoint)
 }
 
-/// Calculates the correct API endpoint to use based on the given override URL and site settings.
-///
-/// # Errors
-///
-/// If an override URL is provided and can't be parsed, or if a valid endpoint can't be constructed from the given
-/// site, an error will be returned.
-pub(crate) fn calculate_resolved_endpoint(
-    override_url: Option<&str>, site: &str, api_key: &str,
-) -> Result<ResolvedEndpoint, EndpointError> {
-    let raw_endpoint = match override_url {
-        // If an override URL is provided, use it directly.
-        Some(url) => url.to_string(),
-        None => {
-            // When using the site, we'll provide the default US-based site if the site value is empty.
-            //
-            // We also do a little bit of prefixing to get it in the right shape before creating the resolved endpoint.
-            let base_domain = if site.is_empty() { DEFAULT_SITE } else { site };
-            format!("https://app.{}", base_domain)
-        }
-    };
-
-    ResolvedEndpoint::from_raw_endpoint(&raw_endpoint, api_key)
-}
-
 /// Returns the API key at position `index` in `raw_url`'s key list from the live config.
 ///
 /// `raw_url` is the pre-normalization URL string (for example `"app.datadoghq.eu"`) as it appears as a
@@ -899,12 +839,30 @@ fn compute_traces_authority(endpoint: &Url) -> Option<Authority> {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::ConfigValue;
     use saluki_config::{
         dynamic::{ConfigSetting, ConfigUpdate},
         ConfigurationLoader,
     };
 
     use super::*;
+
+    /// Returns the Agent-compatible V3 series settings a default configuration resolves to.
+    fn agent_series_config() -> UseV3ApiSeriesConfig {
+        (&shared::MetricsEncoding::default()).into()
+    }
+
+    fn additional_endpoints(endpoints: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+        endpoints
+            .iter()
+            .map(|(url, api_keys)| {
+                (
+                    url.to_string(),
+                    api_keys.iter().map(|api_key| api_key.to_string()).collect(),
+                )
+            })
+            .collect()
+    }
 
     fn additional_endpoints_to_sorted_strings(endpoints: &AdditionalEndpoints) -> Vec<String> {
         let mut flattened = endpoints
@@ -966,11 +924,9 @@ mod tests {
         // Keys at positions 0, 1 are valid; position 2 is empty (skipped); position 3 is a
         // duplicate of position 0 (skipped); position 4 is valid. Only positions 0, 1, 4 produce
         // ResolvedEndpoints, and their api_key_index should be 0, 1, 4 respectively.
-        let raw_input = r#""app.datadoghq.com": ["key-a", "key-b", "", "key-a", "key-c"]"#;
-        let raw_yaml = format!("{{{}}}", raw_input);
-        let endpoints: AdditionalEndpoints = serde_yaml::from_str(&raw_yaml).expect("should deserialize");
+        let endpoints = additional_endpoints(&[("app.datadoghq.com", &["key-a", "key-b", "", "key-a", "key-c"])]);
 
-        let resolved = endpoints.resolved_endpoints(None).expect("should resolve");
+        let resolved = resolve_additional_endpoints(&endpoints, None).expect("should resolve");
 
         assert_eq!(
             resolved.len(),
@@ -989,9 +945,8 @@ mod tests {
         );
 
         // Two URLs have independent index spaces (both start from 0).
-        let raw_yaml2 = r#"app.datadoghq.eu: [eu-key-a, eu-key-b]"#;
-        let endpoints2: AdditionalEndpoints = serde_yaml::from_str(raw_yaml2).expect("should deserialize");
-        let resolved2 = endpoints2.resolved_endpoints(None).expect("should resolve");
+        let endpoints2 = additional_endpoints(&[("app.datadoghq.eu", &["eu-key-a", "eu-key-b"])]);
+        let resolved2 = resolve_additional_endpoints(&endpoints2, None).expect("should resolve");
         assert_eq!(resolved2[0].api_key_index(), Some(0));
         assert_eq!(resolved2[1].api_key_index(), Some(1));
     }
@@ -1017,11 +972,8 @@ mod tests {
         config.ready().await;
 
         // Build the additional endpoint with a live config reference.
-        let raw = r#"http://extra.example.com: [key-1]"#;
-        let additional: AdditionalEndpoints = serde_yaml::from_str(raw).expect("should deserialize");
-        let mut endpoints = additional
-            .resolved_endpoints(Some(config.clone()))
-            .expect("should resolve");
+        let additional = additional_endpoints(&[("http://extra.example.com", &["key-1"])]);
+        let mut endpoints = resolve_additional_endpoints(&additional, Some(config.clone())).expect("should resolve");
         let endpoint = &mut endpoints[0];
 
         // Before the update, api_key() returns the original key.
@@ -1109,42 +1061,58 @@ mod tests {
     }
 
     #[test]
-    fn calculate_resolved_endpoint_resolves_override_and_site() {
-        // A `dd_url` override is used verbatim (dogpound.io is not a Datadog domain, so it is not
-        // version-prefixed) and always wins over `site`; with no override, the endpoint is derived from
-        // `site` (falling back to the default US site when empty) and gains the data plane version prefix.
+    fn the_primary_endpoint_is_built_from_resolved_configuration() {
+        // Endpoint resolution belongs to the configuration layer; the component version-prefixes the
+        // resolved Datadog endpoint and uses a non-Datadog override verbatim.
         let prefix = get_data_plane_version_prefix();
         let cases = [
             (
-                "no override, no site falls back to default site",
-                None,
-                "",
-                format!("https://{prefix}.{DEFAULT_SITE}/"),
-            ),
-            (
-                "no override, custom site",
-                None,
-                "us3.datadoghq.com",
+                "site-derived endpoint",
+                ConfigValue::explicit("us3.datadoghq.com".to_string()),
+                ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
                 format!("https://{prefix}.us3.datadoghq.com/"),
             ),
             (
-                "override, no site uses override verbatim",
-                Some("https://dogpound.io/"),
-                "",
-                "https://dogpound.io/".to_string(),
-            ),
-            (
-                "override wins over site",
-                Some("https://dogpound.io/"),
-                "us3.datadoghq.com",
+                "explicit dd_url used verbatim",
+                ConfigValue::explicit("us3.datadoghq.com".to_string()),
+                ConfigValue::explicit("https://dogpound.io/".to_string()),
                 "https://dogpound.io/".to_string(),
             ),
         ];
 
-        for (name, override_url, site, expected_endpoint) in cases {
-            let resolved = calculate_resolved_endpoint(override_url, site, "").expect(name);
+        for (name, site, dd_url, expected_endpoint) in cases {
+            let endpoints = shared::Endpoints {
+                api_key: "fake-api-key".to_string(),
+                site,
+                dd_url,
+                ..Default::default()
+            };
+            let config = EndpointConfiguration::from_configuration(&endpoints);
+
+            let resolved = config.build_primary_endpoint(None).expect(name);
             assert_eq!(expected_endpoint, resolved.endpoint().to_string(), "{name}");
+            assert_eq!("fake-api-key", resolved.cached_api_key(), "{name}");
         }
+    }
+
+    #[test]
+    fn a_single_destination_is_the_only_endpoint() {
+        let destination = SingleDestination {
+            url: "https://cluster-agent.example.com:5005".to_string(),
+            api_key: "secret-token".to_string(),
+            api_key_refresh_config_path: None,
+            accepts_v3_series: false,
+        };
+        let config = EndpointConfiguration::for_single_destination(&destination);
+
+        assert_eq!(
+            "https://cluster-agent.example.com:5005",
+            config.configured_primary_endpoint()
+        );
+        assert!(config
+            .build_additional_endpoints(None)
+            .expect("additional endpoints should resolve")
+            .is_empty());
     }
 
     #[test]
@@ -1386,7 +1354,7 @@ mod tests {
     fn agent_v3_default_enables_authoritative_v3() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
             .expect("endpoint should resolve");
-        let series_config = UseV3ApiSeriesConfig::default();
+        let series_config = agent_series_config();
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
             series_shadow_sites: &["datadoghq.com".to_string()],
@@ -1400,7 +1368,7 @@ mod tests {
     fn agent_v3_endpoint_overrides_win_over_global_default() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
             .expect("endpoint should resolve");
-        let mut series_config = UseV3ApiSeriesConfig::default();
+        let mut series_config = agent_series_config();
         series_config
             .endpoints
             .insert(resolved.configured_endpoint().to_string(), V3SeriesMode::Disabled);
@@ -1488,7 +1456,7 @@ mod tests {
     fn metrics_primary_v3_uses_route_specific_override() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
             .expect("endpoint should resolve");
-        let series_config = UseV3ApiSeriesConfig::default();
+        let series_config = agent_series_config();
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
             metrics_primary_v3_override: Some(false),
@@ -1507,7 +1475,7 @@ mod tests {
     fn metrics_primary_serializer_v3_can_match_primary_endpoint_name() {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
             .expect("endpoint should resolve");
-        let series_config = UseV3ApiSeriesConfig::default();
+        let series_config = agent_series_config();
         let serializer_v3_endpoints = vec!["https://app.datadoghq.com".to_string()];
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
@@ -1576,68 +1544,53 @@ mod tests {
     }
 
     #[test]
-    fn calculated_site_endpoint_uses_agent_configured_endpoint_shape() {
-        let resolved =
-            calculate_resolved_endpoint(None, "datadoghq.com", "").expect("error calculating default API endpoint");
-
-        assert_eq!("https://app.datadoghq.com", resolved.configured_endpoint());
-    }
-
-    #[test]
-    fn deserialize_dd_url_filters_default_value() {
-        // The default dd_url (what the Agent sends when operator only configured site) should
-        // deserialize to None so that site takes precedence.
-        let config_str = r#"{"api_key": "test-key", "dd_url": "https://app.datadoghq.com"}"#;
-        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
-        assert_eq!(None, config.dd_url);
-    }
-
-    #[test]
-    fn deserialize_dd_url_preserves_explicit_override() {
-        // A dd_url that differs from the default should deserialize as-is.
-        let config_str = r#"{"api_key": "test-key", "dd_url": "https://proxy.internal.example.com:3128"}"#;
-        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
-        assert_eq!(
-            Some("https://proxy.internal.example.com:3128".to_string()),
-            config.dd_url
-        );
-    }
-
-    #[test]
-    fn set_dd_url_is_not_filtered() {
-        // Programmatic calls to set_dd_url bypass serde and are never filtered, even if set to the default value.
-        // This is important for MRF and other override paths that may explicitly set the default URL.
-        let mut config = EndpointConfiguration {
-            api_key: "test-key".to_string(),
-            api_key_refresh_config_path: None,
-            site: "datadoghq.eu".to_string(),
-            dd_url: None,
-            additional_endpoints: AdditionalEndpoints::default(),
+    fn the_configured_endpoint_keeps_the_agent_endpoint_shape() {
+        // The configured endpoint is matched against V3 endpoint lists, so it must stay in the shape
+        // the Agent uses, before version prefixing.
+        let endpoints = shared::Endpoints {
+            site: ConfigValue::defaulted("datadoghq.com".to_string()),
+            dd_url: ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
+            ..Default::default()
         };
-        config.set_dd_url("https://app.datadoghq.com".to_string());
-        assert_eq!(Some("https://app.datadoghq.com".to_string()), config.dd_url);
-    }
+        let config = EndpointConfiguration::from_configuration(&endpoints);
 
-    #[test]
-    fn site_takes_precedence_when_dd_url_is_default() {
-        // When dd_url is at its default (sent by Agent with source="default"), site should determine the endpoint.
-        // This is tested through deserialization so the default-filtering occurs.
-        let config_str = r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://app.datadoghq.com"}"#;
-        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
-
-        assert_eq!("https://app.datadoghq.eu", config.configured_primary_endpoint());
-    }
-
-    #[test]
-    fn explicit_dd_url_overrides_site() {
-        // A dd_url that diverges from the default should take precedence over site.
-        let config_str =
-            r#"{"api_key": "test-key", "site": "datadoghq.eu", "dd_url": "https://proxy.internal.example.com:3128"}"#;
-        let config: EndpointConfiguration = serde_json::from_str(config_str).expect("deserialization should succeed");
-
+        assert_eq!("https://app.datadoghq.com", config.configured_primary_endpoint());
         assert_eq!(
-            "https://proxy.internal.example.com:3128",
-            config.configured_primary_endpoint()
+            "https://app.datadoghq.com",
+            config
+                .build_primary_endpoint(None)
+                .expect("endpoint should resolve")
+                .configured_endpoint()
         );
+    }
+
+    #[test]
+    fn an_explicit_dd_url_overrides_site_even_at_the_schema_default() {
+        // The Agent sends `dd_url` at its schema default even when only `site` is configured, so the
+        // URL alone cannot express an override: an operator who explicitly sets the default URL still
+        // overrides `site`, and a defaulted URL does not.
+        let cases = [
+            (
+                "explicit default URL overrides site",
+                ConfigValue::explicit("https://app.datadoghq.com".to_string()),
+                "https://app.datadoghq.com",
+            ),
+            (
+                "defaulted URL leaves the endpoint to site",
+                ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
+                "https://app.datadoghq.eu",
+            ),
+        ];
+
+        for (name, dd_url, expected) in cases {
+            let endpoints = shared::Endpoints {
+                site: ConfigValue::explicit("datadoghq.eu".to_string()),
+                dd_url,
+                ..Default::default()
+            };
+            let config = EndpointConfiguration::from_configuration(&endpoints);
+
+            assert_eq!(expected, config.configured_primary_endpoint(), "{name}");
+        }
     }
 }

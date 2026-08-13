@@ -10,6 +10,9 @@ use std::{num::NonZeroUsize, time::Duration};
 /// Default timeout before a partially filled encoder payload is flushed.
 pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Default maximum number of metrics packed into a single encoder payload.
+pub const DEFAULT_MAX_METRICS_PER_PAYLOAD: usize = 10_000;
+
 /// Default environment for traces that do not provide one.
 pub const DEFAULT_TRACE_ENV: &str = "none";
 

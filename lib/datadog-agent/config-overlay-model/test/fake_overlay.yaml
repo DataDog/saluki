@@ -5,7 +5,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -15,7 +15,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Datadog API key"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -52,7 +52,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -86,7 +86,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Agent log verbosity"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -95,7 +95,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Log to stdout instead of file"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -108,7 +108,7 @@ inventory:
       configuration compatibility but clamped to TLS 1.2 because rustls does not support
       those protocol versions.
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -117,7 +117,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Hosts to exclude from proxy routing"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -148,7 +148,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Datadog intake site"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 

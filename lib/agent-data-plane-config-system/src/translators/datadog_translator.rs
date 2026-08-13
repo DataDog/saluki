@@ -104,6 +104,22 @@ fn non_empty(s: String) -> Option<String> {
     }
 }
 
+/// Returns `None` for an `s` that is empty or entirely whitespace; otherwise returns `Some(s)` with
+/// the surrounding whitespace removed.
+///
+/// Use this for a setting whose consumer treats "absent" and "blank" alike. A value padded in a
+/// configuration file or an environment variable means the same thing as one that was never set, so
+/// normalizing here keeps the padding from reaching a consumer that would read it as meaningful: a
+/// credential that is really blank, or a site that composes into an intake URL nothing can parse.
+fn non_empty_trimmed(s: String) -> Option<String> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Clamps a raw `i64` port into the `u16` range.
 fn to_port(value: i64) -> u16 {
     value.clamp(0, u16::MAX as i64) as u16
@@ -847,11 +863,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_multi_region_failover_api_key(&mut self, value: String) {
-        self.config.domains.multi_region_failover.api_key = non_empty(value);
+        self.config.domains.multi_region_failover.api_key = non_empty_trimmed(value);
     }
 
     fn consume_multi_region_failover_dd_url(&mut self, value: String) {
-        self.config.domains.multi_region_failover.dd_url = non_empty(value);
+        self.config.domains.multi_region_failover.dd_url = non_empty_trimmed(value);
     }
 
     fn consume_multi_region_failover_enabled(&mut self, value: bool) {
@@ -867,7 +883,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_multi_region_failover_site(&mut self, value: String) {
-        self.config.domains.multi_region_failover.site = non_empty(value);
+        self.config.domains.multi_region_failover.site = non_empty_trimmed(value);
     }
 
     fn consume_no_proxy_nonexact_match(&mut self, value: bool) {
@@ -1534,6 +1550,50 @@ mod tests {
 
         assert!(errors.is_none());
         assert_explicit(&config.shared.endpoints.forwarder.retry_queue_max_size, 0);
+    }
+
+    #[test]
+    fn padded_failover_endpoint_settings_are_trimmed() {
+        // A padded value must resolve to the same endpoint as a bare one. Carrying the whitespace
+        // through would compose an intake URL the forwarder cannot parse.
+        let (config, errors) = translate_explicit(json!({
+            "multi_region_failover": { "api_key": " mrf-key ", "site": " datadoghq.eu " }
+        }));
+
+        assert!(errors.is_none());
+        let mrf = &config.domains.multi_region_failover;
+        assert_eq!(Some("mrf-key"), mrf.api_key.as_deref());
+        assert_eq!(Some("datadoghq.eu"), mrf.site.as_deref());
+        assert_eq!(
+            Some("https://app.mrf.datadoghq.eu".to_string()),
+            mrf.metrics_endpoint_url()
+        );
+
+        let (config, errors) = translate_explicit(json!({
+            "multi_region_failover": { "dd_url": "  https://custom-mrf.example.com  " }
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(
+            Some("https://custom-mrf.example.com"),
+            config.domains.multi_region_failover.dd_url.as_deref()
+        );
+    }
+
+    #[test]
+    fn a_blank_failover_endpoint_setting_is_unset() {
+        // A whitespace-only value says no more than an absent one. Retaining it would report the
+        // failover region as credentialed when its key is blank.
+        let (config, errors) = translate_explicit(json!({
+            "multi_region_failover": { "enabled": true, "api_key": "   ", "site": "\t", "dd_url": " " }
+        }));
+
+        assert!(errors.is_none());
+        let mrf = &config.domains.multi_region_failover;
+        assert_eq!(None, mrf.api_key);
+        assert_eq!(None, mrf.site);
+        assert_eq!(None, mrf.dd_url);
+        assert_eq!(None, mrf.metrics_endpoint_url());
     }
 
     #[test]

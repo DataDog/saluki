@@ -1,9 +1,6 @@
-use std::{collections::VecDeque, ops::Range, time::Duration};
+use std::{collections::HashMap, collections::VecDeque, ops::Range, time::Duration};
 
-use agent_data_plane_config::{
-    defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT,
-    shared::{Endpoints, MetricsEncoding, V3SeriesMode},
-};
+use agent_data_plane_config::shared::{SharedConfiguration, V3SeriesMode};
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use http::{HeaderValue, Method, Request};
@@ -13,7 +10,6 @@ use saluki_common::{
     iter::ReusableDeduplicator,
     task::HandleExt as _,
 };
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
@@ -31,7 +27,6 @@ use saluki_core::{
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::compression::{CompressionScheme, Compressor};
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use tokio::{io::AsyncWriteExt as _, select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 use url::Url;
@@ -49,12 +44,10 @@ use self::{
 use crate::{
     common::datadog::{
         clamp_payload_limits,
-        config::{OpwMetricsConfiguration, OpwMetricsSettings},
-        data_plane::EncoderDataPlaneConfiguration,
-        default_serializer_compressor_kind,
+        config::OpwMetricsConfiguration,
         endpoints::{
-            calculate_resolved_endpoint, default_site, deserialize_dd_url, series_v3_config_can_enable_v3,
-            AdditionalEndpoints, EndpointV3Settings, ResolvedEndpoint, V3EndpointConfig, DEFAULT_SITE,
+            resolve_additional_endpoints, series_v3_config_can_enable_v3, EndpointV3Settings, ResolvedEndpoint,
+            V3EndpointConfig,
         },
         io::RB_BUFFER_CHUNK_SIZE,
         protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
@@ -77,66 +70,6 @@ mod v3;
 
 const V3_SERIES_ENDPOINT_URI: &str = METRICS_SERIES_V3_PATH;
 const V3_SKETCHES_ENDPOINT_URI: &str = METRICS_SKETCHES_V3_PATH;
-
-const fn default_max_metrics_per_payload() -> usize {
-    10_000
-}
-
-const fn default_max_payload_size() -> usize {
-    DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_uncompressed_payload_size() -> usize {
-    DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_series_payload_size() -> usize {
-    v2::SERIES_V2_COMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_series_uncompressed_payload_size() -> usize {
-    v2::SERIES_V2_UNCOMPRESSED_SIZE_LIMIT
-}
-
-const fn default_max_series_points_per_payload() -> usize {
-    10_000
-}
-
-const fn default_flush_timeout_secs() -> u64 {
-    DEFAULT_ENCODER_FLUSH_TIMEOUT.as_secs()
-}
-
-/// The Datadog Agent's `use_v2_api` configuration section.
-#[derive(Clone, Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
-struct UseV2ApiConfig {
-    /// Whether to use the V2 API for series metrics.
-    ///
-    /// When `true` (the default), series metrics are sent to the V2 protobuf endpoint
-    /// (`/api/v2/series`). When `false`, series metrics are sent to the legacy V1 JSON endpoint
-    /// (`/api/v1/series`). Sketch metrics always use the V2 endpoint (`/api/beta/sketches`)
-    /// regardless of this setting.
-    ///
-    /// Defaults to `true`.
-    #[serde(default = "default_use_v2_api_series")]
-    series: bool,
-}
-
-impl Default for UseV2ApiConfig {
-    fn default() -> Self {
-        Self {
-            series: default_use_v2_api_series(),
-        }
-    }
-}
-
-const fn default_use_v2_api_series() -> bool {
-    true
-}
-
-const fn default_log_payloads() -> bool {
-    false
-}
 
 fn series_shadow_config_for_endpoint(
     series_endpoint: MetricsEndpoint, sample_rate: f64, metrics_v3_disabled_by_compressor: bool,
@@ -226,75 +159,47 @@ fn series_v3_can_be_enabled_for_config(
 /// Datadog Metrics encoder.
 ///
 /// Generates Datadog metrics payloads for the Datadog platform.
-#[derive(Clone, Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug, PartialEq))]
 pub struct DatadogMetricsConfiguration {
     /// Maximum number of input metrics to encode into a single request payload.
     ///
     /// This applies both to the series and sketches endpoints.
-    ///
-    /// Defaults to 10,000.
-    #[serde(
-        rename = "serializer_max_metrics_per_payload",
-        default = "default_max_metrics_per_payload"
-    )]
     max_metrics_per_payload: usize,
 
     /// Maximum compressed size, in bytes, of generic payloads.
     ///
     /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
-    /// builder. V2 series payloads use `serializer_max_series_payload_size` instead. The effective value is clamped to
+    /// builder. V2 series payloads use the series-specific limit instead. The effective value is clamped to
     /// the Agent's default intake-safe limit of 2,621,440 bytes, so larger configured values do not allow payloads that
     /// intake may reject. If set to `0`, every non-empty compressed payload exceeds the limit and is dropped during
     /// flush.
-    ///
-    /// Defaults to 2,621,440 bytes.
-    #[serde(rename = "serializer_max_payload_size", default = "default_max_payload_size")]
     max_payload_size: usize,
 
     /// Maximum uncompressed size, in bytes, of generic payloads.
     ///
     /// This applies to V1 JSON series payloads and sketch payloads, matching the Datadog Agent's generic payload
-    /// builder. V2 series payloads use `serializer_max_series_uncompressed_payload_size` instead. The effective value
+    /// builder. V2 series payloads use the series-specific limit instead. The effective value
     /// is clamped to the Agent's default intake-safe limit of 4,194,304 bytes, so larger configured values do not allow
     /// payloads that intake may reject. Values smaller than the minimum endpoint framing size prevent the request
     /// builder from starting.
-    ///
-    /// Defaults to 4,194,304 bytes.
-    #[serde(
-        rename = "serializer_max_uncompressed_payload_size",
-        default = "default_max_uncompressed_payload_size"
-    )]
     max_uncompressed_payload_size: usize,
 
     /// Maximum compressed size, in bytes, of a V2 series payload.
     ///
-    /// This applies only when `use_v2_api.series` is `true`. V1 series and sketches use `serializer_max_payload_size`
+    /// This applies only when the V2 series API is in use. V1 series and sketches use the generic payload limit
     /// instead. The effective value is clamped to the V2 series API limit of 512,000 bytes, so larger configured values
-    /// do not allow payloads that intake would reject. High-throughput workloads may increase this up to that API limit
-    /// to reduce request count, at the cost of larger individual requests. If set to `0`, every non-empty compressed
-    /// payload exceeds the limit and is dropped during flush.
-    ///
-    /// Defaults to 512,000 bytes.
-    #[serde(
-        rename = "serializer_max_series_payload_size",
-        default = "default_max_series_payload_size"
-    )]
+    /// do not allow payloads that intake would reject. If set to `0`, every non-empty compressed payload exceeds the
+    /// limit and is dropped during flush.
     max_series_payload_size: usize,
 
     /// Maximum uncompressed size, in bytes, of a V2 series payload.
     ///
-    /// This applies only when `use_v2_api.series` is `true`. V1 series and sketches use
-    /// `serializer_max_uncompressed_payload_size` instead. The effective value is clamped to the V2 series API limit of
-    /// 5,242,880 bytes, so larger configured values do not allow payloads that intake would reject. This limit protects
-    /// the encoder before compression, so compressed payload size may still force a separate flush. Values smaller than
-    /// the minimum endpoint framing size prevent the request builder from starting.
-    ///
-    /// Defaults to 5,242,880 bytes.
-    #[serde(
-        rename = "serializer_max_series_uncompressed_payload_size",
-        default = "default_max_series_uncompressed_payload_size"
-    )]
+    /// This applies only when the V2 series API is in use. V1 series and sketches use the generic uncompressed payload
+    /// limit instead. The effective value is clamped to the V2 series API limit of 5,242,880 bytes, so larger configured
+    /// values do not allow payloads that intake would reject. This limit protects the encoder before compression, so
+    /// compressed payload size may still force a separate flush. Values smaller than the minimum endpoint framing size
+    /// prevent the request builder from starting.
     max_series_uncompressed_payload_size: usize,
 
     /// Maximum number of data points, across all series, to encode into a single series request payload.
@@ -303,134 +208,86 @@ pub struct DatadogMetricsConfiguration {
     /// distributions). A single metric series may contribute multiple data points when it carries more than one
     /// timestamp/value pair. When encoding an input would cause the running data point total to exceed this limit, the
     /// current payload is flushed first and the input is placed in the next payload.
-    ///
-    /// Defaults to 10,000.
-    #[serde(
-        rename = "serializer_max_series_points_per_payload",
-        default = "default_max_series_points_per_payload"
-    )]
     max_series_points_per_payload: usize,
 
-    /// Flush timeout for pending requests, in seconds.
+    /// Flush timeout for pending requests.
     ///
     /// When the destination has written metrics to the in-flight request payload, but it has not yet reached the
     /// payload size limits that would force the payload to be flushed, the destination will wait for a period of time
     /// before flushing the in-flight request payload. This allows for the possibility of other events to be processed
     /// and written into the request payload, thereby maximizing the payload size and reducing the number of requests
     /// generated and sent overall.
-    ///
-    /// Defaults to 2 seconds.
-    #[serde(default = "default_flush_timeout_secs")]
-    flush_timeout_secs: u64,
+    flush_timeout: Duration,
 
     /// Compression kind to use for the request payloads.
-    ///
-    /// Defaults to `zstd`.
-    #[serde(
-        rename = "serializer_compressor_kind",
-        default = "default_serializer_compressor_kind"
-    )]
     compressor_kind: String,
 
-    /// ADP-specific zstd compression level, taking precedence over `serializer_zstd_compressor_level`.
+    /// Effective zstd compression level for the request payloads.
     ///
-    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
-    #[serde(default)]
-    data_plane: EncoderDataPlaneConfiguration,
-
-    /// The Core Agent's zstd compression level. Used only when set to a non-default value (not 1),
-    /// since the Agent forwards its default over the config stream.
-    ///
-    /// See [`resolve_zstd_compressor_level`] for how the effective level is determined.
-    #[serde(rename = "serializer_zstd_compressor_level", default)]
-    serializer_zstd_compressor_level: Option<i32>,
+    /// See [`resolve_zstd_compressor_level`] for how the level is determined.
+    zstd_compressor_level: i32,
 
     /// Whether to use the V2 API for series metrics.
     ///
-    /// When `true` (the default), series metrics are sent to the V2 protobuf endpoint (`/api/v2/series`). When
-    /// `false`, series metrics are sent to the legacy V1 JSON endpoint (`/api/v1/series`). Sketch metrics always use
-    /// the V2 endpoint (`/api/beta/sketches`) regardless of this setting.
-    ///
-    /// Defaults to `true`.
-    #[serde(default)]
-    use_v2_api: UseV2ApiConfig,
+    /// When `true`, series metrics are sent to the V2 protobuf endpoint (`/api/v2/series`). When `false`, series
+    /// metrics are sent to the legacy V1 JSON endpoint (`/api/v1/series`). Sketch metrics always use the V2 endpoint
+    /// (`/api/beta/sketches`) regardless of this setting.
+    use_v2_series_api: bool,
 
     /// Whether to log metric payload contents before encoding.
     ///
     /// This logs decoded metric objects, not the encoded JSON/protobuf HTTP body.
-    ///
-    /// Defaults to `false`.
-    #[serde(default = "default_log_payloads")]
     log_payloads: bool,
 
     /// Additional tags to apply to all forwarded metrics.
-    #[serde(default, skip)]
     additional_tags: Option<SharedTagSet>,
 
     /// V3 API configuration for per-endpoint V3 support.
     ///
     /// Configures which endpoints receive V3 payloads and whether validation mode is enabled.
-    #[serde(rename = "serializer_experimental_use_v3_api", default)]
     v3_api: V3ApiConfig,
 
     /// Agent-compatible V3 API configuration.
-    #[serde(default)]
     use_v3_api: UseV3ApiConfig,
 
-    /// OPW/Vector metrics routing configuration.
-    ///
-    /// Read from the Agent's `observability_pipelines_worker` and (deprecated) `vector` sections,
-    /// which are top-level, so this is flattened into the same root.
-    #[serde(flatten)]
+    /// Metrics routing to an alternate intake.
     opw_metrics: OpwMetricsConfiguration,
 
-    /// The Datadog site used to resolve the primary metrics endpoint.
-    ///
-    /// Defaults to `datadoghq.com`.
-    #[serde(default = "default_site")]
-    site: String,
+    /// The primary metrics endpoint, as configured and not altered in any way.
+    primary_endpoint: String,
 
-    /// The optional explicit primary metrics endpoint.
-    ///
-    /// Defaults to unset, in which case `site` determines the endpoint.
-    #[serde(default, deserialize_with = "deserialize_dd_url")]
-    dd_url: Option<String>,
-
-    /// Additional endpoints that metrics may be dual-shipped to.
-    #[serde(default)]
-    additional_endpoints: AdditionalEndpoints,
+    /// Additional endpoints that metrics may be dual-shipped to, keyed by endpoint URL with their API keys.
+    additional_endpoints: HashMap<String, Vec<String>>,
 }
 
 impl DatadogMetricsConfiguration {
-    /// Creates a new `DatadogMetricsConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
+    /// Creates a new `DatadogMetricsConfiguration` from the resolved shared configuration.
+    pub fn from_configuration(shared: &SharedConfiguration) -> Self {
+        let endpoints = &shared.endpoints;
+        let metrics = &shared.metrics_encoding;
 
-    /// Creates a metrics encoder using authoritative typed metrics-routing configuration.
-    pub fn from_configuration_with_metrics_routing(
-        config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints,
-    ) -> Result<Self, GenericError> {
-        let mut metrics_config = Self::from_configuration(config)?;
-
-        metrics_config.compressor_kind = endpoints.compression.compressor_kind.clone();
-        metrics_config.use_v2_api.series = metrics.use_v2_series_api;
-        metrics_config.v3_api = (&metrics.v3_api).into();
-        metrics_config.use_v3_api.series = metrics.into();
-        metrics_config.opw_metrics = OpwMetricsConfiguration::new(
-            OpwMetricsSettings::new(
-                endpoints.opw_intake.enabled,
-                endpoints.opw_intake.url.clone(),
-                endpoints.opw_intake.use_v3_series,
+        Self {
+            max_metrics_per_payload: metrics.max_metrics_per_payload,
+            max_payload_size: metrics.max_payload_size,
+            max_uncompressed_payload_size: metrics.max_uncompressed_payload_size,
+            max_series_payload_size: metrics.max_series_payload_size,
+            max_series_uncompressed_payload_size: metrics.max_series_uncompressed_payload_size,
+            max_series_points_per_payload: metrics.max_series_points_per_payload,
+            flush_timeout: metrics.flush_timeout,
+            compressor_kind: endpoints.compression.compressor_kind.clone(),
+            zstd_compressor_level: resolve_zstd_compressor_level(
+                endpoints.compression.zstd_compressor_level_override,
+                Some(endpoints.compression.zstd_compressor_level),
             ),
-            OpwMetricsSettings::new(
-                endpoints.vector_intake.enabled,
-                endpoints.vector_intake.url.clone(),
-                endpoints.vector_intake.use_v3_series,
-            ),
-        );
-
-        Ok(metrics_config)
+            use_v2_series_api: metrics.use_v2_series_api,
+            log_payloads: metrics.log_payloads,
+            additional_tags: None,
+            v3_api: (&metrics.v3_api).into(),
+            use_v3_api: UseV3ApiConfig { series: metrics.into() },
+            opw_metrics: OpwMetricsConfiguration::from_configuration(endpoints),
+            primary_endpoint: endpoints.primary_endpoint(),
+            additional_endpoints: endpoints.additional_endpoints.clone(),
+        }
     }
 
     /// Sets additional tags to be applied uniformly to all metrics forwarded by this destination.
@@ -442,10 +299,10 @@ impl DatadogMetricsConfiguration {
     /// Restricts endpoint-aware protocol selection to a single overridden metrics endpoint.
     ///
     /// This mirrors a forwarder branch that replaces the normal primary endpoint and removes additional and
-    /// OPW/Vector endpoints, such as Multi-Region Failover.
+    /// alternate-intake endpoints, such as Multi-Region Failover.
     pub fn with_metrics_endpoint_override(mut self, dd_url: String) -> Self {
-        self.dd_url = Some(dd_url);
-        self.additional_endpoints = AdditionalEndpoints::default();
+        self.primary_endpoint = dd_url;
+        self.additional_endpoints = HashMap::new();
         self.opw_metrics.disable();
         self
     }
@@ -489,35 +346,24 @@ impl DatadogMetricsConfiguration {
         })
     }
 
-    fn configured_primary_endpoint(&self) -> String {
-        match self.dd_url.as_deref() {
-            Some(url) => url.to_string(),
-            None => {
-                let base_domain = if self.site.is_empty() { DEFAULT_SITE } else { &self.site };
-                format!("https://app.{base_domain}")
-            }
-        }
-    }
-
     fn any_series_endpoint_matches(
         &self, mut predicate: impl FnMut(&EndpointV3Settings) -> bool,
     ) -> Result<bool, GenericError> {
-        let configured_primary_endpoint = self.configured_primary_endpoint();
         if let Some((metrics_primary_url, metrics_primary_v3_override)) =
             selected_metrics_primary_endpoint(&self.opw_metrics)
         {
-            let metrics_primary = calculate_resolved_endpoint(Some(metrics_primary_url), &self.site, "")
+            let metrics_primary = ResolvedEndpoint::from_raw_endpoint(metrics_primary_url, "")
                 .error_context("Failed parsing/resolving the metrics primary destination endpoint.")?;
             let settings = self.endpoint_v3_settings(
                 &metrics_primary,
                 Some(metrics_primary_v3_override),
-                Some(&configured_primary_endpoint),
+                Some(&self.primary_endpoint),
             );
             if predicate(&settings) {
                 return Ok(true);
             }
         } else {
-            let primary = calculate_resolved_endpoint(self.dd_url.as_deref(), &self.site, "")
+            let primary = ResolvedEndpoint::from_raw_endpoint(&self.primary_endpoint, "")
                 .error_context("Failed parsing/resolving the primary destination endpoint.")?;
             let settings = self.endpoint_v3_settings(&primary, None, None);
             if predicate(&settings) {
@@ -525,9 +371,7 @@ impl DatadogMetricsConfiguration {
             }
         }
 
-        for endpoint in self
-            .additional_endpoints
-            .resolved_endpoints(None)
+        for endpoint in resolve_additional_endpoints(&self.additional_endpoints, None)
             .error_context("Failed parsing/resolving the additional destination endpoints.")?
         {
             let settings = self.endpoint_v3_settings(&endpoint, None, None);
@@ -540,7 +384,7 @@ impl DatadogMetricsConfiguration {
     }
 
     fn requires_v2_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
-        if !self.use_v2_api.series || metrics_v3_disabled_by_compressor {
+        if !self.use_v2_series_api || metrics_v3_disabled_by_compressor {
             return Ok(true);
         }
 
@@ -554,7 +398,7 @@ impl DatadogMetricsConfiguration {
 
         let metrics_primary_v3_override = selected_metrics_primary_v3_override(&self.opw_metrics);
         if !series_v3_can_be_enabled_for_config(
-            self.use_v2_api.series,
+            self.use_v2_series_api,
             self.v3_api.use_v3_series(),
             metrics_primary_v3_override,
             !self.additional_endpoints.is_empty(),
@@ -582,11 +426,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let v3_serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
 
-        let zstd_compressor_level = resolve_zstd_compressor_level(
-            self.data_plane.serializer_zstd_compressor_level,
-            self.serializer_zstd_compressor_level,
-        );
-        let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
+        let v2_compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
         let v3_compression_scheme = if self.v3_api.compression_level > 0 {
             CompressionScheme::new(&self.compressor_kind, self.v3_api.compression_level)
         } else {
@@ -628,7 +468,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             self.v3_api.sketches.validate,
             metrics_v3_disabled_by_compressor,
         );
-        let series_endpoint = if self.use_v2_api.series {
+        let series_endpoint = if self.use_v2_series_api {
             MetricsEndpoint::SeriesV2
         } else {
             MetricsEndpoint::SeriesV1
@@ -680,11 +520,12 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         v2_sketch_builder.with_len_limits(sketches_uncompressed_limit, sketches_compressed_limit)?;
         let v2_sketch_builder = Some(v2_sketch_builder);
 
-        let flush_timeout = match self.flush_timeout_secs {
+        let flush_timeout = if self.flush_timeout.is_zero() {
             // We always give ourselves a minimum flush timeout of 10ms to allow for some very minimal amount of
             // batching, while still practically flushing things almost immediately.
-            0 => Duration::from_millis(10),
-            secs => Duration::from_secs(secs),
+            Duration::from_millis(10)
+        } else {
+            self.flush_timeout
         };
 
         if series_mode.needs_v3() || sketches_mode.needs_v3() {
@@ -2224,10 +2065,16 @@ fn content_encoding_for_scheme(compression_scheme: CompressionScheme) -> Option<
 mod tests {
     use std::{collections::HashMap, io::Cursor};
 
+    use agent_data_plane_config::{
+        shared::{
+            AltMetricsIntake, MetricsEncoding as TypedMetricsEncoding, V3ApiSettings as TypedV3ApiSettings,
+            V3SeriesMode,
+        },
+        ConfigValue,
+    };
     use bytes::Bytes;
     use datadog_protos::metrics::v3::MetricData as V3MetricData;
     use protobuf::Message as _;
-    use saluki_config::ConfigurationLoader;
     use saluki_context::{
         tags::{Tag, TagSet},
         Context,
@@ -2241,28 +2088,36 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+    use crate::common::datadog::{test_util::shared_configuration, DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL};
+
+    /// Returns an encoder built from shared configuration shaped like a translated Agent configuration.
+    fn metrics_config_from(shared: &SharedConfiguration) -> DatadogMetricsConfiguration {
+        DatadogMetricsConfiguration::from_configuration(shared)
+    }
+
+    /// Returns the Agent-compatible V3 series settings a default configuration resolves to.
+    fn agent_series_config() -> UseV3ApiSeriesConfig {
+        (&TypedMetricsEncoding::default()).into()
+    }
 
     #[test]
-    fn deser_agent_v3_api_nested_settings() {
-        let raw = r#"
-serializer_experimental_use_v3_api:
-  compression_level: 7
-  series:
-    endpoints:
-      - https://app.datadoghq.com
-    validate: true
-    use_beta: true
-    beta_route: /api/intake/metrics/custom/series
-    shadow_sample_rate: 0.25
-    shadow_sites:
-      - datadoghq.eu
-  sketches:
-    endpoints:
-      - https://app.datadoghq.eu
-"#;
+    fn v3_api_settings_come_from_resolved_configuration() {
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_api.compression_level = 7;
+        shared.metrics_encoding.v3_api.series = TypedV3ApiSettings {
+            endpoints: vec!["https://app.datadoghq.com".to_string()],
+            validate: true,
+            use_beta: true,
+            beta_route: "/api/intake/metrics/custom/series".to_string(),
+            shadow_sample_rate: 0.25,
+            shadow_sites: vec!["datadoghq.eu".to_string()],
+        };
+        shared.metrics_encoding.v3_api.sketches = TypedV3ApiSettings {
+            endpoints: vec!["https://app.datadoghq.eu".to_string()],
+            ..Default::default()
+        };
 
-        let config =
-            serde_yaml::from_str::<DatadogMetricsConfiguration>(raw).expect("configuration should deserialize");
+        let config = metrics_config_from(&shared);
 
         assert_eq!(7, config.v3_api.compression_level);
         assert_eq!(
@@ -2280,59 +2135,64 @@ serializer_experimental_use_v3_api:
         );
     }
 
-    #[tokio::test]
-    async fn typed_metrics_routing_is_authoritative() {
-        let (raw, _) = ConfigurationLoader::for_tests(
-            Some(serde_json::json!({
-                "serializer_compressor_kind": "zlib",
-                "use_v2_api_series": true,
-                "use_v3_api_series_enabled": "true",
-                "observability_pipelines_worker_metrics_enabled": false,
-            })),
-            None,
-            false,
-        )
-        .await;
-
-        let mut endpoints = Endpoints::default();
-        endpoints.compression.compressor_kind = "zstd".to_string();
-        endpoints.opw_intake.enabled = true;
-        endpoints.opw_intake.url = "https://opw.example.com".to_string();
-        endpoints.opw_intake.use_v3_series = true;
-        let mut metrics = MetricsEncoding {
-            use_v2_series_api: false,
-            ..Default::default()
+    #[test]
+    fn metrics_routing_comes_from_resolved_configuration() {
+        let mut shared = shared_configuration();
+        shared.endpoints.compression.compressor_kind = "zstd".to_string();
+        shared.endpoints.opw_intake = AltMetricsIntake {
+            enabled: true,
+            url: "https://opw.example.com".to_string(),
+            use_v3_series: true,
         };
-        metrics.v3_api.compression_level = 7;
-        metrics.v3_api.series.validate = true;
-        metrics.v3_series_mode = V3SeriesMode::Disabled;
-        metrics.v3_series_endpoint_modes =
+        shared.metrics_encoding.use_v2_series_api = false;
+        shared.metrics_encoding.v3_api.compression_level = 7;
+        shared.metrics_encoding.v3_api.series.validate = true;
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
+        shared.metrics_encoding.v3_series_endpoint_modes =
             HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
 
-        let config = DatadogMetricsConfiguration::from_configuration_with_metrics_routing(&raw, &metrics, &endpoints)
-            .expect("configuration should deserialize");
+        let config = metrics_config_from(&shared);
 
-        assert_eq!(config.compressor_kind, "zstd");
-        assert!(!config.use_v2_api.series);
-        assert_eq!(config.v3_api.compression_level, 7);
+        assert_eq!("zstd", config.compressor_kind);
+        assert!(!config.use_v2_series_api);
+        assert_eq!(7, config.v3_api.compression_level);
         assert!(config.v3_api.series.validate);
-        assert_eq!(config.use_v3_api.series.enabled, V3SeriesMode::Disabled);
+        assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
         assert_eq!(
-            config.use_v3_api.series.endpoints.get("https://app.datadoghq.com"),
-            Some(&V3SeriesMode::Enabled)
+            Some(&V3SeriesMode::Enabled),
+            config.use_v3_api.series.endpoints.get("https://app.datadoghq.com")
         );
-        // A selected endpoint means OPW routing is enabled; it carries the URL and V3 override.
+        // A selected endpoint means alternate-intake routing is enabled; it carries the URL and V3 override.
         let opw = config
             .opw_metrics
             .selected_endpoint()
-            .expect("OPW routing should be selected");
-        assert_eq!(opw.url, "https://opw.example.com");
+            .expect("alternate intake routing should be selected");
+        assert_eq!("https://opw.example.com", opw.url);
         assert!(opw.use_v3_series);
     }
 
     #[test]
-    fn agent_v3_api_shadow_defaults_match_agent() {
-        let config = serde_yaml::from_str::<DatadogMetricsConfiguration>("").expect("configuration should deserialize");
+    fn the_zstd_compression_level_is_resolved_from_configuration() {
+        // The Agent forwards its own default level of 1, which cannot be distinguished from an
+        // operator setting 1, so ADP's default applies unless one of the two is set to something else.
+        let cases = [
+            ("agent default only", 1, None, DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL),
+            ("agent level changed", 5, None, 5),
+            ("data plane override wins", 5, Some(4), 4),
+        ];
+
+        for (name, agent_level, override_level, expected) in cases {
+            let mut shared = shared_configuration();
+            shared.endpoints.compression.zstd_compressor_level = agent_level;
+            shared.endpoints.compression.zstd_compressor_level_override = override_level;
+
+            assert_eq!(expected, metrics_config_from(&shared).zstd_compressor_level, "{name}");
+        }
+    }
+
+    #[test]
+    fn shadow_defaults_match_the_agent() {
+        let config = metrics_config_from(&shared_configuration());
 
         assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);
         assert_eq!(vec!["datadoghq.com"], config.v3_api.series.shadow_sites);
@@ -2373,22 +2233,17 @@ serializer_experimental_use_v3_api:
         );
     }
 
-    fn v3_series_config(raw: &str) -> DatadogMetricsConfiguration {
-        serde_yaml::from_str(raw).expect("configuration should deserialize")
-    }
-
     #[test]
     fn mixed_v2_and_v3_endpoints_require_both_series_encoders() {
-        let config = v3_series_config(
-            r#"
-use_v3_api:
-  series:
-    enabled: "datadog_only"
-additional_endpoints:
-  https://custom.example.com:
-    - additional-api-key
-"#,
-        );
+        // The primary Datadog endpoint is V3-authoritative under `datadog_only`, while the additional
+        // endpoint is not a Datadog URL and stays on V2.
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "https://custom.example.com".to_string(),
+            vec!["additional-api-key".to_string()],
+        )]);
+        let config = metrics_config_from(&shared);
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
@@ -2396,14 +2251,10 @@ additional_endpoints:
 
     #[test]
     fn all_v2_endpoints_do_not_require_v3_series() {
-        let config = v3_series_config(
-            r#"
-dd_url: http://127.0.0.1:9091
-use_v3_api:
-  series:
-    enabled: "datadog_only"
-"#,
-        );
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::DatadogOnly;
+        shared.endpoints.dd_url = ConfigValue::explicit("http://127.0.0.1:9091".to_string());
+        let config = metrics_config_from(&shared);
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(!config.requires_v3_series(false).expect("endpoints should resolve"));
@@ -2411,16 +2262,10 @@ use_v3_api:
 
     #[test]
     fn validation_requires_v2_series() {
-        let config = v3_series_config(
-            r#"
-use_v3_api:
-  series:
-    enabled: "true"
-serializer_experimental_use_v3_api:
-  series:
-    validate: true
-"#,
-        );
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
+        shared.metrics_encoding.v3_api.series.validate = true;
+        let config = metrics_config_from(&shared);
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
@@ -2428,18 +2273,13 @@ serializer_experimental_use_v3_api:
 
     #[test]
     fn v1_series_configuration_takes_precedence_over_v3() {
-        let config = v3_series_config(
-            r#"
-use_v2_api:
-  series: false
-use_v3_api:
-  series:
-    enabled: "true"
-"#,
-        );
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.use_v2_series_api = false;
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
+        let config = metrics_config_from(&shared);
 
         let series_v3_can_be_enabled = series_v3_can_be_enabled_for_config(
-            config.use_v2_api.series,
+            config.use_v2_series_api,
             false,
             None,
             false,
@@ -2461,22 +2301,18 @@ use_v3_api:
 
     #[test]
     fn all_v3_serializer_endpoints_require_only_v3_series() {
-        let config = v3_series_config(
-            r#"
-dd_url: https://agent.datad0g.com.
-use_v3_api:
-  series:
-    enabled: "false"
-additional_endpoints:
-  https://agent.datadoghq.com.:
-    - additional-api-key
-serializer_experimental_use_v3_api:
-  series:
-    endpoints:
-      - https://agent.datad0g.com.
-      - https://agent.datadoghq.com.
-"#,
-        );
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
+        shared.endpoints.dd_url = ConfigValue::explicit("https://agent.datad0g.com.".to_string());
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "https://agent.datadoghq.com.".to_string(),
+            vec!["additional-api-key".to_string()],
+        )]);
+        shared.metrics_encoding.v3_api.series.endpoints = vec![
+            "https://agent.datad0g.com.".to_string(),
+            "https://agent.datadoghq.com.".to_string(),
+        ];
+        let config = metrics_config_from(&shared);
 
         assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
@@ -2484,19 +2320,14 @@ serializer_experimental_use_v3_api:
 
     #[test]
     fn endpoint_override_uses_the_overridden_endpoint_protocol() {
-        let config = v3_series_config(
-            r#"
-dd_url: https://primary.example.com
-use_v3_api:
-  series:
-    enabled: "false"
-serializer_experimental_use_v3_api:
-  series:
-    endpoints:
-      - https://primary.example.com
-      - https://v3-mrf.example.com
-"#,
-        );
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
+        shared.endpoints.dd_url = ConfigValue::explicit("https://primary.example.com".to_string());
+        shared.metrics_encoding.v3_api.series.endpoints = vec![
+            "https://primary.example.com".to_string(),
+            "https://v3-mrf.example.com".to_string(),
+        ];
+        let config = metrics_config_from(&shared);
 
         let v2_mrf_config = config
             .clone()
@@ -2518,18 +2349,32 @@ serializer_experimental_use_v3_api:
     }
 
     #[test]
+    fn an_endpoint_override_drops_the_configured_additional_and_alternate_endpoints() {
+        let mut shared = shared_configuration();
+        shared.endpoints.dd_url = ConfigValue::explicit("https://primary.example.com".to_string());
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "https://additional.example.com".to_string(),
+            vec!["additional-api-key".to_string()],
+        )]);
+        shared.endpoints.opw_intake = AltMetricsIntake {
+            enabled: true,
+            url: "https://opw.example.com".to_string(),
+            use_v3_series: true,
+        };
+
+        let config = metrics_config_from(&shared).with_metrics_endpoint_override("https://mrf.example.com".to_string());
+
+        assert_eq!("https://mrf.example.com", config.primary_endpoint);
+        assert!(config.additional_endpoints.is_empty());
+        assert_eq!(None, config.opw_metrics.selected_endpoint().map(|opw| opw.url));
+    }
+
+    #[test]
     fn v2_series_only_override_keeps_v2_and_disables_shadowing() {
-        let config = v3_series_config(
-            r#"
-use_v3_api:
-  series:
-    enabled: "true"
-serializer_experimental_use_v3_api:
-  series:
-    shadow_sample_rate: 1.0
-"#,
-        )
-        .with_v2_series_only();
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
+        shared.metrics_encoding.v3_api.series.shadow_sample_rate = 1.0;
+        let config = metrics_config_from(&shared).with_v2_series_only();
 
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
         assert!(config.use_v3_api.series.endpoints.is_empty());
@@ -2541,13 +2386,20 @@ serializer_experimental_use_v3_api:
 
     #[test]
     fn agent_default_v3_does_not_enable_opw_only_encoder_mode() {
-        let series_config = UseV3ApiSeriesConfig::default();
-        // An OPW override whose URL cannot resolve falls through to the Vector override.
-        let opw_metrics: OpwMetricsConfiguration = serde_json::from_value(serde_json::json!({
-            "observability_pipelines_worker": { "metrics": { "enabled": true, "url": "http://[::1" } },
-            "vector": { "metrics": { "enabled": true, "url": "http://vector.example.com" } },
-        }))
-        .expect("OPW metrics configuration should deserialize");
+        let series_config = agent_series_config();
+        // An alternate intake whose URL cannot resolve does not fall through to the Vector intake.
+        let mut shared = shared_configuration();
+        shared.endpoints.opw_intake = AltMetricsIntake {
+            enabled: true,
+            url: "http://[::1".to_string(),
+            use_v3_series: false,
+        };
+        shared.endpoints.vector_intake = AltMetricsIntake {
+            enabled: true,
+            url: "http://vector.example.com".to_string(),
+            use_v3_series: false,
+        };
+        let opw_metrics = OpwMetricsConfiguration::from_configuration(&shared.endpoints);
         let invalid_metrics_primary_override = selected_metrics_primary_v3_override(&opw_metrics);
 
         assert!(!series_v3_can_be_enabled_for_config(
@@ -3921,96 +3773,29 @@ serializer_experimental_use_v3_api:
 }
 
 #[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DatadogMetricsConfiguration;
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(
-            structs::DATADOG_METRICS_CONFIGURATION,
-            &[
-                "serializer_experimental_use_v3_api.sketches.beta_route",
-                "serializer_experimental_use_v3_api.sketches.shadow_sample_rate",
-                "serializer_experimental_use_v3_api.sketches.shadow_sites",
-                "serializer_experimental_use_v3_api.sketches.use_beta",
-            ],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<DatadogMetricsConfiguration>()
-                    .expect("DatadogMetricsConfiguration should deserialize")
-            },
-        )
-        .await
-    }
-}
-
-#[cfg(test)]
-mod use_v2_api_series_default {
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
-
+mod payload_limits {
     use super::{v2, DatadogMetricsConfiguration};
-    use crate::common::datadog::clamp_payload_limits;
+    use crate::common::datadog::{clamp_payload_limits, test_util::shared_configuration};
 
-    /// `use_v2_api_series` defaults to `true`, preserving V2 protobuf behavior when the flag is absent.
-    #[tokio::test]
-    async fn defaults_to_true_when_absent() {
-        let cfg = ConfigurationLoader::default()
-            .add_providers([figment::providers::Serialized::defaults(json!({}))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-        assert!(parsed.use_v2_api.series);
-    }
+    #[test]
+    fn payload_limits_come_from_resolved_configuration() {
+        let mut shared = shared_configuration();
+        shared.metrics_encoding.max_payload_size = 4321;
+        shared.metrics_encoding.max_uncompressed_payload_size = 8765;
+        shared.metrics_encoding.max_series_payload_size = 1234;
+        shared.metrics_encoding.max_series_uncompressed_payload_size = 5678;
+        shared.metrics_encoding.max_series_points_per_payload = 500;
+        shared.metrics_encoding.max_metrics_per_payload = 42;
 
-    #[tokio::test]
-    async fn deserializes_payload_limit_keys() {
-        let cfg = ConfigurationLoader::default()
-            .add_providers([figment::providers::Serialized::defaults(json!({
-                "serializer_max_payload_size": 4321,
-                "serializer_max_uncompressed_payload_size": 8765,
-                "serializer_max_series_payload_size": 1234,
-                "serializer_max_series_uncompressed_payload_size": 5678,
-            }))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
+        let config = DatadogMetricsConfiguration::from_configuration(&shared);
 
-        assert_eq!(parsed.max_payload_size, 4321);
-        assert_eq!(parsed.max_uncompressed_payload_size, 8765);
-        assert_eq!(parsed.max_series_payload_size, 1234);
-        assert_eq!(parsed.max_series_uncompressed_payload_size, 5678);
-    }
-
-    #[tokio::test]
-    async fn deserializes_max_series_points_per_payload() {
-        // Default should be 10,000.
-        let cfg = ConfigurationLoader::default()
-            .add_providers([figment::providers::Serialized::defaults(json!({}))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-        assert_eq!(parsed.max_series_points_per_payload, 10_000);
-        assert_eq!(parsed.v3_payload_limits().max_points_per_payload, 10_000);
-
-        // Explicit value should round-trip.
-        let cfg = ConfigurationLoader::default()
-            .add_providers([figment::providers::Serialized::defaults(json!({
-                "serializer_max_series_points_per_payload": 500,
-            }))])
-            .into_generic()
-            .await
-            .expect("config should load");
-        let parsed: DatadogMetricsConfiguration = cfg.as_typed().expect("should deserialize");
-        assert_eq!(parsed.max_series_points_per_payload, 500);
-        assert_eq!(parsed.v3_payload_limits().max_points_per_payload, 500);
+        assert_eq!(4321, config.max_payload_size);
+        assert_eq!(8765, config.max_uncompressed_payload_size);
+        assert_eq!(1234, config.max_series_payload_size);
+        assert_eq!(5678, config.max_series_uncompressed_payload_size);
+        assert_eq!(500, config.max_series_points_per_payload);
+        assert_eq!(500, config.v3_payload_limits().max_points_per_payload);
+        assert_eq!(42, config.max_metrics_per_payload);
     }
 
     #[test]

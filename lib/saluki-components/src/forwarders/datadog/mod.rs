@@ -1,4 +1,4 @@
-use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
+use agent_data_plane_config::shared::SharedConfiguration;
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
@@ -17,6 +17,7 @@ use tracing::debug;
 
 use crate::common::datadog::{
     config::ForwarderConfiguration,
+    endpoints::SingleDestination,
     io::TransactionForwarder,
     protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
@@ -37,52 +38,41 @@ pub struct DatadogForwarderConfiguration {
     /// See [`ForwarderConfiguration`] for more information about the available settings.
     forwarder_config: ForwarderConfiguration,
 
-    configuration: Option<GenericConfiguration>,
+    /// Live configuration, from which endpoints refresh their API keys.
+    configuration: GenericConfiguration,
 }
 
 impl DatadogForwarderConfiguration {
-    /// Creates a new `DatadogForwarderConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        let forwarder_config = ForwarderConfiguration::from_configuration(config)?;
-        Ok(Self {
-            forwarder_config,
-            configuration: Some(config.clone()),
-        })
-    }
-
-    /// Creates a forwarder using authoritative typed metrics-routing configuration.
-    pub fn from_configuration_with_metrics_routing(
-        config: &GenericConfiguration, metrics: &MetricsEncoding, endpoints: &Endpoints,
-    ) -> Result<Self, GenericError> {
-        let mut config = Self::from_configuration(config)?;
-        config
-            .forwarder_config
-            .apply_typed_metrics_configuration(metrics, endpoints);
-        Ok(config)
-    }
-
-    /// Overrides the default endpoint and refreshes its API key from the given config path.
+    /// Creates a new `DatadogForwarderConfiguration` from the resolved shared configuration.
     ///
-    /// This is for override endpoints whose API key does not refresh from the top-level `api_key`
-    /// config path, such as Multi-Region Failover.
-    pub fn with_endpoint_override_and_api_key_refresh_config_path(
-        mut self, dd_url: String, api_key: String, api_key_refresh_config_path: &'static str,
-    ) -> Self {
-        self.apply_endpoint_override(dd_url, api_key, api_key_refresh_config_path);
-
-        self
+    /// `config` is retained so that endpoints can refresh their API keys as configuration changes.
+    pub fn from_configuration(shared: &SharedConfiguration, config: &GenericConfiguration) -> Self {
+        Self {
+            forwarder_config: ForwarderConfiguration::from_configuration(shared, config),
+            configuration: config.clone(),
+        }
     }
 
-    fn apply_endpoint_override(&mut self, dd_url: String, api_key: String, api_key_refresh_config_path: &'static str) {
-        // Clear any existing additional endpoints, and set the new DD URL and API key.
-        //
-        // This ensures that the only endpoint we'll send to is this one.
-        let endpoint = self.forwarder_config.endpoint_mut();
-        endpoint.clear_additional_endpoints();
-        endpoint.set_dd_url(dd_url);
-        endpoint.set_api_key(api_key);
-        endpoint.set_api_key_refresh_config_path(api_key_refresh_config_path);
-        self.forwarder_config.clear_opw_metrics_endpoint();
+    /// Creates a new `DatadogForwarderConfiguration` that forwards to a single endpoint override.
+    ///
+    /// The override replaces the configured endpoints entirely, and its API key refreshes from
+    /// `api_key_refresh_config_path` rather than the primary `api_key`, as Multi-Region Failover
+    /// requires.
+    pub fn for_endpoint_override(
+        shared: &SharedConfiguration, config: &GenericConfiguration, dd_url: String, api_key: String,
+        api_key_refresh_config_path: &'static str,
+    ) -> Self {
+        let destination = SingleDestination {
+            url: dd_url,
+            api_key,
+            api_key_refresh_config_path: Some(api_key_refresh_config_path),
+            accepts_v3_series: true,
+        };
+
+        Self {
+            forwarder_config: ForwarderConfiguration::for_single_destination(shared, config, &destination),
+            configuration: config.clone(),
+        }
     }
 }
 
@@ -98,7 +88,7 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
         let forwarder = TransactionForwarder::from_config(
             context,
             self.forwarder_config.clone(),
-            self.configuration.clone(),
+            Some(self.configuration.clone()),
             get_dd_endpoint_name,
             telemetry.clone(),
             metrics_builder,
@@ -220,6 +210,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::common::datadog::test_util::shared_configuration;
 
     #[test]
     fn dd_endpoint_names_map_from_request_path() {
@@ -290,17 +281,17 @@ mod tests {
             .expect("initial dynamic snapshot should be sent");
         generic_config.ready().await;
 
-        let config = DatadogForwarderConfiguration::from_configuration(&generic_config)
-            .expect("DatadogForwarderConfiguration should parse")
-            .with_endpoint_override_and_api_key_refresh_config_path(
-                "http://mrf.example.test".to_string(),
-                "mrf-api-key".to_string(),
-                "multi_region_failover.api_key",
-            );
+        let config = DatadogForwarderConfiguration::for_endpoint_override(
+            &shared_configuration(),
+            &generic_config,
+            "http://mrf.example.test".to_string(),
+            "mrf-api-key".to_string(),
+            "multi_region_failover.api_key",
+        );
 
         let mut endpoints = config
             .forwarder_config
-            .build_routable_endpoints(config.configuration.clone())
+            .build_routable_endpoints(Some(config.configuration.clone()))
             .expect("endpoint should resolve");
 
         assert_eq!(endpoints.len(), 1);

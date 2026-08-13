@@ -36,10 +36,6 @@ pub use classifier::{Classification, ConfigClassifier};
 ///
 /// Used as values in annotation `used_by` fields to declare which consumers incorporate a key.
 pub mod structs {
-    /// Identifier for `ProxyConfiguration`.
-    pub const PROXY_CONFIGURATION: &str = "ProxyConfiguration";
-    /// Identifier for `ForwarderConfiguration`.
-    pub const FORWARDER_CONFIGURATION: &str = "ForwarderConfiguration";
     /// Identifier for `DogStatsDConfiguration`.
     pub const DOGSTATSD_CONFIGURATION: &str = "DogStatsDConfiguration";
     /// Identifier for `ContainerdConfiguration`.
@@ -52,16 +48,12 @@ pub mod structs {
     pub const DOGSTATSD_DEBUG_LOG_CONFIGURATION: &str = "DogStatsDDebugLogConfiguration";
     /// Identifier for `DogStatsDPrefixFilterConfiguration`.
     pub const DOGSTATSD_PREFIX_FILTER_CONFIGURATION: &str = "DogStatsDPrefixFilterConfiguration";
-    /// Identifier for `DatadogMetricsConfiguration`.
-    pub const DATADOG_METRICS_CONFIGURATION: &str = "DatadogMetricsConfiguration";
     /// Identifier for `DatadogLogsConfiguration`.
     pub const DATADOG_LOGS_CONFIGURATION: &str = "DatadogLogsConfiguration";
     /// Identifier for `DatadogEventsConfiguration`.
     pub const DATADOG_EVENTS_CONFIGURATION: &str = "DatadogEventsConfiguration";
     /// Identifier for `DatadogServiceChecksConfiguration`.
     pub const DATADOG_SERVICE_CHECKS_CONFIGURATION: &str = "DatadogServiceChecksConfiguration";
-    /// Identifier for `MrfConfiguration`.
-    pub const MRF_CONFIGURATION: &str = "MrfConfiguration";
     /// Identifier for `RemoteAgentClientConfiguration`.
     pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
     /// Identifier for `TagFilterlistConfiguration`.

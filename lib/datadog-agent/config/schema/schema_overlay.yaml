@@ -50,7 +50,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [get_typed, TypedConfigSystem]
       test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -183,7 +183,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Relax backend tag validation via HTTP header"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_ALLOW_ARBITRARY_TAGS]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -193,7 +193,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "API key for endpoint auth"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [get_typed, TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -735,7 +735,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Override intake endpoint URL"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1423,7 +1423,7 @@ inventory:
       restart.
     issue: "#1357"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1433,7 +1433,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Retry backoff base (secs)"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1442,7 +1442,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Retry backoff jitter factor"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1451,7 +1451,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Retry backoff ceiling (secs)"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1460,7 +1460,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "HTTP conn reset interval (secs)"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1470,7 +1470,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Mem-to-disk flush ratio"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1483,7 +1483,7 @@ inventory:
       value sizes ADP's per-endpoint high-priority pending queue.
     issue: "#1362"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1494,7 +1494,7 @@ inventory:
     description: "HTTP version selection (auto/http1/http2)"
     issue: "#1361"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"http1"'
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1519,7 +1519,7 @@ inventory:
     description: "Max concurrent HTTP requests"
     issue: "#1363"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1535,7 +1535,7 @@ inventory:
     warn: true
     issue: "#1363"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1546,7 +1546,7 @@ inventory:
     description: "Days before retry files are deleted"
     issue: "#1360"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1556,7 +1556,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Backoff recovery decrease factor"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1566,7 +1566,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Reset errors on success"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1591,7 +1591,7 @@ inventory:
     description: "Retry queue time-based capacity"
     issue: "#1365"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1601,7 +1601,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Retry queue max size (deprecated)"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1611,7 +1611,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Retry queue max size (bytes)"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1641,7 +1641,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Max disk usage ratio for retry"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1650,7 +1650,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Max on-disk retry storage size"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1660,7 +1660,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "On-disk retry storage directory"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -1669,7 +1669,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Forwarder HTTP request timeout"
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1800,7 +1800,7 @@ inventory:
       ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not
       log compressed wire payload bytes.
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration]
+      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -1870,7 +1870,7 @@ inventory:
       This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
       OTLP proxying to the core agent, or unrelated HTTP clients.
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_MIN_TLS_VERSION]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1880,7 +1880,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "API key for the failover-region endpoint"
     test_support:
-      used_by: [MrfConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_MULTI_REGION_FAILOVER_API_KEY]
       value_type_override: string
       additional_attributes:
@@ -1891,7 +1891,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Failover intake URL"
     test_support:
-      used_by: [MrfConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_MULTI_REGION_FAILOVER_DD_URL]
       value_type_override: string
       additional_attributes:
@@ -1926,7 +1926,7 @@ inventory:
       | `multi_region_failover.site`             | Datadog site for the failover region, used as `https://app.mrf.<site>`.    | unset   |
       | `multi_region_failover.dd_url`           | Explicit failover intake URL. Takes precedence over `site` when set.       | unset   |
     test_support:
-      used_by: [MrfConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_MULTI_REGION_FAILOVER_ENABLED]
       additional_attributes:
         config_registry_filename: mrf.rs
@@ -1936,7 +1936,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Enable metrics forwarding to failover region"
     test_support:
-      used_by: [MrfConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_MULTI_REGION_FAILOVER_FAILOVER_METRICS]
       additional_attributes:
         config_registry_filename: mrf.rs
@@ -1946,7 +1946,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Metric name allowlist for MRF forwarding"
     test_support:
-      used_by: [MrfConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_MULTI_REGION_FAILOVER_METRIC_ALLOWLIST]
       value_type_override: string_list
       additional_attributes:
@@ -1957,7 +1957,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Datadog site for the failover region"
     test_support:
-      used_by: [MrfConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_MULTI_REGION_FAILOVER_SITE]
       value_type_override: string
       additional_attributes:
@@ -1968,7 +1968,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Domain/CIDR `no_proxy` matching"
     test_support:
-      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_NO_PROXY_NONEXACT_MATCH]
       additional_attributes:
         config_registry_filename: proxy.rs
@@ -1978,7 +1978,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Route metrics to OPW instance"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_ENABLED]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1988,7 +1988,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "OPW metrics intake URL"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_URL]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -1998,7 +1998,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use V3 series for OPW"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_OBSERVABILITY_PIPELINES_WORKER_METRICS_USE_V3_API_SERIES]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -2234,7 +2234,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "HTTP proxy URL"
     test_support:
-      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_PROXY_HTTP, HTTP_PROXY]
       additional_attributes:
         config_registry_filename: proxy.rs
@@ -2244,7 +2244,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "HTTPS proxy URL"
     test_support:
-      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_PROXY_HTTPS, HTTPS_PROXY]
       additional_attributes:
         config_registry_filename: proxy.rs
@@ -2254,7 +2254,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Hosts bypassing proxy"
     test_support:
-      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_PROXY_NO_PROXY]
       additional_attributes:
         config_registry_filename: proxy.rs
@@ -2268,10 +2268,8 @@ inventory:
         [
           DatadogEventsConfiguration,
           DatadogLogsConfiguration,
-          DatadogMetricsConfiguration,
           DatadogServiceChecksConfiguration,
           TypedConfigSystem,
-          ForwarderConfiguration,
         ]
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2281,7 +2279,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "V3 API zstd compression level"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2290,7 +2288,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Beta V3 series API route"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2299,7 +2297,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Endpoints enabled for V3 series API"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2308,7 +2306,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "V3 series shadow mode sample rate"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2317,7 +2315,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "V3 series shadow mode enabled sites"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2326,7 +2324,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use the beta V3 series API route"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2335,7 +2333,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Dual-send v2+v3 series for validation"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2344,7 +2342,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Endpoints enabling v3 sketches API"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2353,7 +2351,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Dual-send v2+v3 sketches for validation"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2362,7 +2360,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max compressed payload size (generic)"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration]
+      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2372,7 +2370,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max compressed V2 series payload size"
     test_support:
-      used_by: [DatadogMetricsConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2382,7 +2380,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max data points per series payload"
     test_support:
-      used_by: [DatadogMetricsConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2392,7 +2390,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed V2 series payload size"
     test_support:
-      used_by: [DatadogMetricsConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2402,7 +2400,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed payload size (generic)"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogMetricsConfiguration, DatadogServiceChecksConfiguration]
+      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2420,7 +2418,6 @@ inventory:
         [
           DatadogEventsConfiguration,
           DatadogLogsConfiguration,
-          DatadogMetricsConfiguration,
           DatadogServiceChecksConfiguration,
           TypedConfigSystem,
         ]
@@ -2433,7 +2430,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Datadog site domain"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 
@@ -2450,7 +2447,7 @@ inventory:
       This setting does not affect ADP IPC, local privileged APIs, ADP control-plane clients,
       OTLP proxying to the core agent, or unrelated HTTP clients.
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_SKIP_SSL_VALIDATION]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -2465,7 +2462,7 @@ inventory:
       on Unix. If the file cannot be opened, ADP logs a single warning and continues without TLS
       key logging. Protect the generated file as sensitive data.
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_SSLKEYLOGFILE]
       test_json: '"/tmp/saluki-sslkeylogfile"'
       additional_attributes:
@@ -2600,7 +2597,7 @@ inventory:
       delegating the handshake to an opaque connect-and-handshake future, so it can time out the handshake without
       also aborting an in-progress TCP connect.
     test_support:
-      used_by: [ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
     issue: "#178"
@@ -2618,7 +2615,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Proxy cloud metadata endpoints"
     test_support:
-      used_by: [ForwarderConfiguration, ProxyConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_USE_PROXY_FOR_CLOUD_METADATA]
       additional_attributes:
         config_registry_filename: proxy.rs
@@ -2628,7 +2625,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Send series via V2 protobuf endpoint"
     test_support:
-      used_by: [DatadogMetricsConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2637,7 +2634,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Global V3 series mode"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_USE_V3_API_SERIES_ENABLED]
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2647,7 +2644,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Per-endpoint V3 series modes"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_USE_V3_API_SERIES_ENDPOINTS]
       test_json: '"{\"http://datadog.example.com\":\"false\"}"'
       additional_attributes:
@@ -2658,7 +2655,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Route metrics to OPW (legacy alias)"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_VECTOR_METRICS_ENABLED]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -2668,7 +2665,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "OPW metrics intake URL (legacy alias)"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_VECTOR_METRICS_URL]
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -2678,7 +2675,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Use V3 series for Vector"
     test_support:
-      used_by: [DatadogMetricsConfiguration, ForwarderConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_VECTOR_METRICS_USE_V3_API_SERIES]
       additional_attributes:
         config_registry_filename: forwarder.rs

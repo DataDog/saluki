@@ -359,11 +359,16 @@ fn validation_base_url(endpoint: &Url) -> Url {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
 
+    use agent_data_plane_config::{
+        shared::{AltMetricsIntake, SharedConfiguration},
+        ConfigValue,
+    };
     use axum::{routing::get, Router};
     use saluki_config::{
         dynamic::{ConfigSetting, ConfigUpdate},
@@ -374,7 +379,17 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
-    use crate::common::datadog::{config::ForwarderConfiguration, endpoints::ResolvedEndpoint};
+    use crate::common::datadog::{
+        config::ForwarderConfiguration, endpoints::ResolvedEndpoint, test_util::shared_configuration,
+    };
+
+    /// Returns shared configuration whose primary endpoint is `dd_url`, with `primary-key` as its API key.
+    fn shared_configuration_for(dd_url: &str) -> SharedConfiguration {
+        let mut shared = shared_configuration();
+        shared.endpoints.api_key = "primary-key".to_string();
+        shared.endpoints.dd_url = ConfigValue::explicit(dd_url.to_string());
+        shared
+    }
 
     fn validation_url_for(raw_endpoint: &str) -> String {
         let endpoint = ResolvedEndpoint::from_raw_endpoint(raw_endpoint, "api-key").expect("endpoint should resolve");
@@ -470,22 +485,22 @@ mod tests {
 
     #[tokio::test]
     async fn validation_targets_include_primary_additional_and_opw() {
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({
-                "api_key": "primary-key",
-                "dd_url": "http://primary.example.com",
-                "additional_endpoints": {
-                    "http://additional.example.com": ["additional-key", "additional-key", ""]
-                },
-                "observability_pipelines_worker": {
-                    "metrics": { "enabled": true, "url": "http://opw.example.com" }
-                }
-            })),
-            None,
-            false,
-        )
-        .await;
-        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
+        let mut shared = shared_configuration_for("http://primary.example.com");
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "http://additional.example.com".to_string(),
+            vec![
+                "additional-key".to_string(),
+                "additional-key".to_string(),
+                String::new(),
+            ],
+        )]);
+        shared.endpoints.opw_intake = AltMetricsIntake {
+            enabled: true,
+            url: "http://opw.example.com".to_string(),
+            use_v3_series: false,
+        };
+        let forwarder_config = ForwarderConfiguration::from_configuration(&shared, &config);
         let mut endpoints = forwarder_config
             .build_routable_endpoints(Some(config))
             .expect("endpoints should resolve");
@@ -527,7 +542,12 @@ mod tests {
             .expect("initial snapshot should send");
         config.ready().await;
 
-        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let mut shared = shared_configuration_for("http://primary.example.com");
+        shared.endpoints.additional_endpoints = HashMap::from([(
+            "http://additional.example.com".to_string(),
+            vec!["old-additional-key".to_string()],
+        )]);
+        let forwarder_config = ForwarderConfiguration::from_configuration(&shared, &config);
         let mut endpoints = forwarder_config
             .build_routable_endpoints(Some(config.clone()))
             .expect("endpoints should resolve");
@@ -605,13 +625,9 @@ mod tests {
 
         // A validation server that rejects the key with a 403, so validation concludes it is invalid.
         let invalid_url = start_validation_server(StatusCode::FORBIDDEN).await;
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({ "api_key": "primary-key", "dd_url": invalid_url })),
-            None,
-            false,
-        )
-        .await;
-        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
+        let forwarder_config =
+            ForwarderConfiguration::from_configuration(&shared_configuration_for(&invalid_url), &config);
         let mut endpoints = forwarder_config
             .build_routable_endpoints(Some(config))
             .expect("endpoints should resolve");
@@ -646,13 +662,9 @@ mod tests {
 
         // A validation server that accepts the key, so validation concludes it is valid.
         let valid_url = start_validation_server(StatusCode::OK).await;
-        let (config, _) = ConfigurationLoader::for_tests(
-            Some(json!({ "api_key": "primary-key", "dd_url": valid_url })),
-            None,
-            false,
-        )
-        .await;
-        let forwarder_config = ForwarderConfiguration::from_configuration(&config).expect("config should parse");
+        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
+        let forwarder_config =
+            ForwarderConfiguration::from_configuration(&shared_configuration_for(&valid_url), &config);
         let mut endpoints = forwarder_config
             .build_routable_endpoints(Some(config))
             .expect("endpoints should resolve");

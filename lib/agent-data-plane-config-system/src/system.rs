@@ -52,6 +52,14 @@ pub enum Error {
         /// Every translation error recorded.
         source: TranslateErrors,
     },
+
+    /// The fully merged configuration resolved no usable Datadog API key.
+    #[snafu(display(
+        "no Datadog API key is configured: set `api_key` in the Datadog Agent's configuration, or \
+         `DD_API_KEY` in the environment. Every payload is authenticated with this key, so nothing can \
+         be submitted without one"
+    ))]
+    MissingApiKey,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -105,7 +113,7 @@ impl ConfigurationSystem {
         // fails the boot and we never run on bad config. At runtime (see `agent_loop`) the same
         // check instead rejects the offending update and keeps the last-known-good configuration,
         // because a runtime update must never take the system down.
-        let config = translate_strict(&base.overlay(&agent))?;
+        let config = translate_authoritative(&base.overlay(&agent))?;
 
         let current = Arc::new(ArcSwap::from_pointee(config));
         // The initial receiver is dropped immediately; `send_replace` works with zero receivers, and
@@ -186,7 +194,7 @@ async fn agent_loop(
         // value never lingers to re-poison a later merge.
         let mut tentative = agent.clone();
         fold(&mut tentative, &update);
-        match translate_strict(&base.overlay(&tentative)) {
+        match translate_authoritative(&base.overlay(&tentative)) {
             Ok(config) => {
                 agent = tentative;
                 current.store(Arc::new(config));
@@ -240,6 +248,49 @@ pub(crate) fn translate_strict(merged: &SourceTree) -> Result<SalukiConfiguratio
         return Err(Error::Translate { source: errors });
     }
     Ok(config)
+}
+
+/// Translates merged sources that are authoritative for the running process, rejecting a
+/// configuration ADP cannot run on.
+///
+/// This is [`translate_strict`] plus [`validate`]. Use it where the merged sources are complete: the
+/// Datadog Agent's snapshot layered over the local base, or the local base alone in standalone mode.
+///
+/// # Errors
+///
+/// Returns an error if translation fails, or if the translated configuration fails validation.
+pub(crate) fn translate_authoritative(merged: &SourceTree) -> Result<SalukiConfiguration> {
+    let config = translate_strict(merged)?;
+    validate(&config)?;
+    Ok(config)
+}
+
+/// Checks the invariants a configuration must satisfy for this process to do useful work.
+///
+/// Translation alone cannot make these checks. It converts one key at a time and every schema key
+/// has a default, so a setting the operator never supplied is indistinguishable from one they did
+/// until the whole merged configuration is in hand.
+///
+/// Apply this only to an authoritative configuration. The local snapshot
+/// [`LoadedConfiguration::load`][crate::LoadedConfiguration::load] produces is incomplete by design:
+/// under the Datadog Agent the API key arrives over the configuration stream, so a local-only
+/// snapshot legitimately has none, and CLI subcommands read that snapshot without ever submitting a
+/// payload.
+///
+/// # Errors
+///
+/// Returns [`Error::MissingApiKey`] if no usable API key resolved. Every payload ADP submits is
+/// authenticated with this key, so an empty one turns each flush into a rejected request that the
+/// forwarder then retries. Failing here names the cause once instead of leaving an operator to infer
+/// it from a stream of authentication failures.
+pub(crate) fn validate(config: &SalukiConfiguration) -> Result<()> {
+    // A blank key is as unusable as an absent one, and a padded key is a typo we should name rather
+    // than send.
+    if config.shared.endpoints.api_key.trim().is_empty() {
+        return Err(Error::MissingApiKey);
+    }
+
+    Ok(())
 }
 
 // TODO: A map/array-valued schema leaf is replaced wholesale when any source (file, environment, or
@@ -298,9 +349,21 @@ mod tests {
     use serde_json::{json, Value};
     use tokio::sync::mpsc;
 
-    use super::{translate, translate_strict, ConfigurationSystem, Error, SalukiOnly, SourceTree};
+    use super::{
+        translate, translate_authoritative, translate_strict, ConfigurationSystem, Error, SalukiOnly, SourceTree,
+    };
+
+    /// API key the connected-system fixture puts in the local base.
+    ///
+    /// An authoritative configuration must resolve one (see [`super::validate`]), and putting it in
+    /// the base rather than in a streamed snapshot keeps it in place across the snapshot replacements
+    /// these tests exercise.
+    const TEST_API_KEY: &str = "test-api-key";
 
     /// Builds a standalone system whose authority is the local sources (`file` + `env`).
+    ///
+    /// Translates without validating so a test can state only the setting it is exercising. The
+    /// production standalone path validates; `loaded.rs` covers that.
     async fn standalone_system(
         file: Option<Value>, env: Option<&[(String, String)]>,
     ) -> Result<ConfigurationSystem, Error> {
@@ -313,11 +376,17 @@ mod tests {
     /// Builds a connected system whose base is `base` and whose authority is the returned Agent
     /// stream. The initial (empty) snapshot is queued before the system blocks on it, so the caller
     /// gets back a stream ready for `Partial`/`Snapshot` updates.
-    async fn connected_system(base: Value) -> (ConfigurationSystem, mpsc::Sender<ConfigUpdate>) {
+    ///
+    /// `base` is given an [`api_key`][TEST_API_KEY] unless it states its own, so a caller varying
+    /// some unrelated setting need not restate what validation requires.
+    async fn connected_system(mut base: Value) -> (ConfigurationSystem, mpsc::Sender<ConfigUpdate>) {
         let (agent_tx, agent_rx) = mpsc::channel(100);
         let (compat_map, compat_tx) = ConfigurationLoader::for_tests(None, None, true).await;
         let compat_tx = compat_tx.expect("dynamic sender exists");
         agent_tx.send(ConfigUpdate::snapshot([])).await.unwrap();
+        if let Some(base) = base.as_object_mut() {
+            base.entry("api_key").or_insert(json!(TEST_API_KEY));
+        }
         let base = SourceTree::all_explicit(base);
         let system = ConfigurationSystem::connected(agent_rx, compat_tx, compat_map, base)
             .await
@@ -345,6 +414,21 @@ mod tests {
 
         assert_eq!(config.control.logging.level, "warn");
         assert_eq!(config.domains.dogstatsd.listeners.port, 9125);
+    }
+
+    #[test]
+    fn boolean_use_v3_api_series_enabled_is_normalized() {
+        let sources = SourceTree::all_explicit(json!({
+            "use_v3_api": {
+                "series": {
+                    "enabled": true
+                }
+            }
+        }));
+
+        let config = translate_strict(&sources).expect("a boolean V3 series mode should translate");
+
+        assert_eq!(config.shared.metrics_encoding.v3_series_mode, V3SeriesMode::Enabled);
     }
 
     #[tokio::test]
@@ -544,6 +628,70 @@ mod tests {
             .expect("numeric byte size boots");
 
         assert_eq!(system.config().domains.dogstatsd.debug_log.log_file_max_size, 10485760);
+    }
+
+    #[test]
+    fn a_configuration_without_an_api_key_is_rejected() {
+        // Nothing ADP submits is accepted without a key, so the authoritative gate names the cause
+        // rather than letting every flush fail authentication. Translation alone accepts this: the
+        // schema default for `api_key` is the empty string, so nothing is missing to translate.
+        let sources = SourceTree::all_explicit(json!({}));
+        translate_strict(&sources).expect("an absent API key still translates");
+
+        let error = translate_authoritative(&sources).expect_err("an absent API key should fail the gate");
+
+        assert!(matches!(error, Error::MissingApiKey));
+        assert!(error.to_string().contains("api_key"));
+    }
+
+    #[test]
+    fn a_blank_api_key_is_rejected() {
+        // An explicitly blank key is as unusable as an absent one, and whitespace is a typo worth
+        // reporting rather than submitting.
+        for key in ["", "   ", "\t\n"] {
+            let sources = SourceTree::all_explicit(json!({ "api_key": key }));
+
+            assert!(
+                matches!(translate_authoritative(&sources), Err(Error::MissingApiKey)),
+                "{key:?} should not count as an API key"
+            );
+        }
+
+        let sources = SourceTree::all_explicit(json!({ "api_key": TEST_API_KEY }));
+        assert_eq!(
+            TEST_API_KEY,
+            translate_authoritative(&sources)
+                .expect("a real key passes the gate")
+                .shared
+                .endpoints
+                .api_key
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_that_blanks_the_api_key_is_rejected_keeping_last_known_good() {
+        // Validation covers runtime updates too: an update that leaves the process unable to submit
+        // anything is rejected like any other invalid one, and the working key stays in place.
+        let (system, agent_tx) = connected_system(json!({ "log_level": "warn" })).await;
+        assert_eq!(TEST_API_KEY, system.config().shared.endpoints.api_key);
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit("api_key", json!(""))))
+            .await
+            .unwrap();
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )))
+            .await
+            .unwrap();
+
+        await_config(&system, "the later valid update to take effect", |c| {
+            c.control.logging.level == "error"
+        })
+        .await;
+        assert_eq!(TEST_API_KEY, system.config().shared.endpoints.api_key);
     }
 
     #[tokio::test]
