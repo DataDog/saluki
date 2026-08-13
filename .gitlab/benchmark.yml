@@ -1,6 +1,6 @@
 .setup-smp-env: &setup-smp-env
   - export AWS_NAMED_PROFILE=single-machine-performance
-  - export SMP_VERSION=0.27.0
+  - export SMP_VERSION=dev-pr4693-16df80e63
   - export RUST_LOG=info,aws_config::profile::credentials=error
   - export SMP_ACCOUNT_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-account-id --with-decryption --query "Parameter.Value" --out text)
   - export SMP_TEAM_ID=$(aws ssm get-parameter --region us-east-1 --name ci.saluki.smp-team-id --with-decryption --query "Parameter.Value" --out text)
@@ -176,7 +176,7 @@ run-benchmarks-adp:
     - mkdir outputs && touch outputs/report.md outputs/report.html
     - ./ci/tooling/configure-smp-aws-credentials.sh
     # Download the SMP binary.
-    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     # Trigger the SMP job run.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
       job submit
@@ -232,6 +232,7 @@ report-benchmarks-adp:
     - python3 ./ci/tooling/build-smp-report.py
       --report-json outputs/report.json
       --output-report outputs/condensed-report.md
+      --smp-binary ./smp
     - cat outputs/condensed-report.md | /usr/local/bin/pr-commenter --for-pr="$CI_COMMIT_REF_NAME" --header="Regression Detector (Agent Data Plane)"
 
 run-benchmarks-adp-full:
@@ -267,7 +268,7 @@ run-benchmarks-adp-full:
     - mkdir outputs && touch outputs/report.md outputs/report.html
     - ./ci/tooling/configure-smp-aws-credentials.sh
     # Download the SMP binary.
-    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/v${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
+    - aws --profile ${AWS_NAMED_PROFILE} s3 cp s3://smp-cli-releases/${SMP_VERSION}/x86_64-unknown-linux-musl/smp smp && chmod +x smp
     - echo "Running full suite -- baseline ${BASELINE_ADP_SHA}, comparison ${COMPARISON_ADP_SHA}."
     # Trigger the SMP job run against the full suite.
     - ./smp --team-id ${SMP_TEAM_ID} --aws-named-profile ${AWS_NAMED_PROFILE}
@@ -298,6 +299,7 @@ run-benchmarks-adp-full:
     - python3 ./ci/tooling/build-smp-report.py
       --report-json outputs/report.json
       --output-report outputs/condensed-report.md
+      --smp-binary ./smp
     - |
       if [ "$CI_PIPELINE_SOURCE" = "schedule" ]; then
         ./ci/tooling/report-smp-to-slack.sh outputs/condensed-report.md
