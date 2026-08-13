@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["drive"],"mod":["classifier","env_decode","env_provider","env_reader"],"struct":["DatadogConfiguration","TranslateError","TranslateErrors"],"trait":["DatadogConfigWitness"]};
+window.SIDEBAR_ITEMS = {"fn":["cast_to_string","drive"],"mod":["classifier","env_decode","env_provider","env_reader"],"struct":["DatadogConfiguration","TranslateError","TranslateErrors"],"trait":["DatadogConfigWitness"]};

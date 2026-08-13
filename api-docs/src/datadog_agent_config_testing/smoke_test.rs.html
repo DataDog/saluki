@@ -313,12 +313,12 @@
 <a href=#313 id=313 data-nosnippet>313</a>
 <a href=#314 id=314 data-nosnippet>314</a>    <span class="attr">#[tokio::test]
 <a href=#315 id=315 data-nosnippet>315</a>    </span><span class="kw">async fn </span>flags_a_supported_key_that_never_changes_the_struct() {
-<a href=#316 id=316 data-nosnippet>316</a>        <span class="comment">// `PROXY_CONFIGURATION` has registered (supported) keys. A factory that ignores the config
+<a href=#316 id=316 data-nosnippet>316</a>        <span class="comment">// `DATADOG_LOGS_CONFIGURATION` has registered (supported) keys. A factory that ignores the config
 <a href=#317 id=317 data-nosnippet>317</a>        // entirely means each supported key "produces the default struct", violating the supported-key
 <a href=#318 id=318 data-nosnippet>318</a>        // guarantee, which the harness must flag.
 <a href=#319 id=319 data-nosnippet>319</a>        </span><span class="kw">let </span>outcome = tokio::spawn(<span class="kw">async </span>{
 <a href=#320 id=320 data-nosnippet>320</a>            run_config_smoke_tests(
-<a href=#321 id=321 data-nosnippet>321</a>                structs::PROXY_CONFIGURATION,
+<a href=#321 id=321 data-nosnippet>321</a>                structs::DATADOG_LOGS_CONFIGURATION,
 <a href=#322 id=322 data-nosnippet>322</a>                <span class="kw-2">&amp;</span>[],
 <a href=#323 id=323 data-nosnippet>323</a>                <span class="macro">json!</span>({}),
 <a href=#324 id=324 data-nosnippet>324</a>                |_cfg: GenericConfiguration| <span class="macro">json!</span>({}),

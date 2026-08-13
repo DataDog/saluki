@@ -10,24 +10,27 @@
 <a href=#10 id=10 data-nosnippet>10</a><span class="doccomment">/// Default timeout before a partially filled encoder payload is flushed.
 <a href=#11 id=11 data-nosnippet>11</a></span><span class="kw">pub const </span>DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(<span class="number">2</span>);
 <a href=#12 id=12 data-nosnippet>12</a>
-<a href=#13 id=13 data-nosnippet>13</a><span class="doccomment">/// Default environment for traces that do not provide one.
-<a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">pub const </span>DEFAULT_TRACE_ENV: <span class="kw-2">&amp;</span>str = <span class="string">"none"</span>;
+<a href=#13 id=13 data-nosnippet>13</a><span class="doccomment">/// Default maximum number of metrics packed into a single encoder payload.
+<a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">pub const </span>DEFAULT_MAX_METRICS_PER_PAYLOAD: usize = <span class="number">10_000</span>;
 <a href=#15 id=15 data-nosnippet>15</a>
-<a href=#16 id=16 data-nosnippet>16</a><span class="doccomment">/// Whether error traces are sampled independently of the base sampler by default.
-<a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">pub const </span>DEFAULT_ERROR_SAMPLING_ENABLED: bool = <span class="bool-val">true</span>;
+<a href=#16 id=16 data-nosnippet>16</a><span class="doccomment">/// Default environment for traces that do not provide one.
+<a href=#17 id=17 data-nosnippet>17</a></span><span class="kw">pub const </span>DEFAULT_TRACE_ENV: <span class="kw-2">&amp;</span>str = <span class="string">"none"</span>;
 <a href=#18 id=18 data-nosnippet>18</a>
-<a href=#19 id=19 data-nosnippet>19</a><span class="doccomment">/// Default rare-sampler traces-per-second budget.
-<a href=#20 id=20 data-nosnippet>20</a></span><span class="kw">pub const </span>DEFAULT_RARE_SAMPLER_TPS: f64 = <span class="number">5.0</span>;
+<a href=#19 id=19 data-nosnippet>19</a><span class="doccomment">/// Whether error traces are sampled independently of the base sampler by default.
+<a href=#20 id=20 data-nosnippet>20</a></span><span class="kw">pub const </span>DEFAULT_ERROR_SAMPLING_ENABLED: bool = <span class="bool-val">true</span>;
 <a href=#21 id=21 data-nosnippet>21</a>
-<a href=#22 id=22 data-nosnippet>22</a><span class="doccomment">/// Default rare-sampler cooldown, in seconds.
-<a href=#23 id=23 data-nosnippet>23</a></span><span class="kw">pub const </span>DEFAULT_RARE_SAMPLER_COOLDOWN_SECS: f64 = <span class="number">300.0</span>;
+<a href=#22 id=22 data-nosnippet>22</a><span class="doccomment">/// Default rare-sampler traces-per-second budget.
+<a href=#23 id=23 data-nosnippet>23</a></span><span class="kw">pub const </span>DEFAULT_RARE_SAMPLER_TPS: f64 = <span class="number">5.0</span>;
 <a href=#24 id=24 data-nosnippet>24</a>
-<a href=#25 id=25 data-nosnippet>25</a><span class="doccomment">/// Default rare-sampler signature cardinality.
-<a href=#26 id=26 data-nosnippet>26</a></span><span class="kw">pub const </span>DEFAULT_RARE_SAMPLER_CARDINALITY: usize = <span class="number">200</span>;
+<a href=#25 id=25 data-nosnippet>25</a><span class="doccomment">/// Default rare-sampler cooldown, in seconds.
+<a href=#26 id=26 data-nosnippet>26</a></span><span class="kw">pub const </span>DEFAULT_RARE_SAMPLER_COOLDOWN_SECS: f64 = <span class="number">300.0</span>;
 <a href=#27 id=27 data-nosnippet>27</a>
-<a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Default OTLP trace string interner capacity: 512 KiB.
-<a href=#29 id=29 data-nosnippet>29</a></span><span class="kw">pub const </span>DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(<span class="number">512 </span>* <span class="number">1024</span>).unwrap();
+<a href=#28 id=28 data-nosnippet>28</a><span class="doccomment">/// Default rare-sampler signature cardinality.
+<a href=#29 id=29 data-nosnippet>29</a></span><span class="kw">pub const </span>DEFAULT_RARE_SAMPLER_CARDINALITY: usize = <span class="number">200</span>;
 <a href=#30 id=30 data-nosnippet>30</a>
-<a href=#31 id=31 data-nosnippet>31</a><span class="doccomment">/// Maximum OTLP trace string interner capacity: 1 GiB. Arbitrary to stop @blt from blowing us up.
-<a href=#32 id=32 data-nosnippet>32</a></span><span class="kw">pub const </span>MAX_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(<span class="number">1024 </span>* <span class="number">1024 </span>* <span class="number">1024</span>).unwrap();
+<a href=#31 id=31 data-nosnippet>31</a><span class="doccomment">/// Default OTLP trace string interner capacity: 512 KiB.
+<a href=#32 id=32 data-nosnippet>32</a></span><span class="kw">pub const </span>DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(<span class="number">512 </span>* <span class="number">1024</span>).unwrap();
+<a href=#33 id=33 data-nosnippet>33</a>
+<a href=#34 id=34 data-nosnippet>34</a><span class="doccomment">/// Maximum OTLP trace string interner capacity: 1 GiB. Arbitrary to stop @blt from blowing us up.
+<a href=#35 id=35 data-nosnippet>35</a></span><span class="kw">pub const </span>MAX_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(<span class="number">1024 </span>* <span class="number">1024 </span>* <span class="number">1024</span>).unwrap();
 </code></pre></div></section></main></body></html>
