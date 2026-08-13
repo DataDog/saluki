@@ -50,10 +50,13 @@ def main() -> int:
     # created it.
     args.output_report.parent.mkdir(parents=True, exist_ok=True)
 
+    smp_binary: Path = args.smp_binary.resolve()
+    print(smp_binary.stat())
+
     try:
         subprocess.run(
             (
-                args.smp_binary,
+                smp_binary.as_posix(),
                 "report",
                 "render",
                 "--report-json",
