@@ -289,6 +289,7 @@ mod tests {
     use std::time::Duration;
 
     use agent_data_plane_config::domains::dogstatsd::OriginTagCardinality;
+    use agent_data_plane_config::shared::V3SeriesMode;
     use agent_data_plane_config::Provenance;
     use agent_data_plane_config::{Live, SalukiConfiguration};
     use datadog_agent_config::DatadogConfiguration;
@@ -362,8 +363,8 @@ mod tests {
         .await;
 
         assert_eq!(
-            system.config().shared.metrics_encoding.v3_series_mode.mode,
-            "datadog_only"
+            system.config().shared.metrics_encoding.v3_series_mode,
+            V3SeriesMode::DatadogOnly
         );
 
         agent_tx
@@ -406,14 +407,13 @@ mod tests {
             .unwrap();
 
         await_config(&system, "the streamed metrics V3 routing configuration", |config| {
-            config.shared.metrics_encoding.v3_series_mode.mode == "false"
+            config.shared.metrics_encoding.v3_series_mode == V3SeriesMode::Disabled
                 && config
                     .shared
                     .metrics_encoding
-                    .v3_series_mode
-                    .endpoint_modes
+                    .v3_series_endpoint_modes
                     .get("https://app.datadoghq.com")
-                    .is_some_and(|mode| mode == "true")
+                    == Some(&V3SeriesMode::Enabled)
         })
         .await;
 
@@ -544,6 +544,29 @@ mod tests {
             .expect("numeric byte size boots");
 
         assert_eq!(system.config().domains.dogstatsd.debug_log.log_file_max_size, 10485760);
+    }
+
+    #[tokio::test]
+    async fn standalone_loads_scalars_written_in_any_form_the_agent_casts() {
+        // The Agent reads a setting by casting whatever its configuration holds to the accessor's
+        // type, so a boolean written where the schema declares a string, or a quoted integer, is a
+        // configuration it accepts. Each must reach the typed model instead of aborting the strict
+        // startup gate.
+        let system = standalone_system(
+            Some(json!({
+                "use_v3_api": { "series": { "enabled": true } },
+                "dogstatsd_port": "8126",
+            })),
+            None,
+        )
+        .await
+        .expect("scalars in Agent-castable forms boot");
+
+        assert_eq!(
+            system.config().shared.metrics_encoding.v3_series_mode,
+            V3SeriesMode::Enabled
+        );
+        assert_eq!(system.config().domains.dogstatsd.listeners.port, 8126);
     }
 
     #[tokio::test]

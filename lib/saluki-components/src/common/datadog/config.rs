@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use agent_data_plane_config::shared::{Endpoints, MetricsEncoding};
+use agent_data_plane_config::shared::{Endpoints, MetricsEncoding, V3SeriesMode};
 use saluki_config::{DurationString, GenericConfiguration};
 use saluki_error::GenericError;
 use saluki_io::net::client::http::{HttpProtocol, TlsMinimumVersion};
@@ -416,7 +416,7 @@ impl ForwarderConfiguration {
             ),
         );
         self.v3_api = (&metrics.v3_api).into();
-        self.use_v3_api.series = (&metrics.v3_series_mode).into();
+        self.use_v3_api.series = metrics.into();
         self.serializer_compressor_kind = endpoints.compression.compressor_kind.clone();
     }
 
@@ -473,7 +473,7 @@ impl ForwarderConfiguration {
 
     /// Forces series metrics routing to accept only V2 payloads.
     pub(crate) fn force_v2_series(&mut self) {
-        self.use_v3_api.series.enabled = "false".to_string();
+        self.use_v3_api.series.enabled = V3SeriesMode::Disabled;
         self.use_v3_api.series.endpoints.clear();
         self.v3_api.series.endpoints.clear();
         self.v3_api.series.shadow_sites.clear();
@@ -1054,10 +1054,10 @@ mod tests {
         )
         .await;
 
-        assert_eq!(config.use_v3_api_series().enabled, "datadog_only");
+        assert_eq!(config.use_v3_api_series().enabled, V3SeriesMode::DatadogOnly);
         assert_eq!(
             config.use_v3_api_series().endpoints.get(DATADOG_URL),
-            Some(&"false".to_string())
+            Some(&V3SeriesMode::Disabled)
         );
     }
 
@@ -1081,18 +1081,18 @@ mod tests {
         let mut metrics = MetricsEncoding::default();
         metrics.v3_api.compression_level = 7;
         metrics.v3_api.series.validate = true;
-        metrics.v3_series_mode.mode = "false".to_string();
-        metrics.v3_series_mode.endpoint_modes = HashMap::from([(DATADOG_URL.to_string(), "true".to_string())]);
+        metrics.v3_series_mode = V3SeriesMode::Disabled;
+        metrics.v3_series_endpoint_modes = HashMap::from([(DATADOG_URL.to_string(), V3SeriesMode::Enabled)]);
 
         config.apply_typed_metrics_configuration(&metrics, &endpoints);
 
         assert_eq!(config.serializer_compressor_kind, "zstd");
         assert_eq!(config.v3_api.compression_level, 7);
         assert!(config.v3_api.series.validate);
-        assert_eq!(config.use_v3_api_series().enabled, "false");
+        assert_eq!(config.use_v3_api_series().enabled, V3SeriesMode::Disabled);
         assert_eq!(
             config.use_v3_api_series().endpoints.get(DATADOG_URL),
-            Some(&"true".to_string())
+            Some(&V3SeriesMode::Enabled)
         );
         assert_eq!(
             endpoint_urls_by_route(&config, EndpointRoute::MetricsPrimary),

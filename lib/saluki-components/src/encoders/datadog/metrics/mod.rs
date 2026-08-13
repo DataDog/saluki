@@ -2,7 +2,7 @@ use std::{collections::VecDeque, ops::Range, time::Duration};
 
 use agent_data_plane_config::{
     defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT,
-    shared::{Endpoints, MetricsEncoding},
+    shared::{Endpoints, MetricsEncoding, V3SeriesMode},
 };
 use async_trait::async_trait;
 use ddsketch::DDSketch;
@@ -416,7 +416,7 @@ impl DatadogMetricsConfiguration {
         metrics_config.compressor_kind = endpoints.compression.compressor_kind.clone();
         metrics_config.use_v2_api.series = metrics.use_v2_series_api;
         metrics_config.v3_api = (&metrics.v3_api).into();
-        metrics_config.use_v3_api.series = (&metrics.v3_series_mode).into();
+        metrics_config.use_v3_api.series = metrics.into();
         metrics_config.opw_metrics = OpwMetricsConfiguration::new(
             OpwMetricsSettings::new(
                 endpoints.opw_intake.enabled,
@@ -454,7 +454,7 @@ impl DatadogMetricsConfiguration {
     ///
     /// This is used for local destinations that only accept the V2 series protocol, such as the Cluster Agent.
     pub fn with_v2_series_only(mut self) -> Self {
-        self.use_v3_api.series.enabled = "false".to_string();
+        self.use_v3_api.series.enabled = V3SeriesMode::Disabled;
         self.use_v3_api.series.endpoints.clear();
         self.v3_api.series.endpoints.clear();
         self.v3_api.series.shadow_sample_rate = 0.0;
@@ -2305,9 +2305,9 @@ serializer_experimental_use_v3_api:
         };
         metrics.v3_api.compression_level = 7;
         metrics.v3_api.series.validate = true;
-        metrics.v3_series_mode.mode = "false".to_string();
-        metrics.v3_series_mode.endpoint_modes =
-            HashMap::from([("https://app.datadoghq.com".to_string(), "true".to_string())]);
+        metrics.v3_series_mode = V3SeriesMode::Disabled;
+        metrics.v3_series_endpoint_modes =
+            HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
 
         let config = DatadogMetricsConfiguration::from_configuration_with_metrics_routing(&raw, &metrics, &endpoints)
             .expect("configuration should deserialize");
@@ -2316,10 +2316,10 @@ serializer_experimental_use_v3_api:
         assert!(!config.use_v2_api.series);
         assert_eq!(config.v3_api.compression_level, 7);
         assert!(config.v3_api.series.validate);
-        assert_eq!(config.use_v3_api.series.enabled, "false");
+        assert_eq!(config.use_v3_api.series.enabled, V3SeriesMode::Disabled);
         assert_eq!(
             config.use_v3_api.series.endpoints.get("https://app.datadoghq.com"),
-            Some(&"true".to_string())
+            Some(&V3SeriesMode::Enabled)
         );
         // A selected endpoint means OPW routing is enabled; it carries the URL and V3 override.
         let opw = config
@@ -2531,7 +2531,7 @@ serializer_experimental_use_v3_api:
         )
         .with_v2_series_only();
 
-        assert_eq!("false", config.use_v3_api.series.enabled);
+        assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
         assert!(config.use_v3_api.series.endpoints.is_empty());
         assert!(config.v3_api.series.endpoints.is_empty());
         assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);

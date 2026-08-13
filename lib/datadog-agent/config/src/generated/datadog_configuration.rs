@@ -49,12 +49,15 @@ pub struct DatadogConfiguration {
     pub agent_ipc: AgentIpc,
 
     #[serde(default = "defaults::default_u64::<i64, 2>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub aggregator_stop_timeout: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub allow_arbitrary_tags: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub api_key: String,
 
     #[serde(default)]
@@ -64,48 +67,61 @@ pub struct DatadogConfiguration {
     pub autoscaling: Autoscaling,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub basic_telemetry_add_container_tags: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub bind_host: String,
 
     #[serde(default)]
     pub cluster_agent: ClusterAgent,
 
     #[serde(default = "defaults::default_u64::<i64, 5001>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub cmd_port: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub cri_connection_timeout: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 5>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub cri_query_timeout: i64,
 
     #[serde(default)]
     pub data_plane: DataPlane,
 
     #[serde(default = "defaults::datadog_configuration_dd_url")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dd_url: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub disable_file_logging: bool,
 
     #[serde(default = "defaults::default_u64::<i64, 8192>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_buffer_size: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_capture_depth: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dogstatsd_capture_path: String,
 
     #[serde(default = "defaults::default_u64::<i64, 20>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_context_expiry_seconds: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_disable_verbose_logs: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_entity_id_precedence: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -113,72 +129,92 @@ pub struct DatadogConfiguration {
     pub dogstatsd_eol_required: Vec<String>,
 
     #[serde(default = "defaults::default_u64::<i64, 300>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_expiry_seconds: i64,
 
     #[serde(default)]
     /// Alias defined in schema overlay.
     #[serde(alias = "aggregate_flush_open_windows")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_flush_incomplete_buckets: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dogstatsd_log_file: String,
 
     #[serde(default = "defaults::default_u64::<i64, 3>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_log_file_max_rolls: i64,
 
     #[serde(default = "defaults::datadog_configuration_dogstatsd_log_file_max_size")]
-    #[serde(deserialize_with = "crate::string_de::deserialize_string_or_integer")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dogstatsd_log_file_max_size: String,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_logging_enabled: bool,
 
     #[serde(default = "defaults::default_u64::<i64, 1000>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_mapper_cache_size: i64,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub dogstatsd_mapper_profiles: Vec<::serde_json::Value>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_metrics_stats_enable: bool,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_no_aggregation_pipeline: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_non_local_traffic: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_origin_detection: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_origin_detection_client: bool,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_origin_optout_enabled: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dogstatsd_pipe_name: String,
 
     #[serde(default = "defaults::default_u64::<i64, 8125>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_port: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_so_rcvbuf: i64,
 
     #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
     pub dogstatsd_socket: Option<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_stream_log_too_big: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dogstatsd_stream_socket: String,
 
     #[serde(default = "defaults::default_u64::<i64, 4096>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_string_interner_size: i64,
 
     #[serde(default = "defaults::datadog_configuration_dogstatsd_tag_cardinality")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dogstatsd_tag_cardinality: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -188,15 +224,18 @@ pub struct DatadogConfiguration {
     #[serde(
         default = "defaults::datadog_configuration_dogstatsd_windows_pipe_security_descriptor"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dogstatsd_windows_pipe_security_descriptor: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_workers_count: i64,
 
     #[serde(default)]
     pub enable_payloads: EnablePayloads,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub env: String,
 
     #[serde(
@@ -207,70 +246,91 @@ pub struct DatadogConfiguration {
     pub expected_tags_duration: std::time::Duration,
 
     #[serde(default = "defaults::default_u64::<i64, 60>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_apikey_validation_interval: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 2>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_backoff_base: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 2>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_backoff_factor: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 64>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_backoff_max: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_connection_reset_interval: i64,
 
     #[serde(
         default = "defaults::datadog_configuration_forwarder_flush_to_disk_mem_ratio"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub forwarder_flush_to_disk_mem_ratio: f64,
 
     #[serde(default = "defaults::default_u64::<i64, 100>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_high_prio_buffer_size: i64,
 
     #[serde(default = "defaults::datadog_configuration_forwarder_http_protocol")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub forwarder_http_protocol: String,
 
     #[serde(default = "defaults::default_u64::<i64, 10>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_max_concurrent_requests: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_num_workers: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 10>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_outdated_file_in_days: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 2>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_recovery_interval: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub forwarder_recovery_reset: bool,
 
     #[serde(default = "defaults::default_u64::<i64, 900>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_retry_queue_capacity_time_interval_sec: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_retry_queue_max_size: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 15728640>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_retry_queue_payloads_max_size: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 2>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_stop_timeout: i64,
 
     #[serde(
         default = "defaults::datadog_configuration_forwarder_storage_max_disk_ratio"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub forwarder_storage_max_disk_ratio: f64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_storage_max_size_in_bytes: i64,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub forwarder_storage_path: String,
 
     #[serde(default = "defaults::default_u64::<i64, 20>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub forwarder_timeout: i64,
 
     #[serde(default = "defaults::datadog_configuration_histogram_aggregates")]
@@ -278,9 +338,11 @@ pub struct DatadogConfiguration {
     pub histogram_aggregates: Vec<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub histogram_copy_to_distribution: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub histogram_copy_to_distribution_prefix: String,
 
     #[serde(default = "defaults::datadog_configuration_histogram_percentiles")]
@@ -288,28 +350,35 @@ pub struct DatadogConfiguration {
     pub histogram_percentiles: Vec<String>,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub log_file_max_rolls: i64,
 
     #[serde(default = "defaults::datadog_configuration_log_file_max_size")]
-    #[serde(deserialize_with = "crate::string_de::deserialize_string_or_integer")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub log_file_max_size: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub log_format_json: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub log_format_rfc3339: bool,
 
     #[serde(default = "defaults::datadog_configuration_log_level")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub log_level: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub log_payloads: bool,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub log_to_console: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub log_to_syslog: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -317,72 +386,89 @@ pub struct DatadogConfiguration {
     pub metric_filterlist: Vec<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub metric_filterlist_match_prefix: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
     pub metric_tag_filterlist: Vec<::serde_json::Value>,
 
     #[serde(default = "defaults::datadog_configuration_min_tls_version")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub min_tls_version: String,
 
     #[serde(default)]
     pub multi_region_failover: MultiRegionFailover,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub no_proxy_nonexact_match: bool,
 
     #[serde(default)]
     pub observability_pipelines_worker: ObservabilityPipelinesWorker,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub origin_detection_unified: bool,
 
     #[serde(default)]
     pub otlp_config: OtlpConfig,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub provider_kind: String,
 
     #[serde(default)]
     pub proxy: Proxy,
 
     #[serde(default = "defaults::datadog_configuration_serializer_compressor_kind")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub serializer_compressor_kind: String,
 
     #[serde(default)]
     pub serializer_experimental_use_v3_api: SerializerExperimentalUseV3Api,
 
     #[serde(default = "defaults::default_u64::<i64, 2621440>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub serializer_max_payload_size: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 512000>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub serializer_max_series_payload_size: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 10000>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub serializer_max_series_points_per_payload: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 5242880>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub serializer_max_series_uncompressed_payload_size: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 4194304>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub serializer_max_uncompressed_payload_size: i64,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub serializer_zstd_compressor_level: i64,
 
     #[serde(default = "defaults::datadog_configuration_site")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub site: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub skip_ssl_validation: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub sslkeylogfile: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub statsd_forward_host: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub statsd_forward_port: i64,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -390,9 +476,11 @@ pub struct DatadogConfiguration {
     pub statsd_metric_blocklist: Vec<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub statsd_metric_blocklist_match_prefix: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub statsd_metric_namespace: String,
 
     #[serde(
@@ -404,9 +492,11 @@ pub struct DatadogConfiguration {
     pub statsd_metric_namespace_blacklist: Vec<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub syslog_rfc: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub syslog_uri: String,
 
     #[serde(default)]
@@ -420,6 +510,7 @@ pub struct DatadogConfiguration {
     pub tls_handshake_timeout: std::time::Duration,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub use_proxy_for_cloud_metadata: bool,
 
     #[serde(default)]
@@ -432,6 +523,7 @@ pub struct DatadogConfiguration {
     pub vector: Vector,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub vsock_addr: String,
 }
 
@@ -581,6 +673,7 @@ impl Default for DatadogConfiguration {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct AgentIpc {
     #[serde(default = "defaults::default_u64::<i64, 134217728>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub grpc_max_message_size: i64,
 }
 
@@ -595,15 +688,18 @@ impl Default for AgentIpc {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfig {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub compute_stats_by_span_kind: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enable_rare_sampler: bool,
 
     #[serde(default)]
     pub error_tracking_standalone: ApmConfigErrorTrackingStandalone,
 
     #[serde(default = "defaults::datadog_configuration_apm_config_errors_per_second")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub errors_per_second: f64,
 
     #[serde(default)]
@@ -614,6 +710,7 @@ pub struct ApmConfig {
     pub peer_tags: Vec<String>,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub peer_tags_aggregation: bool,
 
     #[serde(default)]
@@ -622,6 +719,7 @@ pub struct ApmConfig {
     #[serde(
         default = "defaults::datadog_configuration_apm_config_target_traces_per_second"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub target_traces_per_second: f64,
 }
 
@@ -644,6 +742,7 @@ impl Default for ApmConfig {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigErrorTrackingStandalone {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 }
 
@@ -700,6 +799,7 @@ impl Default for ApmConfigObfuscation {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationCreditCards {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -707,6 +807,7 @@ pub struct ApmConfigObfuscationCreditCards {
     pub keep_values: Vec<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub luhn: bool,
 }
 
@@ -723,6 +824,7 @@ impl Default for ApmConfigObfuscationCreditCards {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationElasticsearch {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -747,9 +849,11 @@ impl Default for ApmConfigObfuscationElasticsearch {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationHttp {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub remove_paths_with_digits: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub remove_query_string: bool,
 }
 
@@ -765,9 +869,11 @@ impl Default for ApmConfigObfuscationHttp {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationMemcached {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub keep_command: bool,
 }
 
@@ -783,6 +889,7 @@ impl Default for ApmConfigObfuscationMemcached {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationMongodb {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -807,6 +914,7 @@ impl Default for ApmConfigObfuscationMongodb {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationOpensearch {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -831,9 +939,11 @@ impl Default for ApmConfigObfuscationOpensearch {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationRedis {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub remove_all_args: bool,
 }
 
@@ -849,9 +959,11 @@ impl Default for ApmConfigObfuscationRedis {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigObfuscationValkey {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub remove_all_args: bool,
 }
 
@@ -867,11 +979,13 @@ impl Default for ApmConfigObfuscationValkey {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ApmConfigProbabilisticSampler {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(
         default = "defaults::datadog_configuration_apm_config_probabilistic_sampler_sampling_percentage"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub sampling_percentage: f64,
 }
 
@@ -901,6 +1015,7 @@ impl Default for Autoscaling {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct AutoscalingFailover {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default = "defaults::datadog_configuration_autoscaling_failover_metrics")]
@@ -920,17 +1035,21 @@ impl Default for AutoscalingFailover {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ClusterAgent {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub auth_token: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(
         default = "defaults::datadog_configuration_cluster_agent_kubernetes_service_name"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub kubernetes_service_name: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub url: String,
 }
 
@@ -948,29 +1067,35 @@ impl Default for ClusterAgent {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DataPlane {
     #[serde(default = "defaults::datadog_configuration_data_plane_api_listen_address")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub api_listen_address: String,
 
     #[serde(default)]
     pub dogstatsd: DataPlaneDogstatsd,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default = "defaults::datadog_configuration_data_plane_log_file")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub log_file: String,
 
     #[serde(default)]
     pub otlp: DataPlaneOtlp,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub remote_agent_enabled: bool,
 
     #[serde(
         default = "defaults::datadog_configuration_data_plane_secure_api_listen_address"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub secure_api_listen_address: String,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub use_new_config_stream_endpoint: bool,
 }
 
@@ -992,9 +1117,11 @@ impl Default for DataPlane {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DataPlaneDogstatsd {
     #[serde(default = "defaults::default_u64::<i64, 100000>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub aggregator_tag_filter_cache_capacity: i64,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 }
 
@@ -1010,6 +1137,7 @@ impl Default for DataPlaneDogstatsd {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DataPlaneOtlp {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
@@ -1028,6 +1156,7 @@ impl Default for DataPlaneOtlp {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DataPlaneOtlpProxy {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
@@ -1058,6 +1187,7 @@ impl Default for DataPlaneOtlpProxy {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DataPlaneOtlpProxyLogs {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 }
 
@@ -1072,6 +1202,7 @@ impl Default for DataPlaneOtlpProxyLogs {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DataPlaneOtlpProxyMetrics {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 }
 
@@ -1114,6 +1245,7 @@ pub struct DataPlaneOtlpProxyReceiverProtocolsGrpc {
     #[serde(
         default = "defaults::datadog_configuration_data_plane_otlp_proxy_receiver_protocols_grpc_endpoint"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub endpoint: String,
 }
 
@@ -1128,6 +1260,7 @@ impl Default for DataPlaneOtlpProxyReceiverProtocolsGrpc {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct DataPlaneOtlpProxyTraces {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 }
 
@@ -1142,15 +1275,19 @@ impl Default for DataPlaneOtlpProxyTraces {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct EnablePayloads {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub events: bool,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub series: bool,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub service_checks: bool,
 
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub sketches: bool,
 }
 
@@ -1168,15 +1305,19 @@ impl Default for EnablePayloads {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct MultiRegionFailover {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub api_key: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub dd_url: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub failover_metrics: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -1184,6 +1325,7 @@ pub struct MultiRegionFailover {
     pub metric_allowlist: Vec<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub site: String,
 }
 
@@ -1217,9 +1359,11 @@ impl Default for ObservabilityPipelinesWorker {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ObservabilityPipelinesWorkerMetrics {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub url: String,
 
     #[serde(default)]
@@ -1239,6 +1383,7 @@ impl Default for ObservabilityPipelinesWorkerMetrics {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct ObservabilityPipelinesWorkerMetricsUseV3Api {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub series: bool,
 }
 
@@ -1277,6 +1422,7 @@ impl Default for OtlpConfig {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigLogs {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 }
 
@@ -1291,12 +1437,14 @@ impl Default for OtlpConfigLogs {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigMetrics {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
     pub histograms: OtlpConfigMetricsHistograms,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub resource_attributes_as_tags: bool,
 
     #[serde(default)]
@@ -1308,9 +1456,11 @@ pub struct OtlpConfigMetrics {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_metrics_tag_cardinality"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub tag_cardinality: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub tags: String,
 }
 
@@ -1333,9 +1483,11 @@ pub struct OtlpConfigMetricsHistograms {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_metrics_histograms_mode"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub mode: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub send_aggregation_metrics: bool,
 }
 
@@ -1353,6 +1505,7 @@ pub struct OtlpConfigMetricsSummaries {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_metrics_summaries_mode"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub mode: String,
 }
 
@@ -1369,11 +1522,13 @@ pub struct OtlpConfigMetricsSums {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_metrics_sums_cumulative_monotonic_mode"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub cumulative_monotonic_mode: String,
 
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_metrics_sums_initial_cumulative_monotonic_value"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub initial_cumulative_monotonic_value: String,
 }
 
@@ -1423,14 +1578,17 @@ pub struct OtlpConfigReceiverProtocolsGrpc {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub endpoint: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_recv_msg_size_mib: i64,
 
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub transport: String,
 }
 
@@ -1449,6 +1607,7 @@ pub struct OtlpConfigReceiverProtocolsHttp {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub endpoint: String,
 }
 
@@ -1463,9 +1622,11 @@ impl Default for OtlpConfigReceiverProtocolsHttp {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigTraces {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default = "defaults::default_u64::<i64, 5003>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub internal_port: i64,
 
     #[serde(default)]
@@ -1487,6 +1648,7 @@ pub struct OtlpConfigTracesProbabilisticSampler {
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_traces_probabilistic_sampler_sampling_percentage"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub sampling_percentage: f64,
 }
 
@@ -1501,9 +1663,11 @@ impl Default for OtlpConfigTracesProbabilisticSampler {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct Proxy {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub http: String,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub https: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -1524,6 +1688,7 @@ impl Default for Proxy {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct SerializerExperimentalUseV3Api {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub compression_level: i64,
 
     #[serde(default)]
@@ -1548,6 +1713,7 @@ pub struct SerializerExperimentalUseV3ApiSeries {
     #[serde(
         default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_beta_route"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub beta_route: String,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -1557,6 +1723,7 @@ pub struct SerializerExperimentalUseV3ApiSeries {
     #[serde(
         default = "defaults::datadog_configuration_serializer_experimental_use_v3_api_series_shadow_sample_rate"
     )]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_f64")]
     pub shadow_sample_rate: f64,
 
     #[serde(
@@ -1566,9 +1733,11 @@ pub struct SerializerExperimentalUseV3ApiSeries {
     pub shadow_sites: Vec<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub use_beta: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub validate: bool,
 }
 
@@ -1592,6 +1761,7 @@ pub struct SerializerExperimentalUseV3ApiSketches {
     pub endpoints: Vec<String>,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub validate: bool,
 }
 
@@ -1607,6 +1777,7 @@ impl Default for SerializerExperimentalUseV3ApiSketches {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct Telemetry {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_origin: bool,
 }
 
@@ -1621,6 +1792,7 @@ impl Default for Telemetry {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct UseV2Api {
     #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub series: bool,
 }
 
@@ -1647,6 +1819,7 @@ impl Default for UseV3Api {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct UseV3ApiSeries {
     #[serde(default = "defaults::datadog_configuration_use_v3_api_series_enabled")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub enabled: String,
 
     #[serde(default, skip_serializing_if = "::serde_json::Map::is_empty")]
@@ -1679,9 +1852,11 @@ impl Default for Vector {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct VectorMetrics {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub url: String,
 
     #[serde(default)]
@@ -1701,6 +1876,7 @@ impl Default for VectorMetrics {
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct VectorMetricsUseV3Api {
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub series: bool,
 }
 

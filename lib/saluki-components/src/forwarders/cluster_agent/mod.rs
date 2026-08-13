@@ -213,6 +213,7 @@ fn get_cluster_agent_endpoint_name(_uri: &Uri) -> Option<MetaString> {
 
 #[cfg(test)]
 mod tests {
+    use agent_data_plane_config::shared::V3SeriesMode;
     use http::Method;
     use saluki_config::ConfigurationLoader;
     use serde_json::json;
@@ -285,14 +286,16 @@ mod tests {
 
         let unmodified_forwarder =
             ForwarderConfiguration::from_configuration(&config).expect("forwarder configuration should parse");
-        assert_eq!("true", unmodified_forwarder.use_v3_api_series().enabled);
+        assert_eq!(V3SeriesMode::Enabled, unmodified_forwarder.use_v3_api_series().enabled);
         assert_eq!(
             &["example.com".to_string()],
             unmodified_forwarder.v3_api().series.shadow_sites.as_slice()
         );
 
-        let mut metrics = MetricsEncoding::default();
-        metrics.v3_series_mode.mode = "true".to_string();
+        let mut metrics = MetricsEncoding {
+            v3_series_mode: V3SeriesMode::Enabled,
+            ..Default::default()
+        };
         metrics.v3_api.series.shadow_sites = vec!["example.com".to_string()];
         let config = ClusterAgentForwarderConfiguration::from_configuration_with_metrics_routing(
             &config,
@@ -314,7 +317,10 @@ mod tests {
             "https://cluster-agent.example.com/"
         );
         assert_eq!(endpoints[0].endpoint().cached_api_key(), "secret-token");
-        assert_eq!("false", config.forwarder_config.use_v3_api_series().enabled);
+        assert_eq!(
+            V3SeriesMode::Disabled,
+            config.forwarder_config.use_v3_api_series().enabled
+        );
         assert!(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
         assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
         assert!(config.forwarder_config.v3_api().series.shadow_sites.is_empty());
