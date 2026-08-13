@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ContainerdDetector","Feature","FeatureDetector"]};
+window.SIDEBAR_ITEMS = {"fn":["is_ecs_fargate"],"struct":["ContainerdDetector","Feature","FeatureDetector"]};

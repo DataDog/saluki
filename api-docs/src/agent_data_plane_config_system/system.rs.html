@@ -846,33 +846,42 @@
 <a href=#846 id=846 data-nosnippet>846</a>            <span class="string">"dogstatsd_port"</span>: <span class="number">9125</span>,
 <a href=#847 id=847 data-nosnippet>847</a>            <span class="string">"dogstatsd_tag_cardinality"</span>: <span class="string">"high"</span>,
 <a href=#848 id=848 data-nosnippet>848</a>            <span class="string">"expected_tags_duration"</span>: <span class="string">"15s"</span>,
-<a href=#849 id=849 data-nosnippet>849</a>            <span class="string">"telemetry"</span>: { <span class="string">"dogstatsd_origin"</span>: <span class="bool-val">true </span>},
-<a href=#850 id=850 data-nosnippet>850</a>            <span class="string">"dogstatsd_tcp_port"</span>: <span class="number">8126</span>,
-<a href=#851 id=851 data-nosnippet>851</a>        }));
-<a href=#852 id=852 data-nosnippet>852</a>        <span class="kw">let </span>value = sources.to_value();
-<a href=#853 id=853 data-nosnippet>853</a>        <span class="kw">let </span>datadog: DatadogConfiguration = serde_json::from_value(value.clone()).expect(<span class="string">"datadog source deserializes"</span>);
-<a href=#854 id=854 data-nosnippet>854</a>        <span class="kw">let </span>saluki: SalukiOnly = serde_json::from_value(value).expect(<span class="string">"saluki-only source deserializes"</span>);
-<a href=#855 id=855 data-nosnippet>855</a>
-<a href=#856 id=856 data-nosnippet>856</a>        <span class="kw">let </span>(config, errors) = translate(<span class="kw-2">&amp;</span>datadog, <span class="kw-2">&amp;</span>saluki, <span class="kw-2">&amp;</span>sources);
-<a href=#857 id=857 data-nosnippet>857</a>        <span class="macro">assert!</span>(errors.is_none(), <span class="string">"translation of a valid map records no error"</span>);
-<a href=#858 id=858 data-nosnippet>858</a>
-<a href=#859 id=859 data-nosnippet>859</a>        <span class="comment">// Driven scalar conversion: i64 -&gt; u16.
-<a href=#860 id=860 data-nosnippet>860</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.port, <span class="number">9125</span>);
-<a href=#861 id=861 data-nosnippet>861</a>        <span class="comment">// Driven enum parse.
-<a href=#862 id=862 data-nosnippet>862</a>        </span><span class="macro">assert_eq!</span>(
-<a href=#863 id=863 data-nosnippet>863</a>            config.domains.dogstatsd.origin.tag_cardinality,
-<a href=#864 id=864 data-nosnippet>864</a>            OriginTagCardinality::High
-<a href=#865 id=865 data-nosnippet>865</a>        );
-<a href=#866 id=866 data-nosnippet>866</a>        <span class="comment">// Driven `format: duration` parse: a Go duration string becomes a `Duration`.
-<a href=#867 id=867 data-nosnippet>867</a>        </span><span class="macro">assert_eq!</span>(config.shared.tags.expected_tags_duration, Duration::from_secs(<span class="number">15</span>));
-<a href=#868 id=868 data-nosnippet>868</a>        <span class="comment">// Driven bool in a nested Datadog section.
-<a href=#869 id=869 data-nosnippet>869</a>        </span><span class="macro">assert!</span>(config.domains.dogstatsd.telemetry.origin_breakdown);
-<a href=#870 id=870 data-nosnippet>870</a>        <span class="comment">// Raw endpoint inputs: carried through without selecting a primary endpoint here.
-<a href=#871 id=871 data-nosnippet>871</a>        </span><span class="macro">assert_eq!</span>(config.shared.endpoints.api_key, <span class="string">"abc"</span>);
-<a href=#872 id=872 data-nosnippet>872</a>        <span class="macro">assert!</span>(config.shared.endpoints.dd_url.is_explicit());
-<a href=#873 id=873 data-nosnippet>873</a>        <span class="macro">assert_eq!</span>(config.shared.endpoints.dd_url.value, <span class="string">"https://custom.example.com"</span>);
-<a href=#874 id=874 data-nosnippet>874</a>        <span class="comment">// Seeded Saluki-only field.
-<a href=#875 id=875 data-nosnippet>875</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.tcp_port, <span class="number">8126</span>);
-<a href=#876 id=876 data-nosnippet>876</a>    }
-<a href=#877 id=877 data-nosnippet>877</a>}
+<a href=#849 id=849 data-nosnippet>849</a>            <span class="string">"provider_kind"</span>: <span class="string">"gke-autopilot"</span>,
+<a href=#850 id=850 data-nosnippet>850</a>            <span class="string">"eks_fargate"</span>: <span class="bool-val">true</span>,
+<a href=#851 id=851 data-nosnippet>851</a>            <span class="string">"kubernetes_kubelet_nodename"</span>: <span class="string">"fargate-node"</span>,
+<a href=#852 id=852 data-nosnippet>852</a>            <span class="string">"cluster_name"</span>: <span class="string">"fargate-cluster"</span>,
+<a href=#853 id=853 data-nosnippet>853</a>            <span class="string">"telemetry"</span>: { <span class="string">"dogstatsd_origin"</span>: <span class="bool-val">true </span>},
+<a href=#854 id=854 data-nosnippet>854</a>            <span class="string">"dogstatsd_tcp_port"</span>: <span class="number">8126</span>,
+<a href=#855 id=855 data-nosnippet>855</a>        }));
+<a href=#856 id=856 data-nosnippet>856</a>        <span class="kw">let </span>value = sources.to_value();
+<a href=#857 id=857 data-nosnippet>857</a>        <span class="kw">let </span>datadog: DatadogConfiguration = serde_json::from_value(value.clone()).expect(<span class="string">"datadog source deserializes"</span>);
+<a href=#858 id=858 data-nosnippet>858</a>        <span class="kw">let </span>saluki: SalukiOnly = serde_json::from_value(value).expect(<span class="string">"saluki-only source deserializes"</span>);
+<a href=#859 id=859 data-nosnippet>859</a>
+<a href=#860 id=860 data-nosnippet>860</a>        <span class="kw">let </span>(config, errors) = translate(<span class="kw-2">&amp;</span>datadog, <span class="kw-2">&amp;</span>saluki, <span class="kw-2">&amp;</span>sources);
+<a href=#861 id=861 data-nosnippet>861</a>        <span class="macro">assert!</span>(errors.is_none(), <span class="string">"translation of a valid map records no error"</span>);
+<a href=#862 id=862 data-nosnippet>862</a>
+<a href=#863 id=863 data-nosnippet>863</a>        <span class="comment">// Driven scalar conversion: i64 -&gt; u16.
+<a href=#864 id=864 data-nosnippet>864</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.port, <span class="number">9125</span>);
+<a href=#865 id=865 data-nosnippet>865</a>        <span class="comment">// Driven enum parse.
+<a href=#866 id=866 data-nosnippet>866</a>        </span><span class="macro">assert_eq!</span>(
+<a href=#867 id=867 data-nosnippet>867</a>            config.domains.dogstatsd.origin.tag_cardinality,
+<a href=#868 id=868 data-nosnippet>868</a>            OriginTagCardinality::High
+<a href=#869 id=869 data-nosnippet>869</a>        );
+<a href=#870 id=870 data-nosnippet>870</a>        <span class="comment">// Driven `format: duration` parse: a Go duration string becomes a `Duration`.
+<a href=#871 id=871 data-nosnippet>871</a>        </span><span class="macro">assert_eq!</span>(config.shared.tags.expected_tags_duration, Duration::from_secs(<span class="number">15</span>));
+<a href=#872 id=872 data-nosnippet>872</a>        <span class="comment">// Shared deployment inputs used to derive static tags for both DogStatsD and OTLP.
+<a href=#873 id=873 data-nosnippet>873</a>        </span><span class="macro">assert_eq!</span>(config.shared.static_tags.provider_kind, <span class="string">"gke-autopilot"</span>);
+<a href=#874 id=874 data-nosnippet>874</a>        <span class="macro">assert!</span>(config.shared.static_tags.eks_fargate);
+<a href=#875 id=875 data-nosnippet>875</a>        <span class="macro">assert_eq!</span>(config.shared.static_tags.kubernetes_kubelet_nodename, <span class="string">"fargate-node"</span>);
+<a href=#876 id=876 data-nosnippet>876</a>        <span class="macro">assert_eq!</span>(config.shared.static_tags.cluster_name, <span class="string">"fargate-cluster"</span>);
+<a href=#877 id=877 data-nosnippet>877</a>        <span class="comment">// Driven bool in a nested Datadog section.
+<a href=#878 id=878 data-nosnippet>878</a>        </span><span class="macro">assert!</span>(config.domains.dogstatsd.telemetry.origin_breakdown);
+<a href=#879 id=879 data-nosnippet>879</a>        <span class="comment">// Raw endpoint inputs: carried through without selecting a primary endpoint here.
+<a href=#880 id=880 data-nosnippet>880</a>        </span><span class="macro">assert_eq!</span>(config.shared.endpoints.api_key, <span class="string">"abc"</span>);
+<a href=#881 id=881 data-nosnippet>881</a>        <span class="macro">assert!</span>(config.shared.endpoints.dd_url.is_explicit());
+<a href=#882 id=882 data-nosnippet>882</a>        <span class="macro">assert_eq!</span>(config.shared.endpoints.dd_url.value, <span class="string">"https://custom.example.com"</span>);
+<a href=#883 id=883 data-nosnippet>883</a>        <span class="comment">// Seeded Saluki-only field.
+<a href=#884 id=884 data-nosnippet>884</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.tcp_port, <span class="number">8126</span>);
+<a href=#885 id=885 data-nosnippet>885</a>    }
+<a href=#886 id=886 data-nosnippet>886</a>}
 </code></pre></div></section></main></body></html>
