@@ -10,8 +10,9 @@ This is a more compact alternative to SMP's canonical report.md:
 - Merges the `perf` indicator into the `Δ mean %` cell using emoji colored
   by direction relative to each experiment's optimization goal: 🟢 = past
   the effect-size threshold in the improving direction, 🔴 = past it in the
-  regressing direction, ⚪ = within the threshold. The threshold is read
-  from `job_info.effect_size` in the report.
+  regressing direction, ⚪ = within the threshold, ⚠️ = SMP produced no
+  analysis for the experiment. The threshold is read from
+  `job_info.effect_size` in the report.
 
 Usage:
     python3 build-smp-report.py \\
@@ -71,11 +72,20 @@ GOAL_INFO = {
 }
 
 
+def has_analysis(goal_data: dict) -> bool:
+    """Return whether SMP produced optimization-goal analysis for an experiment.
+    """
+    return "percent_change" in goal_data
+
+
 def classify_change(
     goal_data: dict,
     effect_size: float | None,
 ) -> str:
     """Classify a change as `improvement`, `regression`, or `neutral`.
+
+    Experiments without analysis (see `has_analysis`) always classify as
+    neutral: there is no measured change to classify.
 
     Experiments configured `erratic: true` (`reported_erratic`) are ignored
     outright and always classify as neutral. For the rest, a regression /
@@ -90,6 +100,8 @@ def classify_change(
     `is_regression` / `is_improvement`, so we don't gate on it separately.
     """
     if goal_data.get("reported_erratic"):
+        return "neutral"
+    if not has_analysis(goal_data):
         return "neutral"
     if effect_size is None:
         return "neutral"
@@ -156,13 +168,18 @@ def render_experiment_row(
 ) -> str:
     """Render one Markdown table row for an experiment's optimization-goal
     analysis."""
-    goal_data = experiment["optimization_goal"]
+    goal_data = experiment.get("optimization_goal") or {}
+    links_cell = build_links(name, job_id, time_range)
+
+    # Render experiments without analysis rather than failing the whole report
+    if not has_analysis(goal_data):
+        return f"| {name} **(no analysis)** | ? | ⚠️ n/a | {links_cell} |"
+
     percent_change = goal_data["percent_change"]
     optimization_goal = goal_data["optimization_goal"]
 
     classification = classify_change(goal_data, effect_size)
     pct_cell = f"{change_emoji(classification)} {format_percent(percent_change)}"
-    links_cell = build_links(name, job_id, time_range)
     display_name = name
     if goal_data.get("reported_erratic"):
         display_name = f"{name} **(ignored)**"
@@ -278,6 +295,8 @@ def partition_experiments(
     """
     regressions, others = [], []
     for name, experiment in experiments.items():
+        if "optimization_goal" not in experiment:
+            continue
         goal_data = experiment.get("optimization_goal") or {}
         reported_erratic = goal_data.get("reported_erratic", False)
         classification = classify_change(goal_data, effect_size)
@@ -324,6 +343,19 @@ def build_report(report: dict) -> str:
         )
     else:
         headline = "## Optimization Goals: ✅ No significant changes detected"
+
+    # Experiments without analysis are neither regressions nor clean passes, so
+    # call them out in the headline instead of letting them hide in the details.
+    unanalyzed = [
+        name
+        for name, experiment in others
+        if not has_analysis(experiment.get("optimization_goal") or {})
+    ]
+    if unanalyzed:
+        headline += (
+            f" &middot; ⚠️ {len(unanalyzed)} experiment"
+            f"{'s' if len(unanalyzed) != 1 else ''} without analysis"
+        )
 
     sections = [
         f"**Run ID:** `{job_id}`",
@@ -389,7 +421,11 @@ def build_report(report: dict) -> str:
         "that flag describes sample dispersion rather than directional certainty. "
         "The Δ mean % cell is colored accordingly: 🟢 = improvement, 🔴 = regression, "
         "⚪ = neutral. Reduction in CPU or memory is an improvement; reduction in "
-        "ingress throughput is a regression."
+        "ingress throughput is a regression. Experiments tagged "
+        "<code>(no analysis)</code> show <code>⚠️ n/a</code>: SMP ran them but "
+        "produced no analysis, usually because a replicate failed and exhausted "
+        "its retries. Check the SMP report for that experiment's replicate "
+        "failures."
     )
     sections += [
         "<details><summary><b>Explanation</b></summary>",
