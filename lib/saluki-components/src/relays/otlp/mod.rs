@@ -72,6 +72,7 @@ impl RelayBuilder for OtlpRelayConfiguration {
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
+            cors: self.receiver.http.cors.clone(),
             metrics: build_metrics(&context),
         }))
     }
@@ -84,6 +85,7 @@ pub struct OtlpRelay {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    cors: domains::otlp::Cors,
     metrics: Metrics,
 }
 
@@ -94,6 +96,7 @@ impl Relay for OtlpRelay {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
+            cors,
             metrics,
         } = *self;
 
@@ -112,7 +115,8 @@ impl Relay for OtlpRelay {
             http_endpoint.clone(),
             grpc_endpoint.clone(),
             grpc_max_recv_msg_size_bytes,
-        );
+        )
+        .with_cors(cors);
 
         let (http_shutdown, mut http_error) = server_builder
             .build(handler, memory_limiter, global_thread_pool, metrics)
@@ -270,6 +274,7 @@ mod tests {
             http: domains::otlp::HttpReceiver {
                 endpoint: "0.0.0.0:4318".to_string(),
                 transport: "tcp".to_string(),
+                cors: Default::default(),
             },
             ..Default::default()
         });

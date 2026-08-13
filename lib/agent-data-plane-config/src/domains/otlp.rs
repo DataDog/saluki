@@ -240,6 +240,9 @@ pub struct HttpReceiver {
     /// Transport the HTTP receiver binds (for example, `tcp` or `unix`). (not in Datadog Agent
     /// config schema)
     pub transport: String,
+
+    /// CORS configuration for the HTTP receiver.
+    pub cors: Cors,
 }
 
 impl Default for HttpReceiver {
@@ -248,8 +251,36 @@ impl Default for HttpReceiver {
             // Witnessed; overwritten during drive.
             endpoint: String::new(),
             transport: "tcp".to_string(),
+            cors: Cors::default(),
         }
     }
+}
+
+/// CORS configuration for the OTLP HTTP receiver.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Cors {
+    /// Origins allowed to make cross-origin requests. Allows for wildcard character when describing
+    /// domains (for example: "http://*.domains.com")
+    ///
+    /// Defaults to an empty list (disabling CORS).
+    pub allowed_origins: Vec<String>,
+
+    /// Headers allowed in CORS requests, in addition to the implicitly allowed `Accept`,
+    /// `Accept-Language`, `Content-Type`, and `Content-Language` headers.
+    ///
+    /// When empty, `X-Requested-With` is also implicitly allowed. Include `*` to allow any
+    /// request header. Defaults to an empty list.
+    pub allowed_headers: Vec<String>,
+
+    /// Headers safe to expose to the API of a CORS response.
+    ///
+    /// Sets the `Access-Control-Expose-Headers` response header. Defaults to an empty list.
+    pub exposed_headers: Vec<String>,
+
+    /// Number of seconds browsers should cache a CORS preflight response.
+    ///
+    /// Defaults to `0` (which prevents caching)
+    pub max_age: u64,
 }
 
 /// OTLP trace ingestion settings.

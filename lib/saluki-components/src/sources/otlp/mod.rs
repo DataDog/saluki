@@ -169,6 +169,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let cors = self.otlp.receiver.http.cors.clone();
         let metrics = build_metrics(&context);
 
         Ok(Box::new(Otlp {
@@ -181,6 +182,7 @@ impl SourceBuilder for OtlpConfiguration {
             metric_tags,
             default_hostname: self.default_hostname.clone(),
             traces_translator,
+            cors,
             metrics,
         }))
     }
@@ -205,6 +207,7 @@ pub struct Otlp {
     metric_tags: SharedTagSet,
     default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
+    cors: agent_data_plane_config::domains::otlp::Cors,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
@@ -221,6 +224,7 @@ impl Source for Otlp {
             metric_tags,
             default_hostname,
             traces_translator,
+            cors,
             metrics,
         } = *self;
 
@@ -260,7 +264,8 @@ impl Source for Otlp {
         );
 
         let handler = SourceHandler::new(tx);
-        let server_builder = OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes);
+        let server_builder =
+            OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
 
         let (http_shutdown, mut http_error) = server_builder
             .build(handler, memory_limiter.clone(), thread_pool_handle, metrics)

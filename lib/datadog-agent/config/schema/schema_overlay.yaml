@@ -2326,20 +2326,40 @@ inventory:
     description: "HTTP compression algorithms"
 
   otlp_config.receiver.protocols.http.cors.allowed_headers:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP CORS allowed headers"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.allowed_origins:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP CORS allowed origins"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.exposed_headers:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP CORS exposed headers"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.cors.max_age:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP CORS max age"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.endpoint:
     support: full

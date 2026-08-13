@@ -8,9 +8,11 @@ pub mod semantics;
 pub mod traces;
 pub mod util;
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use ::metrics::Counter;
+use agent_data_plane_config::domains::otlp::Cors;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -43,6 +45,7 @@ use stringtheory::MetaString;
 use tokio::runtime::Handle;
 use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::error;
 
 pub const OTLP_METRICS_GRPC_SERVICE_PATH: MetaString =
@@ -117,6 +120,7 @@ pub struct OtlpServerBuilder {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    cors: Cors,
 }
 
 impl OtlpServerBuilder {
@@ -128,7 +132,14 @@ impl OtlpServerBuilder {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
+            cors: Cors::default(),
         }
+    }
+
+    /// Sets the CORS configuration for the HTTP receiver.
+    pub fn with_cors(mut self, cors: Cors) -> Self {
+        self.cors = cors;
+        self
     }
 
     /// Builds and starts the OTLP servers (HTTP and gRPC).
@@ -179,13 +190,20 @@ impl OtlpServerBuilder {
         thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
 
         // Create and spawn the HTTP server.
-        let service = TowerToHyperService::new(
-            Router::new()
-                .route("/v1/metrics", post(http_metrics_handler::<H>))
-                .route("/v1/logs", post(http_logs_handler::<H>))
-                .route("/v1/traces", post(http_traces_handler::<H>))
-                .with_state((otlp_handler, memory_limiter, metrics)),
-        );
+        let router = Router::new()
+            .route("/v1/metrics", post(http_metrics_handler::<H>))
+            .route("/v1/logs", post(http_logs_handler::<H>))
+            .route("/v1/traces", post(http_traces_handler::<H>))
+            .with_state((otlp_handler, memory_limiter, metrics));
+
+        // Apply CORS middleware when origins are configured.
+        let router = if !self.cors.allowed_origins.is_empty() {
+            router.layer(build_cors_layer(&self.cors))
+        } else {
+            router
+        };
+
+        let service = TowerToHyperService::new(router);
 
         let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
             .await
@@ -197,6 +215,82 @@ impl OtlpServerBuilder {
 
         Ok((http_shutdown_coordinator, http_error))
     }
+}
+
+/// Builds a `tower-http` CORS layer from the resolved CORS configuration.
+///
+/// - Any entry containing `*` (not just a bare `*`) enables allow-all mode.
+/// - Otherwise, an entry may contain a single `*` as a partial wildcard that matches zero or more
+///   characters (for example, `http://*.domain.com` matches `http://foo.domain.com`). Only the
+///   first `*` is treated as a wildcard; additional `*` characters become literal suffix.
+fn build_cors_layer(cors: &Cors) -> CorsLayer {
+    let mut layer = CorsLayer::new();
+
+    // Origins. `rs/cors` treats any `*` in the list as allow-all.
+    let has_wildcard = cors.allowed_origins.iter().any(|o| o.contains('*'));
+
+    if has_wildcard {
+        layer = layer.allow_origin(Any);
+    } else {
+        // All origins are exact-match; lowercase for case-insensitive comparison.
+        let exact_origins: Vec<http::HeaderValue> = cors
+            .allowed_origins
+            .iter()
+            .map(|o| o.to_lowercase())
+            .filter_map(|o| http::HeaderValue::from_str(&o).ok())
+            .collect();
+        layer = layer.allow_origin(exact_origins);
+    }
+
+    if cors.allowed_headers.iter().any(|h| h == "*") {
+        layer = layer.allow_headers(Any);
+    } else {
+        let mut headers: Vec<http::HeaderName> = cors
+            .allowed_headers
+            .iter()
+            .filter_map(|h| http::HeaderName::from_str(h).ok())
+            .collect();
+        // Implicit headers always allowed.
+        for name in ["accept", "accept-language", "content-type", "content-language"] {
+            if let Ok(h) = http::HeaderName::from_str(name) {
+                headers.push(h);
+            }
+        }
+        // When no explicit headers are listed, also allow X-Requested-With.
+        if cors.allowed_headers.is_empty() {
+            if let Ok(h) = http::HeaderName::from_str("x-requested-with") {
+                headers.push(h);
+            }
+        }
+        layer = layer.allow_headers(headers);
+    }
+
+    // Exposed headers.
+    if !cors.exposed_headers.is_empty() {
+        let headers: Vec<http::HeaderName> = cors
+            .exposed_headers
+            .iter()
+            .filter_map(|h| http::HeaderName::from_str(h).ok())
+            .collect();
+        layer = layer.expose_headers(headers);
+    }
+
+    // Max age.
+    if cors.max_age > 0 {
+        layer = layer.max_age(std::time::Duration::from_secs(cors.max_age));
+    }
+
+    layer
+}
+
+#[cfg(test)]
+fn wildcard_match(pattern: &str, input: &str) -> bool {
+    let mut parts = pattern.splitn(2, '*');
+    let prefix = parts.next().unwrap_or("");
+    let Some(suffix) = parts.next() else {
+        return pattern == input;
+    };
+    input.starts_with(prefix) && input.ends_with(suffix) && input.len() >= prefix.len() + suffix.len()
 }
 
 /// HTTP handler for OTLP metrics requests.
@@ -434,5 +528,56 @@ mod tests {
             .unwrap();
 
         assert_bytes_received(&recorder, expected_size);
+    }
+
+    #[test]
+    fn wildcard_match_exact_subdomain() {
+        assert!(wildcard_match("http://*.example.com", "http://foo.example.com"));
+    }
+
+    #[test]
+    fn wildcard_match_zero_chars_for_star() {
+        // `*` matches zero characters, so `http://*.example.com` matches `http://.example.com`.
+        assert!(wildcard_match("http://*.example.com", "http://.example.com"));
+    }
+
+    #[test]
+    fn wildcard_match_rejects_wrong_domain() {
+        assert!(!wildcard_match("http://*.example.com", "http://foo.other.com"));
+    }
+
+    #[test]
+    fn wildcard_match_rejects_suffix_attack() {
+        assert!(!wildcard_match(
+            "http://*.example.com",
+            "http://foo.example.com.evil.com"
+        ));
+    }
+
+    #[test]
+    fn wildcard_match_wildcard_in_middle() {
+        assert!(wildcard_match(
+            "http://*.example.com:8080",
+            "http://foo.example.com:8080"
+        ));
+    }
+
+    #[test]
+    fn wildcard_match_second_star_is_literal() {
+        // Only the first `*` is a wildcard; the second `*` is literal in the suffix.
+        assert!(wildcard_match("http://*.example.com/*", "http://foo.example.com/*"));
+        assert!(!wildcard_match("http://*.example.com/*", "http://foo.example.com/bar"));
+    }
+
+    #[test]
+    fn wildcard_match_broader_pattern() {
+        // `http://*example.com` matches `http://badexample.com` (pure string matching, rs/cors behavior).
+        assert!(wildcard_match("http://*example.com", "http://badexample.com"));
+    }
+
+    #[test]
+    fn wildcard_match_no_wildcard_is_exact() {
+        assert!(wildcard_match("http://example.com", "http://example.com"));
+        assert!(!wildcard_match("http://example.com", "http://other.com"));
     }
 }

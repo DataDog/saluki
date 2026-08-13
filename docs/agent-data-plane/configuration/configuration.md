@@ -453,10 +453,6 @@ ways that are not yet fully characterized.
 | `otlp_config.receiver.protocols.grpc.tls.tpm.path`                                         | gRPC TLS TPM path                      |         |
 | `otlp_config.receiver.protocols.grpc.write_buffer_size`                                    | gRPC write buffer size                 |         |
 | `otlp_config.receiver.protocols.http.compression_algorithms`                               | HTTP compression algorithms            |         |
-| `otlp_config.receiver.protocols.http.cors.allowed_headers`                                 | HTTP CORS allowed headers              |         |
-| `otlp_config.receiver.protocols.http.cors.allowed_origins`                                 | HTTP CORS allowed origins              |         |
-| `otlp_config.receiver.protocols.http.cors.exposed_headers`                                 | HTTP CORS exposed headers              |         |
-| `otlp_config.receiver.protocols.http.cors.max_age`                                         | HTTP CORS max age                      |         |
 | `otlp_config.receiver.protocols.http.idle_timeout`                                         | HTTP idle timeout                      |         |
 | `otlp_config.receiver.protocols.http.include_metadata`                                     | HTTP include metadata in context       |         |
 | `otlp_config.receiver.protocols.http.keep_alives_enabled`                                  | HTTP keep-alives enabled               |         |
@@ -824,6 +820,10 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.receiver.protocols.grpc.endpoint`                 | otlp_config.receiver.protocols.grpc.endpoint       |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`    | Max OTLP inbound gRPC message size (MiB)           |
 | `otlp_config.receiver.protocols.grpc.transport`                | otlp_config.receiver.protocols.grpc.transport      |
+| `otlp_config.receiver.protocols.http.cors.allowed_headers`     | HTTP CORS allowed headers                          |
+| `otlp_config.receiver.protocols.http.cors.allowed_origins`     | HTTP CORS allowed origins                          |
+| `otlp_config.receiver.protocols.http.cors.exposed_headers`     | HTTP CORS exposed headers                          |
+| `otlp_config.receiver.protocols.http.cors.max_age`             | HTTP CORS max age                                  |
 | `otlp_config.receiver.protocols.http.endpoint`                 | otlp_config.receiver.protocols.http.endpoint       |
 | `otlp_config.traces.enabled`                                   | otlp_config.traces.enabled                         |
 | `otlp_config.traces.internal_port`                             | otlp_config.traces.internal_port                   |

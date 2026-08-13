@@ -1629,6 +1629,9 @@ impl Default for OtlpConfigReceiverProtocolsGrpc {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigReceiverProtocolsHttp {
+    #[serde(default)]
+    pub cors: OtlpConfigReceiverProtocolsHttpCors,
+
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint"
     )]
@@ -1639,7 +1642,38 @@ pub struct OtlpConfigReceiverProtocolsHttp {
 impl Default for OtlpConfigReceiverProtocolsHttp {
     fn default() -> Self {
         Self {
+            cors: Default::default(),
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsHttpCors {
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub allowed_headers: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub allowed_origins: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_space_separated_or_seq")]
+    pub exposed_headers: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_i64")]
+    pub max_age: Option<i64>,
+}
+
+impl Default for OtlpConfigReceiverProtocolsHttpCors {
+    fn default() -> Self {
+        Self {
+            allowed_headers: Default::default(),
+            allowed_origins: Default::default(),
+            exposed_headers: Default::default(),
+            max_age: Default::default(),
         }
     }
 }
