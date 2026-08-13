@@ -228,6 +228,8 @@ report-benchmarks-adp:
     paths:
       - outputs/condensed-report.md
     when: always
+  before_script:
+    - *setup-smp-env
   script:
     # Do some pre-flight steps like creating directories, installing helper utilities, setting credentials, and so on.
     - mkdir -p outputs
