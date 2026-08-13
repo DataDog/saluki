@@ -10,6 +10,8 @@ use std::time::Instant;
 use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
+#[cfg(target_os = "linux")]
+use saluki_app::util::wait_for_shutdown_signal;
 #[cfg(any(target_os = "linux", test))]
 use saluki_components::sources::TimestampResolution;
 #[cfg(target_os = "linux")]
@@ -302,13 +304,8 @@ async fn handle_dogstatsd_replay(
     let cancel_on_signal = tokio::spawn({
         let cancel = cancel.clone();
         async move {
-            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                .expect("failed to install SIGTERM handler");
-
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => cancel.cancel(),
-                _ = sigterm.recv() => cancel.cancel(),
-            }
+            wait_for_shutdown_signal().await;
+            cancel.cancel();
         }
     });
 
