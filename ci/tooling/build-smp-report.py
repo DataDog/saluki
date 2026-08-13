@@ -15,13 +15,14 @@ Usage:
 """
 
 import argparse
-import sys
-
-from pathlib import Path
+import logging
 import subprocess
+import sys
+from pathlib import Path
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(
         description="Generate a condensed Markdown SMP benchmark report.",
     )
@@ -53,20 +54,23 @@ def main() -> int:
     smp_binary: Path = args.smp_binary.resolve()
     print(smp_binary.stat())
 
+    cmd = (
+        smp_binary.as_posix(),
+        "report",
+        "render",
+        "--report-json",
+        args.report_json,
+        "--output-file",
+        args.output_report,
+        "--target-config-dir",
+        "test/smp/regression/adp/full/",
+        "--template-file",
+        "ci/tooling/smp_condensed_report.md.j2",
+    )
+    logging.info("Running %s", cmd)
     try:
         subprocess.run(
-            (
-                smp_binary.as_posix(),
-                "report",
-                "render",
-                "--report-json",
-                args.report_json,
-                "--output-file",
-                args.output_report,
-                "--target-config-dir",
-                "test/smp/regression/adp/full/" "--template-file",
-                "ci/tooling/smp_condensed_report.md.j2",
-            ),
+            cmd,
             check=True,
         )
     except subprocess.CalledProcessError as exc:
@@ -77,6 +81,7 @@ def main() -> int:
             "Check the benchmark job logs for details.\n"
         )
         args.output_report.write_text(failure_report)
+        logging.exception("Report rendering failed")
 
     return 0
 
