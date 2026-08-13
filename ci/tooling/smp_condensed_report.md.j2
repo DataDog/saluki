@@ -64,8 +64,7 @@
 | {{ r.name }} | {{ r.label }} | {{ r.dot }} {{ r.delta }} | {{ links(r.experiment) }} |
 {% endfor -%}
 {%- endmacro -%}
-## Regression Detector (Agent Data Plane)
-
+_this test report is locally rendered_
 **Run ID:** `{{ job_id }}`
 **Baseline:** `{{ baseline_sha[:8] or "(unknown)" }}` &middot; **Comparison:** `{{ comparison_sha[:8] or "(unknown)" }}` &middot; {% if shas_are_shas %}[diff](../../compare/{{ baseline_sha }}..{{ comparison_sha }}){% else %}(diff unavailable){% endif %}
 {#- Data the report carries but the tables cannot show. One line each, and
