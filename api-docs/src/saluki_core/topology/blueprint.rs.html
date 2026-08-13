@@ -958,8 +958,8 @@
 <a href=#958 id=958 data-nosnippet>958</a>            <span class="kw">let </span>shutdown = context.take_shutdown_handle();
 <a href=#959 id=959 data-nosnippet>959</a>            <span class="kw">if let </span><span class="prelude-val">Some</span>(started) = <span class="self">self</span>.spawned_child {
 <a href=#960 id=960 data-nosnippet>960</a>                context
-<a href=#961 id=961 data-nosnippet>961</a>                    .spawn_handle()
-<a href=#962 id=962 data-nosnippet>962</a>                    .spawn(CountingChild { started })
+<a href=#961 id=961 data-nosnippet>961</a>                    .spawner()
+<a href=#962 id=962 data-nosnippet>962</a>                    .spawn_supervisable(CountingChild { started })
 <a href=#963 id=963 data-nosnippet>963</a>                    .<span class="kw">await
 <a href=#964 id=964 data-nosnippet>964</a>                    </span>.expect(<span class="string">"should spawn dynamic child"</span>);
 <a href=#965 id=965 data-nosnippet>965</a>            }
