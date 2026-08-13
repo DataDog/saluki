@@ -2,12 +2,13 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::Duration;
 
 use serde::Serialize;
 
 use crate::defaults::DEFAULT_ENCODER_FLUSH_TIMEOUT;
-use crate::ConfigValue;
+use crate::{ConfigValue, Error};
 
 /// Cross-cutting configuration shared across domains.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -333,8 +334,12 @@ pub struct MetricsEncoding {
     /// V3 metrics-intake protocol settings (`serializer_experimental_use_v3_api.*`).
     pub v3_api: V3ApiEncoding,
 
-    /// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
+    /// Global V3 series routing mode (`use_v3_api.series.enabled`).
     pub v3_series_mode: V3SeriesMode,
+
+    /// Per-endpoint V3 series routing overrides, keyed by endpoint URL
+    /// (`use_v3_api.series.endpoints`).
+    pub v3_series_endpoint_modes: HashMap<String, V3SeriesMode>,
 }
 
 impl Default for MetricsEncoding {
@@ -354,6 +359,7 @@ impl Default for MetricsEncoding {
             histogram: HistogramEncoding::default(),
             v3_api: V3ApiEncoding::default(),
             v3_series_mode: V3SeriesMode::default(),
+            v3_series_endpoint_modes: HashMap::new(),
         }
     }
 }
@@ -408,24 +414,38 @@ impl Default for V3ApiSettings {
     }
 }
 
-/// Global and per-endpoint V3 series routing mode (`use_v3_api.series.*`).
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub struct V3SeriesMode {
-    /// Global V3 series mode.
-    ///
-    /// Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
-    /// TODO: consider modeling as an enum.
-    pub mode: String,
+/// Whether series are routed to the V3 metrics intake (`use_v3_api.series.*`).
+///
+/// Each variant serializes to the spelling [`FromStr`] reads, so a serialized mode round-trips.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub enum V3SeriesMode {
+    /// Route series to the V3 intake.
+    #[serde(rename = "true")]
+    Enabled,
 
-    /// Per-endpoint V3 series mode overrides, keyed by endpoint URL.
-    pub endpoint_modes: HashMap<String, String>,
+    /// Route series to the older intake.
+    #[serde(rename = "false")]
+    Disabled,
+
+    /// Route series to the V3 intake only for endpoints that are Datadog intake URLs.
+    #[default]
+    #[serde(rename = "datadog_only")]
+    DatadogOnly,
 }
 
-impl Default for V3SeriesMode {
-    fn default() -> Self {
-        Self {
-            mode: "datadog_only".to_string(),
-            endpoint_modes: HashMap::new(),
+impl FromStr for V3SeriesMode {
+    type Err = Error;
+
+    // The Agent reads this setting as a string and then interprets it, accepting more spellings than
+    // `strconv.ParseBool` does, so the accepted set is wider than that of a `boolean` leaf.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "t" | "yes" | "on" => Ok(Self::Enabled),
+            "false" | "0" | "f" | "no" | "off" | "" => Ok(Self::Disabled),
+            "datadog_only" => Ok(Self::DatadogOnly),
+            other => Err(Error::new_without_source(format!(
+                "unknown V3 series mode `{other}`; expected a boolean or `datadog_only`"
+            ))),
         }
     }
 }
@@ -470,4 +490,51 @@ pub struct AutoscalingFailover {
 
     /// Metrics designated for failover.
     pub metrics: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::V3SeriesMode;
+
+    #[test]
+    fn v3_series_mode_parses_every_form_the_agent_interprets() {
+        for (value, expected) in [
+            ("true", V3SeriesMode::Enabled),
+            ("TRUE", V3SeriesMode::Enabled),
+            ("1", V3SeriesMode::Enabled),
+            ("t", V3SeriesMode::Enabled),
+            ("yes", V3SeriesMode::Enabled),
+            ("on", V3SeriesMode::Enabled),
+            ("false", V3SeriesMode::Disabled),
+            ("0", V3SeriesMode::Disabled),
+            ("f", V3SeriesMode::Disabled),
+            ("no", V3SeriesMode::Disabled),
+            ("off", V3SeriesMode::Disabled),
+            ("", V3SeriesMode::Disabled),
+            (" datadog_only ", V3SeriesMode::DatadogOnly),
+        ] {
+            assert_eq!(
+                value.parse::<V3SeriesMode>().expect("mode should parse"),
+                expected,
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn v3_series_mode_rejects_an_uninterpretable_value() {
+        let error = "sometimes"
+            .parse::<V3SeriesMode>()
+            .expect_err("an uninterpretable mode should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "unknown V3 series mode `sometimes`; expected a boolean or `datadog_only`"
+        );
+    }
+
+    #[test]
+    fn v3_series_mode_defaults_to_datadog_only() {
+        assert_eq!(V3SeriesMode::default(), V3SeriesMode::DatadogOnly);
+    }
 }

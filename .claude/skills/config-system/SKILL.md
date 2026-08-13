@@ -123,6 +123,22 @@ Reserve `#[serde(flatten)]` for a struct that genuinely groups several *top-leve
 example, the forwarder's `forwarder_*` retry settings). Name a Rust field after its canonical
 section rather than renaming it onto one.
 
+## Scalar leaf coercion
+
+`DatadogConfiguration` scalar leaves accept what the Agent's permissive casting accepts. Codegen
+attaches a `cast_de.rs` coercion per schema type. For example `dogstatsd_port: "8125.0"` is valid
+and coerced to the int `8125`. `1` or `"T"` is coerced to a `bool`.
+
+## Documented enum settings
+
+A `string` setting whose documentation names a closed set of values (`otlp_config.metrics.histograms.mode`)
+becomes an enum in `agent-data-plane-config` with `#[default]` on the schema default and a `FromStr`
+listing the accepted spellings. The translator parses it and records the error, recovering to the value
+the Agent uses. When the Agent defines that recovery itself rather than falling back to a default
+(`use_v3_api.series.enabled`: warn and route to v2), warn instead of recording an error, so the strict
+startup gate does not reject a configuration the Agent runs with. Serialize each variant to the
+spelling `FromStr` reads.
+
 ## Saluki-only values
 
 Values absent from the Datadog schema reach `SalukiConfiguration` through the `SalukiOnly` source

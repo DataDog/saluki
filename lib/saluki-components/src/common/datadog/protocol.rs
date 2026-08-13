@@ -3,9 +3,11 @@
 use std::collections::HashMap;
 
 use agent_data_plane_config::shared::{
-    V3ApiEncoding as TypedV3ApiEncoding, V3ApiSettings as TypedV3ApiSettings, V3SeriesMode as TypedV3SeriesMode,
+    MetricsEncoding as TypedMetricsEncoding, V3ApiEncoding as TypedV3ApiEncoding, V3ApiSettings as TypedV3ApiSettings,
+    V3SeriesMode,
 };
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use super::METRICS_SERIES_V3_BETA_PATH;
 
@@ -19,10 +21,6 @@ const fn default_v3_series_shadow_sample_rate() -> f64 {
 
 fn default_v3_series_shadow_sites() -> Vec<String> {
     vec!["datadoghq.com".to_string()]
-}
-
-fn default_use_v3_api_series_enabled() -> String {
-    "datadog_only".to_string()
 }
 
 #[derive(Deserialize)]
@@ -41,19 +39,34 @@ impl V3SeriesModeValue {
     }
 }
 
+/// Parses a V3 series mode, warning and disabling V3 for a value the Agent cannot interpret.
+///
+/// The Agent reads this setting as a string and interprets it when routing, treating a value it does
+/// not recognize as false. Recovering the same way keeps a typo from failing the component outright.
+fn parse_v3_series_mode_or_disable(config_key: &'static str, value: &str) -> V3SeriesMode {
+    value.parse().unwrap_or_else(|_| {
+        warn!(
+            config_key,
+            value, "Invalid V3 series mode value. Expected true, false, or datadog_only; treating as false."
+        );
+        V3SeriesMode::Disabled
+    })
+}
+
 /// Deserializes an Agent V3 series mode value.
 ///
 /// The Datadog Agent accepts string values such as `true`, `false`, and `datadog_only`, while YAML values may also be
-/// written as booleans. Normalize those supported forms into the string form used by the evaluator.
-pub fn deserialize_v3_series_mode<'de, D>(deserializer: D) -> Result<String, D::Error>
+/// written as booleans. Both forms reach the same parser.
+pub fn deserialize_v3_series_mode<'de, D>(deserializer: D) -> Result<V3SeriesMode, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    V3SeriesModeValue::deserialize(deserializer).map(V3SeriesModeValue::into_string)
+    let raw = V3SeriesModeValue::deserialize(deserializer)?.into_string();
+    Ok(parse_v3_series_mode_or_disable("use_v3_api.series.enabled", &raw))
 }
 
 /// Deserializes per-endpoint Agent V3 series mode overrides.
-pub fn deserialize_v3_series_endpoint_modes<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+pub fn deserialize_v3_series_endpoint_modes<'de, D>(deserializer: D) -> Result<HashMap<String, V3SeriesMode>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -73,7 +86,10 @@ where
 
     Ok(values
         .into_iter()
-        .map(|(endpoint, value)| (endpoint, value.into_string()))
+        .map(|(endpoint, value)| {
+            let mode = parse_v3_series_mode_or_disable("use_v3_api.series.endpoints", &value.into_string());
+            (endpoint, mode)
+        })
         .collect())
 }
 
@@ -308,37 +324,22 @@ pub struct UseV3ApiConfig {
 }
 
 /// Agent-compatible `use_v3_api.series` configuration.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UseV3ApiSeriesConfig {
     /// Global V3 series mode.
-    ///
-    /// Valid Agent values are truthy strings, falsy strings, and `datadog_only`. Invalid values are treated as false by
-    /// the evaluator. Defaults to `datadog_only`, which enables V3 only for configured Datadog intake URLs.
-    #[serde(
-        default = "default_use_v3_api_series_enabled",
-        deserialize_with = "deserialize_v3_series_mode"
-    )]
-    pub enabled: String,
+    #[serde(default, deserialize_with = "deserialize_v3_series_mode")]
+    pub enabled: V3SeriesMode,
 
     /// Per-endpoint V3 series mode overrides.
     #[serde(default, deserialize_with = "deserialize_v3_series_endpoint_modes")]
-    pub endpoints: HashMap<String, String>,
+    pub endpoints: HashMap<String, V3SeriesMode>,
 }
 
-impl Default for UseV3ApiSeriesConfig {
-    fn default() -> Self {
+impl From<&TypedMetricsEncoding> for UseV3ApiSeriesConfig {
+    fn from(config: &TypedMetricsEncoding) -> Self {
         Self {
-            enabled: default_use_v3_api_series_enabled(),
-            endpoints: HashMap::new(),
-        }
-    }
-}
-
-impl From<&TypedV3SeriesMode> for UseV3ApiSeriesConfig {
-    fn from(config: &TypedV3SeriesMode) -> Self {
-        Self {
-            enabled: config.mode.clone(),
-            endpoints: config.endpoint_modes.clone(),
+            enabled: config.v3_series_mode,
+            endpoints: config.v3_series_endpoint_modes.clone(),
         }
     }
 }
@@ -347,15 +348,15 @@ impl From<&TypedV3SeriesMode> for UseV3ApiSeriesConfig {
 mod tests {
     use serde::Deserialize;
 
-    use super::{deserialize_v3_series_mode, UseV3ApiSeriesConfig};
+    use super::{deserialize_v3_series_mode, UseV3ApiSeriesConfig, V3SeriesMode};
 
     #[derive(Deserialize)]
     struct Wrapper {
         #[serde(deserialize_with = "deserialize_v3_series_mode")]
-        mode: String,
+        mode: V3SeriesMode,
     }
 
-    fn parse_mode(value: serde_json::Value) -> String {
+    fn parse_mode(value: serde_json::Value) -> V3SeriesMode {
         serde_json::from_value::<Wrapper>(serde_json::json!({ "mode": value }))
             .expect("mode should deserialize")
             .mode
@@ -363,14 +364,14 @@ mod tests {
 
     #[test]
     fn deserialize_v3_series_mode_normalizes_accepted_forms() {
-        // Documented accepted forms: the string values `true`, `false`, and `datadog_only` pass through
-        // unchanged, and YAML/JSON booleans are normalized to their string form for the evaluator.
+        // Documented accepted forms: the string values `true`, `false`, and `datadog_only`, plus the
+        // YAML/JSON booleans the Agent also accepts for this setting.
         let cases = [
-            (serde_json::json!("true"), "true"),
-            (serde_json::json!("false"), "false"),
-            (serde_json::json!("datadog_only"), "datadog_only"),
-            (serde_json::json!(true), "true"),
-            (serde_json::json!(false), "false"),
+            (serde_json::json!("true"), V3SeriesMode::Enabled),
+            (serde_json::json!("false"), V3SeriesMode::Disabled),
+            (serde_json::json!("datadog_only"), V3SeriesMode::DatadogOnly),
+            (serde_json::json!(true), V3SeriesMode::Enabled),
+            (serde_json::json!(false), V3SeriesMode::Disabled),
         ];
 
         for (input, expected) in cases {
@@ -379,7 +380,25 @@ mod tests {
     }
 
     #[test]
+    fn deserialize_v3_series_mode_disables_v3_for_an_uninterpretable_value() {
+        // The Agent's evaluator treats a mode it cannot interpret as false rather than failing, so
+        // deserialization recovers the same way instead of rejecting the component's configuration.
+        assert_eq!(parse_mode(serde_json::json!("sometimes")), V3SeriesMode::Disabled);
+    }
+
+    #[test]
     fn v3_series_mode_defaults_to_datadog_only() {
-        assert_eq!(UseV3ApiSeriesConfig::default().enabled, "datadog_only");
+        assert_eq!(UseV3ApiSeriesConfig::default().enabled, V3SeriesMode::DatadogOnly);
+    }
+
+    #[test]
+    fn a_serialized_v3_series_mode_deserializes_back_to_itself() {
+        // A mode serializes to the Agent spelling it was read from, so a serialized configuration is
+        // one this deserializer accepts.
+        for mode in [V3SeriesMode::Enabled, V3SeriesMode::Disabled, V3SeriesMode::DatadogOnly] {
+            let serialized = serde_json::to_value(mode).expect("mode should serialize");
+
+            assert_eq!(parse_mode(serialized.clone()), mode, "{serialized}");
+        }
     }
 }

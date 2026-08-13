@@ -4,6 +4,7 @@ use std::{
     sync::LazyLock,
 };
 
+use agent_data_plane_config::shared::V3SeriesMode;
 use http::uri::Authority;
 use regex::Regex;
 use saluki_config::GenericConfiguration;
@@ -12,7 +13,7 @@ use saluki_metadata;
 use serde::Deserialize;
 use serde_with::{serde_as, DisplayFromStr, OneOrMany, PickFirst};
 use snafu::{ResultExt, Snafu};
-use tracing::{debug, warn};
+use tracing::debug;
 use url::Url;
 
 use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeriesConfig};
@@ -150,18 +151,10 @@ impl EndpointV3Settings {
             true
         } else if let Some(metrics_primary_use_v3) = config.metrics_primary_v3_override {
             metrics_primary_use_v3
-        } else if let Some(endpoint_value) = config.series_config.endpoints.get(config.configured_endpoint) {
-            evaluate_series_v3_mode(
-                "use_v3_api.series.endpoints",
-                endpoint_value,
-                config.configured_endpoint,
-            )
+        } else if let Some(endpoint_mode) = config.series_config.endpoints.get(config.configured_endpoint) {
+            evaluate_series_v3_mode(*endpoint_mode, config.configured_endpoint)
         } else {
-            evaluate_series_v3_mode(
-                "use_v3_api.series.enabled",
-                &config.series_config.enabled,
-                config.configured_endpoint,
-            )
+            evaluate_series_v3_mode(config.series_config.enabled, config.configured_endpoint)
         };
 
         let use_v3_sketches = config
@@ -254,54 +247,19 @@ fn serializer_v3_config_matches_endpoint(configured_endpoint: &str, v3_series_en
         .any(|endpoint| configured_endpoint == endpoint)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SeriesV3Mode {
-    Enabled,
-    Disabled,
-    DatadogOnly,
-    Invalid,
-}
-
-fn parse_series_v3_mode(value: &str) -> SeriesV3Mode {
-    let trimmed = value.trim();
-    if trimmed.eq_ignore_ascii_case("true")
-        || trimmed == "1"
-        || trimmed.eq_ignore_ascii_case("t")
-        || trimmed.eq_ignore_ascii_case("yes")
-        || trimmed.eq_ignore_ascii_case("on")
-    {
-        SeriesV3Mode::Enabled
-    } else if trimmed.eq_ignore_ascii_case("false")
-        || trimmed == "0"
-        || trimmed.eq_ignore_ascii_case("f")
-        || trimmed.eq_ignore_ascii_case("no")
-        || trimmed.eq_ignore_ascii_case("off")
-        || trimmed.is_empty()
-    {
-        SeriesV3Mode::Disabled
-    } else if trimmed.eq_ignore_ascii_case("datadog_only") {
-        SeriesV3Mode::DatadogOnly
-    } else {
-        SeriesV3Mode::Invalid
-    }
-}
-
 fn configured_endpoint_is_datadog_url(configured_endpoint: &str) -> bool {
     Url::parse(configured_endpoint.trim()).is_ok_and(|url| is_datadog_url(&url))
 }
 
-pub(crate) fn evaluate_series_v3_mode(config_key: &'static str, value: &str, configured_endpoint: &str) -> bool {
-    match parse_series_v3_mode(value) {
-        SeriesV3Mode::Enabled => true,
-        SeriesV3Mode::Disabled => false,
-        SeriesV3Mode::DatadogOnly => configured_endpoint_is_datadog_url(configured_endpoint),
-        SeriesV3Mode::Invalid => {
-            warn!(
-                config_key,
-                value, "Invalid V3 series mode value. Expected true, false, or datadog_only; treating as false."
-            );
-            false
-        }
+/// Resolves a V3 series mode against the endpoint it applies to.
+///
+/// Only `datadog_only` depends on the endpoint, which is why the mode cannot be reduced to a boolean
+/// when it is read.
+pub(crate) fn evaluate_series_v3_mode(mode: V3SeriesMode, configured_endpoint: &str) -> bool {
+    match mode {
+        V3SeriesMode::Enabled => true,
+        V3SeriesMode::Disabled => false,
+        V3SeriesMode::DatadogOnly => configured_endpoint_is_datadog_url(configured_endpoint),
     }
 }
 
@@ -309,22 +267,14 @@ pub(crate) fn series_v3_config_can_enable_v3(series_config: &UseV3ApiSeriesConfi
     if series_config
         .endpoints
         .iter()
-        .any(|(endpoint, value)| evaluate_series_v3_mode("use_v3_api.series.endpoints", value, endpoint))
+        .any(|(endpoint, mode)| evaluate_series_v3_mode(*mode, endpoint))
     {
         return true;
     }
 
-    match parse_series_v3_mode(&series_config.enabled) {
-        SeriesV3Mode::Enabled | SeriesV3Mode::DatadogOnly => true,
-        SeriesV3Mode::Disabled => false,
-        SeriesV3Mode::Invalid => {
-            warn!(
-                config_key = "use_v3_api.series.enabled",
-                value = series_config.enabled,
-                "Invalid V3 series mode value. Expected true, false, or datadog_only; treating as false."
-            );
-            false
-        }
+    match series_config.enabled {
+        V3SeriesMode::Enabled | V3SeriesMode::DatadogOnly => true,
+        V3SeriesMode::Disabled => false,
     }
 }
 
@@ -1453,7 +1403,7 @@ mod tests {
         let mut series_config = UseV3ApiSeriesConfig::default();
         series_config
             .endpoints
-            .insert(resolved.configured_endpoint().to_string(), "false".to_string());
+            .insert(resolved.configured_endpoint().to_string(), V3SeriesMode::Disabled);
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
             series_shadow_sites: &["datadoghq.com".to_string()],
@@ -1462,12 +1412,12 @@ mod tests {
         assert!(!settings.use_v3_series);
 
         series_config = UseV3ApiSeriesConfig {
-            enabled: "false".to_string(),
+            enabled: V3SeriesMode::Disabled,
             ..Default::default()
         };
         series_config
             .endpoints
-            .insert(resolved.configured_endpoint().to_string(), "true".to_string());
+            .insert(resolved.configured_endpoint().to_string(), V3SeriesMode::Enabled);
 
         let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
             series_shadow_sites: &["datadoghq.com".to_string()],
@@ -1483,7 +1433,7 @@ mod tests {
         let custom = ResolvedEndpoint::from_raw_endpoint("https://example.com", "fake-api-key")
             .expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig {
-            enabled: "datadog_only".to_string(),
+            enabled: V3SeriesMode::DatadogOnly,
             endpoints: HashMap::new(),
         };
 
@@ -1497,7 +1447,7 @@ mod tests {
     #[test]
     fn agent_v3_datadog_only_config_viability_matches_core_agent_url_rules() {
         let mut series_config = UseV3ApiSeriesConfig {
-            enabled: "false".to_string(),
+            enabled: V3SeriesMode::Disabled,
             endpoints: HashMap::new(),
         };
         for endpoint in [
@@ -1507,12 +1457,12 @@ mod tests {
             "https://app.us12.datadoghq.com",
             "https://app.apne1.datadoghq.com",
         ] {
-            series_config.endpoints = HashMap::from([(endpoint.to_string(), "datadog_only".to_string())]);
+            series_config.endpoints = HashMap::from([(endpoint.to_string(), V3SeriesMode::DatadogOnly)]);
             assert!(series_v3_config_can_enable_v3(&series_config), "{endpoint}");
         }
 
         for endpoint in ["app.datadoghq.com", "app.datadoghq.com:443", "example.com"] {
-            series_config.endpoints = HashMap::from([(endpoint.to_string(), "datadog_only".to_string())]);
+            series_config.endpoints = HashMap::from([(endpoint.to_string(), V3SeriesMode::DatadogOnly)]);
             assert!(!series_v3_config_can_enable_v3(&series_config), "{endpoint}");
         }
     }
@@ -1522,12 +1472,12 @@ mod tests {
         let resolved = ResolvedEndpoint::from_raw_endpoint("app.datadoghq.com:443", "fake-api-key")
             .expect("endpoint should resolve");
         let mut series_config = UseV3ApiSeriesConfig {
-            enabled: "false".to_string(),
+            enabled: V3SeriesMode::Disabled,
             endpoints: HashMap::new(),
         };
         series_config
             .endpoints
-            .insert(resolved.configured_endpoint().to_string(), "datadog_only".to_string());
+            .insert(resolved.configured_endpoint().to_string(), V3SeriesMode::DatadogOnly);
 
         let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
 
@@ -1575,7 +1525,7 @@ mod tests {
         let resolved = ResolvedEndpoint::from_raw_endpoint("https://vector.example.com", "fake-api-key")
             .expect("endpoint should resolve");
         let series_config = UseV3ApiSeriesConfig {
-            enabled: "false".to_string(),
+            enabled: V3SeriesMode::Disabled,
             ..Default::default()
         };
         let serializer_v3_endpoints = vec![resolved.configured_endpoint().to_string()];

@@ -11,12 +11,17 @@
 //! value and substitutes an empty result, while this module propagates a hard error so the caller
 //! can reject the value instead of silently losing it.
 //!
+//! The scalar type fallbacks are the string half of [`crate::cast_de`], which every configuration
+//! source shares, so an environment variable and a file accept the same spellings for a leaf.
+//!
 //! One type is intentionally left as a string: a `Duration` leaf keeps its raw text and is parsed by
 //! `crate::duration_de` at deserialize time, because a duration also arrives from the file (a Go
 //! duration string) and from the Agent stream (integer nanoseconds), so that leaf must stay
 //! shape-tolerant regardless of the environment.
 
 use serde_json::{Map, Number, Value};
+
+use crate::cast_de;
 
 /// How to decode a raw environment string into a JSON value for one leaf.
 ///
@@ -71,9 +76,11 @@ pub fn decode(raw: &str, how: EnvDecode) -> Result<Value, String> {
         EnvDecode::JsonListOrSpaceSeparated => json_list_or_split(raw, ' '),
         EnvDecode::TracesSpan => traces_span(raw),
         EnvDecode::RawString | EnvDecode::DurationString => Ok(Value::String(raw.to_string())),
-        EnvDecode::Bool => parse_bool(raw).map(Value::Bool),
-        EnvDecode::Integer => parse_integer(raw),
-        EnvDecode::Float => parse_float(raw),
+        EnvDecode::Bool => cast_de::parse_bool(raw).map(Value::Bool),
+        EnvDecode::Integer => cast_de::parse_i64(raw).map(|n| Value::Number(n.into())),
+        EnvDecode::Float => cast_de::parse_f64(raw)
+            // `parse_f64` rejects the non-finite values, which are the only ones JSON cannot hold.
+            .map(|parsed| Value::Number(Number::from_f64(parsed).expect("a finite float is a JSON number"))),
         EnvDecode::StringList => Ok(whitespace_list(raw)),
     }
 }
@@ -152,33 +159,6 @@ fn traces_span(raw: &str) -> Result<Value, String> {
 /// The `[]string` type fallback (`cast.ToStringSliceE`): split on whitespace, dropping empties.
 fn whitespace_list(raw: &str) -> Value {
     string_array(raw.split_whitespace())
-}
-
-/// Boolean type fallback (`cast.ToBoolE` → `strconv.ParseBool`).
-///
-/// Accepts exactly Go's grammar: `1`, `t`, `T`, `TRUE`, `true`, `True`, and the false equivalents.
-fn parse_bool(raw: &str) -> Result<bool, String> {
-    match raw {
-        "1" | "t" | "T" | "TRUE" | "true" | "True" => Ok(true),
-        "0" | "f" | "F" | "FALSE" | "false" | "False" => Ok(false),
-        other => Err(format!("invalid boolean `{other}`")),
-    }
-}
-
-/// Integer type fallback (`cast.ToIntE`).
-fn parse_integer(raw: &str) -> Result<Value, String> {
-    raw.trim()
-        .parse::<i64>()
-        .map(|n| Value::Number(n.into()))
-        .map_err(|_| format!("invalid integer `{raw}`"))
-}
-
-/// Float type fallback (`cast.ToFloat64E`).
-fn parse_float(raw: &str) -> Result<Value, String> {
-    let n: f64 = raw.trim().parse().map_err(|_| format!("invalid number `{raw}`"))?;
-    Number::from_f64(n)
-        .map(Value::Number)
-        .ok_or_else(|| format!("non-finite number `{raw}`"))
 }
 
 /// Collects strings into a JSON array of strings.
@@ -278,7 +258,8 @@ mod tests {
         assert_eq!(decode("T", EnvDecode::Bool).unwrap(), json!(true));
         assert!(decode("yes", EnvDecode::Bool).is_err());
         assert_eq!(decode("9125", EnvDecode::Integer).unwrap(), json!(9125));
-        assert!(decode("9125.0", EnvDecode::Integer).is_err());
+        assert_eq!(decode("9125.0", EnvDecode::Integer).unwrap(), json!(9125));
+        assert!(decode("9125.5", EnvDecode::Integer).is_err());
         assert_eq!(decode("1.5", EnvDecode::Float).unwrap(), json!(1.5));
     }
 
