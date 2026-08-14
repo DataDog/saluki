@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["ACCEPTABLE_FLUSH_DELAY"],"mod":["config","dogstatsd","driver","payload","rand"]};
+window.SIDEBAR_ITEMS = {"constant":["ACCEPTABLE_FLUSH_DELAY"],"mod":["config","contexts","dogstatsd","driver","payload","rand"]};

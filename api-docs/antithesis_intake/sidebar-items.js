@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["capture","http"]};
+window.SIDEBAR_ITEMS = {"mod":["capture","context_pool","http"]};

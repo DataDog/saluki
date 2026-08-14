@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["DatadogConfig","DriverConfig"]};
+window.SIDEBAR_ITEMS = {"struct":["ContextSourceConfig","DatadogConfig","DriverConfig"]};
