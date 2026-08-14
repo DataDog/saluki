@@ -11,10 +11,6 @@ export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 
 export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
 # ADP-specific settings used during builds.
-#
-# ADP's name and version aren't here: the binary declares them itself (see `declare_app_details!` in
-# bin/agent-data-plane/src/main.rs) and Cargo supplies the version, so builds no longer pass them in. ADP_APP_VERSION
-# survives only because release artifacts are named after it.
 export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
 export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))

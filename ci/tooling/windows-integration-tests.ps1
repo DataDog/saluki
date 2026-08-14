@@ -57,8 +57,7 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 Invoke-Native docker version
 
 Write-Host "[*] Building Panoramic and Agent Data Plane for Windows..."
-# saluki-metadata reads these at build time. ADP declares its own name and version, so only
-# build metadata is passed in here.
+# saluki-metadata reads these at build time.
 # Windows PowerShell 5.1 doesn't have Get-Date's -AsUTC switch (added in PS 7.1).
 $env:APP_BUILD_TIME = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 if (-not $env:APP_GIT_HASH) {

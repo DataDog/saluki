@@ -30,7 +30,6 @@ export CARGO_TARGET_DIR
 
 APP_GIT_HASH_AUTO="$(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo not-in-git)"
 
-# Only build metadata is passed in; ADP declares its own name and Cargo supplies its version.
 export APP_GIT_HASH="${APP_GIT_HASH:-${ADP_APP_GIT_HASH:-${APP_GIT_HASH_AUTO}}}"
 # Unlike the Makefile, this script defaults APP_DEV_BUILD to "false", so it can't fall back to a placeholder
 # timestamp: saluki-metadata rejects placeholder metadata on release builds. Stamp the current time instead.

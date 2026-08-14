@@ -46,8 +46,7 @@ Install-CachedZipTool `
 
 # saluki-metadata reads these at build time. Must match what the Makefile passes through
 # (ADP_APP_GIT_HASH / ADP_APP_BUILD_TIME) so the Windows binary reports the same build
-# metadata as the linux/darwin binaries do. The application's name and version aren't here:
-# ADP declares those itself and Cargo supplies the version.
+# metadata as the linux/darwin binaries do.
 # Windows PowerShell 5.1 (the default `powershell.exe` in the LTSC2022 build image) doesn't
 # have Get-Date's -AsUTC switch (added in PS 7.1). ToUniversalTime() works on both.
 $env:APP_BUILD_TIME = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")

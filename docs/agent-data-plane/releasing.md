@@ -81,12 +81,8 @@ during the build process and is used to drive a number of behaviors:
 - outputting the version of ADP, when it was built, the build architecture, etc, as a log at startup
 - special constant identifiers that are used to populate things like HTTP request headers (user agent, etc)
 
-ADP's identity—its full name, short name, identifier, and version—isn't passed in by the build. The binary declares it
-in `bin/agent-data-plane/src/main.rs` using `saluki_metadata::declare_app_details!`, and Cargo supplies the version from
-`bin/agent-data-plane/Cargo.toml`. Changing any of those means editing that declaration, not the build tooling.
-
-What remains describes the build rather than the application, and is calculated with a Make
-target—`emit-adp-build-metadata`—which populates it during local builds or regular CI builds:
+This build metadata is calculated with a Make target—`emit-adp-build-metadata`—which populates it during local builds or
+regular CI builds. The relevant build arguments are all prefixed with `APP_` and are as follows:
 
 - `APP_GIT_HASH`: the Git commit the build was performed from (set to the GitLab CI commit SHA)
 - `APP_BUILD_TIME`: the time the build was performed (set to the creation time of the GitLab CI pipeline)
