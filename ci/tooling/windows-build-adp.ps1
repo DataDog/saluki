@@ -50,7 +50,7 @@ Install-CachedZipTool `
 # the same way as the linux/darwin binaries do.
 $env:APP_FULL_NAME = "Agent Data Plane"
 $env:APP_SHORT_NAME = "data-plane"
-$env:APP_IDENTIFIER = "agent-data-plane"
+$env:APP_IDENTIFIER = "adp"
 $env:APP_VERSION = $env:ADP_VERSION
 # Windows PowerShell 5.1 (the default `powershell.exe` in the LTSC2022 build image) doesn't
 # have Get-Date's -AsUTC switch (added in PS 7.1). ToUniversalTime() works on both.
