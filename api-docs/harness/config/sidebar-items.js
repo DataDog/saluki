@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ContextSourceConfig","DatadogConfig","DriverConfig"]};
+window.SIDEBAR_ITEMS = {"constant":["MIN_CONTEXTS_PER_KIND"],"struct":["ContextSourceConfig","DatadogConfig","DriverConfig"]};

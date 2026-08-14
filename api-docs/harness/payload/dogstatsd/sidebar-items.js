@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["PAYLOAD_BYTE_LIMIT"],"fn":["write_payload"],"struct":["Payload","WorkingSet"]};
+window.SIDEBAR_ITEMS = {"constant":["DATAGRAM_BYTE_LIMIT"],"fn":["write_datagram"],"struct":["DatagramStats","Pull"]};
