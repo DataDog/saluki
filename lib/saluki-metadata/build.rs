@@ -17,11 +17,10 @@ fn main() {
     let target_arch = get_env_var_or_default("TARGET", "unknown-arch");
 
     // Release builds shouldn't silently ship the placeholder values above, so treat any that survive as a build
-    // failure. We can't key off APP_DEV_BUILD alone: CI sets it at the workflow level, so on a tag pipeline it's also
-    // set for test/lint jobs that supply no build metadata, hence only enforcing when some of it was supplied.
-    let metadata_supplied = env_var_present("APP_GIT_HASH") || env_var_present("APP_BUILD_TIME");
-
-    if !app_dev_build && metadata_supplied {
+    // failure. CI sets APP_DEV_BUILD at the workflow level, so on a tag pipeline it's also set for jobs that only test
+    // or lint; those run through the Makefile, which exports this metadata for every recipe, so they satisfy the check
+    // the same way a real build does.
+    if !app_dev_build {
         let mut placeholders = Vec::new();
 
         if app_git_hash == "unknown" || app_git_hash == "not-in-git" {
@@ -63,11 +62,6 @@ fn get_env_var_or_default(var_name: &str, default: &str) -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or(default.to_string())
-}
-
-/// Returns `true` if the given environment variable is set to a non-empty value.
-fn env_var_present(var_name: &str) -> bool {
-    std::env::var(var_name).ok().filter(|s| !s.is_empty()).is_some()
 }
 
 /// Returns the value the given environment variable after parsing as a boolean, or the default value if the environment
