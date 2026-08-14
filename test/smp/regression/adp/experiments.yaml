@@ -248,6 +248,31 @@ experiments:
         - unix_datagram:
             bytes_per_second: "10 MiB"
 
+  - name: dsd_uds_10mb_3k_timestamped_contexts
+    extends: dsd_base
+    optimization_goals:
+      - cpu
+      - memory
+    lading:
+      generator:
+        - unix_datagram:
+            bytes_per_second: "10 MiB"
+            variant:
+              dogstatsd:
+                metric_weights:
+                  count: 208
+                  gauge: 66
+                  timer: 0
+                  distribution: 0
+                  set: 0
+                  histogram: 0
+                timestamp:
+                  range:
+                    inclusive:
+                      min: 1656581400
+                      max: 1656585000
+                  probability: 1.0
+
   - name: dsd_uds_100mb_3k_contexts
     extends: dsd_base
     optimization_goals:
