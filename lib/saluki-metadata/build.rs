@@ -33,16 +33,9 @@ fn main() {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(0);
 
-    // Release builds have to carry real metadata. The defaults above are deliberately forgiving so that a bare `cargo
-    // build` works, but that same forgiveness means a release binary whose build tooling forgot (or misspelled) one of
-    // these variables ships silently, reporting "unknown" to users and telemetry. Once a build looks like a release
-    // build of the application, treat any remaining placeholder as a build failure instead.
-    //
-    // "Looks like" is doing real work here. `APP_DEV_BUILD` alone isn't a sufficient signal: it's set at the workflow
-    // level in CI, so on a tag pipeline it's also present for jobs that merely run `cargo test`/`cargo clippy` and have
-    // no reason to supply application metadata. We therefore only enforce when something actually tried to identify the
-    // application, which no test/lint job does. Requiring just one of these to be present still catches the failure
-    // mode we care about, since forgetting one variable leaves the others set.
+    // Release builds shouldn't silently ship the placeholder values above, so treat any that survive as a build
+    // failure. We can't key off APP_DEV_BUILD alone: CI sets it at the workflow level, so on a tag pipeline it's also
+    // set for test/lint jobs that supply no metadata, hence only enforcing when something identified the application.
     let identifying_build = ["APP_FULL_NAME", "APP_SHORT_NAME", "APP_IDENTIFIER", "APP_VERSION"]
         .iter()
         .any(|var_name| env_var_present(var_name));
