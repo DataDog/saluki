@@ -64,7 +64,7 @@ async fn main() -> Result<(), GenericError> {
 
     // Print version and exit early without requiring config.
     if let Action::Version(v) = &cli.action {
-        handle_version_command(&APP_DETAILS, v.json).await;
+        handle_version_command(v.json).await;
         return Ok(());
     }
 
@@ -228,7 +228,7 @@ async fn run_inner(
         Action::Debug(cmd) => handle_debug_command(local_config, cmd).await,
         Action::Config(cmd) => handle_config_command(local_config, cmd).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(local_config, cmd).await,
-        Action::Version(v) => handle_version_command(&APP_DETAILS, v.json).await,
+        Action::Version(v) => handle_version_command(v.json).await,
     }
 
     Ok(None)

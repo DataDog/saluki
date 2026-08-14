@@ -1,5 +1,4 @@
 use argh::FromArgs;
-use saluki_metadata::AppDetails;
 
 /// Prints the agent-data-plane version.
 #[derive(FromArgs, Debug)]
@@ -12,9 +11,10 @@ pub struct VersionCommand {
 
 /// Prints the agent-data-plane version.
 ///
-/// Takes the details directly rather than reading the registered ones, since this runs before bootstrap has had a
-/// chance to register them.
-pub async fn handle_version_command(app_data: &AppDetails, json: bool) {
+/// Reads the crate's own details rather than the registered ones, since this can run before bootstrap has had a chance
+/// to register them.
+pub async fn handle_version_command(json: bool) {
+    let app_data = &crate::APP_DETAILS;
     if json {
         println!(
             "{}",
