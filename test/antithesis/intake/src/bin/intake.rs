@@ -6,9 +6,11 @@
 mod unix_intake {
     use std::future::IntoFuture;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use antithesis_intake::{
         capture::State,
+        context_pool::Pool,
         http::{build_router, state::AppState},
     };
     use antithesis_sdk::prelude::*;
@@ -31,9 +33,11 @@ mod unix_intake {
         /// Optional ADP-target HTTP bind address.
         #[arg(long = "adp-listen-addr", env = "ADP_LISTEN_ADDR")]
         adp_listen_addr: Option<String>,
-        /// Directory holding the timeline's sampled `datadog.yaml`.
-        #[arg(long = "agent-config-dir", env = "AGENT_CONFIG_DIR", default_value = "/agent-config")]
-        agent_config_dir: PathBuf,
+        /// Directory holding this timeline's sampled `datadog.yaml` and `context_source.yaml`. The
+        /// former backs Pyld60, the latter resolves the pool's per-kind caps on the first `/contexts`
+        /// request.
+        #[arg(long = "config-dir", env = "CONFIG_DIR", default_value = "/agent-config")]
+        config_dir: PathBuf,
     }
 
     #[tokio::main]
@@ -64,6 +68,8 @@ mod unix_intake {
         spawn_signal_handlers(shutdown_tx).context("Failed to configure signal handlers.")?;
 
         let capture = State::new();
+        // One pool backs every lane, so the drivers draw recurring identities across lanes.
+        let pool = Arc::new(Pool::new(config.config_dir.clone()));
 
         if let (Some(agent_addr), Some(adp_addr)) = (config.agent_listen_addr.as_ref(), config.adp_listen_addr.as_ref())
         {
@@ -78,8 +84,8 @@ mod unix_intake {
                 agent_addr, adp_addr
             );
 
-            let agent_router = build_router(AppState::agent(&capture, &config.agent_config_dir));
-            let adp_router = build_router(AppState::adp(&capture, &config.agent_config_dir));
+            let agent_router = build_router(AppState::agent(&capture, pool.clone(), &config.config_dir));
+            let adp_router = build_router(AppState::adp(&capture, pool.clone(), &config.config_dir));
 
             // Both servers drain in flight requests on the shared shutdown signal.
             let agent_server = axum::serve(agent_listener, agent_router)
@@ -99,7 +105,7 @@ mod unix_intake {
 
             axum::serve(
                 listener,
-                build_router(AppState::adp(&capture, &config.agent_config_dir)),
+                build_router(AppState::adp(&capture, pool, &config.config_dir)),
             )
             .with_graceful_shutdown(wait_for_shutdown(shutdown_rx))
             .await

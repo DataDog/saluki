@@ -16,8 +16,11 @@ services:
       DD_HOSTNAME: "antithesis-differential"
       AGENT_LISTEN_ADDR: "0.0.0.0:2049"
       ADP_LISTEN_ADDR: "0.0.0.0:2050"
+      CONFIG_DIR: "/agent-config"
     volumes:
-      # The sampled datadog.yaml, so the intake can hold each target to what its config asked for.
+      # first_sample_config (workload) writes this timeline's datadog.yaml and context_source.yaml
+      # here. The intake reads the first to hold each target to its config and the second for the
+      # context pool's caps.
       - agent-config:/agent-config:ro
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/2049'"]
@@ -92,6 +95,8 @@ services:
     environment:
       NO_COLOR: "1"
       INTAKE_CONTROL_ADDR: "intake:2049"
+      # Both lanes share one pool, so either lane's address serves the same contexts.
+      INTAKE_ADDR: "intake:2049"
       AGENT_DOGSTATSD_SOCKET: "/var/run/datadog-agent/dsd.socket"
       ADP_DOGSTATSD_SOCKET: "/var/run/adp/dsd.socket"
       DOGSTATSD_SOCKET: "/var/run/dogstatsd/dsd.socket"
