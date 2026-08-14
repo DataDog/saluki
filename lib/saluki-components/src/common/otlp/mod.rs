@@ -29,20 +29,15 @@ use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
 use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
-use saluki_common::sync::shutdown::ShutdownCoordinator;
-use saluki_common::task::HandleExt as _;
 use saluki_core::accounting::MemoryLimiter;
-use saluki_core::components::ComponentContext;
+use saluki_core::components::{ComponentContext, ComponentSpawner};
 use saluki_core::observability::ComponentMetricsExt;
-use saluki_error::{generic_error, GenericError};
-use saluki_io::net::listener::ConnectionOrientedListener;
-use saluki_io::net::server::http::{ErrorHandle, HttpServer};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::net::server::{grpc::GrpcServer, http::HttpServer};
 use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
-use tokio::runtime::Handle;
-use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::error;
@@ -162,50 +157,46 @@ impl OtlpServerBuilder {
 
     /// Builds and starts the OTLP servers (HTTP and gRPC).
     ///
-    /// Returns the HTTP server shutdown handle and error handle.
+    /// Both servers run on the shared worker pool, since request handling shouldn't contend with the runtime driving
+    /// the topology, and decoding can be compute-heavy for large requests.
+    ///
+    /// # Errors
+    ///
+    /// If the gRPC endpoint isn't a TCP address, the listen addresses can't be bound, or either server can't be
+    /// spawned, an error is returned.
     pub async fn build<H: OtlpHandler>(
-        self, handler: H, memory_limiter: MemoryLimiter, thread_pool_handle: Handle, metrics: Metrics,
-    ) -> Result<(ShutdownCoordinator, ErrorHandle), GenericError> {
+        self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, spawner: &ComponentSpawner,
+    ) -> Result<(), GenericError> {
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
         // Create and spawn the gRPC server.
-        let grpc_metrics_server = MetricsServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let inner_grpc = GrpcServiceImpl::new(otlp_handler.clone(), memory_limiter.clone(), metrics.clone());
 
-        let grpc_logs_server = LogsServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let grpc_metrics_server =
+            MetricsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        let grpc_traces_server = TraceServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let grpc_logs_server =
+            LogsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        let grpc_server = Server::builder()
+        let grpc_traces_server =
+            TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+
+        let ListenAddress::Tcp(grpc_socket_addr) = self.grpc_endpoint else {
+            return Err(generic_error!("OTLP gRPC endpoint must be a TCP address."));
+        };
+
+        let grpc_server = GrpcServer::new(grpc_socket_addr)
             .add_service(grpc_metrics_server)
             .add_service(grpc_logs_server)
             .add_service(grpc_traces_server);
 
-        let grpc_socket_addr = match self.grpc_endpoint {
-            ListenAddress::Tcp(addr) => addr,
-            _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
-        };
-
-        let grpc_listener = tokio::net::TcpListener::bind(grpc_socket_addr)
+        spawner
+            .supervisable(grpc_server)
+            .on_worker_pool()
+            .spawn()
             .await
-            .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
-        let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
-        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
+            .error_context("Failed to spawn OTLP gRPC server.")?;
 
         // Create and spawn the HTTP server.
         let router = Router::new()
@@ -223,15 +214,16 @@ impl OtlpServerBuilder {
 
         let service = TowerToHyperService::new(router);
 
-        let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
+        let http_server = HttpServer::from_listen_address(self.http_endpoint, service);
+
+        spawner
+            .supervisable(http_server)
+            .on_worker_pool()
+            .spawn()
             .await
-            .map_err(|e| generic_error!("Failed to create OTLP HTTP listener: {}", e))?;
+            .error_context("Failed to spawn OTLP HTTP server.")?;
 
-        let (http_shutdown_coordinator, http_error) = HttpServer::from_listener(http_listener, service)
-            .with_executor(thread_pool_handle)
-            .listen();
-
-        Ok((http_shutdown_coordinator, http_error))
+        Ok(())
     }
 }
 
