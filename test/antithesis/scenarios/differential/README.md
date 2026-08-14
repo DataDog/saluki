@@ -1,8 +1,8 @@
 # Differential scenario
 
-This scenario tests that the Datadog Agent emits the same metric contexts for the
-same DogStatsD input whether its embedded data plane (ADP) is off or on. Values
-for contexts are not compared.
+This scenario tests that the Datadog Agent emits the same metric contexts, and
+the same values for those contexts, for the same DogStatsD input whether its
+embedded data plane (ADP) is off or on.
 
 ## How it works
 
@@ -60,16 +60,24 @@ acceptable_flush_delay`. We compute `delayed` for each member of `D` in
 check passes. In the `finally_` check we sleep for `acceptable_flush_delay` and
 then assert that `D == {}`.
 
+Values are compared by Frechet distance, discussed in detail in
+`test/antithesis/intake/README.md`.
+
 # Caveats
 
 1. This is a differential test. If ADP and Datadog Agent are buggy in the _same
    manner_ then this will be accorded a success. Consider for instance if both
    SUTs never emit any contexts incorrectly.
 2. We are only making claims about when a context appears in output. We are not
-   claiming that contexts are refreshed correctly. So, for instance, if one of
-   the systems only ever emits one instance of a continually updated context
-   this will not be detected.
-3. `acceptable_flush_delay` must be set by convention.
+   claiming that contexts are refreshed correctly. A lane that emits one
+   instance of a continually updated context is caught by neither comparison,
+   since truncating to the older lane's newest bucket collapses the compared
+   range.
+3. The value comparison forgives flush skew up to the leash width, and drops
+   that many buckets from each end of the compared range. A divergence confined
+   to those buckets is not caught.
+4. `acceptable_flush_delay` must be set by convention, as must the value
+   comparison's bucket width, leash width and equivalence threshold.
 
 # Assumptions
 

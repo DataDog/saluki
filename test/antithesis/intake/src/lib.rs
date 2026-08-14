@@ -32,12 +32,21 @@
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
 #![deny(warnings)]
+// The comparison machinery behind the two differential oracles is reachable only from their routes, which
+// only a differential build links. Without the feature it is all dead code, and the crate denies warnings,
+// so the whole oracle tree would fail to compile for the general scenario. See the `differential` feature
+// in Cargo.toml for why the gate cannot be a runtime switch.
+#![cfg_attr(not(feature = "differential"), allow(dead_code))]
 
 pub mod capture;
+mod context_diff;
 pub mod context_pool;
 pub mod http;
 
 mod lenient_decode;
+mod oracle;
 mod properties;
+mod series;
 mod series_observation;
+mod sketch;
 mod sut_config;

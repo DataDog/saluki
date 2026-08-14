@@ -490,6 +490,8 @@ pub(crate) struct V3Series {
     pub(crate) name: String,
     pub(crate) tags: Vec<String>,
     pub(crate) kind: MetricKind,
+    /// The reporting interval the series declares, in seconds. The rate fold weights by it.
+    pub(crate) interval: u32,
     /// The kept points as `(wire bucket-start, value)`, in wire order.
     pub(crate) points: Vec<(u64, BucketValue)>,
 }
@@ -990,6 +992,7 @@ pub(crate) fn decode_series_v3(
             name: name.clone(),
             tags: out_tags,
             kind,
+            interval: u32::try_from(data.intervals[i]).unwrap_or(0),
             points,
         });
     }
