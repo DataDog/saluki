@@ -26,9 +26,8 @@ pub fn get_app_details() -> &'static AppDetails {
 
 /// Registers the details for this application.
 ///
-/// Binaries declare their details with [`declare_app_details!`] and register them here. This must happen before
-/// anything reads them through [`get_app_details`]; applications built on `saluki-app` get this for free, since
-/// bootstrapping registers the details it was given before initializing any other subsystem.
+/// Binaries declare their details with [`declare_app_details!`] and register them here, which should be the first
+/// thing `main` does: anything read through [`get_app_details`] beforehand reports an unknown application.
 ///
 /// # Panics
 ///

@@ -10,11 +10,8 @@ pub struct VersionCommand {
 }
 
 /// Prints the agent-data-plane version.
-///
-/// Reads the crate's own details rather than the registered ones, since this can run before bootstrap has had a chance
-/// to register them.
 pub async fn handle_version_command(json: bool) {
-    let app_data = &crate::APP_DETAILS;
+    let app_data = saluki_metadata::get_app_details();
     if json {
         println!(
             "{}",

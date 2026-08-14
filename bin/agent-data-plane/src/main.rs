@@ -45,9 +45,8 @@ static ALLOC: saluki_common::resource_tracking::TrackingAllocator<std::alloc::Sy
 
 /// Identity of this application.
 ///
-/// Registered during bootstrap, which is what makes it visible to the libraries ADP is built from. Code in this crate
-/// should prefer referring to it directly, since it's also valid before bootstrap has run.
-pub const APP_DETAILS: AppDetails = saluki_metadata::declare_app_details!(
+/// Registered at the very start of `main`, which is what makes it visible to the libraries ADP is built from.
+const APP_DETAILS: AppDetails = saluki_metadata::declare_app_details!(
     full_name = "Agent Data Plane",
     short_name = "data-plane",
     identifier = "adp",
@@ -56,6 +55,10 @@ pub const APP_DETAILS: AppDetails = saluki_metadata::declare_app_details!(
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
+
+    // Register who we are before anything else, so that everything from here on -- including code that runs before
+    // bootstrap -- reports this application rather than an unknown one.
+    saluki_metadata::set_app_details(APP_DETAILS);
 
     #[cfg(feature = "antithesis")]
     initialize_antithesis();
@@ -87,7 +90,7 @@ async fn main() -> Result<(), GenericError> {
     //
     // This initializes logging, metrics, allocator telemetry, TLS, and more. We get handled a guard that we need to
     // hold until the application is about to exit, which ensures things like flushing any buffered logs, and so on.
-    let bootstrapper = AppBootstrapper::from_configuration(APP_DETAILS, &local_config.raw_config())
+    let bootstrapper = AppBootstrapper::from_configuration(&local_config.raw_config())
         .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
         .with_metrics_prefix("adp")
         .with_metrics_default_level(metrics_default_level)
