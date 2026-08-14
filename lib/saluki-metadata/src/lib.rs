@@ -72,10 +72,10 @@ macro_rules! declare_app_details {
     };
 }
 
-/// Parses a `u32` from a string in a const context.
+/// Parses a `u32` from a string in a `const` context.
 ///
 /// Only intended for the version components that Cargo hands us, which are always plain decimal numbers. Any other
-/// character causes a compile-time error, and overflow panics like it would in any other const evaluation.
+/// character causes a compile-time error, and overflow panics like it would in any other `const` evaluation.
 #[doc(hidden)]
 pub const fn const_parse_u32(s: &str) -> u32 {
     let bytes = s.as_bytes();
