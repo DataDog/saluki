@@ -131,8 +131,8 @@ and coerced to the int `8125`. `1` or `"T"` is coerced to a `bool`.
 ## Documented enum settings
 
 A `string` setting whose schema documentation names a closed set of values becomes an enum in
-`agent-data-plane-config` with `#[default]` and `FromStr`. Match Agent behavior; warn and fallback
-to default, or record a `TranslateError`. Serialize using the `FromStr` spelling.
+`agent-data-plane-config` with `#[default]` and `FromStr`. Match Agent behavior; warn and fallback,
+or record a `TranslateError`. Serialize using the `FromStr` spelling.
 
 ## Saluki-only values
 
