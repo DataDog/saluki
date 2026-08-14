@@ -1,62 +1,31 @@
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-env-changed=APP_FULL_NAME");
-    println!("cargo:rerun-if-env-changed=APP_SHORT_NAME");
-    println!("cargo:rerun-if-env-changed=APP_IDENTIFIER");
     println!("cargo:rerun-if-env-changed=APP_GIT_HASH");
-    println!("cargo:rerun-if-env-changed=APP_VERSION");
     println!("cargo:rerun-if-env-changed=APP_BUILD_TIME");
     println!("cargo:rerun-if-env-changed=APP_DEV_BUILD");
     println!("cargo:rerun-if-env-changed=TARGET");
 
-    // This is really, really simple: we look for some specific environment variables, split one of them apart into
-    // numbers if we find it, and then write the values to a file that will get imported by lib.rs. Ta-da.
-    let app_full_name = get_env_var_or_default("APP_FULL_NAME", "unknown");
-    let app_short_name = get_env_var_or_default("APP_SHORT_NAME", "unknown");
-    let app_identifier = get_env_var_or_default("APP_IDENTIFIER", "unknown");
+    // This is really, really simple: we look for some specific environment variables and write the values to a file
+    // that will get imported by lib.rs. Ta-da.
+    //
+    // Only build metadata lives here. Which application is being built isn't knowable from this crate -- one compiled
+    // copy is shared by every binary in the workspace -- so names and versions are declared by the binaries themselves
+    // and registered at startup. See `declare_app_details!`.
     let app_git_hash = get_env_var_or_default("APP_GIT_HASH", "unknown");
-    let app_version = get_env_var_or_default("APP_VERSION", "0.0.0");
     let app_build_time = get_env_var_or_default("APP_BUILD_TIME", "0000-00-00 00:00:00");
     let app_dev_build = get_env_var_bool_or_default("APP_DEV_BUILD", true);
     let target_arch = get_env_var_or_default("TARGET", "unknown-arch");
 
-    // Split the version string on periods to try and extract the major, minor, and patch numbers.
-    //
-    // For the patch component, we also split on hyphens to remove any pre-release or build metadata, and only return
-    // the first portion, assuming it's a number.
-    let mut version_parts = app_version.split('.');
-    let major = version_parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-    let minor = version_parts.next().and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
-    let patch = version_parts
-        .flat_map(|s| s.split('-'))
-        .next()
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(0);
-
     // Release builds shouldn't silently ship the placeholder values above, so treat any that survive as a build
     // failure. We can't key off APP_DEV_BUILD alone: CI sets it at the workflow level, so on a tag pipeline it's also
-    // set for test/lint jobs that supply no metadata, hence only enforcing when something identified the application.
-    let identifying_build = ["APP_FULL_NAME", "APP_SHORT_NAME", "APP_IDENTIFIER", "APP_VERSION"]
-        .iter()
-        .any(|var_name| env_var_present(var_name));
+    // set for test/lint jobs that supply no build metadata, hence only enforcing when some of it was supplied.
+    let metadata_supplied = env_var_present("APP_GIT_HASH") || env_var_present("APP_BUILD_TIME");
 
-    if !app_dev_build && identifying_build {
+    if !app_dev_build && metadata_supplied {
         let mut placeholders = Vec::new();
 
-        if app_full_name == "unknown" {
-            placeholders.push("APP_FULL_NAME");
-        }
-        if app_short_name == "unknown" {
-            placeholders.push("APP_SHORT_NAME");
-        }
-        if app_identifier == "unknown" {
-            placeholders.push("APP_IDENTIFIER");
-        }
         if app_git_hash == "unknown" || app_git_hash == "not-in-git" {
             placeholders.push("APP_GIT_HASH");
-        }
-        if app_version == "0.0.0" {
-            placeholders.push("APP_VERSION");
         }
         if app_build_time.starts_with("0000-00-00") {
             placeholders.push("APP_BUILD_TIME");
@@ -77,29 +46,12 @@ fn main() {
         details_file,
         format!(
             r#"
-    pub const DETECTED_APP_FULL_NAME: &str = "{}";
-    pub const DETECTED_APP_SHORT_NAME: &str = "{}";
-    pub const DETECTED_APP_IDENTIFIER: &str = "{}";
     pub const DETECTED_GIT_HASH: &str = "{}";
-    pub const DETECTED_APP_VERSION: &str = "{}";
-    pub const DETECTED_APP_VERSION_MAJOR: u32 = {};
-    pub const DETECTED_APP_VERSION_MINOR: u32 = {};
-    pub const DETECTED_APP_VERSION_PATCH: u32 = {};
     pub const DETECTED_APP_BUILD_TIME: &str = "{}";
     pub const DETECTED_APP_DEV_BUILD: bool = {};
     pub const DETECTED_TARGET_ARCH: &str = "{}";
             "#,
-            app_full_name,
-            app_short_name,
-            app_identifier,
-            app_git_hash,
-            app_version,
-            major,
-            minor,
-            patch,
-            app_build_time,
-            app_dev_build,
-            target_arch,
+            app_git_hash, app_build_time, app_dev_build, target_arch,
         ),
     )
     .expect("failed to write details file");

@@ -19,6 +19,7 @@ use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
 use saluki_config::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_metadata::AppDetails;
 use tracing::{error, info, warn};
 
 mod cli;
@@ -42,6 +43,16 @@ static ALLOC: saluki_common::resource_tracking::TrackingAllocator<tikv_jemalloca
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<std::alloc::System> =
     saluki_common::resource_tracking::TrackingAllocator::new(std::alloc::System);
 
+/// Identity of this application.
+///
+/// Registered during bootstrap, which is what makes it visible to the libraries ADP is built from. Code in this crate
+/// should prefer referring to it directly, since it's also valid before bootstrap has run.
+pub const APP_DETAILS: AppDetails = saluki_metadata::declare_app_details!(
+    full_name = "Agent Data Plane",
+    short_name = "data-plane",
+    identifier = "adp",
+);
+
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
@@ -53,7 +64,7 @@ async fn main() -> Result<(), GenericError> {
 
     // Print version and exit early without requiring config.
     if let Action::Version(v) = &cli.action {
-        handle_version_command(v.json).await;
+        handle_version_command(&APP_DETAILS, v.json).await;
         return Ok(());
     }
 
@@ -76,7 +87,7 @@ async fn main() -> Result<(), GenericError> {
     //
     // This initializes logging, metrics, allocator telemetry, TLS, and more. We get handled a guard that we need to
     // hold until the application is about to exit, which ensures things like flushing any buffered logs, and so on.
-    let bootstrapper = AppBootstrapper::from_configuration(&local_config.raw_config())
+    let bootstrapper = AppBootstrapper::from_configuration(APP_DETAILS, &local_config.raw_config())
         .error_context("Failed to parse bootstrap configuration during bootstrap phase.")?
         .with_metrics_prefix("adp")
         .with_metrics_default_level(metrics_default_level)
@@ -217,7 +228,7 @@ async fn run_inner(
         Action::Debug(cmd) => handle_debug_command(local_config, cmd).await,
         Action::Config(cmd) => handle_config_command(local_config, cmd).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(local_config, cmd).await,
-        Action::Version(v) => handle_version_command(v.json).await,
+        Action::Version(v) => handle_version_command(&APP_DETAILS, v.json).await,
     }
 
     Ok(None)

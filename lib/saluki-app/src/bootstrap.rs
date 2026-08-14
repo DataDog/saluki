@@ -4,6 +4,7 @@ use metrics::Level;
 use saluki_config::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{ErrorContext as _, GenericError};
+use saluki_metadata::AppDetails;
 
 use crate::{
     logging::{initialize_logging, LoggingConfiguration, LoggingGuard},
@@ -52,6 +53,7 @@ impl BootstrapGuard {
 /// This helper type is used to configure the various low-level shared resources required by the application, such as
 /// the logging and metrics subsystems.
 pub struct AppBootstrapper {
+    app_details: AppDetails,
     logging_config: LoggingConfiguration,
     metrics_prefix: String,
     metrics_default_level: Level,
@@ -64,11 +66,16 @@ impl AppBootstrapper {
     /// that have application-specific logging requirements should follow up with
     /// [`with_logging_configuration`][Self::with_logging_configuration] to override this default.
     ///
+    /// Taking the application's details here is what guarantees they're registered before any subsystem that reports
+    /// them starts up: [`bootstrap`][Self::bootstrap] registers them before doing anything else. Declare them with
+    /// [`declare_app_details!`][saluki_metadata::declare_app_details].
+    ///
     /// # Errors
     ///
     /// This currently doesn't fail, but the signature returns `Result` to leave room for future failures.
-    pub fn from_configuration(_config: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub fn from_configuration(app_details: AppDetails, _config: &GenericConfiguration) -> Result<Self, GenericError> {
         Ok(Self {
+            app_details,
             logging_config: LoggingConfiguration::simple(),
             metrics_prefix: "saluki".to_string(),
             metrics_default_level: Level::INFO,
@@ -114,6 +121,10 @@ impl AppBootstrapper {
     ///
     /// If any of the bootstrap steps fail, an error will be returned.
     pub async fn bootstrap(self) -> Result<Bootstrap, GenericError> {
+        // Register the application's details before anything else: the logging subsystem derives its subagent prefix
+        // from them, so registering any later would have it report an unknown application.
+        saluki_metadata::set_app_details(self.app_details);
+
         // Initialize the logging subsystem first, since we want to make it possible to get any logs from the rest of
         // the bootstrap process.
         let (logging_guard, logging_override) = initialize_logging(self.logging_config)
