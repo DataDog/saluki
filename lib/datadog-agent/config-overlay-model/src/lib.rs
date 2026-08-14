@@ -239,7 +239,11 @@ pub enum ValueType {
 ///
 /// Defaults to the canonical location of the required schema files in this library.
 pub struct Files {
-    pub schema: PathBuf,
+    /// The Datadog Agent core schema file (`schema/core/core_schema.yaml`).
+    pub datadog_schema: PathBuf,
+    /// Directory containing the vendored OTel receiver schema (`schema/otel/`).
+    pub otel_schema_dir: PathBuf,
+    /// The schema overlay (`schema/schema_overlay.yaml`).
     pub overlay: PathBuf,
 }
 
@@ -249,16 +253,18 @@ impl Default for Files {
             .join("..")
             .join("config")
             .join("schema");
-        let schema = dir.join("core").join("core_schema.yaml");
-        let overlay = dir.join("schema_overlay.yaml");
-        Files { schema, overlay }
+        Files {
+            datadog_schema: dir.join("core").join("core_schema.yaml"),
+            otel_schema_dir: dir.join("otel"),
+            overlay: dir.join("schema_overlay.yaml"),
+        }
     }
 }
 
 impl SchemaOverlay {
     pub fn load(files: Files) -> Result<Self, Error> {
         let loaded = Self::from_file(&files.overlay)?;
-        loaded.validate(&files.schema)?;
+        loaded.validate(&files.datadog_schema, &files.otel_schema_dir)?;
         Ok(loaded)
     }
 
@@ -273,8 +279,8 @@ impl SchemaOverlay {
         Self::from_yaml(&contents)
     }
 
-    fn validate(&self, core_schema: &Path) -> Result<(), Error> {
-        self.validate_keys_match(core_schema)?;
+    fn validate(&self, datadog_schema: &Path, otel_schema_dir: &Path) -> Result<(), Error> {
+        self.validate_keys_match(datadog_schema, otel_schema_dir)?;
         self.validate_entries()?;
         Ok(())
     }
@@ -325,8 +331,8 @@ impl SchemaOverlay {
     }
 
     /// Ensure that each core schema key appears exactly once across the overlay sections.
-    fn validate_keys_match(&self, core_schema: &Path) -> Result<(), Error> {
-        let schema_keys = Self::schema_keys(core_schema)?;
+    fn validate_keys_match(&self, datadog_schema: &Path, otel_schema_dir: &Path) -> Result<(), Error> {
+        let schema_keys = Self::schema_keys(datadog_schema, otel_schema_dir)?;
 
         for key in self.excluded.keys() {
             if self.inventory.contains_key(key.as_str()) {
@@ -364,8 +370,8 @@ impl SchemaOverlay {
         Ok(())
     }
 
-    fn schema_keys(schema_path: &Path) -> Result<HashSet<String>, Error> {
-        let schema = load_resolved_schema(schema_path)?;
+    fn schema_keys(datadog_schema: &Path, otel_schema_dir: &Path) -> Result<HashSet<String>, Error> {
+        let schema = load_composed_schema(datadog_schema, otel_schema_dir)?;
         let props = schema
             .get("properties")
             .and_then(|v| v.as_mapping())
@@ -539,6 +545,354 @@ fn resolve_refs(value: &mut serde_yaml::Value, schema_dir: &Path) -> Result<(), 
     Ok(())
 }
 
+/// Load the Datadog schema with the OTel receiver schema patched in.
+pub fn load_composed_schema(datadog_schema: &Path, otel_schema_dir: &Path) -> Result<serde_yaml::Value, Error> {
+    let mut datadog_schema = load_resolved_schema(datadog_schema)?;
+    let otel_receiver = load_otel_receiver(otel_schema_dir)?;
+    patch_receiver(&mut datadog_schema, otel_receiver)?;
+    Ok(datadog_schema)
+}
+
+/// Load and completely resolve the OTel receiver schema into a Datadog compatible subtree.
+fn load_otel_receiver(otel_dir: &Path) -> Result<serde_yaml::Value, Error> {
+    let schema_path = otel_dir.join("config.schema.yaml");
+    let doc = read_yaml(&schema_path)?;
+
+    let defs = doc
+        .get("$defs")
+        .and_then(|v| v.as_mapping())
+        .ok_or_else(|| Error::Validation("OTel schema missing $defs".to_string()))?
+        .clone();
+
+    // Start from properties.protocols (the root of the receiver config).
+    let mut protocols = doc
+        .get("properties")
+        .and_then(|v| v.get("protocols"))
+        .cloned()
+        .ok_or_else(|| Error::Validation("OTel schema missing properties.protocols".to_string()))?;
+
+    // Resolve all $ref, $defs, and allOf.
+    resolve_otel_refs(&mut protocols, otel_dir, &defs)?;
+
+    // Convert to Datadog schema dialect.
+    convert_to_datadog_dialect(&mut protocols);
+
+    // Tag env bindings. Only a subset is is registered and gets an explicit `env_vars` designation; the rest get `no-env`.
+    tag_otel_env_bindings(&mut protocols, &["protocols"]);
+
+    // Wrap in a "receiver" section to match the Datadog schema structure.
+    let mut receiver_section = serde_yaml::Mapping::new();
+    receiver_section.insert(
+        serde_yaml::Value::String("node_type".to_string()),
+        serde_yaml::Value::String("section".to_string()),
+    );
+    receiver_section.insert(
+        serde_yaml::Value::String("type".to_string()),
+        serde_yaml::Value::String("object".to_string()),
+    );
+    let mut properties = serde_yaml::Mapping::new();
+    properties.insert(serde_yaml::Value::String("protocols".to_string()), protocols);
+    receiver_section.insert(
+        serde_yaml::Value::String("properties".to_string()),
+        serde_yaml::Value::Mapping(properties),
+    );
+
+    Ok(serde_yaml::Value::Mapping(receiver_section))
+}
+
+/// Merge the resolved OTel receiver subtree into the Datadog schema's `otlp_config.receiver` while
+/// honoring default values not native to OTel.
+fn patch_receiver(datadog_schema: &mut serde_yaml::Value, otel_receiver: serde_yaml::Value) -> Result<(), Error> {
+    let Some(otlp_config) = datadog_schema
+        .get_mut("properties")
+        .and_then(|v| v.get_mut("otlp_config"))
+    else {
+        return Ok(());
+    };
+
+    let Some(receiver) = otlp_config.get_mut("properties").and_then(|v| v.get_mut("receiver")) else {
+        return Ok(());
+    };
+
+    let datadog_receiver = std::mem::take(receiver);
+    let mut merged = otel_receiver;
+    merge_receiver_node(&mut merged, &datadog_receiver);
+    *receiver = merged;
+    Ok(())
+}
+
+/// Recursively overlay Datadog-specific metadata from the core schema onto the resolved OTel node.
+fn merge_receiver_node(otel: &mut serde_yaml::Value, datadog: &serde_yaml::Value) {
+    let Some(otel_map) = otel.as_mapping_mut() else { return };
+    let Some(datadog_map) = datadog.as_mapping() else {
+        return;
+    };
+
+    // Overlay all Datadog metadata fields onto the OTel node, except `properties`
+    // which is merged recursively to preserve OTel's additional keys.
+    for (key, val) in datadog_map.iter() {
+        if key.as_str() == Some("properties") {
+            continue;
+        }
+        otel_map.insert(key.clone(), val.clone());
+    }
+
+    // Recursively merge `properties` containers.
+    if let (Some(otel_props), Some(datadog_props)) = (
+        otel_map.get_mut("properties").and_then(|v| v.as_mapping_mut()),
+        datadog_map.get("properties").and_then(|v| v.as_mapping()),
+    ) {
+        // Merge overlapping OTel properties with corresponding Datadog properties.
+        let otel_keys: Vec<serde_yaml::Value> = otel_props.keys().cloned().collect();
+        for key in &otel_keys {
+            if let Some(datadog_val) = datadog_props.get(key) {
+                if let Some(otel_val) = otel_props.get_mut(key) {
+                    merge_receiver_node(otel_val, datadog_val);
+                }
+            }
+        }
+        // Add Datadog-only properties that don't exist in OTel.
+        for (key, val) in datadog_props.iter() {
+            if !otel_props.contains_key(key) {
+                otel_props.insert(key.clone(), val.clone());
+            }
+        }
+    }
+}
+
+/// Resolve OTel schema references into a flat tree.
+fn resolve_otel_refs(
+    value: &mut serde_yaml::Value, otel_dir: &Path, current_defs: &serde_yaml::Mapping,
+) -> Result<(), Error> {
+    let Some(map) = value.as_mapping_mut() else {
+        return Ok(());
+    };
+
+    // 1. Handle $ref: replace this node with the resolved definition.
+    if let Some(ref_str) = map.get("$ref").and_then(|v| v.as_str()) {
+        // Save sibling keys (everything except $ref): for example x-optional, description.
+        let siblings: Vec<(serde_yaml::Value, serde_yaml::Value)> = map
+            .iter()
+            .filter(|(k, _)| k.as_str() != Some("$ref"))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        // Resolve the ref target, getting the definition value and its source $defs.
+        let (mut resolved, source_defs) = resolve_otel_ref_target(ref_str, otel_dir, current_defs)?;
+
+        // Recursively resolve refs inside the definition using the source file's $defs.
+        resolve_otel_refs(&mut resolved, otel_dir, &source_defs)?;
+
+        // Resolve siblings using current_defs (they belong to the current file).
+        let mut resolved_siblings: Vec<(serde_yaml::Value, serde_yaml::Value)> = Vec::new();
+        for (k, mut v) in siblings {
+            resolve_otel_refs(&mut v, otel_dir, current_defs)?;
+            resolved_siblings.push((k, v));
+        }
+
+        // Merge siblings into the resolved definition (siblings override def keys).
+        if let Some(resolved_map) = resolved.as_mapping_mut() {
+            for (k, v) in resolved_siblings {
+                resolved_map.insert(k, v);
+            }
+        }
+
+        *value = resolved;
+        return Ok(());
+    }
+
+    // 2. Handle allOf: merge each fragment's properties into this node.
+    if let Some(allof) = map.remove("allOf") {
+        if let Some(allof_seq) = allof.as_sequence() {
+            for fragment in allof_seq {
+                let mut resolved_fragment = fragment.clone();
+                resolve_otel_refs(&mut resolved_fragment, otel_dir, current_defs)?;
+
+                // Merge fragment's properties into value's properties.
+                if let Some(source_props) = resolved_fragment.get("properties").and_then(|v| v.as_mapping()) {
+                    if map.get("properties").is_none() {
+                        map.insert(
+                            serde_yaml::Value::String("properties".to_string()),
+                            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+                        );
+                    }
+                    if let Some(target_props) = map.get_mut("properties").and_then(|v| v.as_mapping_mut()) {
+                        for (k, v) in source_props {
+                            target_props.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Recurse into properties, stripping auth and middlewares that reference excluded packages.
+    if let Some(props) = map.get_mut("properties").and_then(|v| v.as_mapping_mut()) {
+        // Strip auth/middlewares if they have a $ref (direct or via allOf/items) that
+        // transitively references configauth/configmiddleware. A plain `auth` field
+        // (like tpm_config.auth: type: string) has no $ref and must be kept.
+        if let Some(auth) = props.get("auth") {
+            let auth_str = serde_yaml::to_string(auth).unwrap_or_default();
+            if auth_str.contains("$ref") {
+                props.remove(serde_yaml::Value::String("auth".to_string()));
+            }
+        }
+        if let Some(middlewares) = props.get("middlewares") {
+            let mw_str = serde_yaml::to_string(middlewares).unwrap_or_default();
+            if mw_str.contains("$ref") {
+                props.remove(serde_yaml::Value::String("middlewares".to_string()));
+            }
+        }
+        for (_, v) in props.iter_mut() {
+            resolve_otel_refs(v, otel_dir, current_defs)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve a single `$ref` target, returning the definition value and its source `$defs`.
+fn resolve_otel_ref_target(
+    ref_str: &str, otel_dir: &Path, current_defs: &serde_yaml::Mapping,
+) -> Result<(serde_yaml::Value, serde_yaml::Mapping), Error> {
+    if let Some(stripped) = ref_str.strip_prefix('/') {
+        // Package-qualified ref: /config/`configgrpc`.server_config
+        let last_dot = stripped
+            .rfind('.')
+            .ok_or_else(|| Error::Validation(format!("invalid package-qualified ref (no dot): {ref_str}")))?;
+        let package_path = &stripped[..last_dot];
+        let def_name = &stripped[last_dot + 1..];
+
+        // Handle configopaque refs inline (not vendored).
+        if package_path == "config/configopaque" {
+            let inline = match def_name {
+                "string" => serde_yaml::Value::Mapping([("type".into(), "string".into())].into_iter().collect()),
+                "map_list" => {
+                    let mut m = serde_yaml::Mapping::new();
+                    m.insert("type".into(), "object".into());
+                    let mut addl = serde_yaml::Mapping::new();
+                    addl.insert("type".into(), "string".into());
+                    m.insert("additionalProperties".into(), serde_yaml::Value::Mapping(addl));
+                    serde_yaml::Value::Mapping(m)
+                }
+                other => return Err(Error::Validation(format!("unknown configopaque ref: {other}"))),
+            };
+            return Ok((inline, serde_yaml::Mapping::new()));
+        }
+
+        // Reject refs to excluded packages (should not be reached if auth/middlewares are stripped).
+        if package_path == "config/configauth" || package_path == "config/configmiddleware" {
+            return Err(Error::Validation(format!(
+                "unexpected ref to excluded package: {ref_str}"
+            )));
+        }
+
+        // Load the package's schema file.
+        let file_path = otel_dir.join(package_path).join("config.schema.yaml");
+        let file_doc = read_yaml(&file_path)?;
+        let file_defs = file_doc
+            .get("$defs")
+            .and_then(|v| v.as_mapping())
+            .ok_or_else(|| Error::Validation(format!("OTel schema {file_path:?} missing $defs")))?
+            .clone();
+        let def_value = file_defs
+            .get(def_name)
+            .cloned()
+            .ok_or_else(|| Error::Validation(format!("$defs.{def_name} not found in {file_path:?}")))?;
+
+        Ok((def_value, file_defs))
+    } else {
+        // Local ref: protocols, http_config, sanitized_url_path, etc.
+        let def_value = current_defs
+            .get(ref_str)
+            .cloned()
+            .ok_or_else(|| Error::Validation(format!("local $def {ref_str} not found")))?;
+        Ok((def_value, current_defs.clone()))
+    }
+}
+
+/// Convert an OTel schema tree to the Datadog compatible schema dialect.
+fn convert_to_datadog_dialect(value: &mut serde_yaml::Value) {
+    let Some(map) = value.as_mapping_mut() else {
+        return;
+    };
+
+    // Remove OTel-specific extensions.
+    map.remove(serde_yaml::Value::String("x-optional".to_string()));
+    map.remove(serde_yaml::Value::String("x-customType".to_string()));
+
+    // Determine if this is a section (has properties) or a setting (leaf).
+    let is_section = map.get("properties").is_some();
+    let node_type = if is_section { "section" } else { "setting" };
+
+    // Add node_type if not present.
+    if map.get("node_type").is_none() {
+        map.insert(
+            serde_yaml::Value::String("node_type".to_string()),
+            serde_yaml::Value::String(node_type.to_string()),
+        );
+    }
+
+    // Recurse into properties.
+    if let Some(props) = map.get_mut("properties").and_then(|v| v.as_mapping_mut()) {
+        for (_, v) in props.iter_mut() {
+            convert_to_datadog_dialect(v);
+        }
+    }
+}
+
+/// List of env-reachable `otlp_config.receiver` keys
+const ENV_REGISTERED_OTEL_KEYS: &[&str] = &[
+    "otlp_config.receiver.protocols.grpc.endpoint",
+    "otlp_config.receiver.protocols.grpc.transport",
+    "otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib",
+    "otlp_config.receiver.protocols.grpc.max_concurrent_streams",
+    "otlp_config.receiver.protocols.grpc.read_buffer_size",
+    "otlp_config.receiver.protocols.grpc.write_buffer_size",
+    "otlp_config.receiver.protocols.grpc.include_metadata",
+    "otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time",
+    "otlp_config.receiver.protocols.http.endpoint",
+    "otlp_config.receiver.protocols.http.max_request_body_size",
+    "otlp_config.receiver.protocols.http.include_metadata",
+    "otlp_config.receiver.protocols.http.cors.allowed_headers",
+    "otlp_config.receiver.protocols.http.cors.allowed_origins",
+];
+
+/// Walks the OTel receiver subtree and tags each setting with `env_vars` or `no-env`.
+fn tag_otel_env_bindings(value: &mut serde_yaml::Value, path_parts: &[&str]) {
+    let Some(map) = value.as_mapping_mut() else { return };
+
+    if map.get("node_type").and_then(|v| v.as_str()) == Some("setting") {
+        let full_path = format!("otlp_config.receiver.{}", path_parts.join("."));
+        if ENV_REGISTERED_OTEL_KEYS.contains(&full_path.as_str()) {
+            let env_var = format!("DD_{}", full_path.replace('.', "_").to_uppercase());
+            let env_vars = serde_yaml::Value::Sequence(vec![serde_yaml::Value::String(env_var)]);
+            map.insert(serde_yaml::Value::String("env_vars".to_string()), env_vars);
+        } else {
+            let tags_key = serde_yaml::Value::String("tags".to_string());
+            let mut tags = map
+                .get(&tags_key)
+                .and_then(|v| v.as_sequence().cloned())
+                .unwrap_or_default();
+            if !tags.iter().any(|t| t.as_str() == Some("no-env")) {
+                tags.push(serde_yaml::Value::String("no-env".to_string()));
+            }
+            map.insert(tags_key, serde_yaml::Value::Sequence(tags));
+        }
+        return;
+    }
+
+    if let Some(props) = map.get_mut("properties").and_then(|v| v.as_mapping_mut()) {
+        for (key, val) in props.iter_mut() {
+            if let Some(key_str) = key.as_str() {
+                let mut parts = path_parts.to_vec();
+                parts.push(key_str);
+                tag_otel_env_bindings(val, &parts);
+            }
+        }
+    }
+}
+
 const VALIDATION_RULES: &str = "\n\
     \n\
     Rules that must hold in schema_overlay.yaml:\n\
@@ -585,12 +939,22 @@ impl std::error::Error for Error {
 mod tests {
     use super::*;
 
+    /// Returns the OTel schema directory for tests that need the composed schema.
+    fn otel_schema_dir_for_tests() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("config")
+            .join("schema")
+            .join("otel")
+    }
+
     #[test]
     fn overlay_loads() {
         let test_files = Files {
-            schema: Path::new(env!("CARGO_MANIFEST_DIR"))
+            datadog_schema: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("test")
                 .join("fake_schema.yaml"),
+            otel_schema_dir: otel_schema_dir_for_tests(),
             overlay: Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("test")
                 .join("fake_overlay.yaml"),
@@ -640,12 +1004,14 @@ mod tests {
 
     fn load_from_strs(schema: &str, overlay: &str) -> Result<SchemaOverlay, Error> {
         let dir = tempfile::tempdir().unwrap();
-        let schema_path = dir.path().join("schema.yaml");
+        let schema_path = dir.path().join("fake_schema.yaml");
         let overlay_path = dir.path().join("overlay.yaml");
         std::fs::write(&schema_path, schema).unwrap();
         std::fs::write(&overlay_path, overlay).unwrap();
+        let otel_schema_dir = otel_schema_dir_for_tests();
         SchemaOverlay::load(Files {
-            schema: schema_path,
+            datadog_schema: schema_path,
+            otel_schema_dir,
             overlay: overlay_path,
         })
     }
@@ -739,10 +1105,10 @@ excluded:
             "properties:\n  enabled:\n    type: boolean\n",
         )
         .unwrap();
-        let schema_path = dir.path().join("schema.yaml");
+        let schema_path = dir.path().join("core_schema.yaml");
         std::fs::write(&schema_path, "properties:\n  feature:\n    $ref: sub.yaml\n").unwrap();
 
-        let keys = SchemaOverlay::schema_keys(&schema_path).unwrap();
+        let keys = SchemaOverlay::schema_keys(&schema_path, &otel_schema_dir_for_tests()).unwrap();
         assert_eq!(
             keys,
             HashSet::from(["feature.enabled".to_string()]),
@@ -755,10 +1121,10 @@ excluded:
     #[test]
     fn missing_schema_ref_reports_io_error() {
         let dir = tempfile::tempdir().unwrap();
-        let schema_path = dir.path().join("schema.yaml");
+        let schema_path = dir.path().join("core_schema.yaml");
         std::fs::write(&schema_path, "properties:\n  feature:\n    $ref: does_not_exist.yaml\n").unwrap();
 
-        let err = SchemaOverlay::schema_keys(&schema_path).unwrap_err();
+        let err = SchemaOverlay::schema_keys(&schema_path, &otel_schema_dir_for_tests()).unwrap_err();
         assert!(matches!(err, Error::Io(_)), "expected Io error, got: {err}");
         assert!(
             err.to_string().contains("does_not_exist.yaml"),
@@ -800,7 +1166,7 @@ excluded: {}
 
     // The per-entry validation rules (`validate_entries`) are documented in `VALIDATION_RULES` and
     // enforced independently of the schema cross-check, so these tests deserialize an overlay in
-    // isolation (via `from_yaml`) and run only that pass — no matching core schema is needed.
+    // isolation (via `from_yaml`) and run only that pass: no matching core schema is needed.
     fn validate_entries_of(overlay: &str) -> Result<(), Error> {
         SchemaOverlay::from_yaml(overlay)
             .expect("overlay should deserialize")
@@ -1013,5 +1379,36 @@ excluded: {}
                 .contains("additional_yaml_path 'beta' collides with a canonical"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn verify_otel_receiver_env_bindings() {
+        let schema_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("config")
+            .join("schema")
+            .join("core")
+            .join("core_schema.yaml");
+        let otel_schema_dir = otel_schema_dir_for_tests();
+        let schema_map = crate::schema_gen::load_schema(&schema_path, &otel_schema_dir);
+
+        let registered: HashSet<&str> = super::ENV_REGISTERED_OTEL_KEYS.iter().copied().collect();
+
+        for (key, info) in &schema_map {
+            if !key.starts_with("otlp_config.receiver.protocols.") {
+                continue;
+            }
+            if registered.contains(key.as_str()) {
+                assert!(
+                    matches!(info.env, crate::schema_gen::EnvBinding::Overridden(_)),
+                    "registered key `{key}` should have explicit env_vars"
+                );
+            } else {
+                assert!(
+                    matches!(info.env, crate::schema_gen::EnvBinding::None),
+                    "unregistered key `{key}` should be no-env"
+                );
+            }
+        }
     }
 }

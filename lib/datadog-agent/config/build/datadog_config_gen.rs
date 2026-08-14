@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use datadog_agent_config_overlay_model::schema_gen::{FieldInfo, FieldType};
-use datadog_agent_config_overlay_model::{load_resolved_schema, KnownEntry, SchemaOverlay};
+use datadog_agent_config_overlay_model::{KnownEntry, SchemaOverlay};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 use syn::visit_mut::{self, VisitMut};
@@ -47,16 +47,13 @@ const LEAF_KEYWORDS: &[&str] = &[
 ];
 
 pub fn generate(
-    overlay: &SchemaOverlay, schema_path: &Path, schema_map: &IndexMap<String, FieldInfo>, manifest_dir: &Path,
+    overlay: &SchemaOverlay, composed_schema: &serde_yaml::Value, schema_map: &IndexMap<String, FieldInfo>,
+    manifest_dir: &Path,
 ) {
     let supported = supported_keys(overlay);
 
-    // Load the schema with all `$ref` files inlined (apm_config, multi_region_failover, ...).
-    // Without $ref resolution those subsystem keys are silently absent and the witness driver
-    // cannot cover them. Delegate to overlay-model's resolver rather than duplicating it.
-    let schema_yaml = load_resolved_schema(schema_path).unwrap_or_else(|e| panic!("failed to load schema: {e}"));
     let schema: Value =
-        serde_json::to_value(schema_yaml).unwrap_or_else(|e| panic!("failed to convert schema to JSON: {e}"));
+        serde_json::to_value(composed_schema).unwrap_or_else(|e| panic!("failed to convert schema to JSON: {e}"));
     let properties = schema
         .get("properties")
         .and_then(Value::as_object)
