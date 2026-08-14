@@ -1,11 +1,16 @@
 //! Shared `DogStatsD` content sampling: alphabets, field and value builders, tags.
 //!
-//! There is no clean/feral split. Every content field ranges over the full forwarded byte alphabet:
-//! ASCII words, exotic and non-UTF-8 bytes, AND the message delimiters `:` `|` `,` `#` `@`. Including
-//! the delimiters is deliberate. It reaches the context-dependent forwarded cases the Agent keeps,
-//! such as a `:` inside a set value or a `:` in a tag value, and the ones it drops. The generator does
-//! not decide which is which. It serializes and lets [`crate::dogstatsd::is_malformed`] sort and
-//! repair.
+//! There is no clean/feral split. Every pool here is valid UTF-8, from plain ASCII words to exotic
+//! scripts, and every content field also draws the message delimiters `:` `|` `,` `#` `@`. Including the
+//! delimiters is deliberate. It reaches the context-dependent forwarded cases the Agent keeps, such as a
+//! `:` inside a set value or a `:` in a tag value, and the ones it drops. The generator does not decide
+//! which is which. It serializes and lets [`crate::dogstatsd::is_malformed`] sort and repair. Value
+//! tokens are the one exception and omit `|`, which closes the value field and would drop every line
+//! carrying it.
+//!
+//! An invalid UTF-8 byte never comes from these pools. It is minted into an identity by
+//! [`crate::contexts::Context::mint_non_utf8_within`], which is the only caller of
+//! [`invalid_utf8_byte`].
 
 use rand::distr::Distribution;
 use rand::{Rng, RngExt};
@@ -29,18 +34,17 @@ const COMPLIANT_WORD: &[&[u8]] = &[
     b"workers",
 ];
 
-/// Aberrant identifier segments: whitespace, NUL, ill-formed and non-conforming UTF-8, and exotic
-/// Unicode. Omits `\n` and `\r`, which are datagram framing rather than content.
+/// Aberrant identifier segments: whitespace, NUL, and exotic but valid UTF-8. Invalid-UTF-8 bytes are
+/// deliberately absent. [`crate::contexts::Context::mint_non_utf8_within`] puts one into an identity
+/// instead, for the fraction of pulls the intake picks, so the blast radius stays a budgeted fraction of
+/// datagrams rather than compounding across every minted context into a near-certain whole-payload v3
+/// reject. Editing a rendered datagram would invent an identity the pool never issued, which is how
+/// bounded cardinality leaks. Omits `\n` and `\r`, which are datagram framing rather than content.
 const ABERRANT_WORD: &[&[u8]] = &[
     b" ",
     b"\t",
     b"\0",
-    b"\x80",                // lone continuation byte
-    b"\xc3",                // truncated two-byte lead
-    b"\xed\xa0\x80",        // UTF-16 surrogate, ill-formed UTF-8
-    b"\xc0\x80",            // overlong NUL
-    b"\xff\xfe",            // non-character bytes
-    "café".as_bytes(),      // non-conforming but valid UTF-8
+    "café".as_bytes(),      // non-ASCII but valid UTF-8
     "Ωμέγα".as_bytes(),     // Greek
     "日本語".as_bytes(),    // CJK
     "🦆".as_bytes(),        // emoji, non-ASCII multi-byte
@@ -50,12 +54,30 @@ const ABERRANT_WORD: &[&[u8]] = &[
     "\u{feff}".as_bytes(),  // byte-order mark
 ];
 
+/// Bytes no valid UTF-8 sequence can lead with, for poisoning a minted identity. `0x80` is a valid
+/// continuation byte, so a poisoned field is verified rather than assumed invalid.
+const INVALID_UTF8: &[u8] = &[0x80, 0xC0, 0xC1, 0xF5, 0xFE, 0xFF];
+
+/// One byte that makes any surrounding ASCII field invalid UTF-8.
+pub(crate) fn invalid_utf8_byte(rng: &mut (impl Rng + ?Sized)) -> u8 {
+    INVALID_UTF8[rng.random_range(0..INVALID_UTF8.len())]
+}
+
 /// Message delimiters, mixed into content so the generator explores delimiter-bearing fields. Most
 /// land the message in the drop set and are repaired away. The survivors are the forwarded oddities.
 const DELIMITERS: &[&[u8]] = &[b":", b"|", b",", b"#", b"@"];
 
 /// The full content alphabet for identifier-like fields.
 const WORD_POOLS: &[&[&[u8]]] = &[COMPLIANT_WORD, ABERRANT_WORD, DELIMITERS];
+
+/// Delimiters a value token may carry. `|` is absent: it closes the value field, so the type token
+/// after it becomes value content and the Agent drops the line. A long value drawn from a pool holding
+/// `|` almost always carries one, which is how a set metric exhausted its repair tries at a wide budget.
+/// The byte is not lost to the generator, only to values, and a value bearing it never reached the SUT.
+const VALUE_DELIMITERS: &[&[u8]] = &[b":", b",", b"#", b"@"];
+
+/// Pools a value token is built from.
+const VALUE_POOLS: &[&[&[u8]]] = &[COMPLIANT_WORD, ABERRANT_WORD, VALUE_DELIMITERS];
 
 /// Tag keys. `host` is excluded. `DogStatsD` promotes a `host` tag to the metric host resource, and
 /// varying host instances break the intake host-consistency check.
@@ -314,9 +336,9 @@ pub(crate) fn rate_token(rng: &mut (impl Rng + ?Sized)) -> Vec<u8> {
     pick(rng, RATE_TOKEN).to_vec()
 }
 
-/// A set-type value: an opaque required field over the full alphabet.
+/// A set-type value: an opaque required field over the alphabet a value may carry.
 pub(crate) fn opaque_value(rng: &mut (impl Rng + ?Sized)) -> Vec<u8> {
-    field(rng, WORD_POOLS, COUNTS_REQUIRED)
+    field(rng, VALUE_POOLS, COUNTS_REQUIRED)
 }
 
 /// The floor cost of a value token, the shortest `SPECIAL_VALUE` entry.
@@ -343,7 +365,7 @@ pub(crate) fn rate_token_within(rng: &mut (impl Rng + ?Sized), budget: usize) ->
 
 /// A set-type value within `budget`.
 pub(crate) fn opaque_value_within(rng: &mut (impl Rng + ?Sized), budget: usize) -> Vec<u8> {
-    field_within(rng, WORD_POOLS, COUNTS_REQUIRED, budget)
+    field_within(rng, VALUE_POOLS, COUNTS_REQUIRED, budget)
 }
 
 /// The serialized length of a tag set, `|#` and separating commas included.

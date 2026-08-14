@@ -6,3 +6,7 @@
 # everyone who runs the test benefits from these saved cases.
 cc 377cba92b14295b3fe5c6f2738a398ee042be8e35f529398ecf9e275e6b0a1da # shrinks to seed = 0
 cc 1f807f27fdbf0b983fc773b815b21d6023e1bce87691d07133b438b862edcc5b # shrinks to seed = 6079028945602138863, limit_bytes = 21
+cc 966dfab50a6a0af70bafa9c882cd664e62586012ec563187766e7b07773b588e # shrinks to seed = 816969264511539406, limit_bytes = 9
+cc 4470fd2185844af9954fc8e973eee2ac8f6c939167fb7d950e448a5ca2d2b52a # shrinks to seed = 881271281136835980, limit_bytes = 8
+cc c084e24d26194bedbf39e3055ace5c28a2d3ce2f2b071be7277a18f49e568849 # shrinks to seed = 6133403856440011550
+cc 89407cb915422a73621ab39b63ac3bb99e1a12ebb33825d9f623da074b805f9f # shrinks to seed = 17633913455663304866, limit_bytes = 3
