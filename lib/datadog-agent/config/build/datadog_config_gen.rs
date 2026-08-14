@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use datadog_agent_config_overlay_model::schema_gen::{FieldInfo, FieldType};
-use datadog_agent_config_overlay_model::{load_resolved_schema, InputShape, KnownEntry, SchemaOverlay};
+use datadog_agent_config_overlay_model::{KnownEntry, SchemaOverlay};
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 use syn::visit_mut::{self, VisitMut};
