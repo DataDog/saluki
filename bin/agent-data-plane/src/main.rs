@@ -228,7 +228,8 @@ async fn run_inner(
         Action::Debug(cmd) => handle_debug_command(local_config, cmd).await,
         Action::Config(cmd) => handle_config_command(local_config, cmd).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(local_config, cmd).await,
-        Action::Version(v) => handle_version_command(v.json).await,
+        // Handled before bootstrap, so that reporting the version never depends on there being usable configuration.
+        Action::Version(_) => unreachable!("version is handled before bootstrap"),
     }
 
     Ok(None)
