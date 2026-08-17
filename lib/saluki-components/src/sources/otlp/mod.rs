@@ -642,7 +642,6 @@ mod tests {
 
     #[test]
     fn delta_ttl_defaults_to_3600s() {
-        // Omitted from the domain, default (3600s) flows through unchanged.
         assert_eq!(
             config_with_metrics(domains::otlp::Metrics::default())
                 .metrics_translator_config()

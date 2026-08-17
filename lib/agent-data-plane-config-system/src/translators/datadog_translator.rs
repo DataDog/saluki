@@ -1844,7 +1844,6 @@ mod tests {
 
     #[test]
     fn otlp_metrics_delta_ttl_defaults_to_3600s_when_unset() {
-        // Omitted, the Datadog schema default of 3600 seconds applies.
         let (config, errors) = translate_explicit(json!({}));
 
         assert!(errors.is_none());
@@ -1853,8 +1852,6 @@ mod tests {
 
     #[test]
     fn otlp_metrics_delta_ttl_negative_records_error_and_keeps_default() {
-        // A negative TTL is not a valid duration; the witness records an error and leaves the
-        // last-known-good (default) value in place.
         let (config, errors) = translate_explicit(json!({
             "otlp_config": { "metrics": { "delta_ttl": -1 } }
         }));

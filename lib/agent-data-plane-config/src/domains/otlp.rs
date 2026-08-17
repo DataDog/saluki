@@ -29,8 +29,6 @@ pub struct Domain {
 }
 
 /// Default TTL for cached prior points used when converting cumulative sums to deltas.
-///
-/// Matches the Datadog Agent schema default of 3600 seconds. See [`Metrics::delta_ttl`].
 pub const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
 
 /// OTLP metrics translation settings.
