@@ -64,9 +64,9 @@
 <a href=#64 id=64 data-nosnippet>64</a>    m.insert(CONTAINER_NAME, <span class="string">"container_name"</span>);
 <a href=#65 id=65 data-nosnippet>65</a>    m.insert(CONTAINER_IMAGE_NAME, <span class="string">"image_name"</span>);
 <a href=#66 id=66 data-nosnippet>66</a>    m.insert(<span class="string">"container.image.tag"</span>, <span class="string">"image_tag"</span>); <span class="comment">// For older semconv versions
-<a href=#67 id=67 data-nosnippet>67</a>    </span>m.insert(CONTAINER_RUNTIME, <span class="string">"runtime"</span>);
+<a href=#67 id=67 data-nosnippet>67</a>    </span>m.insert(<span class="string">"container.runtime"</span>, <span class="string">"runtime"</span>); <span class="comment">// Not re-exported by semconv 0.32.1+
 <a href=#68 id=68 data-nosnippet>68</a>
-<a href=#69 id=69 data-nosnippet>69</a>    <span class="comment">// Cloud conventions
+<a href=#69 id=69 data-nosnippet>69</a>    // Cloud conventions
 <a href=#70 id=70 data-nosnippet>70</a>    // https://www.datadoghq.com/blog/tagging-best-practices/
 <a href=#71 id=71 data-nosnippet>71</a>    </span>m.insert(CLOUD_PROVIDER, <span class="string">"cloud_provider"</span>);
 <a href=#72 id=72 data-nosnippet>72</a>    m.insert(CLOUD_REGION, <span class="string">"region"</span>);

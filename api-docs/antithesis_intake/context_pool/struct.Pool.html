@@ -4,7 +4,7 @@
     &amp;self,
     n: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>,
     rng: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.reference.html">&amp;mut R</a>,
-) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.103/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="enum" href="../../harness/contexts/enum.Context.html" title="enum harness::contexts::Context">Context</a>&gt;&gt;</h4></section></summary><div class="docblock"><p>Serve <code>n</code> contexts: for each slot sample a kind, mint a fresh one while that kind is under its
+) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.104/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="enum" href="../../harness/contexts/enum.Context.html" title="enum harness::contexts::Context">Context</a>&gt;&gt;</h4></section></summary><div class="docblock"><p>Serve <code>n</code> contexts: for each slot sample a kind, mint a fresh one while that kind is under its
 cap, else draw an existing one of that kind. The whole operation holds the lock, so concurrent
 requests never race on <code>rng</code> or overshoot a cap.</p>
 <h5 id="errors"><a class="doc-anchor" href="#errors">§</a>Errors</h5>

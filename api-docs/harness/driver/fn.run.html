@@ -5,7 +5,7 @@
     limit_bytes: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>,
     count: <a class="primitive" href="https://doc.rust-lang.org/nightly/std/primitive.usize.html">usize</a>,
     sockets: <a class="struct" href="https://doc.rust-lang.org/nightly/alloc/vec/struct.Vec.html" title="struct alloc::vec::Vec">Vec</a>&lt;<a class="struct" href="https://doc.rust-lang.org/nightly/std/os/unix/net/datagram/struct.UnixDatagram.html" title="struct std::os::unix::net::datagram::UnixDatagram">UnixDatagram</a>&gt;,
-) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.103/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;<a class="struct" href="struct.Stats.html" title="struct harness::driver::Stats">Stats</a>&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Pull <code>context_count</code> contexts from the intake pool at <code>intake_addr</code> once, then drive <code>count</code> datagrams
+) -&gt; <a class="type" href="https://docs.rs/anyhow/1.0.104/anyhow/type.Result.html" title="type anyhow::Result">Result</a>&lt;<a class="struct" href="struct.Stats.html" title="struct harness::driver::Stats">Stats</a>&gt;</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Pull <code>context_count</code> contexts from the intake pool at <code>intake_addr</code> once, then drive <code>count</code> datagrams
 to every socket from that one pull, each datagram a fresh per-occurrence render of every context that
 fits under <code>limit_bytes</code>, blocking through transient backpressure so every datagram reaches every
 socket.
