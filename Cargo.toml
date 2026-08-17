@@ -86,7 +86,13 @@ otlp-protos = { path = "lib/protos/otlp" }
 anymap3 = { version = "1", default-features = false, features = ["std"] }
 async-trait = { version = "0.1", default-features = false }
 atty = { version = "0.2", default-features = false }
-aws-lc-rs = { version = "1", default-features = false }
+# Pinned below 1.18 because that release switches the `fips` feature from the AWS-LC-FIPS 3.x module
+# (NIST CMVP validated: https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5314
+# and https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5298) to AWS-LC-FIPS
+# 4.x, which has only been submitted for FIPS 140-3 validation, not certified yet. Track certification status
+# via the CMVP Modules In Process list (https://csrc.nist.gov/Projects/cryptographic-module-validation-program/modules-in-process/Modules-In-Process-List)
+# and aws-lc-rs release notes (https://github.com/aws/aws-lc-rs/releases) before lifting this pin.
+aws-lc-rs = { version = ">=1, <1.18", default-features = false }
 axum = { version = "0.8", default-features = false }
 bytes = { version = "1", default-features = false }
 clap = { version = "4", default-features = false, features = [] }
