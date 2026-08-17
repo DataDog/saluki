@@ -1,0 +1,241 @@
+name: Update Agent Tagger Entity ID Prefixes
+
+# The Agent's tagger publishes entities under a set of entity ID prefixes, and ADP has to decide, for each one,
+# whether to consume it or deliberately ignore it. When the Agent adds a prefix we haven't classified, ADP silently
+# drops those entities, so we want to know about the addition before it reaches an Agent release.
+#
+# This workflow tracks the prefixes declared on the Agent's `main` branch and opens a pull request whenever they
+# change. That pull request fails CI until the new prefix is classified, which is the point: the failure is the
+# notification, and the fix lands on the same branch.
+
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+jobs:
+  check-and-update:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Get access token from dd-octo-sts
+        uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: self.update-agent-tagger-prefixes.create-pr
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          token: "${{ steps.octo-sts.outputs.token }}"
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch entity ID prefixes from the Agent
+        id: fetch-prefixes
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: "${{ steps.octo-sts.outputs.token }}"
+          script: |
+            const SOURCE_PATH = 'comp/core/tagger/types/entity_id.go';
+
+            // Prefixes are declared as `SomeName EntityIDPrefix = "some_prefix"`.
+            const PREFIX_PATTERN = /^\s*\w+\s+EntityIDPrefix\s*=\s*"([a-z0-9_]+)"\s*$/gm;
+
+            // Prefixes that have existed for years. If the extraction stops finding these, the source has been
+            // restructured (or we fetched something that isn't the file we expect) and the result can't be trusted.
+            // Failing loudly here matters more than it looks: an empty prefix list would let the ADP-side test pass
+            // without checking anything.
+            const ANCHOR_PREFIXES = ['container_id', 'kubernetes_pod_uid', 'internal'];
+
+            const { data: file } = await github.rest.repos.getContent({
+              owner: 'DataDog',
+              repo: 'datadog-agent',
+              path: SOURCE_PATH,
+              ref: 'main',
+            });
+
+            const contents = Buffer.from(file.content, 'base64').toString('utf8');
+            const prefixes = [...contents.matchAll(PREFIX_PATTERN)].map(match => match[1]).sort();
+
+            console.log(`Extracted ${prefixes.length} prefixes: ${prefixes.join(', ')}`);
+
+            const missingAnchors = ANCHOR_PREFIXES.filter(anchor => !prefixes.includes(anchor));
+            if (missingAnchors.length > 0) {
+              core.setFailed(
+                `Extraction from ${SOURCE_PATH} is missing long-standing prefixes (${missingAnchors.join(', ')}), ` +
+                `so the pattern no longer matches how the Agent declares them. Update PREFIX_PATTERN in this ` +
+                `workflow rather than trusting this run.`
+              );
+              return;
+            }
+
+            core.setOutput('prefixes', prefixes.join('\n'));
+            core.setOutput('source_sha', file.sha);
+
+      - name: Update fixture
+        id: update
+        env:
+          PREFIXES: "${{ steps.fetch-prefixes.outputs.prefixes }}"
+        run: |
+          FIXTURE=bin/agent-data-plane/tests/fixtures/agent_tagger_entity_id_prefixes.txt
+
+          # Preserve the leading comment block, then replace the prefix list below it.
+          {
+            grep '^#' "$FIXTURE"
+            printf '%s\n' "$PREFIXES"
+          } > "${FIXTURE}.new"
+          mv "${FIXTURE}.new" "$FIXTURE"
+
+          if git diff --quiet -- "$FIXTURE"; then
+            echo "The Agent's entity ID prefixes are unchanged."
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+          else
+            git diff -- "$FIXTURE"
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            # Name the branch after the content so that re-running while a pull request is already open doesn't
+            # clobber it, and so an unrelated later change gets its own branch.
+            echo "branch_name=ci/update-agent-tagger-prefixes-$(sha256sum "$FIXTURE" | cut -c1-12)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create remote branch
+        if: steps.update.outputs.needs_update == 'true'
+        run: git push origin HEAD:refs/heads/${{ steps.update.outputs.branch_name }}
+
+      - name: Commit changes
+        id: commit
+        if: steps.update.outputs.needs_update == 'true'
+        run: |
+          git add bin/agent-data-plane/tests/fixtures/agent_tagger_entity_id_prefixes.txt
+          git commit -m "chore(ci): update Agent tagger entity ID prefixes"
+          echo "update_commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Sign commit
+        if: steps.update.outputs.needs_update == 'true'
+        uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
+        with:
+          token: "${{ steps.octo-sts.outputs.token }}"
+          branch: ${{ steps.update.outputs.branch_name }}
+          head-sha: ${{ github.sha }}
+          command: push
+          commits: "${{ steps.commit.outputs.update_commit_sha }}"
+
+      - name: Create pull request
+        if: steps.update.outputs.needs_update == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: "${{ steps.octo-sts.outputs.token }}"
+          script: |
+            const branchName = '${{ steps.update.outputs.branch_name }}';
+            const sourceSha = '${{ steps.fetch-prefixes.outputs.source_sha }}';
+            const prTitle = 'chore(ci): update Agent tagger entity ID prefixes';
+            const prLabel = 'ci/update-agent-tagger-prefixes';
+            const prBody = `## Summary
+
+            The set of entity ID prefixes declared by the Datadog Agent's tagger has changed, so this PR updates the
+            fixture that records it.
+
+            **A failing \`agent_entity_id_prefixes_are_all_classified\` test on this PR is the expected outcome, not a
+            broken build.** It means the Agent added a prefix that ADP neither handles nor ignores, and the test
+            failure names the prefix. To resolve it, push a commit to this branch that either:
+
+            - adds the prefix to \`HANDLED_ENTITY_ID_PREFIXES\` in
+              \`bin/agent-data-plane/src/internal/env/workload/collectors/tagger.rs\`, along with an arm in
+              \`remote_entity_id_to_entity_id\` converting it to an \`EntityId\`, or
+            - adds it to \`IGNORED_ENTITY_ID_PREFIXES\` with a comment explaining why ADP doesn't need it.
+
+            If CI is green, the change was a removal or a rename of a prefix we don't consume, and this PR can be
+            merged as-is. Note that we don't drop prefixes from our lists just because the Agent removed them, since
+            ADP runs alongside a range of Agent versions.
+
+            Source: [\`comp/core/tagger/types/entity_id.go\`](https://github.com/DataDog/datadog-agent/blob/${sourceSha}/comp/core/tagger/types/entity_id.go)
+
+            _This PR was automatically generated by the [Update Agent Tagger Entity ID Prefixes](.github/workflows/update-agent-tagger-prefixes.yml) workflow._
+
+            ## Change Type
+
+            - [ ] Bug fix
+            - [ ] New feature
+            - [x] Non-functional (chore, refactoring, docs)
+            - [ ] Performance`;
+
+            // Make sure we don't open a second PR for a change we've already reported.
+            const { data: exactPRData } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open head:${branchName}`
+            });
+
+            if (exactPRData.items.length > 0) {
+              console.log(`Pull request for this change already exists: ${exactPRData.items[0].html_url}`);
+              return;
+            }
+
+            const updatePR = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: prTitle,
+              head: branchName,
+              base: 'main',
+              body: prBody,
+            });
+            console.log(`Pull request created: ${updatePR.data.html_url}`);
+
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: updatePR.data.number,
+              labels: [prLabel, 'automated']
+            });
+
+            // Close out any older PRs from this workflow: the newest fixture is a superset of what they reported.
+            const { data: labeledPRData } = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open label:"${prLabel}"`
+            });
+
+            for (const obsoleteUpdatePR of labeledPRData.items) {
+              if (obsoleteUpdatePR.number == updatePR.data.number) {
+                continue;
+              }
+
+              console.log(`Closing existing PR: ${obsoleteUpdatePR.html_url}`);
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: obsoleteUpdatePR.number,
+                state: 'closed'
+              });
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: obsoleteUpdatePR.number,
+                body: `Closing this pull request in favor of a newer prefix update: [update PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${updatePR.data.number})`
+              });
+            }
+
+      # A failure here means we've stopped tracking the Agent's prefixes, which is silent by nature: nothing else
+      # would tell us that the check has stopped checking anything.
+      - name: Notify Slack on failure
+        if: failure()
+        env:
+          SLACK_TOKEN: "${{ secrets.SLACK_SLAPR_BOT_TOKEN }}"
+          SLACK_CHANNEL: "${{ vars.DEFAULT_SLACK_CHANNEL_ID }}"
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          TEXT=":warning: The <${RUN_URL}|Agent tagger entity ID prefix check> failed. Until it is fixed, we won't be told when the Agent adds an entity ID prefix that ADP doesn't handle."
+
+          RESPONSE=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
+            -H "Authorization: Bearer ${SLACK_TOKEN}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            --data "$(jq -n --arg channel "$SLACK_CHANNEL" --arg text "$TEXT" '{channel: $channel, text: $text}')")
+
+          # Slack reports application-level errors in the body with a 200 status, so check the payload rather than
+          # relying on curl's exit code.
+          if [ "$(echo "$RESPONSE" | jq -r '.ok')" != "true" ]; then
+            echo "Failed to post to Slack: $RESPONSE"
+            exit 1
+          fi

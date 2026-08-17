@@ -110,9 +110,13 @@ impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
     async fn watch(&mut self, operations_tx: &mut mpsc::Sender<MetadataOperation>) -> Result<(), GenericError> {
         self.health.mark_ready();
 
+        let prefixes = HANDLED_ENTITY_ID_PREFIXES
+            .iter()
+            .map(|prefix| prefix.to_string())
+            .collect();
         let mut entity_stream = self
             .client
-            .get_tagger_stream(RemoteTagCardinality::High)
+            .get_tagger_stream(RemoteTagCardinality::High, prefixes)
             .map_err(StatusError::from);
         debug!("Established tagger entity stream.");
 
@@ -216,6 +220,46 @@ impl MemoryBounds for RemoteAgentTaggerMetadataCollector {
     }
 }
 
+/// Entity ID prefixes that we subscribe to and convert into an [`EntityId`].
+///
+/// This is the set of prefixes we ask the Agent's tagger for, so an entity whose prefix isn't listed here never
+/// reaches us at all. Adding a prefix here requires a matching arm in [`remote_entity_id_to_entity_id`].
+const HANDLED_ENTITY_ID_PREFIXES: &[&str] = &[
+    "container_id",
+    "container_image_metadata",
+    "ecs_task",
+    "deployment",
+    "kubernetes_metadata",
+    "kubernetes_node",
+    "kubernetes_pod_uid",
+    "process",
+    "internal",
+];
+
+/// Entity ID prefixes that the Agent's tagger publishes but that we have reviewed and deliberately don't consume.
+///
+/// We don't subscribe to these, so they cost us nothing at runtime. Recording them here is what lets us tell a prefix
+/// we've decided against apart from one the Agent has newly added, which is the difference the
+/// `agent_entity_id_prefixes_are_all_classified` test checks for.
+///
+/// - `gpu`: keyed by GPU device UUID, which never arrives as origin information.
+/// - `kueue_workload`, `kubernetes_kueue_queue`, `kueue_resource_flavor`: the Agent folds these same Kueue tags into
+///   the pod and container entities, which we do handle, so consuming them here would be redundant.
+/// - `crd`, `kubernetes_capabilities`: describe cluster-level objects rather than workloads, and carry no identifier
+///   that origin detection can resolve.
+/// - `host`, `kubelet`: no tagger entity is ever published for these today, so they're listed only for completeness
+///   against the Agent's set of prefixes.
+const IGNORED_ENTITY_ID_PREFIXES: &[&str] = &[
+    "gpu",
+    "kueue_workload",
+    "kubernetes_kueue_queue",
+    "kueue_resource_flavor",
+    "crd",
+    "kubernetes_capabilities",
+    "host",
+    "kubelet",
+];
+
 fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<EntityId> {
     // TODO: In the future, it would be nice to do zero-copy deserialization so that we could just intern them (or
     // inline them) directly instead of having to deal with the owned strings... but for now, we can transparently
@@ -236,26 +280,12 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
                 None
             }
         },
-        // Entities that the Agent's tagger publishes but that we have no use for.
+        // Entities we've reviewed and don't consume. See `IGNORED_ENTITY_ID_PREFIXES` for why each one is here.
         //
-        // We ignore these explicitly so that the catch-all arm below stays a meaningful signal: it should only fire
-        // for a prefix that the Agent has newly added and that we haven't yet made a decision about.
-        //
-        // - `gpu`: keyed by GPU device UUID, which never arrives as origin information.
-        // - `kueue_workload`, `kubernetes_kueue_queue`, `kueue_resource_flavor`: the Agent folds these same Kueue tags
-        //   into the pod and container entities, which we do handle, so consuming them here would be redundant.
-        // - `crd`, `kubernetes_capabilities`: describe cluster-level objects rather than workloads, and carry no
-        //   identifier that origin detection can resolve.
-        // - `host`, `kubelet`: no tagger entity is ever published for these today, so they're listed only for
-        //   completeness against the Agent's set of prefixes.
-        "gpu"
-        | "kueue_workload"
-        | "kubernetes_kueue_queue"
-        | "kueue_resource_flavor"
-        | "crd"
-        | "kubernetes_capabilities"
-        | "host"
-        | "kubelet" => None,
+        // We don't subscribe to these, so in practice they never arrive at all.
+        prefix if IGNORED_ENTITY_ID_PREFIXES.contains(&prefix) => None,
+        // Anything we didn't ask for. The Agent filters the stream by the prefixes we subscribe to, so reaching this
+        // arm means either the Agent ignored our filter or it's too old to support one.
         prefix => {
             warn!("Unhandled entity ID prefix: {}://{}", prefix, remote_entity_id.uid);
             None
@@ -304,27 +334,87 @@ mod tests {
         }
     }
 
-    #[test]
-    fn ignores_known_unused_entity_prefixes_from_the_remote_tagger() {
-        let cases = [
-            ("gpu", "GPU-00000000-0000-0000-0000-000000000000"),
-            ("kueue_workload", "spark-jobs/spark-driver-0"),
-            ("kubernetes_kueue_queue", "spark-jobs/local-queue"),
-            ("kueue_resource_flavor", "default-flavor"),
-            ("crd", "apps/v1/default/example"),
-            ("kubernetes_capabilities", "kube_capabilities"),
-            ("host", "host"),
-            ("kubelet", "kubelet"),
-        ];
+    /// The Agent's set of tagger entity ID prefixes, regenerated nightly by
+    /// `.github/workflows/update-agent-tagger-prefixes.yml`.
+    const AGENT_ENTITY_ID_PREFIXES: &str =
+        include_str!("../../../../../tests/fixtures/agent_tagger_entity_id_prefixes.txt");
 
-        for (prefix, uid) in cases {
+    fn agent_entity_id_prefixes() -> Vec<&'static str> {
+        AGENT_ENTITY_ID_PREFIXES
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect()
+    }
+
+    #[test]
+    fn agent_entity_id_prefix_fixture_is_intact() {
+        // A truncated or empty fixture would make `agent_entity_id_prefixes_are_all_classified` pass without checking
+        // anything, so assert that it still looks like the Agent's list before we rely on it. The generating workflow
+        // performs the same check, but the fixture can also be edited by hand.
+        let prefixes = agent_entity_id_prefixes();
+
+        assert!(
+            prefixes.len() >= HANDLED_ENTITY_ID_PREFIXES.len(),
+            "fixture lists only {} prefixes, which is fewer than the {} we handle: it is likely truncated",
+            prefixes.len(),
+            HANDLED_ENTITY_ID_PREFIXES.len(),
+        );
+
+        for anchor in ["container_id", "kubernetes_pod_uid", "internal"] {
+            assert!(
+                prefixes.contains(&anchor),
+                "fixture is missing the long-standing `{anchor}` prefix, so it is likely truncated or malformed"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_entity_id_prefixes_are_all_classified() {
+        // Note that we deliberately don't assert the other direction. ADP runs alongside a range of Agent versions, so
+        // a prefix that the Agent has since removed may still need handling for older Agents.
+        for prefix in agent_entity_id_prefixes() {
+            assert!(
+                HANDLED_ENTITY_ID_PREFIXES.contains(&prefix) || IGNORED_ENTITY_ID_PREFIXES.contains(&prefix),
+                "the Agent's tagger publishes `{prefix}://` entities but ADP neither handles nor ignores them. Either \
+                 add `{prefix}` to `HANDLED_ENTITY_ID_PREFIXES` along with an arm in \
+                 `remote_entity_id_to_entity_id` that converts it, or add it to `IGNORED_ENTITY_ID_PREFIXES` with a \
+                 comment explaining why we don't need it."
+            );
+        }
+    }
+
+    #[test]
+    fn prefix_lists_agree_with_conversion() {
+        // The prefixes we subscribe to determine what the Agent sends us, so a prefix listed as handled but missing an
+        // arm here (or vice versa) would silently drop entities we asked for.
+        //
+        // `internal` only converts for a single UID, so use that UID throughout: every other prefix treats it as an
+        // opaque value.
+        for prefix in HANDLED_ENTITY_ID_PREFIXES {
+            assert!(
+                remote_entity_id_to_entity_id(RemoteEntityId {
+                    prefix: (*prefix).to_owned(),
+                    uid: "global-entity-id".to_owned(),
+                })
+                .is_some(),
+                "`{prefix}` is subscribed to but isn't converted by `remote_entity_id_to_entity_id`"
+            );
+
+            assert!(
+                !IGNORED_ENTITY_ID_PREFIXES.contains(prefix),
+                "`{prefix}` is listed as both handled and ignored"
+            );
+        }
+
+        for prefix in IGNORED_ENTITY_ID_PREFIXES {
             assert_eq!(
                 remote_entity_id_to_entity_id(RemoteEntityId {
-                    prefix: prefix.to_owned(),
-                    uid: uid.to_owned(),
+                    prefix: (*prefix).to_owned(),
+                    uid: "global-entity-id".to_owned(),
                 }),
                 None,
-                "{prefix}://{uid}"
+                "`{prefix}` is listed as ignored but is converted by `remote_entity_id_to_entity_id`"
             );
         }
     }

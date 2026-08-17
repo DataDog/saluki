@@ -134,16 +134,23 @@ impl RemoteAgentClient {
         Ok(response.hostname)
     }
 
-    /// Gets a stream of tagger entities at the given cardinality.
+    /// Gets a stream of tagger entities at the given cardinality, limited to the given entity ID prefixes.
+    ///
+    /// The server only sends events for entities whose ID carries one of `prefixes`, which avoids paying the
+    /// serialization and bandwidth cost of entities that the caller has no use for. If `prefixes` is empty, the server
+    /// sends events for every prefix it knows about.
     ///
     /// If there is an error with the initial request, or an error occurs while streaming, the next message in the
     /// stream will be `Some(Err(status))`, where the status indicates the underlying error.
-    pub fn get_tagger_stream(&mut self, cardinality: TagCardinality) -> StreamingResponse<StreamTagsResponse> {
+    pub fn get_tagger_stream(
+        &mut self, cardinality: TagCardinality, prefixes: Vec<String>,
+    ) -> StreamingResponse<StreamTagsResponse> {
         let mut client = self.secure_client.clone();
         StreamingResponse::from_response_future(async move {
             client
                 .tagger_stream_entities(StreamTagsRequest {
                     cardinality: cardinality.into(),
+                    prefixes,
                     ..Default::default()
                 })
                 .await

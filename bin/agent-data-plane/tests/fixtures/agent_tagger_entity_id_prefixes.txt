@@ -1,0 +1,25 @@
+# Entity ID prefixes declared by the Datadog Agent's tagger, one per line, sorted.
+#
+# Extracted from `comp/core/tagger/types/entity_id.go` on the `main` branch of DataDog/datadog-agent.
+#
+# DO NOT EDIT BY HAND. This file is regenerated nightly by `.github/workflows/update-agent-tagger-prefixes.yml`,
+# which opens a pull request whenever the Agent's set of prefixes changes. That pull request is expected to fail CI
+# until every prefix listed here is accounted for in either `HANDLED_ENTITY_ID_PREFIXES` or
+# `IGNORED_ENTITY_ID_PREFIXES` in `src/internal/env/workload/collectors/tagger.rs`.
+container_id
+container_image_metadata
+crd
+deployment
+ecs_task
+gpu
+host
+internal
+kubelet
+kubernetes_capabilities
+kubernetes_kueue_queue
+kubernetes_metadata
+kubernetes_node
+kubernetes_pod_uid
+kueue_resource_flavor
+kueue_workload
+process
