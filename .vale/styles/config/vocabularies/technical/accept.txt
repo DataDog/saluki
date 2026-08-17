@@ -267,3 +267,4 @@ otlpreceiver
 configgrpc
 configtls
 keyspace
+Kueue
