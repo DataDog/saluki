@@ -65,7 +65,7 @@ where
     }
 
     fn size_hint(&self) -> SizeHint {
-        self.size_hint.clone()
+        self.size_hint
     }
 }
 
