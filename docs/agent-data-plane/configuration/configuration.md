@@ -823,6 +823,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `observability_pipelines_worker.metrics.use_v3_api.series`     | Use V3 series for OPW                              |
 | `origin_detection_unified`                                     | Unified origin detection mode                      |
 | `otlp_config.logs.enabled`                                     | otlp_config.logs.enabled                           |
+| `otlp_config.metrics.delta_ttl`                                | TTL (seconds) for cached delta-conversion points   |
 | `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
 | `otlp_config.metrics.histograms.mode`                          | OTLP histogram bucket reporting mode               |
 | `otlp_config.metrics.histograms.send_aggregation_metrics`      | Emit OTLP histogram aggregation metrics.           |

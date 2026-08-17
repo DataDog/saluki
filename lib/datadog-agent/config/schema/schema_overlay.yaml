@@ -2090,6 +2090,22 @@ inventory:
       The core Agent batches OTLP metric input before translation through its serializer exporter queue.
       ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
+  otlp_config.metrics.delta_ttl:
+    support: full
+    pipelines: [otlp]
+    description: "TTL (seconds) for cached delta-conversion points"
+    documentation: |-
+      Controls how long previously-seen data points are kept in memory when converting cumulative
+      monotonic sums to deltas. Once a series' cached prior value is older than this TTL, it is
+      evicted and the next value is treated as an initial value again. Defaults to `3600` seconds.
+      Raise this for high-cardinality or low-frequency series that report infrequently enough to
+      trip spurious "initial value" resets; lower it to bound memory use when many short-lived
+      series are seen.
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   otlp_config.metrics.enabled:
     support: full
     pipelines: [otlp]
@@ -4324,7 +4340,6 @@ excluded:
   otlp_config.logs.batch.flush_timeout: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
-  otlp_config.metrics.delta_ttl: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
   otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
   otlp_config.traces.infra_attributes.enabled: "ignored in initial audit 2026-04-23"
