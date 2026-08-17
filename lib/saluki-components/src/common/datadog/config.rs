@@ -439,11 +439,6 @@ impl ForwarderConfiguration {
         endpoint_concurrency.saturating_mul(endpoint_concurrency_multiplier)
     }
 
-    /// Returns whether Foldspace series transport is enabled.
-    pub const fn stateful_metrics_enabled(&self) -> bool {
-        self.v3_api.stateful_metrics_enabled()
-    }
-
     /// Returns the endpoint-local ordered Foldspace in-flight window.
     pub const fn stateful_metrics_max_inflight_payloads(&self) -> usize {
         self.stateful_metrics_max_inflight_payloads
@@ -1099,7 +1094,7 @@ mod tests {
 
         assert_eq!(config.serializer_compressor_kind, "zstd");
         assert_eq!(config.v3_api.compression_level, 7);
-        assert!(config.stateful_metrics_enabled());
+        assert!(config.v3_api.stateful_metrics_enabled());
         assert!(config.v3_api.series.validate);
         assert_eq!(config.use_v3_api_series().enabled, "false");
         assert_eq!(

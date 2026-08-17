@@ -17,3 +17,4 @@ mod dogstatsd_client_telemetry_tests;
 
 mod prometheus;
 pub use self::prometheus::{PrometheusConfiguration, PrometheusPayloadProvider};
+pub use crate::common::datadog::stateful_metrics::StatefulMetricsDestinationConfiguration;

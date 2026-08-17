@@ -7,6 +7,7 @@ swap:
   # package/path identifiers such as `github.com/DataDog/datadog-agent/...`.
   'datadog(?![-/]|\.[a-z])': Datadog
   dogstatsd: DogStatsD
+  'foldspace(?![-/]|\.[a-z])': Foldspace
   saluki: Saluki
 
   # Project-specific acronyms. The negative lookahead excludes URL path segments and file

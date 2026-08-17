@@ -2,6 +2,7 @@ pub mod config;
 pub(crate) mod data_plane;
 pub mod endpoints;
 pub mod io;
+pub(crate) mod metrics;
 pub mod middleware;
 pub mod obfuscation;
 pub mod protocol;

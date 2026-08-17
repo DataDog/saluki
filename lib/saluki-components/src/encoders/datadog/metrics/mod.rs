@@ -7,15 +7,10 @@ use agent_data_plane_config::{
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use facet::Facet;
-use foldspace_core::{
-    LogicalMetricBatch, LogicalMetricSeries, MetricOrigin as FoldspaceMetricOrigin, MetricPoint, MetricResource,
-    MetricSeriesType, MetricTagSet,
-};
 use http::{HeaderValue, Method, Request};
 use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_common::{
     buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
-    collections::FastHashSet,
     iter::ReusableDeduplicator,
     task::HandleExt as _,
 };
@@ -29,7 +24,7 @@ use saluki_core::{
             metric::{Metric, MetricOrigin, MetricValues},
             EventType,
         },
-        payload::{HttpPayload, MetricSeriesPayload, Payload, PayloadMetadata, PayloadType},
+        payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
     },
     observability::ComponentMetricsExt as _,
     topology::{EventsBuffer, PayloadsBuffer},
@@ -38,7 +33,6 @@ use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::compression::{CompressionScheme, Compressor};
 use saluki_metrics::MetricsBuilder;
 use serde::Deserialize;
-use stringtheory::MetaString;
 use tokio::{io::AsyncWriteExt as _, select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 use url::Url;
@@ -64,6 +58,7 @@ use crate::{
             AdditionalEndpoints, EndpointV3Settings, ResolvedEndpoint, V3EndpointConfig, DEFAULT_SITE,
         },
         io::RB_BUFFER_CHUNK_SIZE,
+        metrics::{emittable_scalar_point, is_foldspace_series, is_v3_series_device_tag, is_v3_series_resource_tag},
         protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
         resolve_zstd_compressor_level,
@@ -84,8 +79,6 @@ mod v3;
 
 const V3_SERIES_ENDPOINT_URI: &str = METRICS_SERIES_V3_PATH;
 const V3_SKETCHES_ENDPOINT_URI: &str = METRICS_SKETCHES_V3_PATH;
-const LOGICAL_METRIC_BATCH_VERSION: u16 = 1;
-const LOGICAL_METRIC_COMPRESSION_LEVEL: i32 = 3;
 
 const fn default_max_metrics_per_payload() -> usize {
     10_000
@@ -474,6 +467,41 @@ impl DatadogMetricsConfiguration {
         self
     }
 
+    pub(crate) fn stateful_metrics_enabled(&self) -> Result<bool, GenericError> {
+        let zstd_compressor_level = resolve_zstd_compressor_level(
+            self.data_plane.serializer_zstd_compressor_level,
+            self.serializer_zstd_compressor_level,
+        );
+        let compression_scheme = CompressionScheme::new(&self.compressor_kind, zstd_compressor_level);
+        let metrics_v3_disabled_by_compressor = matches!(compression_scheme, CompressionScheme::Zlib(_));
+        let series_mode = metrics_encoder_mode_for_config(
+            self.requires_v3_series(metrics_v3_disabled_by_compressor)?,
+            self.v3_api.series.validate,
+            metrics_v3_disabled_by_compressor,
+        );
+
+        Ok(self.v3_api.stateful_metrics_enabled() && matches!(series_mode, MetricsEncoderMode::V3Enabled))
+    }
+
+    pub(crate) const fn stateful_max_metrics_per_batch(&self) -> usize {
+        self.max_metrics_per_payload
+    }
+
+    pub(crate) const fn stateful_max_points_per_batch(&self) -> usize {
+        self.max_series_points_per_payload
+    }
+
+    pub(crate) fn stateful_flush_timeout(&self) -> Duration {
+        match self.flush_timeout_secs {
+            0 => Duration::from_millis(10),
+            secs => Duration::from_secs(secs),
+        }
+    }
+
+    pub(crate) fn stateful_additional_tags(&self) -> SharedTagSet {
+        self.additional_tags.clone().unwrap_or_default()
+    }
+
     fn v3_payload_limits(&self) -> V3PayloadLimits {
         V3PayloadLimits::new(
             self.max_series_payload_size,
@@ -586,11 +614,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
     }
 
     fn output_payload_type(&self) -> PayloadType {
-        if self.v3_api.stateful_metrics_enabled() {
-            PayloadType::Http | PayloadType::MetricSeries
-        } else {
-            PayloadType::Http
-        }
+        PayloadType::Http
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
@@ -713,6 +737,8 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             );
         }
 
+        let stateful_series_enabled =
+            self.v3_api.stateful_metrics_enabled() && matches!(series_mode, MetricsEncoderMode::V3Enabled);
         Ok(Box::new(DatadogMetrics {
             v2_series_builder,
             v2_sketch_builder,
@@ -722,7 +748,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
             telemetry,
             flush_timeout,
             log_payloads: self.log_payloads,
-            stateful_metrics_enabled: self.v3_api.stateful_metrics_enabled(),
+            stateful_series_enabled,
         }))
     }
 }
@@ -760,7 +786,7 @@ pub struct DatadogMetrics {
     telemetry: ComponentTelemetry,
     flush_timeout: Duration,
     log_payloads: bool,
-    stateful_metrics_enabled: bool,
+    stateful_series_enabled: bool,
 }
 
 struct V3RuntimeConfig {
@@ -784,7 +810,7 @@ impl Encoder for DatadogMetrics {
             telemetry,
             flush_timeout,
             log_payloads,
-            stateful_metrics_enabled,
+            stateful_series_enabled,
         } = *self;
 
         let mut health = context.take_health_handle();
@@ -803,7 +829,7 @@ impl Encoder for DatadogMetrics {
             payloads_tx,
             flush_timeout,
             log_payloads,
-            stateful_metrics_enabled,
+            stateful_series_enabled,
         );
         let request_builder_handle = context
             .topology_context()
@@ -901,7 +927,7 @@ async fn run_request_builder(
     mut v2_sketch_builder: Option<RequestBuilder<v2::MetricsEndpointEncoder>>, series_mode: MetricsEncoderMode,
     sketches_mode: MetricsEncoderMode, v3_runtime_config: V3RuntimeConfig, telemetry: ComponentTelemetry,
     mut events_rx: mpsc::Receiver<EventsBuffer>, mut payloads_tx: mpsc::Sender<PayloadsBuffer>,
-    flush_timeout: Duration, log_payloads: bool, stateful_metrics_enabled: bool,
+    flush_timeout: Duration, log_payloads: bool, stateful_series_enabled: bool,
 ) -> Result<(), GenericError> {
     let mut pending_flush = false;
     let pending_flush_timeout = sleep(flush_timeout);
@@ -928,7 +954,6 @@ async fn run_request_builder(
         series_endpoint_uri: &v3_runtime_config.series_endpoint_uri,
         serializer_telemetry: &v3_runtime_config.serializer_telemetry,
         telemetry: &telemetry,
-        stateful_metrics_enabled: stateful_metrics_enabled && matches!(series_mode, MetricsEncoderMode::V3Enabled),
     };
     let v3_shadow_flush_context = V3FlushContext {
         endpoint_config: &v3_runtime_config.endpoint_config,
@@ -936,7 +961,6 @@ async fn run_request_builder(
         series_endpoint_uri: &v3_runtime_config.shadow_series_endpoint_uri,
         serializer_telemetry: &v3_runtime_config.serializer_telemetry,
         telemetry: &telemetry,
-        stateful_metrics_enabled: false,
     };
 
     loop {
@@ -952,11 +976,18 @@ async fn run_request_builder(
                         log_metric_payload(&metric);
                     }
 
+                    let uses_stateful_series = stateful_series_enabled && is_foldspace_series(&metric);
+
                     // A series metric whose points are all non-finite would encode to a series with no points, which
-                    // intake rejects as an empty value set. Drop it whole rather than emit an empty series.
+                    // intake rejects as an empty value set. The stateful destination accounts for its own drops.
                     if !v1::has_emittable_point(&metric) {
                         debug!(metric = %metric.context().name(), "Dropping series metric with no finite points.");
-                        telemetry.events_dropped_encoder().increment(1);
+                        if !uses_stateful_series {
+                            telemetry.events_dropped_encoder().increment(1);
+                        }
+                        continue;
+                    }
+                    if uses_stateful_series && v2_series_builder.is_none() {
                         continue;
                     }
 
@@ -988,7 +1019,7 @@ async fn run_request_builder(
                         *batch_id = Some(Uuid::now_v7());
                     }
                     let active_batch_id = needs_batch_id.then_some(batch_id.as_ref()).flatten();
-                    let should_buffer_v3 = endpoint_mode.needs_v3() || series_shadow_active;
+                    let should_buffer_v3 = (endpoint_mode.needs_v3() || series_shadow_active) && !uses_stateful_series;
 
                     // Store a copy of the metric in `maybe_v3_metrics` if it's present.
                     //
@@ -1410,7 +1441,6 @@ struct V3FlushContext<'a> {
     series_endpoint_uri: &'a str,
     serializer_telemetry: &'a V3SerializerTelemetry,
     telemetry: &'a ComponentTelemetry,
-    stateful_metrics_enabled: bool,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1440,10 +1470,6 @@ async fn encode_and_flush_v3_series_metrics(
     }
     let metrics_to_flush = std::mem::take(metrics);
 
-    if context.stateful_metrics_enabled {
-        return encode_and_flush_logical_series_metrics(&metrics_to_flush, context, payloads_tx).await;
-    }
-
     encode_and_flush_v3_payload_requests(
         context.series_endpoint_uri,
         &metrics_to_flush,
@@ -1455,197 +1481,6 @@ async fn encode_and_flush_v3_series_metrics(
         payload_info,
     )
     .await
-}
-
-async fn encode_and_flush_logical_series_metrics(
-    metrics: &[Metric], context: V3FlushContext<'_>, payloads_tx: &mut mpsc::Sender<Payload>,
-) -> Result<(), GenericError> {
-    let (http_metrics, stateful_metrics): (Vec<_>, Vec<_>) =
-        metrics.iter().partition(|metric| metric.metadata().unit().is_some());
-
-    if !http_metrics.is_empty() {
-        let http_metrics = http_metrics.into_iter().cloned().collect::<Vec<_>>();
-        let mut ratio = V3CompressionRatio::default();
-        encode_and_flush_v3_payload_requests(
-            context.series_endpoint_uri,
-            &http_metrics,
-            V3FlushContext {
-                stateful_metrics_enabled: false,
-                ..context
-            },
-            "series",
-            &mut ratio,
-            payloads_tx,
-            None,
-            Some(MetricsPayloadInfo::v3_series()),
-        )
-        .await?;
-    }
-
-    if stateful_metrics.is_empty() {
-        return Ok(());
-    }
-
-    let logical_series = stateful_metrics
-        .into_iter()
-        .filter_map(|metric| logical_series_from_metric(metric, context.endpoint_config.additional_tags()))
-        .filter(|series| !series.points.is_empty())
-        .collect::<Vec<_>>();
-    if logical_series.is_empty() {
-        return Ok(());
-    }
-
-    let event_count = logical_series.len();
-    let data_point_count = logical_series.iter().map(|series| series.points.len()).sum();
-    let logical_batch = LogicalMetricBatch::new(logical_series);
-    let serialized =
-        rmp_serde::to_vec_named(&logical_batch).error_context("Failed to serialize logical metric batch.")?;
-    let compressed = zstd::stream::encode_all(serialized.as_slice(), LOGICAL_METRIC_COMPRESSION_LEVEL)
-        .error_context("Failed to compress logical metric batch.")?;
-    let metadata = PayloadMetadata::from_event_and_data_point_count(event_count, data_point_count);
-    payloads_tx
-        .send(Payload::MetricSeries(MetricSeriesPayload::new(
-            LOGICAL_METRIC_BATCH_VERSION,
-            metadata,
-            compressed,
-        )))
-        .await
-        .error_context("Failed to send logical metric payload.")?;
-
-    Ok(())
-}
-
-fn logical_series_from_metric(metric: &Metric, additional_tags: &SharedTagSet) -> Option<LogicalMetricSeries> {
-    let metric_type = match metric.values() {
-        MetricValues::Counter(..) => MetricSeriesType::Count,
-        MetricValues::Rate(..) => MetricSeriesType::Rate,
-        MetricValues::Gauge(..) | MetricValues::Set(..) => MetricSeriesType::Gauge,
-        MetricValues::Histogram(..) | MetricValues::Distribution(..) => return None,
-    };
-
-    let mut seen_tags = FastHashSet::default();
-    let prefix = additional_tags
-        .into_iter()
-        .filter(|tag| !is_v3_series_resource_tag(tag) && !is_v3_series_device_tag(tag))
-        .filter_map(|tag| {
-            let value = MetaString::from(tag.as_str());
-            seen_tags.insert(value.clone()).then(|| value.to_string())
-        })
-        .collect();
-    let values = metric
-        .context()
-        .tags()
-        .into_iter()
-        .chain(metric.context().origin_tags())
-        .filter(|tag| !is_v3_series_resource_tag(tag) && !is_v3_series_device_tag(tag))
-        .filter_map(|tag| {
-            let value = MetaString::from(tag.as_str());
-            seen_tags.insert(value.clone()).then(|| value.to_string())
-        })
-        .collect();
-
-    let mut resources = Vec::new();
-    if let Some(host) = metric.context().host().filter(|host| !host.is_empty()) {
-        resources.push(MetricResource::new("host", host));
-    }
-    let mut device = None;
-    let mut seen_resource_tags = FastHashSet::default();
-    for tag in metric
-        .context()
-        .origin_tags()
-        .into_iter()
-        .chain(metric.context().tags())
-        .chain(additional_tags)
-    {
-        let tag_value = MetaString::from(tag.as_str());
-        if !seen_resource_tags.insert(tag_value) {
-            continue;
-        }
-        if is_v3_series_device_tag(tag) {
-            device = tag.value().filter(|value| !value.is_empty());
-        } else if is_v3_series_resource_tag(tag) {
-            if let Some((kind, name)) = tag.value().and_then(|value| value.split_once(':')) {
-                if !kind.is_empty() && !name.is_empty() {
-                    resources.push(MetricResource::new(kind, name));
-                }
-            }
-        }
-    }
-    if let Some(device) = device {
-        let index = usize::from(metric.context().host().is_some_and(|host| !host.is_empty()));
-        resources.insert(index, MetricResource::new("device", device));
-    }
-
-    let (source_type_name, origin) = match metric.metadata().origin() {
-        Some(MetricOrigin::SourceType(source_type)) => (Some(source_type.to_string()), None),
-        Some(MetricOrigin::OriginMetadata {
-            product,
-            subproduct,
-            product_detail,
-        }) => (
-            None,
-            Some(FoldspaceMetricOrigin::new(
-                *product as i32,
-                *subproduct as i32,
-                *product_detail as i32,
-            )),
-        ),
-        None => (None, None),
-    };
-
-    let (interval, points) = match metric.values() {
-        MetricValues::Counter(points) | MetricValues::Gauge(points) => (
-            0,
-            points
-                .into_iter()
-                .filter(|(_, value)| emittable_scalar_point(*value))
-                .map(|(timestamp, value)| {
-                    MetricPoint::new(timestamp.map_or(0, |timestamp| timestamp.get() as i64), value)
-                })
-                .collect(),
-        ),
-        MetricValues::Rate(points, interval) => (
-            interval.as_secs(),
-            points
-                .into_iter()
-                .map(|(timestamp, value)| {
-                    let value = if interval.is_zero() {
-                        value
-                    } else {
-                        value / interval.as_secs_f64()
-                    };
-                    (timestamp, value)
-                })
-                .filter(|(_, value)| emittable_scalar_point(*value))
-                .map(|(timestamp, value)| {
-                    MetricPoint::new(timestamp.map_or(0, |timestamp| timestamp.get() as i64), value)
-                })
-                .collect(),
-        ),
-        MetricValues::Set(points) => (
-            0,
-            points
-                .into_iter()
-                .filter(|(_, value)| emittable_scalar_point(*value))
-                .map(|(timestamp, value)| {
-                    MetricPoint::new(timestamp.map_or(0, |timestamp| timestamp.get() as i64), value)
-                })
-                .collect(),
-        ),
-        MetricValues::Histogram(..) | MetricValues::Distribution(..) => return None,
-    };
-
-    Some(LogicalMetricSeries {
-        name: metric.context().name().to_string(),
-        metric_type,
-        tags: MetricTagSet { prefix, values },
-        resources,
-        interval,
-        points,
-        source_type_name,
-        origin,
-        no_index: false,
-    })
 }
 
 async fn encode_and_flush_v3_sketch_metrics(
@@ -2356,19 +2191,6 @@ fn write_metric_to_v3(
     builder.close();
 }
 
-#[inline]
-fn emittable_scalar_point(point: f64) -> bool {
-    point.is_finite()
-}
-
-fn is_v3_series_device_tag(tag: &Tag) -> bool {
-    tag.name() == "device" && tag.value().is_some()
-}
-
-fn is_v3_series_resource_tag(tag: &Tag) -> bool {
-    tag.name() == "dd.internal.resource" && tag.value().is_some()
-}
-
 /// Creates a V3 HTTP request from encoded payload data.
 async fn create_v3_request(
     endpoint_uri: &str, encoded: V3EncodedMetrics, compression_scheme: CompressionScheme,
@@ -2648,6 +2470,44 @@ serializer_experimental_use_v3_api:
 
         assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
+    }
+
+    #[test]
+    fn stateful_destination_requires_authoritative_v3_series() {
+        let authoritative = v3_series_config(
+            r#"
+use_v3_api:
+  series:
+    enabled: "true"
+serializer_experimental_use_v3_api:
+  stateful_metrics_enabled: true
+"#,
+        );
+        let validation = v3_series_config(
+            r#"
+use_v3_api:
+  series:
+    enabled: "true"
+serializer_experimental_use_v3_api:
+  stateful_metrics_enabled: true
+  series:
+    validate: true
+"#,
+        );
+        let zlib = v3_series_config(
+            r#"
+serializer_compressor_kind: zlib
+use_v3_api:
+  series:
+    enabled: "true"
+serializer_experimental_use_v3_api:
+  stateful_metrics_enabled: true
+"#,
+        );
+
+        assert!(authoritative.stateful_metrics_enabled().unwrap());
+        assert!(!validation.stateful_metrics_enabled().unwrap());
+        assert!(!zlib.stateful_metrics_enabled().unwrap());
     }
 
     #[test]
@@ -3068,142 +2928,7 @@ serializer_experimental_use_v3_api:
             series_endpoint_uri: V3_SERIES_ENDPOINT_URI,
             serializer_telemetry,
             telemetry,
-            stateful_metrics_enabled: false,
         }
-    }
-
-    fn decode_logical_payload(payload: &MetricSeriesPayload) -> LogicalMetricBatch {
-        assert_eq!(payload.version(), LOGICAL_METRIC_BATCH_VERSION);
-        let serialized =
-            zstd::stream::decode_all(payload.compressed_data()).expect("logical metric payload should decompress");
-        rmp_serde::from_slice(&serialized).expect("logical metric payload should deserialize")
-    }
-
-    #[test]
-    fn logical_series_preserves_v3_fields() {
-        let context = Context::from_static_parts(
-            "stateful.complete",
-            &["env:prod", "device:eth0", "dd.internal.resource:pod:pod-a"],
-        )
-        .with_origin_tags(tag_set(["origin:dogstatsd"]))
-        .with_host(Some(MetaString::from_static("host-a")));
-        let metadata = MetricMetadata::default().with_origin(MetricOrigin::OriginMetadata {
-            product: 10,
-            subproduct: 11,
-            product_detail: 12,
-        });
-        let metric = Metric::from_parts(
-            context,
-            MetricValues::rate([(123_u64, 20.0)], Duration::from_secs(10)),
-            metadata,
-        );
-        let additional_tags = SharedTagSet::from(tag_set(["global:true"]));
-
-        let series = logical_series_from_metric(&metric, &additional_tags).expect("series should translate");
-
-        assert_eq!(series.name, "stateful.complete");
-        assert_eq!(series.metric_type, MetricSeriesType::Rate);
-        assert_eq!(series.interval, 10);
-        assert_eq!(series.points, vec![MetricPoint::new(123, 2.0)]);
-        assert_eq!(series.tags.prefix, vec!["global:true"]);
-        assert_eq!(series.tags.values, vec!["env:prod", "origin:dogstatsd"]);
-        assert_eq!(
-            series.resources,
-            vec![
-                MetricResource::new("host", "host-a"),
-                MetricResource::new("device", "eth0"),
-                MetricResource::new("pod", "pod-a"),
-            ]
-        );
-        assert_eq!(series.origin, Some(FoldspaceMetricOrigin::new(10, 11, 12)));
-        assert_eq!(series.source_type_name, None);
-    }
-
-    #[tokio::test]
-    async fn stateful_series_use_logical_payload_while_units_stay_http() {
-        let endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
-        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
-        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
-        let mut context = test_v3_flush_context(
-            &endpoint_config,
-            V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000),
-            &serializer_telemetry,
-            &telemetry,
-        );
-        context.stateful_metrics_enabled = true;
-        let unit_metric = Metric::from_parts(
-            Context::from_static_parts("stateful.unit", &[]),
-            MetricValues::counter((1_u64, 1.0)),
-            MetricMetadata::default().with_unit(MetaString::from_static("millisecond")),
-        );
-        let mut metrics = vec![Metric::counter("stateful.compatible", 2.0), unit_metric];
-        let mut ratio = V3CompressionRatio::default();
-        let (mut payloads_tx, mut payloads_rx) = mpsc::channel(4);
-
-        encode_and_flush_v3_series_metrics(
-            context,
-            &mut metrics,
-            &mut ratio,
-            &mut payloads_tx,
-            None,
-            Some(MetricsPayloadInfo::v3_series()),
-        )
-        .await
-        .expect("stateful series should flush");
-        drop(payloads_tx);
-
-        let mut saw_http = false;
-        let mut logical = None;
-        while let Some(payload) = payloads_rx.recv().await {
-            match payload {
-                Payload::Http(_) => saw_http = true,
-                Payload::MetricSeries(payload) => logical = Some(decode_logical_payload(&payload)),
-                _ => panic!("unexpected metrics payload type"),
-            }
-        }
-
-        assert!(saw_http, "unit-bearing series should remain on V3 HTTP");
-        let logical = logical.expect("compatible series should use logical transport");
-        assert_eq!(logical.series().len(), 1);
-        assert_eq!(logical.series()[0].name, "stateful.compatible");
-    }
-
-    #[tokio::test]
-    async fn sketches_remain_on_http_when_stateful_series_are_enabled() {
-        let endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
-        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
-        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
-        let mut context = test_v3_flush_context(
-            &endpoint_config,
-            V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000),
-            &serializer_telemetry,
-            &telemetry,
-        );
-        context.stateful_metrics_enabled = true;
-        let mut sketch = DDSketch::default();
-        sketch.insert(42.0);
-        let mut metrics = vec![Metric::from_parts(
-            Context::from_static_parts("stateful.sketch", &[]),
-            MetricValues::distribution((1_u64, sketch)),
-            MetricMetadata::default(),
-        )];
-        let mut ratio = V3CompressionRatio::default();
-        let (mut payloads_tx, mut payloads_rx) = mpsc::channel(2);
-
-        encode_and_flush_v3_sketch_metrics(
-            context,
-            &mut metrics,
-            &mut ratio,
-            &mut payloads_tx,
-            None,
-            Some(MetricsPayloadInfo::v3_sketches()),
-        )
-        .await
-        .expect("sketch should flush");
-        drop(payloads_tx);
-
-        assert!(matches!(payloads_rx.recv().await, Some(Payload::Http(_))));
-        assert!(payloads_rx.recv().await.is_none());
     }
 
     /// Collected form of a payload emitted by `encode_and_flush_v3_payload_requests`.
@@ -3856,6 +3581,7 @@ serializer_experimental_use_v3_api:
         shadow_series_endpoint_uri: String,
         series_shadow_config: SeriesShadowConfig,
         flush_timeout: Duration,
+        stateful_series_enabled: bool,
     }
 
     impl RequestBuilderScenario {
@@ -3870,6 +3596,7 @@ serializer_experimental_use_v3_api:
                 shadow_series_endpoint_uri: "/api/intake/metrics/v3beta/series".to_string(),
                 series_shadow_config: SeriesShadowConfig::new(0.0),
                 flush_timeout: Duration::from_millis(10),
+                stateful_series_enabled: false,
             }
         }
 
@@ -3895,6 +3622,11 @@ serializer_experimental_use_v3_api:
         /// Overrides the flush timeout used to bound pending flushes.
         fn with_flush_timeout(mut self, flush_timeout: Duration) -> Self {
             self.flush_timeout = flush_timeout;
+            self
+        }
+
+        fn with_stateful_series(mut self) -> Self {
+            self.stateful_series_enabled = true;
             self
         }
 
@@ -3942,7 +3674,7 @@ serializer_experimental_use_v3_api:
                 payloads_tx,
                 self.flush_timeout,
                 false,
-                false,
+                self.stateful_series_enabled,
             ));
 
             RequestBuilderHarness {
@@ -4207,6 +3939,48 @@ serializer_experimental_use_v3_api:
         assert!(!request.headers().contains_key("X-Metrics-Request-ID"));
         harness.assert_no_payload_within(Duration::from_millis(50)).await;
 
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stateful_series_are_excluded_from_v3_http() {
+        let mut harness = RequestBuilderScenario::new(MetricsEncoderMode::V3Enabled, MetricsEncoderMode::V2Only)
+            .with_stateful_series()
+            .spawn()
+            .await;
+        let unit_metric = Metric::from_parts(
+            Context::from_static_parts("stateful.unit", &[]),
+            MetricValues::counter((1_u64, 1.0)),
+            MetricMetadata::default().with_unit(MetaString::from_static("millisecond")),
+        );
+
+        harness
+            .push_metrics([Metric::counter("stateful.compatible", 2.0), unit_metric])
+            .await;
+
+        let (metadata, request) = harness.next_http_request().await;
+        assert_eq!(V3_SERIES_ENDPOINT_URI, request.uri());
+        assert_eq!(metadata.event_count(), 1);
+        harness.assert_no_payload_within(Duration::from_millis(50)).await;
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stateful_series_remain_on_v2_http_for_mixed_endpoints() {
+        let mut harness = RequestBuilderScenario::new(MetricsEncoderMode::V3Enabled, MetricsEncoderMode::V2Only)
+            .with_v2_series_builder(10_000)
+            .with_stateful_series()
+            .spawn()
+            .await;
+
+        harness
+            .push_metrics([Metric::counter("stateful.compatible", 2.0)])
+            .await;
+
+        let (metadata, request) = harness.next_http_request().await;
+        assert_eq!("/api/v2/series", request.uri());
+        assert_eq!(metadata.event_count(), 1);
+        harness.assert_no_payload_within(Duration::from_millis(50)).await;
         harness.shutdown().await;
     }
 

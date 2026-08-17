@@ -19,6 +19,7 @@ use saluki_components::{
     decoders::otlp::OtlpDecoderConfiguration,
     destinations::{
         DogStatsDClientTelemetryConfiguration, DogStatsDDebugLogConfiguration, DogStatsDStatisticsConfiguration,
+        StatefulMetricsDestinationConfiguration,
     },
     encoders::{
         BufferedIncrementalConfiguration, DatadogApmStatsEncoderConfiguration, DatadogEventsConfiguration,
@@ -506,6 +507,13 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         endpoints,
     )
     .error_context("Failed to configure Datadog Metrics encoder.")?;
+    let stateful_metrics_config = StatefulMetricsDestinationConfiguration::from_configuration_with_metrics_routing(
+        &config_system.raw_map(),
+        metrics,
+        endpoints,
+        &dd_metrics_config,
+    )
+    .error_context("Failed to configure Foldspace metrics destination.")?;
 
     blueprint
         // Components.
@@ -513,6 +521,11 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         .add_encoder("dd_metrics_encode", dd_metrics_config)?
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
+    if let Some(stateful_metrics_config) = stateful_metrics_config {
+        blueprint
+            .add_destination("dd_stateful_metrics_out", stateful_metrics_config)?
+            .connect_components("metrics_enrich", "dd_stateful_metrics_out")?;
+    }
 
     add_mrf_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map(), metrics, endpoints)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map(), metrics, endpoints)?;
@@ -544,6 +557,20 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         DatadogMetricsConfiguration::from_configuration_with_metrics_routing(config, metrics, endpoints)
             .error_context("Failed to configure Multi-Region Failover Datadog Metrics encoder.")?
             .with_metrics_endpoint_override(mrf_dd_url.clone());
+    let mrf_stateful_metrics_config = StatefulMetricsDestinationConfiguration::from_configuration_with_metrics_routing(
+        config,
+        metrics,
+        endpoints,
+        &mrf_metrics_config,
+    )
+    .error_context("Failed to configure Multi-Region Failover Foldspace destination.")?
+    .map(|config| {
+        config.with_endpoint_override_and_api_key_refresh_config_path(
+            mrf_dd_url.clone(),
+            mrf_api_key.clone(),
+            "multi_region_failover.api_key",
+        )
+    });
 
     let mrf_forwarder_config =
         DatadogForwarderConfiguration::from_configuration_with_metrics_routing(config, metrics, endpoints)
@@ -566,6 +593,11 @@ fn add_mrf_metrics_pipeline_to_blueprint(
             "mrf_metrics_encode",
             "mrf_dd_out",
         ])?;
+    if let Some(mrf_stateful_metrics_config) = mrf_stateful_metrics_config {
+        blueprint
+            .add_destination("mrf_stateful_metrics_out", mrf_stateful_metrics_config)?
+            .connect_components("mrf_metrics_gateway", "mrf_stateful_metrics_out")?;
+    }
 
     Ok(())
 }
