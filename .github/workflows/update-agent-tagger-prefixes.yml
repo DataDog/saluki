@@ -7,6 +7,9 @@ name: Update Agent Tagger Entity ID Prefixes
 # This workflow tracks the prefixes declared on the Agent's `main` branch and opens a pull request whenever they
 # change. That pull request fails CI until the new prefix is classified, which is the point: the failure is the
 # notification, and the fix lands on the same branch.
+#
+# A failure of the workflow itself is silent — nothing else would tell us that the check has stopped checking
+# anything — so failures are watched from Slack through the GitHub integration rather than announced from here.
 
 on:
   schedule:
@@ -216,26 +219,3 @@ jobs:
                 body: `Closing this pull request in favor of a newer prefix update: [update PR](https://github.com/${context.repo.owner}/${context.repo.repo}/pull/${updatePR.data.number})`
               });
             }
-
-      # A failure here means we've stopped tracking the Agent's prefixes, which is silent by nature: nothing else
-      # would tell us that the check has stopped checking anything.
-      - name: Notify Slack on failure
-        if: failure()
-        env:
-          SLACK_TOKEN: "${{ secrets.SLACK_SLAPR_BOT_TOKEN }}"
-          SLACK_CHANNEL: "${{ vars.DEFAULT_SLACK_CHANNEL_ID }}"
-          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-        run: |
-          TEXT=":warning: The <${RUN_URL}|Agent tagger entity ID prefix check> failed. Until it is fixed, we won't be told when the Agent adds an entity ID prefix that ADP doesn't handle."
-
-          RESPONSE=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
-            -H "Authorization: Bearer ${SLACK_TOKEN}" \
-            -H "Content-Type: application/json; charset=utf-8" \
-            --data "$(jq -n --arg channel "$SLACK_CHANNEL" --arg text "$TEXT" '{channel: $channel, text: $text}')")
-
-          # Slack reports application-level errors in the body with a 200 status, so check the payload rather than
-          # relying on curl's exit code.
-          if [ "$(echo "$RESPONSE" | jq -r '.ok')" != "true" ]; then
-            echo "Failed to post to Slack: $RESPONSE"
-            exit 1
-          fi
