@@ -261,15 +261,16 @@ impl Default for HttpReceiver {
 pub struct Cors {
     /// Allowed origins for cross-origin requests. A bare `*` allows every origin; a partial
     /// wildcard like `http://*.example.com` matches that prefix and suffix. Empty disables CORS.
+    /// Defaults to empty; configure this for browser-based exporters.
     pub allowed_origins: Vec<String>,
 
     /// Request headers allowed in preflight, beyond the implicit `Accept`, `Accept-Language`,
     /// `Content-Type`, and `Content-Language`. Use `*` to allow any header. Empty also implicitly
-    /// allows `X-Requested-With`. Defaults to empty.
+    /// allows `X-Requested-With`. Defaults to empty; add headers for browser exporters that send them.
     pub allowed_headers: Vec<String>,
 
     /// Response headers exposed to the browser via `Access-Control-Expose-Headers`.
-    /// Defaults to empty.
+    /// Defaults to empty; add headers browser clients need to read.
     pub exposed_headers: Vec<String>,
 
     /// Seconds browsers may cache a preflight response. Defaults to `0` (no caching); increase
