@@ -259,27 +259,21 @@ impl Default for HttpReceiver {
 /// CORS configuration for the OTLP HTTP receiver.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Cors {
-    /// Origins allowed to make cross-origin requests. Allows for wildcard character when describing
-    /// domains (for example: "http://*.domains.com")
-    ///
-    /// Defaults to an empty list (disabling CORS).
+    /// Allowed origins for cross-origin requests. A bare `*` allows every origin; a partial
+    /// wildcard like `http://*.example.com` matches that prefix and suffix. Empty disables CORS.
     pub allowed_origins: Vec<String>,
 
-    /// Headers allowed in CORS requests, in addition to the implicitly allowed `Accept`,
-    /// `Accept-Language`, `Content-Type`, and `Content-Language` headers.
-    ///
-    /// When empty, `X-Requested-With` is also implicitly allowed. Include `*` to allow any
-    /// request header. Defaults to an empty list.
+    /// Request headers allowed in preflight, beyond the implicit `Accept`, `Accept-Language`,
+    /// `Content-Type`, and `Content-Language`. Use `*` to allow any header. Empty also implicitly
+    /// allows `X-Requested-With`. Defaults to empty.
     pub allowed_headers: Vec<String>,
 
-    /// Headers safe to expose to the API of a CORS response.
-    ///
-    /// Sets the `Access-Control-Expose-Headers` response header. Defaults to an empty list.
+    /// Response headers exposed to the browser via `Access-Control-Expose-Headers`.
+    /// Defaults to empty.
     pub exposed_headers: Vec<String>,
 
-    /// Number of seconds browsers should cache a CORS preflight response.
-    ///
-    /// Defaults to `0` (which prevents caching)
+    /// Seconds browsers may cache a preflight response. Defaults to `0` (no caching); increase
+    /// to avoid repeated preflight round-trips for frequent browser requests.
     pub max_age: u64,
 }
 

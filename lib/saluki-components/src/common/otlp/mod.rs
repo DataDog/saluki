@@ -16,7 +16,7 @@ use agent_data_plane_config::domains::otlp::Cors;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{Method, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
@@ -45,7 +45,7 @@ use stringtheory::MetaString;
 use tokio::runtime::Handle;
 use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::error;
 
 pub const OTLP_METRICS_GRPC_SERVICE_PATH: MetaString =
@@ -217,30 +217,34 @@ impl OtlpServerBuilder {
     }
 }
 
-/// Builds a `tower-http` CORS layer from the resolved CORS configuration.
+/// Builds a CORS layer from the resolved CORS configuration.
 ///
-/// - Any entry containing `*` (not just a bare `*`) enables allow-all mode.
-/// - Otherwise, an entry may contain a single `*` as a partial wildcard that matches zero or more
-///   characters (for example, `http://*.domain.com` matches `http://foo.domain.com`). Only the
-///   first `*` is treated as a wildcard; additional `*` characters become literal suffix.
+/// A bare `*` in the list of allowed origins enables allow-all; otherwise the first `*` in an origin is a partial wildcard
+/// (for example, `http://*.domain.com` matches `http://foo.domain.com`).
 fn build_cors_layer(cors: &Cors) -> CorsLayer {
     let mut layer = CorsLayer::new();
+    let allowed_origins = cors
+        .allowed_origins
+        .iter()
+        .map(|origin| origin.to_ascii_lowercase())
+        .collect::<Vec<_>>();
 
-    // Origins. `rs/cors` treats any `*` in the list as allow-all.
-    let has_wildcard = cors.allowed_origins.iter().any(|o| o.contains('*'));
-
-    if has_wildcard {
+    if allowed_origins.iter().any(|origin| origin == "*") {
         layer = layer.allow_origin(Any);
     } else {
-        // All origins are exact-match; lowercase for case-insensitive comparison.
-        let exact_origins: Vec<http::HeaderValue> = cors
-            .allowed_origins
-            .iter()
-            .map(|o| o.to_lowercase())
-            .filter_map(|o| http::HeaderValue::from_str(&o).ok())
-            .collect();
-        layer = layer.allow_origin(exact_origins);
+        layer = layer.allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+            let Ok(origin) = origin.to_str() else {
+                return false;
+            };
+            let origin = origin.to_ascii_lowercase();
+
+            allowed_origins.iter().any(|pattern| origin_matches(pattern, &origin))
+        }));
     }
+
+    // Preflight must permit the methods browser exporters use; without this the browser blocks
+    // the actual request even when the origin is allowed.
+    layer = layer.allow_methods([Method::GET, Method::POST, Method::HEAD]);
 
     if cors.allowed_headers.iter().any(|h| h == "*") {
         layer = layer.allow_headers(Any);
@@ -283,14 +287,15 @@ fn build_cors_layer(cors: &Cors) -> CorsLayer {
     layer
 }
 
-#[cfg(test)]
-fn wildcard_match(pattern: &str, input: &str) -> bool {
+/// Matches an Origin header against an allowed-origin pattern with first-`*` wildcard semantics.
+fn origin_matches(pattern: &str, origin: &str) -> bool {
     let mut parts = pattern.splitn(2, '*');
     let prefix = parts.next().unwrap_or("");
     let Some(suffix) = parts.next() else {
-        return pattern == input;
+        return pattern == origin;
     };
-    input.starts_with(prefix) && input.ends_with(suffix) && input.len() >= prefix.len() + suffix.len()
+
+    origin.starts_with(prefix) && origin.ends_with(suffix) && origin.len() >= prefix.len() + suffix.len()
 }
 
 /// HTTP handler for OTLP metrics requests.
@@ -435,8 +440,14 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 mod tests {
     use std::sync::Arc;
 
+    use axum::{
+        body::Body,
+        http::{header, Request},
+        routing::post,
+    };
     use saluki_core::{accounting::MemoryLimiter, components::ComponentContext};
     use saluki_metrics::test::TestRecorder;
+    use tower::ServiceExt;
 
     use super::*;
 
@@ -531,53 +542,130 @@ mod tests {
     }
 
     #[test]
-    fn wildcard_match_exact_subdomain() {
-        assert!(wildcard_match("http://*.example.com", "http://foo.example.com"));
-    }
-
-    #[test]
-    fn wildcard_match_zero_chars_for_star() {
-        // `*` matches zero characters, so `http://*.example.com` matches `http://.example.com`.
-        assert!(wildcard_match("http://*.example.com", "http://.example.com"));
-    }
-
-    #[test]
-    fn wildcard_match_rejects_wrong_domain() {
-        assert!(!wildcard_match("http://*.example.com", "http://foo.other.com"));
-    }
-
-    #[test]
-    fn wildcard_match_rejects_suffix_attack() {
-        assert!(!wildcard_match(
+    fn origin_matcher_matches_rs_cors_patterns() {
+        assert!(origin_matches("http://*.example.com", "http://foo.example.com"));
+        assert!(origin_matches("http://*.example.com", "http://.example.com"));
+        assert!(!origin_matches(
             "http://*.example.com",
             "http://foo.example.com.evil.com"
         ));
+        assert!(origin_matches("http://*.example.com/*", "http://foo.example.com/*"));
+        assert!(!origin_matches("http://*.example.com/*", "http://foo.example.com/bar"));
+        assert!(origin_matches("http://example.com", "http://example.com"));
+        assert!(!origin_matches("http://example.com", "http://other.com"));
     }
 
-    #[test]
-    fn wildcard_match_wildcard_in_middle() {
-        assert!(wildcard_match(
-            "http://*.example.com:8080",
-            "http://foo.example.com:8080"
-        ));
+    #[tokio::test]
+    async fn cors_layer_matches_partial_wildcard_origin() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&Cors {
+                allowed_origins: vec!["HTTP://*.EXAMPLE.COM".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "http://api.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://api.example.com")
+        );
     }
 
-    #[test]
-    fn wildcard_match_second_star_is_literal() {
-        // Only the first `*` is a wildcard; the second `*` is literal in the suffix.
-        assert!(wildcard_match("http://*.example.com/*", "http://foo.example.com/*"));
-        assert!(!wildcard_match("http://*.example.com/*", "http://foo.example.com/bar"));
+    #[tokio::test]
+    async fn cors_layer_rejects_unrelated_partial_wildcard_origin() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&Cors {
+                allowed_origins: vec!["http://*.example.com".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
     }
 
-    #[test]
-    fn wildcard_match_broader_pattern() {
-        // `http://*example.com` matches `http://badexample.com` (pure string matching, rs/cors behavior).
-        assert!(wildcard_match("http://*example.com", "http://badexample.com"));
+    #[tokio::test]
+    async fn cors_layer_allows_any_origin_for_bare_wildcard() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&Cors {
+                allowed_origins: vec!["*".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
     }
 
-    #[test]
-    fn wildcard_match_no_wildcard_is_exact() {
-        assert!(wildcard_match("http://example.com", "http://example.com"));
-        assert!(!wildcard_match("http://example.com", "http://other.com"));
+    #[tokio::test]
+    async fn cors_preflight_allows_post_method() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&Cors {
+                allowed_origins: vec!["*".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/")
+                    .header(header::ORIGIN, "http://example.com")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let allowed_methods = response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(allowed_methods.contains("POST"));
     }
 }
