@@ -237,7 +237,7 @@ twox-hash = { version = "2", features = ["xxhash64"] }
 shake = { version = "0.1", default-features = false }
 test-strategy = { version = "0.4", default-features = false }
 opentelemetry-semantic-conventions = { version = "0.32.0", default-features = false }
-comfy-table = { version = "7", default-features = false }
+comfy-table = { version = "8", default-features = false }
 dtoa = { version = "1", default-features = false }
 itoa = { version = "1", default-features = false }
 ryu = { version = "1", default-features = false }
