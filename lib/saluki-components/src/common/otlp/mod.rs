@@ -12,7 +12,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use ::metrics::Counter;
-use agent_data_plane_config::domains::otlp::Cors;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -115,12 +114,25 @@ pub trait OtlpHandler: Send + Sync + 'static {
     async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError>;
 }
 
+/// CORS settings for an OTLP HTTP server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CorsConfiguration {
+    /// Origins allowed to make cross-origin requests.
+    pub allowed_origins: Vec<String>,
+    /// Request headers allowed in cross-origin requests.
+    pub allowed_headers: Vec<String>,
+    /// Response headers exposed to browser clients.
+    pub exposed_headers: Vec<String>,
+    /// Seconds browsers may cache a preflight response.
+    pub max_age: u64,
+}
+
 /// OTLP server configuration and setup.
 pub struct OtlpServerBuilder {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
-    cors: Cors,
+    cors: CorsConfiguration,
 }
 
 impl OtlpServerBuilder {
@@ -132,12 +144,12 @@ impl OtlpServerBuilder {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
-            cors: Cors::default(),
+            cors: CorsConfiguration::default(),
         }
     }
 
     /// Sets the CORS configuration for the HTTP receiver.
-    pub fn with_cors(mut self, cors: Cors) -> Self {
+    pub fn with_cors(mut self, cors: CorsConfiguration) -> Self {
         self.cors = cors;
         self
     }
@@ -221,7 +233,7 @@ impl OtlpServerBuilder {
 ///
 /// A bare `*` in the list of allowed origins enables allow-all; otherwise the first `*` in an origin is a partial wildcard
 /// (for example, `http://*.domain.com` matches `http://foo.domain.com`).
-fn build_cors_layer(cors: &Cors) -> CorsLayer {
+fn build_cors_layer(cors: &CorsConfiguration) -> CorsLayer {
     let mut layer = CorsLayer::new();
     let allowed_origins = cors
         .allowed_origins
@@ -559,7 +571,7 @@ mod tests {
     async fn cors_layer_matches_partial_wildcard_origin() {
         let app = Router::new()
             .route("/", post(|| async { StatusCode::NO_CONTENT }))
-            .layer(build_cors_layer(&Cors {
+            .layer(build_cors_layer(&CorsConfiguration {
                 allowed_origins: vec!["HTTP://*.EXAMPLE.COM".to_string()],
                 ..Default::default()
             }));
@@ -589,7 +601,7 @@ mod tests {
     async fn cors_layer_rejects_unrelated_partial_wildcard_origin() {
         let app = Router::new()
             .route("/", post(|| async { StatusCode::NO_CONTENT }))
-            .layer(build_cors_layer(&Cors {
+            .layer(build_cors_layer(&CorsConfiguration {
                 allowed_origins: vec!["http://*.example.com".to_string()],
                 ..Default::default()
             }));
@@ -613,7 +625,7 @@ mod tests {
     async fn cors_layer_allows_any_origin_for_bare_wildcard() {
         let app = Router::new()
             .route("/", post(|| async { StatusCode::NO_CONTENT }))
-            .layer(build_cors_layer(&Cors {
+            .layer(build_cors_layer(&CorsConfiguration {
                 allowed_origins: vec!["*".to_string()],
                 ..Default::default()
             }));
@@ -643,7 +655,7 @@ mod tests {
     async fn cors_preflight_allows_post_method() {
         let app = Router::new()
             .route("/", post(|| async { StatusCode::NO_CONTENT }))
-            .layer(build_cors_layer(&Cors {
+            .layer(build_cors_layer(&CorsConfiguration {
                 allowed_origins: vec!["*".to_string()],
                 ..Default::default()
             }));

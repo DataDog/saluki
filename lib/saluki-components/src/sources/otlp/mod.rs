@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
-use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
+use crate::common::otlp::{build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerBuilder};
 
 mod logs;
 mod metrics;
@@ -61,6 +61,16 @@ fn parse_configured_metric_tags(raw: &str) -> SharedTagSet {
         }
     }
     tags.into_shared()
+}
+
+/// Builds component-owned CORS settings from the resolved configuration model.
+fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
+    CorsConfiguration {
+        allowed_origins: cors.allowed_origins.clone(),
+        allowed_headers: cors.allowed_headers.clone(),
+        exposed_headers: cors.exposed_headers.clone(),
+        max_age: cors.max_age,
+    }
 }
 
 /// Applies resolved static tags using replacement semantics.
@@ -169,7 +179,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
-        let cors = self.otlp.receiver.http.cors.clone();
+        let cors = cors_configuration(&self.otlp.receiver.http.cors);
         let metrics = build_metrics(&context);
 
         Ok(Box::new(Otlp {
@@ -207,7 +217,7 @@ pub struct Otlp {
     metric_tags: SharedTagSet,
     default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
-    cors: agent_data_plane_config::domains::otlp::Cors,
+    cors: CorsConfiguration,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
