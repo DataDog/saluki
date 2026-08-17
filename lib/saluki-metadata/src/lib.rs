@@ -74,23 +74,14 @@ macro_rules! declare_app_details {
 
 /// Parses a `u32` from a string in a `const` context.
 ///
-/// Only intended for the version components that Cargo hands us, which are always plain decimal numbers. Any other
-/// character causes a compile-time error, and overflow panics like it would in any other `const` evaluation.
+/// Only intended for the version components that Cargo hands us, which are always plain decimal numbers. Anything else
+/// fails the build.
 #[doc(hidden)]
 pub const fn const_parse_u32(s: &str) -> u32 {
-    let bytes = s.as_bytes();
-    let mut value = 0u32;
-    let mut i = 0;
-
-    while i < bytes.len() {
-        let digit = bytes[i];
-        assert!(digit >= b'0' && digit <= b'9', "version component was not a number");
-
-        value = value * 10 + (digit - b'0') as u32;
-        i += 1;
+    match u32::from_str_radix(s, 10) {
+        Ok(value) => value,
+        Err(_) => panic!("version component was not a number"),
     }
-
-    value
 }
 
 /// Application details.
