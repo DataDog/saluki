@@ -185,6 +185,7 @@ test-integration-windows-amd64:
       -e BUILD_PROFILE
       -e BUILD_FEATURES
       -e ADP_VERSION="${ADP_IMAGE_VERSION}"
+      -e APP_DEV_BUILD
       -e TARGET_ARCH
       -e OUTPUT_DIR="c:\mnt"
       ${WINBUILDIMAGE}
