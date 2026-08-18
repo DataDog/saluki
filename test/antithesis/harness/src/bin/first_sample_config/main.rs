@@ -14,7 +14,7 @@ use antithesis_sdk::prelude::*;
 use antithesis_sdk::random::AntithesisRng;
 use anyhow::Context;
 use clap::Parser;
-use harness::config::DatadogConfig;
+use harness::config::{ContextSourceConfig, DatadogConfig};
 use rand::rand_core::UnwrapErr;
 use serde_json::json;
 
@@ -63,9 +63,21 @@ fn main() -> anyhow::Result<()> {
 
     // Load-generator view of the same sample, so a generator caps its datagrams
     // to the SUT's receive buffer without reading the Agent config.
+    let driver = config.driver_config(&mut rng);
     let driver_path = cli.config_dir.join("driver.yaml");
-    fs::write(&driver_path, config.driver_config(&mut rng).to_yaml()?.as_bytes())
+    fs::write(&driver_path, driver.to_yaml()?.as_bytes())
         .with_context(|| format!("write driver config {}", driver_path.display()))?;
+
+    // Per-kind context-pool caps for this timeline, read lazily by the intake's shared pool. Sampled
+    // here so the pool's cardinality varies per timeline like every other sampled knob.
+    let context_source_path = cli.config_dir.join("context_source.yaml");
+    fs::write(
+        &context_source_path,
+        ContextSourceConfig::sample(&mut rng, driver.datagram_byte_limit)
+            .to_yaml()?
+            .as_bytes(),
+    )
+    .with_context(|| format!("write context source config {}", context_source_path.display()))?;
 
     // Per-timeline anchor: counting these in triage tells us how many distinct
     // configs the run sampled.

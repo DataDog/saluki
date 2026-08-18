@@ -547,7 +547,7 @@ async fn handle_stats_cardinality_analysis<'a>(cmd: &StatsCommand, response: Sta
 fn get_stylized_table() -> Table {
     let mut table = Table::new();
     table.set_content_arrangement(ContentArrangement::Dynamic);
-    table.load_preset(ASCII_FULL_CONDENSED);
+    table.load_style(ASCII_FULL_CONDENSED);
 
     table
 }

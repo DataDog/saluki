@@ -7,9 +7,11 @@
 //! each producer.
 
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use antithesis_intake::capture;
+use antithesis_intake::context_pool::Pool;
 use antithesis_intake::http::{build_router, state::AppState};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -60,7 +62,10 @@ async fn adp_async_compression(raw: &[u8]) -> Vec<u8> {
 const AGENT_UA: &str = "datadog-agent/7.55.0";
 
 async fn post_series(encoding: Option<&str>, user_agent: Option<&str>, body: Vec<u8>) -> StatusCode {
-    let state = AppState::agent(&capture::State::new(), Path::new("/nonexistent-agent-config"));
+    // This test drives only the series decode path, never `/contexts`, so neither the pool's config
+    // nor the sampled `datadog.yaml` is read.
+    let pool = Arc::new(Pool::new(PathBuf::from("/nonexistent")));
+    let state = AppState::agent(&capture::State::new(), pool, Path::new("/nonexistent"));
     let app = build_router(state);
     let mut builder = Request::builder()
         .method("POST")

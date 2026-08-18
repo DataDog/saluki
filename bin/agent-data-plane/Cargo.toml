@@ -78,9 +78,6 @@ tikv-jemallocator = { workspace = true, features = [
   "stats",
 ] }
 
-[build-dependencies]
-chrono = { workspace = true }
-
 [dev-dependencies]
 datadog-agent-config-testing = { workspace = true }
 derive-where = { workspace = true }

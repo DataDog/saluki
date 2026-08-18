@@ -34,6 +34,10 @@ mod unix_driver {
         /// to the shared sampled receive buffer.
         #[arg(long = "config-dir", env = "CONFIG_DIR", default_value = "/agent-config")]
         config_dir: PathBuf,
+        /// `host:port` of the intake that serves the shared context pool over `GET /contexts`. Both
+        /// lanes share one pool, so either lane's address serves the same contexts.
+        #[arg(long = "intake-addr", env = "INTAKE_ADDR", default_value = "intake:2049")]
+        intake_addr: String,
     }
 
     pub(super) fn run() -> anyhow::Result<()> {
@@ -64,7 +68,9 @@ mod unix_driver {
         // Agent first, ADP second: `stats.sent` and `stats.max_packed` are indexed in this order.
         let stats = driver::run(
             AntithesisRng,
-            driver_config.payload_byte_limit,
+            &config.intake_addr,
+            driver_config.context_count,
+            driver_config.datagram_byte_limit,
             driver_config.datagram_count,
             vec![agent_socket, adp_socket],
         )?;

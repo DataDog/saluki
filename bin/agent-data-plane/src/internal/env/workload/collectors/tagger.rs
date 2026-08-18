@@ -236,8 +236,26 @@ fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<Ent
                 None
             }
         },
-        // We don't care about this, so we just ignore it.
-        "gpu" => None,
+        // Entities that the Agent's tagger publishes but that we have no use for.
+        //
+        // We ignore these explicitly so that the catch-all arm below stays a meaningful signal: it should only fire
+        // for a prefix that the Agent has newly added and that we haven't yet made a decision about.
+        //
+        // - `gpu`: keyed by GPU device UUID, which never arrives as origin information.
+        // - `kueue_workload`, `kubernetes_kueue_queue`, `kueue_resource_flavor`: the Agent folds these same Kueue tags
+        //   into the pod and container entities, which we do handle, so consuming them here would be redundant.
+        // - `crd`, `kubernetes_capabilities`: describe cluster-level objects rather than workloads, and carry no
+        //   identifier that origin detection can resolve.
+        // - `host`, `kubelet`: no tagger entity is ever published for these today, so they're listed only for
+        //   completeness against the Agent's set of prefixes.
+        "gpu"
+        | "kueue_workload"
+        | "kubernetes_kueue_queue"
+        | "kueue_resource_flavor"
+        | "crd"
+        | "kubernetes_capabilities"
+        | "host"
+        | "kubelet" => None,
         prefix => {
             warn!("Unhandled entity ID prefix: {}://{}", prefix, remote_entity_id.uid);
             None
@@ -281,6 +299,31 @@ mod tests {
                     uid: uid.to_owned(),
                 }),
                 Some(expected),
+                "{prefix}://{uid}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_known_unused_entity_prefixes_from_the_remote_tagger() {
+        let cases = [
+            ("gpu", "GPU-00000000-0000-0000-0000-000000000000"),
+            ("kueue_workload", "spark-jobs/spark-driver-0"),
+            ("kubernetes_kueue_queue", "spark-jobs/local-queue"),
+            ("kueue_resource_flavor", "default-flavor"),
+            ("crd", "apps/v1/default/example"),
+            ("kubernetes_capabilities", "kube_capabilities"),
+            ("host", "host"),
+            ("kubelet", "kubelet"),
+        ];
+
+        for (prefix, uid) in cases {
+            assert_eq!(
+                remote_entity_id_to_entity_id(RemoteEntityId {
+                    prefix: prefix.to_owned(),
+                    uid: uid.to_owned(),
+                }),
+                None,
                 "{prefix}://{uid}"
             );
         }

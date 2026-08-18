@@ -13,8 +13,11 @@ services:
     image: intake:${ANTITHESIS_IMAGE_TAG:-latest}
     environment:
       NO_COLOR: "1"
+      CONFIG_DIR: "/agent-config"
     volumes:
-      # The sampled datadog.yaml, so the intake can hold the SUT to what its config asked for.
+      # first_sample_config (workload) writes this timeline's datadog.yaml and context_source.yaml
+      # here. The intake reads the first to hold the SUT to its config and the second for the context
+      # pool's caps.
       - agent-config:/agent-config:ro
     healthcheck:
       # antithesis-intake serves HTTP on :2049. /dev/tcp avoids needing curl in the image.

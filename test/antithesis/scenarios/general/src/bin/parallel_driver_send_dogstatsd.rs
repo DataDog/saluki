@@ -26,10 +26,17 @@ mod unix_driver {
         /// to the SUT's sampled receive buffer.
         #[arg(long = "config-dir", env = "CONFIG_DIR", default_value = "/agent-config")]
         config_dir: PathBuf,
+        /// `host:port` of the intake that serves the shared context pool over `GET /contexts`.
+        #[arg(long = "intake-addr", env = "INTAKE_ADDR", default_value = "intake:2049")]
+        intake_addr: String,
     }
 
     pub(super) fn run() -> anyhow::Result<()> {
         antithesis_init();
+
+        // reqwest is built with `rustls-no-provider` in this crate, so install the process-wide
+        // crypto provider before the driver builds its context-fetch client, which otherwise panics.
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 
         let config = Config::try_parse()?;
 
@@ -41,7 +48,9 @@ mod unix_driver {
         let driver_config = DriverConfig::read(&config.config_dir)?;
         let stats = driver::run(
             AntithesisRng,
-            driver_config.payload_byte_limit,
+            &config.intake_addr,
+            driver_config.context_count,
+            driver_config.datagram_byte_limit,
             driver_config.datagram_count,
             vec![socket],
         )?;
