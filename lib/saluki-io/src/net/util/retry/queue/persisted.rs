@@ -10,7 +10,7 @@ use fs4::{available_space, total_space};
 use rand::RngExt as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use serde::{de::DeserializeOwned, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::{EventContainer, PushResult};
 
@@ -390,7 +390,15 @@ where
             self.total_on_disk_bytes -= entry.size_bytes;
             push_result.track_dropped_item(&deserialized);
 
-            warn!(entry.path = %entry.path.display(), entry.len = entry.size_bytes, "Dropped persisted entry.");
+            // The message text here is kept in sync with an equivalent log emitted by another implementation of
+            // this queue, so that log-based alerting on this condition matches regardless of which implementation
+            // is deployed.
+            error!(
+                entry.path = %entry.path.display(),
+                entry.len = entry.size_bytes,
+                "Maximum disk space for retry transactions is reached. Removing {}.",
+                entry.path.display()
+            );
         }
 
         Ok(push_result)
