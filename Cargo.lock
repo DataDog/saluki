@@ -1305,6 +1305,7 @@ dependencies = [
  "saluki-error",
  "serde",
  "serde_json",
+ "socket2",
  "stele",
  "tokio",
  "tower-http 0.7.0",
