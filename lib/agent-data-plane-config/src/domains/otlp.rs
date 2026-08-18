@@ -65,14 +65,7 @@ pub struct Metrics {
     pub summaries: Summaries,
 
     /// Time-to-live for cached prior data points used when converting cumulative monotonic sums
-    /// to deltas.
-    ///
-    /// Once a series' cached prior value is older than this TTL, it is evicted and the next value
-    /// is treated as an initial value again. Defaults to `3600` seconds ([`DEFAULT_DELTA_TTL`]).
-    ///
-    /// Raise this for high-cardinality or low-frequency series that report infrequently enough to
-    /// trip spurious "initial value" resets. Lower it to bound memory use when many short-lived
-    /// series are seen, since each cached point is held for the full TTL regardless of activity.
+    /// to deltas. Defaults to `3600` seconds. Must be greater than zero.
     pub delta_ttl: Duration,
 }
 

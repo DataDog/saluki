@@ -7,7 +7,6 @@ use agent_data_plane_config::domains::{
 use saluki_error::{generic_error, GenericError};
 
 const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
-const DEFAULT_SWEEP_INTERVAL: Duration = Duration::from_secs(1800);
 
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
@@ -34,7 +33,6 @@ pub struct OtlpMetricsTranslatorConfig {
     pub quantiles: bool,
     // Points cache settings
     pub delta_ttl: Duration,
-    pub sweep_interval: Duration,
     pub infer_delta_interval: bool,
 }
 
@@ -114,11 +112,6 @@ impl OtlpMetricsTranslatorConfig {
         self.delta_ttl = ttl;
         self
     }
-
-    pub fn with_sweep_interval(mut self, interval: Duration) -> Self {
-        self.sweep_interval = interval;
-        self
-    }
 }
 
 impl Default for OtlpMetricsTranslatorConfig {
@@ -137,7 +130,6 @@ impl Default for OtlpMetricsTranslatorConfig {
             quantiles: false,
             infer_delta_interval: false,
             delta_ttl: DEFAULT_DELTA_TTL,
-            sweep_interval: DEFAULT_SWEEP_INTERVAL,
         }
     }
 }

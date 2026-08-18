@@ -927,8 +927,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_metrics_delta_ttl(&mut self, value: i64) {
-        // The schema types this as an integer denominated in seconds. Convert to a `Duration` at the
-        // earliest opportunity so the resolved model never carries the raw scalar.
+        if value <= 0 {
+            self.record_error(TranslateError::new_with_message(
+                "otlp_config.metrics.delta_ttl",
+                format!("time to live must be positive: {value}"),
+            ));
+            return;
+        }
         match parse_seconds("otlp_config.metrics.delta_ttl", value) {
             Ok(ttl) => self.config.domains.otlp.metrics.delta_ttl = ttl,
             Err(error) => self.record_error(error),
@@ -1859,5 +1864,18 @@ mod tests {
         assert_eq!(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
         let errors = errors.expect("negative delta_ttl should record a translation error");
         assert!(errors.to_string().contains("otlp_config.metrics.delta_ttl"));
+        assert!(errors.to_string().contains("time to live must be positive"));
+    }
+
+    #[test]
+    fn otlp_metrics_delta_ttl_zero_records_error_and_keeps_default() {
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "metrics": { "delta_ttl": 0 } }
+        }));
+
+        assert_eq!(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
+        let errors = errors.expect("zero delta_ttl should record a translation error");
+        assert!(errors.to_string().contains("otlp_config.metrics.delta_ttl"));
+        assert!(errors.to_string().contains("time to live must be positive"));
     }
 }
