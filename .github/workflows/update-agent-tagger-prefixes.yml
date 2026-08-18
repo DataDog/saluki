@@ -114,36 +114,74 @@ jobs:
 
           git diff -- "$FIXTURE"
 
-          # Name the branch after the content, so that an unrelated later change gets its own branch and so we can
-          # recognize a change we've already reported.
-          BRANCH_NAME="ci/update-agent-tagger-prefixes-$(sha256sum "$FIXTURE" | cut -c1-12)"
-
-          # We report each distinct change once. The branch for a change we've already reported carries a commit that
-          # isn't on main, so pushing to it would be rejected as a non-fast-forward and fail every run until the pull
-          # request is dealt with -- which would leave us unable to tell a stale run from a broken one.
-          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" > /dev/null; then
-            echo "This change has already been reported on ${BRANCH_NAME}; leaving the existing pull request alone."
-            echo "needs_update=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
+          # Name the branch after the content, so that an unrelated later change gets its own branch and so the next
+          # step can look up whether this particular change has been reported already.
           echo "needs_update=true" >> $GITHUB_OUTPUT
-          echo "branch_name=${BRANCH_NAME}" >> $GITHUB_OUTPUT
+          echo "branch_name=ci/update-agent-tagger-prefixes-$(sha256sum "$FIXTURE" | cut -c1-12)" >> $GITHUB_OUTPUT
+
+      - name: Check whether this change was already reported
+        id: reported
+        if: steps.update.outputs.needs_update == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: "${{ steps.octo-sts.outputs.token }}"
+          script: |
+            const branchName = '${{ steps.update.outputs.branch_name }}';
+
+            // We report each distinct change once, and a pull request is what constitutes having reported it: an open
+            // one is still waiting to be dealt with, and a closed one was already declined.
+            const { data: pullRequests } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branchName}`,
+              state: 'all',
+            });
+
+            // A merged one doesn't count, though. Branch names are derived from the fixture's contents, so if the
+            // Agent removes a prefix it added earlier, we land back on the contents of an already-merged pull request
+            // and would otherwise suppress the change forever. Seeing a diff at all means the state has moved on since
+            // that merge.
+            const reportedBy = pullRequests.find(pullRequest => !pullRequest.merged_at);
+
+            if (reportedBy) {
+              console.log(`Already reported by ${reportedBy.html_url} (${reportedBy.state}); nothing to do.`);
+              core.setOutput('already_reported', 'true');
+              return;
+            }
+
+            core.setOutput('already_reported', 'false');
+
+            // Nothing left to act on, so a branch that still exists is either an orphan from a run that failed partway
+            // through -- most likely while signing the commit -- or a leftover from a merged one. Delete it so that
+            // this run can start from a clean state: pushing to it would be rejected as a non-fast-forward, and
+            // leaving it in place would suppress this change forever.
+            try {
+              await github.rest.git.deleteRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`,
+              });
+              console.log(`Deleted orphaned branch ${branchName} left by an earlier failed run.`);
+            } catch (error) {
+              if (error.status !== 404 && error.status !== 422) {
+                throw error;
+              }
+            }
 
       - name: Create remote branch
-        if: steps.update.outputs.needs_update == 'true'
+        if: steps.update.outputs.needs_update == 'true' && steps.reported.outputs.already_reported == 'false'
         run: git push origin HEAD:refs/heads/${{ steps.update.outputs.branch_name }}
 
       - name: Commit changes
         id: commit
-        if: steps.update.outputs.needs_update == 'true'
+        if: steps.update.outputs.needs_update == 'true' && steps.reported.outputs.already_reported == 'false'
         run: |
           git add bin/agent-data-plane/tests/fixtures/agent_tagger_entity_id_prefixes.txt
           git commit -m "chore(ci): update Agent tagger entity ID prefixes"
           echo "update_commit_sha=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
 
       - name: Sign commit
-        if: steps.update.outputs.needs_update == 'true'
+        if: steps.update.outputs.needs_update == 'true' && steps.reported.outputs.already_reported == 'false'
         uses: DataDog/commit-headless@5a0f3876e0fbdd3a86b3e008acf4ec562db59eee # v2.0.1
         with:
           token: "${{ steps.octo-sts.outputs.token }}"
@@ -153,7 +191,7 @@ jobs:
           commits: "${{ steps.commit.outputs.update_commit_sha }}"
 
       - name: Create pull request
-        if: steps.update.outputs.needs_update == 'true'
+        if: steps.update.outputs.needs_update == 'true' && steps.reported.outputs.already_reported == 'false'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           github-token: "${{ steps.octo-sts.outputs.token }}"
@@ -190,16 +228,6 @@ jobs:
             - [ ] New feature
             - [x] Non-functional (chore, refactoring, docs)
             - [ ] Performance`;
-
-            // Make sure we don't open a second PR for a change we've already reported.
-            const { data: exactPRData } = await github.rest.search.issuesAndPullRequests({
-              q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open head:${branchName}`
-            });
-
-            if (exactPRData.items.length > 0) {
-              console.log(`Pull request for this change already exists: ${exactPRData.items[0].html_url}`);
-              return;
-            }
 
             const updatePR = await github.rest.pulls.create({
               owner: context.repo.owner,

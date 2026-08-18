@@ -20,6 +20,46 @@ use stringtheory::{
 use tokio::{select, sync::mpsc};
 use tracing::{debug, trace, warn};
 
+/// Entity ID prefixes that we subscribe to and convert into an [`EntityId`].
+///
+/// This is the set of prefixes we ask the Agent's tagger for, so an entity whose prefix isn't listed here never
+/// reaches us at all. Adding a prefix here requires a matching arm in [`remote_entity_id_to_entity_id`].
+const HANDLED_ENTITY_ID_PREFIXES: &[&str] = &[
+    "container_id",
+    "container_image_metadata",
+    "ecs_task",
+    "deployment",
+    "kubernetes_metadata",
+    "kubernetes_node",
+    "kubernetes_pod_uid",
+    "process",
+    "internal",
+];
+
+/// Entity ID prefixes that the Agent's tagger publishes but that we have reviewed and deliberately don't consume.
+///
+/// We don't subscribe to these, so they cost us nothing at runtime. Recording them here is what lets us tell a prefix
+/// we've decided against apart from one the Agent has newly added, which is the difference the
+/// `agent_entity_id_prefixes_are_all_classified` test checks for.
+///
+/// - `gpu`: keyed by GPU device UUID, which never arrives as origin information.
+/// - `kueue_workload`, `kubernetes_kueue_queue`, `kueue_resource_flavor`: the Agent folds these same Kueue tags into
+///   the pod and container entities, which we do handle, so consuming them here would be redundant.
+/// - `crd`, `kubernetes_capabilities`: describe cluster-level objects rather than workloads, and carry no identifier
+///   that origin detection can resolve.
+/// - `host`, `kubelet`: no tagger entity is ever published for these today, so they're listed only for completeness
+///   against the Agent's set of prefixes.
+const IGNORED_ENTITY_ID_PREFIXES: &[&str] = &[
+    "gpu",
+    "kueue_workload",
+    "kubernetes_kueue_queue",
+    "kueue_resource_flavor",
+    "crd",
+    "kubernetes_capabilities",
+    "host",
+    "kubelet",
+];
+
 #[static_metrics(prefix = remote_tagger_metadata_collector)]
 #[derive(Clone)]
 struct Telemetry {
@@ -116,7 +156,7 @@ impl MetadataCollector for RemoteAgentTaggerMetadataCollector {
             .collect();
         let mut entity_stream = self
             .client
-            .get_tagger_stream(RemoteTagCardinality::High, prefixes)
+            .get_tagger_stream(RemoteTagCardinality::High, Some(prefixes))
             .map_err(StatusError::from);
         debug!("Established tagger entity stream.");
 
@@ -220,46 +260,6 @@ impl MemoryBounds for RemoteAgentTaggerMetadataCollector {
     }
 }
 
-/// Entity ID prefixes that we subscribe to and convert into an [`EntityId`].
-///
-/// This is the set of prefixes we ask the Agent's tagger for, so an entity whose prefix isn't listed here never
-/// reaches us at all. Adding a prefix here requires a matching arm in [`remote_entity_id_to_entity_id`].
-const HANDLED_ENTITY_ID_PREFIXES: &[&str] = &[
-    "container_id",
-    "container_image_metadata",
-    "ecs_task",
-    "deployment",
-    "kubernetes_metadata",
-    "kubernetes_node",
-    "kubernetes_pod_uid",
-    "process",
-    "internal",
-];
-
-/// Entity ID prefixes that the Agent's tagger publishes but that we have reviewed and deliberately don't consume.
-///
-/// We don't subscribe to these, so they cost us nothing at runtime. Recording them here is what lets us tell a prefix
-/// we've decided against apart from one the Agent has newly added, which is the difference the
-/// `agent_entity_id_prefixes_are_all_classified` test checks for.
-///
-/// - `gpu`: keyed by GPU device UUID, which never arrives as origin information.
-/// - `kueue_workload`, `kubernetes_kueue_queue`, `kueue_resource_flavor`: the Agent folds these same Kueue tags into
-///   the pod and container entities, which we do handle, so consuming them here would be redundant.
-/// - `crd`, `kubernetes_capabilities`: describe cluster-level objects rather than workloads, and carry no identifier
-///   that origin detection can resolve.
-/// - `host`, `kubelet`: no tagger entity is ever published for these today, so they're listed only for completeness
-///   against the Agent's set of prefixes.
-const IGNORED_ENTITY_ID_PREFIXES: &[&str] = &[
-    "gpu",
-    "kueue_workload",
-    "kubernetes_kueue_queue",
-    "kueue_resource_flavor",
-    "crd",
-    "kubernetes_capabilities",
-    "host",
-    "kubelet",
-];
-
 fn remote_entity_id_to_entity_id(remote_entity_id: RemoteEntityId) -> Option<EntityId> {
     // TODO: In the future, it would be nice to do zero-copy deserialization so that we could just intern them (or
     // inline them) directly instead of having to deal with the owned strings... but for now, we can transparently
@@ -336,8 +336,10 @@ mod tests {
 
     /// The Agent's set of tagger entity ID prefixes, regenerated nightly by
     /// `.github/workflows/update-agent-tagger-prefixes.yml`.
-    const AGENT_ENTITY_ID_PREFIXES: &str =
-        include_str!("../../../../../tests/fixtures/agent_tagger_entity_id_prefixes.txt");
+    const AGENT_ENTITY_ID_PREFIXES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_tagger_entity_id_prefixes.txt"
+    ));
 
     fn agent_entity_id_prefixes() -> Vec<&'static str> {
         AGENT_ENTITY_ID_PREFIXES
