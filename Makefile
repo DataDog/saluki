@@ -130,7 +130,7 @@ build-adp-base:
 	APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
 	APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 	APP_VERSION="$(ADP_APP_VERSION)" \
-	APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+	APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
 	cargo build --profile $(BUILD_PROFILE) --package agent-data-plane
 
 .PHONY: build-adp
@@ -646,7 +646,7 @@ build-adp-host: ## Builds the agent-data-plane binary for the current host (Carg
 		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
 		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 		APP_VERSION="$(ADP_APP_VERSION)" \
-		APP_BUILD_DATE="$(ADP_APP_BUILD_DATE)" \
+		APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
 .PHONY: build-adp-aix

@@ -33,6 +33,45 @@ fn main() {
         .and_then(|v| v.parse::<u32>().ok())
         .unwrap_or(0);
 
+    // Release builds shouldn't silently ship the placeholder values above, so treat any that survive as a build
+    // failure. We can't key off APP_DEV_BUILD alone: CI sets it at the workflow level, so on a tag pipeline it's also
+    // set for test/lint jobs that supply no metadata, hence only enforcing when something identified the application.
+    let identifying_build = ["APP_FULL_NAME", "APP_SHORT_NAME", "APP_IDENTIFIER", "APP_VERSION"]
+        .iter()
+        .any(|var_name| env_var_present(var_name));
+
+    if !app_dev_build && identifying_build {
+        let mut placeholders = Vec::new();
+
+        if app_full_name == "unknown" {
+            placeholders.push("APP_FULL_NAME");
+        }
+        if app_short_name == "unknown" {
+            placeholders.push("APP_SHORT_NAME");
+        }
+        if app_identifier == "unknown" {
+            placeholders.push("APP_IDENTIFIER");
+        }
+        if app_git_hash == "unknown" || app_git_hash == "not-in-git" {
+            placeholders.push("APP_GIT_HASH");
+        }
+        if app_version == "0.0.0" {
+            placeholders.push("APP_VERSION");
+        }
+        if app_build_time.starts_with("0000-00-00") {
+            placeholders.push("APP_BUILD_TIME");
+        }
+
+        if !placeholders.is_empty() {
+            panic!(
+                "APP_DEV_BUILD is 'false', marking this a release build, but the following build metadata environment \
+                 variables are unset or still hold their placeholder defaults: {}. Set them in whichever build entry \
+                 point is being used, or set APP_DEV_BUILD=true if this isn't actually a release build.",
+                placeholders.join(", ")
+            );
+        }
+    }
+
     let details_file = std::env::var("OUT_DIR").unwrap() + "/details.rs";
     std::fs::write(
         details_file,
@@ -72,6 +111,11 @@ fn get_env_var_or_default(var_name: &str, default: &str) -> String {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or(default.to_string())
+}
+
+/// Returns `true` if the given environment variable is set to a non-empty value.
+fn env_var_present(var_name: &str) -> bool {
+    std::env::var(var_name).ok().filter(|s| !s.is_empty()).is_some()
 }
 
 /// Returns the value the given environment variable after parsing as a boolean, or the default value if the environment

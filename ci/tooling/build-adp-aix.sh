@@ -36,7 +36,10 @@ export APP_SHORT_NAME="${APP_SHORT_NAME:-${ADP_APP_SHORT_NAME:-data-plane}}"
 export APP_IDENTIFIER="${APP_IDENTIFIER:-${ADP_APP_IDENTIFIER:-adp}}"
 export APP_GIT_HASH="${APP_GIT_HASH:-${ADP_APP_GIT_HASH:-${APP_GIT_HASH_AUTO}}}"
 export APP_VERSION="${APP_VERSION:-${ADP_APP_VERSION:-${ADP_APP_VERSION_AUTO}}}"
-export APP_BUILD_TIME="${APP_BUILD_TIME:-${ADP_APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-0000-00-00T00:00:00-00:00}}}"
+# Unlike the Makefile, this script defaults APP_DEV_BUILD to "false", so it can't fall back to a placeholder
+# timestamp: saluki-metadata rejects placeholder metadata on release builds. Stamp the current time instead.
+APP_BUILD_TIME_AUTO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+export APP_BUILD_TIME="${APP_BUILD_TIME:-${ADP_APP_BUILD_TIME:-${CI_PIPELINE_CREATED_AT:-${APP_BUILD_TIME_AUTO}}}}"
 export APP_DEV_BUILD="${APP_DEV_BUILD:-${ADP_APP_DEV_BUILD:-false}}"
 
 require_executable() {
