@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"fn":["get_app_details"],"struct":["AppDetails","Version"]};
+window.SIDEBAR_ITEMS = {"fn":["get_app_details","set_app_details"],"macro":["declare_app_details"],"struct":["AppDetails","Version"]};
