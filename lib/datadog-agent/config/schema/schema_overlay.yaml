@@ -826,24 +826,6 @@ inventory:
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
-  dogstatsd_experimental_http.enabled:
-    support: none
-    severity: high
-    planned: true
-    pipelines: [dogstatsd]
-    description: "Enable experimental HTTP/H2C DSD listener"
-    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; planned when the DogStatsD-over-HTTP work resumes."
-    issue: "#1682"
-
-  dogstatsd_experimental_http.listen_address:
-    support: none
-    severity: high
-    planned: true
-    pipelines: [dogstatsd]
-    description: "Bind address for experimental HTTP DSD listener"
-    documentation: "Experimental HTTP path for pre-aggregated DogStatsD metrics; planned when the DogStatsD-over-HTTP work resumes."
-    issue: "#1682"
-
   dogstatsd_expiry_seconds:
     support: full
     pipelines: [dogstatsd]
@@ -3648,6 +3630,8 @@ excluded:
   docker_env_as_tags: "ignored in initial audit 2026-04-23"
   docker_labels_as_tags: "ignored in initial audit 2026-04-23"
   docker_query_timeout: "ignored in initial audit 2026-04-23"
+  dogstatsd_experimental_http.enabled: "served entirely by the core Agent (comp/dogstatsd/http); never reaches ADP"
+  dogstatsd_experimental_http.listen_address: "served entirely by the core Agent (comp/dogstatsd/http); never reaches ADP"
   ec2_imdsv2_transition_payload_enabled: "ignored in initial audit 2026-04-23"
   ec2_metadata_timeout: "ignored in initial audit 2026-04-23"
   ec2_metadata_token_lifetime: "ignored in initial audit 2026-04-23"
