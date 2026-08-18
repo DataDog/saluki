@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use serde::{Serialize, Serializer};
 
 #[allow(dead_code)]
@@ -5,41 +7,94 @@ mod details {
     include!(concat!(env!("OUT_DIR"), "/details.rs"));
 }
 
-static VERSION_DETAILS: AppDetails = AppDetails {
-    full_name: details::DETECTED_APP_FULL_NAME,
-    short_name: details::DETECTED_APP_SHORT_NAME,
-    identifier: details::DETECTED_APP_IDENTIFIER,
-    git_hash: details::DETECTED_GIT_HASH,
-    version: Version::new(
-        details::DETECTED_APP_VERSION,
-        details::DETECTED_APP_VERSION_MAJOR,
-        details::DETECTED_APP_VERSION_MINOR,
-        details::DETECTED_APP_VERSION_PATCH,
-    ),
-    build_time: details::DETECTED_APP_BUILD_TIME,
-    dev_build: details::DETECTED_APP_DEV_BUILD,
-    target_arch: details::DETECTED_TARGET_ARCH,
-};
+static APP_DETAILS: OnceLock<AppDetails> = OnceLock::new();
 
-/// Gets the detected details for this application.
+/// Details reported before an application has registered its own.
+static UNREGISTERED_APP_DETAILS: AppDetails =
+    AppDetails::new("unknown", "unknown", "unknown", Version::new("0.0.0", 0, 0, 0));
+
+/// Gets the details for this application.
 ///
 /// This includes basic information like the application name and semantic version, and information that might otherwise
 /// fall under the general umbrella of "build metadata."
+///
+/// If the application hasn't registered its details through [`set_app_details`], the name and version fields report
+/// `"unknown"` and `0.0.0` respectively. Build metadata is always populated, since it's captured at compile time.
 pub fn get_app_details() -> &'static AppDetails {
-    &VERSION_DETAILS
+    APP_DETAILS.get().unwrap_or(&UNREGISTERED_APP_DETAILS)
+}
+
+/// Registers the details for this application.
+///
+/// Binaries declare their details with [`declare_app_details!`] and register them here, which should be the first
+/// thing `main` does: anything read through [`get_app_details`] beforehand reports an unknown application.
+///
+/// # Panics
+///
+/// Panics if the details have already been registered.
+pub fn set_app_details(details: AppDetails) {
+    assert!(
+        APP_DETAILS.set(details).is_ok(),
+        "application details have already been registered"
+    );
+}
+
+/// Declares the details for the application being compiled.
+///
+/// The caller supplies the three names that identify the application. Everything else is filled in automatically: the
+/// version comes from the calling crate's Cargo manifest, and the build metadata from `saluki-metadata`'s own build
+/// script.
+///
+/// # Examples
+///
+/// ```
+/// # use saluki_metadata::{declare_app_details, AppDetails};
+/// pub const APP_DETAILS: AppDetails = declare_app_details!(
+///     full_name = "Example Application",
+///     short_name = "example",
+///     identifier = "ex",
+/// );
+/// ```
+#[macro_export]
+macro_rules! declare_app_details {
+    (full_name = $full_name:expr, short_name = $short_name:expr, identifier = $identifier:expr $(,)?) => {
+        $crate::AppDetails::new(
+            $full_name,
+            $short_name,
+            $identifier,
+            $crate::Version::new(
+                env!("CARGO_PKG_VERSION"),
+                $crate::const_parse_u32(env!("CARGO_PKG_VERSION_MAJOR")),
+                $crate::const_parse_u32(env!("CARGO_PKG_VERSION_MINOR")),
+                $crate::const_parse_u32(env!("CARGO_PKG_VERSION_PATCH")),
+            ),
+        )
+    };
+}
+
+/// Parses a `u32` from a string in a `const` context.
+///
+/// Only intended for the version components that Cargo hands us, which are always plain decimal numbers. Anything else
+/// fails the build.
+#[doc(hidden)]
+pub const fn const_parse_u32(s: &str) -> u32 {
+    match u32::from_str_radix(s, 10) {
+        Ok(value) => value,
+        Err(_) => panic!("version component was not a number"),
+    }
 }
 
 /// Application details.
 ///
 /// # Configuration
 ///
-/// This struct is generated at build time and contains information about the detected application name and version
-/// based on detected environment variables. The following environment variables are used:
+/// The name and version fields identify a specific application, so they're declared by the binary itself through
+/// [`declare_app_details!`] and registered with [`set_app_details`]. The version comes from that binary's Cargo
+/// manifest.
 ///
-/// - `APP_FULL_NAME`: Application's full name. If this isn't set, the default value is `"unknown"`.
-/// - `APP_SHORT_NAME`: Application's short name. If this isn't set, the default value is `"unknown"`.
-/// - `APP_IDENTIFIER`: Application's identifier. If this isn't set, the default value is `"unknown"`.
-/// - `APP_VERSION`: Version of the application. If this isn't set, the default value is `"0.0.0"`.
+/// The remaining fields describe the build rather than the application, so they're captured at compile time from the
+/// following environment variables:
+///
 /// - `APP_GIT_HASH`: Git hash of the application. If this isn't set, the default value is `"unknown"`.
 /// - `APP_BUILD_TIME`: Build time of the application. If this isn't set, the default value is `"0000-00-00 00:00:00"`.
 /// - `APP_DEV_BUILD`: Whether the application is a development build. If this isn't set, the default value is `true`.
@@ -47,10 +102,6 @@ pub fn get_app_details() -> &'static AppDetails {
 ///
 /// Environment variables prefixed with `APP_` are expected to be set by the build script/tooling, while others are
 /// provided automatically by Cargo.
-///
-/// The version string will be treated as a semantic version, and will be split on periods to extract the major, minor,
-/// and patch numbers. Additionally, the patch number will be split on hyphens to remove any pre-release or build
-/// metadata.
 #[derive(Serialize)]
 pub struct AppDetails {
     full_name: &'static str,
@@ -64,11 +115,30 @@ pub struct AppDetails {
 }
 
 impl AppDetails {
+    /// Creates a new `AppDetails` from the given application identity.
+    ///
+    /// Build metadata is filled in from the values captured at compile time, so callers can't get it wrong. Prefer
+    /// [`declare_app_details!`], which also derives the version from the calling crate's Cargo manifest.
+    pub const fn new(
+        full_name: &'static str, short_name: &'static str, identifier: &'static str, version: Version,
+    ) -> Self {
+        Self {
+            full_name,
+            short_name,
+            identifier,
+            version,
+            git_hash: details::DETECTED_GIT_HASH,
+            build_time: details::DETECTED_APP_BUILD_TIME,
+            dev_build: details::DETECTED_APP_DEV_BUILD,
+            target_arch: details::DETECTED_TARGET_ARCH,
+        }
+    }
+
     /// Returns the application's full name.
     ///
     /// This is typically a human-friendly/"pretty" name of the binary/executable, such as `"Agent Data Plane"`.
     ///
-    /// If the full name couldn't be detected, this will return `"unknown"`.
+    /// If the application hasn't registered its details, this will return `"unknown"`.
     pub fn full_name(&self) -> &'static str {
         self.full_name
     }
@@ -77,7 +147,7 @@ impl AppDetails {
     ///
     /// This is typically a shorter version of the name of the binary/executable, such as `"Data Plane"` or `"DATAPLANE"`.
     ///
-    /// If the short name couldn't be detected, this will return `"unknown"`.
+    /// If the application hasn't registered its details, this will return `"unknown"`.
     pub fn short_name(&self) -> &'static str {
         self.short_name
     }
@@ -87,7 +157,7 @@ impl AppDetails {
     /// This is typically a very condensed form of the name of the binary/executable, like an acronym, such as `"adp"`
     /// or `"ADP"`.
     ///
-    /// If the identifier couldn't be detected, this will return `"unknown"`.
+    /// If the application hasn't registered its details, this will return `"unknown"`.
     pub fn identifier(&self) -> &'static str {
         self.identifier
     }
@@ -101,7 +171,7 @@ impl AppDetails {
 
     /// Returns the application's version.
     ///
-    /// If the version couldn't be detected, this will return a version equivalent to `"0.0.0"`.
+    /// If the application hasn't registered its details, this will return a version equivalent to `"0.0.0"`.
     pub fn version(&self) -> &Version {
         &self.version
     }
@@ -147,7 +217,8 @@ pub struct Version {
 }
 
 impl Version {
-    const fn new(raw: &'static str, major: u32, minor: u32, patch: u32) -> Self {
+    /// Creates a new `Version` from the given raw string and its component numbers.
+    pub const fn new(raw: &'static str, major: u32, minor: u32, patch: u32) -> Self {
         Self {
             raw,
             major,

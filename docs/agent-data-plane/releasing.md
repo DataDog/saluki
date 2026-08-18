@@ -84,10 +84,6 @@ during the build process and is used to drive a number of behaviors:
 This build metadata is calculated with a Make target—`emit-adp-build-metadata`—which populates it during local builds or
 regular CI builds. The relevant build arguments are all prefixed with `APP_` and are as follows:
 
-- `APP_FULL_NAME`: the full name of the application (hard-coded to `Agent Data Plane`)
-- `APP_SHORT_NAME`: the short name of the application (hard-coded to `data-plane`)
-- `APP_IDENTIFIER`: a short identifier for the application (hard-coded to `adp`)
-- `APP_VERSION`: the version of the application (set to `version` field in `bin/agent-data-plane/Cargo.toml`)
 - `APP_GIT_HASH`: the Git commit the build was performed from (set to the GitLab CI commit SHA)
 - `APP_BUILD_TIME`: the time the build was performed (set to the creation time of the GitLab CI pipeline)
 - `APP_DEV_BUILD`: whether this is a development build (set to `false` only for tag pipelines)

@@ -11,9 +11,6 @@ export APP_GIT_HASH := $(or $(CI_COMMIT_SHA),$(shell git rev-parse --short HEAD 
 export APP_BUILD_TIME := $(or $(CI_PIPELINE_CREATED_AT),0000-00-00T00:00:00-00:00)
 
 # ADP-specific settings used during builds.
-export ADP_APP_FULL_NAME := Agent Data Plane
-export ADP_APP_SHORT_NAME := data-plane
-export ADP_APP_IDENTIFIER := adp
 export ADP_APP_GIT_HASH := $(APP_GIT_HASH)
 export ADP_APP_VERSION_AUTO := $(shell cat bin/agent-data-plane/Cargo.toml | grep -E "^version = \"" | head -n 1 | cut -d '"' -f 2)
 export ADP_APP_VERSION := $(or $(ADP_APP_VERSION),$(ADP_APP_VERSION_AUTO))
@@ -125,11 +122,7 @@ help:
 build-adp-base: check-rust-build-tools
 build-adp-base:
 	@echo "[*] Building ADP locally (profile: $(BUILD_PROFILE))"
-	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
-	APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
-	APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
-	APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
-	APP_VERSION="$(ADP_APP_VERSION)" \
+	@APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 	APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
 	cargo build --profile $(BUILD_PROFILE) --package agent-data-plane
 
@@ -166,10 +159,6 @@ build-adp-image-base:
 		--build-arg "BUILD_TARGET=$(BUILD_TARGET)" \
 		--build-arg "BUILD_PROFILE=$(BUILD_PROFILE)" \
 		--build-arg "BUILD_FEATURES=$(BUILD_FEATURES)" \
-		--build-arg "APP_FULL_NAME=$(ADP_APP_FULL_NAME)" \
-		--build-arg "APP_SHORT_NAME=$(ADP_APP_SHORT_NAME)" \
-		--build-arg "APP_IDENTIFIER=$(ADP_APP_IDENTIFIER)" \
-		--build-arg "APP_VERSION=$(ADP_APP_VERSION)" \
 		--build-arg "APP_GIT_HASH=$(ADP_APP_GIT_HASH)" \
 		--file ./docker/Dockerfile.agent-data-plane \
 		.
@@ -641,11 +630,7 @@ build-adp-host: check-rust-build-tools
 build-adp-host: $(if $(filter true,$(CI)),cargo-install-cargo-auditable)
 build-adp-host: ## Builds the agent-data-plane binary for the current host (Cargo profile from $$BUILD_PROFILE, default: release)
 	@echo "[*] Building agent-data-plane ($(BUILD_PROFILE), host target)..."
-	@APP_FULL_NAME="$(ADP_APP_FULL_NAME)" \
-		APP_SHORT_NAME="$(ADP_APP_SHORT_NAME)" \
-		APP_IDENTIFIER="$(ADP_APP_IDENTIFIER)" \
-		APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
-		APP_VERSION="$(ADP_APP_VERSION)" \
+	@APP_GIT_HASH="$(ADP_APP_GIT_HASH)" \
 		APP_BUILD_TIME="$(ADP_APP_BUILD_TIME)" \
 		cargo $(ADP_CARGO_BUILD_SUBCMD) --profile $(BUILD_PROFILE) --bin agent-data-plane
 
@@ -885,11 +870,7 @@ fast-edit-test: ## Runs a lightweight format/lint/test pass
 
 .PHONY: emit-adp-build-metadata
 emit-adp-build-metadata: ## Emits ADP build metadata shell variables suitable for use during image builds
-	@echo "APP_FULL_NAME=${ADP_APP_FULL_NAME}"
-	@echo "APP_SHORT_NAME=${ADP_APP_SHORT_NAME}"
-	@echo "APP_IDENTIFIER=${ADP_APP_IDENTIFIER}"
 	@echo "APP_GIT_HASH=${ADP_APP_GIT_HASH}"
-	@echo "APP_VERSION=${ADP_APP_VERSION}"
 	@echo "APP_BUILD_TIME=${ADP_APP_BUILD_TIME}"
 
 .PHONY: bump-adp-version

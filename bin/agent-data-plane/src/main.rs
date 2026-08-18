@@ -19,6 +19,7 @@ use saluki_app::bootstrap::{AppBootstrapper, Bootstrap, BootstrapGuard};
 use saluki_config::GenericConfiguration;
 use saluki_core::runtime::Supervisor;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_metadata::AppDetails;
 use tracing::{error, info, warn};
 
 mod cli;
@@ -42,9 +43,22 @@ static ALLOC: saluki_common::resource_tracking::TrackingAllocator<tikv_jemalloca
 static ALLOC: saluki_common::resource_tracking::TrackingAllocator<std::alloc::System> =
     saluki_common::resource_tracking::TrackingAllocator::new(std::alloc::System);
 
+/// Identity of this application.
+///
+/// Registered at the very start of `main`, which is what makes it visible to the libraries ADP is built from.
+const APP_DETAILS: AppDetails = saluki_metadata::declare_app_details!(
+    full_name = "Agent Data Plane",
+    short_name = "data-plane",
+    identifier = "adp",
+);
+
 #[tokio::main]
 async fn main() -> Result<(), GenericError> {
     let started = Instant::now();
+
+    // Register who we are before anything else, so that everything from here on -- including code that runs before
+    // bootstrap -- reports this application rather than an unknown one.
+    saluki_metadata::set_app_details(APP_DETAILS);
 
     #[cfg(feature = "antithesis")]
     initialize_antithesis();
@@ -217,7 +231,8 @@ async fn run_inner(
         Action::Debug(cmd) => handle_debug_command(local_config, cmd).await,
         Action::Config(cmd) => handle_config_command(local_config, cmd).await,
         Action::Dogstatsd(cmd) => handle_dogstatsd_command(local_config, cmd).await,
-        Action::Version(v) => handle_version_command(v.json).await,
+        // Handled before bootstrap, so that reporting the version never depends on there being usable configuration.
+        Action::Version(_) => unreachable!("version is handled before bootstrap"),
     }
 
     Ok(None)

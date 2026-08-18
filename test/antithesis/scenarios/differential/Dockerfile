@@ -29,10 +29,7 @@ RUN --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml
 # Build the instrumented Agent Data Plane.
 # ---------------------------------------------------------------------------
 FROM build-base AS adp-builder
-ENV APP_FULL_NAME="Agent Data Plane" \
-    APP_SHORT_NAME="data-plane" \
-    APP_IDENTIFIER="adp" \
-    CARGO_PROFILE_RELEASE_LTO=off
+ENV CARGO_PROFILE_RELEASE_LTO=off
 WORKDIR /adp
 COPY . /adp
 RUN --mount=type=cache,target=/adp/target,id=antithesis-differential-adp-target \

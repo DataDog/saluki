@@ -45,10 +45,7 @@ RUN --mount=type=bind,source=rust-toolchain.toml,target=/tmp/rust-toolchain.toml
 # into SIGABRT, caught as a hard crash.
 # ---------------------------------------------------------------------------
 FROM build-base AS adp-builder
-ENV APP_FULL_NAME="Agent Data Plane" \
-    APP_SHORT_NAME="data-plane" \
-    APP_IDENTIFIER="adp" \
-    CARGO_PROFILE_RELEASE_LTO=off
+ENV CARGO_PROFILE_RELEASE_LTO=off
 WORKDIR /adp
 COPY . /adp
 # The sancov RUSTFLAGS are passed via `--config target.<triple>.rustflags` with an explicit
