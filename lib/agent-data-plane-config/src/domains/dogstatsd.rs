@@ -449,14 +449,25 @@ pub fn validate_metric_tag_value_allowlists(
                 entry.tag_name
             )));
         }
-        if let Some(other) = entries[..index].iter().find(|other| {
-            other.tag_name == entry.tag_name
-                && (other.metric_prefix.starts_with(&entry.metric_prefix)
-                    || entry.metric_prefix.starts_with(&other.metric_prefix))
-        }) {
+    }
+
+    let mut sorted_entries = entries.iter().collect::<Vec<_>>();
+    sorted_entries.sort_unstable_by(|left, right| {
+        left.tag_name
+            .cmp(&right.tag_name)
+            .then_with(|| left.metric_prefix.cmp(&right.metric_prefix))
+    });
+
+    // After sorting by tag and prefix, any overlapping prefixes are adjacent because all strings that extend a prefix
+    // form one contiguous range.
+    for pair in sorted_entries.windows(2) {
+        let [left, right] = pair else {
+            unreachable!("a two-entry window must contain two entries");
+        };
+        if left.tag_name == right.tag_name && right.metric_prefix.starts_with(&left.metric_prefix) {
             return Err(InvalidMetricTagValueAllowlist(format!(
                 "overlapping metric prefixes '{}' and '{}' are configured for tag '{}'; configure non-overlapping prefixes for each tag",
-                other.metric_prefix, entry.metric_prefix, entry.tag_name
+                left.metric_prefix, right.metric_prefix, left.tag_name
             )));
         }
     }
