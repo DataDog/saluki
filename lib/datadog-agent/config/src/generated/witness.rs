@@ -192,14 +192,8 @@ pub trait DatadogConfigWitness {
     fn consume_proxy_no_proxy(&mut self, value: Vec<String>);
     fn consume_serializer_compressor_kind(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_compression_level(&mut self, value: i64);
-    fn consume_serializer_experimental_use_v3_api_series_beta_route(&mut self, value: String);
     fn consume_serializer_experimental_use_v3_api_series_endpoints(&mut self, value: Vec<String>);
-    fn consume_serializer_experimental_use_v3_api_series_shadow_sample_rate(&mut self, value: f64);
-    fn consume_serializer_experimental_use_v3_api_series_shadow_sites(&mut self, value: Vec<String>);
-    fn consume_serializer_experimental_use_v3_api_series_use_beta(&mut self, value: bool);
-    fn consume_serializer_experimental_use_v3_api_series_validate(&mut self, value: bool);
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>);
-    fn consume_serializer_experimental_use_v3_api_sketches_validate(&mut self, value: bool);
     fn consume_serializer_max_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_payload_size(&mut self, value: i64);
     fn consume_serializer_max_series_points_per_payload(&mut self, value: i64);
@@ -504,33 +498,11 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_serializer_experimental_use_v3_api_compression_level(
         config.serializer_experimental_use_v3_api.compression_level.clone(),
     );
-    consumer.consume_serializer_experimental_use_v3_api_series_beta_route(
-        config.serializer_experimental_use_v3_api.series.beta_route.clone(),
-    );
     consumer.consume_serializer_experimental_use_v3_api_series_endpoints(
         config.serializer_experimental_use_v3_api.series.endpoints.clone(),
     );
-    consumer.consume_serializer_experimental_use_v3_api_series_shadow_sample_rate(
-        config
-            .serializer_experimental_use_v3_api
-            .series
-            .shadow_sample_rate
-            .clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_shadow_sites(
-        config.serializer_experimental_use_v3_api.series.shadow_sites.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_use_beta(
-        config.serializer_experimental_use_v3_api.series.use_beta.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_series_validate(
-        config.serializer_experimental_use_v3_api.series.validate.clone(),
-    );
     consumer.consume_serializer_experimental_use_v3_api_sketches_endpoints(
         config.serializer_experimental_use_v3_api.sketches.endpoints.clone(),
-    );
-    consumer.consume_serializer_experimental_use_v3_api_sketches_validate(
-        config.serializer_experimental_use_v3_api.sketches.validate.clone(),
     );
     consumer.consume_serializer_max_payload_size(config.serializer_max_payload_size.clone());
     consumer.consume_serializer_max_series_payload_size(config.serializer_max_series_payload_size.clone());

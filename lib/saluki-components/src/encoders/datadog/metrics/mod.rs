@@ -30,16 +30,10 @@ use saluki_metrics::MetricsBuilder;
 use tokio::{io::AsyncWriteExt as _, select, sync::mpsc, time::sleep};
 use tracing::{debug, error, warn};
 use url::Url;
-use uuid::Uuid;
 
-#[cfg(test)]
-use self::shadow::shadow_sample_matches;
-use self::{
-    shadow::{SeriesShadowConfig, SeriesShadowState},
-    v3::{
-        V3EncodedMetrics, V3EncodedRequest, V3EncoderStats, V3MetricType, V3PayloadLimits, V3PayloadRequest,
-        V3PayloadSplitReason, V3SerializerTelemetry, V3Writer,
-    },
+use self::v3::{
+    V3EncodedMetrics, V3EncodedRequest, V3EncoderStats, V3MetricType, V3PayloadLimits, V3PayloadRequest,
+    V3PayloadSplitReason, V3SerializerTelemetry, V3Writer,
 };
 use crate::{
     common::datadog::{
@@ -63,25 +57,11 @@ use crate::{
 mod endpoint;
 use self::endpoint::{EndpointConfiguration, MetricsEndpoint};
 
-mod shadow;
 mod v1;
 mod v2;
 mod v3;
 
-const V3_SERIES_ENDPOINT_URI: &str = METRICS_SERIES_V3_PATH;
 const V3_SKETCHES_ENDPOINT_URI: &str = METRICS_SKETCHES_V3_PATH;
-
-fn series_shadow_config_for_endpoint(
-    series_endpoint: MetricsEndpoint, sample_rate: f64, metrics_v3_disabled_by_compressor: bool,
-) -> SeriesShadowConfig {
-    SeriesShadowConfig::new(
-        if !metrics_v3_disabled_by_compressor && series_endpoint == MetricsEndpoint::SeriesV2 {
-            sample_rate
-        } else {
-            0.0
-        },
-    )
-}
 
 /// Encoding mode for a metrics endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,37 +71,28 @@ enum MetricsEncoderMode {
     /// V3 is enabled for at least one endpoint; generate tagged V2 and V3 payloads so each endpoint
     /// receives the protocol version configured for it.
     V3Enabled,
-    /// Send both V2 and V3 payloads simultaneously with a shared batch ID for backend validation.
-    Validation,
 }
 
 impl MetricsEncoderMode {
-    fn from_config(use_v3: bool, validate: bool) -> Self {
-        match (use_v3, validate) {
-            (false, _) => Self::V2Only,
-            (true, false) => Self::V3Enabled,
-            (true, true) => Self::Validation,
+    fn from_config(use_v3: bool) -> Self {
+        match use_v3 {
+            false => Self::V2Only,
+            true => Self::V3Enabled,
         }
     }
 
     fn needs_v3(self) -> bool {
-        matches!(self, Self::V3Enabled | Self::Validation)
-    }
-
-    fn needs_batch_id(self) -> bool {
-        matches!(self, Self::Validation)
+        matches!(self, Self::V3Enabled)
     }
 
     fn needs_tagging(self) -> bool {
-        matches!(self, Self::V3Enabled | Self::Validation)
+        matches!(self, Self::V3Enabled)
     }
 }
 
-fn metrics_encoder_mode_for_config(
-    use_v3: bool, validate: bool, metrics_v3_disabled_by_compressor: bool,
-) -> MetricsEncoderMode {
+fn metrics_encoder_mode_for_config(use_v3: bool, metrics_v3_disabled_by_compressor: bool) -> MetricsEncoderMode {
     let use_v3 = use_v3 && !metrics_v3_disabled_by_compressor;
-    MetricsEncoderMode::from_config(use_v3, use_v3 && validate)
+    MetricsEncoderMode::from_config(use_v3)
 }
 
 fn selected_metrics_primary_v3_override(opw_metrics: &OpwMetricsConfiguration) -> Option<bool> {
@@ -244,7 +215,7 @@ pub struct DatadogMetricsConfiguration {
 
     /// V3 API configuration for per-endpoint V3 support.
     ///
-    /// Configures which endpoints receive V3 payloads and whether validation mode is enabled.
+    /// Configures which endpoints receive V3 payloads.
     v3_api: V3ApiConfig,
 
     /// Agent-compatible V3 API configuration.
@@ -307,14 +278,13 @@ impl DatadogMetricsConfiguration {
         self
     }
 
-    /// Forces series metrics to use V2 without producing V3 shadow payloads.
+    /// Forces series metrics to use V2.
     ///
     /// This is used for local destinations that only accept the V2 series protocol, such as the Cluster Agent.
     pub fn with_v2_series_only(mut self) -> Self {
         self.use_v3_api.series.enabled = V3SeriesMode::Disabled;
         self.use_v3_api.series.endpoints.clear();
         self.v3_api.series.endpoints.clear();
-        self.v3_api.series.shadow_sample_rate = 0.0;
         self.opw_metrics.clear_v3_series_overrides();
         self
     }
@@ -334,15 +304,11 @@ impl DatadogMetricsConfiguration {
     ) -> EndpointV3Settings {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: endpoint.configured_endpoint(),
-            resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint,
             series_config: &self.use_v3_api.series,
             metrics_primary_v3_override,
             serializer_v3_series_endpoints: &self.v3_api.series.endpoints,
             serializer_v3_sketches_endpoints: &self.v3_api.sketches.endpoints,
-            series_validate: self.v3_api.series.validate,
-            sketches_validate: self.v3_api.sketches.validate,
-            series_shadow_sites: &self.v3_api.series.shadow_sites,
         })
     }
 
@@ -388,7 +354,7 @@ impl DatadogMetricsConfiguration {
             return Ok(true);
         }
 
-        self.any_series_endpoint_matches(|settings| !settings.use_v3_series || settings.series_validation_mode)
+        self.any_series_endpoint_matches(|settings| !settings.use_v3_series)
     }
 
     fn requires_v3_series(&self, metrics_v3_disabled_by_compressor: bool) -> Result<bool, GenericError> {
@@ -432,12 +398,7 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         } else {
             v2_compression_scheme
         };
-        let series_endpoint_uri = if self.v3_api.series.use_beta {
-            self.v3_api.series.beta_route.clone()
-        } else {
-            V3_SERIES_ENDPOINT_URI.to_string()
-        };
-        let shadow_series_endpoint_uri = self.v3_api.series.beta_route.clone();
+        let series_endpoint_uri = METRICS_SERIES_V3_PATH.to_string();
         let payload_limits = self.v3_payload_limits();
 
         let v2_endpoint_config = EndpointConfiguration::new(
@@ -458,32 +419,18 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         // Derive the encoding mode for each metric type from the configuration.
         let metrics_v3_disabled_by_compressor = matches!(v3_compression_scheme, CompressionScheme::Zlib(_));
         let use_v3_series = self.requires_v3_series(metrics_v3_disabled_by_compressor)?;
-        let series_mode = metrics_encoder_mode_for_config(
-            use_v3_series,
-            self.v3_api.series.validate,
-            metrics_v3_disabled_by_compressor,
-        );
-        let sketches_mode = metrics_encoder_mode_for_config(
-            self.v3_api.use_v3_sketches(),
-            self.v3_api.sketches.validate,
-            metrics_v3_disabled_by_compressor,
-        );
+        let series_mode = metrics_encoder_mode_for_config(use_v3_series, metrics_v3_disabled_by_compressor);
+        let sketches_mode =
+            metrics_encoder_mode_for_config(self.v3_api.use_v3_sketches(), metrics_v3_disabled_by_compressor);
         let series_endpoint = if self.use_v2_series_api {
             MetricsEndpoint::SeriesV2
         } else {
             MetricsEndpoint::SeriesV1
         };
-        let series_shadow_config = series_shadow_config_for_endpoint(
-            series_endpoint,
-            self.v3_api.series.shadow_sample_rate,
-            metrics_v3_disabled_by_compressor,
-        );
         let v3_runtime_config = V3RuntimeConfig {
             endpoint_config,
             payload_limits,
             series_endpoint_uri,
-            shadow_series_endpoint_uri,
-            series_shadow_config,
             serializer_telemetry: v3_serializer_telemetry,
         };
         let generic_payload_limits = clamp_payload_limits(
@@ -590,8 +537,6 @@ struct V3RuntimeConfig {
     endpoint_config: EndpointConfiguration,
     payload_limits: V3PayloadLimits,
     series_endpoint_uri: String,
-    shadow_series_endpoint_uri: String,
-    series_shadow_config: SeriesShadowConfig,
     serializer_telemetry: V3SerializerTelemetry,
 }
 
@@ -728,18 +673,12 @@ async fn run_request_builder(
     let pending_flush_timeout = sleep(flush_timeout);
     tokio::pin!(pending_flush_timeout);
 
-    let mut v3_series_metrics =
-        (series_mode.needs_v3() || v3_runtime_config.series_shadow_config.is_enabled()).then(Vec::<Metric>::new);
+    let mut v3_series_metrics = series_mode.needs_v3().then(Vec::<Metric>::new);
     let mut v3_sketch_metrics = sketches_mode.needs_v3().then(Vec::<Metric>::new);
     let mut v3_series_points = 0usize;
     let mut v3_sketch_points = 0usize;
     let mut v3_series_ratio = V3CompressionRatio::default();
     let mut v3_sketch_ratio = V3CompressionRatio::default();
-
-    let mut series_batch_id = None;
-    let mut sketches_batch_id = None;
-    let mut series_shadow_state = SeriesShadowState::default();
-    let series_shadow_config = v3_runtime_config.series_shadow_config;
 
     let tag_series = series_mode.needs_tagging();
     let tag_sketches = sketches_mode.needs_tagging();
@@ -747,13 +686,6 @@ async fn run_request_builder(
         endpoint_config: &v3_runtime_config.endpoint_config,
         payload_limits: v3_runtime_config.payload_limits,
         series_endpoint_uri: &v3_runtime_config.series_endpoint_uri,
-        serializer_telemetry: &v3_runtime_config.serializer_telemetry,
-        telemetry: &telemetry,
-    };
-    let v3_shadow_flush_context = V3FlushContext {
-        endpoint_config: &v3_runtime_config.endpoint_config,
-        payload_limits: v3_runtime_config.payload_limits,
-        series_endpoint_uri: &v3_runtime_config.shadow_series_endpoint_uri,
         serializer_telemetry: &v3_runtime_config.serializer_telemetry,
         telemetry: &telemetry,
     };
@@ -781,33 +713,22 @@ async fn run_request_builder(
 
                     // Figure out which endpoint the metric belongs to, and grab the relevant V2 builder/V3 storage.
                     let endpoint = MetricsEndpoint::from_metric(&metric);
-                    let (endpoint_mode, maybe_v2_builder, maybe_v3_metrics, v3_points, batch_id) = match endpoint {
+                    let (endpoint_mode, maybe_v2_builder, maybe_v3_metrics, v3_points) = match endpoint {
                         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => (
                             series_mode,
                             &mut v2_series_builder,
                             &mut v3_series_metrics,
                             &mut v3_series_points,
-                            &mut series_batch_id,
                         ),
                         MetricsEndpoint::Sketches => (
                             sketches_mode,
                             &mut v2_sketch_builder,
                             &mut v3_sketch_metrics,
                             &mut v3_sketch_points,
-                            &mut sketches_batch_id,
                         ),
                     };
                     let metric_point_count = metric.values().len();
-                    let is_series = matches!(endpoint, MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2);
-                    let series_shadow_active = is_series
-                        && matches!(endpoint_mode, MetricsEncoderMode::V2Only)
-                        && series_shadow_state.ensure_decision(series_shadow_config);
-                    let needs_batch_id = endpoint_mode.needs_batch_id() || series_shadow_active;
-                    if needs_batch_id && batch_id.is_none() {
-                        *batch_id = Some(Uuid::now_v7());
-                    }
-                    let active_batch_id = needs_batch_id.then_some(batch_id.as_ref()).flatten();
-                    let should_buffer_v3 = endpoint_mode.needs_v3() || series_shadow_active;
+                    let should_buffer_v3 = endpoint_mode.needs_v3();
 
                     // Store a copy of the metric in `maybe_v3_metrics` if it's present.
                     //
@@ -822,32 +743,16 @@ async fn run_request_builder(
 
                     // Attempt encoding the metric for V2 if configured.
                     //
-                    // If the metric couldn't be encoded (too big, some other issue), the call returns `false` which is
-                    // our signal to remove the metric from `maybe_v3_metrics` (if we added it), since we know now that
-                    // the metric wasn't encoded for V2 and we want our V2/V3 payload batches to be consistent in
-                    // validation mode.
+                    // If the metric could not be encoded, remove its buffered V3 copy when this endpoint also requires
+                    // a V2 encoding.
                     let v2_payload_info = match endpoint {
                         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-                            if series_shadow_active {
-                                Some(MetricsPayloadInfo::v2_shadow_series())
-                            } else {
-                                tag_series.then(MetricsPayloadInfo::v2_series)
-                            }
+                            tag_series.then(MetricsPayloadInfo::v2_series)
                         }
                         MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v2_sketches),
                     };
-                    // If V2 flushes while this batch is not shadowed, the current metric may start the next V2 batch.
-                    // Keep a clone so we can add it to the next V3 shadow batch if that next batch samples in.
-                    let metric_for_next_shadow_batch = (is_series
-                        && matches!(endpoint_mode, MetricsEncoderMode::V2Only)
-                        && series_shadow_config.is_enabled()
-                        && !series_shadow_active)
-                        .then(|| metric.clone());
-                    let mut v2_encoded = false;
-                    let v2_flushed = if let Some(builder) = maybe_v2_builder {
-                        let result =
-                            encode_v2_metrics(builder, metric, &telemetry, &mut payloads_tx, active_batch_id, v2_payload_info).await?;
-                        v2_encoded = result.encoded();
+                    let _v2_flushed = if let Some(builder) = maybe_v2_builder {
+                        let result = encode_v2_metrics(builder, metric, &telemetry, &mut payloads_tx, v2_payload_info).await?;
                         if should_buffer_v3
                             && !result.encoded()
                             && !matches!(endpoint_mode, MetricsEncoderMode::V3Enabled)
@@ -857,28 +762,21 @@ async fn run_request_builder(
                                 *v3_points = v3_points.saturating_sub(metric_point_count);
                             }
                         }
-
                         result.flushed()
                     } else {
                         false
                     };
 
-                    // Validation and shadow payloads must keep V2/V3 batch boundaries aligned. Authoritative V3 can
-                    // batch independently, so it flushes on V3-specific limits instead of following V2 flushes.
                     let v3_payload_info = match endpoint {
                         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-                            if series_shadow_active {
-                                Some(MetricsPayloadInfo::v3_shadow_series())
-                            } else {
-                                tag_series.then(MetricsPayloadInfo::v3_series)
-                            }
+                            tag_series.then(MetricsPayloadInfo::v3_series)
                         }
                         MetricsEndpoint::Sketches => tag_sketches.then(MetricsPayloadInfo::v3_sketches),
                     };
                     let mut split_metric = None;
-                    let v3_flushed = if let Some(v3_metrics) = maybe_v3_metrics {
+                    let _v3_flushed = if let Some(v3_metrics) = maybe_v3_metrics {
                         let should_flush_v3 = match endpoint_mode {
-                            MetricsEncoderMode::V2Only => series_shadow_active && v2_flushed,
+                            MetricsEncoderMode::V2Only => false,
                             MetricsEncoderMode::V3Enabled => {
                                 if v3_flush_context.payload_limits.point_count_fits(metric_point_count)
                                     && v3_flush_context.payload_limits.point_count_exceeds_limit(*v3_points)
@@ -899,32 +797,15 @@ async fn run_request_builder(
                                             .should_flush_metric_count_limit(v3_metrics)
                                 }
                             }
-                            MetricsEncoderMode::Validation => v2_flushed,
                         };
                         if should_flush_v3 {
-                            if !matches!(endpoint_mode, MetricsEncoderMode::V3Enabled) {
-                                // V2 flushes the previous batch without the current metric. Pop it
-                                // from V3 before flushing so both batches cover the same set of metrics.
-                                if v2_flushed {
-                                    if let Some(metric) = v3_metrics.pop() {
-                                        *v3_points = v3_points.saturating_sub(metric.values().len());
-                                        split_metric = Some(metric);
-                                    }
-                                }
-                            }
-                            let flush_context = if series_shadow_active {
-                                v3_shadow_flush_context
-                            } else {
-                                v3_flush_context
-                            };
                             encode_and_flush_v3_metrics(
                                 endpoint,
-                                flush_context,
+                                v3_flush_context,
                                 v3_metrics,
                                 &mut v3_series_ratio,
                                 &mut v3_sketch_ratio,
                                 &mut payloads_tx,
-                                active_batch_id,
                                 v3_payload_info,
                             )
                             .await?;
@@ -938,65 +819,11 @@ async fn run_request_builder(
                     };
 
                     if matches!(endpoint_mode, MetricsEncoderMode::V3Enabled) {
-                        // Authoritative V3 may flush the previous point-limit batch while keeping the current metric
-                        // buffered for the next V3 payload.
                         if let Some(m) = split_metric.take() {
                             let point_count = m.values().len();
                             if let Some(metrics) = maybe_v3_metrics {
                                 metrics.push(m);
                                 *v3_points += point_count;
-                            }
-                        }
-                    } else if endpoint_mode.needs_batch_id() && (v2_flushed || v3_flushed) {
-                        // A validation flush completes the current V2/V3 pair. If V2 carried the current metric into
-                        // the next batch, keep the V3 copy and assign that next pair a fresh validation ID.
-                        *batch_id = if let Some(m) = split_metric.take() {
-                            let point_count = m.values().len();
-                            if let Some(metrics) = maybe_v3_metrics {
-                                metrics.push(m);
-                                *v3_points += point_count;
-                            }
-                            Some(Uuid::now_v7())
-                        } else {
-                            None
-                        };
-                    } else if is_series && series_shadow_active && (v2_flushed || v3_flushed) {
-                        // A shadow flush completes the current sampled pair. The next V2 batch gets a new shadow sample
-                        // decision, so only carry the split metric into V3 if that next batch samples in.
-                        series_shadow_state.reset();
-                        *batch_id = if let Some(m) = split_metric.take() {
-                            if series_shadow_state.ensure_decision(series_shadow_config) {
-                                let point_count = m.values().len();
-                                if let Some(metrics) = maybe_v3_metrics {
-                                    metrics.push(m);
-                                    *v3_points += point_count;
-                                }
-                                Some(Uuid::now_v7())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                    } else if is_series
-                        && matches!(endpoint_mode, MetricsEncoderMode::V2Only)
-                        && series_shadow_config.is_enabled()
-                        && v2_flushed
-                    {
-                        // This V2 batch was not shadowed, but the flushed metric may have started the next V2 batch.
-                        // Re-sample for that next batch and seed the V3 buffer only if the new decision samples in.
-                        series_shadow_state.reset();
-                        *batch_id = None;
-                        if v2_encoded {
-                            if let Some(m) = metric_for_next_shadow_batch {
-                                if series_shadow_state.ensure_decision(series_shadow_config) {
-                                    let point_count = m.values().len();
-                                    if let Some(metrics) = maybe_v3_metrics {
-                                        metrics.push(m);
-                                        *v3_points += point_count;
-                                    }
-                                    *batch_id = Some(Uuid::now_v7());
-                                }
                             }
                         }
                     }
@@ -1016,45 +843,23 @@ async fn run_request_builder(
                 pending_flush = false;
 
                 // Flush any pending series metrics.
-                // Timeout flushes complete the current batch, so reuse the existing shadow decision instead of sampling
-                // a new one for metrics that are already buffered.
-                let series_shadow_active = matches!(series_mode, MetricsEncoderMode::V2Only)
-                    && series_shadow_state.active.unwrap_or(false);
-                let v2_series_payload_info = if series_shadow_active {
-                    Some(MetricsPayloadInfo::v2_shadow_series())
-                } else {
-                    tag_series.then(MetricsPayloadInfo::v2_series)
-                };
-                let series_active_batch_id = (series_mode.needs_batch_id() || series_shadow_active)
-                    .then_some(series_batch_id.as_ref())
-                    .flatten();
+                let v2_series_payload_info = tag_series.then(MetricsPayloadInfo::v2_series);
                 let mut v2_series_flush_succeeded = true;
                 if let Some(builder) = &mut v2_series_builder {
-                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, series_active_batch_id, v2_series_payload_info).await {
+                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, v2_series_payload_info).await {
                         error!(error = %e, "Failed to flush V2 series metrics: {}", e);
                         v2_series_flush_succeeded = false;
                     }
                 }
 
-                let v3_series_payload_info = if series_shadow_active {
-                    Some(MetricsPayloadInfo::v3_shadow_series())
-                } else {
-                    tag_series.then(MetricsPayloadInfo::v3_series)
-                };
+                let v3_series_payload_info = tag_series.then(MetricsPayloadInfo::v3_series);
                 if let Some(metrics) = &mut v3_series_metrics {
                     if v2_series_flush_succeeded || matches!(series_mode, MetricsEncoderMode::V3Enabled) {
-                        // Shadow series use the V3 beta route; normal V3 series use the configured authoritative route.
-                        let flush_context = if series_shadow_active {
-                            v3_shadow_flush_context
-                        } else {
-                            v3_flush_context
-                        };
                         if let Err(e) = encode_and_flush_v3_series_metrics(
-                            flush_context,
+                            v3_flush_context,
                             metrics,
                             &mut v3_series_ratio,
                             &mut payloads_tx,
-                            series_active_batch_id,
                             v3_series_payload_info,
                         )
                         .await
@@ -1063,26 +868,17 @@ async fn run_request_builder(
                         }
                         v3_series_points = 0;
                     } else {
-                        // Validation/shadow V3 must not outlive a failed V2 baseline flush.
                         warn!("Failed to flush V2 series metrics, skipping V3 series flush.");
                         metrics.clear();
                         v3_series_points = 0;
                     }
                 }
-                if series_mode.needs_batch_id() {
-                    series_batch_id = None;
-                }
-                if matches!(series_mode, MetricsEncoderMode::V2Only) && series_shadow_config.is_enabled() {
-                    series_shadow_state.reset();
-                    series_batch_id = None;
-                }
 
                 // Flush any pending sketch metrics.
                 let v2_sketches_payload_info = tag_sketches.then(MetricsPayloadInfo::v2_sketches);
-                let sketches_active_batch_id = sketches_mode.needs_batch_id().then_some(sketches_batch_id.as_ref()).flatten();
                 let mut v2_sketches_flush_succeeded = true;
                 if let Some(builder) = &mut v2_sketch_builder {
-                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, sketches_active_batch_id, v2_sketches_payload_info).await {
+                    if let Err(e) = flush_v2_metrics(builder, &mut payloads_tx, v2_sketches_payload_info).await {
                         error!(error = %e, "Failed to flush V2 sketch metrics: {}", e);
                         v2_sketches_flush_succeeded = false;
                     }
@@ -1096,7 +892,6 @@ async fn run_request_builder(
                             metrics,
                             &mut v3_sketch_ratio,
                             &mut payloads_tx,
-                            sketches_active_batch_id,
                             v3_sketches_payload_info,
                         )
                         .await
@@ -1109,9 +904,6 @@ async fn run_request_builder(
                         metrics.clear();
                         v3_sketch_points = 0;
                     }
-                }
-                if sketches_mode.needs_batch_id() {
-                    sketches_batch_id = None;
                 }
 
                 debug!("All flushed requests sent to I/O task. Waiting for next event buffer...");
@@ -1146,7 +938,7 @@ impl EncodeResult {
 
 async fn encode_v2_metrics(
     request_builder: &mut RequestBuilder<v2::MetricsEndpointEncoder>, metric: Metric, telemetry: &ComponentTelemetry,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<EncodeResult, GenericError> {
     // Encode the metric. If we get it back, that means the current request is full, and we need to
     // flush it before we can try to encode the metric again... so we'll hold on to it in that case
@@ -1166,7 +958,7 @@ async fn encode_v2_metrics(
         }
     };
 
-    flush_v2_metrics(request_builder, payloads_tx, batch_id, payload_info).await?;
+    flush_v2_metrics(request_builder, payloads_tx, payload_info).await?;
 
     // Now try to encode the metric again. If it fails again, we'll just log it because it shouldn't
     // be possible to fail at this point, otherwise we would have already caught that the first
@@ -1186,28 +978,17 @@ async fn encode_v2_metrics(
 
 async fn flush_v2_metrics(
     request_builder: &mut RequestBuilder<MetricsEndpointEncoder>, payloads_tx: &mut mpsc::Sender<Payload>,
-    batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<usize, GenericError> {
     let mut requests_flushed = 0;
 
     let maybe_requests = request_builder.flush().await;
-    let batch_len = maybe_requests.len();
-    for (batch_seq, maybe_request) in maybe_requests.into_iter().enumerate() {
+    for maybe_request in maybe_requests {
         match maybe_request {
             Ok((events, data_points, request)) => {
                 requests_flushed += 1;
 
-                flush_payload(
-                    request,
-                    events,
-                    data_points,
-                    payloads_tx,
-                    batch_id,
-                    batch_seq,
-                    batch_len,
-                    payload_info,
-                )
-                .await?;
+                flush_payload(request, events, data_points, payloads_tx, payload_info).await?;
             }
 
             // TODO: Increment a counter here that metrics were dropped due to a flush failure.
@@ -1235,23 +1016,21 @@ struct V3FlushContext<'a> {
 async fn encode_and_flush_v3_metrics(
     endpoint: MetricsEndpoint, context: V3FlushContext<'_>, metrics: &mut Vec<Metric>,
     series_ratio: &mut V3CompressionRatio, sketches_ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     match endpoint {
         MetricsEndpoint::SeriesV1 | MetricsEndpoint::SeriesV2 => {
-            encode_and_flush_v3_series_metrics(context, metrics, series_ratio, payloads_tx, batch_id, payload_info)
-                .await
+            encode_and_flush_v3_series_metrics(context, metrics, series_ratio, payloads_tx, payload_info).await
         }
         MetricsEndpoint::Sketches => {
-            encode_and_flush_v3_sketch_metrics(context, metrics, sketches_ratio, payloads_tx, batch_id, payload_info)
-                .await
+            encode_and_flush_v3_sketch_metrics(context, metrics, sketches_ratio, payloads_tx, payload_info).await
         }
     }
 }
 
 async fn encode_and_flush_v3_series_metrics(
     context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
         return Ok(());
@@ -1265,7 +1044,6 @@ async fn encode_and_flush_v3_series_metrics(
         "series",
         ratio,
         payloads_tx,
-        batch_id,
         payload_info,
     )
     .await
@@ -1273,7 +1051,7 @@ async fn encode_and_flush_v3_series_metrics(
 
 async fn encode_and_flush_v3_sketch_metrics(
     context: V3FlushContext<'_>, metrics: &mut Vec<Metric>, ratio: &mut V3CompressionRatio,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, payload_info: Option<MetricsPayloadInfo>,
+    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
     if metrics.is_empty() {
         return Ok(());
@@ -1287,19 +1065,11 @@ async fn encode_and_flush_v3_sketch_metrics(
         "sketches",
         ratio,
         payloads_tx,
-        batch_id,
         payload_info,
     )
     .await
 }
 
-/// Encodes `metrics` into one or more V3 payload requests, forwarding each one to the I/O task.
-///
-/// Requests are sent as they are built rather than accumulated, so a batch that splits into many payloads does not
-/// hold all of them in memory at once. The exception is validation/shadow batches, which carry an
-/// `X-Metrics-Request-Len` header that is only known once every payload in the batch has been built; those are
-/// collected first and sent afterwards.
-#[allow(clippy::too_many_arguments)]
 /// Smallest compression ratio used when translating the compressed size limit into an uncompressed byte target.
 ///
 /// Guards against dividing by a pathologically small ratio and producing an enormous target.
@@ -1593,12 +1363,8 @@ async fn split_and_encode_oversized_v3_range(
 #[allow(clippy::too_many_arguments)]
 async fn encode_and_flush_v3_payload_requests(
     endpoint_uri: &str, metrics: &[Metric], context: V3FlushContext<'_>, payload_kind: &'static str,
-    ratio: &mut V3CompressionRatio, payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>,
-    payload_info: Option<MetricsPayloadInfo>,
+    ratio: &mut V3CompressionRatio, payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
-    // Batches that carry validation headers need the total payload count up front, so they cannot be streamed.
-    let stream_payloads = batch_id.is_none();
-    let mut pending_requests = Vec::new();
     let target_uncompressed_len = ratio.uncompressed_target(context.payload_limits);
     let mut idx = 0;
 
@@ -1640,49 +1406,21 @@ async fn encode_and_flush_v3_payload_requests(
         };
 
         for payload_request in requests {
-            if stream_payloads {
-                flush_payload(
-                    payload_request.request,
-                    payload_request.event_count,
-                    payload_request.data_point_count,
-                    payloads_tx,
-                    None,
-                    0,
-                    0,
-                    payload_info,
-                )
-                .await?;
-                debug!(
-                    payload_kind,
-                    events = payload_request.event_count,
-                    data_points = payload_request.data_point_count,
-                    "Sent V3 payload."
-                );
-            } else {
-                pending_requests.push(payload_request);
-            }
+            flush_payload(
+                payload_request.request,
+                payload_request.event_count,
+                payload_request.data_point_count,
+                payloads_tx,
+                payload_info,
+            )
+            .await?;
+            debug!(
+                payload_kind,
+                events = payload_request.event_count,
+                data_points = payload_request.data_point_count,
+                "Sent V3 payload."
+            );
         }
-    }
-
-    let batch_len = pending_requests.len();
-    for (batch_seq, payload_request) in pending_requests.into_iter().enumerate() {
-        flush_payload(
-            payload_request.request,
-            payload_request.event_count,
-            payload_request.data_point_count,
-            payloads_tx,
-            batch_id,
-            batch_seq,
-            batch_len,
-            payload_info,
-        )
-        .await?;
-        debug!(
-            payload_kind,
-            events = payload_request.event_count,
-            data_points = payload_request.data_point_count,
-            "Sent V3 payload."
-        );
     }
 
     Ok(())
@@ -1737,31 +1475,10 @@ async fn compressed_v3_len(bytes: &[u8], compression_scheme: CompressionScheme) 
     Ok(compressor.into_inner().freeze().len())
 }
 
-/// Converts a `Uuid` to a `HeaderValue`.
-fn uuid_to_header_value(uuid: &Uuid) -> HeaderValue {
-    let s = uuid.as_hyphenated().to_string();
-    HeaderValue::try_from(s).expect("hyphenated UUID should be a valid header value")
-}
-
-/// Converts a `usize` to a `HeaderValue`.
-fn usize_to_header_value(value: usize) -> HeaderValue {
-    let s = value.to_string();
-    HeaderValue::try_from(s).expect("usize should be a valid header value")
-}
-
 async fn flush_payload(
-    mut request: Request<FrozenChunkedBytesBuffer>, event_count: usize, data_point_count: usize,
-    payloads_tx: &mut mpsc::Sender<Payload>, batch_id: Option<&Uuid>, batch_seq: usize, batch_len: usize,
-    payload_info: Option<MetricsPayloadInfo>,
+    request: Request<FrozenChunkedBytesBuffer>, event_count: usize, data_point_count: usize,
+    payloads_tx: &mut mpsc::Sender<Payload>, payload_info: Option<MetricsPayloadInfo>,
 ) -> Result<(), GenericError> {
-    // Attach the validation batch UUID and sequence headers if present.
-    if let Some(batch_id) = batch_id {
-        let headers = request.headers_mut();
-        headers.insert("X-Metrics-Request-ID", uuid_to_header_value(batch_id));
-        headers.insert("X-Metrics-Request-Seq", usize_to_header_value(batch_seq));
-        headers.insert("X-Metrics-Request-Len", usize_to_header_value(batch_len));
-    }
-
     let mut payload_meta = PayloadMetadata::from_event_and_data_point_count(event_count, data_point_count);
     if let Some(info) = payload_info {
         payload_meta = payload_meta.with(info);
@@ -2106,15 +1823,9 @@ mod tests {
         shared.metrics_encoding.v3_api.compression_level = 7;
         shared.metrics_encoding.v3_api.series = TypedV3ApiSettings {
             endpoints: vec!["https://app.datadoghq.com".to_string()],
-            validate: true,
-            use_beta: true,
-            beta_route: "/api/intake/metrics/custom/series".to_string(),
-            shadow_sample_rate: 0.25,
-            shadow_sites: vec!["datadoghq.eu".to_string()],
         };
         shared.metrics_encoding.v3_api.sketches = TypedV3ApiSettings {
             endpoints: vec!["https://app.datadoghq.eu".to_string()],
-            ..Default::default()
         };
 
         let config = metrics_config_from(&shared);
@@ -2124,11 +1835,6 @@ mod tests {
             Some("https://app.datadoghq.com"),
             config.v3_api.series.endpoints.first().map(String::as_str)
         );
-        assert!(config.v3_api.series.validate);
-        assert!(config.v3_api.series.use_beta);
-        assert_eq!("/api/intake/metrics/custom/series", config.v3_api.series.beta_route);
-        assert_eq!(0.25, config.v3_api.series.shadow_sample_rate);
-        assert_eq!(vec!["datadoghq.eu"], config.v3_api.series.shadow_sites);
         assert_eq!(
             Some("https://app.datadoghq.eu"),
             config.v3_api.sketches.endpoints.first().map(String::as_str)
@@ -2146,7 +1852,6 @@ mod tests {
         };
         shared.metrics_encoding.use_v2_series_api = false;
         shared.metrics_encoding.v3_api.compression_level = 7;
-        shared.metrics_encoding.v3_api.series.validate = true;
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Disabled;
         shared.metrics_encoding.v3_series_endpoint_modes =
             HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
@@ -2156,7 +1861,6 @@ mod tests {
         assert_eq!("zstd", config.compressor_kind);
         assert!(!config.use_v2_series_api);
         assert_eq!(7, config.v3_api.compression_level);
-        assert!(config.v3_api.series.validate);
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
         assert_eq!(
             Some(&V3SeriesMode::Enabled),
@@ -2191,45 +1895,11 @@ mod tests {
     }
 
     #[test]
-    fn shadow_defaults_match_the_agent() {
-        let config = metrics_config_from(&shared_configuration());
-
-        assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);
-        assert_eq!(vec!["datadoghq.com"], config.v3_api.series.shadow_sites);
-    }
-
-    #[test]
-    fn shadow_sample_matches_agent_threshold_behavior() {
-        assert!(!shadow_sample_matches(0.0, 0.0));
-        assert!(shadow_sample_matches(0.5, 0.4));
-        assert!(!shadow_sample_matches(0.5, 0.5));
-        assert!(!shadow_sample_matches(0.5, 0.6));
-    }
-
-    #[test]
-    fn shadow_sampling_is_disabled_for_v1_series_baseline_or_v3_incompatible_compressor() {
-        assert!(series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0, false).is_enabled());
-        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV1, 1.0, false).is_enabled());
-        assert!(!series_shadow_config_for_endpoint(MetricsEndpoint::SeriesV2, 1.0, true).is_enabled());
-    }
-
-    #[test]
     fn metrics_v3_disabled_by_compressor_uses_v2_only() {
-        assert_eq!(
-            MetricsEncoderMode::V2Only,
-            metrics_encoder_mode_for_config(true, false, true)
-        );
-        assert_eq!(
-            MetricsEncoderMode::V2Only,
-            metrics_encoder_mode_for_config(true, true, true)
-        );
+        assert_eq!(MetricsEncoderMode::V2Only, metrics_encoder_mode_for_config(true, true));
         assert_eq!(
             MetricsEncoderMode::V3Enabled,
-            metrics_encoder_mode_for_config(true, false, false)
-        );
-        assert_eq!(
-            MetricsEncoderMode::Validation,
-            metrics_encoder_mode_for_config(true, true, false)
+            metrics_encoder_mode_for_config(true, false)
         );
     }
 
@@ -2261,13 +1931,12 @@ mod tests {
     }
 
     #[test]
-    fn validation_requires_v2_series() {
+    fn enabled_v3_series_mode_requires_only_v3_series() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-        shared.metrics_encoding.v3_api.series.validate = true;
         let config = metrics_config_from(&shared);
 
-        assert!(config.requires_v2_series(false).expect("endpoints should resolve"));
+        assert!(!config.requires_v2_series(false).expect("endpoints should resolve"));
         assert!(config.requires_v3_series(false).expect("endpoints should resolve"));
     }
 
@@ -2290,7 +1959,7 @@ mod tests {
 
         assert_eq!(
             MetricsEncoderMode::V2Only,
-            metrics_encoder_mode_for_config(series_v3_can_be_enabled, false, false)
+            metrics_encoder_mode_for_config(series_v3_can_be_enabled, false)
         );
 
         assert!(
@@ -2370,16 +2039,14 @@ mod tests {
     }
 
     #[test]
-    fn v2_series_only_override_keeps_v2_and_disables_shadowing() {
+    fn v2_series_only_override_requires_only_v2_series() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-        shared.metrics_encoding.v3_api.series.shadow_sample_rate = 1.0;
         let config = metrics_config_from(&shared).with_v2_series_only();
 
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api.series.enabled);
         assert!(config.use_v3_api.series.endpoints.is_empty());
         assert!(config.v3_api.series.endpoints.is_empty());
-        assert_eq!(0.0, config.v3_api.series.shadow_sample_rate);
         assert!(config.requires_v2_series(false).expect("endpoint should resolve"));
         assert!(!config.requires_v3_series(false).expect("endpoint should resolve"));
     }
@@ -2494,7 +2161,7 @@ mod tests {
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+        let mut request = create_v3_request(METRICS_SERIES_V3_PATH, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created");
         measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::noop())
@@ -2523,7 +2190,7 @@ mod tests {
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
         let expected_payload = encoded.payload.clone();
 
-        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::zstd_default())
+        let mut request = create_v3_request(METRICS_SERIES_V3_PATH, encoded, CompressionScheme::zstd_default())
             .await
             .expect("request should be created");
         measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::zstd_default())
@@ -2629,7 +2296,7 @@ mod tests {
             Metric::gauge("v3.telemetry.float64", [(123, (1i64 << 30) as f64), (124, 1.5)]),
         ];
         let encoded = encode_v3_metrics_batch(&metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
-        let mut request = create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+        let mut request = create_v3_request(METRICS_SERIES_V3_PATH, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created");
         measure_v3_column_compressed_sizes(&mut request.stats, CompressionScheme::noop())
@@ -2681,7 +2348,7 @@ mod tests {
 
     async fn create_v3_test_request(metrics: &[Metric]) -> V3EncodedRequest {
         let encoded = encode_v3_metrics_batch(metrics, &SharedTagSet::default()).expect("metrics should encode to V3");
-        create_v3_request(V3_SERIES_ENDPOINT_URI, encoded, CompressionScheme::noop())
+        create_v3_request(METRICS_SERIES_V3_PATH, encoded, CompressionScheme::noop())
             .await
             .expect("request should be created")
     }
@@ -2693,7 +2360,7 @@ mod tests {
         V3FlushContext {
             endpoint_config: ep_config,
             payload_limits,
-            series_endpoint_uri: V3_SERIES_ENDPOINT_URI,
+            series_endpoint_uri: METRICS_SERIES_V3_PATH,
             serializer_telemetry,
             telemetry,
         }
@@ -2714,13 +2381,12 @@ mod tests {
         let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(64);
         let mut ratio = V3CompressionRatio::default();
         encode_and_flush_v3_payload_requests(
-            V3_SERIES_ENDPOINT_URI,
+            METRICS_SERIES_V3_PATH,
             metrics,
             context,
             "series",
             &mut ratio,
             &mut payloads_tx,
-            None,
             None,
         )
         .await
@@ -3057,134 +2723,6 @@ mod tests {
         assert!(ratio.uncompressed_target(limits) <= limits.max_uncompressed_size);
     }
 
-    #[tokio::test]
-    async fn v3_split_flush_uses_payload_request_batch_headers() {
-        let mut metrics = vec![
-            Metric::counter("v3.headers.split.one", 1.0),
-            Metric::counter("v3.headers.split.two", 2.0),
-        ];
-        let single_request = create_v3_test_request(&metrics[..1]).await;
-        let combined_request = create_v3_test_request(&metrics).await;
-        assert!(combined_request.compressed_len > single_request.compressed_len);
-
-        let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
-        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
-        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
-        let batch_id = Uuid::now_v7();
-        let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
-
-        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let mut ratio = V3CompressionRatio::default();
-        encode_and_flush_v3_series_metrics(
-            context,
-            &mut metrics,
-            &mut ratio,
-            &mut payloads_tx,
-            Some(&batch_id),
-            Some(MetricsPayloadInfo::v3_series()),
-        )
-        .await
-        .expect("V3 metrics should flush");
-
-        for expected_seq in 0..2 {
-            let payload = payloads_rx.recv().await.expect("payload should be emitted");
-            let Payload::Http(http_payload) = payload else {
-                panic!("expected HTTP payload");
-            };
-            let (_, request) = http_payload.into_parts();
-            assert_eq!(
-                batch_id.as_hyphenated().to_string(),
-                request
-                    .headers()
-                    .get("X-Metrics-Request-ID")
-                    .expect("batch ID header should be present")
-                    .to_str()
-                    .expect("batch ID header should be valid")
-            );
-            assert_eq!(
-                expected_seq.to_string(),
-                request
-                    .headers()
-                    .get("X-Metrics-Request-Seq")
-                    .expect("batch sequence header should be present")
-                    .to_str()
-                    .expect("batch sequence header should be valid")
-            );
-            assert_eq!(
-                "2",
-                request
-                    .headers()
-                    .get("X-Metrics-Request-Len")
-                    .expect("batch length header should be present")
-                    .to_str()
-                    .expect("batch length header should be valid")
-            );
-        }
-
-        assert!(metrics.is_empty());
-    }
-
-    #[tokio::test]
-    async fn v3_sketch_flush_uses_split_payload_requests() {
-        let mut metrics = vec![
-            Metric::distribution("v3.sketch.split.one", [1.0, 2.0, 3.0]),
-            Metric::distribution("v3.sketch.split.two", [4.0, 5.0, 6.0]),
-        ];
-        let single_request = create_v3_test_request(&metrics[..1]).await;
-        let combined_request = create_v3_test_request(&metrics).await;
-        assert!(combined_request.compressed_len > single_request.compressed_len);
-
-        let limits = V3PayloadLimits::new(single_request.compressed_len, usize::MAX, 10_000, 10_000);
-        let ep_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
-        let telemetry = ComponentTelemetry::from_builder(&MetricsBuilder::default());
-        let serializer_telemetry = V3SerializerTelemetry::from_builder(&MetricsBuilder::default());
-        let batch_id = Uuid::now_v7();
-        let (mut payloads_tx, mut payloads_rx) = tokio::sync::mpsc::channel(8);
-
-        let context = test_v3_flush_context(&ep_config, limits, &serializer_telemetry, &telemetry);
-        let mut ratio = V3CompressionRatio::default();
-        encode_and_flush_v3_sketch_metrics(
-            context,
-            &mut metrics,
-            &mut ratio,
-            &mut payloads_tx,
-            Some(&batch_id),
-            Some(MetricsPayloadInfo::v3_sketches()),
-        )
-        .await
-        .expect("V3 sketches should flush");
-
-        for expected_seq in 0..2 {
-            let payload = payloads_rx.recv().await.expect("payload should be emitted");
-            let Payload::Http(http_payload) = payload else {
-                panic!("expected HTTP payload");
-            };
-            let (_, request) = http_payload.into_parts();
-            assert_eq!(V3_SKETCHES_ENDPOINT_URI, request.uri());
-            assert_eq!(
-                expected_seq.to_string(),
-                request
-                    .headers()
-                    .get("X-Metrics-Request-Seq")
-                    .expect("batch sequence header should be present")
-                    .to_str()
-                    .expect("batch sequence header should be valid")
-            );
-            assert_eq!(
-                "2",
-                request
-                    .headers()
-                    .get("X-Metrics-Request-Len")
-                    .expect("batch length header should be present")
-                    .to_str()
-                    .expect("batch length header should be valid")
-            );
-        }
-
-        assert!(metrics.is_empty());
-    }
-
     #[test]
     fn v3_series_metric_unit_refs_are_encoded_sparsely() {
         let context = Context::from_static_parts("my.timer.avg", &[]);
@@ -3342,46 +2880,26 @@ mod tests {
 
     /// Distinct inputs for a [`run_request_builder`] integration test.
     struct RequestBuilderScenario {
-        v2_series_max_metrics: Option<usize>,
         series_mode: MetricsEncoderMode,
         sketches_mode: MetricsEncoderMode,
         payload_limits: V3PayloadLimits,
-        shadow_series_endpoint_uri: String,
-        series_shadow_config: SeriesShadowConfig,
         flush_timeout: Duration,
     }
 
     impl RequestBuilderScenario {
-        /// Creates a scenario with no V2 series builder, unbounded V3 size/point limits, shadow sampling disabled,
-        /// and a 10 ms flush timeout.
+        /// Creates a scenario with unbounded V3 size/point limits and a 10 ms flush timeout.
         fn new(series_mode: MetricsEncoderMode, sketches_mode: MetricsEncoderMode) -> Self {
             Self {
-                v2_series_max_metrics: None,
                 series_mode,
                 sketches_mode,
                 payload_limits: V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, 10_000),
-                shadow_series_endpoint_uri: "/api/intake/metrics/v3beta/series".to_string(),
-                series_shadow_config: SeriesShadowConfig::new(0.0),
                 flush_timeout: Duration::from_millis(10),
             }
-        }
-
-        /// Attaches a V2 series request builder that flushes after `max_metrics_per_payload` metrics.
-        fn with_v2_series_builder(mut self, max_metrics_per_payload: usize) -> Self {
-            self.v2_series_max_metrics = Some(max_metrics_per_payload);
-            self
         }
 
         /// Sets the V3 per-payload point limit that drives point-count split flushes.
         fn with_max_points_per_payload(mut self, max_points_per_payload: usize) -> Self {
             self.payload_limits = V3PayloadLimits::new(usize::MAX, usize::MAX, 10_000, max_points_per_payload);
-            self
-        }
-
-        /// Enables V3 series shadow sampling at `sample_rate`, routed to `shadow_series_endpoint_uri`.
-        fn with_series_shadow(mut self, sample_rate: f64, shadow_series_endpoint_uri: &str) -> Self {
-            self.series_shadow_config = SeriesShadowConfig::new(sample_rate);
-            self.shadow_series_endpoint_uri = shadow_series_endpoint_uri.to_string();
             self
         }
 
@@ -3394,22 +2912,6 @@ mod tests {
         /// Spawns [`run_request_builder`] for this scenario, returning a harness for pushing metrics and draining
         /// flushed payloads.
         async fn spawn(self) -> RequestBuilderHarness {
-            let v2_series_builder = match self.v2_series_max_metrics {
-                Some(max_metrics_per_payload) => {
-                    let v2_endpoint_config = EndpointConfiguration::new(
-                        CompressionScheme::noop(),
-                        max_metrics_per_payload,
-                        usize::MAX,
-                        None,
-                    );
-                    Some(
-                        v2::create_v2_request_builder(MetricsEndpoint::SeriesV2, &v2_endpoint_config)
-                            .await
-                            .expect("V2 request builder should be created"),
-                    )
-                }
-                None => None,
-            };
             let v3_endpoint_config = EndpointConfiguration::new(CompressionScheme::noop(), 10_000, usize::MAX, None);
             let metrics_builder = MetricsBuilder::default();
             let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
@@ -3418,16 +2920,14 @@ mod tests {
             let (payloads_tx, payloads_rx) = tokio::sync::mpsc::channel(8);
 
             let handle = tokio::spawn(run_request_builder(
-                v2_series_builder,
+                None,
                 None,
                 self.series_mode,
                 self.sketches_mode,
                 V3RuntimeConfig {
                     endpoint_config: v3_endpoint_config,
                     payload_limits: self.payload_limits,
-                    series_endpoint_uri: V3_SERIES_ENDPOINT_URI.to_string(),
-                    shadow_series_endpoint_uri: self.shadow_series_endpoint_uri,
-                    series_shadow_config: self.series_shadow_config,
+                    series_endpoint_uri: METRICS_SERIES_V3_PATH.to_string(),
                     serializer_telemetry,
                 },
                 telemetry,
@@ -3499,48 +2999,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validation_split_flush_assigns_batch_id_to_carried_metric() {
-        // Validation mode keeps each V2 flush aligned with a V3 flush under the same batch ID. With the V2 builder
-        // flushing after one metric, two input metrics produce two V2/V3 pairs, and the metric carried into the
-        // second batch gets a fresh validation ID.
-        let mut harness = RequestBuilderScenario::new(MetricsEncoderMode::Validation, MetricsEncoderMode::V2Only)
-            .with_v2_series_builder(1)
-            .spawn()
-            .await;
-
-        harness
-            .push_metrics([
-                Metric::counter("validation.split.one", 1.0),
-                Metric::counter("validation.split.two", 2.0),
-            ])
-            .await;
-
-        let mut flushed_requests = Vec::new();
-        for _ in 0..4 {
-            let (_, request) = harness.next_http_request().await;
-            let batch_id = request
-                .headers()
-                .get("X-Metrics-Request-ID")
-                .expect("validation batch ID header should be present")
-                .to_str()
-                .expect("validation batch ID should be valid header text")
-                .to_string();
-            flushed_requests.push((request.uri().to_string(), batch_id));
-        }
-
-        assert_eq!("/api/v2/series", flushed_requests[0].0);
-        assert_eq!(V3_SERIES_ENDPOINT_URI, flushed_requests[1].0);
-        assert_eq!("/api/v2/series", flushed_requests[2].0);
-        assert_eq!(V3_SERIES_ENDPOINT_URI, flushed_requests[3].0);
-
-        assert_eq!(flushed_requests[0].1, flushed_requests[1].1);
-        assert_eq!(flushed_requests[2].1, flushed_requests[3].1);
-        assert_ne!(flushed_requests[0].1, flushed_requests[2].1);
-
-        harness.shutdown().await;
-    }
-
-    #[tokio::test]
     async fn authoritative_v3_flushes_previous_point_limit_batch() {
         // Authoritative V3 batches independently of V2. With a 3-point limit, the first two-point metric fits but
         // the second would exceed it, so the first flushes as a point-limit split and the second flushes on the
@@ -3563,12 +3021,12 @@ mod tests {
 
         // Point-count split flushes the first metric before the second exceeds the limit.
         let (_, request) = harness.next_http_request().await;
-        assert_eq!(V3_SERIES_ENDPOINT_URI, request.uri());
+        assert_eq!(METRICS_SERIES_V3_PATH, request.uri());
         harness.assert_no_payload_within(Duration::from_millis(50)).await;
 
         // The carried-over metric flushes when the pending-flush timeout fires.
         let (_, request) = harness.next_http_request().await;
-        assert_eq!(V3_SERIES_ENDPOINT_URI, request.uri());
+        assert_eq!(METRICS_SERIES_V3_PATH, request.uri());
         assert_eq!(
             recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "max_points")])),
             Some(1)
@@ -3609,95 +3067,6 @@ mod tests {
             recorder.counter(("serializer.v3_payload_split_reason", &[("reason", "max_points")])),
             Some(1)
         );
-
-        harness.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn authoritative_v3_does_not_flush_on_v2_boundary() {
-        // The V2 builder flushes at its one-metric boundary, but authoritative V3 batches independently and must
-        // not flush just because V2 did. The remaining V2 and V3 batches only flush together on the timeout.
-        let mut harness = RequestBuilderScenario::new(MetricsEncoderMode::V3Enabled, MetricsEncoderMode::V2Only)
-            .with_v2_series_builder(1)
-            .with_flush_timeout(Duration::from_millis(250))
-            .spawn()
-            .await;
-
-        harness
-            .push_metrics([
-                Metric::counter("authoritative.v3.decouple.one", 1.0),
-                Metric::counter("authoritative.v3.decouple.two", 2.0),
-            ])
-            .await;
-
-        let (_, request) = harness.next_http_request().await;
-        assert_eq!("/api/v2/series", request.uri());
-        harness.assert_no_payload_within(Duration::from_millis(50)).await;
-
-        let mut timeout_flush_uris = Vec::new();
-        for _ in 0..2 {
-            let (_, request) = harness.next_http_request().await;
-            timeout_flush_uris.push(request.uri().to_string());
-        }
-        assert_eq!(2, timeout_flush_uris.len());
-        assert!(timeout_flush_uris.iter().any(|uri| uri == "/api/v2/series"));
-        assert!(timeout_flush_uris.iter().any(|uri| uri == V3_SERIES_ENDPOINT_URI));
-
-        harness.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn shadow_sampled_series_flush_sends_v2_and_v3_beta_with_same_batch_id() {
-        // With shadow sampling forced on (rate 1.0), a V2-only series flush also emits a sampled V3 beta shadow
-        // payload to the configured shadow route, tagged as shadow and sharing the V2 batch ID.
-        let mut harness = RequestBuilderScenario::new(MetricsEncoderMode::V2Only, MetricsEncoderMode::V2Only)
-            .with_v2_series_builder(10_000)
-            .with_series_shadow(1.0, "/api/intake/metrics/v3beta/custom")
-            .spawn()
-            .await;
-
-        harness.push_metrics([Metric::counter("shadow.sampled", 1.0)]).await;
-
-        let mut flushed_requests = Vec::new();
-        for _ in 0..2 {
-            let (metadata, request) = harness.next_http_request().await;
-            let payload_info = *metadata
-                .get::<MetricsPayloadInfo>()
-                .expect("metrics payload info should be present");
-            let batch_id = request
-                .headers()
-                .get("X-Metrics-Request-ID")
-                .expect("shadow batch ID header should be present")
-                .to_str()
-                .expect("shadow batch ID should be valid header text")
-                .to_string();
-            flushed_requests.push((request.uri().to_string(), payload_info, batch_id));
-        }
-
-        assert_eq!("/api/v2/series", flushed_requests[0].0);
-        assert_eq!(MetricsPayloadInfo::v2_shadow_series(), flushed_requests[0].1);
-        assert_eq!("/api/intake/metrics/v3beta/custom", flushed_requests[1].0);
-        assert_eq!(MetricsPayloadInfo::v3_shadow_series(), flushed_requests[1].1);
-        assert_eq!(flushed_requests[0].2, flushed_requests[1].2);
-
-        harness.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn shadow_sample_rate_zero_sends_only_v2_without_validation_headers() {
-        // With shadow sampling disabled (rate 0.0), a V2-only series flush emits only the V2 payload, with no
-        // shadow/validation batch ID header and no second payload.
-        let mut harness = RequestBuilderScenario::new(MetricsEncoderMode::V2Only, MetricsEncoderMode::V2Only)
-            .with_v2_series_builder(10_000)
-            .spawn()
-            .await;
-
-        harness.push_metrics([Metric::counter("shadow.disabled", 1.0)]).await;
-
-        let (_, request) = harness.next_http_request().await;
-        assert_eq!("/api/v2/series", request.uri());
-        assert!(!request.headers().contains_key("X-Metrics-Request-ID"));
-        harness.assert_no_payload_within(Duration::from_millis(50)).await;
 
         harness.shutdown().await;
     }

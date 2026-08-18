@@ -459,20 +459,6 @@ mod tests {
                     "serializer_experimental_use_v3_api.series.endpoints",
                     json!(["https://app.us3.datadoghq.com"]),
                 ),
-                ConfigSetting::explicit("serializer_experimental_use_v3_api.series.validate", json!(true)),
-                ConfigSetting::explicit("serializer_experimental_use_v3_api.series.use_beta", json!(true)),
-                ConfigSetting::explicit(
-                    "serializer_experimental_use_v3_api.series.beta_route",
-                    json!("/api/intake/metrics/custom/series"),
-                ),
-                ConfigSetting::explicit(
-                    "serializer_experimental_use_v3_api.series.shadow_sample_rate",
-                    json!(0.25),
-                ),
-                ConfigSetting::explicit(
-                    "serializer_experimental_use_v3_api.series.shadow_sites",
-                    json!(["us3.datadoghq.com"]),
-                ),
                 ConfigSetting::explicit("use_v2_api.series", json!(false)),
                 ConfigSetting::explicit("use_v3_api.series.enabled", json!("false")),
                 // The Agent sends an object-valued setting whole, and these entry keys contain dots.
@@ -506,12 +492,6 @@ mod tests {
         assert!(!metrics.use_v2_series_api);
         assert_eq!(metrics.v3_api.compression_level, 7);
         assert_eq!(metrics.v3_api.series.endpoints, vec!["https://app.us3.datadoghq.com"]);
-        assert!(metrics.v3_api.series.validate);
-        assert!(metrics.v3_api.series.use_beta);
-        assert_eq!(metrics.v3_api.series.beta_route, "/api/intake/metrics/custom/series");
-        assert_eq!(metrics.v3_api.series.shadow_sample_rate, 0.25);
-        assert_eq!(metrics.v3_api.series.shadow_sites, vec!["us3.datadoghq.com"]);
-
         let opw = &config.shared.endpoints.opw_intake;
         assert!(opw.enabled);
         assert_eq!(opw.url, "https://opw.example.com");

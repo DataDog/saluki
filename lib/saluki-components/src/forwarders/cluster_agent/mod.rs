@@ -274,15 +274,10 @@ mod tests {
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
         shared.metrics_encoding.v3_series_endpoint_modes =
             HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
-        shared.metrics_encoding.v3_api.series.shadow_sites = vec!["example.com".to_string()];
 
         // The same configuration drives a plain Datadog forwarder, which does honor all of it.
         let datadog_forwarder = ForwarderConfiguration::from_configuration(&shared, &raw_config);
         assert_eq!(V3SeriesMode::Enabled, datadog_forwarder.use_v3_api_series().enabled);
-        assert_eq!(
-            &["example.com".to_string()],
-            datadog_forwarder.v3_api().series.shadow_sites.as_slice()
-        );
 
         let config = ClusterAgentForwarderConfiguration::from_configuration(
             &shared,
@@ -309,7 +304,7 @@ mod tests {
         );
         assert!(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
         assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
-        assert!(config.forwarder_config.v3_api().series.shadow_sites.is_empty());
+        assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
         assert!(!config.forwarder_config.allow_arbitrary_tags());
     }
 }

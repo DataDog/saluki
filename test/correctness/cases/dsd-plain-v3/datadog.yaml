@@ -23,8 +23,6 @@ dogstatsd_origin_detection: false
 dogstatsd_workers_count: 1
 
 # Enable V3 metrics encoding for all endpoints.
-#
-# Validation mode is off here so this case compares Agent V3 output against ADP V3 output directly.
 data_plane:
   metrics:
     v3:

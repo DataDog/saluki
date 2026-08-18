@@ -39,10 +39,6 @@ pub struct MetricsPayloadInfo {
 
     /// The type of metrics (series or sketches).
     pub payload_type: MetricsPayloadType,
-
-    /// Whether this payload is part of sampled V3 shadow validation.
-    #[serde(default)]
-    pub shadow: bool,
 }
 
 impl MetricsPayloadInfo {
@@ -51,7 +47,6 @@ impl MetricsPayloadInfo {
         Self {
             version: MetricsProtocolVersion::V2,
             payload_type: MetricsPayloadType::Series,
-            shadow: false,
         }
     }
 
@@ -60,7 +55,6 @@ impl MetricsPayloadInfo {
         Self {
             version: MetricsProtocolVersion::V2,
             payload_type: MetricsPayloadType::Sketches,
-            shadow: false,
         }
     }
 
@@ -69,7 +63,6 @@ impl MetricsPayloadInfo {
         Self {
             version: MetricsProtocolVersion::V3,
             payload_type: MetricsPayloadType::Series,
-            shadow: false,
         }
     }
 
@@ -78,36 +71,12 @@ impl MetricsPayloadInfo {
         Self {
             version: MetricsProtocolVersion::V3,
             payload_type: MetricsPayloadType::Sketches,
-            shadow: false,
-        }
-    }
-
-    /// Creates a new V2 series payload info for sampled shadow validation.
-    pub const fn v2_shadow_series() -> Self {
-        Self {
-            version: MetricsProtocolVersion::V2,
-            payload_type: MetricsPayloadType::Series,
-            shadow: true,
-        }
-    }
-
-    /// Creates a new V3 series payload info for sampled shadow validation.
-    pub const fn v3_shadow_series() -> Self {
-        Self {
-            version: MetricsProtocolVersion::V3,
-            payload_type: MetricsPayloadType::Series,
-            shadow: true,
         }
     }
 
     /// Returns true if this is a sketch payload.
     pub const fn is_sketch(&self) -> bool {
         matches!(self.payload_type, MetricsPayloadType::Sketches)
-    }
-
-    /// Returns true if this payload is part of sampled shadow validation.
-    pub const fn is_shadow(&self) -> bool {
-        self.shadow
     }
 }
 
@@ -119,30 +88,6 @@ pub struct V3ApiSettings {
     /// Each entry should be a configured endpoint name, such as `https://app.datadoghq.com`.
     /// If empty, no V3 payloads are generated for this metric type.
     pub endpoints: Vec<String>,
-
-    /// Whether to also send V2 payloads to V3-enabled endpoints (validation mode).
-    ///
-    /// When true, endpoints in the `endpoints` list receive both V2 and V3 payloads.
-    /// When false, endpoints in the `endpoints` list receive only V3 payloads.
-    pub validate: bool,
-
-    /// Whether to use the beta V3 route for this metric type.
-    ///
-    /// This only applies to series metrics. Sketches always use the standard V3 sketches route.
-    pub use_beta: bool,
-
-    /// Beta V3 route to use when `use_beta` is enabled for series metrics.
-    pub beta_route: String,
-
-    /// Per-flush probability of sending a sampled V3 beta shadow payload.
-    ///
-    /// This only applies to series metrics when V3 is not authoritative.
-    pub shadow_sample_rate: f64,
-
-    /// Datadog sites eligible for sampled V3 beta shadow payloads.
-    ///
-    /// This only applies to series metrics when V3 is not authoritative.
-    pub shadow_sites: Vec<String>,
 }
 
 impl V3ApiSettings {
@@ -183,11 +128,6 @@ impl From<&TypedV3ApiSettings> for V3ApiSettings {
     fn from(settings: &TypedV3ApiSettings) -> Self {
         Self {
             endpoints: settings.endpoints.clone(),
-            validate: settings.validate,
-            use_beta: settings.use_beta,
-            beta_route: settings.beta_route.clone(),
-            shadow_sample_rate: settings.shadow_sample_rate,
-            shadow_sites: settings.shadow_sites.clone(),
         }
     }
 }

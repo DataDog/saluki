@@ -55,7 +55,7 @@ use super::{
     },
     transaction::{Metadata, Transaction, TransactionBody},
     validation::ApiKeyValidator,
-    METRIC_INTAKE_PATHS,
+    METRICS_SERIES_V3_PATH, METRIC_INTAKE_PATHS,
 };
 
 type EndpointNameFn = dyn Fn(&Uri) -> Option<MetaString> + Send + Sync;
@@ -495,8 +495,7 @@ async fn run_io_loop<B>(
 
     // Listen for transactions to forward, and send a copy of each one to the matching endpoint I/O tasks.
     while let Some(transaction) = transactions_rx.recv().await {
-        let is_metrics_request =
-            is_metrics_request_uri(transaction.request_uri(), config.v3_api().series.beta_route.as_str());
+        let is_metrics_request = is_metrics_request_uri(transaction.request_uri(), METRICS_SERIES_V3_PATH);
         for endpoint_sender in &endpoint_txs {
             if !should_route_to_endpoint(is_metrics_request, has_metrics_primary, endpoint_sender.route) {
                 continue;
@@ -601,15 +600,11 @@ async fn run_endpoint_io_loop<B>(
     } else {
         EndpointV3Settings::from_v3_config(V3EndpointConfig {
             configured_endpoint: &configured_endpoint,
-            resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint,
             series_config: config.use_v3_api_series(),
             metrics_primary_v3_override,
             serializer_v3_series_endpoints: &v3_api.series.endpoints,
             serializer_v3_sketches_endpoints: &v3_api.sketches.endpoints,
-            series_validate: v3_api.series.validate,
-            sketches_validate: v3_api.sketches.validate,
-            series_shadow_sites: &v3_api.series.shadow_sites,
         })
     };
     debug!(
@@ -706,11 +701,6 @@ async fn run_endpoint_io_loop<B>(
                         );
                         continue;
                     }
-                    let txn = if endpoint_v3_settings.should_receive_validation_headers(payload_info) {
-                        txn
-                    } else {
-                        strip_metrics_validation_headers(txn)
-                    };
                     let transaction_size = txn.size_bytes();
                     let resolved = endpoint_name(txn.request_uri());
                     let logical = resolved.as_deref().unwrap_or_else(|| txn.request_uri().path());
@@ -804,18 +794,6 @@ async fn run_endpoint_io_loop<B>(
 
     // Signal to the main I/O task that we've finished.
     task_barrier.wait().await;
-}
-
-fn strip_metrics_validation_headers<B>(txn: Transaction<B>) -> Transaction<B>
-where
-    B: Buf + Clone,
-{
-    let (metadata, mut request) = txn.into_parts();
-    let headers = request.headers_mut();
-    headers.remove("X-Metrics-Request-ID");
-    headers.remove("X-Metrics-Request-Seq");
-    headers.remove("X-Metrics-Request-Len");
-    Transaction::reassemble(metadata, request)
 }
 
 fn generate_retry_queue_id(context: ComponentContext, endpoint: &ResolvedEndpoint) -> String {

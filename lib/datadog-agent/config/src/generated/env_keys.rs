@@ -932,44 +932,14 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Integer,
     },
     EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_BETA_ROUTE"],
-        path: &["serializer_experimental_use_v3_api", "series", "beta_route"],
-        decode: EnvDecode::RawString,
-    },
-    EnvKey {
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS"],
         path: &["serializer_experimental_use_v3_api", "series", "endpoints"],
         decode: EnvDecode::StringList,
     },
     EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE"],
-        path: &["serializer_experimental_use_v3_api", "series", "shadow_sample_rate"],
-        decode: EnvDecode::Float,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES"],
-        path: &["serializer_experimental_use_v3_api", "series", "shadow_sites"],
-        decode: EnvDecode::StringList,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA"],
-        path: &["serializer_experimental_use_v3_api", "series", "use_beta"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE"],
-        path: &["serializer_experimental_use_v3_api", "series", "validate"],
-        decode: EnvDecode::Bool,
-    },
-    EnvKey {
         env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS"],
         path: &["serializer_experimental_use_v3_api", "sketches", "endpoints"],
         decode: EnvDecode::StringList,
-    },
-    EnvKey {
-        env_vars: &["DD_SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE"],
-        path: &["serializer_experimental_use_v3_api", "sketches", "validate"],
-        decode: EnvDecode::Bool,
     },
     EnvKey {
         env_vars: &["DD_SERIALIZER_MAX_PAYLOAD_SIZE"],
