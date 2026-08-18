@@ -5,31 +5,57 @@ edition = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
 
+[features]
+default = ["full"]
+full = [
+  "ipc-tls",
+  "dep:backon",
+  "dep:datadog-protos",
+  "dep:futures",
+  "dep:pin-project-lite",
+  "dep:saluki-config",
+  "dep:saluki-io",
+  "dep:saluki-metadata",
+  "dep:serde",
+  "dep:tonic",
+  "dep:tracing",
+  "dep:windows-registry",
+  "dep:tokio-vsock",
+]
+ipc-tls = [
+  "dep:rustls",
+  "dep:rustls-pki-types",
+  "dep:saluki-error",
+  "dep:saluki-tls",
+  "dep:tokio",
+]
+
 [dependencies]
-backon = { workspace = true, features = ["tokio-sleep"] }
-datadog-protos = { workspace = true }
-futures = { workspace = true }
-pin-project-lite = { workspace = true }
-rustls = { workspace = true }
-rustls-pki-types = { workspace = true }
-saluki-config = { workspace = true }
-saluki-error = { workspace = true }
-saluki-io = { workspace = true }
-saluki-metadata = { workspace = true }
-saluki-tls = { workspace = true }
-serde = { workspace = true }
-tokio = { workspace = true }
-tonic = { workspace = true, features = ["transport"] }
-tracing = { workspace = true }
+backon = { workspace = true, features = ["tokio-sleep"], optional = true }
+datadog-protos = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
+pin-project-lite = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
+saluki-config = { workspace = true, optional = true }
+saluki-error = { workspace = true, optional = true }
+saluki-io = { workspace = true, optional = true }
+saluki-metadata = { workspace = true, optional = true }
+saluki-tls = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["fs", "time"], optional = true }
+tonic = { workspace = true, features = ["transport"], optional = true }
+tracing = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-registry = "0.6.1"
+windows-registry = { version = "0.6.1", optional = true }
 
 [dev-dependencies]
 rcgen = { workspace = true, features = ["crypto", "pem"] }
 saluki-config = { workspace = true, features = ["test-util"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 tokio-rustls = { workspace = true }
 
 [target.'cfg(not(windows))'.dev-dependencies]
@@ -39,7 +65,7 @@ rcgen = { workspace = true, features = ["aws_lc_rs"] }
 rcgen = { workspace = true, features = ["ring"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-tokio-vsock = { workspace = true }
+tokio-vsock = { workspace = true, optional = true }
 
 [lints]
 workspace = true

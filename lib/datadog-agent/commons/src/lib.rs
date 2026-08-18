@@ -7,8 +7,11 @@
 #![deny(missing_docs)]
 #![deny(warnings)]
 
+#[cfg(feature = "full")]
 pub mod agent_version;
 
+#[cfg(any(feature = "full", feature = "ipc-tls"))]
 pub mod ipc;
 
+#[cfg(feature = "full")]
 pub mod platform;
