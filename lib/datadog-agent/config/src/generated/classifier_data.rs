@@ -75,20 +75,6 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("\"tcp://0.0.0.0:5102\""),
     },
     ClassifierEntry {
-        yaml_path: "dogstatsd_experimental_http.enabled",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::High),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("false"),
-    },
-    ClassifierEntry {
-        yaml_path: "dogstatsd_experimental_http.listen_address",
-        aliases: &[],
-        support_level: SupportLevel::Incompatible(Severity::High),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-        default: DefaultValue::Json("\"127.0.0.1:8125\""),
-    },
-    ClassifierEntry {
         yaml_path: "dogstatsd_host_socket_path",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),

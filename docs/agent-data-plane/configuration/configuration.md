@@ -25,11 +25,9 @@ If you find an error on this page, please [open an issue].
 The following settings are not yet supported in ADP but are planned with GitHub issue links for
 tracking.
 
-| Config Key                                   | Description                                     | Issue   |
-| -------------------------------------------- | ----------------------------------------------- | ------- |
-| `dogstatsd_experimental_http.enabled`        | Enable experimental HTTP/H2C DSD listener       | [#1682] |
-| `dogstatsd_experimental_http.listen_address` | Bind address for experimental HTTP DSD listener | [#1682] |
-| `tls_handshake_timeout`                      | HTTP TLS handshake timeout                      | [#178]  |
+| Config Key              | Description                | Issue  |
+| ----------------------- | -------------------------- | ------ |
+| `tls_handshake_timeout` | HTTP TLS handshake timeout | [#178] |
 
 <!-- section:unsupported-not-planned -->
 ### Not Planned
@@ -811,7 +809,6 @@ Both commands scrub recognized secret values before writing JSON to standard out
 [#1381]: https://github.com/DataDog/saluki/issues/1381
 [#1679]: https://github.com/DataDog/saluki/issues/1679
 [#1681]: https://github.com/DataDog/saluki/issues/1681
-[#1682]: https://github.com/DataDog/saluki/issues/1682
 [#1687]: https://github.com/DataDog/saluki/issues/1687
 [#1749]: https://github.com/DataDog/saluki/issues/1749
 [#1753]: https://github.com/DataDog/saluki/issues/1753
