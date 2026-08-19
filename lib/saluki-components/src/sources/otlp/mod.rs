@@ -38,7 +38,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
-use crate::common::otlp::{build_metrics, Metrics, OtlpHandler, OtlpServerBuilder};
+use crate::common::otlp::{build_metrics, build_server_config, Metrics, OtlpHandler, OtlpServerBuilder};
 
 mod logs;
 mod metrics;
@@ -169,6 +169,8 @@ impl SourceBuilder for OtlpConfiguration {
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let grpc_tls_config = build_server_config(&self.otlp.receiver.grpc.tls).await?;
+        let http_tls_config = build_server_config(&self.otlp.receiver.http.tls).await?;
         let metrics = build_metrics(&context);
 
         Ok(Box::new(Otlp {
@@ -176,6 +178,8 @@ impl SourceBuilder for OtlpConfiguration {
             origin_tag_resolver,
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
+            http_tls_config,
+            grpc_tls_config,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
             metric_tags,
@@ -200,6 +204,8 @@ pub struct Otlp {
     origin_tag_resolver: OtlpOriginTagResolver,
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
+    http_tls_config: Option<rustls::ServerConfig>,
+    grpc_tls_config: Option<rustls::ServerConfig>,
     grpc_max_recv_msg_size_bytes: usize,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
     metric_tags: SharedTagSet,
@@ -216,6 +222,8 @@ impl Source for Otlp {
             origin_tag_resolver,
             grpc_endpoint,
             http_endpoint,
+            http_tls_config,
+            grpc_tls_config,
             grpc_max_recv_msg_size_bytes,
             metrics_translator_config,
             metric_tags,
@@ -260,7 +268,8 @@ impl Source for Otlp {
         );
 
         let handler = SourceHandler::new(tx);
-        let server_builder = OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes);
+        let server_builder = OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
+            .with_tls_configs(http_tls_config, grpc_tls_config);
 
         let (http_shutdown, mut http_error) = server_builder
             .build(handler, memory_limiter.clone(), thread_pool_handle, metrics)
