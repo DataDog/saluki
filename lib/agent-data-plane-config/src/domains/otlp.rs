@@ -54,7 +54,8 @@ pub struct Metrics {
 
     /// Whether instrumentation scope name, version, and attributes are added as metric tags.
     ///
-    /// Defaults to `true`.
+    /// Defaults to `true`. When `false`, no scope tags are emitted (no `n/a` placeholders).
+    /// Disable this in high-cardinality scope environments where per-scope tag overhead outweighs queryability.
     pub instrumentation_scope_metadata_as_tags: bool,
 
     /// OTLP sum translation settings.
