@@ -36,7 +36,7 @@
 <a href=#36 id=36 data-nosnippet>36</a><span class="kw">impl </span>PointsCache {
 <a href=#37 id=37 data-nosnippet>37</a>    <span class="kw">pub fn </span>from_config(config: OtlpMetricsTranslatorConfig) -&gt; <span class="self">Self </span>{
 <a href=#38 id=38 data-nosnippet>38</a>        <span class="kw">let </span>ttl = config.delta_ttl;
-<a href=#39 id=39 data-nosnippet>39</a>        <span class="kw">let </span>interval = config.sweep_interval;
+<a href=#39 id=39 data-nosnippet>39</a>        <span class="kw">let </span>interval = std::cmp::max(Duration::from_secs(<span class="number">1</span>), ttl / <span class="number">2</span>);
 <a href=#40 id=40 data-nosnippet>40</a>
 <a href=#41 id=41 data-nosnippet>41</a>        <span class="kw">let </span>number_points = CacheBuilder::from_identifier(<span class="string">"otlp/metrics/number_points"</span>)
 <a href=#42 id=42 data-nosnippet>42</a>            .expect(<span class="string">"identifier cannot be invalid"</span>)
