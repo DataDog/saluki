@@ -304,7 +304,6 @@ mod tests {
         );
         assert!(config.forwarder_config.use_v3_api_series().endpoints.is_empty());
         assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
-        assert!(config.forwarder_config.v3_api().series.endpoints.is_empty());
         assert!(!config.forwarder_config.allow_arbitrary_tags());
     }
 }

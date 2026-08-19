@@ -52,14 +52,9 @@ async fn run() -> Result<(), GenericError> {
         .await
         .error_context("Failed to bind DogStatsD forwarding capture socket.")?;
 
-    let raw_socket = dogstatsd_forwarding_socket
-        .into_std()
-        .error_context("Failed to convert forwarding capture socket to std.")?;
-    if let Err(e) = SockRef::from(&raw_socket).set_recv_buffer_size(838_860) {
+    if let Err(e) = SockRef::from(&dogstatsd_forwarding_socket).set_recv_buffer_size(1_677_720) {
         warn!(error = %e, "Failed to set UDP receive buffer size for forwarding capture socket.");
     }
-    let dogstatsd_forwarding_socket = UdpSocket::from_std(raw_socket)
-        .error_context("Failed to re-create forwarding capture socket after buffer sizing.")?;
     let _dogstatsd_forwarding_task = tokio::spawn(capture_dogstatsd_forwarded_packets(
         dogstatsd_forwarding_socket,
         dogstatsd_forwarding_state.clone(),
