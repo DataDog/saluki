@@ -17,9 +17,19 @@ use tokio::{pin, select};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, Metrics, OtlpHandler, OtlpServerBuilder, OTLP_LOGS_GRPC_SERVICE_PATH,
+    build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerBuilder, OTLP_LOGS_GRPC_SERVICE_PATH,
     OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
 };
+
+/// Builds component-owned CORS settings from the resolved configuration model.
+fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
+    CorsConfiguration {
+        allowed_origins: cors.allowed_origins.clone(),
+        allowed_headers: cors.allowed_headers.clone(),
+        exposed_headers: cors.exposed_headers.clone(),
+        max_age: cors.max_age,
+    }
+}
 
 /// Configuration for the OTLP relay.
 #[derive(Default)]
@@ -72,6 +82,7 @@ impl RelayBuilder for OtlpRelayConfiguration {
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
+            cors: cors_configuration(&self.receiver.http.cors),
             metrics: build_metrics(&context),
         }))
     }
@@ -84,6 +95,7 @@ pub struct OtlpRelay {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    cors: CorsConfiguration,
     metrics: Metrics,
 }
 
@@ -94,6 +106,7 @@ impl Relay for OtlpRelay {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
+            cors,
             metrics,
         } = *self;
 
@@ -112,7 +125,8 @@ impl Relay for OtlpRelay {
             http_endpoint.clone(),
             grpc_endpoint.clone(),
             grpc_max_recv_msg_size_bytes,
-        );
+        )
+        .with_cors(cors);
 
         let (http_shutdown, mut http_error) = server_builder
             .build(handler, memory_limiter, global_thread_pool, metrics)
@@ -270,6 +284,7 @@ mod tests {
             http: domains::otlp::HttpReceiver {
                 endpoint: "0.0.0.0:4318".to_string(),
                 transport: "tcp".to_string(),
+                cors: Default::default(),
             },
             ..Default::default()
         });

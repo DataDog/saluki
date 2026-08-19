@@ -178,6 +178,10 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_http_cors_allowed_headers(&mut self, value: Vec<String>);
+    fn consume_otlp_config_receiver_protocols_http_cors_allowed_origins(&mut self, value: Vec<String>);
+    fn consume_otlp_config_receiver_protocols_http_cors_exposed_headers(&mut self, value: Vec<String>);
+    fn consume_otlp_config_receiver_protocols_http_cors_max_age(&mut self, value: Option<i64>);
     fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String);
     fn consume_otlp_config_traces_enabled(&mut self, value: bool);
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64);
@@ -466,6 +470,18 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer.consume_otlp_config_receiver_protocols_grpc_transport(
         config.otlp_config.receiver.protocols.grpc.transport.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_cors_allowed_headers(
+        config.otlp_config.receiver.protocols.http.cors.allowed_headers.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_cors_allowed_origins(
+        config.otlp_config.receiver.protocols.http.cors.allowed_origins.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_cors_exposed_headers(
+        config.otlp_config.receiver.protocols.http.cors.exposed_headers.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_cors_max_age(
+        config.otlp_config.receiver.protocols.http.cors.max_age.clone(),
     );
     consumer.consume_otlp_config_receiver_protocols_http_endpoint(
         config.otlp_config.receiver.protocols.http.endpoint.clone(),

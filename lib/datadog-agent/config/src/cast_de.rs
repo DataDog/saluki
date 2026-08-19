@@ -144,6 +144,18 @@ where
     deserializer.deserialize_option(OptionalStringVisitor)
 }
 
+/// Deserializes an optional `integer` leaf, where an absent or null value stays `None`.
+///
+/// # Errors
+///
+/// Same as [`deserialize_i64`] for a present value.
+pub(crate) fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_option(OptionalI64Visitor)
+}
+
 struct BoolVisitor;
 
 impl Visitor<'_> for BoolVisitor {
@@ -311,6 +323,28 @@ impl<'de> Visitor<'de> for OptionalStringVisitor {
 
     fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Option<String>, D::Error> {
         deserializer.deserialize_any(StringVisitor).map(Some)
+    }
+}
+
+struct OptionalI64Visitor;
+
+impl<'de> Visitor<'de> for OptionalI64Visitor {
+    type Value = Option<i64>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an integer, a numeric string, a boolean, or null")
+    }
+
+    fn visit_none<E: de::Error>(self) -> Result<Option<i64>, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<Option<i64>, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Option<i64>, D::Error> {
+        deserializer.deserialize_any(I64Visitor).map(Some)
     }
 }
 

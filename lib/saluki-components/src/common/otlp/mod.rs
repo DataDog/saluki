@@ -8,13 +8,14 @@ pub mod semantics;
 pub mod traces;
 pub mod util;
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use ::metrics::Counter;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderName, Method, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
@@ -43,6 +44,7 @@ use stringtheory::MetaString;
 use tokio::runtime::Handle;
 use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::error;
 
 pub const OTLP_METRICS_GRPC_SERVICE_PATH: MetaString =
@@ -51,6 +53,12 @@ pub const OTLP_LOGS_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.logs.v1.LogsService/Export");
 pub const OTLP_TRACES_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.trace.v1.TraceService/Export");
+const IMPLICIT_HEADERS: [HeaderName; 4] = [
+    HeaderName::from_static("accept"),
+    HeaderName::from_static("accept-language"),
+    HeaderName::from_static("content-type"),
+    HeaderName::from_static("content-language"),
+];
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -112,11 +120,25 @@ pub trait OtlpHandler: Send + Sync + 'static {
     async fn handle_traces(&self, body: Bytes) -> Result<(), GenericError>;
 }
 
+/// CORS settings for an OTLP HTTP server.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CorsConfiguration {
+    /// Origins allowed to make cross-origin requests.
+    pub allowed_origins: Vec<String>,
+    /// Request headers allowed in cross-origin requests.
+    pub allowed_headers: Vec<String>,
+    /// Response headers exposed to browser clients.
+    pub exposed_headers: Vec<String>,
+    /// Seconds browsers may cache a preflight response.
+    pub max_age: u64,
+}
+
 /// OTLP server configuration and setup.
 pub struct OtlpServerBuilder {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    cors: CorsConfiguration,
 }
 
 impl OtlpServerBuilder {
@@ -128,7 +150,14 @@ impl OtlpServerBuilder {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
+            cors: CorsConfiguration::default(),
         }
+    }
+
+    /// Sets the CORS configuration for the HTTP receiver.
+    pub fn with_cors(mut self, cors: CorsConfiguration) -> Self {
+        self.cors = cors;
+        self
     }
 
     /// Builds and starts the OTLP servers (HTTP and gRPC).
@@ -179,13 +208,20 @@ impl OtlpServerBuilder {
         thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
 
         // Create and spawn the HTTP server.
-        let service = TowerToHyperService::new(
-            Router::new()
-                .route("/v1/metrics", post(http_metrics_handler::<H>))
-                .route("/v1/logs", post(http_logs_handler::<H>))
-                .route("/v1/traces", post(http_traces_handler::<H>))
-                .with_state((otlp_handler, memory_limiter, metrics)),
-        );
+        let router = Router::new()
+            .route("/v1/metrics", post(http_metrics_handler::<H>))
+            .route("/v1/logs", post(http_logs_handler::<H>))
+            .route("/v1/traces", post(http_traces_handler::<H>))
+            .with_state((otlp_handler, memory_limiter, metrics));
+
+        // Apply CORS middleware when origins are configured.
+        let router = if !self.cors.allowed_origins.is_empty() {
+            router.layer(build_cors_layer(&self.cors))
+        } else {
+            router
+        };
+
+        let service = TowerToHyperService::new(router);
 
         let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
             .await
@@ -197,6 +233,88 @@ impl OtlpServerBuilder {
 
         Ok((http_shutdown_coordinator, http_error))
     }
+}
+
+/// Builds a CORS layer from the resolved CORS configuration.
+///
+/// A bare `*` in the list of allowed origins enables allow-all; otherwise the first `*` in an origin is a partial wildcard
+/// (for example, `http://*.domain.com` matches `http://foo.domain.com`).
+fn build_cors_layer(cors: &CorsConfiguration) -> CorsLayer {
+    let mut layer = CorsLayer::new();
+    let allowed_origins = cors
+        .allowed_origins
+        .iter()
+        .map(|origin| origin.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    let allows_any_origin = allowed_origins.iter().any(|origin| origin == "*");
+    if allows_any_origin {
+        layer = layer.allow_origin(Any);
+    } else {
+        layer = layer.allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
+            let Ok(origin) = origin.to_str() else {
+                return false;
+            };
+            let origin = origin.to_ascii_lowercase();
+
+            allowed_origins.iter().any(|pattern| origin_matches(pattern, &origin))
+        }));
+    }
+
+    // Preflight must permit the methods browser exporters use; without this the browser blocks
+    // the actual request even when the origin is allowed.
+    layer = layer.allow_methods([Method::GET, Method::POST, Method::HEAD]);
+
+    if cors.allowed_headers.iter().any(|h| h == "*") {
+        layer = layer.allow_headers(Any);
+    } else {
+        let mut headers: Vec<HeaderName> = cors
+            .allowed_headers
+            .iter()
+            .filter_map(|h| HeaderName::from_str(h).ok())
+            .collect();
+        headers.extend_from_slice(&IMPLICIT_HEADERS);
+        if cors.allowed_headers.is_empty() {
+            headers.push(HeaderName::from_static("x-requested-with"));
+        }
+        layer = layer.allow_headers(headers);
+    }
+
+    // Exposed headers.
+    if !cors.exposed_headers.is_empty() {
+        let headers: Vec<HeaderName> = cors
+            .exposed_headers
+            .iter()
+            .filter_map(|h| HeaderName::from_str(h).ok())
+            .collect();
+        layer = layer.expose_headers(headers);
+    }
+
+    // Max age.
+    if cors.max_age > 0 {
+        layer = layer.max_age(std::time::Duration::from_secs(cors.max_age));
+    }
+
+    // Wildcard CORS responses cannot permit browser credentials.
+    if !allows_any_origin
+        && !cors.allowed_headers.iter().any(|header| header == "*")
+        && !cors.exposed_headers.iter().any(|header| header == "*")
+    {
+        layer = layer.allow_credentials(true);
+    }
+
+    layer
+}
+
+/// Matches an Origin header against an allowed-origin pattern with first-`*` wildcard semantics.
+fn origin_matches(pattern: &str, origin: &str) -> bool {
+    let mut parts = pattern.splitn(2, '*');
+    let prefix = parts.next().unwrap_or("");
+    let Some(suffix) = parts.next() else {
+        return pattern == origin;
+    };
+
+    origin.starts_with(prefix) && origin.ends_with(suffix) && origin.len() >= prefix.len() + suffix.len()
 }
 
 /// HTTP handler for OTLP metrics requests.
@@ -341,8 +459,14 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 mod tests {
     use std::sync::Arc;
 
+    use axum::{
+        body::Body,
+        http::{header, Request},
+        routing::post,
+    };
     use saluki_core::{accounting::MemoryLimiter, components::ComponentContext};
     use saluki_metrics::test::TestRecorder;
+    use tower::ServiceExt;
 
     use super::*;
 
@@ -434,5 +558,144 @@ mod tests {
             .unwrap();
 
         assert_bytes_received(&recorder, expected_size);
+    }
+
+    #[test]
+    fn origin_matcher_matches_rs_cors_patterns() {
+        assert!(origin_matches("http://*.example.com", "http://foo.example.com"));
+        assert!(origin_matches("http://*.example.com", "http://.example.com"));
+        assert!(!origin_matches(
+            "http://*.example.com",
+            "http://foo.example.com.evil.com"
+        ));
+        assert!(origin_matches("http://*.example.com/*", "http://foo.example.com/*"));
+        assert!(!origin_matches("http://*.example.com/*", "http://foo.example.com/bar"));
+        assert!(origin_matches("http://example.com", "http://example.com"));
+        assert!(!origin_matches("http://example.com", "http://other.com"));
+    }
+
+    #[tokio::test]
+    async fn cors_layer_matches_partial_wildcard_origin() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&CorsConfiguration {
+                allowed_origins: vec!["HTTP://*.EXAMPLE.COM".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "http://api.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("http://api.example.com")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_layer_rejects_unrelated_partial_wildcard_origin() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&CorsConfiguration {
+                allowed_origins: vec!["http://*.example.com".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none());
+    }
+
+    #[tokio::test]
+    async fn cors_layer_allows_any_origin_for_bare_wildcard() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&CorsConfiguration {
+                allowed_origins: vec!["*".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_allows_post_method() {
+        let app = Router::new()
+            .route("/", post(|| async { StatusCode::NO_CONTENT }))
+            .layer(build_cors_layer(&CorsConfiguration {
+                allowed_origins: vec!["*".to_string()],
+                ..Default::default()
+            }));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/")
+                    .header(header::ORIGIN, "http://example.com")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let allowed_methods = response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_METHODS)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(allowed_methods.contains("POST"));
     }
 }

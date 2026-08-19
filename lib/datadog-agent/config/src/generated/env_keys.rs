@@ -841,6 +841,47 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_HEADERS"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "http",
+            "cors",
+            "allowed_headers",
+        ],
+        decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_ALLOWED_ORIGINS"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "http",
+            "cors",
+            "allowed_origins",
+        ],
+        decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_EXPOSED_HEADERS"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "http",
+            "cors",
+            "exposed_headers",
+        ],
+        decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_CORS_MAX_AGE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "cors", "max_age"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"],
         path: &["otlp_config", "receiver", "protocols", "http", "endpoint"],
         decode: EnvDecode::RawString,

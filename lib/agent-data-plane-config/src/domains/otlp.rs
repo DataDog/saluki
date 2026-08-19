@@ -263,6 +263,9 @@ pub struct HttpReceiver {
     /// Transport the HTTP receiver binds (for example, `tcp` or `unix`). (not in Datadog Agent
     /// config schema)
     pub transport: String,
+
+    /// CORS configuration for the HTTP receiver.
+    pub cors: Cors,
 }
 
 impl Default for HttpReceiver {
@@ -271,8 +274,31 @@ impl Default for HttpReceiver {
             // Witnessed; overwritten during drive.
             endpoint: String::new(),
             transport: "tcp".to_string(),
+            cors: Cors::default(),
         }
     }
+}
+
+/// CORS configuration for the OTLP HTTP receiver.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Cors {
+    /// Allowed origins for cross-origin requests. A bare `*` allows every origin; a partial
+    /// wildcard like `http://*.example.com` matches that prefix and suffix. Empty disables CORS.
+    /// Defaults to empty; configure this for browser-based exporters.
+    pub allowed_origins: Vec<String>,
+
+    /// Request headers allowed in preflight, beyond the implicit `Accept`, `Accept-Language`,
+    /// `Content-Type`, and `Content-Language`. Use `*` to allow any header. Empty also implicitly
+    /// allows `X-Requested-With`. Defaults to empty; add headers for browser exporters that send them.
+    pub allowed_headers: Vec<String>,
+
+    /// Response headers exposed to the browser via `Access-Control-Expose-Headers`.
+    /// Defaults to empty; add headers browser clients need to read.
+    pub exposed_headers: Vec<String>,
+
+    /// Seconds browsers may cache a preflight response. Defaults to `0` (no caching); increase
+    /// to avoid repeated preflight round-trips for frequent browser requests.
+    pub max_age: u64,
 }
 
 /// OTLP trace ingestion settings.

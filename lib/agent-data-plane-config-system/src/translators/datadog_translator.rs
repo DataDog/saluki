@@ -1019,6 +1019,30 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.receiver.http.endpoint = value;
     }
 
+    fn consume_otlp_config_receiver_protocols_http_cors_allowed_headers(&mut self, value: Vec<String>) {
+        self.config.domains.otlp.receiver.http.cors.allowed_headers = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_http_cors_allowed_origins(&mut self, value: Vec<String>) {
+        self.config.domains.otlp.receiver.http.cors.allowed_origins = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_http_cors_exposed_headers(&mut self, value: Vec<String>) {
+        self.config.domains.otlp.receiver.http.cors.exposed_headers = value;
+    }
+
+    fn consume_otlp_config_receiver_protocols_http_cors_max_age(&mut self, value: Option<i64>) {
+        if let Some(v) = value {
+            match u64::try_from(v) {
+                Ok(max_age) => self.config.domains.otlp.receiver.http.cors.max_age = max_age,
+                Err(error) => self.record_error(TranslateError::new(
+                    "otlp_config.receiver.protocols.http.cors.max_age",
+                    error,
+                )),
+            }
+        }
+    }
+
     fn consume_otlp_config_traces_enabled(&mut self, value: bool) {
         self.config.domains.otlp.traces.enabled = value;
     }

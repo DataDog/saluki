@@ -583,6 +583,7 @@ fn permissivize(file: &mut syn::File) {
                 LeafKind::Number => "crate::cast_de::deserialize_f64",
                 LeafKind::Text => "crate::cast_de::deserialize_string",
                 LeafKind::OptionalText => "crate::cast_de::deserialize_optional_string",
+                LeafKind::OptionalInteger => "crate::cast_de::deserialize_optional_i64",
                 LeafKind::Exempt => continue,
                 LeafKind::Unknown => panic!(
                     "field `{}.{name}` has no declared coercion; classify its type in `leaf_kind` and \
@@ -604,6 +605,7 @@ enum LeafKind {
     Number,
     Text,
     OptionalText,
+    OptionalInteger,
     /// A nested section, or a leaf whose shape another pass or its own consumer handles.
     Exempt,
     Unknown,
@@ -619,6 +621,14 @@ fn leaf_kind(ty: &syn::Type, struct_names: &HashSet<String>) -> LeafKind {
     }
     if option_inner(ty).is_some_and(is_plain_string) {
         return LeafKind::OptionalText;
+    }
+    // An optional `integer` leaf uses the same permissive coercion as a plain `i64`, while an
+    // absent or null value stays `None`.
+    if option_inner(ty)
+        .and_then(plain_ident)
+        .is_some_and(|ident| ident == "i64")
+    {
+        return LeafKind::OptionalInteger;
     }
     if is_vec_string(ty) || is_string_map_vec_string(ty) || is_json_container(ty) || is_duration(ty) {
         return LeafKind::Exempt;
