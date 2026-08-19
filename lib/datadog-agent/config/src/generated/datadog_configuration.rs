@@ -1461,6 +1461,10 @@ impl Default for OtlpConfigLogs {
 
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
 pub struct OtlpConfigMetrics {
+    #[serde(default = "defaults::default_u64::<i64, 3600>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
+    pub delta_ttl: i64,
+
     #[serde(default = "defaults::default_bool::<true>")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub enabled: bool,
@@ -1492,6 +1496,7 @@ pub struct OtlpConfigMetrics {
 impl Default for OtlpConfigMetrics {
     fn default() -> Self {
         Self {
+            delta_ttl: defaults::default_u64::<i64, 3600>(),
             enabled: defaults::default_bool::<true>(),
             histograms: Default::default(),
             resource_attributes_as_tags: Default::default(),

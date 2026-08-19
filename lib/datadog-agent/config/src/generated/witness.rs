@@ -165,6 +165,7 @@ pub trait DatadogConfigWitness {
     fn consume_observability_pipelines_worker_metrics_use_v3_api_series(&mut self, value: bool);
     fn consume_origin_detection_unified(&mut self, value: bool);
     fn consume_otlp_config_logs_enabled(&mut self, value: bool);
+    fn consume_otlp_config_metrics_delta_ttl(&mut self, value: i64);
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool);
     fn consume_otlp_config_metrics_histograms_mode(&mut self, value: String);
     fn consume_otlp_config_metrics_histograms_send_aggregation_metrics(&mut self, value: bool);
@@ -434,6 +435,7 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer.consume_origin_detection_unified(config.origin_detection_unified.clone());
     consumer.consume_otlp_config_logs_enabled(config.otlp_config.logs.enabled.clone());
+    consumer.consume_otlp_config_metrics_delta_ttl(config.otlp_config.metrics.delta_ttl.clone());
     consumer.consume_otlp_config_metrics_enabled(config.otlp_config.metrics.enabled.clone());
     consumer.consume_otlp_config_metrics_histograms_mode(config.otlp_config.metrics.histograms.mode.clone());
     consumer.consume_otlp_config_metrics_histograms_send_aggregation_metrics(

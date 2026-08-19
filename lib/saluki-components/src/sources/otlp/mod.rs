@@ -107,7 +107,8 @@ impl OtlpConfiguration {
             .with_send_histogram_aggregations(self.otlp.metrics.send_histogram_aggregations)
             .with_cumulative_monotonic_mode(self.otlp.metrics.sums.cumulative_monotonic_mode)
             .with_initial_cumulative_monotonic_value(self.otlp.metrics.sums.initial_cumulative_monotonic_value)
-            .with_resource_attributes_as_tags(self.otlp.metrics.resource_attributes_as_tags);
+            .with_resource_attributes_as_tags(self.otlp.metrics.resource_attributes_as_tags)
+            .with_delta_ttl(self.otlp.metrics.delta_ttl);
         config.tag_cardinality = self.otlp.metrics.tag_cardinality;
         config
     }
@@ -473,6 +474,8 @@ async fn run_converter(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use agent_data_plane_config::domains;
     use agent_data_plane_config::domains::otlp::{
         CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
@@ -624,6 +627,27 @@ mod tests {
                 value
             );
         }
+    }
+
+    #[test]
+    fn delta_ttl_flows_to_metrics_translator() {
+        // An explicit TTL overrides the 3600s default end-to-end into the translator config.
+        let config = config_with_metrics(domains::otlp::Metrics {
+            delta_ttl: Duration::from_secs(7200),
+            ..Default::default()
+        });
+
+        assert_eq!(config.metrics_translator_config().delta_ttl, Duration::from_secs(7200));
+    }
+
+    #[test]
+    fn delta_ttl_defaults_to_3600s() {
+        assert_eq!(
+            config_with_metrics(domains::otlp::Metrics::default())
+                .metrics_translator_config()
+                .delta_ttl,
+            Duration::from_secs(3600)
+        );
     }
 
     #[test]

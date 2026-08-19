@@ -1,6 +1,7 @@
 //! OTLP domain: the OTLP receiver (gRPC/HTTP transports, logs/metrics activation), the OTLP proxy
 //! gating, and OTLP context sizing. OTLP trace handling lives in the `traces` domain.
 
+use std::time::Duration;
 use std::{num::NonZeroUsize, str::FromStr};
 
 use serde::Serialize;
@@ -27,8 +28,11 @@ pub struct Domain {
     pub contexts: Contexts,
 }
 
+/// Default TTL for cached prior points used when converting cumulative sums to deltas.
+pub const DEFAULT_DELTA_TTL: Duration = Duration::from_secs(3600);
+
 /// OTLP metrics translation settings.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Metrics {
     /// Tag cardinality applied to entity and global tags enriched onto OTLP metrics.
     ///
@@ -59,6 +63,25 @@ pub struct Metrics {
 
     /// OTLP summary translation settings.
     pub summaries: Summaries,
+
+    /// Time-to-live for cached prior data points used when converting cumulative monotonic sums
+    /// to deltas. Defaults to `3600` seconds. Must be greater than zero.
+    pub delta_ttl: Duration,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            tag_cardinality: OriginTagCardinality::default(),
+            histogram_mode: HistogramMode::default(),
+            send_histogram_aggregations: false,
+            resource_attributes_as_tags: false,
+            sums: Sums::default(),
+            tags: String::new(),
+            summaries: Summaries::default(),
+            delta_ttl: DEFAULT_DELTA_TTL,
+        }
+    }
 }
 
 /// How explicit OTLP histogram buckets are reported.

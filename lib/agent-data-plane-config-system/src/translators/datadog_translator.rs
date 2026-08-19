@@ -926,6 +926,20 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.receiver.logs_enabled = value;
     }
 
+    fn consume_otlp_config_metrics_delta_ttl(&mut self, value: i64) {
+        if value <= 0 {
+            self.record_error(TranslateError::new_with_message(
+                "otlp_config.metrics.delta_ttl",
+                format!("time to live must be positive: {value}"),
+            ));
+            return;
+        }
+        match parse_seconds("otlp_config.metrics.delta_ttl", value) {
+            Ok(ttl) => self.config.domains.otlp.metrics.delta_ttl = ttl,
+            Err(error) => self.record_error(error),
+        }
+    }
+
     fn consume_otlp_config_metrics_enabled(&mut self, value: bool) {
         self.config.domains.otlp.receiver.metrics_enabled = value;
     }
@@ -1229,7 +1243,8 @@ mod tests {
     use agent_data_plane_config::domains::{
         dogstatsd::OriginTagCardinality,
         otlp::{
-            CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+            CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
+            DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
         },
     };
     use agent_data_plane_config::shared::V3SeriesMode;
@@ -1819,5 +1834,48 @@ mod tests {
             assert!(errors.is_none());
             assert_eq!(config.domains.otlp.receiver.grpc.max_recv_msg_size_mib, expected);
         }
+    }
+
+    #[test]
+    fn otlp_metrics_delta_ttl_translates_explicit_value() {
+        // An explicit integer (seconds) is carried through the witness as a `Duration`.
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "metrics": { "delta_ttl": 7200 } }
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.metrics.delta_ttl, Duration::from_secs(7200));
+    }
+
+    #[test]
+    fn otlp_metrics_delta_ttl_defaults_to_3600s_when_unset() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
+    }
+
+    #[test]
+    fn otlp_metrics_delta_ttl_negative_records_error_and_keeps_default() {
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "metrics": { "delta_ttl": -1 } }
+        }));
+
+        assert_eq!(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
+        let errors = errors.expect("negative delta_ttl should record a translation error");
+        assert!(errors.to_string().contains("otlp_config.metrics.delta_ttl"));
+        assert!(errors.to_string().contains("time to live must be positive"));
+    }
+
+    #[test]
+    fn otlp_metrics_delta_ttl_zero_records_error_and_keeps_default() {
+        let (config, errors) = translate_explicit(json!({
+            "otlp_config": { "metrics": { "delta_ttl": 0 } }
+        }));
+
+        assert_eq!(config.domains.otlp.metrics.delta_ttl, DEFAULT_DELTA_TTL);
+        let errors = errors.expect("zero delta_ttl should record a translation error");
+        assert!(errors.to_string().contains("otlp_config.metrics.delta_ttl"));
+        assert!(errors.to_string().contains("time to live must be positive"));
     }
 }
