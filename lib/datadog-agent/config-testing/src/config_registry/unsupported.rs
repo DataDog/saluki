@@ -115,28 +115,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `dogstatsd_experimental_http.enabled`-Enable experimental HTTP/H2C DSD listener
-    DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_ENABLED,
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `dogstatsd_experimental_http.listen_address`-Bind address for experimental HTTP DSD listener
-    DOGSTATSD_EXPERIMENTAL_HTTP_LISTEN_ADDRESS = SalukiAnnotation {
-        schema: &schema::DOGSTATSD_EXPERIMENTAL_HTTP_LISTEN_ADDRESS,
-        support_level: SupportLevel::Incompatible(Severity::High),
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `forwarder_requeue_buffer_size`-In-memory re-queue buffer size
     FORWARDER_REQUEUE_BUFFER_SIZE = SalukiAnnotation {
         schema: &schema::FORWARDER_REQUEUE_BUFFER_SIZE,
