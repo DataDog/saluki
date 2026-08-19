@@ -241,7 +241,8 @@ fn build_cors_layer(cors: &CorsConfiguration) -> CorsLayer {
         .map(|origin| origin.to_ascii_lowercase())
         .collect::<Vec<_>>();
 
-    if allowed_origins.iter().any(|origin| origin == "*") {
+    let allows_any_origin = allowed_origins.iter().any(|origin| origin == "*");
+    if allows_any_origin {
         layer = layer.allow_origin(Any);
     } else {
         layer = layer.allow_origin(AllowOrigin::predicate(move |origin, _request_parts| {
@@ -294,6 +295,14 @@ fn build_cors_layer(cors: &CorsConfiguration) -> CorsLayer {
     // Max age.
     if cors.max_age > 0 {
         layer = layer.max_age(std::time::Duration::from_secs(cors.max_age));
+    }
+
+    // Wildcard CORS responses cannot permit browser credentials.
+    if !allows_any_origin
+        && !cors.allowed_headers.iter().any(|header| header == "*")
+        && !cors.exposed_headers.iter().any(|header| header == "*")
+    {
+        layer = layer.allow_credentials(true);
     }
 
     layer
@@ -595,6 +604,13 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("http://api.example.com")
         );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
     }
 
     #[tokio::test]
@@ -649,6 +665,10 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("*")
         );
+        assert!(response
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .is_none());
     }
 
     #[tokio::test]
