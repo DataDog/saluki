@@ -812,6 +812,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
 | `otlp_config.metrics.histograms.mode`                          | OTLP histogram bucket reporting mode               |
 | `otlp_config.metrics.histograms.send_aggregation_metrics`      | Emit OTLP histogram aggregation metrics.           |
+| `otlp_config.metrics.instrumentation_scope_metadata_as_tags`   | Add instrumentation scope metadata as metric tags. |
 | `otlp_config.metrics.resource_attributes_as_tags`              | Add scalar resource attributes as raw tags.        |
 | `otlp_config.metrics.summaries.mode`                           | OTLP summary quantile reporting mode.              |
 | `otlp_config.metrics.sums.cumulative_monotonic_mode`           | Cumulative monotonic sum reporting mode.           |

@@ -118,6 +118,7 @@ impl OtlpConfiguration {
             .with_cumulative_monotonic_mode(self.otlp.metrics.sums.cumulative_monotonic_mode)
             .with_initial_cumulative_monotonic_value(self.otlp.metrics.sums.initial_cumulative_monotonic_value)
             .with_resource_attributes_as_tags(self.otlp.metrics.resource_attributes_as_tags)
+            .with_instrumentation_scope_metadata_as_tags(self.otlp.metrics.instrumentation_scope_metadata_as_tags)
             .with_delta_ttl(self.otlp.metrics.delta_ttl);
         config.tag_cardinality = self.otlp.metrics.tag_cardinality;
         config
@@ -662,6 +663,29 @@ mod tests {
                 .metrics_translator_config()
                 .delta_ttl,
             Duration::from_secs(3600)
+        );
+    }
+
+    #[test]
+    fn instrumentation_scope_metadata_as_tags_defaults_to_true() {
+        assert!(
+            config_with_metrics(domains::otlp::Metrics::default())
+                .metrics_translator_config()
+                .instrumentation_scope_metadata_as_tags
+        );
+    }
+
+    #[test]
+    fn instrumentation_scope_metadata_as_tags_flows_to_metrics_translator() {
+        let config = config_with_metrics(domains::otlp::Metrics {
+            instrumentation_scope_metadata_as_tags: false,
+            ..Default::default()
+        });
+
+        assert!(
+            !config
+                .metrics_translator_config()
+                .instrumentation_scope_metadata_as_tags
         );
     }
 
