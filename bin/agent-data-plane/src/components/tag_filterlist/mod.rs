@@ -426,43 +426,41 @@ impl Transform for TagFilterlist {
     }
 }
 
-enum TagFilterAction<'a> {
-    Keep,
-    Remove,
-    Replace(&'a Tag),
-}
-
 #[inline]
 fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &FastHashSet<String>) -> bool {
     is_exclude != names.contains(tag.as_borrowed().name())
 }
 
 #[inline]
-fn filter_tag<'a>(
-    tag: &Tag, key_filter: Option<&CompiledKeyFilter>, metric_name: &str, filters: &'a CompiledFilters,
-) -> TagFilterAction<'a> {
+fn filter_tag(
+    tag: &Tag, key_filter: Option<&CompiledKeyFilter>, metric_name: &str, filters: &CompiledFilters,
+    replacements: &mut Vec<Tag>,
+) -> bool {
     if let Some(key_filter) = key_filter {
         if !should_keep_tag(tag, key_filter.is_exclude, &key_filter.tag_names) {
-            return TagFilterAction::Remove;
+            return false;
         }
     }
 
     let tag = tag.as_borrowed();
 
     let Some(value) = tag.value() else {
-        return TagFilterAction::Keep;
+        return true;
     };
     let Some(allowlist) = filters.value_prefix_filters.get(metric_name, tag.name()) else {
-        return TagFilterAction::Keep;
+        return true;
     };
     if allowlist.allowed_values.contains(value) {
-        return TagFilterAction::Keep;
+        return true;
     }
 
     match &allowlist.on_miss {
-        CompiledMismatchAction::Remove => TagFilterAction::Remove,
-        CompiledMismatchAction::Replace(replacement) if replacement.as_str() == tag.as_ref() => TagFilterAction::Keep,
-        CompiledMismatchAction::Replace(replacement) => TagFilterAction::Replace(replacement),
+        CompiledMismatchAction::Remove => false,
+        CompiledMismatchAction::Replace(replacement) if replacement.as_str() == tag.as_ref() => true,
+        CompiledMismatchAction::Replace(replacement) => {
+            replacements.push(replacement.clone());
+            false
+        }
     }
 }
 
@@ -490,21 +488,15 @@ pub fn filter_metric_tags(
     let mut tag_replacements = Vec::new();
     let mut origin_tag_replacements = Vec::new();
     let mut tag_set_view = metric.context_mut().tags_mut_view(state);
-    tag_set_view.retain_tags(|tag| match filter_tag(tag, key_filter, metric_name.as_ref(), filters) {
-        TagFilterAction::Keep => true,
-        TagFilterAction::Remove => false,
-        TagFilterAction::Replace(replacement) => {
-            tag_replacements.push(replacement.clone());
-            false
-        }
-    });
-    tag_set_view.retain_origin_tags(|tag| match filter_tag(tag, key_filter, metric_name.as_ref(), filters) {
-        TagFilterAction::Keep => true,
-        TagFilterAction::Remove => false,
-        TagFilterAction::Replace(replacement) => {
-            origin_tag_replacements.push(replacement.clone());
-            false
-        }
+    tag_set_view.retain_tags(|tag| filter_tag(tag, key_filter, metric_name.as_ref(), filters, &mut tag_replacements));
+    tag_set_view.retain_origin_tags(|tag| {
+        filter_tag(
+            tag,
+            key_filter,
+            metric_name.as_ref(),
+            filters,
+            &mut origin_tag_replacements,
+        )
     });
     let total_removed = tag_set_view.finish();
 
