@@ -911,6 +911,14 @@ fn build_diagnostics_layer(emitter: DiagnosticsEmitter, endpoint_url: String) ->
             format!("Datadog API key rejected as invalid (HTTP 403) when forwarding to '{endpoint_url}'."),
             DiagnosticDetails::InvalidApiKey,
         ));
+
+        // The message text here is kept in sync with an equivalent log emitted by another implementation of
+        // this forwarder, so that log-based alerting on this condition matches regardless of which implementation
+        // is deployed.
+        error!(
+            endpoint_url,
+            "API Key invalid (403 response), dropping transaction for {endpoint_url}."
+        );
     };
 
     HttpInspectionLayer::new().with_inspector(StatusCode::FORBIDDEN, forbidden_inspector)
