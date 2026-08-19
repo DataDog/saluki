@@ -15,7 +15,7 @@ use ::metrics::Counter;
 use async_trait::async_trait;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderName, Method, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use otlp_protos::opentelemetry::proto::collector::logs::v1::logs_service_server::{LogsService, LogsServiceServer};
@@ -53,6 +53,12 @@ pub const OTLP_LOGS_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.logs.v1.LogsService/Export");
 pub const OTLP_TRACES_GRPC_SERVICE_PATH: MetaString =
     MetaString::from_static("/opentelemetry.proto.collector.trace.v1.TraceService/Export");
+const IMPLICIT_HEADERS: [HeaderName; 4] = [
+    HeaderName::from_static("accept"),
+    HeaderName::from_static("accept-language"),
+    HeaderName::from_static("content-type"),
+    HeaderName::from_static("content-language"),
+];
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -262,32 +268,24 @@ fn build_cors_layer(cors: &CorsConfiguration) -> CorsLayer {
     if cors.allowed_headers.iter().any(|h| h == "*") {
         layer = layer.allow_headers(Any);
     } else {
-        let mut headers: Vec<http::HeaderName> = cors
+        let mut headers: Vec<HeaderName> = cors
             .allowed_headers
             .iter()
-            .filter_map(|h| http::HeaderName::from_str(h).ok())
+            .filter_map(|h| HeaderName::from_str(h).ok())
             .collect();
-        // Implicit headers always allowed.
-        for name in ["accept", "accept-language", "content-type", "content-language"] {
-            if let Ok(h) = http::HeaderName::from_str(name) {
-                headers.push(h);
-            }
-        }
-        // When no explicit headers are listed, also allow X-Requested-With.
+        headers.extend_from_slice(&IMPLICIT_HEADERS);
         if cors.allowed_headers.is_empty() {
-            if let Ok(h) = http::HeaderName::from_str("x-requested-with") {
-                headers.push(h);
-            }
+            headers.push(HeaderName::from_static("x-requested-with"));
         }
         layer = layer.allow_headers(headers);
     }
 
     // Exposed headers.
     if !cors.exposed_headers.is_empty() {
-        let headers: Vec<http::HeaderName> = cors
+        let headers: Vec<HeaderName> = cors
             .exposed_headers
             .iter()
-            .filter_map(|h| http::HeaderName::from_str(h).ok())
+            .filter_map(|h| HeaderName::from_str(h).ok())
             .collect();
         layer = layer.expose_headers(headers);
     }
