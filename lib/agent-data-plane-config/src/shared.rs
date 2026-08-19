@@ -413,40 +413,11 @@ pub struct V3ApiEncoding {
     pub compression_level: i32,
 }
 
-/// Per-payload V3 intake settings, reused for both series and sketches. Sketches read only
-/// `endpoints` and `validate`; the remaining series-only fields stay at their defaults.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Per-payload V3 intake settings, reused for both series and sketches.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiSettings {
     /// Endpoints enabled for the V3 intake.
     pub endpoints: Vec<String>,
-
-    /// Whether payloads are dual-sent to v2 and v3 for validation.
-    pub validate: bool,
-
-    /// Whether the beta V3 route is used instead of the stable one (series only).
-    pub use_beta: bool,
-
-    /// Route for the beta V3 series API (series only).
-    pub beta_route: String,
-
-    /// Shadow-mode sample rate (series only).
-    pub shadow_sample_rate: f64,
-
-    /// Sites for which shadow mode is enabled (series only).
-    pub shadow_sites: Vec<String>,
-}
-
-impl Default for V3ApiSettings {
-    fn default() -> Self {
-        Self {
-            endpoints: Vec::new(),
-            validate: false,
-            use_beta: false,
-            beta_route: "/api/intake/metrics/v3beta/series".to_string(),
-            shadow_sample_rate: 0.0,
-            shadow_sites: vec!["datadoghq.com".to_string()],
-        }
-    }
 }
 
 /// Whether series are routed to the V3 metrics intake (`use_v3_api.series.*`).

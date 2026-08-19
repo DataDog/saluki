@@ -836,14 +836,8 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `proxy.no_proxy`                                               | Hosts bypassing proxy                              |
 | `serializer_compressor_kind`                                   | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                      |
-| `serializer_experimental_use_v3_api.series.beta_route`         | Beta V3 series API route                           |
 | `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API                |
-| `serializer_experimental_use_v3_api.series.shadow_sample_rate` | V3 series shadow mode sample rate                  |
-| `serializer_experimental_use_v3_api.series.shadow_sites`       | V3 series shadow mode enabled sites                |
-| `serializer_experimental_use_v3_api.series.use_beta`           | Use the beta V3 series API route                   |
-| `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation              |
 | `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API                 |
-| `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation            |
 | `serializer_max_payload_size`                                  | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                           | Max compressed V2 series payload size              |
 | `serializer_max_series_points_per_payload`                     | Max data points per series payload                 |

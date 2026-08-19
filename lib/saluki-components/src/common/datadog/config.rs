@@ -328,7 +328,6 @@ impl ForwarderConfiguration {
                 endpoints: HashMap::new(),
             };
             v3_api.series.endpoints.clear();
-            v3_api.series.shadow_sites.clear();
         }
 
         let routing = ForwarderRouting {
@@ -544,7 +543,7 @@ mod tests {
     use std::collections::HashMap;
 
     use agent_data_plane_config::{
-        shared::{AltMetricsIntake, Proxy, Tls, V3ApiEncoding, V3ApiSettings, V3SeriesMode},
+        shared::{AltMetricsIntake, Proxy, Tls, V3ApiEncoding, V3SeriesMode},
         ConfigValue,
     };
     use saluki_config::ConfigurationLoader;
@@ -849,10 +848,6 @@ mod tests {
             use_v3_series: true,
         };
         shared.metrics_encoding.v3_api = V3ApiEncoding {
-            series: V3ApiSettings {
-                validate: true,
-                ..Default::default()
-            },
             compression_level: 7,
             ..Default::default()
         };
@@ -862,7 +857,6 @@ mod tests {
         let config = forwarder_config_from(shared).await;
 
         assert_eq!(7, config.v3_api().compression_level);
-        assert!(config.v3_api().series.validate);
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api_series().enabled);
         assert_eq!(
             Some(&V3SeriesMode::Enabled),
@@ -953,7 +947,6 @@ mod tests {
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
         shared.metrics_encoding.v3_series_endpoint_modes =
             HashMap::from([(DATADOG_URL.to_string(), V3SeriesMode::Enabled)]);
-        shared.metrics_encoding.v3_api.series.shadow_sites = vec!["datadoghq.com".to_string()];
 
         let destination = SingleDestination {
             url: "https://only.example.com".to_string(),
@@ -973,15 +966,12 @@ mod tests {
         assert_eq!(V3SeriesMode::Disabled, config.use_v3_api_series().enabled);
         assert!(config.use_v3_api_series().endpoints.is_empty());
         assert!(config.v3_api().series.endpoints.is_empty());
-        assert!(config.v3_api().series.shadow_sites.is_empty());
     }
 
     #[tokio::test]
     async fn a_single_destination_keeps_configured_v3_series_routing_when_it_accepts_v3() {
         let mut shared = shared_configuration();
         shared.metrics_encoding.v3_series_mode = V3SeriesMode::Enabled;
-        shared.metrics_encoding.v3_api.series.shadow_sites = vec!["datadoghq.com".to_string()];
-
         let destination = SingleDestination {
             url: "https://mrf.example.com".to_string(),
             api_key: "mrf-api-key".to_string(),
@@ -991,9 +981,5 @@ mod tests {
         let config = ForwarderConfiguration::for_single_destination(&shared, &empty_config().await, &destination);
 
         assert_eq!(V3SeriesMode::Enabled, config.use_v3_api_series().enabled);
-        assert_eq!(
-            &["datadoghq.com".to_string()],
-            config.v3_api().series.shadow_sites.as_slice()
-        );
     }
 }

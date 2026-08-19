@@ -18,6 +18,10 @@ process_config:
   container_collection:
     enabled: false
 
+# Disable preflight_mode to avoid probe metric from entering datadog-intake, which is not essential to assess correct forwarding behavior
+data_plane: 
+  preflight_mode: false
+
 # Point ourselves at the datadog-intake service.
 dd_url: "http://datadog-intake:2049"
 

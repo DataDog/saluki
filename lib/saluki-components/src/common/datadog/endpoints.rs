@@ -21,9 +21,6 @@ use super::protocol::{MetricsPayloadInfo, MetricsProtocolVersion, UseV3ApiSeries
 static DD_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^app(\.mrf)?\.([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)$").unwrap()
 });
-static DD_SITE_FROM_HOSTNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:^|\.)([a-z]{2,}\d{1,2}\.)?(datad(?:oghq|0g)\.(?:com|eu)|ddog-gov\.com)\.?$").unwrap()
-});
 
 /// Per-endpoint V3 protocol settings.
 ///
@@ -37,23 +34,12 @@ pub struct EndpointV3Settings {
 
     /// Whether this endpoint accepts V3 sketches payloads.
     pub use_v3_sketches: bool,
-
-    /// Whether validation mode is enabled for series (send both V2 and V3).
-    pub series_validation_mode: bool,
-
-    /// Whether validation mode is enabled for sketches (send both V2 and V3).
-    pub sketches_validation_mode: bool,
-
-    /// Whether this endpoint accepts sampled V3 beta series shadow payloads.
-    pub series_shadow_mode: bool,
 }
 
 /// Inputs used to derive V3 settings for one endpoint.
 pub(crate) struct V3EndpointConfig<'a> {
     /// Endpoint string as it appeared in configuration for this routed endpoint.
     pub(crate) configured_endpoint: &'a str,
-    /// Resolved endpoint URL.
-    pub(crate) resolved_endpoint: &'a Url,
     /// Optional primary endpoint name used by serializer V3 endpoint-list matching.
     pub(crate) serializer_v3_configured_endpoint: Option<&'a str>,
     /// Agent-compatible V3 series config.
@@ -64,12 +50,6 @@ pub(crate) struct V3EndpointConfig<'a> {
     pub(crate) serializer_v3_series_endpoints: &'a [String],
     /// Serializer V3 sketches endpoint list.
     pub(crate) serializer_v3_sketches_endpoints: &'a [String],
-    /// Whether series validation mode is enabled.
-    pub(crate) series_validate: bool,
-    /// Whether sketches validation mode is enabled.
-    pub(crate) sketches_validate: bool,
-    /// Sites eligible for V3 series shadow traffic.
-    pub(crate) series_shadow_sites: &'a [String],
 }
 
 impl EndpointV3Settings {
@@ -78,9 +58,6 @@ impl EndpointV3Settings {
         Self {
             use_v3_series: false,
             use_v3_sketches: false,
-            series_validation_mode: false,
-            sketches_validation_mode: false,
-            series_shadow_mode: false,
         }
     }
 
@@ -90,22 +67,15 @@ impl EndpointV3Settings {
     /// If the endpoint name matches any entry, V3 is enabled for that metric type.
     #[cfg(test)]
     pub fn from_endpoint_url(
-        configured_endpoint: &str, resolved_endpoint: &Url, v3_series_endpoints: &[String],
-        v3_sketches_endpoints: &[String], series_validate: bool, sketches_validate: bool,
-        series_shadow_sites: &[String],
+        configured_endpoint: &str, _resolved_endpoint: &Url, v3_series_endpoints: &[String],
+        v3_sketches_endpoints: &[String],
     ) -> Self {
         let use_v3_series = serializer_v3_config_matches_endpoint(configured_endpoint, v3_series_endpoints);
         let use_v3_sketches = v3_sketches_endpoints.iter().any(|e| configured_endpoint == e);
-        let series_shadow_mode = !use_v3_series
-            && extract_site_from_url(resolved_endpoint.as_str())
-                .is_some_and(|site| series_shadow_sites.iter().any(|shadow_site| shadow_site == &site));
 
         Self {
             use_v3_series,
             use_v3_sketches,
-            series_validation_mode: use_v3_series && series_validate,
-            sketches_validation_mode: use_v3_sketches && sketches_validate,
-            series_shadow_mode,
         }
     }
 
@@ -134,20 +104,10 @@ impl EndpointV3Settings {
             .serializer_v3_sketches_endpoints
             .iter()
             .any(|e| config.configured_endpoint == e);
-        let series_shadow_mode = !use_v3_series
-            && extract_site_from_url(config.resolved_endpoint.as_str()).is_some_and(|site| {
-                config
-                    .series_shadow_sites
-                    .iter()
-                    .any(|shadow_site| shadow_site == &site)
-            });
 
         Self {
             use_v3_series,
             use_v3_sketches,
-            series_validation_mode: use_v3_series && config.series_validate,
-            sketches_validation_mode: use_v3_sketches && config.sketches_validate,
-            series_shadow_mode,
         }
     }
 
@@ -156,8 +116,8 @@ impl EndpointV3Settings {
     /// Returns `true` if the endpoint should receive the payload, `false` otherwise.
     ///
     /// The logic is:
-    /// - V2 series payload: accept if series V3 is disabled OR series validation mode is enabled
-    /// - V2 sketches payload: accept if sketches V3 is disabled OR sketches validation mode is enabled
+    /// - V2 series payload: accept if series V3 is disabled
+    /// - V2 sketches payload: accept if sketches V3 is disabled
     /// - V3 series payload: accept if series V3 is enabled
     /// - V3 sketches payload: accept if sketches V3 is enabled
     /// - Non-metrics payloads (None): always accept
@@ -172,44 +132,23 @@ impl EndpointV3Settings {
         match info.version {
             MetricsProtocolVersion::V2 => {
                 if is_sketch {
-                    // V2 sketches: accept if V3 sketches is disabled OR validation mode is enabled
-                    !self.use_v3_sketches || self.sketches_validation_mode
+                    // V2 sketches: accept if V3 sketches is disabled.
+                    !self.use_v3_sketches
                 } else {
-                    // V2 series: accept if V3 series is disabled OR validation mode is enabled
-                    !self.use_v3_series || self.series_validation_mode
+                    // V2 series: accept if V3 series is disabled.
+                    !self.use_v3_series
                 }
             }
 
             MetricsProtocolVersion::V3 => {
                 if is_sketch {
-                    // V3 sketches: accept if V3 sketches is enabled
+                    // V3 sketches: accept if V3 sketches is enabled.
                     self.use_v3_sketches
-                } else if info.is_shadow() {
-                    // V3 shadow series: accept only when this V2-authoritative endpoint is shadow-enabled.
-                    self.series_shadow_mode
                 } else {
                     // V3 series: accept if V3 series is enabled.
                     self.use_v3_series
                 }
             }
-        }
-    }
-
-    /// Determines if this endpoint should receive metrics validation headers.
-    ///
-    /// Validation headers are endpoint-scoped: they should only be sent to endpoints that are
-    /// receiving both V2 and V3 payloads for the payload's metric family.
-    pub fn should_receive_validation_headers(&self, payload_info: Option<MetricsPayloadInfo>) -> bool {
-        let Some(info) = payload_info else {
-            return false;
-        };
-
-        if info.is_shadow() {
-            self.series_shadow_mode
-        } else if info.is_sketch() {
-            self.sketches_validation_mode
-        } else {
-            self.series_validation_mode
         }
     }
 }
@@ -262,15 +201,6 @@ fn is_datadog_host(host: &str) -> bool {
 
 pub(crate) fn is_datadog_url(url: &Url) -> bool {
     url.host_str().is_some_and(is_datadog_host)
-}
-
-pub(crate) fn extract_site_from_url(raw_url: &str) -> Option<String> {
-    let url = Url::parse(raw_url).ok()?;
-    let hostname = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
-    let captures = DD_SITE_FROM_HOSTNAME_REGEX.captures(&hostname)?;
-    let datacenter = captures.get(1).map_or("", |m| m.as_str());
-    let domain = captures.get(2)?.as_str();
-    Some(format!("{datacenter}{domain}"))
 }
 
 /// Error type for invalid endpoints.
@@ -1116,31 +1046,14 @@ mod tests {
     }
 
     #[test]
-    fn validation_headers_are_scoped_to_payload_family() {
-        let settings = EndpointV3Settings {
-            use_v3_series: true,
-            use_v3_sketches: false,
-            series_validation_mode: true,
-            sketches_validation_mode: false,
-            series_shadow_mode: false,
-        };
-
-        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_series())));
-        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_series())));
-        assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_sketches())));
-        assert!(!settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_sketches())));
-        assert!(!settings.should_receive_validation_headers(None));
-    }
-
-    #[test]
     fn should_receive_payload_covers_all_documented_branches() {
         // Walks every branch enumerated in `should_receive_payload`'s doc comment:
-        // - V2 series: accept if series V3 is disabled OR series validation mode is enabled
-        // - V2 sketches: accept if sketches V3 is disabled OR sketches validation mode is enabled
+        // - V2 series: accept if series V3 is disabled
+        // - V2 sketches: accept if sketches V3 is disabled
         // - V3 series: accept if series V3 is enabled
         // - V3 sketches: accept if sketches V3 is enabled
         // - Non-metrics payloads (None): always accept
-        let cases: [(&str, EndpointV3Settings, Option<MetricsPayloadInfo>, bool); 11] = [
+        let cases: [(&str, EndpointV3Settings, Option<MetricsPayloadInfo>, bool); 9] = [
             (
                 "v2 series accepted when series v3 disabled",
                 EndpointV3Settings::disabled(),
@@ -1148,23 +1061,13 @@ mod tests {
                 true,
             ),
             (
-                "v2 series rejected when series v3 enabled without validation",
+                "v2 series rejected when series v3 enabled",
                 EndpointV3Settings {
                     use_v3_series: true,
                     ..EndpointV3Settings::disabled()
                 },
                 Some(MetricsPayloadInfo::v2_series()),
                 false,
-            ),
-            (
-                "v2 series accepted when series validation mode duplicates to v2",
-                EndpointV3Settings {
-                    use_v3_series: true,
-                    series_validation_mode: true,
-                    ..EndpointV3Settings::disabled()
-                },
-                Some(MetricsPayloadInfo::v2_series()),
-                true,
             ),
             (
                 "v2 sketches accepted when sketches v3 disabled",
@@ -1173,23 +1076,13 @@ mod tests {
                 true,
             ),
             (
-                "v2 sketches rejected when sketches v3 enabled without validation",
+                "v2 sketches rejected when sketches v3 enabled",
                 EndpointV3Settings {
                     use_v3_sketches: true,
                     ..EndpointV3Settings::disabled()
                 },
                 Some(MetricsPayloadInfo::v2_sketches()),
                 false,
-            ),
-            (
-                "v2 sketches accepted when sketches validation mode duplicates to v2",
-                EndpointV3Settings {
-                    use_v3_sketches: true,
-                    sketches_validation_mode: true,
-                    ..EndpointV3Settings::disabled()
-                },
-                Some(MetricsPayloadInfo::v2_sketches()),
-                true,
             ),
             (
                 "v3 series accepted when series v3 enabled",
@@ -1226,7 +1119,6 @@ mod tests {
                 EndpointV3Settings {
                     use_v3_series: true,
                     use_v3_sketches: true,
-                    ..EndpointV3Settings::disabled()
                 },
                 None,
                 true,
@@ -1236,79 +1128,6 @@ mod tests {
         for (name, settings, payload_info, expected) in cases {
             assert_eq!(settings.should_receive_payload(payload_info), expected, "{name}");
         }
-    }
-
-    #[test]
-    fn extract_site_from_url_matches_datadog_domains() {
-        assert_eq!(
-            Some("datadoghq.com".to_string()),
-            extract_site_from_url("https://1-2-3-agent.datadoghq.com/api/v2/series")
-        );
-        assert_eq!(
-            Some("us3.datadoghq.com".to_string()),
-            extract_site_from_url("https://intake.profile.us3.datadoghq.com/v1/input")
-        );
-        assert_eq!(None, extract_site_from_url("https://vector.example.test/api/v2/series"));
-    }
-
-    #[test]
-    fn shadow_payloads_are_endpoint_scoped() {
-        let resolved = ResolvedEndpoint::from_raw_endpoint("https://app.datadoghq.com", "fake-api-key")
-            .expect("endpoint should resolve");
-        let settings = EndpointV3Settings::from_endpoint_url(
-            resolved.configured_endpoint(),
-            resolved.endpoint(),
-            &[],
-            &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
-        );
-
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v2_shadow_series())));
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_series())));
-        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v2_shadow_series())));
-        assert!(settings.should_receive_validation_headers(Some(MetricsPayloadInfo::v3_shadow_series())));
-    }
-
-    #[test]
-    fn shadow_payloads_require_allowed_site_and_v2_authoritative_endpoint() {
-        let us3 = ResolvedEndpoint::from_raw_endpoint("https://app.us3.datadoghq.com", "fake-api-key")
-            .expect("endpoint should resolve");
-        let settings = EndpointV3Settings::from_endpoint_url(
-            us3.configured_endpoint(),
-            us3.endpoint(),
-            &[],
-            &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
-        );
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-
-        let settings = EndpointV3Settings::from_endpoint_url(
-            us3.configured_endpoint(),
-            us3.endpoint(),
-            &[],
-            &[],
-            false,
-            false,
-            &["us3.datadoghq.com".to_string()],
-        );
-        assert!(settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
-
-        let v3_series_endpoints = vec![us3.configured_endpoint().to_string()];
-        let settings = EndpointV3Settings::from_endpoint_url(
-            us3.configured_endpoint(),
-            us3.endpoint(),
-            &v3_series_endpoints,
-            &[],
-            false,
-            false,
-            &["us3.datadoghq.com".to_string()],
-        );
-        assert!(!settings.should_receive_payload(Some(MetricsPayloadInfo::v3_shadow_series())));
     }
 
     #[test]
@@ -1325,9 +1144,6 @@ mod tests {
             resolved.endpoint(),
             &v3_series_endpoints,
             &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
         );
 
         assert!(settings.use_v3_series);
@@ -1338,15 +1154,11 @@ mod tests {
     ) -> V3EndpointConfig<'a> {
         V3EndpointConfig {
             configured_endpoint: endpoint.configured_endpoint(),
-            resolved_endpoint: endpoint.endpoint(),
             serializer_v3_configured_endpoint: None,
             series_config,
             metrics_primary_v3_override: None,
             serializer_v3_series_endpoints: &[],
             serializer_v3_sketches_endpoints: &[],
-            series_validate: false,
-            sketches_validate: false,
-            series_shadow_sites: &[],
         }
     }
 
@@ -1356,12 +1168,8 @@ mod tests {
             .expect("endpoint should resolve");
         let series_config = agent_series_config();
 
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
+        let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
         assert!(settings.use_v3_series);
-        assert!(!settings.series_shadow_mode);
     }
 
     #[test]
@@ -1373,10 +1181,7 @@ mod tests {
             .endpoints
             .insert(resolved.configured_endpoint().to_string(), V3SeriesMode::Disabled);
 
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
+        let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
         assert!(!settings.use_v3_series);
 
         series_config = UseV3ApiSeriesConfig {
@@ -1387,10 +1192,7 @@ mod tests {
             .endpoints
             .insert(resolved.configured_endpoint().to_string(), V3SeriesMode::Enabled);
 
-        let settings = EndpointV3Settings::from_v3_config(V3EndpointConfig {
-            series_shadow_sites: &["datadoghq.com".to_string()],
-            ..v3_endpoint_config(&resolved, &series_config)
-        });
+        let settings = EndpointV3Settings::from_v3_config(v3_endpoint_config(&resolved, &series_config));
         assert!(settings.use_v3_series);
     }
 
@@ -1517,9 +1319,6 @@ mod tests {
             resolved.endpoint(),
             &v3_series_endpoints,
             &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
         );
 
         assert!(!settings.use_v3_series);
@@ -1535,9 +1334,6 @@ mod tests {
             resolved.endpoint(),
             &v3_series_endpoints,
             &[],
-            false,
-            false,
-            &["datadoghq.com".to_string()],
         );
 
         assert!(!settings.use_v3_series);

@@ -2603,15 +2603,6 @@ inventory:
       additional_attributes:
         config_registry_filename: encoders.rs
 
-  serializer_experimental_use_v3_api.series.beta_route:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Beta V3 series API route"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
   serializer_experimental_use_v3_api.series.endpoints:
     support: full
     pipelines: [dogstatsd]
@@ -2621,55 +2612,10 @@ inventory:
       additional_attributes:
         config_registry_filename: encoders.rs
 
-  serializer_experimental_use_v3_api.series.shadow_sample_rate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "V3 series shadow mode sample rate"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.shadow_sites:
-    support: full
-    pipelines: [dogstatsd]
-    description: "V3 series shadow mode enabled sites"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.use_beta:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Use the beta V3 series API route"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.validate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Dual-send v2+v3 series for validation"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
   serializer_experimental_use_v3_api.sketches.endpoints:
     support: full
     pipelines: [dogstatsd]
     description: "Endpoints enabling v3 sketches API"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.sketches.validate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Dual-send v2+v3 sketches for validation"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
