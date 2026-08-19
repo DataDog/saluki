@@ -2117,6 +2117,15 @@ inventory:
       additional_attributes:
         config_registry_filename: otlp.rs
 
+  otlp_config.metrics.instrumentation_scope_metadata_as_tags:
+    support: full
+    pipelines: [otlp]
+    description: "Add instrumentation scope metadata as metric tags."
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
   otlp_config.metrics.resource_attributes_as_tags:
     support: full
     pipelines: [otlp]
@@ -4345,7 +4354,6 @@ excluded:
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
-  otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
   otlp_config.traces.infra_attributes.enabled: "ignored in initial audit 2026-04-23"
   otlp_config.traces.span_name_as_resource_name: "ignored in initial audit 2026-04-23"
   otlp_config.traces.span_name_remappings: "ignored in initial audit 2026-04-23"

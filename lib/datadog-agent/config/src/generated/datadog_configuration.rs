@@ -1472,6 +1472,10 @@ pub struct OtlpConfigMetrics {
     #[serde(default)]
     pub histograms: OtlpConfigMetricsHistograms,
 
+    #[serde(default = "defaults::default_bool::<true>")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
+    pub instrumentation_scope_metadata_as_tags: bool,
+
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub resource_attributes_as_tags: bool,
@@ -1499,6 +1503,7 @@ impl Default for OtlpConfigMetrics {
             delta_ttl: defaults::default_u64::<i64, 3600>(),
             enabled: defaults::default_bool::<true>(),
             histograms: Default::default(),
+            instrumentation_scope_metadata_as_tags: defaults::default_bool::<true>(),
             resource_attributes_as_tags: Default::default(),
             summaries: Default::default(),
             sums: Default::default(),

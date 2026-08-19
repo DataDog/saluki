@@ -959,6 +959,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.metrics.resource_attributes_as_tags = value;
     }
 
+    fn consume_otlp_config_metrics_instrumentation_scope_metadata_as_tags(&mut self, value: bool) {
+        self.config.domains.otlp.metrics.instrumentation_scope_metadata_as_tags = value;
+    }
+
     fn consume_otlp_config_metrics_sums_cumulative_monotonic_mode(&mut self, value: String) {
         match value.parse::<CumulativeMonotonicMode>() {
             Ok(mode) => self.config.domains.otlp.metrics.sums.cumulative_monotonic_mode = mode,

@@ -52,6 +52,11 @@ pub struct Metrics {
     /// semantic-convention mappings that are always applied.
     pub resource_attributes_as_tags: bool,
 
+    /// Whether instrumentation scope name, version, and attributes are added as metric tags.
+    ///
+    /// Defaults to `true`.
+    pub instrumentation_scope_metadata_as_tags: bool,
+
     /// OTLP sum translation settings.
     pub sums: Sums,
 
@@ -76,6 +81,7 @@ impl Default for Metrics {
             histogram_mode: HistogramMode::default(),
             send_histogram_aggregations: false,
             resource_attributes_as_tags: false,
+            instrumentation_scope_metadata_as_tags: true,
             sums: Sums::default(),
             tags: String::new(),
             summaries: Summaries::default(),
