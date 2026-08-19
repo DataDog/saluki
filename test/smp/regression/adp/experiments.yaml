@@ -47,6 +47,7 @@ global:
       DD_DATA_PLANE_STANDALONE_MODE: "true"
 
       # Enable internal telemetry endpoint.
+      DD_METRICS_LEVEL: "trace"
 
     # Applied to the replicas SMP profiles. SMP loads ddprof into the target itself, via
     # LD_PRELOAD, so these are read by that profiler rather than by anything we run.
