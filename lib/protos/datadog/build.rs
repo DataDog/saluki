@@ -155,10 +155,12 @@ fn field_name_to_go_case(field_name: &str) -> String {
 
 fn protobuf_codegen() -> protobuf_codegen::Codegen {
     let mut codegen = protobuf_codegen::Codegen::new();
-    match std::env::var_os("PROTOC") {
-        Some(protoc) => codegen.protoc_path(Path::new(&protoc)),
-        None => codegen.protoc(),
-    };
+    codegen.protoc();
+
+    if let Some(protoc) = std::env::var_os("PROTOC") {
+        codegen.protoc_path(Path::new(&protoc));
+    }
+
     codegen
 }
 
