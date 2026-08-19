@@ -571,7 +571,7 @@ This ADP-only key is independent from `metric_tag_filterlist`. Remote Config upd
 
 Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value tag such as `customer_id:` is a value and is subject to the allow-list; include `""` in `values` to retain it. An empty `values` list treats every key/value tag as a mismatch.
 
-Metric prefixes for the same tag must not overlap, including duplicate prefixes. ADP rejects overlapping rules at startup so each metric and tag matches at most one rule. Rules for different tags may use the same prefix. ADP also rejects empty metric prefixes and tag names, and tag names containing `:`. As with `metric_tag_filterlist`, ADP does not trim configured strings: prefixes, tag names, values, and replacements preserve whitespace and match exactly. Configure a replacement that cannot collide with a real tag value.
+Distinct metric prefixes must not overlap, even when the rules target different tags. Multiple rules may use the same prefix when they target different tags. ADP rejects overlapping rules at startup so each metric matches at most one prefix. ADP also rejects empty metric prefixes and tag names, duplicate prefix and tag pairs, and tag names containing `:`. As with `metric_tag_filterlist`, ADP does not trim configured strings: prefixes, tag names, values, and replacements preserve whitespace and match exactly. Configure a replacement that cannot collide with a real tag value.
 
 ### `dogstatsd_permissive_decoding`
 

@@ -355,14 +355,14 @@ pub struct MetricTagFilterEntry {
 
 /// One tag value allow-list entry.
 ///
-/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing. Prefixes
-/// for the same tag must not overlap, including duplicate prefixes.
+/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing. Distinct
+/// prefixes must not overlap. Multiple rules may use the same prefix when they target different tags.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct MetricTagValueAllowlistEntry {
     /// Non-empty metric-name prefix the entry applies to.
     ///
-    /// Matching is exact and case-sensitive, including any whitespace. An empty prefix or a prefix that overlaps
-    /// another rule for the same tag is invalid.
+    /// Matching is exact and case-sensitive, including any whitespace. Empty prefixes and overlapping distinct
+    /// prefixes are invalid. Multiple rules may use the same prefix when they target different tags.
     pub metric_prefix: String,
 
     /// Non-empty tag key whose values are constrained.
@@ -425,8 +425,8 @@ impl std::error::Error for InvalidMetricTagValueAllowlist {}
 ///
 /// # Errors
 ///
-/// Returns an error for empty prefixes or tag names, tag names containing `:`, or overlapping prefixes for the same
-/// tag.
+/// Returns an error for empty prefixes or tag names, tag names containing `:`, overlapping distinct prefixes, or a
+/// duplicate prefix and tag pair.
 pub fn validate_metric_tag_value_allowlists(
     entries: &[MetricTagValueAllowlistEntry],
 ) -> Result<(), InvalidMetricTagValueAllowlist> {
@@ -453,21 +453,28 @@ pub fn validate_metric_tag_value_allowlists(
 
     let mut sorted_entries = entries.iter().collect::<Vec<_>>();
     sorted_entries.sort_unstable_by(|left, right| {
-        left.tag_name
-            .cmp(&right.tag_name)
-            .then_with(|| left.metric_prefix.cmp(&right.metric_prefix))
+        left.metric_prefix
+            .cmp(&right.metric_prefix)
+            .then_with(|| left.tag_name.cmp(&right.tag_name))
     });
 
-    // After sorting by tag and prefix, any overlapping prefixes are adjacent because all strings that extend a prefix
-    // form one contiguous range.
+    // After sorting by prefix and then tag, duplicate prefix/tag pairs are adjacent. Any distinct prefix that extends
+    // another prefix follows the complete group for the shorter prefix, so one adjacent pair also exposes that overlap.
     for pair in sorted_entries.windows(2) {
         let [left, right] = pair else {
             unreachable!("a two-entry window must contain two entries");
         };
-        if left.tag_name == right.tag_name && right.metric_prefix.starts_with(&left.metric_prefix) {
+        if left.metric_prefix == right.metric_prefix {
+            if left.tag_name == right.tag_name {
+                return Err(InvalidMetricTagValueAllowlist(format!(
+                    "metric prefix '{}' is configured more than once for tag '{}'; configure each prefix and tag pair only once",
+                    left.metric_prefix, left.tag_name
+                )));
+            }
+        } else if right.metric_prefix.starts_with(&left.metric_prefix) {
             return Err(InvalidMetricTagValueAllowlist(format!(
-                "overlapping metric prefixes '{}' and '{}' are configured for tag '{}'; configure non-overlapping prefixes for each tag",
-                left.metric_prefix, right.metric_prefix, left.tag_name
+                "overlapping metric prefixes '{}' and '{}' are configured; configure distinct prefixes that do not overlap",
+                left.metric_prefix, right.metric_prefix
             )));
         }
     }

@@ -67,48 +67,24 @@ struct CompiledKeyFilter {
 #[derive(Clone)]
 struct CompiledValuePrefixFilter {
     metric_prefix: String,
-    allowlist: CompiledTagValueAllowlist,
+    value_allowlists: FastHashMap<String, CompiledTagValueAllowlist>,
 }
 
 #[derive(Clone, Default)]
-struct CompiledValuePrefixFilters {
-    metric_prefixes: Vec<String>,
-    filters_by_tag_name: FastHashMap<String, Vec<CompiledValuePrefixFilter>>,
-}
+struct CompiledValuePrefixFilters(Vec<CompiledValuePrefixFilter>);
 
 impl CompiledValuePrefixFilters {
-    fn sort_and_compact(&mut self) {
-        self.metric_prefixes.sort_unstable();
-
-        let mut compacted_prefixes = Vec::with_capacity(self.metric_prefixes.len());
-        for prefix in self.metric_prefixes.drain(..) {
-            if compacted_prefixes
-                .last()
-                .is_some_and(|existing: &String| prefix.starts_with(existing))
-            {
-                continue;
-            }
-            compacted_prefixes.push(prefix);
-        }
-        self.metric_prefixes = compacted_prefixes;
-
-        for filters in self.filters_by_tag_name.values_mut() {
-            filters.sort_unstable_by(|left, right| left.metric_prefix.cmp(&right.metric_prefix));
-        }
+    fn sort(&mut self) {
+        self.0
+            .sort_unstable_by(|left, right| left.metric_prefix.cmp(&right.metric_prefix));
     }
 
-    fn has_rule_for_metric(&self, metric_name: &str) -> bool {
-        find_matching_prefix(&self.metric_prefixes, metric_name, String::as_str).is_some()
-    }
-
-    fn get(&self, metric_name: &str, tag_name: &str) -> Option<&CompiledTagValueAllowlist> {
-        let filters = self.filters_by_tag_name.get(tag_name)?;
-        find_matching_prefix(filters, metric_name, |filter| filter.metric_prefix.as_str())
-            .map(|filter| &filter.allowlist)
+    fn get(&self, metric_name: &str) -> Option<&CompiledValuePrefixFilter> {
+        find_matching_prefix(&self.0, metric_name, |filter| filter.metric_prefix.as_str())
     }
 
     fn rule_count(&self) -> usize {
-        self.filters_by_tag_name.values().map(Vec::len).sum()
+        self.0.iter().map(|filter| filter.value_allowlists.len()).sum()
     }
 }
 
@@ -189,13 +165,13 @@ pub fn compile_filters(entries: &[MetricTagFilterEntry]) -> CompiledFilters {
 
 /// Adds value allow-list entries to a compiled filter table.
 ///
-/// Metric prefixes for the same tag must not overlap, ensuring that a metric/tag pair matches at most one rule.
-/// Rules for different tags may use the same or overlapping prefixes.
+/// Distinct metric prefixes must not overlap, ensuring that each metric matches at most one prefix. Multiple rules may
+/// use the same prefix when they target different tags.
 ///
 /// # Errors
 ///
-/// Returns an error when an entry has invalid fields or when two entries for the same tag have overlapping metric
-/// prefixes.
+/// Returns an error when an entry has invalid fields, distinct metric prefixes overlap, or the same prefix and tag are
+/// configured more than once.
 pub fn add_value_allowlists(
     filters: &mut CompiledFilters, entries: &[MetricTagValueAllowlistEntry],
 ) -> Result<(), GenericError> {
@@ -217,22 +193,24 @@ pub fn add_value_allowlists(
             on_miss,
         };
 
-        filters
+        if let Some(filter) = filters
             .value_prefix_filters
-            .metric_prefixes
-            .push(entry.metric_prefix.clone());
-        filters
-            .value_prefix_filters
-            .filters_by_tag_name
-            .entry(entry.tag_name.clone())
-            .or_default()
-            .push(CompiledValuePrefixFilter {
+            .0
+            .iter_mut()
+            .find(|filter| filter.metric_prefix == entry.metric_prefix)
+        {
+            filter.value_allowlists.insert(entry.tag_name.clone(), allowlist);
+        } else {
+            let mut value_allowlists = FastHashMap::default();
+            value_allowlists.insert(entry.tag_name.clone(), allowlist);
+            filters.value_prefix_filters.0.push(CompiledValuePrefixFilter {
                 metric_prefix: entry.metric_prefix.clone(),
-                allowlist,
+                value_allowlists,
             });
+        }
     }
 
-    filters.value_prefix_filters.sort_and_compact();
+    filters.value_prefix_filters.sort();
     Ok(())
 }
 
@@ -433,7 +411,7 @@ fn should_keep_tag(tag: &Tag, is_exclude: bool, names: &FastHashSet<String>) -> 
 
 #[inline]
 fn filter_tag(
-    tag: &Tag, key_filter: Option<&CompiledKeyFilter>, metric_name: &str, filters: &CompiledFilters,
+    tag: &Tag, key_filter: Option<&CompiledKeyFilter>, value_filter: Option<&CompiledValuePrefixFilter>,
     replacements: &mut Vec<Tag>,
 ) -> bool {
     if let Some(key_filter) = key_filter {
@@ -447,7 +425,7 @@ fn filter_tag(
     let Some(value) = tag.value() else {
         return true;
     };
-    let Some(allowlist) = filters.value_prefix_filters.get(metric_name, tag.name()) else {
+    let Some(allowlist) = value_filter.and_then(|filter| filter.value_allowlists.get(tag.name())) else {
         return true;
     };
     if allowlist.allowed_values.contains(value) {
@@ -480,24 +458,16 @@ pub fn filter_metric_tags(
 ) -> FilterMetricTagsOutcome {
     let metric_name = metric.context().name().clone();
     let key_filter = filters.key_filters.get(metric_name.as_ref());
-    let has_value_rule = filters.value_prefix_filters.has_rule_for_metric(metric_name.as_ref());
-    if key_filter.is_none() && !has_value_rule {
+    let value_filter = filters.value_prefix_filters.get(metric_name.as_ref());
+    if key_filter.is_none() && value_filter.is_none() {
         return FilterMetricTagsOutcome::RuleMiss;
     }
 
     let mut tag_replacements = Vec::new();
     let mut origin_tag_replacements = Vec::new();
     let mut tag_set_view = metric.context_mut().tags_mut_view(state);
-    tag_set_view.retain_tags(|tag| filter_tag(tag, key_filter, metric_name.as_ref(), filters, &mut tag_replacements));
-    tag_set_view.retain_origin_tags(|tag| {
-        filter_tag(
-            tag,
-            key_filter,
-            metric_name.as_ref(),
-            filters,
-            &mut origin_tag_replacements,
-        )
-    });
+    tag_set_view.retain_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut tag_replacements));
+    tag_set_view.retain_origin_tags(|tag| filter_tag(tag, key_filter, value_filter, &mut origin_tag_replacements));
     let total_removed = tag_set_view.finish();
 
     if !tag_replacements.is_empty() || !origin_tag_replacements.is_empty() {
@@ -812,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_value_allowlist_prefixes_for_the_same_tag_are_rejected() {
+    fn overlapping_value_allowlist_prefixes_are_rejected_across_tags() {
         let broad = value_allowlist(
             "my.",
             "customer_id",
@@ -822,31 +792,43 @@ mod tests {
         );
         let narrow = value_allowlist(
             "my.metric",
-            "customer_id",
-            &["top-2"],
+            "region",
+            &["us-east-1"],
             TagValueMismatchAction::Replace,
             "other",
         );
 
         let error = compile_all_filters(&[], &[broad, narrow])
             .err()
-            .expect("overlapping prefixes for one tag must fail");
+            .expect("overlapping distinct prefixes must fail even for different tags");
         assert!(error
             .to_string()
-            .contains("metric prefixes 'my.' and 'my.metric' are configured for tag 'customer_id'"));
+            .contains("overlapping metric prefixes 'my.' and 'my.metric' are configured"));
 
-        compile_all_filters(
+        let duplicate = value_allowlist(
+            "my.",
+            "customer_id",
+            &["top-2"],
+            TagValueMismatchAction::Replace,
+            "other",
+        );
+        let error = compile_all_filters(
             &[],
             &[
                 value_allowlist("my.", "customer_id", &[], TagValueMismatchAction::Remove, "other"),
                 value_allowlist("my.", "region", &[], TagValueMismatchAction::Remove, "other"),
+                duplicate,
             ],
         )
-        .expect("different tags may use the same prefix");
+        .err()
+        .expect("duplicate prefix and tag pairs must fail");
+        assert!(error
+            .to_string()
+            .contains("metric prefix 'my.' is configured more than once for tag 'customer_id'"));
     }
 
     #[test]
-    fn overlapping_value_allowlist_prefixes_for_different_tags_both_apply() {
+    fn same_value_allowlist_prefix_for_different_tags_applies_both_rules() {
         let filters = compile_all_filters(
             &[],
             &[
@@ -857,16 +839,10 @@ mod tests {
                     TagValueMismatchAction::Remove,
                     "other",
                 ),
-                value_allowlist(
-                    "my.metric",
-                    "region",
-                    &["us-east-1"],
-                    TagValueMismatchAction::Remove,
-                    "other",
-                ),
+                value_allowlist("my.", "region", &["us-east-1"], TagValueMismatchAction::Remove, "other"),
             ],
         )
-        .expect("overlapping prefixes for different tags should compile");
+        .expect("different tags may use the same prefix");
         let mut metric = distribution_metric("my.metric.requests", &["customer_id:long-tail", "region:us-west-2"]);
         let mut state = TagSetMutViewState::default();
 
