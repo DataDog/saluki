@@ -245,6 +245,7 @@ OTP
 respawn(s|ed|ing)?
 validator
 varint
+fixint
 serializer
 backreference(s)?
 Miri
