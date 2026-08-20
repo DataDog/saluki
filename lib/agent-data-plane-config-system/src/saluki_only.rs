@@ -70,7 +70,7 @@ use std::{num::NonZeroUsize, time::Duration};
 
 use agent_data_plane_config::defaults::{DEFAULT_STRING_INTERNER_SIZE_BYTES, MAX_STRING_INTERNER_SIZE_BYTES};
 use agent_data_plane_config::domains::traces::{OttlErrorMode, OttlFilter, OttlTransform};
-use agent_data_plane_config::SalukiConfiguration;
+use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use bytesize::ByteSize;
 use saluki_config::DurationString;
 use serde::{Deserialize, Deserializer};
@@ -439,11 +439,11 @@ impl SalukiOnly {
         if let Some(v) = self.serializer_max_metrics_per_payload {
             config.shared.metrics_encoding.max_metrics_per_payload = v;
         }
-        // Carried as a separate field rather than folded into `zstd_compressor_level`: the encoders
-        // still resolve the two against each other, and keeping one copy of that precedence rule
-        // matters more than collapsing the fields early.
-        config.shared.endpoints.compression.zstd_compressor_level_override =
-            self.data_plane.serializer_zstd_compressor_level;
+        // Highest precedence of the three inputs `Compression::zstd_compressor_level` resolves, so it
+        // is explicit when set and keeps ADP's default otherwise.
+        if let Some(v) = self.data_plane.serializer_zstd_compressor_level {
+            config.shared.endpoints.compression.adp_zstd_level = ConfigValue::explicit(v);
+        }
 
         // domains.dogstatsd
         let dsd = &mut config.domains.dogstatsd;
@@ -694,10 +694,7 @@ mod tests {
         assert_eq!(config.shared.metrics_level, "debug");
         assert_eq!(config.shared.metrics_encoding.flush_timeout, Duration::from_secs(7));
         assert_eq!(config.shared.metrics_encoding.max_metrics_per_payload, 999);
-        assert_eq!(
-            config.shared.endpoints.compression.zstd_compressor_level_override,
-            Some(9)
-        );
+        assert_eq!(config.shared.endpoints.compression.effective_zstd_level(), 9);
 
         // domains.dogstatsd
         let dsd = &config.domains.dogstatsd;

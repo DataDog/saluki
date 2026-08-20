@@ -356,9 +356,8 @@ mod tests {
 
     #[test]
     fn the_adp_zstd_override_reaches_both_views_from_the_environment() {
-        // `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` names a nested Saluki-only key that the
-        // prefix scan flattens to `data_plane_serializer_zstd_compressor_level`. The five payload
-        // encoders read it from the by-key view, so cover that view alongside the typed model.
+        // The documented environment variable must produce the same canonical nested path in the
+        // by-key view and the typed model.
         let _guard = test_env_lock();
         let path = std::env::temp_dir().join(format!("adp_zstd_env_{}.yaml", std::process::id()));
         std::fs::write(&path, "{}\n").unwrap();
@@ -369,17 +368,12 @@ mod tests {
             .raw_config()
             .try_get_typed::<i32>("data_plane.serializer_zstd_compressor_level")
             .expect("key reads");
-        let from_typed = loaded
-            .local()
-            .shared
-            .endpoints
-            .compression
-            .zstd_compressor_level_override;
+        let from_typed = loaded.local().shared.endpoints.compression.effective_zstd_level();
 
         std::env::remove_var("DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL");
         std::fs::remove_file(&path).ok();
         assert_eq!(from_by_key, Some(7));
-        assert_eq!(from_typed, Some(7));
+        assert_eq!(from_typed, 7);
     }
 
     #[test]

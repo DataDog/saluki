@@ -38,7 +38,6 @@ use tracing::{debug, error};
 use crate::common::datadog::{
     io::RB_BUFFER_CHUNK_SIZE,
     request_builder::{EndpointEncoder, RequestBuilder},
-    resolve_zstd_compressor_level,
     telemetry::ComponentTelemetry,
     DEFAULT_INTAKE_COMPRESSED_SIZE_LIMIT, DEFAULT_INTAKE_UNCOMPRESSED_SIZE_LIMIT, TAG_DECISION_MAKER,
 };
@@ -108,8 +107,7 @@ pub struct DatadogTraceConfiguration {
     /// Compression algorithm applied to outgoing payloads.
     compressor_kind: String,
 
-    /// Effective zstd compression level, already resolved from the ADP-specific override and the
-    /// Core Agent value by [`resolve_zstd_compressor_level`].
+    /// Effective zstd compression level, resolved by the configuration layer.
     zstd_compressor_level: i32,
 
     /// How long the encoder waits before flushing a partially filled payload.
@@ -154,10 +152,6 @@ impl DatadogTraceConfiguration {
         let version = format!("agent-data-plane/{}", app_details.version().raw());
 
         let compression = &shared.endpoints.compression;
-        let zstd_compressor_level = resolve_zstd_compressor_level(
-            compression.zstd_compressor_level_override,
-            Some(compression.zstd_compressor_level),
-        );
 
         // ADP defaults the global environment tag to `none` rather than the Core Agent's empty
         // string, so normalize an empty resolved value back to `none`.
@@ -169,7 +163,7 @@ impl DatadogTraceConfiguration {
 
         Self {
             compressor_kind: compression.compressor_kind.clone(),
-            zstd_compressor_level,
+            zstd_compressor_level: compression.effective_zstd_level(),
             flush_timeout: shared.metrics_encoding.flush_timeout,
             env,
             target_traces_per_second: traces.target_traces_per_second,

@@ -121,10 +121,8 @@ mod tests {
         );
     }
 
-    /// The five payload encoders read `data_plane.serializer_zstd_compressor_level` from the by-key
-    /// view, and the prefix-scanning provider cannot reach it: splitting `DD_` names on `__` yields
-    /// the flat `data_plane_serializer_zstd_compressor_level`, not the nested path. This provider is
-    /// the only source that delivers the documented variable, so pin it.
+    /// The documented environment variable must appear at the key's canonical nested path in the
+    /// provider output.
     #[test]
     fn adp_zstd_override_reaches_its_nested_path() {
         let _guard = test_env_lock();

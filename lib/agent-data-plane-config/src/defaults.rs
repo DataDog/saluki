@@ -10,6 +10,12 @@ use std::{num::NonZeroUsize, time::Duration};
 /// Default timeout before a partially filled encoder payload is flushed.
 pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Default zstd compression level for payloads ADP sends.
+///
+/// Higher than the Agent's default of `1` because ADP compresses more efficiently and can afford
+/// better compression: level 3 yields ~6% smaller payloads without a net CPU increase.
+pub const DEFAULT_ZSTD_COMPRESSOR_LEVEL: i32 = 3;
+
 /// Default maximum number of metrics packed into a single encoder payload.
 pub const DEFAULT_MAX_METRICS_PER_PAYLOAD: usize = 10_000;
 

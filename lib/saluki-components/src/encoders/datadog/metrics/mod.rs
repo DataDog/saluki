@@ -46,7 +46,6 @@ use crate::{
         io::RB_BUFFER_CHUNK_SIZE,
         protocol::{MetricsPayloadInfo, UseV3ApiConfig, UseV3ApiSeriesConfig, V3ApiConfig},
         request_builder::{RequestBuilder, RequestBuilderError},
-        resolve_zstd_compressor_level,
         telemetry::ComponentTelemetry,
         DEFAULT_SERIALIZER_COMPRESSED_SIZE_LIMIT, DEFAULT_SERIALIZER_UNCOMPRESSED_SIZE_LIMIT, METRICS_SERIES_V3_PATH,
         METRICS_SKETCHES_V3_PATH,
@@ -194,8 +193,6 @@ pub struct DatadogMetricsConfiguration {
     compressor_kind: String,
 
     /// Effective zstd compression level for the request payloads.
-    ///
-    /// See [`resolve_zstd_compressor_level`] for how the level is determined.
     zstd_compressor_level: i32,
 
     /// Whether to use the V2 API for series metrics.
@@ -246,10 +243,7 @@ impl DatadogMetricsConfiguration {
             max_series_points_per_payload: metrics.max_series_points_per_payload,
             flush_timeout: metrics.flush_timeout,
             compressor_kind: endpoints.compression.compressor_kind.clone(),
-            zstd_compressor_level: resolve_zstd_compressor_level(
-                endpoints.compression.zstd_compressor_level_override,
-                Some(endpoints.compression.zstd_compressor_level),
-            ),
+            zstd_compressor_level: endpoints.compression.effective_zstd_level(),
             use_v2_series_api: metrics.use_v2_series_api,
             log_payloads: metrics.log_payloads,
             additional_tags: None,
@@ -1805,7 +1799,7 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
-    use crate::common::datadog::{test_util::shared_configuration, DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL};
+    use crate::common::datadog::test_util::shared_configuration;
 
     /// Returns an encoder built from shared configuration shaped like a translated Agent configuration.
     fn metrics_config_from(shared: &SharedConfiguration) -> DatadogMetricsConfiguration {
@@ -1873,25 +1867,6 @@ mod tests {
             .expect("alternate intake routing should be selected");
         assert_eq!("https://opw.example.com", opw.url);
         assert!(opw.use_v3_series);
-    }
-
-    #[test]
-    fn the_zstd_compression_level_is_resolved_from_configuration() {
-        // The Agent forwards its own default level of 1, which cannot be distinguished from an
-        // operator setting 1, so ADP's default applies unless one of the two is set to something else.
-        let cases = [
-            ("agent default only", 1, None, DEFAULT_ADP_ZSTD_COMPRESSOR_LEVEL),
-            ("agent level changed", 5, None, 5),
-            ("data plane override wins", 5, Some(4), 4),
-        ];
-
-        for (name, agent_level, override_level, expected) in cases {
-            let mut shared = shared_configuration();
-            shared.endpoints.compression.zstd_compressor_level = agent_level;
-            shared.endpoints.compression.zstd_compressor_level_override = override_level;
-
-            assert_eq!(expected, metrics_config_from(&shared).zstd_compressor_level, "{name}");
-        }
     }
 
     #[test]
