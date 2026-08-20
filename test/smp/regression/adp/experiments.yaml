@@ -254,6 +254,93 @@ templates:
                 tag_values:
                   - "value{{ lading_range(0, 10) }}"
 
+  # Base template for ADP-only metric tag value allow-list experiments.
+  #
+  # Unlike `metric_tag_filterlist`, this configuration does not come from the Core Agent, so these
+  # experiments run ADP standalone to avoid measuring an unrelated process. Variables drive both
+  # the generated allow-list and lading's metric/tag corpus.
+  tagvaluefilter_base:
+    variables:
+      metric_prefix: tagvalue.metric.
+      traffic_metric_first: 10000
+      traffic_metrics: 500
+      rule_metric_first: 10000
+      rule_metrics: 0
+      rule_mode: none
+      tag_prefix: tagvalue_tag_
+      tag_pool: 54
+      value_prefix: value
+      value_pool: 12
+      allowed_values: 10
+      mismatch_action: remove
+      replacement: other
+
+    target:
+      command: /opt/datadog-agent/embedded/bin/agent-data-plane --config /etc/agent-data-plane/tagvaluefilter.yaml run
+      files:
+        empty.yaml: null
+        tagvaluefilter.yaml:
+          source: shared/tagvaluefilter.yaml.j2
+      environment:
+        DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+        DD_DOGSTATSD_PORT: "0"
+        DD_DOGSTATSD_SOCKET: /tmp/adp-dogstatsd-dgram.sock
+        DD_AGGREGATE_CONTEXT_LIMIT: "80000"
+        DD_DOGSTATSD_STRING_INTERNER_SIZE_BYTES: "32MiB"
+
+  # Value allow-list configuration with no traffic, used to measure compiled configuration memory.
+  tagvaluefilter_idle:
+    extends: tagvaluefilter_base
+    lading:
+      generator: []
+
+  # Value allow-list processing under a fixed 100 MiB/s DogStatsD workload. The corpus contains 500
+  # metric names, 54 tags per message, and 12 possible values for each tag.
+  tagvaluefilter_dsd_uds_100mb:
+    extends: tagvaluefilter_base
+    lading:
+      generator:
+        - unix_datagram:
+            seed: [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131]
+            path: /tmp/adp-dogstatsd-dgram.sock
+            block_cache_method: Fixed
+            bytes_per_second: "100 MiB"
+            maximum_prebuild_cache_size_bytes: "500 Mb"
+            variant:
+              dogstatsd:
+                contexts:
+                  inclusive:
+                    min: 78000
+                    max: 78000
+                tags_per_msg:
+                  inclusive:
+                    min: 54
+                    max: 54
+                multivalue_count:
+                  inclusive:
+                    min: 2
+                    max: 32
+                multivalue_pack_probability: 0.08
+                kind_weights:
+                  metric: 100
+                  event: 0
+                  service_check: 0
+                # Value allow-lists apply to counters and sketch-backed metrics. Exclude the metric
+                # types that intentionally bypass the transform so throughput exercises the feature.
+                metric_weights:
+                  count: 3
+                  gauge: 0
+                  timer: 0
+                  distribution: 1
+                  set: 0
+                  histogram: 0
+                metric_names:
+                  - "{{ exp_vars.metric_prefix }}{{ lading_range(exp_vars.traffic_metric_first, exp_vars.traffic_metrics) }}"
+                tag_names:
+                  - "{{ exp_vars.tag_prefix }}{{ lading_range(0, exp_vars.tag_pool) }}"
+                tag_values:
+                  - "{{ exp_vars.value_prefix }}{{ lading_range(0, exp_vars.value_pool) }}"
+
   # Base template for OTLP experiments
   otlp_base:
     target:
@@ -698,3 +785,103 @@ experiments:
     optimization_goal: cpu
     variables:
       filterlist_metrics: 10000
+
+  # ============================================================================
+  # Metric tag value allow-list experiments
+  # ============================================================================
+
+  # Idle variants separate the memory used by metric-prefix rules from the memory used by the
+  # allowed-value sets.
+  - name: tagvaluefilter_0rules_idle
+    extends: tagvaluefilter_idle
+    optimization_goal: memory
+
+  - name: tagvaluefilter_1rule_10values_idle
+    extends: tagvaluefilter_idle
+    optimization_goal: memory
+    variables:
+      rule_mode: broad
+      rule_metrics: 1
+      allowed_values: 10
+
+  - name: tagvaluefilter_500rules_10values_idle
+    extends: tagvaluefilter_idle
+    optimization_goal: memory
+    variables:
+      rule_mode: per_metric
+      rule_metrics: 500
+      allowed_values: 10
+
+  - name: tagvaluefilter_10000rules_10values_idle
+    extends: tagvaluefilter_idle
+    optimization_goal: memory
+    variables:
+      rule_mode: per_metric
+      rule_metrics: 10000
+      allowed_values: 10
+
+  - name: tagvaluefilter_1rule_10000values_idle
+    extends: tagvaluefilter_idle
+    optimization_goal: memory
+    variables:
+      rule_mode: broad
+      rule_metrics: 1
+      value_pool: 10000
+      allowed_values: 10000
+
+  # Traffic variants isolate the no-rule baseline, allowed-value lookup, context mutation, prefix
+  # table scaling, and the full-table miss path.
+  - name: tagvaluefilter_0rules_100mb
+    extends: tagvaluefilter_dsd_uds_100mb
+    optimization_goal: cpu
+
+  - name: tagvaluefilter_1rule_allow_100mb
+    extends: tagvaluefilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: broad
+      rule_metrics: 1
+      allowed_values: 12
+
+  - name: tagvaluefilter_1rule_remove25_100mb
+    extends: tagvaluefilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: broad
+      rule_metrics: 1
+      allowed_values: 9
+      mismatch_action: remove
+
+  - name: tagvaluefilter_1rule_replace25_100mb
+    extends: tagvaluefilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: broad
+      rule_metrics: 1
+      allowed_values: 9
+      mismatch_action: replace
+
+  - name: tagvaluefilter_500rules_allow_100mb
+    extends: tagvaluefilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: per_metric
+      rule_metrics: 500
+      allowed_values: 12
+
+  - name: tagvaluefilter_10000rules_allow_100mb
+    extends: tagvaluefilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: per_metric
+      rule_metrics: 10000
+      allowed_values: 12
+
+  - name: tagvaluefilter_10000rules_miss_100mb
+    extends: tagvaluefilter_dsd_uds_100mb
+    optimization_goal: cpu
+    variables:
+      rule_mode: per_metric
+      rule_metric_first: 20000
+      rule_metrics: 10000
+      allowed_values: 12
