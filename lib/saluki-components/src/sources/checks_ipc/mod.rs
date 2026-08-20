@@ -103,10 +103,11 @@ impl Source for ChecksIPC {
             return Err(generic_error!("Checks IPC gRPC endpoint must be a TCP address."));
         };
 
-        let grpc_server = GrpcServer::new(grpc_socket_addr).add_service(ChecksServer::new(ChecksService {
-            events_tx,
-            default_hostname,
-        }));
+        let grpc_server =
+            GrpcServer::new(ListenAddress::Tcp(grpc_socket_addr)).add_service(ChecksServer::new(ChecksService {
+                events_tx,
+                default_hostname,
+            }));
 
         context
             .spawner()

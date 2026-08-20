@@ -153,15 +153,11 @@ impl SourceBuilder for OtlpConfiguration {
 
         let grpc_listen_str = format!(
             "{}://{}",
-            self.otlp.receiver.grpc.transport, self.otlp.receiver.grpc.endpoint
+            self.otlp.receiver.grpc.transport.as_str(),
+            self.otlp.receiver.grpc.endpoint
         );
         let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
             .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
-
-        // Enforce the current limitation that we only support TCP for gRPC.
-        if !matches!(grpc_endpoint, ListenAddress::Tcp(_)) {
-            return Err(generic_error!("Only 'tcp' transport is supported for OTLP gRPC"));
-        }
 
         let http_endpoint_str = &self.otlp.receiver.http.endpoint;
         let http_socket_addr = http_endpoint_str
