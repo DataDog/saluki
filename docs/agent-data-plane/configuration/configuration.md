@@ -259,8 +259,7 @@ topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
 Support is partial because ADP does not apply this timeout only to an aggregator component.
 Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
 and the aggregate transform performs its final flush when its input stream ends. Whether open
-aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
-as `dogstatsd_flush_incomplete_buckets`.
+aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -500,7 +499,6 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation        |                |
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |                |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |                |
-| `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300            |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint              | localhost:6317 |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
 | `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3              |

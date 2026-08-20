@@ -218,9 +218,16 @@ the witnessed model.
 4. Search all consumers. Put a value in `domains` when one domain owns it and in `shared` when
    multiple domains consume it. Components do not read `control`.
 5. Add any missing model, witness, or seed path with the workflows above.
-6. Delete `from_configuration`. With up to three fields, replace it with `new`, taking the concrete
-   values; with four or more, make the fields `pub` and let the binary construct the struct by field.
-   For dynamic behavior, pass a narrow `Live<T>` and rebuild the reactive state after `changed()`.
+6. Delete `from_configuration` and pick its replacement by the shape of the `*Configuration` struct:
+   - Fewer than four fields: `new(...)` taking concrete values.
+   - Four or more fields: make them `pub` and let the caller build the struct by field, with no
+     constructor. Avoid introducing a new args or settings struct. Do not impl `Default` or
+     `Deserialize` on the configuration struct.
+   - Runtime wiring the caller cannot read out of configuration: have the caller create it and
+     assign what the component needs to a `pub` field. See `aggregate_context_snapshot_channel` and
+     `AggregateConfiguration::context_snapshot_receiver`.
+   - Values that change at runtime: pass a narrow `Live<T>` and rebuild the reactive state after
+     `changed()`.
 7. Remove source serde, Datadog key names, raw-map access, key watches, parsing, configuration
    defaults, and code made unused by the cutover. `#[allow(dead_code)]` is not an acceptable way to
    retain migration residue.
