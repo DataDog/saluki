@@ -8,6 +8,8 @@ enum MetricType {
     METRIC_TYPE_RATE = 2;
     METRIC_TYPE_GAUGE = 3;
     METRIC_TYPE_HISTOGRAM = 4;
+    METRIC_TYPE_MONOTONIC_COUNT = 5;
+    METRIC_TYPE_HISTORATE = 6;
 }
 
 message Metric {
