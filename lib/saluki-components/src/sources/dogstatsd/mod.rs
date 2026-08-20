@@ -1445,10 +1445,9 @@ async fn process_listener(
                 debug!(%listen_addr, "Received shutdown signal. Waiting for existing stream handlers to finish...");
                 break;
             }
-            // Normally the source's own coordinator above is what stops us, as part of an orderly shutdown. This arm
-            // covers the abnormal case -- the component being torn down for some other reason -- where we would
-            // otherwise ignore the supervisor entirely, run until its shutdown budget elapsed, and be aborted along
-            // with every stream handler still mid-flight.
+            // This separate shutdown path is when we've been _explicitly_ signaled by the supervisor itself to
+            // shutdown, rather than a logical/orderly topology shutdown. This is a corner case for when a component is
+            // being forcefully shutdown for some reason.
             _ = &mut process_shutdown => {
                 debug!(%listen_addr, "Supervisor signalled shutdown. Waiting for existing stream handlers to finish...");
                 break;
