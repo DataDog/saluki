@@ -156,7 +156,7 @@ fn is_fixstr(b: u8) -> bool {
 /// Bounds recursion so a deeply nested unknown field cannot overflow the stack.
 const MAX_SKIP_DEPTH: usize = 200;
 
-/// Advances the cursor by `n` bytes, erroring if fewer remain.
+/// Advances the cursor by `n` bytes, returning an error if fewer remain.
 fn advance(r: &mut &[u8], n: usize, context: &'static str) -> Result<(), DecodeError> {
     if r.len() < n {
         return Err(DecodeError::Msgpack {
