@@ -9,8 +9,9 @@
 //! - **Attribute maps are flat arrays** with three slots per entry (`key`, `type`, `value`).
 //! - **`AnyValue`** is a `uint32` type discriminant followed by the value.
 //!
-//! [`decode_v1_payload`] decodes one tracer payload into the unified [`Trace`] model, producing one
-//! `Trace` per trace chunk. String references are resolved to owned strings during decode.
+//! [`decode_v1_payload`](datadog::decode_v1_payload) decodes one tracer payload into the unified
+//! `Trace` model, producing one `Trace` per trace chunk. String references are resolved to owned
+//! strings during decode.
 
 use std::sync::Arc;
 
