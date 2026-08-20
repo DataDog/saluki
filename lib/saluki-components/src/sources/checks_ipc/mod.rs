@@ -12,7 +12,6 @@ use datadog_protos::checks::{
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
 use saluki_common::task::HandleExt as _;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -28,7 +27,6 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
@@ -36,30 +34,20 @@ use tonic::transport::Server;
 use tonic::{Response, Status};
 use tracing::{debug, trace, warn};
 
-const fn default_grpc_endpoint() -> ListenAddress {
-    ListenAddress::any_tcp(5105)
-}
-
 /// Checks IPC source.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct ChecksIPCConfiguration {
-    #[serde(skip)]
     default_hostname: MetaString,
-
-    #[serde(rename = "checks_ipc_endpoint", default = "default_grpc_endpoint")]
     grpc_endpoint: ListenAddress,
 }
 
 impl ChecksIPCConfiguration {
-    /// Creates a new `ChecksIPCConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-
-    /// Sets the default hostname used when check metrics do not carry an explicit hostname.
-    pub fn with_default_hostname(mut self, hostname: impl Into<MetaString>) -> Self {
-        self.default_hostname = hostname.into();
-        self
+    /// Creates a new `ChecksIPCConfiguration` from the resolved endpoint and default hostname.
+    pub fn new(grpc_endpoint: ListenAddress, default_hostname: impl Into<MetaString>) -> Self {
+        Self {
+            default_hostname: default_hostname.into(),
+            grpc_endpoint,
+        }
     }
 }
 

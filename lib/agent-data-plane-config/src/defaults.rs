@@ -7,6 +7,9 @@
 
 use std::{num::NonZeroUsize, time::Duration};
 
+/// Default Checks IPC endpoint.
+pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp://0.0.0.0:5105";
+
 /// Default timeout before a partially filled encoder payload is flushed.
 pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
