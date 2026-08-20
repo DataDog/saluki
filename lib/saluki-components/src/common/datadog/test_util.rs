@@ -30,7 +30,6 @@ pub(crate) fn shared_configuration() -> SharedConfiguration {
             dd_url: ConfigValue::defaulted("https://app.datadoghq.com".to_string()),
             compression: Compression {
                 compressor_kind: "zstd".to_string(),
-                zstd_compressor_level: 1,
                 ..Default::default()
             },
             tls: Tls {

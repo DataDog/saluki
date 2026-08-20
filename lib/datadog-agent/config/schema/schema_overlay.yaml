@@ -1819,7 +1819,7 @@ inventory:
       ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not
       log compressed wire payload bytes.
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2584,13 +2584,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Payload compression algorithm"
     test_support:
-      used_by:
-        [
-          DatadogEventsConfiguration,
-          DatadogLogsConfiguration,
-          DatadogServiceChecksConfiguration,
-          TypedConfigSystem,
-        ]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2626,7 +2620,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max compressed payload size (generic)"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2666,7 +2660,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed payload size (generic)"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2677,16 +2671,10 @@ inventory:
     description: "Zstd compression level (Agent)"
     documentation: >
       The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`;
-      when that is unset, ADP applies this value if it has been changed from the Agent default of 1,
-      otherwise it uses its own default of 3.
+      when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own
+      default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
     test_support:
-      used_by:
-        [
-          DatadogEventsConfiguration,
-          DatadogLogsConfiguration,
-          DatadogServiceChecksConfiguration,
-          TypedConfigSystem,
-        ]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs

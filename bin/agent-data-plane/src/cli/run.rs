@@ -389,15 +389,15 @@ async fn create_topology(
     }
 
     if dp.logs_pipeline_required() {
-        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
+        add_baseline_logs_pipeline_to_blueprint(&mut blueprint, &shared)?;
     }
 
     if dp.events_pipeline_required() {
-        add_baseline_events_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
+        add_baseline_events_pipeline_to_blueprint(&mut blueprint, &shared)?;
     }
 
     if dp.service_checks_pipeline_required() {
-        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &config_system.raw_map()).await?;
+        add_baseline_service_checks_pipeline_to_blueprint(&mut blueprint, &shared)?;
     }
 
     if dp.traces_pipeline_required() {
@@ -593,13 +593,15 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn add_baseline_logs_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+fn add_baseline_logs_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
     // Create the back half of the logs processing pipeline.
-    let dd_logs_config = DatadogLogsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Logs encoder.")?;
+    let compression = &shared.endpoints.compression;
+    let dd_logs_config = BufferedIncrementalConfiguration::from_encoder_builder(DatadogLogsConfiguration::new(
+        &compression.compressor_kind,
+        compression.effective_zstd_level(),
+    ));
 
     blueprint
         // Components.
@@ -610,12 +612,18 @@ async fn add_baseline_logs_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn add_baseline_events_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+fn add_baseline_events_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_events_config = DatadogEventsConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Events encoder.")?;
+    let metrics_encoding = &shared.metrics_encoding;
+    let compression = &shared.endpoints.compression;
+    let dd_events_config = BufferedIncrementalConfiguration::from_encoder_builder(DatadogEventsConfiguration {
+        max_payload_size: metrics_encoding.max_payload_size,
+        max_uncompressed_payload_size: metrics_encoding.max_uncompressed_payload_size,
+        compressor_kind: compression.compressor_kind.clone(),
+        zstd_level: compression.effective_zstd_level(),
+        log_payloads: metrics_encoding.log_payloads,
+    });
 
     blueprint
         .add_encoder("dd_events_encode", dd_events_config)?
@@ -624,12 +632,19 @@ async fn add_baseline_events_pipeline_to_blueprint(
     Ok(())
 }
 
-async fn add_baseline_service_checks_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration,
+fn add_baseline_service_checks_pipeline_to_blueprint(
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
-    let dd_service_checks_config = DatadogServiceChecksConfiguration::from_configuration(config)
-        .map(BufferedIncrementalConfiguration::from_encoder_builder)
-        .error_context("Failed to configure Datadog Service Checks encoder.")?;
+    let metrics_encoding = &shared.metrics_encoding;
+    let compression = &shared.endpoints.compression;
+    let dd_service_checks_config =
+        BufferedIncrementalConfiguration::from_encoder_builder(DatadogServiceChecksConfiguration {
+            max_payload_size: metrics_encoding.max_payload_size,
+            max_uncompressed_payload_size: metrics_encoding.max_uncompressed_payload_size,
+            compressor_kind: compression.compressor_kind.clone(),
+            zstd_level: compression.effective_zstd_level(),
+            log_payloads: metrics_encoding.log_payloads,
+        });
 
     blueprint
         .add_encoder("dd_service_checks_encode", dd_service_checks_config)?

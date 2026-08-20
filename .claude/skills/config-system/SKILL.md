@@ -218,14 +218,14 @@ the witnessed model.
 4. Search all consumers. Put a value in `domains` when one domain owns it and in `shared` when
    multiple domains consume it. Components do not read `control`.
 5. Add any missing model, witness, or seed path with the workflows above.
-6. Change static construction to accept borrowed typed slices. For dynamic behavior, pass a narrow
-   `Live<T>` and rebuild the reactive state after `changed()`.
+6. Delete `from_configuration`. With up to three fields, replace it with `new`, taking the concrete
+   values; with four or more, make the fields `pub` and let the binary construct the struct by field.
+   For dynamic behavior, pass a narrow `Live<T>` and rebuild the reactive state after `changed()`.
 7. Remove source serde, Datadog key names, raw-map access, key watches, parsing, configuration
    defaults, and code made unused by the cutover. `#[allow(dead_code)]` is not an acceptable way to
    retain migration residue.
 8. Update topology call sites and tests. Preserve behavior tests using typed inputs; remove tests
    only when they tested legacy deserialization and nothing else.
-   - Do *not* rename `from_configuration`. Change its signature to take typed configuration.
 9. Remove the component's `run_config_smoke_tests` invocation once it no longer deserializes from
    `GenericConfiguration`. Replace migrated structs in `used_by` with `TypedConfigSystem` in
    `schema_overlay.yaml`, or the string `TYPED_CONFIG_SYSTEM` in `SALUKI_KEYS`.

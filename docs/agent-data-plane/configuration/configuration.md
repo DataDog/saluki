@@ -390,7 +390,7 @@ is enabled.
 
 ### `serializer_zstd_compressor_level`
 
-The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`; when that is unset, ADP applies this value if it has been changed from the Agent default of 1, otherwise it uses its own default of 3.
+The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`; when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
 
 ### `skip_ssl_validation`
 
@@ -539,7 +539,7 @@ Temporary development key for setting ADP's OTLP listen endpoints independently 
 
 ### `data_plane.serializer_zstd_compressor_level`
 
-ADP-specific zstd compression level, taking precedence over the Core Agent's `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to `serializer_zstd_compressor_level` if it has been changed from the Agent default of 1, and otherwise uses its own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs 69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` or in ADP-specific configuration.
+ADP-specific zstd compression level, taking precedence over the Core Agent's `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to `serializer_zstd_compressor_level` if you set that key explicitly, and otherwise uses its own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs 69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` or in ADP-specific configuration.
 
 ### `data_plane.stop_timeout`
 

@@ -64,8 +64,8 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         documentation: Some(
             "ADP-specific zstd compression level, taking precedence over the Core Agent's \
              `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to \
-             `serializer_zstd_compressor_level` if it has been changed from the Agent default of 1, and \
-             otherwise uses its own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs \
+             `serializer_zstd_compressor_level` if you set that key explicitly, and otherwise uses its \
+             own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs \
              69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can \
              afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` \
              or in ADP-specific configuration.",
@@ -75,12 +75,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
-        used_by: &[
-            "DATADOG_EVENTS_CONFIGURATION",
-            "DATADOG_LOGS_CONFIGURATION",
-            "DATADOG_SERVICE_CHECKS_CONFIGURATION",
-            "TYPED_CONFIG_SYSTEM",
-        ],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::CrossCutting",
         filename: "data_plane.rs",

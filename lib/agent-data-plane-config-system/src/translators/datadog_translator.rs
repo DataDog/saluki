@@ -1123,7 +1123,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_serializer_zstd_compressor_level(&mut self, value: i64) {
-        self.config.shared.endpoints.compression.zstd_compressor_level = value as i32;
+        // ADP keeps its own default of 3 unless an operator asked for the Agent's level, and only
+        // provenance separates a configured 1 from the schema default of 1, because drive delivers the
+        // key either way. `Compression::zstd_compressor_level` applies the precedence.
+        let provenance = self.sources.provenance("serializer_zstd_compressor_level");
+        match i32::try_from(value) {
+            Ok(value) => {
+                self.config.shared.endpoints.compression.agent_zstd_level = ConfigValue::new(value, provenance);
+            }
+            Err(error) => self.record_error(TranslateError::new("serializer_zstd_compressor_level", error)),
+        }
     }
 
     fn consume_site(&mut self, value: String) {
@@ -1244,6 +1253,7 @@ mod tests {
     use std::fmt;
     use std::time::Duration;
 
+    use agent_data_plane_config::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use agent_data_plane_config::domains::{
         dogstatsd::OriginTagCardinality,
         otlp::{
@@ -1546,6 +1556,54 @@ mod tests {
         assert!(errors.is_none());
         assert_defaulted(&config.shared.endpoints.site, "");
         assert_defaulted(&config.shared.endpoints.dd_url, "");
+    }
+
+    // The Agent streams `serializer_zstd_compressor_level` at its schema default of 1 even when the
+    // operator configured nothing. ADP wants its own default of 3, so it applies the Agent's level only
+    // when an input set one. Comparing the value against 1 also discarded an operator who deliberately
+    // asked for 1; provenance separates the two.
+    #[test]
+    fn the_agent_zstd_level_is_honored_only_when_explicit() {
+        let (config, errors) =
+            translate_stream(&[("serializer_zstd_compressor_level", json!(1), StreamProvenance::Default)]);
+
+        assert!(errors.is_none());
+        assert_eq!(
+            DEFAULT_ZSTD_COMPRESSOR_LEVEL,
+            config.shared.endpoints.compression.effective_zstd_level()
+        );
+
+        let (config, errors) = translate_explicit(json!({ "serializer_zstd_compressor_level": 1 }));
+
+        assert!(errors.is_none());
+        assert_eq!(1, config.shared.endpoints.compression.effective_zstd_level());
+    }
+
+    #[test]
+    fn the_adp_zstd_level_wins_over_an_explicit_agent_level() {
+        let (mut config, errors) = translate_explicit(json!({ "serializer_zstd_compressor_level": 5 }));
+        assert!(errors.is_none());
+
+        let saluki_only: SalukiOnly =
+            serde_json::from_value(json!({ "data_plane": { "serializer_zstd_compressor_level": 4 } }))
+                .expect("saluki-only source deserializes");
+        saluki_only.seed(&mut config);
+
+        assert_eq!(4, config.shared.endpoints.compression.effective_zstd_level());
+    }
+
+    #[test]
+    fn an_out_of_range_agent_zstd_level_records_a_translation_error() {
+        let (config, errors) = translate_explicit(json!({
+            "serializer_zstd_compressor_level": i64::from(i32::MAX) + 1,
+        }));
+
+        let errors = errors.expect("out-of-range zstd level should record a translation error");
+        assert!(errors.to_string().contains("serializer_zstd_compressor_level"));
+        assert_eq!(
+            DEFAULT_ZSTD_COMPRESSOR_LEVEL,
+            config.shared.endpoints.compression.effective_zstd_level()
+        );
     }
 
     #[test]
