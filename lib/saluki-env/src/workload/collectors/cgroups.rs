@@ -27,6 +27,12 @@ use crate::{
 #[static_metrics(prefix = cgroups_metadata_collector)]
 #[derive(Clone)]
 struct Telemetry {
+    /// Traversals that covered the entire hierarchy, and so ran a removal pass.
+    ///
+    /// Together with `traversals_incomplete_total`, this accounts for every traversal, so the two can be summed for a
+    /// total or ratioed to see how often traversals are being cut short.
+    traversals_complete_total: Counter,
+
     /// Traversals that could not cover the entire hierarchy, and so did not run a removal pass.
     traversals_incomplete_total: Counter,
 
@@ -201,6 +207,8 @@ impl SynchronousCgroupsManager {
             // a cgroup we didn't see may well still exist, and dropping its alias would break origin enrichment for a
             // live container. Holding on to a stale alias for another poll interval is the cheaper mistake.
             if traversal.complete {
+                self.telemetry.traversals_complete_total().increment(1);
+
                 for cgroup_inode in self.active_cgroups.keys() {
                     if !traversed_cgroups.contains(cgroup_inode) {
                         // This cgroup is no longer present, so we need to delete it.
