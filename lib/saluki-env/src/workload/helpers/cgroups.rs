@@ -16,7 +16,7 @@ use stringtheory::{
     interning::{GenericMapInterner, Interner as _},
     MetaString,
 };
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use crate::features::{Feature, FeatureDetector};
 
@@ -204,8 +204,13 @@ impl CgroupsReader {
         None
     }
 
-    /// Gets all child cgroups in the current cgroups hierarchy
-    pub fn get_child_cgroups(&self) -> Vec<Cgroup> {
+    /// Gets all child cgroups in the current cgroups hierarchy.
+    ///
+    /// Individual paths that can't be traversed -- most commonly because a container exited and its cgroup was removed
+    /// while we were walking the hierarchy -- are skipped rather than aborting the traversal. When that happens, the
+    /// returned traversal is marked as incomplete: the cgroups it contains are all valid, but the set is not
+    /// necessarily exhaustive. See [`CgroupsTraversal::complete`] for why that distinction matters.
+    pub fn get_child_cgroups(&self) -> CgroupsTraversal {
         let mut cgroups = Vec::new();
         let mut visit = |path: &Path| {
             if let Some(cgroup) = self.try_cgroup_from_path(path) {
@@ -214,19 +219,48 @@ impl CgroupsReader {
         };
 
         // Walk the cgroups hierarchy and collect all cgroups that we can find that are related to containers..
-        let root_path = match &self.hierarchy_reader {
-            HierarchyReader::V1 {
-                base_controller_path, ..
-            } => base_controller_path.as_path(),
-            HierarchyReader::V2 { root, .. } => root.as_path(),
+        let root_path = self.hierarchy_reader.root_path();
+
+        let skipped = match visit_subdirectories(root_path, &mut visit) {
+            Ok(outcome) => outcome.skipped,
+            Err(e) => {
+                // We only get here if the hierarchy root itself couldn't be read, which generally points at a
+                // misconfigured cgroupfs path rather than a transient condition.
+                warn!(error = %e, cgroups_root = %root_path.display(), "Failed to visit cgroups hierarchy.");
+
+                return CgroupsTraversal {
+                    cgroups,
+                    complete: false,
+                    skipped: 0,
+                };
+            }
         };
 
-        if let Err(e) = visit_subdirectories(root_path, &mut visit) {
-            error!(error = %e, "Failed to visit cgroups hierarchy.");
+        CgroupsTraversal {
+            cgroups,
+            complete: skipped == 0,
+            skipped,
         }
-
-        cgroups
     }
+}
+
+/// The result of traversing the cgroups hierarchy.
+pub struct CgroupsTraversal {
+    /// Container cgroups found during the traversal.
+    pub cgroups: Vec<Cgroup>,
+
+    /// Whether the traversal covered the entire hierarchy.
+    ///
+    /// When this is `false`, [`cgroups`][Self::cgroups] holds only a subset of the container cgroups that exist. The
+    /// entries present are still valid, so callers can safely treat them as live, but callers **MUST NOT** infer that a
+    /// previously-known cgroup was removed simply because it's absent here.
+    pub complete: bool,
+
+    /// Number of paths skipped due to recoverable errors during the traversal.
+    ///
+    /// This is always `0` when [`complete`][Self::complete] is `true`. It can also be `0` for an incomplete traversal,
+    /// if the hierarchy root itself couldn't be read.
+    pub skipped: usize,
 }
 
 #[derive(Clone)]
@@ -429,33 +463,92 @@ fn read_lines(path: &Path) -> io::Result<Vec<String>> {
     Ok(lines)
 }
 
-fn visit_subdirectories<P, F>(path: P, mut visit: F) -> io::Result<()>
+/// Summary of a completed call to [`visit_subdirectories`].
+struct TraversalOutcome {
+    /// Number of paths skipped due to recoverable errors.
+    skipped: usize,
+}
+
+/// Logs a path that was skipped during traversal, at a level matching how expected the failure is.
+fn log_skipped_path(e: &io::Error, path: &Path) {
+    // Paths disappearing mid-traversal is routine rather than exceptional: cgroups are removed as the workloads
+    // attached to them exit, and we have no way to hold the hierarchy still while we walk it. Anything else is more
+    // surprising and worth a louder log, but is still only a partial loss.
+    if e.kind() == io::ErrorKind::NotFound {
+        trace!(error = %e, path = %path.display(), "Path disappeared during traversal. Skipping.");
+    } else {
+        debug!(error = %e, path = %path.display(), "Failed to traverse path. Skipping.");
+    }
+}
+
+/// Visits every subdirectory beneath the given path.
+///
+/// Subdirectories that can't be read are skipped, along with everything beneath them, and counted in the returned
+/// [`TraversalOutcome`]. Callers that need an exhaustive view of the tree **MUST** check that
+/// [`skipped`][TraversalOutcome::skipped] is zero.
+///
+/// # Errors
+///
+/// If the given path itself can't be queried, an error is returned. Failures below the given path are never fatal.
+fn visit_subdirectories<P, F>(path: P, mut visit: F) -> Result<TraversalOutcome, GenericError>
 where
     P: AsRef<Path>,
     F: FnMut(&Path),
 {
+    let root = path.as_ref();
+
     // We can only visit directories, so if the initial path we're given isn't a directory, then we can't do anything.
-    let metadata = fs::metadata(path.as_ref())?;
+    let metadata = fs::metadata(root)
+        .with_error_context(|| format!("Failed to query metadata for traversal root ({}).", root.display()))?;
     if !metadata.is_dir() {
-        return Ok(());
+        return Ok(TraversalOutcome { skipped: 0 });
     }
+
+    let mut skipped = 0;
 
     // Do an initial pass on our path to get all of its subdirectories, which we'll visit, and then also use as the seed
     // for further visiting.
-    let mut stack = vec![path.as_ref().to_path_buf()];
+    let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
-        let dir_reader = fs::read_dir(path)?;
+        // A directory can be removed between the point where we discovered it and the point where we pop it off the
+        // stack to read it, so failing here costs us that subtree but shouldn't stop us from walking the rest.
+        let dir_reader = match fs::read_dir(&path) {
+            Ok(dir_reader) => dir_reader,
+            Err(e) => {
+                skipped += 1;
+                log_skipped_path(&e, &path);
+                continue;
+            }
+        };
+
         for entry in dir_reader {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                let path = entry.path();
-                visit(&path);
-                stack.push(path);
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    skipped += 1;
+                    log_skipped_path(&e, &path);
+                    continue;
+                }
+            };
+
+            let entry_path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(e) => {
+                    skipped += 1;
+                    log_skipped_path(&e, &entry_path);
+                    continue;
+                }
+            };
+
+            if file_type.is_dir() {
+                visit(&entry_path);
+                stack.push(entry_path);
             }
         }
     }
 
-    Ok(())
+    Ok(TraversalOutcome { skipped })
 }
 
 /// Gets the current process's container ID from its local cgroup membership.
@@ -501,11 +594,21 @@ fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path};
+    use std::{
+        collections::HashSet,
+        fs,
+        num::NonZeroUsize,
+        os::unix::fs::PermissionsExt as _,
+        path::{Path, PathBuf},
+    };
 
     use stringtheory::{interning::GenericMapInterner, MetaString};
+    use tempfile::tempdir;
 
-    use super::{extract_container_id, get_container_id_from_cgroup_lines, CgroupControllerEntry};
+    use super::{
+        extract_container_id, get_container_id_from_cgroup_lines, visit_subdirectories, CgroupControllerEntry,
+        CgroupsReader, HierarchyReader, DEFAULT_PROCFS_ROOT,
+    };
 
     #[test]
     fn parse_controller_entry_cgroups_v1() {
@@ -596,5 +699,178 @@ mod tests {
 
         // Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
         assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
+    }
+
+    const TEST_CONTAINER_ID: &str = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+
+    /// Collects the names of every visited path, relative to `root`.
+    fn visited_names(root: &Path, visited: &[PathBuf]) -> HashSet<String> {
+        visited
+            .iter()
+            .map(|path| path.strip_prefix(root).unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn names(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|name| (*name).to_owned()).collect()
+    }
+
+    /// Makes `path` unreadable, returning `false` if the caller can still read it anyway.
+    ///
+    /// Tests running as root can read a directory regardless of its mode, and so have nothing to assert.
+    fn make_unreadable(path: &Path) -> bool {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+
+        if fs::read_dir(path).is_ok() {
+            make_readable(path);
+            return false;
+        }
+
+        true
+    }
+
+    /// Restores `path` to a readable mode, so that its parent temporary directory can be cleaned up.
+    fn make_readable(path: &Path) {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn reader_rooted_at(root: &Path) -> CgroupsReader {
+        CgroupsReader {
+            procfs_path: PathBuf::from(DEFAULT_PROCFS_ROOT),
+            hierarchy_reader: HierarchyReader::V2 {
+                root: root.to_path_buf(),
+                controllers: Vec::new(),
+            },
+            interner: GenericMapInterner::new(NonZeroUsize::new(1024).unwrap()),
+        }
+    }
+
+    #[test]
+    fn visit_subdirectories_visits_every_subdirectory() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("a/aa")).unwrap();
+        fs::create_dir(root.path().join("b")).unwrap();
+        fs::write(root.path().join("b/file"), "not a directory").unwrap();
+
+        let mut visited = Vec::new();
+        let outcome = visit_subdirectories(root.path(), |path| visited.push(path.to_path_buf())).unwrap();
+
+        assert_eq!(outcome.skipped, 0);
+        assert_eq!(visited_names(root.path(), &visited), names(&["a", "a/aa", "b"]));
+    }
+
+    #[test]
+    fn visit_subdirectories_errors_when_root_is_missing() {
+        let root = tempdir().unwrap();
+
+        assert!(visit_subdirectories(root.path().join("missing"), |_| {}).is_err());
+    }
+
+    #[test]
+    fn visit_subdirectories_ignores_non_directory_root() {
+        let root = tempdir().unwrap();
+        let file_path = root.path().join("file");
+        fs::write(&file_path, "not a directory").unwrap();
+
+        let mut visited = Vec::new();
+        let outcome = visit_subdirectories(&file_path, |path| visited.push(path.to_path_buf())).unwrap();
+
+        assert_eq!(outcome.skipped, 0);
+        assert!(visited.is_empty());
+    }
+
+    #[test]
+    fn visit_subdirectories_skips_directories_removed_mid_traversal() {
+        let root = tempdir().unwrap();
+        for name in ["a", "b", "c"] {
+            fs::create_dir(root.path().join(name)).unwrap();
+        }
+
+        // Every subdirectory of `root` is visited and pushed onto the traversal stack before any of them is read back,
+        // so removing one that was already visited guarantees that reading it later fails with `ENOENT`. That's the
+        // same race we lose in production when a container exits mid-traversal, but without depending on any timing.
+        let mut visited = Vec::new();
+        let outcome = visit_subdirectories(root.path(), |path| {
+            visited.push(path.to_path_buf());
+            if visited.len() == 2 {
+                fs::remove_dir(&visited[0]).unwrap();
+            }
+        })
+        .unwrap();
+
+        // The removed directory was still visited -- we saw it before it went away -- but reading it was skipped
+        // rather than aborting the traversal, so its two siblings were still read.
+        assert_eq!(outcome.skipped, 1);
+        assert_eq!(visited_names(root.path(), &visited), names(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn visit_subdirectories_skips_unreadable_directories() {
+        let root = tempdir().unwrap();
+        let unreadable = root.path().join("unreadable");
+        fs::create_dir(&unreadable).unwrap();
+        fs::create_dir_all(root.path().join("readable/nested")).unwrap();
+
+        if !make_unreadable(&unreadable) {
+            return;
+        }
+
+        let mut visited = Vec::new();
+        let outcome = visit_subdirectories(root.path(), |path| visited.push(path.to_path_buf()));
+
+        make_readable(&unreadable);
+
+        assert_eq!(outcome.unwrap().skipped, 1);
+        assert_eq!(
+            visited_names(root.path(), &visited),
+            names(&["readable", "readable/nested", "unreadable"])
+        );
+    }
+
+    #[test]
+    fn get_child_cgroups_reports_complete_traversal() {
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join(format!("cri-containerd-{}.scope", TEST_CONTAINER_ID))).unwrap();
+
+        let traversal = reader_rooted_at(root.path()).get_child_cgroups();
+
+        assert!(traversal.complete);
+        assert_eq!(traversal.skipped, 0);
+        assert_eq!(traversal.cgroups.len(), 1);
+        assert_eq!(traversal.cgroups[0].container_id, MetaString::from(TEST_CONTAINER_ID));
+    }
+
+    #[test]
+    fn get_child_cgroups_reports_incomplete_traversal() {
+        let root = tempdir().unwrap();
+        fs::create_dir(root.path().join(format!("cri-containerd-{}.scope", TEST_CONTAINER_ID))).unwrap();
+
+        let unreadable = root.path().join("unreadable");
+        fs::create_dir(&unreadable).unwrap();
+        if !make_unreadable(&unreadable) {
+            return;
+        }
+
+        let traversal = reader_rooted_at(root.path()).get_child_cgroups();
+
+        make_readable(&unreadable);
+
+        // The container cgroup we did manage to see is still reported, but the traversal is flagged so that callers
+        // don't mistake an unseen cgroup for a removed one.
+        assert!(!traversal.complete);
+        assert_eq!(traversal.skipped, 1);
+        assert_eq!(traversal.cgroups.len(), 1);
+        assert_eq!(traversal.cgroups[0].container_id, MetaString::from(TEST_CONTAINER_ID));
+    }
+
+    #[test]
+    fn get_child_cgroups_reports_incomplete_traversal_when_root_is_missing() {
+        let root = tempdir().unwrap();
+
+        let traversal = reader_rooted_at(&root.path().join("missing")).get_child_cgroups();
+
+        assert!(!traversal.complete);
+        assert_eq!(traversal.skipped, 0);
+        assert!(traversal.cgroups.is_empty());
     }
 }

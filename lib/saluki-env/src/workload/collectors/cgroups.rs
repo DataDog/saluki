@@ -9,6 +9,7 @@ use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::health::Health;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_metrics::{static_metrics, Counter};
 use stringtheory::{interning::GenericMapInterner, MetaString};
 use tokio::{pin, select, sync::mpsc};
 use tracing::{debug, warn};
@@ -22,6 +23,16 @@ use crate::{
         metadata::MetadataOperation,
     },
 };
+
+#[static_metrics(prefix = cgroups_metadata_collector)]
+#[derive(Clone)]
+struct Telemetry {
+    /// Traversals that could not cover the entire hierarchy, and so did not run a removal pass.
+    traversals_incomplete_total: Counter,
+
+    /// Individual paths skipped during traversal because they could not be read.
+    traversal_paths_skipped_total: Counter,
+}
 
 /// A metadata collector that observes Linux "Control Groups" (cgroups).
 ///
@@ -118,6 +129,7 @@ struct SynchronousCgroupsManager {
     reader: CgroupsReader,
     active_cgroups: FastHashMap<u64, MetaString>,
     operations: Vec<MetadataOperation>,
+    telemetry: Telemetry,
 }
 
 impl SynchronousCgroupsManager {
@@ -126,6 +138,7 @@ impl SynchronousCgroupsManager {
             reader,
             active_cgroups: FastHashMap::default(),
             operations: Vec::with_capacity(64),
+            telemetry: Telemetry::new(),
         }
     }
 
@@ -147,9 +160,16 @@ impl SynchronousCgroupsManager {
 
             // Traverse the cgroups hierarchy and collect all child cgroups that we can find that are attached to a
             // container and have a controller inode for us to attach an alias to.
-            let child_cgroups = self.reader.get_child_cgroups();
-            let child_cgroups_len = child_cgroups.len();
-            for child_cgroup in child_cgroups {
+            let traversal = self.reader.get_child_cgroups();
+            let child_cgroups_len = traversal.cgroups.len();
+
+            if traversal.skipped > 0 {
+                self.telemetry
+                    .traversal_paths_skipped_total()
+                    .increment(traversal.skipped as u64);
+            }
+
+            for child_cgroup in traversal.cgroups {
                 if let Some(cgroup_inode) = child_cgroup.inode() {
                     traversed_cgroups.insert(cgroup_inode);
 
@@ -176,11 +196,23 @@ impl SynchronousCgroupsManager {
             }
 
             // Figure out which cgroups are no longer active and mark them for deletion.
-            for cgroup_inode in self.active_cgroups.keys() {
-                if !traversed_cgroups.contains(cgroup_inode) {
-                    // This cgroup is no longer present, so we need to delete it.
-                    cgroups_to_delete.push(*cgroup_inode);
+            //
+            // We can only draw that conclusion from an exhaustive traversal: if part of the hierarchy was unreadable,
+            // a cgroup we didn't see may well still exist, and dropping its alias would break origin enrichment for a
+            // live container. Holding on to a stale alias for another poll interval is the cheaper mistake.
+            if traversal.complete {
+                for cgroup_inode in self.active_cgroups.keys() {
+                    if !traversed_cgroups.contains(cgroup_inode) {
+                        // This cgroup is no longer present, so we need to delete it.
+                        cgroups_to_delete.push(*cgroup_inode);
+                    }
                 }
+            } else {
+                self.telemetry.traversals_incomplete_total().increment(1);
+                debug!(
+                    skipped = traversal.skipped,
+                    "Cgroups hierarchy traversal was incomplete. Skipping removal of cgroups that were not seen."
+                );
             }
 
             // Process the deletions.
