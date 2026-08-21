@@ -5,10 +5,25 @@
 //! only want the definitive codegen defaults rather than restating values that can drift (see
 //! #1802).
 
-use std::{num::NonZeroUsize, time::Duration};
+use std::{
+    num::{NonZeroU64, NonZeroUsize},
+    time::Duration,
+};
 
 /// Default Checks IPC endpoint.
 pub const DEFAULT_CHECKS_IPC_ENDPOINT: &str = "tcp://0.0.0.0:5105";
+
+/// Default length of an aggregation window.
+pub const DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS: NonZeroU64 = NonZeroU64::new(10).unwrap();
+
+/// Default maximum number of contexts held per aggregation window.
+pub const DEFAULT_AGGREGATE_CONTEXT_LIMIT: usize = 1_000_000;
+
+/// Default period between aggregation flushes.
+pub const DEFAULT_AGGREGATE_FLUSH_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Default delay before an idle passthrough buffer is flushed.
+pub const DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Default timeout before a partially filled encoder payload is flushed.
 pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);

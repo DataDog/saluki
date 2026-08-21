@@ -1092,4 +1092,23 @@ mod tests {
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
     }
+
+    /// Datadog-defined aggregation keys reach their typed model fields through the witness translator.
+    #[test]
+    fn datadog_aggregation_keys_reach_the_model() {
+        let sources = SourceTree::all_explicit(json!({
+            "dogstatsd_expiry_seconds": 60,
+            "dogstatsd_flush_incomplete_buckets": true,
+        }));
+        let value = sources.to_value();
+        let datadog: DatadogConfiguration = serde_json::from_value(value.clone()).expect("datadog source deserializes");
+        let saluki: SalukiOnly = serde_json::from_value(value).expect("saluki-only source deserializes");
+
+        let (config, errors) = translate(&datadog, &saluki, &sources);
+        assert!(errors.is_none(), "translation of a valid map records no error");
+
+        let aggregation = &config.domains.dogstatsd.aggregation;
+        assert_eq!(aggregation.counter_expiry_seconds, Some(60));
+        assert!(aggregation.flush_open_windows);
+    }
 }

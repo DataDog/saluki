@@ -26,7 +26,7 @@ use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
@@ -530,7 +530,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_flush_incomplete_buckets(&mut self, value: bool) {
-        self.config.domains.dogstatsd.aggregation.flush_incomplete_buckets = value;
+        self.config.domains.dogstatsd.aggregation.flush_open_windows = value;
     }
 
     fn consume_dogstatsd_log_file(&mut self, value: String) {
@@ -1016,7 +1016,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String) {
-        self.config.domains.otlp.receiver.grpc.transport = value;
+        match value.parse::<GrpcTransport>() {
+            Ok(transport) => self.config.domains.otlp.receiver.grpc.transport = transport,
+            Err(error) => self.record_error(TranslateError::new(
+                "otlp_config.receiver.protocols.grpc.transport",
+                error,
+            )),
+        }
     }
 
     fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String) {

@@ -548,4 +548,15 @@ mod tests {
             Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 168, 10, 2), 6789)))
         );
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_scheme_parses_as_unix() {
+        let address = ListenAddress::try_from("unix:///tmp/otlp.sock").unwrap();
+        assert_eq!(address.listener_type(), "unix");
+        assert_eq!(
+            address.as_unix_stream_path(),
+            Some(std::path::Path::new("/tmp/otlp.sock"))
+        );
+    }
 }
