@@ -1,19 +1,37 @@
-use std::{convert::Infallible, time::Duration};
+use std::{
+    convert::Infallible,
+    io,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use http::Request;
+use rustls::ServerConfig;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 use saluki_error::ErrorContext as _;
-use tokio::{pin, select, sync::oneshot, time::timeout};
+use saluki_tls::ensure_server_config_fips_compliant;
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    pin, select,
+    sync::oneshot,
+    time::timeout,
+};
+use tokio_rustls::server::TlsStream as TokioTlsStream;
 use tonic::{
     body::Body,
     server::NamedService,
     service::Routes,
-    transport::{server::TcpIncoming, Server},
+    transport::{
+        server::{Connected, TcpIncoming},
+        Server,
+    },
 };
 use tower::Service;
-use tracing::warn;
+use tracing::{debug, warn};
 
 #[cfg(unix)]
 use crate::net::unix::{ensure_unix_socket_free, set_unix_socket_write_only};
@@ -39,6 +57,7 @@ pub struct GrpcServer {
     listen_addr: ListenAddress,
     routes: Option<Routes>,
     graceful_shutdown_timeout: Option<Duration>,
+    tls_config: Option<ServerConfig>,
 }
 
 impl GrpcServer {
@@ -48,6 +67,7 @@ impl GrpcServer {
             listen_addr,
             routes: None,
             graceful_shutdown_timeout: None,
+            tls_config: None,
         }
     }
 
@@ -62,6 +82,16 @@ impl GrpcServer {
     /// Defaults to no timeout (wait as long as allowed).
     pub fn with_graceful_shutdown_timeout(mut self, timeout: Duration) -> Self {
         self.graceful_shutdown_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the TLS configuration for the server.
+    ///
+    /// This enables TLS, after which the server only accepts connections that are encrypted with TLS.
+    ///
+    /// Defaults to TLS being disabled.
+    pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
+        self.tls_config = Some(config);
         self
     }
 
@@ -98,34 +128,95 @@ impl Supervisable for GrpcServer {
 
         match &self.listen_addr {
             ListenAddress::Tcp(addr) => {
-                let listener = TcpIncoming::bind(*addr)
-                    .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
+                // When TLS is enabled, bind a raw TCP listener and wrap each accepted connection with a TLS handshake.
+                // We use a custom `TlsServerStream` wrapper because `tokio_rustls::server::TlsStream<TcpStream>`
+                // only implements tonic's `Connected` trait behind a feature flag we do not enable.
+                if let Some(mut config) = self.tls_config.clone() {
+                    ensure_server_config_fips_compliant(&mut config)
+                        .error_context("Failed to configure TLS for gRPC server")?;
 
-                Ok(Box::pin(async move {
-                    let (drain_tx, drain_rx) = oneshot::channel();
-                    let serve = Server::default().serve_with_incoming_shutdown(routes, listener, async move {
-                        let _ = drain_rx.await;
-                    });
+                    // ALPN: advertise h2 so TLS clients negotiate HTTP/2 directly.
+                    config.alpn_protocols.push(b"h2".to_vec());
 
-                    pin!(serve, process_shutdown);
+                    let listener = tokio::net::TcpListener::bind(*addr)
+                        .await
+                        .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
 
-                    select! {
-                        result = &mut serve => result.error_context("Failed to serve gRPC server."),
+                    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
 
-                        _ = &mut process_shutdown => {
-                            let _ = drain_tx.send(());
-
-                            match timeout(shutdown_timeout, serve).await {
-                                Ok(Ok(())) => Ok(()),
-                                Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
-                                Err(_) => {
-                                    warn!("Failed to gracefully drain gRPC connections.");
-                                    Ok(())
-                                },
+                    let tls_incoming =
+                        futures::stream::unfold((listener, acceptor), |(listener, acceptor)| async move {
+                            loop {
+                                match listener.accept().await {
+                                    Ok((stream, _)) => match acceptor.accept(stream).await {
+                                        Ok(tls_stream) => {
+                                            return Some((Ok(TlsServerStream(tls_stream)), (listener, acceptor)));
+                                        }
+                                        Err(e) => {
+                                            debug!(error = %e, "gRPC TLS handshake failed; skipping connection.");
+                                            continue;
+                                        }
+                                    },
+                                    Err(e) => return Some((Err(e), (listener, acceptor))),
+                                }
                             }
-                        },
-                    }
-                }))
+                        });
+
+                    Ok(Box::pin(async move {
+                        let (drain_tx, drain_rx) = oneshot::channel();
+                        let serve = Server::default().serve_with_incoming_shutdown(routes, tls_incoming, async move {
+                            let _ = drain_rx.await;
+                        });
+
+                        pin!(serve, process_shutdown);
+
+                        select! {
+                            result = &mut serve => result.error_context("Failed to serve gRPC server."),
+
+                            _ = &mut process_shutdown => {
+                                let _ = drain_tx.send(());
+
+                                match timeout(shutdown_timeout, serve).await {
+                                    Ok(Ok(())) => Ok(()),
+                                    Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
+                                    Err(_) => {
+                                        warn!("Failed to gracefully drain gRPC connections.");
+                                        Ok(())
+                                    },
+                                }
+                            },
+                        }
+                    }))
+                } else {
+                    let listener = TcpIncoming::bind(*addr)
+                        .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
+
+                    Ok(Box::pin(async move {
+                        let (drain_tx, drain_rx) = oneshot::channel();
+                        let serve = Server::default().serve_with_incoming_shutdown(routes, listener, async move {
+                            let _ = drain_rx.await;
+                        });
+
+                        pin!(serve, process_shutdown);
+
+                        select! {
+                            result = &mut serve => result.error_context("Failed to serve gRPC server."),
+
+                            _ = &mut process_shutdown => {
+                                let _ = drain_tx.send(());
+
+                                match timeout(shutdown_timeout, serve).await {
+                                    Ok(Ok(())) => Ok(()),
+                                    Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
+                                    Err(_) => {
+                                        warn!("Failed to gracefully drain gRPC connections.");
+                                        Ok(())
+                                    },
+                                }
+                            },
+                        }
+                    }))
+                }
             }
             #[cfg(unix)]
             ListenAddress::Unix(path) => {
@@ -171,6 +262,39 @@ impl Supervisable for GrpcServer {
             }),
         }
     }
+}
+
+/// A TLS-wrapped TCP stream that implements tonic's `Connected` trait.
+///
+/// This wrapper is needed because `tokio_rustls::server::TlsStream<TcpStream>` only implements tonic's `Connected`
+/// trait when the `tls-connect-info` feature is enabled, which we do not use. We provide a minimal `Connected`
+/// implementation with `ConnectInfo = ()` since the gRPC server does not need connection-level metadata.
+struct TlsServerStream(TokioTlsStream<tokio::net::TcpStream>);
+
+impl AsyncRead for TlsServerStream {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for TlsServerStream {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.0).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.0).poll_shutdown(cx)
+    }
+}
+
+impl Connected for TlsServerStream {
+    type ConnectInfo = ();
+
+    fn connect_info(&self) -> Self::ConnectInfo {}
 }
 
 #[cfg(test)]

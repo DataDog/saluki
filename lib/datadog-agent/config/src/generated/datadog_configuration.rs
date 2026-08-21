@@ -1618,6 +1618,9 @@ pub struct OtlpConfigReceiverProtocolsGrpc {
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_recv_msg_size_mib: i64,
 
+    #[serde(default)]
+    pub tls: OtlpConfigReceiverProtocolsGrpcTls,
+
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport"
     )]
@@ -1630,7 +1633,33 @@ impl Default for OtlpConfigReceiverProtocolsGrpc {
         Self {
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint(),
             max_recv_msg_size_mib: Default::default(),
+            tls: Default::default(),
             transport: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsGrpcTls {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub ca_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub cert_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub key_file: Option<String>,
+}
+
+impl Default for OtlpConfigReceiverProtocolsGrpcTls {
+    fn default() -> Self {
+        Self {
+            ca_file: Default::default(),
+            cert_file: Default::default(),
+            key_file: Default::default(),
         }
     }
 }
@@ -1645,6 +1674,9 @@ pub struct OtlpConfigReceiverProtocolsHttp {
     )]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub endpoint: String,
+
+    #[serde(default)]
+    pub tls: OtlpConfigReceiverProtocolsHttpTls,
 }
 
 impl Default for OtlpConfigReceiverProtocolsHttp {
@@ -1652,6 +1684,7 @@ impl Default for OtlpConfigReceiverProtocolsHttp {
         Self {
             cors: Default::default(),
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint(),
+            tls: Default::default(),
         }
     }
 }
@@ -1682,6 +1715,31 @@ impl Default for OtlpConfigReceiverProtocolsHttpCors {
             allowed_origins: Default::default(),
             exposed_headers: Default::default(),
             max_age: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsHttpTls {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub ca_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub cert_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub key_file: Option<String>,
+}
+
+impl Default for OtlpConfigReceiverProtocolsHttpTls {
+    fn default() -> Self {
+        Self {
+            ca_file: Default::default(),
+            cert_file: Default::default(),
+            key_file: Default::default(),
         }
     }
 }
