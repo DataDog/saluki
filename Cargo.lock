@@ -4284,6 +4284,7 @@ dependencies = [
  "protobuf",
  "rand 0.10.2",
  "regex",
+ "rmp",
  "rmp-serde",
  "rustls",
  "saluki-antithesis",

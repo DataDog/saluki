@@ -1,0 +1,996 @@
+{
+  "format": "datadog-trace-v1.0-idx-msgpack",
+  "description": "Fixtures for validating a v1.0 (idx) trace payload msgpack decoder. Every payload here was produced by the trace agent's reference encoder (pkg/proto/pbgo/trace/idx) using its inline string-streaming MarshalMsg, which is the encoding real tracers emit. Base64-decode payload_base64, decode it as a tracer payload, and compare the result against expected. Strings in expected are already resolved through the streaming-string table.",
+  "notes": [
+    "Attribute maps are encoded as a flat msgpack array whose length is 3x the number of entries (key, value type, value); the order of entries within one map is not significant.",
+    "Strings are 'streaming strings': the first occurrence of a string is written inline as a msgpack string and appended to the decoder's string table (index 0 is always the empty string); later occurrences are written as a uint32 index into that table.",
+    "These payloads do not carry an explicit string table (field 1 of the tracer payload) because this encoder never emits one. A decoder must still support that field.",
+    "Field numbers are msgpack uint keys, and fields equal to their zero value are omitted, so map headers vary in size between cases."
+  ],
+  "cases": [
+    {
+      "name": "full_payload",
+      "description": "The widest case: payload metadata (fields 2-9), payload-level attributes, two chunks, all seven AnyValue types, span links, span events, 128-bit trace IDs and string deduplication. Chunk-level attributes override payload-level ones on 'pkey' while payload 'common' and chunk 'ckey' both survive. The second chunk is minimal: because the encoder omits default-valued fields, it transmits neither priority nor origin.",
+      "payload_base64": "igKrY29udGFpbmVyLTEDomdvBKQxLjI0BaZ2Mi4xLjAGp3J0LXV1aWQHpHByb2QIpmhvc3QtYQmlOS45LjkKlqRwa2V5AaRwdmFspmNvbW1vbgGqY29tbW9uLXZhbAuShgECAqZsYW1iZGEDlgkBqGNodW5rdmFspGNrZXkBpGN2YWwEkY8BpXN2Yy1hAqRvcC1hA6ZHRVQgL2EEbwbNA+gHzQH0CMMJ3AAVqWJvb2xfYXR0cgLDqGRibF9hdHRyA8tABAAAAAAAAKhpbnRfYXR0cgQqqmJ5dGVzX2F0dHIFxATerb7vqGFycl9hdHRyBpQEAQGjdHdvqGt2bF9hdHRyB5OmbmVzdGVkBAeoc3RyX2F0dHIBpWhlbGxvCqN3ZWILkYUBxBAQERITFBUWFxgZGhscHR4fAszeA5OibGsBomx2BKR0cz0xBc6AAAABDJGDAc0F3AKjZXZ0A5OiZWsBomV2DQYOCA+obmV0L2h0dHAQAgbEEAABAgMEBQYHCAkKCwwNDg8HBIMEkYMBEQKkb3AtYgTNAU0FwwbEEAABAgMEBQYHCAkKCwwNDg8=",
+      "expected": {
+        "container_id": "container-1",
+        "language_name": "go",
+        "language_version": "1.24",
+        "tracer_version": "v2.1.0",
+        "runtime_id": "rt-uuid",
+        "env": "prod",
+        "hostname": "host-a",
+        "app_version": "9.9.9",
+        "attributes": {
+          "pkey": {
+            "type": "string",
+            "string": "pval"
+          },
+          "common": {
+            "type": "string",
+            "string": "common-val"
+          }
+        },
+        "chunks": [
+          {
+            "priority": 2,
+            "origin": "lambda",
+            "attributes": {
+              "pkey": {
+                "type": "string",
+                "string": "chunkval"
+              },
+              "ckey": {
+                "type": "string",
+                "string": "cval"
+              }
+            },
+            "spans": [
+              {
+                "service": "svc-a",
+                "name": "op-a",
+                "resource": "GET /a",
+                "span_id": 111,
+                "start": 1000,
+                "duration": 500,
+                "error": true,
+                "attributes": {
+                  "bool_attr": {
+                    "type": "bool",
+                    "bool": true
+                  },
+                  "dbl_attr": {
+                    "type": "double",
+                    "double": 2.5
+                  },
+                  "int_attr": {
+                    "type": "int",
+                    "int": 42
+                  },
+                  "bytes_attr": {
+                    "type": "bytes",
+                    "bytes_base64": "3q2+7w=="
+                  },
+                  "arr_attr": {
+                    "type": "array",
+                    "array": [
+                      {
+                        "type": "int",
+                        "int": 1
+                      },
+                      {
+                        "type": "string",
+                        "string": "two"
+                      }
+                    ]
+                  },
+                  "kvl_attr": {
+                    "type": "key_value_list",
+                    "key_values": [
+                      {
+                        "key": "nested",
+                        "value": {
+                          "type": "int",
+                          "int": 7
+                        }
+                      }
+                    ]
+                  },
+                  "str_attr": {
+                    "type": "string",
+                    "string": "hello"
+                  }
+                },
+                "type": "web",
+                "links": [
+                  {
+                    "trace_id_hex": "101112131415161718191a1b1c1d1e1f",
+                    "span_id": 222,
+                    "attributes": {
+                      "lk": {
+                        "type": "string",
+                        "string": "lv"
+                      }
+                    },
+                    "tracestate": "ts=1",
+                    "flags": 2147483649
+                  }
+                ],
+                "events": [
+                  {
+                    "time": 1500,
+                    "name": "evt",
+                    "attributes": {
+                      "ek": {
+                        "type": "string",
+                        "string": "ev"
+                      }
+                    }
+                  }
+                ],
+                "env": "prod",
+                "version": "9.9.9",
+                "component": "net/http",
+                "kind": "SPAN_KIND_SERVER"
+              }
+            ],
+            "trace_id_hex": "000102030405060708090a0b0c0d0e0f",
+            "sampling_mechanism": 4
+          },
+          {
+            "spans": [
+              {
+                "service": "svc-a",
+                "name": "op-b",
+                "span_id": 333
+              }
+            ],
+            "dropped_trace": true,
+            "trace_id_hex": "000102030405060708090a0b0c0d0e0f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty_payload",
+      "description": "A tracer payload with no fields set at all. Encodes to a zero-length msgpack map; decoders must accept it and produce an empty payload rather than erroring.",
+      "payload_base64": "gA==",
+      "expected": {}
+    },
+    {
+      "name": "minimal_span",
+      "description": "One chunk with one span carrying only the fields a tracer always sets. Exercises the common path and confirms unset fields are omitted from the wire entirely.",
+      "payload_base64": "hAOiZ28FpnYyLjEuMAekcHJvZAuRgwEBBJGGAahjaGVja291dAKsaHR0cC5yZXF1ZXN0A6lHRVQgL2NhcnQEzwECAwQFBgcIBs8Xl5z+NioAAAfOABbjYAbEEAsKCQgHBgUEAwIBAAkIBwY=",
+      "expected": {
+        "language_name": "go",
+        "tracer_version": "v2.1.0",
+        "env": "prod",
+        "chunks": [
+          {
+            "priority": 1,
+            "dropped_trace": false,
+            "trace_id_hex": "0b0a0908070605040302010009080706",
+            "sampling_mechanism": 0,
+            "spans": [
+              {
+                "service": "checkout",
+                "name": "http.request",
+                "resource": "GET /cart",
+                "span_id": 72623859790382856,
+                "parent_id": 0,
+                "start": 1700000000000000000,
+                "duration": 1500000,
+                "error": false,
+                "kind": "SPAN_KIND_UNSPECIFIED"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "all_attribute_types",
+      "description": "Every field of every message, and one attribute of each of the seven AnyValue types (string, bool, double, int, bytes, array, key-value list) at the tracer-payload, chunk, span, span-link and span-event levels, including nested arrays and nested key-value lists.",
+      "payload_base64": "igLZQDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYDomdvBKYxLjI1LjAFpnYyLjEuMAbZJDZmOGMxYTM0LTJmMWItNGE1ZS05ZDNjLTBiMWUyZDNmNGE1Ygenc3RhZ2luZwizaS0wYWJjZDEyMzRlZmdoNTY3OAmlMS40LjIK3AAYq3BheWxvYWQuaW50BNP/3////////61wYXlsb2FkLmJ5dGVzBcQEAAH+/61wYXlsb2FkLmFycmF5BpYBpWZpcnN0BCoGlALCA8s/+AAAAAAAAK5wYXlsb2FkLmt2bGlzdAeZrW5lc3RlZC5zdHJpbmcBrG5lc3RlZC12YWx1ZapuZXN0ZWQuaW50BAetbmVzdGVkLmt2bGlzdAeWrG5lc3RlZC5ieXRlcwXEBGRlZXCsbmVzdGVkLmFycmF5BpIBsmRlZXAtYXJyYXktZWxlbWVudK5wYXlsb2FkLnN0cmluZwGyaGVsbG8sIOS4lueVjCDwn4yNtHBheWxvYWQuc3RyaW5nX2VtcHR5AQCscGF5bG9hZC5ib29sAsOucGF5bG9hZC5kb3VibGUDy72OyUyiEFmeC5GHAQICo3J1bQPcABisY2h1bmsuc3RyaW5nARayY2h1bmsuc3RyaW5nX2VtcHR5AQCqY2h1bmsuYm9vbALDrGNodW5rLmRvdWJsZQPLvY7JTKIQWZ6pY2h1bmsuaW50BNP/3////////6tjaHVuay5ieXRlcwXEBAAB/v+rY2h1bmsuYXJyYXkGlgEMBCoGlALCA8s/+AAAAAAAAKxjaHVuay5rdmxpc3QHmQ4BDxAEBxEHlhIFxARkZWVwEwaSARQEkowBqGNoZWNrb3V0AqxodHRwLnJlcXVlc3QDrlBPU1QgL2NoZWNrb3V0BM8REREREREREQbPF5ec/jYqAAAHzg7msoAJ3AAYqHJvb3QuaW50BNP/3////////6pyb290LmJ5dGVzBcQEAAH+/6pyb290LmFycmF5BpYBDAQqBpQCwgPLP/gAAAAAAACrcm9vdC5rdmxpc3QHmQ4BDxAEBxEHlhIFxARkZWVwEwaSARSrcm9vdC5zdHJpbmcBFrFyb290LnN0cmluZ19lbXB0eQEAqXJvb3QuYm9vbALDq3Jvb3QuZG91YmxlA8u9jslMohBZngqjd2ViDQYOCA+obmV0L2h0dHAQAt4AEAGrY2hlY2tvdXQtZGICrnBvc3RncmVzLnF1ZXJ5A9kgU0VMRUNUICogRlJPTSBjYXJ0cyBXSEVSRSBpZCA9ID8EzyIiIiIiIiIiBc8REREREREREQbPF5ec/jbCloAHzgcnDgAIwwncABisY2hpbGQuZG91YmxlA8u9jslMohBZnqljaGlsZC5pbnQE0//f////////q2NoaWxkLmJ5dGVzBcQEAAH+/6tjaGlsZC5hcnJheQaWAQwEKgaUAsIDyz/4AAAAAAAArGNoaWxkLmt2bGlzdAeZDgEPEAQHEQeWEgXEBGRlZXATBpIBFKxjaGlsZC5zdHJpbmcBFrJjaGlsZC5zdHJpbmdfZW1wdHkBAKpjaGlsZC5ib29sAsMKomRiC5KFAcQQqqqqqqqqqqq7u7u7u7u7uwLPMzMzMzMzMzMD3AAYqmxpbmsuYXJyYXkGlgEMBCoGlALCA8s/+AAAAAAAAKtsaW5rLmt2bGlzdAeZDgEPEAQHEQeWEgXEBGRlZXATBpIBFKtsaW5rLnN0cmluZwEWsWxpbmsuc3RyaW5nX2VtcHR5AQCpbGluay5ib29sAsOrbGluay5kb3VibGUDy72OyUyiEFmeqGxpbmsuaW50BNP/3////////6psaW5rLmJ5dGVzBcQEAAH+/wS+ZGQ9czoxO286cnVtLGNvbmdvPXQ2MXJjV2tnTXpFBc6AAAABhQHEEMzMzMzMzMzM3d3d3d3d3d0Cz0REREREREREA5AEAAUADJKDAc8Xl5z+Nw7hwAKpZXhjZXB0aW9uA9wAGLJldmVudC5zdHJpbmdfZW1wdHkBAKpldmVudC5ib29sAsOsZXZlbnQuZG91YmxlA8u9jslMohBZnqlldmVudC5pbnQE0//f////////q2V2ZW50LmJ5dGVzBcQEAAH+/6tldmVudC5hcnJheQaWAQwEKgaUAsIDyz/4AAAAAAAArGV2ZW50Lmt2bGlzdAeZDgEPEAQHEQeWEgXEBGRlZXATBpIBFKxldmVudC5zdHJpbmcBFoMBzxeXnP43Wy0AAqVyZXRyeQOQDQYOCA+sZGF0YWJhc2Uvc3FsEAMFwwbEEAsKCQgHBgUEAwIBAAkIBwYHCA==",
+      "expected": {
+        "container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "language_name": "go",
+        "language_version": "1.25.0",
+        "tracer_version": "v2.1.0",
+        "runtime_id": "6f8c1a34-2f1b-4a5e-9d3c-0b1e2d3f4a5b",
+        "env": "staging",
+        "hostname": "i-0abcd1234efgh5678",
+        "app_version": "1.4.2",
+        "attributes": {
+          "payload.array": {
+            "type": "array",
+            "array": [
+              {
+                "type": "string",
+                "string": "first"
+              },
+              {
+                "type": "int",
+                "int": 42
+              },
+              {
+                "type": "array",
+                "array": [
+                  {
+                    "type": "bool",
+                    "bool": false
+                  },
+                  {
+                    "type": "double",
+                    "double": 1.5
+                  }
+                ]
+              }
+            ]
+          },
+          "payload.bool": {
+            "type": "bool",
+            "bool": true
+          },
+          "payload.bytes": {
+            "type": "bytes",
+            "bytes_base64": "AAH+/w=="
+          },
+          "payload.double": {
+            "type": "double",
+            "double": -3.5e-12
+          },
+          "payload.int": {
+            "type": "int",
+            "int": -9007199254740993
+          },
+          "payload.kvlist": {
+            "type": "key_value_list",
+            "key_values": [
+              {
+                "key": "nested.string",
+                "value": {
+                  "type": "string",
+                  "string": "nested-value"
+                }
+              },
+              {
+                "key": "nested.int",
+                "value": {
+                  "type": "int",
+                  "int": 7
+                }
+              },
+              {
+                "key": "nested.kvlist",
+                "value": {
+                  "type": "key_value_list",
+                  "key_values": [
+                    {
+                      "key": "nested.bytes",
+                      "value": {
+                        "type": "bytes",
+                        "bytes_base64": "ZGVlcA=="
+                      }
+                    },
+                    {
+                      "key": "nested.array",
+                      "value": {
+                        "type": "array",
+                        "array": [
+                          {
+                            "type": "string",
+                            "string": "deep-array-element"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "payload.string": {
+            "type": "string",
+            "string": "hello, 世界 🌍"
+          },
+          "payload.string_empty": {
+            "type": "string",
+            "string": ""
+          }
+        },
+        "chunks": [
+          {
+            "priority": 2,
+            "origin": "rum",
+            "attributes": {
+              "chunk.array": {
+                "type": "array",
+                "array": [
+                  {
+                    "type": "string",
+                    "string": "first"
+                  },
+                  {
+                    "type": "int",
+                    "int": 42
+                  },
+                  {
+                    "type": "array",
+                    "array": [
+                      {
+                        "type": "bool",
+                        "bool": false
+                      },
+                      {
+                        "type": "double",
+                        "double": 1.5
+                      }
+                    ]
+                  }
+                ]
+              },
+              "chunk.bool": {
+                "type": "bool",
+                "bool": true
+              },
+              "chunk.bytes": {
+                "type": "bytes",
+                "bytes_base64": "AAH+/w=="
+              },
+              "chunk.double": {
+                "type": "double",
+                "double": -3.5e-12
+              },
+              "chunk.int": {
+                "type": "int",
+                "int": -9007199254740993
+              },
+              "chunk.kvlist": {
+                "type": "key_value_list",
+                "key_values": [
+                  {
+                    "key": "nested.string",
+                    "value": {
+                      "type": "string",
+                      "string": "nested-value"
+                    }
+                  },
+                  {
+                    "key": "nested.int",
+                    "value": {
+                      "type": "int",
+                      "int": 7
+                    }
+                  },
+                  {
+                    "key": "nested.kvlist",
+                    "value": {
+                      "type": "key_value_list",
+                      "key_values": [
+                        {
+                          "key": "nested.bytes",
+                          "value": {
+                            "type": "bytes",
+                            "bytes_base64": "ZGVlcA=="
+                          }
+                        },
+                        {
+                          "key": "nested.array",
+                          "value": {
+                            "type": "array",
+                            "array": [
+                              {
+                                "type": "string",
+                                "string": "deep-array-element"
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              "chunk.string": {
+                "type": "string",
+                "string": "hello, 世界 🌍"
+              },
+              "chunk.string_empty": {
+                "type": "string",
+                "string": ""
+              }
+            },
+            "dropped_trace": true,
+            "trace_id_hex": "0b0a0908070605040302010009080706",
+            "sampling_mechanism": 8,
+            "spans": [
+              {
+                "service": "checkout",
+                "name": "http.request",
+                "resource": "POST /checkout",
+                "span_id": 1229782938247303441,
+                "parent_id": 0,
+                "start": 1700000000000000000,
+                "duration": 250000000,
+                "error": false,
+                "attributes": {
+                  "root.array": {
+                    "type": "array",
+                    "array": [
+                      {
+                        "type": "string",
+                        "string": "first"
+                      },
+                      {
+                        "type": "int",
+                        "int": 42
+                      },
+                      {
+                        "type": "array",
+                        "array": [
+                          {
+                            "type": "bool",
+                            "bool": false
+                          },
+                          {
+                            "type": "double",
+                            "double": 1.5
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "root.bool": {
+                    "type": "bool",
+                    "bool": true
+                  },
+                  "root.bytes": {
+                    "type": "bytes",
+                    "bytes_base64": "AAH+/w=="
+                  },
+                  "root.double": {
+                    "type": "double",
+                    "double": -3.5e-12
+                  },
+                  "root.int": {
+                    "type": "int",
+                    "int": -9007199254740993
+                  },
+                  "root.kvlist": {
+                    "type": "key_value_list",
+                    "key_values": [
+                      {
+                        "key": "nested.string",
+                        "value": {
+                          "type": "string",
+                          "string": "nested-value"
+                        }
+                      },
+                      {
+                        "key": "nested.int",
+                        "value": {
+                          "type": "int",
+                          "int": 7
+                        }
+                      },
+                      {
+                        "key": "nested.kvlist",
+                        "value": {
+                          "type": "key_value_list",
+                          "key_values": [
+                            {
+                              "key": "nested.bytes",
+                              "value": {
+                                "type": "bytes",
+                                "bytes_base64": "ZGVlcA=="
+                              }
+                            },
+                            {
+                              "key": "nested.array",
+                              "value": {
+                                "type": "array",
+                                "array": [
+                                  {
+                                    "type": "string",
+                                    "string": "deep-array-element"
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "root.string": {
+                    "type": "string",
+                    "string": "hello, 世界 🌍"
+                  },
+                  "root.string_empty": {
+                    "type": "string",
+                    "string": ""
+                  }
+                },
+                "type": "web",
+                "env": "staging",
+                "version": "1.4.2",
+                "component": "net/http",
+                "kind": "SPAN_KIND_SERVER"
+              },
+              {
+                "service": "checkout-db",
+                "name": "postgres.query",
+                "resource": "SELECT * FROM carts WHERE id = ?",
+                "span_id": 2459565876494606882,
+                "parent_id": 1229782938247303441,
+                "start": 1700000000010000000,
+                "duration": 120000000,
+                "error": true,
+                "attributes": {
+                  "child.array": {
+                    "type": "array",
+                    "array": [
+                      {
+                        "type": "string",
+                        "string": "first"
+                      },
+                      {
+                        "type": "int",
+                        "int": 42
+                      },
+                      {
+                        "type": "array",
+                        "array": [
+                          {
+                            "type": "bool",
+                            "bool": false
+                          },
+                          {
+                            "type": "double",
+                            "double": 1.5
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "child.bool": {
+                    "type": "bool",
+                    "bool": true
+                  },
+                  "child.bytes": {
+                    "type": "bytes",
+                    "bytes_base64": "AAH+/w=="
+                  },
+                  "child.double": {
+                    "type": "double",
+                    "double": -3.5e-12
+                  },
+                  "child.int": {
+                    "type": "int",
+                    "int": -9007199254740993
+                  },
+                  "child.kvlist": {
+                    "type": "key_value_list",
+                    "key_values": [
+                      {
+                        "key": "nested.string",
+                        "value": {
+                          "type": "string",
+                          "string": "nested-value"
+                        }
+                      },
+                      {
+                        "key": "nested.int",
+                        "value": {
+                          "type": "int",
+                          "int": 7
+                        }
+                      },
+                      {
+                        "key": "nested.kvlist",
+                        "value": {
+                          "type": "key_value_list",
+                          "key_values": [
+                            {
+                              "key": "nested.bytes",
+                              "value": {
+                                "type": "bytes",
+                                "bytes_base64": "ZGVlcA=="
+                              }
+                            },
+                            {
+                              "key": "nested.array",
+                              "value": {
+                                "type": "array",
+                                "array": [
+                                  {
+                                    "type": "string",
+                                    "string": "deep-array-element"
+                                  }
+                                ]
+                              }
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "child.string": {
+                    "type": "string",
+                    "string": "hello, 世界 🌍"
+                  },
+                  "child.string_empty": {
+                    "type": "string",
+                    "string": ""
+                  }
+                },
+                "type": "db",
+                "links": [
+                  {
+                    "trace_id_hex": "aaaaaaaaaaaaaaaabbbbbbbbbbbbbbbb",
+                    "span_id": 3689348814741910323,
+                    "attributes": {
+                      "link.array": {
+                        "type": "array",
+                        "array": [
+                          {
+                            "type": "string",
+                            "string": "first"
+                          },
+                          {
+                            "type": "int",
+                            "int": 42
+                          },
+                          {
+                            "type": "array",
+                            "array": [
+                              {
+                                "type": "bool",
+                                "bool": false
+                              },
+                              {
+                                "type": "double",
+                                "double": 1.5
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      "link.bool": {
+                        "type": "bool",
+                        "bool": true
+                      },
+                      "link.bytes": {
+                        "type": "bytes",
+                        "bytes_base64": "AAH+/w=="
+                      },
+                      "link.double": {
+                        "type": "double",
+                        "double": -3.5e-12
+                      },
+                      "link.int": {
+                        "type": "int",
+                        "int": -9007199254740993
+                      },
+                      "link.kvlist": {
+                        "type": "key_value_list",
+                        "key_values": [
+                          {
+                            "key": "nested.string",
+                            "value": {
+                              "type": "string",
+                              "string": "nested-value"
+                            }
+                          },
+                          {
+                            "key": "nested.int",
+                            "value": {
+                              "type": "int",
+                              "int": 7
+                            }
+                          },
+                          {
+                            "key": "nested.kvlist",
+                            "value": {
+                              "type": "key_value_list",
+                              "key_values": [
+                                {
+                                  "key": "nested.bytes",
+                                  "value": {
+                                    "type": "bytes",
+                                    "bytes_base64": "ZGVlcA=="
+                                  }
+                                },
+                                {
+                                  "key": "nested.array",
+                                  "value": {
+                                    "type": "array",
+                                    "array": [
+                                      {
+                                        "type": "string",
+                                        "string": "deep-array-element"
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      },
+                      "link.string": {
+                        "type": "string",
+                        "string": "hello, 世界 🌍"
+                      },
+                      "link.string_empty": {
+                        "type": "string",
+                        "string": ""
+                      }
+                    },
+                    "tracestate": "dd=s:1;o:rum,congo=t61rcWkgMzE",
+                    "flags": 2147483649
+                  },
+                  {
+                    "trace_id_hex": "ccccccccccccccccdddddddddddddddd",
+                    "span_id": 4919131752989213764,
+                    "flags": 0
+                  }
+                ],
+                "events": [
+                  {
+                    "time": 1700000000015000000,
+                    "name": "exception",
+                    "attributes": {
+                      "event.array": {
+                        "type": "array",
+                        "array": [
+                          {
+                            "type": "string",
+                            "string": "first"
+                          },
+                          {
+                            "type": "int",
+                            "int": 42
+                          },
+                          {
+                            "type": "array",
+                            "array": [
+                              {
+                                "type": "bool",
+                                "bool": false
+                              },
+                              {
+                                "type": "double",
+                                "double": 1.5
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      "event.bool": {
+                        "type": "bool",
+                        "bool": true
+                      },
+                      "event.bytes": {
+                        "type": "bytes",
+                        "bytes_base64": "AAH+/w=="
+                      },
+                      "event.double": {
+                        "type": "double",
+                        "double": -3.5e-12
+                      },
+                      "event.int": {
+                        "type": "int",
+                        "int": -9007199254740993
+                      },
+                      "event.kvlist": {
+                        "type": "key_value_list",
+                        "key_values": [
+                          {
+                            "key": "nested.string",
+                            "value": {
+                              "type": "string",
+                              "string": "nested-value"
+                            }
+                          },
+                          {
+                            "key": "nested.int",
+                            "value": {
+                              "type": "int",
+                              "int": 7
+                            }
+                          },
+                          {
+                            "key": "nested.kvlist",
+                            "value": {
+                              "type": "key_value_list",
+                              "key_values": [
+                                {
+                                  "key": "nested.bytes",
+                                  "value": {
+                                    "type": "bytes",
+                                    "bytes_base64": "ZGVlcA=="
+                                  }
+                                },
+                                {
+                                  "key": "nested.array",
+                                  "value": {
+                                    "type": "array",
+                                    "array": [
+                                      {
+                                        "type": "string",
+                                        "string": "deep-array-element"
+                                      }
+                                    ]
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      },
+                      "event.string": {
+                        "type": "string",
+                        "string": "hello, 世界 🌍"
+                      },
+                      "event.string_empty": {
+                        "type": "string",
+                        "string": ""
+                      }
+                    }
+                  },
+                  {
+                    "time": 1700000000020000000,
+                    "name": "retry"
+                  }
+                ],
+                "env": "staging",
+                "version": "1.4.2",
+                "component": "database/sql",
+                "kind": "SPAN_KIND_CLIENT"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "streaming_string_refs",
+      "description": "The same strings repeated across chunks, spans and attributes. Every repeat is encoded as a uint32 index into the implicit streaming-string table instead of an inline string, so a decoder that does not build that table correctly will resolve the wrong values.",
+      "payload_base64": "gwOiZ28HpnNoYXJlZAuShAEBAgIEk4gBrnNoYXJlZC1zZXJ2aWNlAqlzaGFyZWQtb3ADBAQBBs8Xl5z+NioAAAfNA+gJk6pzaGFyZWQua2V5AaxzaGFyZWQtdmFsdWUNAogBAwIEAwQEAgbPF5ec/jYqAAAHzQPoCZMFAQYNAogBAwIEAwQEAwbPF5ec/jYqAAAHzQPoCZMFAQYNAgbEEAAAAAAAAAABAAAAAAAAAAGEAQECAgSTiAEDAgQDBAQLBs8Xl5z+NioAAAfNA+gJkwUBBg0CiAEDAgQDBAQMBs8Xl5z+NioAAAfNA+gJkwUBBg0CiAEDAgQDBAQNBs8Xl5z+NioAAAfNA+gJkwUBBg0CBsQQAAAAAAAAAAIAAAAAAAAAAg==",
+      "expected": {
+        "language_name": "go",
+        "env": "shared",
+        "chunks": [
+          {
+            "priority": 1,
+            "origin": "shared",
+            "dropped_trace": false,
+            "trace_id_hex": "00000000000000010000000000000001",
+            "sampling_mechanism": 0,
+            "spans": [
+              {
+                "service": "shared-service",
+                "name": "shared-op",
+                "resource": "shared-op",
+                "span_id": 1,
+                "parent_id": 0,
+                "start": 1700000000000000000,
+                "duration": 1000,
+                "error": false,
+                "attributes": {
+                  "shared.key": {
+                    "type": "string",
+                    "string": "shared-value"
+                  }
+                },
+                "env": "shared",
+                "kind": "SPAN_KIND_UNSPECIFIED"
+              },
+              {
+                "service": "shared-service",
+                "name": "shared-op",
+                "resource": "shared-op",
+                "span_id": 2,
+                "parent_id": 0,
+                "start": 1700000000000000000,
+                "duration": 1000,
+                "error": false,
+                "attributes": {
+                  "shared.key": {
+                    "type": "string",
+                    "string": "shared-value"
+                  }
+                },
+                "env": "shared",
+                "kind": "SPAN_KIND_UNSPECIFIED"
+              },
+              {
+                "service": "shared-service",
+                "name": "shared-op",
+                "resource": "shared-op",
+                "span_id": 3,
+                "parent_id": 0,
+                "start": 1700000000000000000,
+                "duration": 1000,
+                "error": false,
+                "attributes": {
+                  "shared.key": {
+                    "type": "string",
+                    "string": "shared-value"
+                  }
+                },
+                "env": "shared",
+                "kind": "SPAN_KIND_UNSPECIFIED"
+              }
+            ]
+          },
+          {
+            "priority": 1,
+            "origin": "shared",
+            "dropped_trace": false,
+            "trace_id_hex": "00000000000000020000000000000002",
+            "sampling_mechanism": 0,
+            "spans": [
+              {
+                "service": "shared-service",
+                "name": "shared-op",
+                "resource": "shared-op",
+                "span_id": 11,
+                "parent_id": 0,
+                "start": 1700000000000000000,
+                "duration": 1000,
+                "error": false,
+                "attributes": {
+                  "shared.key": {
+                    "type": "string",
+                    "string": "shared-value"
+                  }
+                },
+                "env": "shared",
+                "kind": "SPAN_KIND_UNSPECIFIED"
+              },
+              {
+                "service": "shared-service",
+                "name": "shared-op",
+                "resource": "shared-op",
+                "span_id": 12,
+                "parent_id": 0,
+                "start": 1700000000000000000,
+                "duration": 1000,
+                "error": false,
+                "attributes": {
+                  "shared.key": {
+                    "type": "string",
+                    "string": "shared-value"
+                  }
+                },
+                "env": "shared",
+                "kind": "SPAN_KIND_UNSPECIFIED"
+              },
+              {
+                "service": "shared-service",
+                "name": "shared-op",
+                "resource": "shared-op",
+                "span_id": 13,
+                "parent_id": 0,
+                "start": 1700000000000000000,
+                "duration": 1000,
+                "error": false,
+                "attributes": {
+                  "shared.key": {
+                    "type": "string",
+                    "string": "shared-value"
+                  }
+                },
+                "env": "shared",
+                "kind": "SPAN_KIND_UNSPECIFIED"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
