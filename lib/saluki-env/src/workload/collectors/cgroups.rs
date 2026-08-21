@@ -30,7 +30,7 @@ struct Telemetry {
     /// Traversals that covered the entire hierarchy, and so ran a removal pass.
     ///
     /// Together with `traversals_incomplete_total`, this accounts for every traversal, so the two can be summed for a
-    /// total or ratioed to see how often traversals are being cut short.
+    /// total, or compared against each other to see how often traversals are being cut short.
     traversals_complete_total: Counter,
 
     /// Traversals that could not cover the entire hierarchy, and so did not run a removal pass.

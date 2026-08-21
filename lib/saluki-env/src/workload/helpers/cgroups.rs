@@ -272,7 +272,7 @@ pub struct CgroupsTraversal {
     ///
     /// When this is `false`, part of the hierarchy that may still hold live cgroups couldn't be read, so
     /// [`cgroups`][Self::cgroups] is not exhaustive. The entries present are still valid, and callers can safely treat
-    /// them as live, but callers **MUST NOT** infer that a previously-known cgroup was removed simply because it's
+    /// them as live, but callers **MUST NOT** infer that a previously known cgroup was removed simply because it's
     /// absent here.
     ///
     /// Note that this can be `true` even when [`skipped`][Self::skipped] is non-zero: a skipped path that couldn't have
