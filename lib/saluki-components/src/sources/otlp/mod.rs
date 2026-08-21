@@ -29,7 +29,7 @@ use saluki_core::{
 use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::ListenAddress;
+use saluki_io::net::{server::grpc::GrpcKeepalive, ListenAddress};
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -69,6 +69,25 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
         allowed_headers: cors.allowed_headers.clone(),
         exposed_headers: cors.exposed_headers.clone(),
         max_age: cors.max_age,
+    }
+}
+
+/// Resolves keepalive server parameters into tonic-compatible settings, applying defaults for
+/// unset `time` and `timeout`.
+///
+/// Unset `time` and `timeout` are replaced with their defaults. The age and grace fields default
+/// to no limit, which matches tonic's `None` default.
+fn resolve_grpc_keepalive(keepalive: &Option<domains::otlp::KeepaliveServerParameters>) -> GrpcKeepalive {
+    let params = keepalive.as_ref();
+    GrpcKeepalive {
+        http2_keepalive_interval: Some(
+            params
+                .and_then(|p| p.time)
+                .unwrap_or(domains::otlp::DEFAULT_GRPC_KEEPALIVE_TIME),
+        ),
+        http2_keepalive_timeout: params.and_then(|p| p.timeout),
+        max_connection_age: params.and_then(|p| p.max_connection_age),
+        max_connection_age_grace: params.and_then(|p| p.max_connection_age_grace),
     }
 }
 
@@ -176,6 +195,7 @@ impl SourceBuilder for OtlpConfiguration {
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let grpc_keepalive = resolve_grpc_keepalive(&self.otlp.receiver.grpc.keepalive);
         let cors = cors_configuration(&self.otlp.receiver.http.cors);
         let metrics = build_metrics(&context);
 
@@ -185,6 +205,7 @@ impl SourceBuilder for OtlpConfiguration {
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
+            grpc_keepalive,
             metrics_translator_config,
             metric_tags,
             default_hostname: self.default_hostname.clone(),
@@ -210,6 +231,7 @@ pub struct Otlp {
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    grpc_keepalive: GrpcKeepalive,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
     metric_tags: SharedTagSet,
     default_hostname: MetaString,
@@ -227,6 +249,7 @@ impl Source for Otlp {
             grpc_endpoint,
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
+            grpc_keepalive,
             metrics_translator_config,
             metric_tags,
             default_hostname,
@@ -254,8 +277,9 @@ impl Source for Otlp {
 
         // Build our gRPC and HTTP servers and spawn them.
         let handler = SourceHandler::new(tx);
-        let server_builder =
-            OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
+        let server_builder = OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
+            .with_cors(cors)
+            .with_grpc_keepalive(grpc_keepalive);
         server_builder
             .build(handler, memory_limiter.clone(), metrics.clone(), context.spawner())
             .await?;

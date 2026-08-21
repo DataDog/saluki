@@ -33,7 +33,10 @@ use saluki_core::accounting::MemoryLimiter;
 use saluki_core::components::{ComponentContext, ComponentSpawner};
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_error::{ErrorContext as _, GenericError};
-use saluki_io::net::server::{grpc::GrpcServer, http::HttpServer};
+use saluki_io::net::server::{
+    grpc::{GrpcKeepalive, GrpcServer},
+    http::HttpServer,
+};
 use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
@@ -133,6 +136,7 @@ pub struct OtlpServerBuilder {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    grpc_keepalive: Option<GrpcKeepalive>,
     cors: CorsConfiguration,
 }
 
@@ -145,8 +149,15 @@ impl OtlpServerBuilder {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
+            grpc_keepalive: None,
             cors: CorsConfiguration::default(),
         }
+    }
+
+    /// Sets the gRPC keepalive parameters.
+    pub fn with_grpc_keepalive(mut self, keepalive: GrpcKeepalive) -> Self {
+        self.grpc_keepalive = Some(keepalive);
+        self
     }
 
     /// Sets the CORS configuration for the HTTP receiver.
@@ -186,6 +197,12 @@ impl OtlpServerBuilder {
             .add_service(grpc_metrics_server)
             .add_service(grpc_logs_server)
             .add_service(grpc_traces_server);
+
+        let grpc_server = if let Some(keepalive) = self.grpc_keepalive {
+            grpc_server.with_keepalive(keepalive)
+        } else {
+            grpc_server
+        };
 
         spawner
             .supervisable(grpc_server)

@@ -2219,32 +2219,123 @@ inventory:
     description: "gRPC include metadata in context"
 
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time:
-    support: unknown
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
     description: "gRPC keepalive: min time between pings"
+    documentation: |-
+      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to rate-limit client keepalive PINGs:
+      a client that pings more often than `min_time` receives a GOAWAY with `ENHANCE_YOUR_CALM` and
+      the connection is closed. The default is `5m`.
+
+      These defaults originate in grpc-go, a general-purpose gRPC library that must be safe for any
+      server, including public-facing ones with untrusted or malicious clients. It therefore ships
+      conservative defaults that protect against ping-spam and resource-exhaustion attacks. These
+      defaults propagated unchanged through the OpenTelemetry Collector and into the Datadog Agent
+      config schema; they are not a considered decision for ADP's deployment model.
+
+      ADP's clients are trusted OpenTelemetry SDKs on the same host, not adversarial actors, so the
+      threat model this policy defends against does not apply. Additionally, ADP uses tonic/h2 for its
+      HTTP/2 stack, which has no enforcement policy hook: h2 auto-acks every inbound PING
+      unconditionally, with no observation point to rate-limit or send GOAWAY.
+
+      Setting `min_time` has no effect in ADP. The default (`5m`) is accepted silently; a non-default
+      value emits a warning.
 
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream:
-    support: unknown
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
     description: "gRPC keepalive: allow no-stream pings"
+    documentation: |-
+      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to control whether clients may send
+      keepalive PINGs when no stream (RPC) is active. When `false` (the grpc-go default), a client
+      that pings without an active stream receives a GOAWAY and the connection is closed.
+
+      These defaults originate in grpc-go, a general-purpose gRPC library that must be safe for any
+      server, including public-facing ones with untrusted or malicious clients. It therefore ships
+      conservative defaults that protect against idle-connection squatting and resource exhaustion.
+      These defaults propagated unchanged through the OpenTelemetry Collector and into the Datadog
+      Agent config schema; they are not a considered decision for ADP's deployment model.
+
+      ADP's clients are trusted OpenTelemetry SDKs on the same host that benefit from warm idle
+      connections, so the threat model this policy defends against does not apply. Additionally, ADP
+      uses tonic/h2 for its HTTP/2 stack, which has no enforcement policy hook: h2 auto-acks every
+      inbound PING regardless of active streams, with no observation point to reject no-stream pings.
+
+      Setting `permit_without_stream` has no effect in ADP. ADP always permits PINGs without an active
+      stream.
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC keepalive: max connection age"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC keepalive: max conn age grace"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle:
-    support: unknown
+    support: none
+    severity: medium
+    planned: false
+    pipelines: [otlp]
     description: "gRPC keepalive: max connection idle"
+    documentation: |-
+      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to close connections that have had zero
+      active RPC streams for the given duration, by sending GOAWAY and draining the connection.
+      Idleness is based on RPC stream count, not on traffic: a connection with no active RPCs is
+      considered idle even if the client is sending keepalive PINGs to keep it warm. The default is
+      infinity (never close idle connections).
+
+      This is a stricter form of idle reclamation than `server_parameters.time`/`timeout`, which only
+      closes connections that are fully silent (no frames at all for the idle period). A warm idle
+      connection (no RPCs, but the client is pinging) is closed by `max_connection_idle` but is not
+      closed by `time`/`timeout`, because the client PINGs count as read activity. So `time`/`timeout`
+      is not a full substitute: it covers the dead-connection case, while `max_connection_idle` covers
+      the warm-but-no-RPCs resource-reclamation case.
+
+      ADP uses tonic/h2 for its HTTP/2 stack, which has no `max_connection_idle` equivalent. tonic,
+      hyper, and hyper-util expose no idle-connection-close builder, and h2 does not expose the
+      per-connection hooks (active stream count, GOAWAY trigger) through tonic's server loop. The raw
+      `h2::server::Connection` has the primitives (`has_streams`, `graceful_shutdown`), but tonic
+      owns the connection lifecycle and does not hand the `h2` connection back to caller code.
+
+      The grpc-go default is infinity, so the Core Agent at its default does not reclaim warm-idle
+      connections either: it relies on `time`/`timeout` for dead-connection detection, which ADP
+      supports. At the default configuration, ADP's behavior matches the Core Agent on this axis.
+
+      Setting `max_connection_idle` has no effect in ADP. The default (infinity) is accepted silently;
+      a non-default value emits a warning.
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC keepalive: ping time"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC keepalive: ping timeout"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_concurrent_streams:
     support: unknown

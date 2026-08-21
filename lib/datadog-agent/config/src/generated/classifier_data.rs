@@ -285,6 +285,27 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("8192"),
     },
     ClassifierEntry {
+        yaml_path: "otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+        default: DefaultValue::DurationNanos(300000000000),
+    },
+    ClassifierEntry {
+        yaml_path: "otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+        default: DefaultValue::Missing,
+    },
+    ClassifierEntry {
+        yaml_path: "otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+        default: DefaultValue::Missing,
+    },
+    ClassifierEntry {
         yaml_path: "telemetry.dogstatsd.aggregator_channel_latency_buckets",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Low),

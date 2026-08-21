@@ -19,6 +19,29 @@ use tracing::warn;
 use crate::net::unix::{ensure_unix_socket_free, set_unix_socket_write_only};
 use crate::net::ListenAddress;
 
+/// Resolved keepalive parameters for a gRPC server.
+///
+/// All fields are already resolved by the caller before constructing this struct. `None` means
+/// "do not apply this setting." When constructed via `resolve_grpc_keepalive`, unset `time` and
+/// `timeout` default to 2 hours and 20 seconds respectively; `max_connection_age` and
+/// `max_connection_age_grace` default to no limit.
+#[derive(Clone, Debug, Default)]
+pub struct GrpcKeepalive {
+    /// Interval between HTTP/2 keepalive PING frames. `None` disables server-initiated keepalive.
+    pub http2_keepalive_interval: Option<Duration>,
+
+    /// Timeout for receiving a PONG after a keepalive PING before closing the connection.
+    pub http2_keepalive_timeout: Option<Duration>,
+
+    /// Maximum duration a connection may exist before the server sends GOAWAY. `None` means no
+    /// limit.
+    pub max_connection_age: Option<Duration>,
+
+    /// Grace period after `max_connection_age` before the connection is forcibly closed. `None` means
+    /// no limit.
+    pub max_connection_age_grace: Option<Duration>,
+}
+
 /// A gRPC server.
 ///
 /// Allows serving multiple gRPC services from a single endpoint.
@@ -39,6 +62,7 @@ pub struct GrpcServer {
     listen_addr: ListenAddress,
     routes: Option<Routes>,
     graceful_shutdown_timeout: Option<Duration>,
+    keepalive: Option<GrpcKeepalive>,
 }
 
 impl GrpcServer {
@@ -48,6 +72,7 @@ impl GrpcServer {
             listen_addr,
             routes: None,
             graceful_shutdown_timeout: None,
+            keepalive: None,
         }
     }
 
@@ -79,6 +104,12 @@ impl GrpcServer {
             ..self
         }
     }
+
+    /// Sets the keepalive parameters for this server.
+    pub fn with_keepalive(mut self, keepalive: GrpcKeepalive) -> Self {
+        self.keepalive = Some(keepalive);
+        self
+    }
 }
 
 #[async_trait]
@@ -96,6 +127,21 @@ impl Supervisable for GrpcServer {
         let routes = self.routes.clone().unwrap_or_default();
         let shutdown_timeout = self.graceful_shutdown_timeout.unwrap_or(Duration::MAX);
 
+        // Build the tonic server with keepalive settings applied.
+        let mut server = Server::default();
+        if let Some(ref ka) = self.keepalive {
+            server = server.http2_keepalive_interval(ka.http2_keepalive_interval);
+            if let Some(timeout) = ka.http2_keepalive_timeout {
+                server = server.http2_keepalive_timeout(Some(timeout));
+            }
+            if let Some(age) = ka.max_connection_age {
+                server = server.max_connection_age(age);
+            }
+            if let Some(grace) = ka.max_connection_age_grace {
+                server = server.max_connection_age_grace(grace);
+            }
+        }
+
         match &self.listen_addr {
             ListenAddress::Tcp(addr) => {
                 let listener = TcpIncoming::bind(*addr)
@@ -103,7 +149,7 @@ impl Supervisable for GrpcServer {
 
                 Ok(Box::pin(async move {
                     let (drain_tx, drain_rx) = oneshot::channel();
-                    let serve = Server::default().serve_with_incoming_shutdown(routes, listener, async move {
+                    let serve = server.serve_with_incoming_shutdown(routes, listener, async move {
                         let _ = drain_rx.await;
                     });
 
@@ -142,7 +188,7 @@ impl Supervisable for GrpcServer {
 
                 Ok(Box::pin(async move {
                     let (drain_tx, drain_rx) = oneshot::channel();
-                    let serve = Server::default().serve_with_incoming_shutdown(routes, incoming, async move {
+                    let serve = server.serve_with_incoming_shutdown(routes, incoming, async move {
                         let _ = drain_rx.await;
                     });
 
