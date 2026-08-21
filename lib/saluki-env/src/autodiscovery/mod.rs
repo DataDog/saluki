@@ -184,8 +184,32 @@ pub struct CheckConfig {
     pub init_config: Data,
     /// Instance configurations
     pub instances: Vec<Instance>,
+    /// Metric configuration
+    pub metric_config: Data,
+    /// Logs configuration
+    pub logs_config: Data,
+    /// Auto-discovery identifiers
+    pub ad_identifiers: Vec<MetaString>,
+    /// Advanced auto-discovery identifiers
+    pub advanced_ad_identifiers: Vec<AdvancedADIdentifier>,
+    /// Provider that discovered this config
+    pub provider: MetaString,
+    /// Service ID
+    pub service_id: MetaString,
+    /// Tagger entity
+    pub tagger_entity: MetaString,
+    /// Whether this is a cluster check
+    pub cluster_check: bool,
+    /// Node name
+    pub node_name: MetaString,
     /// Source of the configuration
     pub source: MetaString,
+    /// Whether to ignore autodiscovery tags
+    pub ignore_autodiscovery_tags: bool,
+    /// Whether metrics are excluded
+    pub metrics_excluded: bool,
+    /// Whether logs are excluded
+    pub logs_excluded: bool,
 }
 
 impl Config {
@@ -294,19 +318,49 @@ fn instance_name(instance: &Data) -> String {
 impl From<Config> for CheckConfig {
     fn from(config: Config) -> Self {
         let digest = config.digest();
+        let Config {
+            name,
+            init_config,
+            instances,
+            metric_config,
+            logs_config,
+            ad_identifiers,
+            advanced_ad_identifiers,
+            provider,
+            service_id,
+            tagger_entity,
+            cluster_check,
+            node_name,
+            source,
+            ignore_autodiscovery_tags,
+            metrics_excluded,
+            logs_excluded,
+        } = config;
+        let instances = instances
+            .into_iter()
+            .map(|instance_data| Instance {
+                id: instance_id(&name, &instance_data, digest, &init_config),
+                value: instance_data.value,
+            })
+            .collect();
 
-        CheckConfig {
-            name: config.name.clone(),
-            init_config: config.init_config.clone(),
-            instances: config
-                .instances
-                .into_iter()
-                .map(|instance_data| Instance {
-                    id: instance_id(&config.name, &instance_data, digest, &config.init_config),
-                    value: instance_data.value,
-                })
-                .collect(),
-            source: config.source,
+        Self {
+            name,
+            init_config,
+            instances,
+            metric_config,
+            logs_config,
+            ad_identifiers,
+            advanced_ad_identifiers,
+            provider,
+            service_id,
+            tagger_entity,
+            cluster_check,
+            node_name,
+            source,
+            ignore_autodiscovery_tags,
+            metrics_excluded,
+            logs_excluded,
         }
     }
 }
