@@ -114,12 +114,11 @@ impl Relay for OtlpRelay {
         pin!(global_shutdown);
 
         let mut health = context.take_health_handle();
-        let global_thread_pool = context.topology_context().global_thread_pool().clone();
         let memory_limiter = context.topology_context().memory_limiter().clone();
-        let dispatcher = context.dispatcher();
 
         let (payload_tx, mut payload_rx) = mpsc::channel(1024);
 
+        // Build our gRPC and HTTP servers and spawn them.
         let handler = RelayHandler::new(payload_tx);
         let server_builder = OtlpServerBuilder::new(
             http_endpoint.clone(),
@@ -128,8 +127,8 @@ impl Relay for OtlpRelay {
         )
         .with_cors(cors);
 
-        let (http_shutdown, mut http_error) = server_builder
-            .build(handler, memory_limiter, global_thread_pool, metrics)
+        server_builder
+            .build(handler, memory_limiter, metrics, context.spawner())
             .await?;
 
         health.mark_ready();
@@ -141,16 +140,10 @@ impl Relay for OtlpRelay {
                     debug!("Received shutdown signal.");
                     break
                 },
-                error = &mut http_error => {
-                    if let Some(error) = error {
-                        debug!(%error, "HTTP server error.");
-                    }
-                    break;
-                },
                 Some(otlp_payload) = payload_rx.recv() => {
                     let output_name = otlp_payload.signal_type.as_str();
                     let payload = Payload::Grpc(otlp_payload.into_grpc_payload());
-                    if let Err(e) = dispatcher.dispatch_named(output_name, payload).await {
+                    if let Err(e) = context.dispatcher().dispatch_named(output_name, payload).await {
                         error!(error = %e, output = output_name, "Failed to dispatch OTLP payload.");
                     }
                 },
@@ -159,9 +152,6 @@ impl Relay for OtlpRelay {
         }
 
         debug!("Stopping OTLP relay...");
-
-        http_shutdown.shutdown();
-
         debug!("OTLP relay stopped.");
 
         Ok(())
