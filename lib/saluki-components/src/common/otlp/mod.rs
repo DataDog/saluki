@@ -134,6 +134,8 @@ pub struct OtlpServerBuilder {
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     cors: CorsConfiguration,
+    http_tls_config: Option<rustls::ServerConfig>,
+    grpc_tls_config: Option<rustls::ServerConfig>,
 }
 
 impl OtlpServerBuilder {
@@ -146,12 +148,30 @@ impl OtlpServerBuilder {
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
             cors: CorsConfiguration::default(),
+            http_tls_config: None,
+            grpc_tls_config: None,
         }
     }
 
     /// Sets the CORS configuration for the HTTP receiver.
     pub fn with_cors(mut self, cors: CorsConfiguration) -> Self {
         self.cors = cors;
+        self
+    }
+
+    /// Sets the TLS configuration for the HTTP receiver.
+    ///
+    /// When set, the HTTP receiver only accepts encrypted TLS connections.
+    pub fn with_http_tls_config(mut self, config: rustls::ServerConfig) -> Self {
+        self.http_tls_config = Some(config);
+        self
+    }
+
+    /// Sets the TLS configuration for the gRPC receiver.
+    ///
+    /// When set, the gRPC receiver only accepts encrypted TLS connections.
+    pub fn with_grpc_tls_config(mut self, config: rustls::ServerConfig) -> Self {
+        self.grpc_tls_config = Some(config);
         self
     }
 
@@ -182,10 +202,14 @@ impl OtlpServerBuilder {
         let grpc_traces_server =
             TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        let grpc_server = GrpcServer::new(self.grpc_endpoint.clone())
+        let mut grpc_server = GrpcServer::new(self.grpc_endpoint.clone())
             .add_service(grpc_metrics_server)
             .add_service(grpc_logs_server)
             .add_service(grpc_traces_server);
+
+        if let Some(tls_config) = self.grpc_tls_config {
+            grpc_server = grpc_server.with_tls_config(tls_config);
+        }
 
         spawner
             .supervisable(grpc_server)
@@ -210,7 +234,11 @@ impl OtlpServerBuilder {
 
         let service = TowerToHyperService::new(router);
 
-        let http_server = HttpServer::from_listen_address(self.http_endpoint, service);
+        let mut http_server = HttpServer::from_listen_address(self.http_endpoint, service);
+
+        if let Some(tls_config) = self.http_tls_config {
+            http_server = http_server.with_tls_config(tls_config);
+        }
 
         spawner
             .supervisable(http_server)

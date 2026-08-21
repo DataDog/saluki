@@ -11,6 +11,7 @@ use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, Pa
 use saluki_core::topology::OutputDefinition;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
+use saluki_tls::ServerTLSConfigBuilder;
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
@@ -29,6 +30,26 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
         exposed_headers: cors.exposed_headers.clone(),
         max_age: cors.max_age,
     }
+}
+
+/// Builds a `rustls::ServerConfig` from resolved TLS settings, if TLS is enabled.
+///
+/// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
+/// requires client certificates signed by the CA certificates in that file (mutual TLS).
+fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<rustls::ServerConfig>, GenericError> {
+    if tls.cert_file.is_empty() || tls.key_file.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = ServerTLSConfigBuilder::new()
+        .with_cert_file(&tls.cert_file)
+        .with_key_file(&tls.key_file);
+
+    if !tls.ca_file.is_empty() {
+        builder = builder.with_ca_file(&tls.ca_file);
+    }
+
+    builder.build().map(Some)
 }
 
 /// Configuration for the OTLP relay.
@@ -82,11 +103,16 @@ impl RelayBuilder for OtlpRelayConfiguration {
     }
 
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Relay + Send>, GenericError> {
+        let http_tls_config = build_tls_config(&self.receiver.http.tls)?;
+        let grpc_tls_config = build_tls_config(&self.receiver.grpc.tls)?;
+
         Ok(Box::new(OtlpRelay {
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
             cors: cors_configuration(&self.receiver.http.cors),
+            http_tls_config,
+            grpc_tls_config,
             metrics: build_metrics(&context),
         }))
     }
@@ -100,6 +126,8 @@ pub struct OtlpRelay {
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     cors: CorsConfiguration,
+    http_tls_config: Option<rustls::ServerConfig>,
+    grpc_tls_config: Option<rustls::ServerConfig>,
     metrics: Metrics,
 }
 
@@ -111,6 +139,8 @@ impl Relay for OtlpRelay {
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
             cors,
+            http_tls_config,
+            grpc_tls_config,
             metrics,
         } = *self;
 
@@ -124,12 +154,19 @@ impl Relay for OtlpRelay {
 
         // Build our gRPC and HTTP servers and spawn them.
         let handler = RelayHandler::new(payload_tx);
-        let server_builder = OtlpServerBuilder::new(
+        let mut server_builder = OtlpServerBuilder::new(
             http_endpoint.clone(),
             grpc_endpoint.clone(),
             grpc_max_recv_msg_size_bytes,
         )
         .with_cors(cors);
+
+        if let Some(tls_config) = http_tls_config {
+            server_builder = server_builder.with_http_tls_config(tls_config);
+        }
+        if let Some(tls_config) = grpc_tls_config {
+            server_builder = server_builder.with_grpc_tls_config(tls_config);
+        }
 
         server_builder
             .build(handler, memory_limiter, metrics, context.spawner())
@@ -275,11 +312,13 @@ mod tests {
                 endpoint: "0.0.0.0:4317".to_string(),
                 transport: GrpcTransport::Tcp,
                 max_recv_msg_size_mib: 4,
+                ..Default::default()
             },
             http: domains::otlp::HttpReceiver {
                 endpoint: "0.0.0.0:4318".to_string(),
                 transport: "tcp".to_string(),
                 cors: Default::default(),
+                ..Default::default()
             },
             ..Default::default()
         });
