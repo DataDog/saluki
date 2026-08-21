@@ -52,6 +52,15 @@ impl SourceContext {
         self.shutdown_handle = Some(shutdown_handle);
     }
 
+    /// Installs the shutdown handle for this source context, for tests.
+    ///
+    /// The topology runtime does this itself before a source runs, using the shutdown signal of the component's
+    /// dedicated supervisor. A test that drives a source through a real shutdown has to stand in for it.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_shutdown_handle_for_test(&mut self, shutdown_handle: ShutdownHandle) {
+        self.set_shutdown_handle(shutdown_handle);
+    }
+
     /// Consumes the shutdown handle of this source context.
     ///
     /// # Panics

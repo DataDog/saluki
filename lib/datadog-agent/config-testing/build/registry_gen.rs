@@ -50,7 +50,6 @@ static GOLDEN_ORDER: &[(&str, &[&str])] = &[
             "aggregate_flush_interval",
             "aggregate_context_limit",
             "dogstatsd_flush_incomplete_buckets",
-            "counter_expiry_seconds",
             "dogstatsd_no_aggregation_pipeline",
             "aggregate_passthrough_idle_flush_timeout",
             "histogram_aggregates",
