@@ -484,19 +484,33 @@ fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Opt
     static CONTAINER_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new("([0-9a-f]{64})|([0-9a-f]{32}-\\d+)|([0-9a-f]{8}(-[0-9a-f]{4}){4}$)").unwrap());
 
-    CONTAINER_REGEX
-        .find(cgroup_name)
-        .filter(|name| {
-            // Filter out any systemd-managed cgroups, as well as CRI-O conmon cgroups, as they don't represent containers.
-            !name.as_str().ends_with(".mount") && !name.as_str().starts_with("crio-conmon-")
-        })
-        .and_then(|name| match interner.try_intern(name.as_str()) {
-            Some(interned) => Some(MetaString::from(interned)),
-            None => {
-                error!(container_id = %name.as_str(), "Failed to intern container ID.");
-                None
-            }
-        })
+    let container_id = CONTAINER_REGEX.find(cgroup_name)?;
+
+    // Note that this is checked against the full cgroup name, not against the ID we just matched out of it: the match
+    // is a bare hexadecimal string, which can never carry any of these prefixes or suffixes.
+    if is_container_named_but_not_a_container(cgroup_name) {
+        return None;
+    }
+
+    match interner.try_intern(container_id.as_str()) {
+        Some(interned) => Some(MetaString::from(interned)),
+        None => {
+            error!(container_id = %container_id.as_str(), "Failed to intern container ID.");
+            None
+        }
+    }
+}
+
+/// Returns `true` if a cgroup is named after a container but doesn't represent that container's workload.
+fn is_container_named_but_not_a_container(cgroup_name: &str) -> bool {
+    // With the systemd cgroup driver, a `.mount` cgroup can sit alongside a container's own cgroup. It exists, but no
+    // process is ever attached to it, so it holds no stats.
+    //
+    // The `conmon` cgroups belong to the CRI-O/Podman monitor process supervising a container, rather than to the
+    // container itself.
+    cgroup_name.ends_with(".mount")
+        || cgroup_name.starts_with("crio-conmon-")
+        || cgroup_name.starts_with("libpod-conmon-")
 }
 
 #[cfg(test)]
@@ -572,29 +586,40 @@ mod tests {
         assert_eq!(extract(&raw), Some(expected_container_id));
     }
 
-    // NOTE: `extract_container_id`'s documented intent is to exclude systemd `.mount` cgroups and CRI-O
-    // `crio-conmon-` cgroups, since neither represents an actual container. As currently written, though, the
-    // `.ends_with(".mount")`/`.starts_with("crio-conmon-")` checks are applied to the regex *match* -- which is a
-    // bare hexadecimal container ID -- rather than to the full cgroup name. A hex string can never end with
-    // `.mount` or start with `crio-conmon-`, so these two exclusion filters never actually fire. The two tests
-    // below pin that real, current behavior (the container ID is still extracted) rather than the documented
-    // intent, so a future fix that makes the filters effective will visibly flip these assertions.
+    // The exclusions below have to be checked against the full cgroup name. Checking them against the matched
+    // container ID -- a bare hexadecimal string -- can never fire, which is precisely the bug these tests guard.
 
     #[test]
-    fn extract_container_id_does_not_exclude_dot_mount_cgroups() {
+    fn extract_container_id_excludes_dot_mount_cgroups() {
         let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
         let raw = format!("{}.mount", container_id);
 
-        // Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
-        assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
+        assert_eq!(extract(&raw), None);
     }
 
     #[test]
-    fn extract_container_id_does_not_exclude_crio_conmon_cgroups() {
+    fn extract_container_id_excludes_crio_conmon_cgroups() {
         let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
         let raw = format!("crio-conmon-{}.scope", container_id);
 
-        // Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
+        assert_eq!(extract(&raw), None);
+    }
+
+    #[test]
+    fn extract_container_id_excludes_libpod_conmon_cgroups() {
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let raw = format!("libpod-conmon-{}.scope", container_id);
+
+        assert_eq!(extract(&raw), None);
+    }
+
+    #[test]
+    fn extract_container_id_includes_libpod_container_cgroups() {
+        // Only the `conmon` monitor cgroup is excluded -- the container's own Podman cgroup shares the `libpod-`
+        // prefix and must still resolve.
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let raw = format!("libpod-{}.scope", container_id);
+
         assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
     }
 }
