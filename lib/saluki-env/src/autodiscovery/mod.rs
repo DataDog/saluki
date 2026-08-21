@@ -65,23 +65,36 @@ impl From<ProtoKubeNamespacedName> for KubeNamespacedName {
     }
 }
 
+/// Kubernetes endpoints identifier
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KubeEndpointsIdentifier {
+    /// Kubernetes endpoints resource
+    pub kube_namespaced_name: KubeNamespacedName,
+    /// Endpoints resolution mode
+    pub resolve: MetaString,
+}
+
 /// Advanced autodiscovery identifier
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvancedADIdentifier {
     /// Kubernetes service
     pub kube_service: Option<KubeNamespacedName>,
     /// Kubernetes endpoints
-    pub kube_endpoints: Option<KubeNamespacedName>,
+    pub kube_endpoints: Option<KubeEndpointsIdentifier>,
 }
 
 impl From<ProtoAdvancedAdIdentifier> for AdvancedADIdentifier {
     fn from(value: ProtoAdvancedAdIdentifier) -> Self {
         Self {
             kube_service: value.kube_service.map(Into::into),
-            kube_endpoints: value
-                .kube_endpoints
-                .and_then(|endpoint| endpoint.kube_namespaced_name)
-                .map(Into::into),
+            kube_endpoints: value.kube_endpoints.and_then(|endpoints| {
+                endpoints
+                    .kube_namespaced_name
+                    .map(|namespaced_name| KubeEndpointsIdentifier {
+                        kube_namespaced_name: namespaced_name.into(),
+                        resolve: endpoints.resolve.into(),
+                    })
+            }),
         }
     }
 }
@@ -441,7 +454,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use datadog_protos::agent::{AdvancedAdIdentifier, KubeNamespacedName};
+    use datadog_protos::agent::{
+        AdvancedAdIdentifier, KubeEndpointsIdentifier as ProtoKubeEndpointsIdentifier, KubeNamespacedName,
+    };
 
     use super::*;
 
@@ -576,6 +591,46 @@ mod tests {
         let svc = adv_id.kube_service.as_ref().unwrap();
         assert_eq!(svc.name, "nginx");
         assert_eq!(svc.namespace, "default");
+    }
+
+    #[test]
+    fn test_advanced_ad_identifier_from_proto_retains_endpoints_resolve() {
+        fn proto_id(resolve: &str) -> AdvancedAdIdentifier {
+            AdvancedAdIdentifier {
+                kube_service: None,
+                kube_endpoints: Some(ProtoKubeEndpointsIdentifier {
+                    kube_namespaced_name: Some(KubeNamespacedName {
+                        name: "nginx".to_string(),
+                        namespace: "default".to_string(),
+                    }),
+                    resolve: resolve.to_string(),
+                }),
+            }
+        }
+
+        let adv_id = AdvancedADIdentifier::from(proto_id("ip"));
+
+        assert!(adv_id.kube_service.is_none());
+        let endpoints = adv_id.kube_endpoints.as_ref().expect("endpoints should be present");
+        assert_eq!(endpoints.kube_namespaced_name.name, "nginx");
+        assert_eq!(endpoints.kube_namespaced_name.namespace, "default");
+        assert_eq!(endpoints.resolve, "ip");
+
+        // Identifiers that only differ by their resolution mode must remain distinguishable.
+        assert_ne!(adv_id, AdvancedADIdentifier::from(proto_id("auto")));
+    }
+
+    #[test]
+    fn test_advanced_ad_identifier_from_proto_drops_endpoints_without_namespaced_name() {
+        let proto_id = AdvancedAdIdentifier {
+            kube_service: None,
+            kube_endpoints: Some(ProtoKubeEndpointsIdentifier {
+                kube_namespaced_name: None,
+                resolve: "ip".to_string(),
+            }),
+        };
+
+        assert!(AdvancedADIdentifier::from(proto_id).kube_endpoints.is_none());
     }
 
     #[test]
