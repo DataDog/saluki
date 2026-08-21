@@ -11,8 +11,19 @@ use super::error::DecodeError;
 /// Maximum element count permitted in any array or map header.
 ///
 /// Protects the decoder from payloads that declare an enormous collection size to force large
-/// allocations. Matches the reference decoder's `maxSize` (25,000,000).
+/// allocations. Matches the reference decoder's `maxSize` (25,000,000). This alone doesn't stop a
+/// tiny payload from claiming a count near this ceiling; [`read_array_len`] and [`read_map_len`]
+/// additionally reject counts that couldn't possibly be backed by the remaining input, via
+/// [`check_slab_count`].
 pub const MAX_SIZE: u32 = 25_000_000;
+
+/// Conservative lower bound on the wire size of one array element: every element is at least a
+/// one-byte `nil` or fixint.
+const MIN_BYTES_PER_ARRAY_ELEMENT: u32 = 1;
+
+/// Conservative lower bound on the wire size of one map entry: a key and a value, each at least
+/// one byte.
+const MIN_BYTES_PER_MAP_ENTRY: u32 = 2;
 
 /// Builds a closure that maps a MessagePack decoder error into a [`DecodeError::Msgpack`] carrying
 /// the given static context.
@@ -23,12 +34,38 @@ fn mp<E: Display>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
     }
 }
 
+/// Guards a collection pre-allocation (`Vec::with_capacity(len)`) against a claimed element count
+/// that couldn't possibly be backed by the remaining bytes.
+///
+/// Without this, a small malicious payload could set an array or map header to millions of
+/// entries and force a large allocation before decoding ever reaches the missing bytes and fails
+/// naturally. This is a much tighter bound than [`MAX_SIZE`] for small inputs, since it scales
+/// with the actual data available rather than a fixed ceiling.
+///
+/// # Errors
+///
+/// Returns an error if `len * min_bytes_per_entry` exceeds the number of bytes remaining on the
+/// cursor.
+fn check_slab_count(
+    len: u32, min_bytes_per_entry: u32, remaining: &[u8], context: &'static str,
+) -> Result<(), DecodeError> {
+    if u64::from(len) * u64::from(min_bytes_per_entry) > remaining.len() as u64 {
+        return Err(DecodeError::ImplausibleHeaderCount {
+            context,
+            len,
+            remaining: remaining.len(),
+        });
+    }
+    Ok(())
+}
+
 /// Reads an array header, returning its element count.
 ///
 /// # Errors
 ///
-/// Returns an error if the next value is not an array header or if the declared length exceeds
-/// [`MAX_SIZE`].
+/// Returns an error if the next value is not an array header, if the declared length exceeds
+/// [`MAX_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
+/// [`check_slab_count`]).
 pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
     if len > MAX_SIZE {
@@ -38,6 +75,7 @@ pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, Decod
             max: MAX_SIZE,
         });
     }
+    check_slab_count(len, MIN_BYTES_PER_ARRAY_ELEMENT, r, context)?;
     Ok(len)
 }
 
@@ -45,8 +83,9 @@ pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, Decod
 ///
 /// # Errors
 ///
-/// Returns an error if the next value is not a map header or if the declared length exceeds
-/// [`MAX_SIZE`].
+/// Returns an error if the next value is not a map header, if the declared length exceeds
+/// [`MAX_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
+/// [`check_slab_count`]).
 pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_map_len(r).map_err(mp(context))?;
     if len > MAX_SIZE {
@@ -56,6 +95,7 @@ pub fn read_map_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeE
             max: MAX_SIZE,
         });
     }
+    check_slab_count(len, MIN_BYTES_PER_MAP_ENTRY, r, context)?;
     Ok(len)
 }
 

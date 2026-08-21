@@ -29,6 +29,17 @@ pub enum DecodeError {
         max: u32,
     },
 
+    /// An array or map header declared more elements than the remaining input could possibly back.
+    #[snafu(display("{context} declares {len} entries but only {remaining} byte(s) remain"))]
+    ImplausibleHeaderCount {
+        /// The field or structure whose header declared the implausible count.
+        context: &'static str,
+        /// The declared element count.
+        len: u32,
+        /// The number of bytes remaining on the cursor after the header.
+        remaining: usize,
+    },
+
     /// A streaming string referenced an index that has not yet been added to the string table.
     #[snafu(display("streaming string referenced unseen string index {index} (string table length: {len})"))]
     UnseenStringIndex {
@@ -71,4 +82,11 @@ pub enum DecodeError {
     /// The string table must be the first field so that later streaming-string references resolve.
     #[snafu(display("unexpected strings field: the string table must be sent first"))]
     StringsNotFirst,
+
+    /// The input contained bytes after the top-level tracer payload was fully decoded.
+    #[snafu(display("{len} trailing byte(s) after the tracer payload"))]
+    TrailingBytes {
+        /// The number of unconsumed bytes remaining after decoding.
+        len: usize,
+    },
 }

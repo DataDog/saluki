@@ -43,6 +43,9 @@ use self::string_table::StringTable;
 pub fn decode_v1_payload(bytes: &[u8]) -> Result<Vec<Trace>, DecodeError> {
     let mut reader = bytes;
     let payload = decode_tracer_payload(&mut reader)?;
+    if !reader.is_empty() {
+        return Err(DecodeError::TrailingBytes { len: reader.len() });
+    }
 
     let payload_fields = PayloadFields {
         container_id: payload.container_id,
@@ -105,12 +108,12 @@ struct DecodedChunk {
 
 /// Splits a big-endian trace ID byte string into its high and low 64-bit halves.
 ///
-/// IDs of 16 or more bytes use the first 16 bytes; shorter IDs are right-aligned (high-order bytes
-/// treated as zero), matching the reference decoder's legacy-ID handling.
+/// IDs longer than 16 bytes use the final 16 bytes, matching `normalizeTraceChunkV1` in the
+/// reference Agent decoder; shorter IDs are right-aligned (high-order bytes treated as zero).
 fn split_trace_id(id: &[u8]) -> (u64, u64) {
     let mut buf = [0u8; 16];
     if id.len() >= 16 {
-        buf.copy_from_slice(&id[..16]);
+        buf.copy_from_slice(&id[id.len() - 16..]);
     } else {
         buf[16 - id.len()..].copy_from_slice(id);
     }

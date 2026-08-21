@@ -355,6 +355,8 @@ fn attributes_array_not_multiple_of_three_rejected() {
     let mut strings = StringTable::new();
     let mut buf = Vec::new();
     encode::write_array_len(&mut buf, 2).unwrap();
+    encode::write_nil(&mut buf).unwrap();
+    encode::write_nil(&mut buf).unwrap();
     let mut r = buf.as_slice();
     let err = value::read_attributes_map(&mut r, &mut strings, "test").unwrap_err();
     assert!(matches!(err, DecodeError::InvalidAttributeArrayLen { len: 2 }));
@@ -366,6 +368,9 @@ fn any_value_array_not_multiple_of_two_rejected() {
     let mut buf = Vec::new();
     encode::write_uint(&mut buf, 6).unwrap(); // array type
     encode::write_array_len(&mut buf, 3).unwrap();
+    encode::write_nil(&mut buf).unwrap();
+    encode::write_nil(&mut buf).unwrap();
+    encode::write_nil(&mut buf).unwrap();
     let mut r = buf.as_slice();
     let err = value::read_any_value(&mut r, &mut strings).unwrap_err();
     assert!(matches!(err, DecodeError::InvalidArrayValueLen { len: 3 }));
@@ -557,6 +562,28 @@ fn oversize_array_header_rejected() {
 }
 
 #[test]
+fn implausible_array_count_rejected() {
+    // Under MAX_SIZE, but a tiny payload can't possibly back 1000 elements.
+    let mut buf = Vec::new();
+    encode::write_array_len(&mut buf, 1000).unwrap();
+    encode::write_uint(&mut buf, 0).unwrap(); // far fewer bytes than 1000 elements require
+    let mut r = buf.as_slice();
+    let err = read::read_array_len(&mut r, "test").unwrap_err();
+    assert!(matches!(err, DecodeError::ImplausibleHeaderCount { len: 1000, .. }));
+}
+
+#[test]
+fn implausible_map_count_rejected() {
+    // Under MAX_SIZE, but a tiny payload can't possibly back 1000 entries.
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1000).unwrap();
+    encode::write_uint(&mut buf, 0).unwrap(); // far fewer bytes than 1000 entries require
+    let mut r = buf.as_slice();
+    let err = read::read_map_len(&mut r, "test").unwrap_err();
+    assert!(matches!(err, DecodeError::ImplausibleHeaderCount { len: 1000, .. }));
+}
+
+#[test]
 fn split_trace_id_short_is_zero_padded() {
     // Fewer than 16 bytes: right-aligned, high bytes zero.
     let (high, low) = split_trace_id(&[0xaa, 0xbb]);
@@ -568,6 +595,74 @@ fn split_trace_id_short_is_zero_padded() {
     let (high, low) = split_trace_id(&id);
     assert_eq!(high, 0x0001_0203_0405_0607);
     assert_eq!(low, 0x0809_0a0b_0c0d_0e0f);
+}
+
+#[test]
+fn split_trace_id_overlong_keeps_final_16_bytes() {
+    // 17 bytes: the leading byte must be dropped, not the trailing one.
+    let id: Vec<u8> = (0..17).collect();
+    let (high, low) = split_trace_id(&id);
+    assert_eq!(high, 0x0102_0304_0506_0708);
+    assert_eq!(low, 0x090a_0b0c_0d0e_0f10);
+}
+
+#[test]
+fn overlong_trace_id_in_chunk_uses_final_16_bytes() {
+    let id: Vec<u8> = (0..17).collect();
+
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 1).unwrap(); // trace chunk
+    encode::write_uint(&mut buf, 6).unwrap(); // traceID
+    encode::write_bin(&mut buf, &id).unwrap();
+
+    let traces = decode_v1_payload(&buf).expect("payload with overlong trace ID should decode");
+    assert_eq!(traces.len(), 1);
+    let (expected_high, expected_low) = split_trace_id(&id[1..]);
+    assert_eq!(traces[0].trace_id_high, expected_high);
+    assert_eq!(traces[0].trace_id_low, expected_low);
+}
+
+#[test]
+fn overlong_trace_id_in_span_link_uses_final_16_bytes() {
+    let id: Vec<u8> = (0..17).collect();
+
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap(); // span
+    encode::write_uint(&mut buf, 11).unwrap(); // links
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 1).unwrap(); // span link
+    encode::write_uint(&mut buf, 1).unwrap(); // traceID
+    encode::write_bin(&mut buf, &id).unwrap();
+
+    let mut strings = StringTable::new();
+    let mut r = buf.as_slice();
+    let span = decode_span(&mut r, &mut strings).unwrap();
+    let (expected_high, expected_low) = split_trace_id(&id[1..]);
+    assert_eq!(span.span_links()[0].trace_id_high(), expected_high);
+    assert_eq!(span.span_links()[0].trace_id(), expected_low);
+}
+
+#[test]
+fn trailing_bytes_after_payload_rejected_reserved_marker() {
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 0).unwrap(); // empty, otherwise-valid tracer payload
+    buf.push(0xc1); // reserved MessagePack marker
+
+    let err = decode_v1_payload(&buf).unwrap_err();
+    assert!(matches!(err, DecodeError::TrailingBytes { len: 1 }));
+}
+
+#[test]
+fn trailing_bytes_after_payload_rejected_valid_value() {
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 0).unwrap(); // empty, otherwise-valid tracer payload
+    encode::write_uint(&mut buf, 42).unwrap(); // an otherwise-valid MessagePack value
+
+    let err = decode_v1_payload(&buf).unwrap_err();
+    assert!(matches!(err, DecodeError::TrailingBytes { len: 1 }));
 }
 
 proptest! {
