@@ -125,31 +125,27 @@ impl CgroupsReader {
     }
 
     fn try_cgroup_from_path(&self, cgroup_path: &Path) -> Option<Cgroup> {
-        if let Some(name) = cgroup_path.file_name().and_then(|s| s.to_str()) {
-            if let Some(container_id) = extract_container_id(name, &self.interner) {
-                let metadata = match cgroup_path.metadata() {
-                    Ok(metadata) => metadata,
-                    Err(e) => {
-                        trace!(error = %e, cgroup_controller_path = %cgroup_path.display(), "Failed to get metadata for possible cgroup controller path.");
-                        return None;
-                    }
-                };
+        let container_id = extract_container_id_from_path(cgroup_path, &self.interner)?;
 
-                trace!(
-                    controller_inode = metadata.ino(),
-                    %container_id,
-                    cgroup_controller_path = %cgroup_path.display(),
-                    "Found valid cgroups controller for container.",
-                );
-
-                return Some(Cgroup {
-                    ino: Some(metadata.ino()),
-                    container_id,
-                });
+        let metadata = match cgroup_path.metadata() {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                trace!(error = %e, cgroup_controller_path = %cgroup_path.display(), "Failed to get metadata for possible cgroup controller path.");
+                return None;
             }
-        }
+        };
 
-        None
+        trace!(
+            controller_inode = metadata.ino(),
+            %container_id,
+            cgroup_controller_path = %cgroup_path.display(),
+            "Found valid cgroups controller for container.",
+        );
+
+        Some(Cgroup {
+            ino: Some(metadata.ino()),
+            container_id,
+        })
     }
 
     /// Gets a cgroup for the given process ID.
@@ -185,14 +181,13 @@ impl CgroupsReader {
                 // container ID in it -- but it will be relative in a way that doesn't allow it to be appended to the
                 // root cgroups path, and so trying to query it to get the controller inode, and all of that, will fail.
                 //
-                // All we need is the leaf directory anyways.
-                if let Some(proc_cgroup_path) = entry.path.file_name().and_then(|s| s.to_str()) {
-                    if let Some(container_id) = extract_container_id(proc_cgroup_path, &self.interner) {
-                        return Some(Cgroup {
-                            ino: None,
-                            container_id,
-                        });
-                    }
+                // The names in that path are all we need: matching them doesn't touch the filesystem, so it works just
+                // as well for a relative path as an absolute one.
+                if let Some(container_id) = extract_container_id_from_path(entry.path, &self.interner) {
+                    return Some(Cgroup {
+                        ino: None,
+                        container_id,
+                    });
                 }
             } else {
                 debug!(pid, cgroup_lookup_path = %proc_pid_cgroup_path.display(), base_controller_name, "Found cgroup controller for process, but it doesn't match the base controller.");
@@ -475,30 +470,88 @@ fn get_container_id_from_cgroup_lines(lines: &[String], interner: &GenericMapInt
         .find_map(|cgroup_name| extract_container_id(cgroup_name, interner))
 }
 
-fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Option<MetaString> {
-    // This regular expression is meant to capture:
-    // - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
-    // - 32 character hexadecimal strings followed by a dash and a number (used by AWS ECS)
-    // - 8 character hexadecimal strings followed by up to four groups of 4 character hexadecimal strings separated by
-    //   dashes (essentially a UUID, used by Pivotal Cloud Foundry's Garden technology)
-    static CONTAINER_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new("([0-9a-f]{64})|([0-9a-f]{32}-\\d+)|([0-9a-f]{8}(-[0-9a-f]{4}){4}$)").unwrap());
+/// Matches a container ID anywhere within a cgroup name.
+///
+/// This regular expression is meant to capture:
+/// - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
+/// - 32 character hexadecimal strings followed by a dash and a number (used by AWS ECS)
+/// - 8 character hexadecimal strings followed by up to four groups of 4 character hexadecimal strings separated by
+///   dashes (essentially a UUID, used by Pivotal Cloud Foundry's Garden technology)
+static CONTAINER_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new("([0-9a-f]{64})|([0-9a-f]{32}-\\d+)|([0-9a-f]{8}(-[0-9a-f]{4}){4}$)").unwrap());
 
-    let container_id = CONTAINER_REGEX.find(cgroup_name)?;
+fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Option<MetaString> {
+    match match_container_id(cgroup_name, interner) {
+        ContainerIdMatch::Container(container_id) => Some(container_id),
+        ContainerIdMatch::Excluded | ContainerIdMatch::NoMatch => None,
+    }
+}
+
+/// What a single cgroup name turned out to be.
+enum ContainerIdMatch {
+    /// The cgroup belongs to a container, with the given ID.
+    Container(MetaString),
+
+    /// The cgroup is named after a container but doesn't represent one.
+    Excluded,
+
+    /// The cgroup isn't named after a container at all.
+    NoMatch,
+}
+
+/// Matches a single cgroup name against the container ID heuristic.
+///
+/// [`ContainerIdMatch::Excluded`] is reported separately from [`ContainerIdMatch::NoMatch`] because the two mean
+/// different things to a caller walking a path: a name that isn't a container tells you nothing about its ancestors,
+/// but a name that is deliberately excluded is a definitive answer for that cgroup.
+fn match_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> ContainerIdMatch {
+    let container_id = match CONTAINER_REGEX.find(cgroup_name) {
+        Some(container_id) => container_id,
+        None => return ContainerIdMatch::NoMatch,
+    };
 
     // Note that this is checked against the full cgroup name, not against the ID we just matched out of it: the match
     // is a bare hexadecimal string, which can never carry any of these prefixes or suffixes.
     if is_container_named_but_not_a_container(cgroup_name) {
-        return None;
+        return ContainerIdMatch::Excluded;
     }
 
     match interner.try_intern(container_id.as_str()) {
-        Some(interned) => Some(MetaString::from(interned)),
+        Some(interned) => ContainerIdMatch::Container(MetaString::from(interned)),
         None => {
             error!(container_id = %container_id.as_str(), "Failed to intern container ID.");
-            None
+            ContainerIdMatch::NoMatch
         }
     }
+}
+
+/// Resolves the container ID for a cgroup path, falling back to the path's ancestors.
+///
+/// A container's workload can sit in a cgroup nested below the one named for the container, in which case the leaf
+/// doesn't carry the ID but one of its ancestors does. The deepest ancestor that names a container wins, so the most
+/// specific enclosing container is the one reported.
+///
+/// If the leaf itself is a cgroup that's named after a container but isn't one, `None` is returned without consulting
+/// any ancestors: such a cgroup isn't part of the container's workload, so attributing it to the enclosing container
+/// would be wrong.
+fn extract_container_id_from_path(cgroup_path: &Path, interner: &GenericMapInterner) -> Option<MetaString> {
+    let leaf_name = cgroup_path.file_name().and_then(|s| s.to_str())?;
+
+    match match_container_id(leaf_name, interner) {
+        ContainerIdMatch::Container(container_id) => return Some(container_id),
+        ContainerIdMatch::Excluded => return None,
+        ContainerIdMatch::NoMatch => {}
+    }
+
+    // `ancestors` yields the path itself first, which we've already checked, so skip it.
+    cgroup_path
+        .ancestors()
+        .skip(1)
+        .filter_map(|ancestor| ancestor.file_name().and_then(|s| s.to_str()))
+        .find_map(|ancestor_name| match match_container_id(ancestor_name, interner) {
+            ContainerIdMatch::Container(container_id) => Some(container_id),
+            ContainerIdMatch::Excluded | ContainerIdMatch::NoMatch => None,
+        })
 }
 
 /// Returns `true` if a cgroup is named after a container but doesn't represent that container's workload.
@@ -519,7 +572,9 @@ mod tests {
 
     use stringtheory::{interning::GenericMapInterner, MetaString};
 
-    use super::{extract_container_id, get_container_id_from_cgroup_lines, CgroupControllerEntry};
+    use super::{
+        extract_container_id, extract_container_id_from_path, get_container_id_from_cgroup_lines, CgroupControllerEntry,
+    };
 
     #[test]
     fn parse_controller_entry_cgroups_v1() {
@@ -552,6 +607,11 @@ mod tests {
     fn extract(raw: &str) -> Option<MetaString> {
         let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
         extract_container_id(raw, &interner)
+    }
+
+    fn extract_from_path(raw: &str) -> Option<MetaString> {
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        extract_container_id_from_path(Path::new(raw), &interner)
     }
 
     #[test]
@@ -621,5 +681,84 @@ mod tests {
         let raw = format!("libpod-{}.scope", container_id);
 
         assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
+    }
+
+    const CONTAINER_ID_A: &str = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+    const CONTAINER_ID_B: &str = "1a2b3c4d5e6f70819293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+    #[test]
+    fn extract_from_path_prefers_the_leaf() {
+        let path = format!(
+            "/sys/fs/cgroup/system.slice/cri-containerd-{}.scope/cri-containerd-{}.scope",
+            CONTAINER_ID_A, CONTAINER_ID_B
+        );
+
+        // The deepest container wins, so a nested container isn't attributed to the one enclosing it.
+        assert_eq!(extract_from_path(&path), Some(MetaString::from(CONTAINER_ID_B)));
+    }
+
+    #[test]
+    fn extract_from_path_falls_back_to_ancestors() {
+        // A container's workload can live in a cgroup nested below the one named for the container.
+        let path = format!(
+            "/sys/fs/cgroup/system.slice/cri-containerd-{}.scope/init",
+            CONTAINER_ID_A
+        );
+
+        assert_eq!(extract_from_path(&path), Some(MetaString::from(CONTAINER_ID_A)));
+    }
+
+    #[test]
+    fn extract_from_path_uses_the_deepest_matching_ancestor() {
+        let path = format!(
+            "/sys/fs/cgroup/system.slice/cri-containerd-{}.scope/cri-containerd-{}.scope/init",
+            CONTAINER_ID_A, CONTAINER_ID_B
+        );
+
+        assert_eq!(extract_from_path(&path), Some(MetaString::from(CONTAINER_ID_B)));
+    }
+
+    #[test]
+    fn extract_from_path_returns_none_without_any_container_segment() {
+        let path = "/sys/fs/cgroup/system.slice/systemd-journald.service";
+
+        assert_eq!(extract_from_path(path), None);
+    }
+
+    #[test]
+    fn extract_from_path_does_not_rescue_excluded_leaves_from_ancestors() {
+        // A `.mount` or `conmon` cgroup isn't part of the container's workload, so even though an ancestor names a
+        // container, attributing it there would be wrong.
+        let mount_path = format!(
+            "/sys/fs/cgroup/system.slice/cri-containerd-{}.scope/{}.mount",
+            CONTAINER_ID_A, CONTAINER_ID_B
+        );
+        let conmon_path = format!(
+            "/sys/fs/cgroup/system.slice/cri-containerd-{}.scope/crio-conmon-{}.scope",
+            CONTAINER_ID_A, CONTAINER_ID_B
+        );
+
+        assert_eq!(extract_from_path(&mount_path), None);
+        assert_eq!(extract_from_path(&conmon_path), None);
+    }
+
+    #[test]
+    fn extract_from_path_skips_excluded_ancestors() {
+        // An excluded ancestor doesn't claim the cgroup either; the search continues past it.
+        let path = format!(
+            "/sys/fs/cgroup/system.slice/cri-containerd-{}.scope/crio-conmon-{}.scope/init",
+            CONTAINER_ID_A, CONTAINER_ID_B
+        );
+
+        assert_eq!(extract_from_path(&path), Some(MetaString::from(CONTAINER_ID_A)));
+    }
+
+    #[test]
+    fn extract_from_path_handles_relative_paths() {
+        // `/proc/<pid>/cgroup` reports a path that's relative to the cgroup namespace root, so resolution can't depend
+        // on the path being absolute or on it existing on disk.
+        let path = format!("kubepods.slice/cri-containerd-{}.scope/init", CONTAINER_ID_A);
+
+        assert_eq!(extract_from_path(&path), Some(MetaString::from(CONTAINER_ID_A)));
     }
 }
