@@ -203,9 +203,10 @@ impl SynchronousCgroupsManager {
 
             // Figure out which cgroups are no longer active and mark them for deletion.
             //
-            // We can only draw that conclusion from an exhaustive traversal: if part of the hierarchy was unreadable,
-            // a cgroup we didn't see may well still exist, and dropping its alias would break origin enrichment for a
-            // live container. Holding on to a stale alias for another poll interval is the cheaper mistake.
+            // We can only conclude "absent means removed" from a traversal that would have seen the cgroup if it still
+            // existed. When the traversal reports otherwise, a cgroup we didn't see may well still be live, and
+            // dropping its alias would break origin enrichment for it. Holding on to a stale alias for another poll
+            // interval is the cheaper mistake.
             if traversal.complete {
                 self.telemetry.traversals_complete_total().increment(1);
 

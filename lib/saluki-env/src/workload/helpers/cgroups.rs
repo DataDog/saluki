@@ -207,9 +207,9 @@ impl CgroupsReader {
     /// Gets all child cgroups in the current cgroups hierarchy.
     ///
     /// Individual paths that can't be traversed -- most commonly because a container exited and its cgroup was removed
-    /// while we were walking the hierarchy -- are skipped rather than aborting the traversal. When that happens, the
-    /// returned traversal is marked as incomplete: the cgroups it contains are all valid, but the set is not
-    /// necessarily exhaustive. See [`CgroupsTraversal::complete`] for why that distinction matters.
+    /// while we were walking the hierarchy -- are skipped rather than aborting the traversal. If any of those skips
+    /// could have hidden a cgroup that still exists, the returned traversal is marked as incomplete. See
+    /// [`CgroupsTraversal::complete`] for why that distinction matters.
     pub fn get_child_cgroups(&self) -> CgroupsTraversal {
         let mut cgroups = Vec::new();
         let mut visit = |path: &Path| {
@@ -221,8 +221,8 @@ impl CgroupsReader {
         // Walk the cgroups hierarchy and collect all cgroups that we can find that are related to containers..
         let root_path = self.hierarchy_reader.root_path();
 
-        let skipped = match visit_subdirectories(root_path, &mut visit) {
-            Ok(outcome) => outcome.skipped,
+        let outcome = match visit_subdirectories(root_path, &mut visit) {
+            Ok(outcome) => outcome,
             Err(e) => {
                 // We only get here if the hierarchy root itself couldn't be read, which generally points at a
                 // misconfigured cgroupfs path rather than a transient condition.
@@ -238,8 +238,8 @@ impl CgroupsReader {
 
         CgroupsTraversal {
             cgroups,
-            complete: skipped == 0,
-            skipped,
+            complete: outcome.obscured == 0,
+            skipped: outcome.skipped,
         }
     }
 }
@@ -249,17 +249,22 @@ pub struct CgroupsTraversal {
     /// Container cgroups found during the traversal.
     pub cgroups: Vec<Cgroup>,
 
-    /// Whether the traversal covered the entire hierarchy.
+    /// Whether absence from [`cgroups`][Self::cgroups] can be taken to mean a cgroup no longer exists.
     ///
-    /// When this is `false`, [`cgroups`][Self::cgroups] holds only a subset of the container cgroups that exist. The
-    /// entries present are still valid, so callers can safely treat them as live, but callers **MUST NOT** infer that a
-    /// previously-known cgroup was removed simply because it's absent here.
+    /// When this is `false`, part of the hierarchy that may still hold live cgroups couldn't be read, so
+    /// [`cgroups`][Self::cgroups] is not exhaustive. The entries present are still valid, and callers can safely treat
+    /// them as live, but callers **MUST NOT** infer that a previously-known cgroup was removed simply because it's
+    /// absent here.
+    ///
+    /// Note that this can be `true` even when [`skipped`][Self::skipped] is non-zero: a skipped path that couldn't have
+    /// hidden a live cgroup -- because the path is gone, or because we've never been able to read it -- doesn't make
+    /// the set unreliable.
     pub complete: bool,
 
     /// Number of paths skipped due to recoverable errors during the traversal.
     ///
-    /// This is always `0` when [`complete`][Self::complete] is `true`. It can also be `0` for an incomplete traversal,
-    /// if the hierarchy root itself couldn't be read.
+    /// This counts every skip, including those that don't affect [`complete`][Self::complete], and is intended for
+    /// telemetry rather than for deciding how much to trust the result.
     pub skipped: usize,
 }
 
@@ -464,28 +469,59 @@ fn read_lines(path: &Path) -> io::Result<Vec<String>> {
 }
 
 /// Summary of a completed call to [`visit_subdirectories`].
+#[derive(Default)]
 struct TraversalOutcome {
     /// Number of paths skipped due to recoverable errors.
     skipped: usize,
+
+    /// Number of skipped paths that may have hidden subdirectories which still exist.
+    ///
+    /// This is the subset of [`skipped`][Self::skipped] that makes the traversal's view of the tree unreliable. See
+    /// [`TraversalOutcome::record_skip`] for how a skip is classified.
+    obscured: usize,
 }
 
-/// Logs a path that was skipped during traversal, at a level matching how expected the failure is.
-fn log_skipped_path(e: &io::Error, path: &Path) {
-    // Paths disappearing mid-traversal is routine rather than exceptional: cgroups are removed as the workloads
-    // attached to them exit, and we have no way to hold the hierarchy still while we walk it. Anything else is more
-    // surprising and worth a louder log, but is still only a partial loss.
-    if e.kind() == io::ErrorKind::NotFound {
-        trace!(error = %e, path = %path.display(), "Path disappeared during traversal. Skipping.");
-    } else {
-        debug!(error = %e, path = %path.display(), "Failed to traverse path. Skipping.");
+impl TraversalOutcome {
+    /// Records a path that couldn't be read, classifying whether skipping it may have hidden existing subdirectories.
+    fn record_skip(&mut self, e: &io::Error, path: &Path) {
+        self.skipped += 1;
+
+        match e.kind() {
+            // The directory is gone, so everything beneath it is gone too. There's nothing left for the skip to hide,
+            // and callers tracking those subdirectories are right to consider them removed.
+            //
+            // This is routine rather than exceptional: cgroups are removed as the workloads attached to them exit, and
+            // we have no way to hold the hierarchy still while we walk it.
+            io::ErrorKind::NotFound => {
+                trace!(error = %e, path = %path.display(), "Path disappeared during traversal. Skipping.");
+            }
+
+            // We can't read this subtree, so we've never reported anything from it, so there's nothing a caller could
+            // be tracking for us to hide from them.
+            //
+            // This assumes the permissions aren't changing underneath us: a directory that was readable and becomes
+            // unreadable would be misclassified here. That's rare enough to accept, and the alternative -- treating
+            // every permission error as obscuring -- would permanently mark traversals unreliable whenever some part
+            // of the tree is simply not ours to read.
+            io::ErrorKind::PermissionDenied => {
+                debug!(error = %e, path = %path.display(), "Path is not readable. Skipping.");
+            }
+
+            // The subtree is still there and we just failed to read it this time, so anything beneath it is now
+            // invisible to us despite still existing.
+            _ => {
+                self.obscured += 1;
+                debug!(error = %e, path = %path.display(), "Failed to traverse path. Skipping.");
+            }
+        }
     }
 }
 
 /// Visits every subdirectory beneath the given path.
 ///
 /// Subdirectories that can't be read are skipped, along with everything beneath them, and counted in the returned
-/// [`TraversalOutcome`]. Callers that need an exhaustive view of the tree **MUST** check that
-/// [`skipped`][TraversalOutcome::skipped] is zero.
+/// [`TraversalOutcome`]. Callers that need to distinguish "this subdirectory is gone" from "we couldn't see this
+/// subdirectory" **MUST** check that [`obscured`][TraversalOutcome::obscured] is zero.
 ///
 /// # Errors
 ///
@@ -501,10 +537,10 @@ where
     let metadata = fs::metadata(root)
         .with_error_context(|| format!("Failed to query metadata for traversal root ({}).", root.display()))?;
     if !metadata.is_dir() {
-        return Ok(TraversalOutcome { skipped: 0 });
+        return Ok(TraversalOutcome::default());
     }
 
-    let mut skipped = 0;
+    let mut outcome = TraversalOutcome::default();
 
     // Do an initial pass on our path to get all of its subdirectories, which we'll visit, and then also use as the seed
     // for further visiting.
@@ -515,8 +551,7 @@ where
         let dir_reader = match fs::read_dir(&path) {
             Ok(dir_reader) => dir_reader,
             Err(e) => {
-                skipped += 1;
-                log_skipped_path(&e, &path);
+                outcome.record_skip(&e, &path);
                 continue;
             }
         };
@@ -525,8 +560,7 @@ where
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(e) => {
-                    skipped += 1;
-                    log_skipped_path(&e, &path);
+                    outcome.record_skip(&e, &path);
                     continue;
                 }
             };
@@ -535,8 +569,7 @@ where
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
                 Err(e) => {
-                    skipped += 1;
-                    log_skipped_path(&e, &entry_path);
+                    outcome.record_skip(&e, &entry_path);
                     continue;
                 }
             };
@@ -548,7 +581,7 @@ where
         }
     }
 
-    Ok(TraversalOutcome { skipped })
+    Ok(outcome)
 }
 
 /// Gets the current process's container ID from its local cgroup membership.
@@ -596,7 +629,7 @@ fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Opt
 mod tests {
     use std::{
         collections::HashSet,
-        fs,
+        fs, io,
         num::NonZeroUsize,
         os::unix::fs::PermissionsExt as _,
         path::{Path, PathBuf},
@@ -607,7 +640,7 @@ mod tests {
 
     use super::{
         extract_container_id, get_container_id_from_cgroup_lines, visit_subdirectories, CgroupControllerEntry,
-        CgroupsReader, HierarchyReader, DEFAULT_PROCFS_ROOT,
+        CgroupsReader, HierarchyReader, TraversalOutcome, DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -756,7 +789,27 @@ mod tests {
         let outcome = visit_subdirectories(root.path(), |path| visited.push(path.to_path_buf())).unwrap();
 
         assert_eq!(outcome.skipped, 0);
+        assert_eq!(outcome.obscured, 0);
         assert_eq!(visited_names(root.path(), &visited), names(&["a", "a/aa", "b"]));
+    }
+
+    #[test]
+    fn record_skip_classifies_by_error_kind() {
+        let mut outcome = TraversalOutcome::default();
+
+        // A path that's gone takes its subdirectories with it, and a path we can't read never showed us any, so
+        // neither can be hiding anything from us.
+        outcome.record_skip(&io::Error::from(io::ErrorKind::NotFound), Path::new("/gone"));
+        outcome.record_skip(&io::Error::from(io::ErrorKind::PermissionDenied), Path::new("/denied"));
+
+        assert_eq!(outcome.skipped, 2);
+        assert_eq!(outcome.obscured, 0);
+
+        // Any other failure leaves a subtree that still exists but that we couldn't see into.
+        outcome.record_skip(&io::Error::from(io::ErrorKind::Other), Path::new("/unreadable"));
+
+        assert_eq!(outcome.skipped, 3);
+        assert_eq!(outcome.obscured, 1);
     }
 
     #[test]
@@ -801,7 +854,34 @@ mod tests {
         // The removed directory was still visited -- we saw it before it went away -- but reading it was skipped
         // rather than aborting the traversal, so its two siblings were still read.
         assert_eq!(outcome.skipped, 1);
+
+        // A directory that's gone can't be hiding anything, so the traversal is still trustworthy.
+        assert_eq!(outcome.obscured, 0);
         assert_eq!(visited_names(root.path(), &visited), names(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn visit_subdirectories_reports_obscured_paths_for_unexpected_errors() {
+        let root = tempdir().unwrap();
+        for name in ["a", "b"] {
+            fs::create_dir(root.path().join(name)).unwrap();
+        }
+
+        // Same trick as the removal test, but the already-visited directory is replaced with a regular file instead of
+        // being deleted, so reading it back fails with `ENOTDIR` rather than `ENOENT`.
+        let mut visited = Vec::new();
+        let outcome = visit_subdirectories(root.path(), |path| {
+            visited.push(path.to_path_buf());
+            if visited.len() == 2 {
+                fs::remove_dir(&visited[0]).unwrap();
+                fs::write(&visited[0], "no longer a directory").unwrap();
+            }
+        })
+        .unwrap();
+
+        // Unlike a removal, this is a path we can't account for, so it counts against the traversal's reliability.
+        assert_eq!(outcome.skipped, 1);
+        assert_eq!(outcome.obscured, 1);
     }
 
     #[test]
@@ -820,7 +900,15 @@ mod tests {
 
         make_readable(&unreadable);
 
-        assert_eq!(outcome.unwrap().skipped, 1);
+        let outcome = outcome.unwrap();
+        assert_eq!(outcome.skipped, 1);
+
+        // We've never been able to see into this subtree, so skipping it doesn't hide anything we'd previously
+        // reported. Counting it as obscuring would permanently taint every traversal on a host where part of the tree
+        // simply isn't ours to read.
+        assert_eq!(outcome.obscured, 0);
+
+        // The unreadable directory itself is still visited -- we only fail on its contents.
         assert_eq!(
             visited_names(root.path(), &visited),
             names(&["readable", "readable/nested", "unreadable"])
@@ -841,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn get_child_cgroups_reports_incomplete_traversal() {
+    fn get_child_cgroups_stays_complete_when_subdirectory_is_unreadable() {
         let root = tempdir().unwrap();
         fs::create_dir(root.path().join(format!("cri-containerd-{}.scope", TEST_CONTAINER_ID))).unwrap();
 
@@ -855,9 +943,10 @@ mod tests {
 
         make_readable(&unreadable);
 
-        // The container cgroup we did manage to see is still reported, but the traversal is flagged so that callers
-        // don't mistake an unseen cgroup for a removed one.
-        assert!(!traversal.complete);
+        // The skip is reported for telemetry, but it can't have hidden a live cgroup, so callers can still act on
+        // what's absent. Marking this incomplete would stop the collector from ever reaping cgroups on a host where
+        // some part of the hierarchy is permanently unreadable.
+        assert!(traversal.complete);
         assert_eq!(traversal.skipped, 1);
         assert_eq!(traversal.cgroups.len(), 1);
         assert_eq!(traversal.cgroups[0].container_id, MetaString::from(TEST_CONTAINER_ID));
