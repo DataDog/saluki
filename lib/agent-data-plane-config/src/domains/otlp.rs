@@ -283,6 +283,34 @@ pub struct Receiver {
 /// always carries an effective limit.
 pub const DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB: u64 = 4;
 
+/// Default gRPC keepalive ping interval: idle time before the server sends a PING to check the
+/// connection is still alive.
+pub const DEFAULT_GRPC_KEEPALIVE_TIME: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Default gRPC keepalive ping timeout: time to wait for a PONG before closing the connection.
+pub const DEFAULT_GRPC_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Server-side keepalive parameters for the OTLP gRPC receiver.
+///
+/// All fields are `Option<Duration>`. `None` means "unset"; the component layer applies defaults
+/// for `time` and `timeout` and leaves the age fields as "no limit."
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct KeepaliveServerParameters {
+    /// Maximum time a connection may exist before the server sends GOAWAY. `None` means no limit.
+    pub max_connection_age: Option<Duration>,
+
+    /// Grace period after `max_connection_age` before the connection is forcibly closed. `None`
+    /// means no limit.
+    pub max_connection_age_grace: Option<Duration>,
+
+    /// Idle time before the server sends a keepalive PING. `None` means unset.
+    pub time: Option<Duration>,
+
+    /// Time to wait for a PONG after a keepalive PING before closing the connection. `None` means
+    /// unset.
+    pub timeout: Option<Duration>,
+}
+
 /// OTLP gRPC receiver.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct GrpcReceiver {
@@ -294,6 +322,10 @@ pub struct GrpcReceiver {
 
     /// Transport the gRPC receiver binds. Defaults to `tcp`.
     pub transport: GrpcTransport,
+
+    /// Server-side keepalive parameters. `None` means keepalive is not configured; the component
+    /// layer applies defaults.
+    pub keepalive: Option<KeepaliveServerParameters>,
 }
 
 /// OTLP HTTP receiver.

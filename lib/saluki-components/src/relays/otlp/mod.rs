@@ -275,6 +275,7 @@ mod tests {
                 endpoint: "0.0.0.0:4317".to_string(),
                 transport: GrpcTransport::Tcp,
                 max_recv_msg_size_mib: 4,
+                keepalive: None,
             },
             http: domains::otlp::HttpReceiver {
                 endpoint: "0.0.0.0:4318".to_string(),

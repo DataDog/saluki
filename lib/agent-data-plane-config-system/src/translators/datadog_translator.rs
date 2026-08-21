@@ -26,8 +26,8 @@ use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
-    DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, KeepaliveServerParameters,
+    SummaryMode, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -78,6 +78,26 @@ impl<'a> DatadogTranslator<'a> {
     fn record_error(&mut self, error: TranslateError) {
         self.errors.push(error);
     }
+
+    /// Returns a mutable reference to the keepalive server parameters, initializing the struct if
+    /// keepalive has not yet been configured.
+    fn keepalive_server_parameters_mut(&mut self) -> &mut KeepaliveServerParameters {
+        self.config
+            .domains
+            .otlp
+            .receiver
+            .grpc
+            .keepalive
+            .get_or_insert_with(KeepaliveServerParameters::default)
+    }
+}
+
+/// Converts a `Duration` to `Option<Duration>`, returning `None` for a zero duration.
+///
+/// We preserve `None` in the model for unset values so the component layer can apply the correct
+/// grpc-go defaults.
+fn nonzero_duration(value: std::time::Duration) -> Option<std::time::Duration> {
+    (value != std::time::Duration::ZERO).then_some(value)
 }
 
 /// Parses a V3 series mode, warning and disabling V3 for a value the Agent cannot interpret.
@@ -1023,6 +1043,30 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
                 error,
             )),
         }
+    }
+
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(
+        &mut self, value: std::time::Duration,
+    ) {
+        self.keepalive_server_parameters_mut().max_connection_age = nonzero_duration(value);
+    }
+
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace(
+        &mut self, value: std::time::Duration,
+    ) {
+        self.keepalive_server_parameters_mut().max_connection_age_grace = nonzero_duration(value);
+    }
+
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time(
+        &mut self, value: std::time::Duration,
+    ) {
+        self.keepalive_server_parameters_mut().time = nonzero_duration(value);
+    }
+
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(
+        &mut self, value: std::time::Duration,
+    ) {
+        self.keepalive_server_parameters_mut().timeout = nonzero_duration(value);
     }
 
     fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String) {
