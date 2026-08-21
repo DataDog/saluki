@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"mod":["http","multiplex_service"]};
+window.SIDEBAR_ITEMS = {"mod":["grpc","http","multiplex_service"]};

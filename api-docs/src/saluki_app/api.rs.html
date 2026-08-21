@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>saluki_error::GenericError;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>saluki_io::net::{
 <a href=#13 id=13 data-nosnippet>13</a>    listener::ConnectionOrientedListener,
-<a href=#14 id=14 data-nosnippet>14</a>    server::{http::HttpServer, multiplex_service::MultiplexService},
+<a href=#14 id=14 data-nosnippet>14</a>    server::{http::UnsupervisedHttpServer, multiplex_service::MultiplexService},
 <a href=#15 id=15 data-nosnippet>15</a>    util::hyper::TowerToHyperService,
 <a href=#16 id=16 data-nosnippet>16</a>    ListenAddress,
 <a href=#17 id=17 data-nosnippet>17</a>};
@@ -156,7 +156,7 @@
 <a href=#156 id=156 data-nosnippet>156</a>        ));
 <a href=#157 id=157 data-nosnippet>157</a>
 <a href=#158 id=158 data-nosnippet>158</a>        <span class="comment">// Create and spawn the HTTP server.
-<a href=#159 id=159 data-nosnippet>159</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>http_server = HttpServer::from_listener(listener, multiplexed_service);
+<a href=#159 id=159 data-nosnippet>159</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>http_server = UnsupervisedHttpServer::from_listener(listener, multiplexed_service);
 <a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(tls_config) = <span class="self">self</span>.tls_config {
 <a href=#161 id=161 data-nosnippet>161</a>            http_server = http_server.with_tls_config(tls_config);
 <a href=#162 id=162 data-nosnippet>162</a>        }

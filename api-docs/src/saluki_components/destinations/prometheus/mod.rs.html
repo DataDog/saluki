@@ -26,7 +26,7 @@
 <a href=#26 id=26 data-nosnippet>26</a><span class="kw">use </span>saluki_error::GenericError;
 <a href=#27 id=27 data-nosnippet>27</a><span class="kw">use </span>saluki_io::net::{
 <a href=#28 id=28 data-nosnippet>28</a>    listener::ConnectionOrientedListener,
-<a href=#29 id=29 data-nosnippet>29</a>    server::http::{ErrorHandle, HttpServer},
+<a href=#29 id=29 data-nosnippet>29</a>    server::http::{ErrorHandle, UnsupervisedHttpServer},
 <a href=#30 id=30 data-nosnippet>30</a>    ListenAddress,
 <a href=#31 id=31 data-nosnippet>31</a>};
 <a href=#32 id=32 data-nosnippet>32</a><span class="kw">use </span>serde::Deserialize;
@@ -267,7 +267,7 @@
 <a href=#267 id=267 data-nosnippet>267</a>        }
 <a href=#268 id=268 data-nosnippet>268</a>    });
 <a href=#269 id=269 data-nosnippet>269</a>
-<a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">let </span>http_server = HttpServer::from_listener(listener, service);
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">let </span>http_server = UnsupervisedHttpServer::from_listener(listener, service);
 <a href=#271 id=271 data-nosnippet>271</a>    http_server.listen()
 <a href=#272 id=272 data-nosnippet>272</a>}
 <a href=#273 id=273 data-nosnippet>273</a>

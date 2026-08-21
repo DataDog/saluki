@@ -52,60 +52,69 @@
 <a href=#52 id=52 data-nosnippet>52</a>        <span class="self">self</span>.shutdown_handle = <span class="prelude-val">Some</span>(shutdown_handle);
 <a href=#53 id=53 data-nosnippet>53</a>    }
 <a href=#54 id=54 data-nosnippet>54</a>
-<a href=#55 id=55 data-nosnippet>55</a>    <span class="doccomment">/// Consumes the shutdown handle of this relay context.
+<a href=#55 id=55 data-nosnippet>55</a>    <span class="doccomment">/// Installs the shutdown handle for this relay context, for tests.
 <a href=#56 id=56 data-nosnippet>56</a>    ///
-<a href=#57 id=57 data-nosnippet>57</a>    /// # Panics
-<a href=#58 id=58 data-nosnippet>58</a>    ///
-<a href=#59 id=59 data-nosnippet>59</a>    /// Panics if the shutdown handle has already been taken.
-<a href=#60 id=60 data-nosnippet>60</a>    </span><span class="kw">pub fn </span>take_shutdown_handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; ShutdownHandle {
-<a href=#61 id=61 data-nosnippet>61</a>        <span class="self">self</span>.shutdown_handle.take().expect(<span class="string">"shutdown handle already taken"</span>)
+<a href=#57 id=57 data-nosnippet>57</a>    /// The topology runtime does this itself before a relay runs, using the shutdown signal of the component's
+<a href=#58 id=58 data-nosnippet>58</a>    /// dedicated supervisor. A test that drives a relay through a real shutdown has to stand in for it.
+<a href=#59 id=59 data-nosnippet>59</a>    </span><span class="attr">#[cfg(any(test, feature = <span class="string">"test-util"</span>))]
+<a href=#60 id=60 data-nosnippet>60</a>    </span><span class="kw">pub fn </span>set_shutdown_handle_for_test(<span class="kw-2">&amp;mut </span><span class="self">self</span>, shutdown_handle: ShutdownHandle) {
+<a href=#61 id=61 data-nosnippet>61</a>        <span class="self">self</span>.set_shutdown_handle(shutdown_handle);
 <a href=#62 id=62 data-nosnippet>62</a>    }
 <a href=#63 id=63 data-nosnippet>63</a>
-<a href=#64 id=64 data-nosnippet>64</a>    <span class="doccomment">/// Consumes the health handle of this relay context.
+<a href=#64 id=64 data-nosnippet>64</a>    <span class="doccomment">/// Consumes the shutdown handle of this relay context.
 <a href=#65 id=65 data-nosnippet>65</a>    ///
 <a href=#66 id=66 data-nosnippet>66</a>    /// # Panics
 <a href=#67 id=67 data-nosnippet>67</a>    ///
-<a href=#68 id=68 data-nosnippet>68</a>    /// Panics if the health handle has already been taken.
-<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub fn </span>take_health_handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; Health {
-<a href=#70 id=70 data-nosnippet>70</a>        <span class="self">self</span>.health_handle.take().expect(<span class="string">"health handle already taken"</span>)
+<a href=#68 id=68 data-nosnippet>68</a>    /// Panics if the shutdown handle has already been taken.
+<a href=#69 id=69 data-nosnippet>69</a>    </span><span class="kw">pub fn </span>take_shutdown_handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; ShutdownHandle {
+<a href=#70 id=70 data-nosnippet>70</a>        <span class="self">self</span>.shutdown_handle.take().expect(<span class="string">"shutdown handle already taken"</span>)
 <a href=#71 id=71 data-nosnippet>71</a>    }
 <a href=#72 id=72 data-nosnippet>72</a>
-<a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Returns a reference to the topology context.
-<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">pub fn </span>topology_context(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>TopologyContext {
-<a href=#75 id=75 data-nosnippet>75</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.topology_context
-<a href=#76 id=76 data-nosnippet>76</a>    }
-<a href=#77 id=77 data-nosnippet>77</a>
-<a href=#78 id=78 data-nosnippet>78</a>    <span class="doccomment">/// Returns a reference to the component context.
-<a href=#79 id=79 data-nosnippet>79</a>    </span><span class="kw">pub fn </span>component_context(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ComponentContext {
-<a href=#80 id=80 data-nosnippet>80</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.component_context
-<a href=#81 id=81 data-nosnippet>81</a>    }
-<a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a>    <span class="doccomment">/// Returns a reference to the component registry.
-<a href=#84 id=84 data-nosnippet>84</a>    </span><span class="kw">pub fn </span>component_registry(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ComponentRegistry {
-<a href=#85 id=85 data-nosnippet>85</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.component_registry
-<a href=#86 id=86 data-nosnippet>86</a>    }
-<a href=#87 id=87 data-nosnippet>87</a>
-<a href=#88 id=88 data-nosnippet>88</a>    <span class="doccomment">/// Returns a reference to the payloads dispatcher.
-<a href=#89 id=89 data-nosnippet>89</a>    </span><span class="kw">pub fn </span>dispatcher(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>PayloadsDispatcher {
-<a href=#90 id=90 data-nosnippet>90</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.dispatcher
-<a href=#91 id=91 data-nosnippet>91</a>    }
-<a href=#92 id=92 data-nosnippet>92</a>
-<a href=#93 id=93 data-nosnippet>93</a>    <span class="doccomment">/// Returns a spawner for supervised child tasks belonging to this component.
-<a href=#94 id=94 data-nosnippet>94</a>    ///
-<a href=#95 id=95 data-nosnippet>95</a>    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
-<a href=#96 id=96 data-nosnippet>96</a>    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
-<a href=#97 id=97 data-nosnippet>97</a>    </span><span class="kw">pub fn </span>spawner(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ComponentSpawner {
-<a href=#98 id=98 data-nosnippet>98</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.spawner
-<a href=#99 id=99 data-nosnippet>99</a>    }
-<a href=#100 id=100 data-nosnippet>100</a>}
+<a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Consumes the health handle of this relay context.
+<a href=#74 id=74 data-nosnippet>74</a>    ///
+<a href=#75 id=75 data-nosnippet>75</a>    /// # Panics
+<a href=#76 id=76 data-nosnippet>76</a>    ///
+<a href=#77 id=77 data-nosnippet>77</a>    /// Panics if the health handle has already been taken.
+<a href=#78 id=78 data-nosnippet>78</a>    </span><span class="kw">pub fn </span>take_health_handle(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; Health {
+<a href=#79 id=79 data-nosnippet>79</a>        <span class="self">self</span>.health_handle.take().expect(<span class="string">"health handle already taken"</span>)
+<a href=#80 id=80 data-nosnippet>80</a>    }
+<a href=#81 id=81 data-nosnippet>81</a>
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="doccomment">/// Returns a reference to the topology context.
+<a href=#83 id=83 data-nosnippet>83</a>    </span><span class="kw">pub fn </span>topology_context(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>TopologyContext {
+<a href=#84 id=84 data-nosnippet>84</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.topology_context
+<a href=#85 id=85 data-nosnippet>85</a>    }
+<a href=#86 id=86 data-nosnippet>86</a>
+<a href=#87 id=87 data-nosnippet>87</a>    <span class="doccomment">/// Returns a reference to the component context.
+<a href=#88 id=88 data-nosnippet>88</a>    </span><span class="kw">pub fn </span>component_context(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ComponentContext {
+<a href=#89 id=89 data-nosnippet>89</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.component_context
+<a href=#90 id=90 data-nosnippet>90</a>    }
+<a href=#91 id=91 data-nosnippet>91</a>
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="doccomment">/// Returns a reference to the component registry.
+<a href=#93 id=93 data-nosnippet>93</a>    </span><span class="kw">pub fn </span>component_registry(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ComponentRegistry {
+<a href=#94 id=94 data-nosnippet>94</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.component_registry
+<a href=#95 id=95 data-nosnippet>95</a>    }
+<a href=#96 id=96 data-nosnippet>96</a>
+<a href=#97 id=97 data-nosnippet>97</a>    <span class="doccomment">/// Returns a reference to the payloads dispatcher.
+<a href=#98 id=98 data-nosnippet>98</a>    </span><span class="kw">pub fn </span>dispatcher(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>PayloadsDispatcher {
+<a href=#99 id=99 data-nosnippet>99</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.dispatcher
+<a href=#100 id=100 data-nosnippet>100</a>    }
 <a href=#101 id=101 data-nosnippet>101</a>
-<a href=#102 id=102 data-nosnippet>102</a><span class="kw">impl </span>Clone <span class="kw">for </span>RelayContext {
-<a href=#103 id=103 data-nosnippet>103</a>    <span class="kw">fn </span>clone(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="self">Self </span>{
-<a href=#104 id=104 data-nosnippet>104</a>        <span class="self">Self </span>{
-<a href=#105 id=105 data-nosnippet>105</a>            shutdown_handle: <span class="prelude-val">None</span>,
-<a href=#106 id=106 data-nosnippet>106</a>            health_handle: <span class="prelude-val">None</span>,
-<a href=#107 id=107 data-nosnippet>107</a>            inner: <span class="self">self</span>.inner.clone(),
-<a href=#108 id=108 data-nosnippet>108</a>        }
-<a href=#109 id=109 data-nosnippet>109</a>    }
-<a href=#110 id=110 data-nosnippet>110</a>}
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="doccomment">/// Returns a spawner for supervised child tasks belonging to this component.
+<a href=#103 id=103 data-nosnippet>103</a>    ///
+<a href=#104 id=104 data-nosnippet>104</a>    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
+<a href=#105 id=105 data-nosnippet>105</a>    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
+<a href=#106 id=106 data-nosnippet>106</a>    </span><span class="kw">pub fn </span>spawner(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>ComponentSpawner {
+<a href=#107 id=107 data-nosnippet>107</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.inner.spawner
+<a href=#108 id=108 data-nosnippet>108</a>    }
+<a href=#109 id=109 data-nosnippet>109</a>}
+<a href=#110 id=110 data-nosnippet>110</a>
+<a href=#111 id=111 data-nosnippet>111</a><span class="kw">impl </span>Clone <span class="kw">for </span>RelayContext {
+<a href=#112 id=112 data-nosnippet>112</a>    <span class="kw">fn </span>clone(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="self">Self </span>{
+<a href=#113 id=113 data-nosnippet>113</a>        <span class="self">Self </span>{
+<a href=#114 id=114 data-nosnippet>114</a>            shutdown_handle: <span class="prelude-val">None</span>,
+<a href=#115 id=115 data-nosnippet>115</a>            health_handle: <span class="prelude-val">None</span>,
+<a href=#116 id=116 data-nosnippet>116</a>            inner: <span class="self">self</span>.inner.clone(),
+<a href=#117 id=117 data-nosnippet>117</a>        }
+<a href=#118 id=118 data-nosnippet>118</a>    }
+<a href=#119 id=119 data-nosnippet>119</a>}
 </code></pre></div></section></main></body></html>
