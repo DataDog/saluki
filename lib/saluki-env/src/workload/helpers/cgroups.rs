@@ -510,7 +510,7 @@ static CONTAINER_REGEX: LazyLock<Regex> =
 fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Option<MetaString> {
     match match_container_id(cgroup_name, interner) {
         ContainerIdMatch::Container(container_id) => Some(container_id),
-        ContainerIdMatch::Excluded | ContainerIdMatch::NoMatch => None,
+        ContainerIdMatch::Excluded | ContainerIdMatch::Uninternable | ContainerIdMatch::NoMatch => None,
     }
 }
 
@@ -521,6 +521,12 @@ enum ContainerIdMatch {
 
     /// The cgroup is named after a container but doesn't represent one.
     Excluded,
+
+    /// The cgroup belongs to a container, but interning its ID failed.
+    ///
+    /// We know which container this is and simply can't name it, which is different from not knowing: a caller walking
+    /// a path **MUST NOT** keep searching outwards, since the answer it found would be a different container.
+    Uninternable,
 
     /// The cgroup isn't named after a container at all.
     NoMatch,
@@ -547,7 +553,7 @@ fn match_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Conta
         Some(interned) => ContainerIdMatch::Container(MetaString::from(interned)),
         None => {
             error!(container_id = %container_id.as_str(), "Failed to intern container ID.");
-            ContainerIdMatch::NoMatch
+            ContainerIdMatch::Uninternable
         }
     }
 }
@@ -558,27 +564,41 @@ fn match_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Conta
 /// doesn't carry the ID but one of its ancestors does. The deepest ancestor that names a container wins, so the most
 /// specific enclosing container is the one reported.
 ///
-/// If the leaf itself is a cgroup that's named after a container but isn't one, `None` is returned without consulting
-/// any ancestors: such a cgroup isn't part of the container's workload, so attributing it to the enclosing container
-/// would be wrong.
+/// The search stops early, returning `None`, in two cases where continuing outwards would answer with some *other*
+/// container:
+///
+/// - The leaf is named after a container but isn't one. Such a cgroup isn't part of the container's workload at all.
+/// - A container is identified but its ID can't be interned. We know which container it is and just can't name it,
+///   which is not the same as not knowing.
 fn extract_container_id_from_path(cgroup_path: &Path, interner: &GenericMapInterner) -> Option<MetaString> {
     let leaf_name = cgroup_path.file_name().and_then(|s| s.to_str())?;
 
     match match_container_id(leaf_name, interner) {
         ContainerIdMatch::Container(container_id) => return Some(container_id),
-        ContainerIdMatch::Excluded => return None,
+        ContainerIdMatch::Excluded | ContainerIdMatch::Uninternable => return None,
         ContainerIdMatch::NoMatch => {}
     }
 
     // `ancestors` yields the path itself first, which we've already checked, so skip it.
-    cgroup_path
-        .ancestors()
-        .skip(1)
-        .filter_map(|ancestor| ancestor.file_name().and_then(|s| s.to_str()))
-        .find_map(|ancestor_name| match match_container_id(ancestor_name, interner) {
-            ContainerIdMatch::Container(container_id) => Some(container_id),
-            ContainerIdMatch::Excluded | ContainerIdMatch::NoMatch => None,
-        })
+    for ancestor in cgroup_path.ancestors().skip(1) {
+        let ancestor_name = match ancestor.file_name().and_then(|s| s.to_str()) {
+            Some(ancestor_name) => ancestor_name,
+            None => continue,
+        };
+
+        match match_container_id(ancestor_name, interner) {
+            ContainerIdMatch::Container(container_id) => return Some(container_id),
+
+            // An excluded ancestor is a statement about that cgroup, not about the one we're resolving, so the
+            // container enclosing it can still be the right answer.
+            ContainerIdMatch::Excluded | ContainerIdMatch::NoMatch => {}
+
+            // Reporting the next container out would attribute this cgroup to the wrong one, so stop here.
+            ContainerIdMatch::Uninternable => return None,
+        }
+    }
+
+    None
 }
 
 /// Returns `true` if a cgroup is named after a container but doesn't represent that container's workload.
@@ -597,7 +617,10 @@ fn is_container_named_but_not_a_container(cgroup_name: &str) -> bool {
 mod tests {
     use std::{num::NonZeroUsize, path::Path};
 
-    use stringtheory::{interning::GenericMapInterner, MetaString};
+    use stringtheory::{
+        interning::{GenericMapInterner, InternedString, Interner as _},
+        MetaString,
+    };
 
     use super::{
         extract_container_id, extract_container_id_from_path, get_container_id_from_cgroup_lines,
@@ -794,6 +817,64 @@ mod tests {
         );
 
         assert_eq!(extract_from_path(&path), Some(MetaString::from(CONTAINER_ID_A)));
+    }
+
+    /// Builds an interner that can still resolve `held_id` but has no room left for `blocked_id`.
+    ///
+    /// The returned handles have to be kept alive for as long as the interner is used: an entry is reclaimed as soon
+    /// as its last handle drops, so dropping them would un-fill the interner.
+    fn interner_holding_but_blocking(held_id: &str, blocked_id: &str) -> (GenericMapInterner, Vec<InternedString>) {
+        let interner = GenericMapInterner::new(NonZeroUsize::new(1024).unwrap());
+        let mut held = vec![interner.try_intern(held_id).expect("interner starts out empty")];
+
+        // The interner is sharded, so "full" is per-shard: we have to keep adding distinct strings until the shard
+        // that `blocked_id` hashes to is the one that fills up. Probing with `blocked_id` itself is harmless, since
+        // dropping the handle immediately gives the entry back.
+        for filler in 0.. {
+            if interner.try_intern(blocked_id).is_none() {
+                break;
+            }
+
+            assert!(filler < 100_000, "interner never filled up");
+
+            if let Some(interned) = interner.try_intern(&format!("filler-{:060}", filler)) {
+                held.push(interned);
+            }
+        }
+
+        // `held_id` has to still be resolvable, otherwise the tests below would pass for the wrong reason: they need
+        // the ancestor fallback to be *capable* of succeeding, so that declining to take it means something.
+        assert!(interner.try_intern(held_id).is_some());
+
+        (interner, held)
+    }
+
+    #[test]
+    fn extract_from_path_does_not_fall_back_when_the_leaf_id_cannot_be_interned() {
+        let (interner, _held) = interner_holding_but_blocking(CONTAINER_ID_A, CONTAINER_ID_B);
+
+        // The leaf names a container we can identify but can't name. Walking out to the enclosing container would
+        // attribute the inner container's workload to the outer one, which is worse than reporting nothing.
+        let path = format!(
+            "/sys/fs/cgroup/system.slice/cri-containerd-{}.scope/cri-containerd-{}.scope",
+            CONTAINER_ID_A, CONTAINER_ID_B
+        );
+
+        assert_eq!(extract_container_id_from_path(Path::new(&path), &interner), None);
+    }
+
+    #[test]
+    fn extract_from_path_stops_at_an_ancestor_whose_id_cannot_be_interned() {
+        let (interner, _held) = interner_holding_but_blocking(CONTAINER_ID_A, CONTAINER_ID_B);
+
+        // Same reasoning one level up: the nearest enclosing container is the right answer, so failing to name it
+        // means we have no answer, not that we should keep searching outwards.
+        let path = format!(
+            "/sys/fs/cgroup/system.slice/cri-containerd-{}.scope/cri-containerd-{}.scope/init",
+            CONTAINER_ID_A, CONTAINER_ID_B
+        );
+
+        assert_eq!(extract_container_id_from_path(Path::new(&path), &interner), None);
     }
 
     #[test]
