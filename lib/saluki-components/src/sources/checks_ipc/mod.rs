@@ -21,7 +21,7 @@ use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
 use saluki_core::data_model::event::{Event, EventType};
 use saluki_core::topology::OutputDefinition;
 use saluki_core::{
-    components::{sources::*, ComponentContext},
+    components::{sources::*, BuildContext},
     data_model::event::log::LogStatus,
 };
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -64,7 +64,7 @@ impl SourceBuilder for ChecksIPCConfiguration {
         &OUTPUTS
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(ChecksIPC {
             grpc_endpoint: self.grpc_endpoint.clone(),
             default_hostname: self.default_hostname.clone(),

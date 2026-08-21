@@ -10,6 +10,12 @@ mod dataspace;
 pub(crate) use self::dataspace::CURRENT_DATASPACE;
 pub use self::dataspace::{DataspaceRegistry, DataspaceUpdate, Subscription};
 
+mod resources;
+pub use self::resources::{
+    AcquireError, Resource, ResourceLease, ResourceRegistry, ResourceRegistryAPIHandler, ResourceRegistryState,
+    ResourceRegistryWorker, ResourceSpecification, ResourceStatus,
+};
+
 /// An identifier used to key values in a [`DataspaceRegistry`].
 ///
 /// Identifiers come in two flavors:
