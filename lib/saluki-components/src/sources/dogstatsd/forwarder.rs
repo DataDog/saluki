@@ -5,7 +5,8 @@ use std::{
 };
 
 use bytes::Bytes;
-use saluki_common::task::spawn_traced_named;
+use saluki_core::components::ComponentSpawner;
+use saluki_core::runtime::SpawnError;
 use stringtheory::MetaString;
 use tokio::{net::UdpSocket, sync::mpsc, time::timeout};
 use tracing::{debug, info, warn};
@@ -121,14 +122,28 @@ pub(super) struct PacketForwarder {
 }
 
 impl PacketForwarder {
-    pub(super) fn spawn_connect(&self) {
+    /// Starts connecting to the forward target in the background.
+    ///
+    /// Connecting is deliberately off the caller's path -- a listener shouldn't wait on a remote target before it can
+    /// accept traffic -- so this returns as soon as the child is registered, not once the target is reachable.
+    ///
+    /// # Errors
+    ///
+    /// If the component's supervisor is no longer running, an error is returned.
+    pub(super) async fn spawn_connect(&self, spawner: &ComponentSpawner) -> Result<(), SpawnError> {
         let forwarder = self.clone();
-        spawn_traced_named("dogstatsd-packet-forwarder-setup", async move {
-            forwarder.connect().await;
-        });
+        let forwarder_spawner = spawner.clone();
+
+        spawner
+            .spawn_interruptible("packet_forwarder_connect", async move {
+                forwarder.connect(&forwarder_spawner).await;
+            })
+            .await?;
+
+        Ok(())
     }
 
-    async fn connect(&self) {
+    async fn connect(&self, spawner: &ComponentSpawner) {
         let host = &self.target_host;
         let port = self.target_port;
         match timeout(FORWARDER_CONNECT_TIMEOUT, ConnectedPacketForwarder::connect(host, port)).await {
@@ -145,10 +160,15 @@ impl PacketForwarder {
                 };
                 let target = forwarder.target;
                 let (packets_tx, packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
-                spawn_traced_named(
-                    "dogstatsd-packet-forwarder",
-                    forwarder.run(packets_rx, self.metrics.clone()),
-                );
+                if let Err(e) = spawner
+                    .spawn_interruptible("packet_forwarder", forwarder.run(packets_rx, self.metrics.clone()))
+                    .await
+                {
+                    // Publishing the sender below is what enables forwarding, so bail out before that: otherwise
+                    // packets would queue into a channel that nothing is draining.
+                    warn!(%target, error = %e, "Could not start statsd packet forwarder. Packet forwarding disabled.");
+                    return;
+                }
 
                 info!(%target, "DogStatsD packet forwarding enabled.");
                 if self.connected.set(packets_tx).is_err() {
@@ -178,13 +198,13 @@ mod tests {
     use std::{net::SocketAddr, time::Duration};
 
     use bytes::Bytes;
-    use saluki_core::components::ComponentContext;
+    use saluki_core::components::{test_util::TestComponentSupervisor, ComponentContext};
     use saluki_io::net::ListenAddress;
     use stringtheory::MetaString;
     use tokio::{net::UdpSocket, time::timeout};
 
     use super::super::metrics::build_metrics;
-    use super::{PacketForwarder, PacketForwarderTarget};
+    use super::{ComponentSpawner, PacketForwarder, PacketForwarderTarget};
 
     fn build_forwarder(host: &str, port: u16) -> PacketForwarder {
         let context = ComponentContext::test_source("dogstatsd_forwarder_test");
@@ -199,8 +219,11 @@ mod tests {
         let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
         let target_addr = target.local_addr().expect("target should have an address");
 
+        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let spawner = supervisor.spawner();
+
         let forwarder = build_forwarder(&target_addr.ip().to_string(), target_addr.port());
-        forwarder.connect().await;
+        forwarder.connect(&spawner).await;
         assert!(
             forwarder.connected.get().is_some(),
             "connecting to a live target must enable forwarding"
@@ -214,6 +237,10 @@ mod tests {
             .expect("forwarded payload should arrive before the timeout")
             .expect("recv should succeed");
         assert_eq!(&buf[..received], b"metric.name:1|c");
+
+        // The forwarding loop is a supervised child, so it goes away with the component rather than outliving it.
+        assert_eq!(supervisor.active_children(), 1);
+        assert!(supervisor.shutdown().await.is_ok());
     }
 
     #[tokio::test]
@@ -223,14 +250,17 @@ mod tests {
         let target_addr = target.local_addr().expect("target should have an address");
         let forwarder = build_forwarder(&target_addr.ip().to_string(), target_addr.port());
 
-        forwarder.connect().await;
+        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let spawner = supervisor.spawner();
+
+        forwarder.connect(&spawner).await;
         let first = forwarder
             .connected
             .get()
             .expect("first connect should enable forwarding")
             .clone();
 
-        forwarder.connect().await;
+        forwarder.connect(&spawner).await;
         let second = forwarder
             .connected
             .get()
@@ -240,20 +270,54 @@ mod tests {
             second.same_channel(&first),
             "a second connect must keep the original sender, not replace it"
         );
+
+        assert!(supervisor.shutdown().await.is_ok());
     }
 
     #[tokio::test]
     async fn connect_failure_leaves_forwarding_disabled() {
         // When the target can't be connected (here, an unresolvable host), forwarding stays disabled: `connected` is
         // never set, and `forward` becomes a safe no-op rather than panicking.
+        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
+        let spawner = supervisor.spawner();
+
         let forwarder = build_forwarder("invalid host", 8125);
-        forwarder.connect().await;
+        forwarder.connect(&spawner).await;
         assert!(
             forwarder.connected.get().is_none(),
             "a failed connect must leave forwarding disabled"
         );
 
+        // Nothing was spawned, so there is no forwarding loop left running either.
+        assert_eq!(supervisor.active_children(), 0);
+
         // Must not panic even though forwarding is disabled.
         forwarder.forward(Bytes::from_static(b"metric.name:1|c")).await;
+
+        assert!(supervisor.shutdown().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn forwarding_is_disabled_when_the_supervisor_is_gone() {
+        // `connect` publishes the sender that enables forwarding only after the forwarding loop is running. If the
+        // spawn fails, publishing it anyway would queue packets into a channel nothing drains.
+        let target = UdpSocket::bind("127.0.0.1:0").await.expect("target should bind");
+        let target_addr = target.local_addr().expect("target should have an address");
+
+        // A spawner whose supervisor never ran: spawning through it always fails with `SupervisorGone`.
+        let dead_spawner = ComponentSpawner::new(
+            saluki_core::runtime::Supervisor::new("dogstatsd")
+                .expect("supervisor name should be valid")
+                .handle(),
+            tokio::runtime::Handle::current(),
+        );
+
+        let forwarder = build_forwarder(&target_addr.ip().to_string(), target_addr.port());
+        forwarder.connect(&dead_spawner).await;
+
+        assert!(
+            forwarder.connected.get().is_none(),
+            "forwarding must stay disabled when the forwarding loop could not be started"
+        );
     }
 }
