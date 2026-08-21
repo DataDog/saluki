@@ -768,7 +768,6 @@ pub fn load_platform_root_certificates_inner() -> Result<RootCertStore, GenericE
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "fips"))]
     use std::fs;
     #[cfg(all(unix, not(feature = "fips")))]
     use std::os::unix::fs::PermissionsExt;
