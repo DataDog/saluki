@@ -446,6 +446,7 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    #[cfg(unix)]
     use std::time::Duration;
 
     use axum::{
@@ -453,11 +454,11 @@ mod tests {
         http::{header, Request},
         routing::post,
     };
+    #[cfg(unix)]
+    use saluki_core::components::ComponentSpawner;
+    #[cfg(unix)]
     use saluki_core::runtime::Supervisor;
-    use saluki_core::{
-        accounting::MemoryLimiter,
-        components::{ComponentContext, ComponentSpawner},
-    };
+    use saluki_core::{accounting::MemoryLimiter, components::ComponentContext};
     use saluki_metrics::test::TestRecorder;
     use tower::ServiceExt;
 
