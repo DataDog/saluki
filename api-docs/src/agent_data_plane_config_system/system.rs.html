@@ -1092,5 +1092,24 @@
 <a href=#1092 id=1092 data-nosnippet>1092</a>        <span class="comment">// Seeded Saluki-only field.
 <a href=#1093 id=1093 data-nosnippet>1093</a>        </span><span class="macro">assert_eq!</span>(config.domains.dogstatsd.listeners.tcp_port, <span class="number">8126</span>);
 <a href=#1094 id=1094 data-nosnippet>1094</a>    }
-<a href=#1095 id=1095 data-nosnippet>1095</a>}
+<a href=#1095 id=1095 data-nosnippet>1095</a>
+<a href=#1096 id=1096 data-nosnippet>1096</a>    <span class="doccomment">/// Datadog-defined aggregation keys reach their typed model fields through the witness translator.
+<a href=#1097 id=1097 data-nosnippet>1097</a>    </span><span class="attr">#[test]
+<a href=#1098 id=1098 data-nosnippet>1098</a>    </span><span class="kw">fn </span>datadog_aggregation_keys_reach_the_model() {
+<a href=#1099 id=1099 data-nosnippet>1099</a>        <span class="kw">let </span>sources = SourceTree::all_explicit(<span class="macro">json!</span>({
+<a href=#1100 id=1100 data-nosnippet>1100</a>            <span class="string">"dogstatsd_expiry_seconds"</span>: <span class="number">60</span>,
+<a href=#1101 id=1101 data-nosnippet>1101</a>            <span class="string">"dogstatsd_flush_incomplete_buckets"</span>: <span class="bool-val">true</span>,
+<a href=#1102 id=1102 data-nosnippet>1102</a>        }));
+<a href=#1103 id=1103 data-nosnippet>1103</a>        <span class="kw">let </span>value = sources.to_value();
+<a href=#1104 id=1104 data-nosnippet>1104</a>        <span class="kw">let </span>datadog: DatadogConfiguration = serde_json::from_value(value.clone()).expect(<span class="string">"datadog source deserializes"</span>);
+<a href=#1105 id=1105 data-nosnippet>1105</a>        <span class="kw">let </span>saluki: SalukiOnly = serde_json::from_value(value).expect(<span class="string">"saluki-only source deserializes"</span>);
+<a href=#1106 id=1106 data-nosnippet>1106</a>
+<a href=#1107 id=1107 data-nosnippet>1107</a>        <span class="kw">let </span>(config, errors) = translate(<span class="kw-2">&amp;</span>datadog, <span class="kw-2">&amp;</span>saluki, <span class="kw-2">&amp;</span>sources);
+<a href=#1108 id=1108 data-nosnippet>1108</a>        <span class="macro">assert!</span>(errors.is_none(), <span class="string">"translation of a valid map records no error"</span>);
+<a href=#1109 id=1109 data-nosnippet>1109</a>
+<a href=#1110 id=1110 data-nosnippet>1110</a>        <span class="kw">let </span>aggregation = <span class="kw-2">&amp;</span>config.domains.dogstatsd.aggregation;
+<a href=#1111 id=1111 data-nosnippet>1111</a>        <span class="macro">assert_eq!</span>(aggregation.counter_expiry_seconds, <span class="prelude-val">Some</span>(<span class="number">60</span>));
+<a href=#1112 id=1112 data-nosnippet>1112</a>        <span class="macro">assert!</span>(aggregation.flush_open_windows);
+<a href=#1113 id=1113 data-nosnippet>1113</a>    }
+<a href=#1114 id=1114 data-nosnippet>1114</a>}
 </code></pre></div></section></main></body></html>
