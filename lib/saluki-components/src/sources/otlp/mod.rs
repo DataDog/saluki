@@ -30,6 +30,7 @@ use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
+use saluki_tls::ServerTLSConfigBuilder;
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -70,6 +71,27 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
         exposed_headers: cors.exposed_headers.clone(),
         max_age: cors.max_age,
     }
+}
+
+/// Builds a `rustls::ServerConfig` from resolved TLS settings, if TLS is enabled.
+///
+/// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
+/// requests client certificates and verifies them against the CA certificates in that file, but does not require a
+/// client certificate (optional verification). Mandatory client verification (`client_ca_file`) is not yet supported.
+fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<rustls::ServerConfig>, GenericError> {
+    if tls.cert_file.is_empty() || tls.key_file.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = ServerTLSConfigBuilder::new()
+        .with_cert_file(&tls.cert_file)
+        .with_key_file(&tls.key_file);
+
+    if !tls.ca_file.is_empty() {
+        builder = builder.with_ca_file(&tls.ca_file);
+    }
+
+    builder.build().map(Some)
 }
 
 /// Applies resolved static tags using replacement semantics.
@@ -177,6 +199,8 @@ impl SourceBuilder for OtlpConfiguration {
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let cors = cors_configuration(&self.otlp.receiver.http.cors);
+        let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
+        let grpc_tls_config = build_tls_config(&self.otlp.receiver.grpc.tls)?;
         let metrics = build_metrics(&context);
 
         Ok(Box::new(Otlp {
@@ -190,6 +214,8 @@ impl SourceBuilder for OtlpConfiguration {
             default_hostname: self.default_hostname.clone(),
             traces_translator,
             cors,
+            http_tls_config,
+            grpc_tls_config,
             metrics,
         }))
     }
@@ -215,6 +241,8 @@ pub struct Otlp {
     default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
     cors: CorsConfiguration,
+    http_tls_config: Option<rustls::ServerConfig>,
+    grpc_tls_config: Option<rustls::ServerConfig>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
@@ -232,6 +260,8 @@ impl Source for Otlp {
             default_hostname,
             traces_translator,
             cors,
+            http_tls_config,
+            grpc_tls_config,
             metrics,
         } = *self;
 
@@ -254,8 +284,16 @@ impl Source for Otlp {
 
         // Build our gRPC and HTTP servers and spawn them.
         let handler = SourceHandler::new(tx);
-        let server_builder =
+        let mut server_builder =
             OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
+
+        if let Some(tls_config) = http_tls_config {
+            server_builder = server_builder.with_http_tls_config(tls_config);
+        }
+        if let Some(tls_config) = grpc_tls_config {
+            server_builder = server_builder.with_grpc_tls_config(tls_config);
+        }
+
         server_builder
             .build(handler, memory_limiter.clone(), metrics.clone(), context.spawner())
             .await?;

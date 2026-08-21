@@ -7,10 +7,9 @@ use std::{
     fmt::{Debug, Formatter},
     fs::{File, OpenOptions},
     io::{self, Write},
-    path::Path,
 };
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -417,8 +416,9 @@ impl ServerTLSConfigBuilder {
 
     /// Sets the path to the PEM-encoded CA certificate file used to verify client certificates.
     ///
-    /// When set, the server requires clients to present a certificate signed by one of the CA certificates in this
-    /// file (mutual TLS). When unset, client authentication is not required.
+    /// When set, the server requests client certificates and verifies them against the CA certificates in this file,
+    /// but does not require a client certificate. If the client presents a certificate, it must be valid; if the
+    /// client presents no certificate, the connection is still accepted.
     ///
     /// The file may contain multiple CA certificates in PEM format.
     pub fn with_ca_file<P: Into<PathBuf>>(mut self, path: P) -> Self {
@@ -460,37 +460,8 @@ impl ServerTLSConfigBuilder {
         let private_key = PrivateKeyDer::from_pem_slice(&key_bytes)
             .map_err(|e| generic_error!("Failed to parse private key file '{}': {}", key_file.display(), e))?;
 
-        // Build the server configuration, optionally requiring client certificates.
         let mut config = if let Some(ca_file) = self.ca_file {
-            // Load CA certificates for client verification.
-            let ca_bytes = std::fs::read(&ca_file)
-                .map_err(|e| generic_error!("Failed to read CA certificate file '{}': {}", ca_file.display(), e))?;
-            let mut root_cert_store = RootCertStore::empty();
-            let ca_certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&ca_bytes)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| generic_error!("Failed to parse CA certificate file '{}': {}", ca_file.display(), e))?;
-
-            if ca_certs.is_empty() {
-                return Err(generic_error!(
-                    "No PEM-encoded certificates found in CA file '{}'.",
-                    ca_file.display()
-                ));
-            }
-
-            for ca_cert in ca_certs {
-                root_cert_store
-                    .add(ca_cert)
-                    .map_err(|e| generic_error!("Failed to add CA certificate to root store: {}", e))?;
-            }
-
-            let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_store))
-                .build()
-                .map_err(|e| generic_error!("Failed to build client certificate verifier: {}", e))?;
-
-            ServerConfig::builder()
-                .with_client_cert_verifier(client_verifier)
-                .with_single_cert(cert_chain, private_key)
-                .map_err(|e| generic_error!("Failed to build server TLS configuration: {}", e))?
+            build_server_config_with_client_verifier(&ca_file, cert_chain, private_key)?
         } else {
             ServerConfig::builder()
                 .with_no_client_auth()
@@ -502,6 +473,44 @@ impl ServerTLSConfigBuilder {
 
         Ok(config)
     }
+}
+
+/// Builds a `ServerConfig` with a client certificate verifier loaded from a CA file.
+///
+/// The server requests client certificates and verifies them if presented, but does not require them (optional
+/// verification). This matches the OpenTelemetry Collector's `ca_file` semantics for a server.
+fn build_server_config_with_client_verifier(
+    ca_file: &Path, cert_chain: Vec<CertificateDer<'static>>, private_key: PrivateKeyDer<'static>,
+) -> Result<ServerConfig, GenericError> {
+    let ca_bytes = std::fs::read(ca_file)
+        .map_err(|e| generic_error!("Failed to read CA certificate file '{}': {}", ca_file.display(), e))?;
+    let mut root_cert_store = RootCertStore::empty();
+    let ca_certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&ca_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| generic_error!("Failed to parse CA certificate file '{}': {}", ca_file.display(), e))?;
+
+    if ca_certs.is_empty() {
+        return Err(generic_error!(
+            "No PEM-encoded certificates found in CA file '{}'.",
+            ca_file.display()
+        ));
+    }
+
+    for ca_cert in ca_certs {
+        root_cert_store
+            .add(ca_cert)
+            .map_err(|e| generic_error!("Failed to add CA certificate to root store: {}", e))?;
+    }
+
+    let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_store))
+        .allow_unauthenticated()
+        .build()
+        .map_err(|e| generic_error!("Failed to build client certificate verifier: {}", e))?;
+
+    ServerConfig::builder()
+        .with_client_cert_verifier(client_verifier)
+        .with_single_cert(cert_chain, private_key)
+        .map_err(|e| generic_error!("Failed to build server TLS configuration: {}", e))
 }
 
 /// Ensures that a client TLS configuration is FIPS compliant.

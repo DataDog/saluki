@@ -2270,8 +2270,8 @@ inventory:
     description: "gRPC TLS CA file path"
     documentation: |-
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
-      When set, the receiver requires clients to present a certificate signed by one of the CAs in this file
-      (mutual TLS). Defaults to empty (no client authentication).
+      When set, the server requests client certificates and verifies them if presented, but does not require them.
+      Defaults to empty (no client certificate verification).
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -2516,8 +2516,8 @@ inventory:
     description: "HTTP TLS CA file path"
     documentation: |-
       Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
-      When set, the receiver requires clients to present a certificate signed by one of the CAs in this file
-      (mutual TLS). Defaults to empty (no client authentication).
+      When set, the server requests client certificates and verifies them if presented, but does not require them.
+      Defaults to empty (no client certificate verification).
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:

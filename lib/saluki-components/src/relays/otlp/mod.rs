@@ -35,7 +35,8 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
 /// Builds a `rustls::ServerConfig` from resolved TLS settings, if TLS is enabled.
 ///
 /// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
-/// requires client certificates signed by the CA certificates in that file (mutual TLS).
+/// requests client certificates and verifies them against the CA certificates in that file, but does not require a
+/// client certificate (optional verification). Mandatory client verification (`client_ca_file`) is not yet supported.
 fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<rustls::ServerConfig>, GenericError> {
     if tls.cert_file.is_empty() || tls.key_file.is_empty() {
         return Ok(None);
