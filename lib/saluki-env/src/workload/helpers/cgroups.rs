@@ -28,6 +28,11 @@ const CGROUPS_V1_BASE_CONTROLLER_NAME: &str = "memory";
 const CGROUPS_V2_CONTROLLERS_FILE: &str = "cgroup.controllers";
 const SELF_CGROUP_PATH: &str = "/proc/self/cgroup";
 
+/// Highest inode number that can't refer to a specific cgroup controller.
+///
+/// Inodes 0 and 1 are never valid, and inode 2 is conventionally the root of a filesystem.
+const MAX_RESERVED_INODE: u64 = 2;
+
 /// Linux Control Groups-specific configuration.
 ///
 /// Provides environment-specific paths to both "procfs" and "cgroupfs" filesystems, necessary for querying the Linux
@@ -135,15 +140,29 @@ impl CgroupsReader {
                     }
                 };
 
+                // A reserved inode can't be attributed to this controller specifically, so we have nothing usable to
+                // key an alias on. Drop the cgroup rather than reporting it with an inode that would resolve the wrong
+                // workload -- or none at all.
+                let controller_inode = metadata.ino();
+                if !is_usable_controller_inode(controller_inode) {
+                    debug!(
+                        controller_inode,
+                        %container_id,
+                        cgroup_controller_path = %cgroup_path.display(),
+                        "Ignoring cgroup controller with reserved inode.",
+                    );
+                    return None;
+                }
+
                 trace!(
-                    controller_inode = metadata.ino(),
+                    controller_inode,
                     %container_id,
                     cgroup_controller_path = %cgroup_path.display(),
                     "Found valid cgroups controller for container.",
                 );
 
                 return Some(Cgroup {
-                    ino: Some(metadata.ino()),
+                    ino: Some(controller_inode),
                     container_id,
                 });
             }
@@ -475,6 +494,14 @@ fn get_container_id_from_cgroup_lines(lines: &[String], interner: &GenericMapInt
         .find_map(|cgroup_name| extract_container_id(cgroup_name, interner))
 }
 
+/// Returns `true` if the given inode can identify a specific cgroup controller.
+///
+/// Reserved inodes -- see [`MAX_RESERVED_INODE`] -- are reported by some filesystems for paths that aren't a distinct
+/// object, so they can't be used to tell one controller apart from another.
+fn is_usable_controller_inode(inode: u64) -> bool {
+    inode > MAX_RESERVED_INODE
+}
+
 fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Option<MetaString> {
     // This regular expression is meant to capture:
     // - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
@@ -505,7 +532,9 @@ mod tests {
 
     use stringtheory::{interning::GenericMapInterner, MetaString};
 
-    use super::{extract_container_id, get_container_id_from_cgroup_lines, CgroupControllerEntry};
+    use super::{
+        extract_container_id, get_container_id_from_cgroup_lines, is_usable_controller_inode, CgroupControllerEntry,
+    };
 
     #[test]
     fn parse_controller_entry_cgroups_v1() {
@@ -596,5 +625,20 @@ mod tests {
 
         // Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
         assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
+    }
+
+    #[test]
+    fn reserved_inodes_are_not_usable_controller_inodes() {
+        // 0 and 1 are never valid inodes, and 2 is conventionally the root of a filesystem.
+        assert!(!is_usable_controller_inode(0));
+        assert!(!is_usable_controller_inode(1));
+        assert!(!is_usable_controller_inode(2));
+    }
+
+    #[test]
+    fn ordinary_inodes_are_usable_controller_inodes() {
+        assert!(is_usable_controller_inode(3));
+        assert!(is_usable_controller_inode(4_026_531_835));
+        assert!(is_usable_controller_inode(u64::MAX));
     }
 }
