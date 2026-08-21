@@ -9,7 +9,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{metric::Metric, Event, EventType},
 };
@@ -186,7 +186,7 @@ impl DestinationBuilder for DogStatsDDebugLogConfiguration {
         EventType::Metric
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         DogStatsDDebugLog::new(self).map(|destination| Box::new(destination) as Box<dyn Destination + Send>)
     }
 }

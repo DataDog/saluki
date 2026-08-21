@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use saluki_common::sync::shutdown::ShutdownCoordinator;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{encoders::*, ComponentContext},
+    components::{encoders::*, BuildContext},
     data_model::{event::EventType, payload::PayloadType},
     observability::ComponentMetricsExt,
 };
@@ -63,8 +63,8 @@ where
         self.encoder_builder.output_payload_type()
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
 
         let encoder = self.encoder_builder.build(context).await?;

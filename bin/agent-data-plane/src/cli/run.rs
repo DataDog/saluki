@@ -40,7 +40,7 @@ use saluki_components::{
 use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
-use saluki_core::runtime::{RestartMode, RestartStrategy, Supervisor, SupervisorError};
+use saluki_core::runtime::{state::ResourceRegistry, RestartMode, RestartStrategy, Supervisor, SupervisorError};
 use saluki_core::topology::TopologyBlueprint;
 use saluki_env::{features, EnvironmentProvider as _, HostProvider as _};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
@@ -159,6 +159,7 @@ pub async fn handle_run_command(
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
+    let resource_registry = ResourceRegistry::new();
     let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_configuration(
         standalone,
         &config_sys.raw_map(),
@@ -205,6 +206,7 @@ pub async fn handle_run_command(
     blueprint
         .with_health_registry(health_registry.clone())
         .with_memory_limiter(memory_limiter)
+        .with_resource_registry(resource_registry.clone())
         .with_environment_readiness(env_provider.wait_for_ready());
 
     // Acquire a readiness handle before handing the blueprint off to the supervisor. This waits until the topology has
@@ -216,6 +218,7 @@ pub async fn handle_run_command(
     let mut root_supervisor = Supervisor::new("adp-root")?.with_restart_strategy(root_restart_strategy);
 
     root_supervisor.add_worker(bootstrap_supervisor);
+    internal_supervisor.add_worker(resource_registry.worker());
     if let Some(env_supervisor) = maybe_env_supervisor {
         internal_supervisor.add_worker(env_supervisor);
     }
@@ -1036,11 +1039,11 @@ mod tests {
         components::{
             destinations::{Destination, DestinationBuilder, DestinationContext},
             sources::{Source, SourceBuilder, SourceContext},
-            ComponentContext,
+            BuildContext,
         },
         data_model::event::{metric::Metric, Event, EventType},
         health::HealthRegistry,
-        runtime::Supervisor,
+        runtime::{state::ResourceRegistry, Supervisor},
         topology::{OutputDefinition, TopologyBlueprint},
     };
     use saluki_error::{generic_error, GenericError};
@@ -1164,6 +1167,7 @@ mod tests {
             blueprint
                 .with_health_registry(HealthRegistry::new())
                 .with_memory_limiter(MemoryLimiter::noop())
+                .with_resource_registry(ResourceRegistry::new())
                 .with_ambient_worker_pool();
 
             let mut supervisor =
@@ -1333,7 +1337,7 @@ mod tests {
             &self.outputs
         }
 
-        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
             let events = self
                 .events
                 .lock()
@@ -1366,7 +1370,7 @@ mod tests {
             EventType::Metric
         }
 
-        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
             Ok(Box::new(DrainingMetricDestination))
         }
     }

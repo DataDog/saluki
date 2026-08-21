@@ -13,7 +13,7 @@ use ottl::{CallbackMap, EnumMap, OttlParser};
 use saluki_common::collections::FastHashMap;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
+    components::{transforms::*, BuildContext},
     data_model::event::trace::{AttributeValue, Span},
     topology::EventsBuffer,
 };
@@ -47,7 +47,7 @@ impl SynchronousTransformBuilder for OttlTransformConfiguration {
     /// # Errors
     ///
     /// If the OTTL statement fails to parse, an error is returned.
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let path_resolvers = span_context::span_transform_path_resolvers();
 
         let editors = ottl::editors::standard();
@@ -141,7 +141,7 @@ mod tests {
     use std::collections::HashMap;
 
     use saluki_core::{
-        components::{transforms::*, ComponentContext},
+        components::{transforms::*, BuildContext},
         data_model::event::{
             service_check::{CheckStatus, ServiceCheck},
             trace::AttributeValue,
@@ -174,8 +174,8 @@ mod tests {
             })
     }
 
-    fn test_component_context() -> ComponentContext {
-        ComponentContext::test_transform("ottl_transform")
+    fn test_component_context() -> BuildContext {
+        BuildContext::test_transform("ottl_transform")
     }
 
     fn test_config(value: Option<serde_json::Value>) -> TypedOttlTransform {

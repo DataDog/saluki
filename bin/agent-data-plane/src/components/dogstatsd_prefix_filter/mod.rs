@@ -8,7 +8,7 @@ use saluki_core::data_model::event::{metric::Metric, EventType};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext,
     },
     observability::ComponentMetricsExt as _,
     topology::OutputDefinition,
@@ -110,14 +110,14 @@ impl TransformBuilder for DogStatsDPrefixFilterConfiguration {
         OUTPUTS
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         // Ensure our metric prefix has a trailing period so that we don't have to check for, and possibly add it, when we're
         // actually processing metrics.
         let mut metric_prefix = self.metric_prefix.clone();
         if !metric_prefix.is_empty() && !metric_prefix.ends_with(".") {
             metric_prefix.push('.');
         }
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let effective_filterlist = EffectiveFilterlist::new(
             self.metric_filterlist.clone(),
             self.metric_filterlist_match_prefix,

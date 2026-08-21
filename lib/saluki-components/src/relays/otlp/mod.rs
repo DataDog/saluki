@@ -6,7 +6,7 @@ use axum::body::Bytes;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
-use saluki_core::components::ComponentContext;
+use saluki_core::components::BuildContext;
 use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, PayloadType};
 use saluki_core::topology::OutputDefinition;
 use saluki_error::{ErrorContext as _, GenericError};
@@ -81,13 +81,13 @@ impl RelayBuilder for OtlpRelayConfiguration {
         &OUTPUTS
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Relay + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError> {
         Ok(Box::new(OtlpRelay {
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
             cors: cors_configuration(&self.receiver.http.cors),
-            metrics: build_metrics(&context),
+            metrics: build_metrics(context.component_context()),
         }))
     }
 }

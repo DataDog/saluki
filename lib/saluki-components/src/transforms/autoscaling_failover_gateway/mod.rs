@@ -7,7 +7,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{metric::MetricValues, Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
@@ -100,7 +100,7 @@ impl AutoscalingFailoverGateway {
 
 #[async_trait]
 impl TransformBuilder for AutoscalingFailoverGatewayConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(AutoscalingFailoverGateway::new(self.failover_config.clone())))
     }
 

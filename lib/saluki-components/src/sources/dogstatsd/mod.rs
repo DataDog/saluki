@@ -34,7 +34,7 @@ use saluki_core::data_model::event::{
     Event, EventType,
 };
 use saluki_core::{
-    components::{sources::*, ComponentContext},
+    components::{sources::*, BuildContext},
     pooling::{ElasticObjectPool, ObjectPool as _},
     topology::{EventsBuffer, OutputDefinition},
 };
@@ -994,7 +994,7 @@ impl DogStatsDConfiguration {
 
 #[async_trait]
 impl SourceBuilder for DogStatsDConfiguration {
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         let listeners = self.build_listeners().await?;
         if listeners.is_empty() {
             return Err(Error::NoListenersConfigured.into());
@@ -1020,7 +1020,7 @@ impl SourceBuilder for DogStatsDConfiguration {
         let maybe_origin_tags_resolver = self.workload_provider.clone().map(|provider| {
             DogStatsDOriginTagResolver::new(self.origin_enrichment.clone(), provider, captured_tagger.clone())
         });
-        let context_resolvers = ContextResolvers::new(self, &context, maybe_origin_tags_resolver)
+        let context_resolvers = ContextResolvers::new(self, context.component_context(), maybe_origin_tags_resolver)
             .error_context("Failed to create context resolvers.")?;
 
         let codec_config = DogStatsDCodecConfiguration::default()
