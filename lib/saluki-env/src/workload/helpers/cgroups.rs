@@ -28,6 +28,11 @@ const CGROUPS_V1_BASE_CONTROLLER_NAME: &str = "memory";
 const CGROUPS_V2_CONTROLLERS_FILE: &str = "cgroup.controllers";
 const SELF_CGROUP_PATH: &str = "/proc/self/cgroup";
 
+/// Highest inode number that can't refer to a specific cgroup controller.
+///
+/// Inodes 0 and 1 are never valid, and inode 2 is conventionally the root of a filesystem.
+const MAX_RESERVED_INODE: u64 = 2;
+
 /// Linux Control Groups-specific configuration.
 ///
 /// Provides environment-specific paths to both "procfs" and "cgroupfs" filesystems, necessary for querying the Linux
@@ -135,15 +140,29 @@ impl CgroupsReader {
                     }
                 };
 
+                // A reserved inode can't be attributed to this controller specifically, so we have nothing usable to
+                // key an alias on. Drop the cgroup rather than reporting it with an inode that would resolve the wrong
+                // workload -- or none at all.
+                let controller_inode = metadata.ino();
+                if !is_usable_controller_inode(controller_inode) {
+                    debug!(
+                        controller_inode,
+                        %container_id,
+                        cgroup_controller_path = %cgroup_path.display(),
+                        "Ignoring cgroup controller with reserved inode.",
+                    );
+                    return None;
+                }
+
                 trace!(
-                    controller_inode = metadata.ino(),
+                    controller_inode,
                     %container_id,
                     cgroup_controller_path = %cgroup_path.display(),
                     "Found valid cgroups controller for container.",
                 );
 
                 return Some(Cgroup {
-                    ino: Some(metadata.ino()),
+                    ino: Some(controller_inode),
                     container_id,
                 });
             }
@@ -601,6 +620,14 @@ fn get_container_id_from_cgroup_lines(lines: &[String], interner: &GenericMapInt
         .find_map(|cgroup_name| extract_container_id(cgroup_name, interner))
 }
 
+/// Returns `true` if the given inode can identify a specific cgroup controller.
+///
+/// Reserved inodes -- see [`MAX_RESERVED_INODE`] -- are reported by some filesystems for paths that aren't a distinct
+/// object, so they can't be used to tell one controller apart from another.
+fn is_usable_controller_inode(inode: u64) -> bool {
+    inode > MAX_RESERVED_INODE
+}
+
 fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Option<MetaString> {
     // This regular expression is meant to capture:
     // - 64 character hexadecimal strings (standard format for container IDs almost everywhere)
@@ -610,19 +637,33 @@ fn extract_container_id(cgroup_name: &str, interner: &GenericMapInterner) -> Opt
     static CONTAINER_REGEX: LazyLock<Regex> =
         LazyLock::new(|| Regex::new("([0-9a-f]{64})|([0-9a-f]{32}-\\d+)|([0-9a-f]{8}(-[0-9a-f]{4}){4}$)").unwrap());
 
-    CONTAINER_REGEX
-        .find(cgroup_name)
-        .filter(|name| {
-            // Filter out any systemd-managed cgroups, as well as CRI-O conmon cgroups, as they don't represent containers.
-            !name.as_str().ends_with(".mount") && !name.as_str().starts_with("crio-conmon-")
-        })
-        .and_then(|name| match interner.try_intern(name.as_str()) {
-            Some(interned) => Some(MetaString::from(interned)),
-            None => {
-                error!(container_id = %name.as_str(), "Failed to intern container ID.");
-                None
-            }
-        })
+    let container_id = CONTAINER_REGEX.find(cgroup_name)?;
+
+    // Note that this is checked against the full cgroup name, not against the ID we just matched out of it: the match
+    // is a bare hexadecimal string, which can never carry any of these prefixes or suffixes.
+    if is_container_named_but_not_a_container(cgroup_name) {
+        return None;
+    }
+
+    match interner.try_intern(container_id.as_str()) {
+        Some(interned) => Some(MetaString::from(interned)),
+        None => {
+            error!(container_id = %container_id.as_str(), "Failed to intern container ID.");
+            None
+        }
+    }
+}
+
+/// Returns `true` if a cgroup is named after a container but doesn't represent that container's workload.
+fn is_container_named_but_not_a_container(cgroup_name: &str) -> bool {
+    // With the systemd cgroup driver, a `.mount` cgroup can sit alongside a container's own cgroup. It exists, but no
+    // process is ever attached to it, so it holds no stats.
+    //
+    // The `conmon` cgroups belong to the CRI-O/Podman monitor process supervising a container, rather than to the
+    // container itself.
+    cgroup_name.ends_with(".mount")
+        || cgroup_name.starts_with("crio-conmon-")
+        || cgroup_name.starts_with("libpod-conmon-")
 }
 
 #[cfg(test)]
@@ -639,8 +680,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        extract_container_id, get_container_id_from_cgroup_lines, visit_subdirectories, CgroupControllerEntry,
-        CgroupsReader, HierarchyReader, TraversalOutcome, DEFAULT_PROCFS_ROOT,
+        extract_container_id, get_container_id_from_cgroup_lines, is_usable_controller_inode, visit_subdirectories,
+        CgroupControllerEntry, CgroupsReader, HierarchyReader, TraversalOutcome, DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -708,30 +749,56 @@ mod tests {
         assert_eq!(extract(&raw), Some(expected_container_id));
     }
 
-    // NOTE: `extract_container_id`'s documented intent is to exclude systemd `.mount` cgroups and CRI-O
-    // `crio-conmon-` cgroups, since neither represents an actual container. As currently written, though, the
-    // `.ends_with(".mount")`/`.starts_with("crio-conmon-")` checks are applied to the regex *match* -- which is a
-    // bare hexadecimal container ID -- rather than to the full cgroup name. A hex string can never end with
-    // `.mount` or start with `crio-conmon-`, so these two exclusion filters never actually fire. The two tests
-    // below pin that real, current behavior (the container ID is still extracted) rather than the documented
-    // intent, so a future fix that makes the filters effective will visibly flip these assertions.
+    // The exclusions below have to be checked against the full cgroup name. Checking them against the matched
+    // container ID -- a bare hexadecimal string -- can never fire, which is precisely the bug these tests guard.
 
     #[test]
-    fn extract_container_id_does_not_exclude_dot_mount_cgroups() {
+    fn extract_container_id_excludes_dot_mount_cgroups() {
         let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
         let raw = format!("{}.mount", container_id);
 
-        // Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
+        assert_eq!(extract(&raw), None);
+    }
+
+    #[test]
+    fn extract_container_id_excludes_crio_conmon_cgroups() {
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let raw = format!("crio-conmon-{}.scope", container_id);
+
+        assert_eq!(extract(&raw), None);
+    }
+
+    #[test]
+    fn extract_container_id_excludes_libpod_conmon_cgroups() {
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let raw = format!("libpod-conmon-{}.scope", container_id);
+
+        assert_eq!(extract(&raw), None);
+    }
+
+    #[test]
+    fn extract_container_id_includes_libpod_container_cgroups() {
+        // Only the `conmon` monitor cgroup is excluded -- the container's own Podman cgroup shares the `libpod-`
+        // prefix and must still resolve.
+        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
+        let raw = format!("libpod-{}.scope", container_id);
+
         assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
     }
 
     #[test]
-    fn extract_container_id_does_not_exclude_crio_conmon_cgroups() {
-        let container_id = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
-        let raw = format!("crio-conmon-{}.scope", container_id);
+    fn reserved_inodes_are_not_usable_controller_inodes() {
+        // 0 and 1 are never valid inodes, and 2 is conventionally the root of a filesystem.
+        assert!(!is_usable_controller_inode(0));
+        assert!(!is_usable_controller_inode(1));
+        assert!(!is_usable_controller_inode(2));
+    }
 
-        // Documented intent is exclusion (`None`); the filter is applied to the hex match, so it never fires.
-        assert_eq!(extract(&raw), Some(MetaString::from(container_id)));
+    #[test]
+    fn ordinary_inodes_are_usable_controller_inodes() {
+        assert!(is_usable_controller_inode(3));
+        assert!(is_usable_controller_inode(4_026_531_835));
+        assert!(is_usable_controller_inode(u64::MAX));
     }
 
     const TEST_CONTAINER_ID: &str = "06d914d2013e51a777feead523895935e33d8ad725b3251ac74c491b3d55d8fe";
