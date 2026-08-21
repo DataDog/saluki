@@ -137,8 +137,6 @@ pub struct DatadogConfiguration {
     pub dogstatsd_expiry_seconds: i64,
 
     #[serde(default)]
-    /// Alias defined in schema overlay.
-    #[serde(alias = "aggregate_flush_open_windows")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_bool")]
     pub dogstatsd_flush_incomplete_buckets: bool,
 

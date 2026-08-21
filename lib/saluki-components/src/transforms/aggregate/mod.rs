@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
 use saluki_common::time::get_unix_timestamp;
-use saluki_config::GenericConfiguration;
 use saluki_context::Context;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
@@ -21,7 +20,6 @@ use saluki_core::{
 };
 use saluki_error::{generic_error, GenericError};
 use saluki_metrics::MetricsBuilder;
-use serde::Deserialize;
 use smallvec::SmallVec;
 use stringtheory::MetaString;
 use tokio::{
@@ -35,7 +33,8 @@ mod telemetry;
 use self::telemetry::Telemetry;
 
 mod config;
-use self::config::{HistogramConfiguration, HistogramStatistic};
+pub use self::config::HistogramConfiguration;
+use self::config::HistogramStatistic;
 
 const PASSTHROUGH_IDLE_FLUSH_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 const CONTEXT_SNAPSHOT_REQUEST_CHANNEL_CAPACITY: usize = 1;
@@ -151,9 +150,19 @@ impl AggregateContextSnapshotHandle {
     }
 }
 
-fn aggregate_context_snapshot_channel() -> (AggregateContextSnapshotHandle, AggregateContextSnapshotRequestReceiver) {
+/// Creates a retained-context snapshot handle and its owner-side receiver.
+///
+/// The receiver belongs to the aggregate transform, and is supplied to it through
+/// [`AggregateConfiguration::context_snapshot_receiver`]. The handle belongs to whoever requests snapshots, and can be
+/// cloned to let several callers request them.
+pub fn aggregate_context_snapshot_channel() -> (AggregateContextSnapshotHandle, AggregateContextSnapshotReceiver) {
     let (requests, receiver) = mpsc::channel(CONTEXT_SNAPSHOT_REQUEST_CHANNEL_CAPACITY);
-    (AggregateContextSnapshotHandle { requests }, receiver)
+    (
+        AggregateContextSnapshotHandle { requests },
+        AggregateContextSnapshotReceiver {
+            receiver: Mutex::new(Some(receiver)),
+        },
+    )
 }
 
 #[inline]
@@ -238,16 +247,22 @@ impl AggregateContextSnapshotResponder {
 #[cfg(any(test, feature = "test-util"))]
 pub fn aggregate_context_snapshot_channel_for_test(
 ) -> (AggregateContextSnapshotHandle, AggregateContextSnapshotResponder) {
-    let (handle, receiver) = aggregate_context_snapshot_channel();
-    (handle, AggregateContextSnapshotResponder { receiver })
+    let (requests, receiver) = mpsc::channel(CONTEXT_SNAPSHOT_REQUEST_CHANNEL_CAPACITY);
+    (
+        AggregateContextSnapshotHandle { requests },
+        AggregateContextSnapshotResponder { receiver },
+    )
 }
 
-struct AggregateContextSnapshotChannel {
-    handle: AggregateContextSnapshotHandle,
+/// The owner side of a retained-context snapshot channel.
+///
+/// The aggregate transform takes the receiver out of this holder when it is built. A receiver can only be taken once,
+/// so an [`AggregateConfiguration`] holding one can only build a single transform.
+pub struct AggregateContextSnapshotReceiver {
     receiver: Mutex<Option<AggregateContextSnapshotRequestReceiver>>,
 }
 
-impl AggregateContextSnapshotChannel {
+impl AggregateContextSnapshotReceiver {
     fn take_receiver(&self) -> Result<AggregateContextSnapshotRequestReceiver, GenericError> {
         let mut receiver = self
             .receiver
@@ -257,55 +272,6 @@ impl AggregateContextSnapshotChannel {
             .take()
             .ok_or_else(|| generic_error!("aggregate context snapshot receiver has already been taken"))
     }
-}
-
-impl Default for AggregateContextSnapshotChannel {
-    fn default() -> Self {
-        let (handle, receiver) = aggregate_context_snapshot_channel();
-        Self {
-            handle,
-            receiver: Mutex::new(Some(receiver)),
-        }
-    }
-}
-
-#[cfg(test)]
-impl std::fmt::Debug for AggregateContextSnapshotChannel {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AggregateContextSnapshotChannel")
-            .finish_non_exhaustive()
-    }
-}
-
-#[cfg(test)]
-impl PartialEq for AggregateContextSnapshotChannel {
-    fn eq(&self, _other: &Self) -> bool {
-        true
-    }
-}
-
-const fn default_window_duration_seconds() -> NonZeroU64 {
-    NonZeroU64::new(10).expect("not zero")
-}
-
-const fn default_primary_flush_interval() -> Duration {
-    Duration::from_secs(15)
-}
-
-const fn default_context_limit() -> usize {
-    1_000_000
-}
-
-const fn default_counter_expiry_seconds() -> Option<u64> {
-    Some(300)
-}
-
-const fn default_passthrough_timestamped_metrics() -> bool {
-    true
-}
-
-const fn default_passthrough_idle_flush_timeout() -> Duration {
-    Duration::from_secs(1)
 }
 
 /// Aggregate transform.
@@ -327,32 +293,19 @@ const fn default_passthrough_idle_flush_timeout() -> Duration {
 /// are otherwise sparse. The expiration period is configurable, and allows a trade-off in how sparse/infrequent the
 /// updates to counters can be versus how long it takes for counters that don't exist anymore to actually cease to be
 /// emitted.
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct AggregateConfiguration {
     /// Size of the aggregation window, in seconds.
     ///
     /// Metrics are aggregated into fixed-size windows, such that all updates to the same metric within a window are
     /// aggregated into a single metric. The window size controls how efficiently metrics are aggregated, and in turn,
     /// how many data points are emitted downstream.
-    ///
-    /// Window durations cannot be zero.
-    ///
-    /// Defaults to 10 seconds.
-    #[serde(
-        rename = "aggregate_window_duration_seconds",
-        default = "default_window_duration_seconds"
-    )]
-    window_duration_seconds: NonZeroU64,
+    pub window_duration_seconds: NonZeroU64,
 
     /// How often to flush buckets.
     ///
     /// This represents a trade-off between the savings in network bandwidth (sending fewer requests to downstream
     /// systems, etc) and the frequency of updates (how often updates to a metric are emitted).
-    ///
-    /// Defaults to 15 seconds.
-    #[serde(rename = "aggregate_flush_interval", default = "default_primary_flush_interval")]
-    primary_flush_interval: Duration,
+    pub primary_flush_interval: Duration,
 
     /// Maximum number of contexts to aggregate per window.
     ///
@@ -362,10 +315,7 @@ pub struct AggregateConfiguration {
     ///
     /// When the maximum number of contexts is reached in the current aggregation window, additional metrics are dropped
     /// until the next window starts.
-    ///
-    /// Defaults to 1,000,000.
-    #[serde(rename = "aggregate_context_limit", default = "default_context_limit")]
-    context_limit: usize,
+    pub context_limit: usize,
 
     /// Whether to flush open buckets when stopping the transform.
     ///
@@ -376,14 +326,7 @@ pub struct AggregateConfiguration {
     /// previously flushed value.
     ///
     /// In cases where flushing all outstanding data is paramount, this can be enabled.
-    ///
-    /// Defaults to `false`.
-    #[serde(
-        rename = "aggregate_flush_open_windows",
-        alias = "dogstatsd_flush_incomplete_buckets",
-        default
-    )]
-    flush_open_windows: bool,
+    pub flush_open_windows: bool,
 
     /// How long to keep idle counters alive after they've been flushed, in seconds.
     ///
@@ -396,9 +339,8 @@ pub struct AggregateConfiguration {
     /// After a counter has been idle (no updates) for longer than the expiry period, it will be completely removed and
     /// no further zero values will be emitted.
     ///
-    /// Defaults to 300 seconds (5 minutes). Setting a value of `0` disables idle counter keep-alive.
-    #[serde(alias = "dogstatsd_expiry_seconds", default = "default_counter_expiry_seconds")]
-    counter_expiry_seconds: Option<u64>,
+    /// A value of `0`, or `None`, disables idle counter keep-alive.
+    pub counter_expiry_seconds: Option<u64>,
 
     /// Whether or not to immediately forward (passthrough) metrics with pre-defined timestamps.
     ///
@@ -406,72 +348,52 @@ pub struct AggregateConfiguration {
     /// Only metrics without a timestamp will be aggregated. This can be useful when metrics are already pre-aggregated
     /// client-side and both timeliness and memory efficiency are paramount, as it avoids the overhead of aggregating
     /// within the pipeline.
-    ///
-    /// Defaults to `true`.
-    #[serde(
-        rename = "dogstatsd_no_aggregation_pipeline",
-        default = "default_passthrough_timestamped_metrics"
-    )]
-    passthrough_timestamped_metrics: bool,
+    pub passthrough_timestamped_metrics: bool,
 
     /// How often to flush buffered passthrough metrics.
     ///
     /// While passthrough metrics aren't re-aggregated by the transform, they will still be temporarily buffered in
     /// order to optimize the efficiency of processing them in the next component. This setting controls the maximum
     /// amount of time that passthrough metrics will be buffered before being forwarded.
-    ///
-    /// Defaults to 1 seconds.
-    #[serde(
-        rename = "aggregate_passthrough_idle_flush_timeout",
-        default = "default_passthrough_idle_flush_timeout"
-    )]
-    passthrough_idle_flush_timeout: Duration,
+    pub passthrough_idle_flush_timeout: Duration,
 
-    /// Histogram aggregation configuration.
-    ///
-    /// Controls the aggregates/percentiles that are generated for distributions in "histogram" mode (client-side
-    /// distribution aggregation).
-    #[serde(flatten)]
-    hist_config: HistogramConfiguration,
+    /// Statistics to calculate over histograms, and how to copy them to distributions.
+    pub hist_config: HistogramConfiguration,
 
-    /// Owner-side channel used to coordinate retained-context snapshots.
+    /// Owner side of the channel used to serve retained-context snapshot requests.
     ///
-    /// This runtime-only channel is never read from or written to configuration data.
-    #[serde(skip, default)]
-    context_snapshot_channel: AggregateContextSnapshotChannel,
+    /// This is runtime wiring rather than configuration: it carries no settings, and is created by the caller with
+    /// [`aggregate_context_snapshot_channel`] so that the caller keeps the matching handle.
+    pub context_snapshot_receiver: AggregateContextSnapshotReceiver,
 }
 
+#[cfg(test)]
 impl AggregateConfiguration {
-    /// Creates a new `AggregateConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
+    /// Creates a fixture configuration, for tests that exercise aggregation behavior rather than configuration.
+    ///
+    /// The snapshot handle paired with the configuration's receiver is dropped. Tests that request snapshots build the
+    /// channel with [`aggregate_context_snapshot_channel`] and override `context_snapshot_receiver`.
+    fn for_test() -> Self {
+        let (_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
 
-    /// Creates a new `AggregateConfiguration` with default values.
-    pub fn with_defaults() -> Self {
         Self {
-            window_duration_seconds: default_window_duration_seconds(),
-            primary_flush_interval: default_primary_flush_interval(),
-            context_limit: default_context_limit(),
+            window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+            primary_flush_interval: Duration::from_secs(15),
+            context_limit: 1_000_000,
             flush_open_windows: false,
-            counter_expiry_seconds: default_counter_expiry_seconds(),
-            passthrough_timestamped_metrics: default_passthrough_timestamped_metrics(),
-            passthrough_idle_flush_timeout: default_passthrough_idle_flush_timeout(),
+            counter_expiry_seconds: Some(300),
+            passthrough_timestamped_metrics: true,
+            passthrough_idle_flush_timeout: Duration::from_secs(1),
             hist_config: HistogramConfiguration::default(),
-            context_snapshot_channel: AggregateContextSnapshotChannel::default(),
+            context_snapshot_receiver,
         }
-    }
-
-    /// Returns a handle for requesting retained-context snapshots from the built aggregate transform.
-    pub fn context_snapshot_handle(&self) -> AggregateContextSnapshotHandle {
-        self.context_snapshot_channel.handle.clone()
     }
 }
 
 #[async_trait]
 impl TransformBuilder for AggregateConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let context_snapshot_requests = self.context_snapshot_channel.take_receiver()?;
+        let context_snapshot_requests = self.context_snapshot_receiver.take_receiver()?;
         let metrics_builder = MetricsBuilder::from_component_context(&context);
         let telemetry = Telemetry::new(&metrics_builder);
 
@@ -1620,15 +1542,18 @@ mod tests {
 
     #[test]
     fn aggregate_memory_bounds_include_peak_context_snapshot() {
-        let mut config = AggregateConfiguration::with_defaults();
-        config.context_limit = 17;
+        let context_limit = 17;
+        let config = AggregateConfiguration {
+            context_limit,
+            ..AggregateConfiguration::for_test()
+        };
         let registry = ComponentRegistry::default();
         config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
         let bounds = registry.as_bounds();
 
         let expected_minimum = size_of::<Aggregate>();
-        let aggregation_state_bytes = config.context_limit * (size_of::<Context>() + size_of::<AggregatedMetric>());
-        let context_snapshot_bytes = config.context_limit * size_of::<AggregateContextSnapshotEntry>();
+        let aggregation_state_bytes = context_limit * (size_of::<Context>() + size_of::<AggregatedMetric>());
+        let context_snapshot_bytes = context_limit * size_of::<AggregateContextSnapshotEntry>();
 
         assert_eq!(bounds.total_minimum_required_bytes(), expected_minimum);
         assert_eq!(
@@ -1640,9 +1565,12 @@ mod tests {
     #[tokio::test]
     async fn production_owner_loop_serves_snapshots_and_stops_after_cancellation() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let mut config = AggregateConfiguration::with_defaults();
-            config.primary_flush_interval = Duration::from_secs(60);
-            let snapshot_handle = config.context_snapshot_handle();
+            let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+            let config = AggregateConfiguration {
+                primary_flush_interval: Duration::from_secs(60),
+                context_snapshot_receiver,
+                ..AggregateConfiguration::for_test()
+            };
 
             let available_request_capacity = snapshot_handle.requests.capacity();
             let canceled_request = tokio::spawn({
@@ -1789,8 +1717,7 @@ mod tests {
 
     #[tokio::test]
     async fn aggregate_configuration_receiver_can_only_be_taken_once() {
-        let config = AggregateConfiguration::with_defaults();
-        let _handle = config.context_snapshot_handle();
+        let config = AggregateConfiguration::for_test();
         let first = config.build(ComponentContext::test_transform("aggregate_one")).await;
         assert!(first.is_ok());
 
@@ -2323,33 +2250,5 @@ mod tests {
             recorder.gauge(("aggregate_active_contexts_by_type", &[("metric_type", "gauge")])),
             Some(0.0)
         );
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::AggregateConfiguration;
-
-    #[tokio::test]
-    async fn smoke_test() {
-        // Duration fields serialize as {secs, nanos}. We inject whole-second values so the nanos
-        // sub-fields are always 0 — they are not independently configurable.
-        run_config_smoke_tests(
-            structs::AGGREGATE_CONFIGURATION,
-            &[
-                "aggregate_flush_interval.nanos",
-                "aggregate_passthrough_idle_flush_timeout.nanos",
-            ],
-            json!({}),
-            |cfg| {
-                cfg.as_typed::<AggregateConfiguration>()
-                    .expect("AggregateConfiguration should deserialize")
-            },
-        )
-        .await
     }
 }

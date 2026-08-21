@@ -30,10 +30,10 @@ use saluki_components::{
     relays::otlp::OtlpRelayConfiguration,
     sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        AggregateConfiguration, AggregateContextSnapshotHandle, ApmStatsTransformConfiguration,
-        AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
-        TraceSamplerConfiguration,
+        aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
+        ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
+        DogStatsDMapperConfiguration, HistogramConfiguration, HostEnrichmentConfiguration,
+        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::GenericConfiguration;
@@ -780,9 +780,27 @@ async fn add_dsd_pipeline_to_blueprint(
     let dogstatsd_config = config_system.live(|config| &config.domains.dogstatsd);
     let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(dogstatsd_config)
         .error_context("Failed to configure metric tag filterlist transform.")?;
-    let dsd_agg_config =
-        AggregateConfiguration::from_configuration(config).error_context("Failed to configure aggregate transform.")?;
-    let dsd_context_snapshot_handle = dsd_agg_config.context_snapshot_handle();
+    let aggregation = &typed.domains.dogstatsd.aggregation;
+    let histogram = &typed.shared.metrics_encoding.histogram;
+    let dsd_hist_config = HistogramConfiguration::try_new(
+        &histogram.aggregates,
+        &histogram.percentiles,
+        histogram.copy_to_distribution,
+        histogram.copy_to_distribution_prefix.clone(),
+    )
+    .error_context("Failed to configure histogram aggregation.")?;
+    let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
+    let dsd_agg_config = AggregateConfiguration {
+        window_duration_seconds: aggregation.window_duration_seconds,
+        primary_flush_interval: aggregation.flush_interval,
+        context_limit: aggregation.context_limit,
+        flush_open_windows: aggregation.flush_open_windows,
+        counter_expiry_seconds: aggregation.counter_expiry_seconds,
+        passthrough_timestamped_metrics: aggregation.no_aggregation_pipeline,
+        passthrough_idle_flush_timeout: aggregation.passthrough_idle_flush_timeout,
+        hist_config: dsd_hist_config,
+        context_snapshot_receiver: dsd_context_snapshot_receiver,
+    };
     let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
         .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
@@ -951,7 +969,7 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Mutex, time::Duration};
+    use std::{num::NonZeroU64, path::Path, sync::Mutex, time::Duration};
 
     use agent_data_plane_config::{
         domains::dogstatsd::{
@@ -966,8 +984,9 @@ mod tests {
     use hyper::body::Bytes;
     use saluki_api::{response::Response, APIHandler as _};
     use saluki_components::transforms::{
-        aggregate_context_snapshot_channel_for_test, AggregateConfiguration, AggregateContextSnapshotEntry,
-        AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
+        aggregate_context_snapshot_channel, aggregate_context_snapshot_channel_for_test, AggregateConfiguration,
+        AggregateContextSnapshotEntry, AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
+        HistogramConfiguration,
     };
     use saluki_config::{config_from, GenericConfiguration};
     use saluki_context::Context;
@@ -1016,8 +1035,7 @@ mod tests {
                 "statsd_metric_namespace": "tenant",
                 "statsd_metric_namespace_blocklist": [],
                 "metric_filterlist": ["tenant.raw.blocked"],
-                "metric_filterlist_match_prefix": false,
-                "aggregate_flush_interval": { "secs": 60, "nanos": 0 }
+                "metric_filterlist_match_prefix": false
             }))
             .await;
 
@@ -1043,9 +1061,31 @@ mod tests {
             };
             let tag_filter = TagFilterlistConfiguration::from_configuration(Live::new_fixed(dogstatsd_config))
                 .expect("tag filter configuration should be valid");
-            let aggregate =
-                AggregateConfiguration::from_configuration(&config).expect("aggregate configuration should parse");
-            let snapshot_handle = aggregate.context_snapshot_handle();
+            let hist_config = HistogramConfiguration::try_new(
+                &[
+                    "max".to_string(),
+                    "median".to_string(),
+                    "avg".to_string(),
+                    "count".to_string(),
+                ],
+                &["0.95".to_string()],
+                false,
+                String::new(),
+            )
+            .expect("histogram settings should be valid");
+            let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
+            let aggregate = AggregateConfiguration {
+                window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                // Longer than the test, so the window stays open and contexts stay retained.
+                primary_flush_interval: Duration::from_secs(60),
+                context_limit: 1_000_000,
+                flush_open_windows: false,
+                counter_expiry_seconds: Some(300),
+                passthrough_timestamped_metrics: true,
+                passthrough_idle_flush_timeout: Duration::from_secs(1),
+                hist_config,
+                context_snapshot_receiver,
+            };
 
             let (events_tx, events_rx) = mpsc::channel(2);
             let source = ControlledMetricSourceBuilder {

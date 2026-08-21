@@ -3,12 +3,17 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::defaults::{
+    DEFAULT_AGGREGATE_CONTEXT_LIMIT, DEFAULT_AGGREGATE_FLUSH_INTERVAL,
+    DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT, DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+};
 use crate::Error;
 
 // TODO: better name than Domain? Pipeline? Topology? BlueprintConfig?
@@ -204,9 +209,8 @@ pub struct Contexts {
 /// Metric aggregation window and flush behavior.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Aggregation {
-    /// Length, in seconds, of each aggregation window; must be non-zero. (not in Datadog Agent
-    /// config schema)
-    pub window_duration_seconds: u64,
+    /// Length, in seconds, of each aggregation window. (not in Datadog Agent config schema)
+    pub window_duration_seconds: NonZeroU64,
 
     /// Maximum number of contexts held per aggregation window. (not in Datadog Agent config schema)
     pub context_limit: usize,
@@ -214,8 +218,9 @@ pub struct Aggregation {
     /// How often aggregated metrics are flushed. (not in Datadog Agent config schema)
     pub flush_interval: Duration,
 
-    /// Whether windows that are still open are flushed on shutdown. (not in Datadog Agent config
-    /// schema)
+    /// Whether windows that are still open are flushed on shutdown.
+    ///
+    /// Set by the Datadog `dogstatsd_flush_incomplete_buckets` key.
     pub flush_open_windows: bool,
 
     /// How long the no-aggregation passthrough waits before flushing while idle. (not in Datadog
@@ -223,13 +228,13 @@ pub struct Aggregation {
     pub passthrough_idle_flush_timeout: Duration,
 
     /// How long, in seconds, a counter value is retained after its last update before expiring.
+    ///
+    /// Set by the Datadog `dogstatsd_expiry_seconds` key. A value of `0` disables zero-value counter
+    /// emission.
     pub counter_expiry_seconds: Option<u64>,
 
     /// How long, in seconds, a context is retained after its last update before expiring.
     pub context_expiry_seconds: u64,
-
-    /// Whether incomplete aggregation buckets are flushed rather than discarded.
-    pub flush_incomplete_buckets: bool,
 
     /// Whether metrics bypass aggregation and are forwarded directly.
     pub no_aggregation_pipeline: bool,
@@ -242,18 +247,16 @@ impl Default for Aggregation {
     fn default() -> Self {
         Self {
             // Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
-            // seeded only when set; absent that, these defaults stand and must match what the
-            // aggregate transform expects. A zero window, in particular, is invalid downstream.
-            window_duration_seconds: 10,
-            context_limit: 1_000_000,
-            flush_interval: Duration::from_secs(15),
-            passthrough_idle_flush_timeout: Duration::from_secs(1),
-            flush_open_windows: false,
+            // seeded only when set; absent that, these defaults stand.
+            window_duration_seconds: DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+            context_limit: DEFAULT_AGGREGATE_CONTEXT_LIMIT,
+            flush_interval: DEFAULT_AGGREGATE_FLUSH_INTERVAL,
+            passthrough_idle_flush_timeout: DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT,
             // Datadog-schema knobs: always written by the witness driver, so these values are
             // placeholders that never survive translation.
+            flush_open_windows: false,
             counter_expiry_seconds: None,
             context_expiry_seconds: 0,
-            flush_incomplete_buckets: false,
             no_aggregation_pipeline: false,
             aggregator_tag_filter_cache_capacity: 0,
         }

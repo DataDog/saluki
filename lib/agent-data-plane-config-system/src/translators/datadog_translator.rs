@@ -530,7 +530,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_flush_incomplete_buckets(&mut self, value: bool) {
-        self.config.domains.dogstatsd.aggregation.flush_incomplete_buckets = value;
+        self.config.domains.dogstatsd.aggregation.flush_open_windows = value;
     }
 
     fn consume_dogstatsd_log_file(&mut self, value: String) {
