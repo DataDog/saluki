@@ -2278,8 +2278,13 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS CA PEM"
+    documentation: |-
+      Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.cert_file:
     support: full
@@ -2294,27 +2299,47 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS cert PEM"
+    documentation: |-
+      Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.cipher_suites:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS cipher suites"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS client CA file"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS client CA reload"
 
   otlp_config.receiver.protocols.grpc.tls.curve_preferences:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS curve preferences"
 
   otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS include system CA pool"
 
   otlp_config.receiver.protocols.grpc.tls.key_file:
@@ -2330,35 +2355,61 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS key PEM"
+    documentation: |-
+      Not supported. Use `key_file` to provide the private key for the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.max_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS max version"
 
   otlp_config.receiver.protocols.grpc.tls.min_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS min version"
 
   otlp_config.receiver.protocols.grpc.tls.reload_interval:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS reload interval"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM auth"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.enabled:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM enabled"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM owner auth"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.path:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM path"
 
   otlp_config.receiver.protocols.grpc.transport:
@@ -2473,8 +2524,13 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS CA PEM"
+    documentation: |-
+      Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.cert_file:
     support: full
@@ -2489,27 +2545,47 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS cert PEM"
+    documentation: |-
+      Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.cipher_suites:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS cipher suites"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS client CA file"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file_reload:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS client CA reload"
 
   otlp_config.receiver.protocols.http.tls.curve_preferences:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS curve preferences"
 
   otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS include system CA pool"
 
   otlp_config.receiver.protocols.http.tls.key_file:
@@ -2525,35 +2601,61 @@ inventory:
         config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.key_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS key PEM"
+    documentation: |-
+      Not supported. Use `key_file` to provide the private key for the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.max_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS max version"
 
   otlp_config.receiver.protocols.http.tls.min_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS min version"
 
   otlp_config.receiver.protocols.http.tls.reload_interval:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS reload interval"
 
   otlp_config.receiver.protocols.http.tls.tpm.auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM auth"
 
   otlp_config.receiver.protocols.http.tls.tpm.enabled:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM enabled"
 
   otlp_config.receiver.protocols.http.tls.tpm.owner_auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM owner auth"
 
   otlp_config.receiver.protocols.http.tls.tpm.path:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM path"
 
   otlp_config.receiver.protocols.http.traces_url_path:
