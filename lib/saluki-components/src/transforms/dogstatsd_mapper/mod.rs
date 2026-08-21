@@ -16,7 +16,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},
-        ComponentContext,
+        BuildContext, ComponentContext,
     },
     topology::EventsBuffer,
 };
@@ -368,10 +368,12 @@ impl DogStatsDMapperConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for DogStatsDMapperConfiguration {
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        let metric_mapper =
-            self.dogstatsd_mapper_profiles
-                .build(context, self.context_string_interner_bytes, self.cache_size)?;
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+        let metric_mapper = self.dogstatsd_mapper_profiles.build(
+            context.component_context().clone(),
+            self.context_string_interner_bytes,
+            self.cache_size,
+        )?;
         Ok(Box::new(DogStatsDMapper { metric_mapper }))
     }
 }

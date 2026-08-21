@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{encoders::*, ComponentContext},
+    components::{encoders::*, BuildContext},
     data_model::{
         event::{service_check::ServiceCheck, Event, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -82,8 +82,8 @@ impl IncrementalEncoderBuilder for DatadogServiceChecksConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Self::Output, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_level);
 

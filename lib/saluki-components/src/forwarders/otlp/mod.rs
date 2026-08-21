@@ -14,7 +14,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::payload::Payload;
 use saluki_core::{
-    components::{forwarders::*, ComponentContext},
+    components::{forwarders::*, BuildContext},
     data_model::payload::PayloadType,
 };
 use saluki_error::ErrorContext as _;
@@ -51,7 +51,7 @@ impl ForwarderBuilder for OtlpForwarderConfiguration {
         PayloadType::Grpc
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
         let trace_agent_endpoint = format!("http://localhost:{}", self.core_agent_traces_internal_port);
         let trace_agent_channel = Channel::from_shared(trace_agent_endpoint.clone())
             .error_context("Failed to construct gRPC channel due to an invalid endpoint.")?

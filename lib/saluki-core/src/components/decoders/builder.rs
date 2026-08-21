@@ -6,7 +6,7 @@ use saluki_error::GenericError;
 use super::Decoder;
 use crate::accounting::MemoryBounds;
 use crate::{
-    components::ComponentContext,
+    components::BuildContext,
     data_model::{event::EventType, payload::PayloadType},
 };
 
@@ -28,5 +28,5 @@ pub trait DecoderBuilder: MemoryBounds {
     /// # Errors
     ///
     /// If the decoder can't be built for any reason, an error is returned.
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Decoder + Send>, GenericError>;
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Decoder + Send>, GenericError>;
 }

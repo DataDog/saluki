@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use metrics::Counter;
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
-    components::{destinations::*, ComponentContext},
+    components::{destinations::*, BuildContext},
     data_model::event::{
         metric::{Metric, MetricValues},
         Event, EventType,
@@ -24,9 +24,9 @@ impl DestinationBuilder for DogStatsDClientTelemetryConfiguration {
         EventType::Metric
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(DogStatsDClientTelemetry::new(
-            MetricsBuilder::from_component_context(&context),
+            MetricsBuilder::from_component_context(context.component_context()),
         )))
     }
 }

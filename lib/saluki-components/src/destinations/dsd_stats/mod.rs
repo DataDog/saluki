@@ -13,7 +13,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{Event, EventType},
 };
@@ -296,7 +296,7 @@ impl DestinationBuilder for DogStatsDStatisticsConfiguration {
         EventType::Metric
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         let rx = self.rx.clone().try_lock_owned()?;
         Ok(Box::new(DogStatsDStats { rx }))
     }
@@ -390,7 +390,7 @@ mod tests {
         use saluki_core::components::ComponentContext;
         use saluki_core::data_model::event::metric::Metric;
         use saluki_core::health::HealthRegistry;
-        use saluki_core::runtime::state::DataspaceRegistry;
+        use saluki_core::runtime::state::{DataspaceRegistry, ResourceRegistry};
         use saluki_core::runtime::Supervisor;
         use saluki_core::topology::interconnect::Consumer;
         use saluki_core::topology::{EventsBuffer, TopologyContext};
@@ -403,7 +403,7 @@ mod tests {
 
         let component_context = ComponentContext::test_destination("test");
         let destination = config
-            .build(component_context.clone())
+            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
             .await
             .expect("dsd_stats destination should build");
 
