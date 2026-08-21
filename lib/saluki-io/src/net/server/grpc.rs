@@ -1,4 +1,4 @@
-use std::{convert::Infallible, net::SocketAddr, time::Duration};
+use std::{convert::Infallible, time::Duration};
 
 use async_trait::async_trait;
 use http::Request;
@@ -14,6 +14,10 @@ use tonic::{
 };
 use tower::Service;
 use tracing::warn;
+
+#[cfg(unix)]
+use crate::net::unix::{ensure_unix_socket_free, set_unix_socket_write_only};
+use crate::net::ListenAddress;
 
 /// A gRPC server.
 ///
@@ -31,19 +35,15 @@ use tracing::warn;
 /// The server will attempt to gracefully shutdown existing connections when the parent supervisor signals shutdown.
 /// This will cause the worker to utilize the maximum allowable grace period during shutdown: it will attempt to take as
 /// long as necessary to gracefully shutdown existing connections, bounded only by the parent supervisor.
-///
-/// # Missing
-///
-/// - Accepting `ListenAddress` to optionally listen on a Unix Domain socket or other connection-oriented transport.
 pub struct GrpcServer {
-    listen_addr: SocketAddr,
+    listen_addr: ListenAddress,
     routes: Option<Routes>,
     graceful_shutdown_timeout: Option<Duration>,
 }
 
 impl GrpcServer {
     /// Creates an empty server with no attached services, configured to listen on the given address.
-    pub fn new(listen_addr: SocketAddr) -> Self {
+    pub fn new(listen_addr: ListenAddress) -> Self {
         Self {
             listen_addr,
             routes: None,
@@ -93,47 +93,89 @@ impl Supervisable for GrpcServer {
     }
 
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        // Try binding our listen address during initialization to surface issues earlier.
-        let listener = TcpIncoming::bind(self.listen_addr)
-            .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", self.listen_addr))?;
-
-        let listen_addr = self.listen_addr;
         let routes = self.routes.clone().unwrap_or_default();
         let shutdown_timeout = self.graceful_shutdown_timeout.unwrap_or(Duration::MAX);
 
-        Ok(Box::pin(async move {
-            let (drain_tx, drain_rx) = oneshot::channel();
-            let serve = Server::default().serve_with_incoming_shutdown(routes, listener, async move {
-                let _ = drain_rx.await;
-            });
+        match &self.listen_addr {
+            ListenAddress::Tcp(addr) => {
+                let listener = TcpIncoming::bind(*addr)
+                    .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
 
-            pin!(serve, process_shutdown);
+                Ok(Box::pin(async move {
+                    let (drain_tx, drain_rx) = oneshot::channel();
+                    let serve = Server::default().serve_with_incoming_shutdown(routes, listener, async move {
+                        let _ = drain_rx.await;
+                    });
 
-            select! {
-                result = &mut serve => result.error_context("Failed to serve gRPC server."),
+                    pin!(serve, process_shutdown);
 
-                _ = &mut process_shutdown => {
-                    // Tell the server to shutdown and drain connections, and then continue driving the server
-                    // future to actually let it finish up and wait for all connections to drain/close.
-                    let _ = drain_tx.send(());
+                    select! {
+                        result = &mut serve => result.error_context("Failed to serve gRPC server."),
 
-                    match timeout(shutdown_timeout, serve).await {
-                        Ok(Ok(())) => Ok(()),
-                        Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
-                        Err(_) => {
-                            warn!(%listen_addr, "Failed to gracefully drain gRPC connections.");
-                            Ok(())
+                        _ = &mut process_shutdown => {
+                            let _ = drain_tx.send(());
+
+                            match timeout(shutdown_timeout, serve).await {
+                                Ok(Ok(())) => Ok(()),
+                                Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
+                                Err(_) => {
+                                    warn!("Failed to gracefully drain gRPC connections.");
+                                    Ok(())
+                                },
+                            }
                         },
                     }
-                },
+                }))
             }
-        }))
+            #[cfg(unix)]
+            ListenAddress::Unix(path) => {
+                let path = path.clone();
+                ensure_unix_socket_free(&path)
+                    .await
+                    .with_error_context(|| format!("Failed to clear gRPC Unix socket '{}'.", path.display()))?;
+                let listener = tokio::net::UnixListener::bind(&path)
+                    .with_error_context(|| format!("Failed to bind gRPC Unix listener on '{}'.", path.display()))?;
+                set_unix_socket_write_only(&path).await.with_error_context(|| {
+                    format!("Failed to set permissions on gRPC Unix socket '{}'.", path.display())
+                })?;
+                let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
+
+                Ok(Box::pin(async move {
+                    let (drain_tx, drain_rx) = oneshot::channel();
+                    let serve = Server::default().serve_with_incoming_shutdown(routes, incoming, async move {
+                        let _ = drain_rx.await;
+                    });
+
+                    pin!(serve, process_shutdown);
+
+                    select! {
+                        result = &mut serve => result.error_context("Failed to serve gRPC server."),
+
+                        _ = &mut process_shutdown => {
+                            let _ = drain_tx.send(());
+
+                            match timeout(shutdown_timeout, serve).await {
+                                Ok(Ok(())) => Ok(()),
+                                Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
+                                Err(_) => {
+                                    warn!("Failed to gracefully drain gRPC connections.");
+                                    Ok(())
+                                },
+                            }
+                        },
+                    }
+                }))
+            }
+            _ => Err(InitializationError::Failed {
+                source: saluki_error::generic_error!("gRPC endpoint must be a TCP or Unix address."),
+            }),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener as StdTcpListener;
+    use std::net::{SocketAddr, TcpListener as StdTcpListener};
 
     use saluki_common::sync::shutdown::ShutdownCoordinator;
     use tokio::io::AsyncWriteExt as _;
@@ -158,7 +200,7 @@ mod tests {
         // The listener is bound by `initialize`, so the port is taken before anything serves. That is what makes a bind
         // failure a non-restartable initialization error rather than a runtime one.
         let addr = free_local_addr();
-        let run = GrpcServer::new(addr)
+        let run = GrpcServer::new(ListenAddress::Tcp(addr))
             .initialize(ShutdownHandle::noop())
             .await
             .expect("should initialize");
@@ -176,7 +218,10 @@ mod tests {
         let addr = free_local_addr();
         let _held = StdTcpListener::bind(addr).expect("should hold the address");
 
-        match GrpcServer::new(addr).initialize(ShutdownHandle::noop()).await {
+        match GrpcServer::new(ListenAddress::Tcp(addr))
+            .initialize(ShutdownHandle::noop())
+            .await
+        {
             Ok(_) => panic!("initialization should have failed to bind {addr}"),
             Err(e) => {
                 let error = e.to_string();
@@ -189,7 +234,7 @@ mod tests {
     async fn releases_its_port_once_the_worker_finishes() {
         let addr = free_local_addr();
         let mut coordinator = ShutdownCoordinator::default();
-        let run = GrpcServer::new(addr)
+        let run = GrpcServer::new(ListenAddress::Tcp(addr))
             .initialize(coordinator.register())
             .await
             .expect("should initialize");
@@ -212,7 +257,7 @@ mod tests {
         // does nothing would otherwise hold shutdown open indefinitely.
         let addr = free_local_addr();
         let mut coordinator = ShutdownCoordinator::default();
-        let run = GrpcServer::new(addr)
+        let run = GrpcServer::new(ListenAddress::Tcp(addr))
             .with_graceful_shutdown_timeout(Duration::from_secs(1))
             .initialize(coordinator.register())
             .await

@@ -51,7 +51,11 @@ impl OtlpRelayConfiguration {
     }
 
     fn grpc_endpoint(&self) -> ListenAddress {
-        let address = format!("{}://{}", self.receiver.grpc.transport, self.receiver.grpc.endpoint);
+        let address = format!(
+            "{}://{}",
+            self.receiver.grpc.transport.as_str(),
+            self.receiver.grpc.endpoint
+        );
         ListenAddress::try_from(address).expect("valid gRPC endpoint")
     }
 
@@ -256,6 +260,7 @@ impl OtlpHandler for RelayHandler {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::domains;
+    use agent_data_plane_config::domains::otlp::GrpcTransport;
 
     use super::OtlpRelayConfiguration;
 
@@ -268,7 +273,7 @@ mod tests {
         let config = relay(domains::otlp::Receiver {
             grpc: domains::otlp::GrpcReceiver {
                 endpoint: "0.0.0.0:4317".to_string(),
-                transport: "tcp".to_string(),
+                transport: GrpcTransport::Tcp,
                 max_recv_msg_size_mib: 4,
             },
             http: domains::otlp::HttpReceiver {
