@@ -36,7 +36,7 @@ use super::addr::ConnectionAddress;
 /// ## Errors
 ///
 /// If the underlying system call fails, an error is returned.
-pub(super) async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Result<()> {
+pub async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Result<()> {
     let path = path.as_ref();
 
     // If the socket file already exists, we need to make sure it's already a UNIX socket, which means we're "clear" to
@@ -77,7 +77,7 @@ pub(super) async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Resu
 /// ## Errors
 ///
 /// If the underlying system call fails, an error is returned.
-pub(super) async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::Result<()> {
+pub async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::Result<()> {
     tokio::fs::set_permissions(path, Permissions::from_mode(0o722)).await
 }
 
