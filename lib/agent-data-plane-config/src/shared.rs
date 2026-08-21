@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::defaults::{DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_MAX_METRICS_PER_PAYLOAD};
+use crate::defaults::{DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_MAX_METRICS_PER_PAYLOAD, DEFAULT_ZSTD_COMPRESSOR_LEVEL};
 use crate::{ConfigValue, Error};
 
 /// Cross-cutting configuration shared across domains.
@@ -179,28 +179,69 @@ pub struct Tls {
 }
 
 /// Payload compression settings applied before transmission.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Compression {
     /// Which compression algorithm the encoder uses.
+    // TODO: enum?
     pub compressor_kind: String,
 
-    /// Compression level used when the algorithm is zstd, as the Core Agent configures it.
+    /// ADP's own zstd compression level (`data_plane.serializer_zstd_compressor_level`).
     ///
-    /// Defaults to the Agent's own default of `1`. ADP does not use this value directly: an encoder
-    /// resolves the effective level from this and [`zstd_compressor_level_override`], preferring the
-    /// override and otherwise honoring this value only when it differs from the Agent default.
+    /// Defaults to `3`, which is higher than the Agent's default of `1` because ADP compresses more
+    /// cheaply than the Agent. Its provenance says whether an operator asked for the level, which
+    /// separates a configured `3` from the default `3`. Read [`effective_zstd_level`] rather than this
+    /// field.
     ///
-    /// [`zstd_compressor_level_override`]: Compression::zstd_compressor_level_override
-    pub zstd_compressor_level: i32,
+    /// [`effective_zstd_level`]: Compression::effective_zstd_level
+    pub adp_zstd_level: ConfigValue<i32>,
 
-    /// ADP-specific zstd compression level, taking precedence over [`zstd_compressor_level`].
+    /// The Core Agent's zstd compression level (`serializer_zstd_compressor_level`).
     ///
-    /// Defaults to unset, in which case the encoder falls back to [`zstd_compressor_level`] (when
-    /// changed from the Agent default) and otherwise to its own default of `3`. ADP compresses more
-    /// cheaply than the Agent, so it can afford a higher level; operators rarely need to set this.
+    /// The Agent supplies this key at its own default of `1` even when nothing sets it, so only its
+    /// provenance says whether an operator asked for the level. Read [`effective_zstd_level`] rather
+    /// than this field.
     ///
-    /// [`zstd_compressor_level`]: Compression::zstd_compressor_level
-    pub zstd_compressor_level_override: Option<i32>,
+    /// [`effective_zstd_level`]: Compression::effective_zstd_level
+    pub agent_zstd_level: ConfigValue<i32>,
+}
+
+impl Compression {
+    /// Returns the effective compression level used when the algorithm is zstd.
+    ///
+    /// Defaults to `3`, which is higher than the Agent's default of `1` because ADP compresses more
+    /// cheaply than the Agent. The setting is determined as followed:
+    /// - If an operator explicitly sets `data_plane.serializer_zstd_compressor_level`, it wins.
+    /// - If an operator explicitly sets `serializer_zstd_compressor_level`, ADP uses it.
+    /// - If neither is set, the ADP default of `3` is used.
+    pub fn effective_zstd_level(&self) -> i32 {
+        // Resolution options that depend on the order in which values are applied to a single field
+        // are more brittle and harder to understand. Keeping these fields separate and applying
+        // precedence with this helper function makes the override logic easier to understand.
+
+        // If the operator explicitly set ADP zstd level, use it.
+        if self.adp_zstd_level.is_explicit() {
+            return self.adp_zstd_level.value;
+        }
+
+        // If the operator explicitly set Agent zstd level, use it (even if it happens to equal the
+        // default).
+        if self.agent_zstd_level.is_explicit() {
+            return self.agent_zstd_level.value;
+        }
+
+        // If nothing was explicitly set, use ADP's default.
+        self.adp_zstd_level.value
+    }
+}
+
+impl Default for Compression {
+    fn default() -> Self {
+        Self {
+            compressor_kind: String::new(),
+            adp_zstd_level: ConfigValue::defaulted(DEFAULT_ZSTD_COMPRESSOR_LEVEL),
+            agent_zstd_level: ConfigValue::default(),
+        }
+    }
 }
 
 /// HTTP protocol the forwarder negotiates with the intake.
@@ -413,40 +454,11 @@ pub struct V3ApiEncoding {
     pub compression_level: i32,
 }
 
-/// Per-payload V3 intake settings, reused for both series and sketches. Sketches read only
-/// `endpoints` and `validate`; the remaining series-only fields stay at their defaults.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Per-payload V3 intake settings, reused for both series and sketches.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct V3ApiSettings {
     /// Endpoints enabled for the V3 intake.
     pub endpoints: Vec<String>,
-
-    /// Whether payloads are dual-sent to v2 and v3 for validation.
-    pub validate: bool,
-
-    /// Whether the beta V3 route is used instead of the stable one (series only).
-    pub use_beta: bool,
-
-    /// Route for the beta V3 series API (series only).
-    pub beta_route: String,
-
-    /// Shadow-mode sample rate (series only).
-    pub shadow_sample_rate: f64,
-
-    /// Sites for which shadow mode is enabled (series only).
-    pub shadow_sites: Vec<String>,
-}
-
-impl Default for V3ApiSettings {
-    fn default() -> Self {
-        Self {
-            endpoints: Vec::new(),
-            validate: false,
-            use_beta: false,
-            beta_route: "/api/intake/metrics/v3beta/series".to_string(),
-            shadow_sample_rate: 0.0,
-            shadow_sites: vec!["datadoghq.com".to_string()],
-        }
-    }
 }
 
 /// Whether series are routed to the V3 metrics intake (`use_v3_api.series.*`).
@@ -529,7 +541,8 @@ pub struct AutoscalingFailover {
 
 #[cfg(test)]
 mod tests {
-    use super::{Endpoints, Forwarder, V3SeriesMode};
+    use super::{Compression, Endpoints, Forwarder, V3SeriesMode};
+    use crate::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use crate::ConfigValue;
 
     #[test]
@@ -642,6 +655,33 @@ mod tests {
         };
 
         assert_eq!(1024, forwarder.effective_retry_queue_max_size_bytes());
+    }
+
+    #[test]
+    fn the_effective_zstd_level_prefers_adp_then_an_explicit_agent_level() {
+        let defaulted = Compression::default();
+        assert_eq!(DEFAULT_ZSTD_COMPRESSOR_LEVEL, defaulted.effective_zstd_level());
+
+        // The Agent supplies its own default of 1 on every load, so only an explicit value counts.
+        let agent_defaulted = Compression {
+            agent_zstd_level: ConfigValue::defaulted(1),
+            ..Default::default()
+        };
+        assert_eq!(DEFAULT_ZSTD_COMPRESSOR_LEVEL, agent_defaulted.effective_zstd_level());
+
+        let agent_explicit = Compression {
+            agent_zstd_level: ConfigValue::explicit(1),
+            ..Default::default()
+        };
+        assert_eq!(1, agent_explicit.effective_zstd_level());
+
+        // ADP's own key wins over an explicit Agent level, including at ADP's default value.
+        let both_explicit = Compression {
+            adp_zstd_level: ConfigValue::explicit(DEFAULT_ZSTD_COMPRESSOR_LEVEL),
+            agent_zstd_level: ConfigValue::explicit(5),
+            ..Default::default()
+        };
+        assert_eq!(DEFAULT_ZSTD_COMPRESSOR_LEVEL, both_explicit.effective_zstd_level());
     }
 
     #[test]

@@ -147,8 +147,7 @@ inventory:
       Support is partial because ADP does not apply this timeout only to an aggregator component.
       Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
       and the aggregate transform performs its final flush when its input stream ends. Whether open
-      aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
-      as `dogstatsd_flush_incomplete_buckets`.
+      aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
     issue: "#1681"
     test_support:
       used_by: [get_typed]
@@ -589,7 +588,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Tag-filter deduplication cache size"
     test_support:
-      used_by: [TagFilterlistConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
@@ -828,18 +827,19 @@ inventory:
 
   dogstatsd_expiry_seconds:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [dogstatsd, checks]
     description: "Counter value expiry (seconds)"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: aggregate.rs
 
   dogstatsd_flush_incomplete_buckets:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Flush open buckets on shutdown"
     test_support:
-      used_by: [AggregateConfiguration]
-      additional_yaml_paths: [aggregate_flush_open_windows]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1059,7 +1059,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Enable no-agg timestamped path"
     test_support:
-      used_by: [AggregateConfiguration, DogStatsDConfiguration]
+      used_by: [TypedConfigSystem, DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1709,7 +1709,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Histogram aggregate statistics"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '["count"]'
       additional_attributes:
         config_registry_filename: aggregate.rs
@@ -1719,7 +1719,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Copy histograms to distributions"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1728,7 +1728,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Prefix for hist-to-dist copies"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1737,7 +1737,10 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Histogram percentile aggregates"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      test_json: '["0.95"]'
+      additional_attributes:
+        config_registry_filename: aggregate.rs
 
   kubernetes_kubelet_nodename:
     support: full
@@ -1819,7 +1822,7 @@ inventory:
       ADP does not dump the exact encoded JSON or protobuf HTTP request body, and it does not
       log compressed wire payload bytes.
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -1868,7 +1871,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Per-metric tag allow/deny filter list"
     test_support:
-      used_by: [TagFilterlistConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: tag_filterlist.rs
 
@@ -2114,6 +2117,15 @@ inventory:
     test_support:
       used_by: [TypedConfigSystem]
       test_json: "true"
+      additional_attributes:
+        config_registry_filename: otlp.rs
+
+  otlp_config.metrics.instrumentation_scope_metadata_as_tags:
+    support: full
+    pipelines: [otlp]
+    description: "Add instrumentation scope metadata as metric tags."
+    test_support:
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: otlp.rs
 
@@ -2575,13 +2587,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Payload compression algorithm"
     test_support:
-      used_by:
-        [
-          DatadogEventsConfiguration,
-          DatadogLogsConfiguration,
-          DatadogServiceChecksConfiguration,
-          TypedConfigSystem,
-        ]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: encoders.rs
 
@@ -2589,15 +2595,6 @@ inventory:
     support: full
     pipelines: [dogstatsd]
     description: "V3 API zstd compression level"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.beta_route:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Beta V3 series API route"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -2612,55 +2609,10 @@ inventory:
       additional_attributes:
         config_registry_filename: encoders.rs
 
-  serializer_experimental_use_v3_api.series.shadow_sample_rate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "V3 series shadow mode sample rate"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.shadow_sites:
-    support: full
-    pipelines: [dogstatsd]
-    description: "V3 series shadow mode enabled sites"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.use_beta:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Use the beta V3 series API route"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.series.validate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Dual-send v2+v3 series for validation"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
   serializer_experimental_use_v3_api.sketches.endpoints:
     support: full
     pipelines: [dogstatsd]
     description: "Endpoints enabling v3 sketches API"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: encoders.rs
-
-  serializer_experimental_use_v3_api.sketches.validate:
-    support: full
-    pipelines: [dogstatsd]
-    description: "Dual-send v2+v3 sketches for validation"
     test_support:
       used_by: [TypedConfigSystem]
       additional_attributes:
@@ -2671,7 +2623,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max compressed payload size (generic)"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2711,7 +2663,7 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Max uncompressed payload size (generic)"
     test_support:
-      used_by: [DatadogEventsConfiguration, DatadogServiceChecksConfiguration, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -2722,16 +2674,10 @@ inventory:
     description: "Zstd compression level (Agent)"
     documentation: >
       The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`;
-      when that is unset, ADP applies this value if it has been changed from the Agent default of 1,
-      otherwise it uses its own default of 3.
+      when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own
+      default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
     test_support:
-      used_by:
-        [
-          DatadogEventsConfiguration,
-          DatadogLogsConfiguration,
-          DatadogServiceChecksConfiguration,
-          TypedConfigSystem,
-        ]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: encoders.rs
@@ -4345,7 +4291,6 @@ excluded:
   otlp_config.logs.batch.max_size: "ignored in initial audit 2026-04-23"
   otlp_config.logs.batch.min_size: "ignored in initial audit 2026-04-23"
   otlp_config.metrics.histograms.send_count_sum_metrics: "deprecated; ADP supports only send_aggregation_metrics"
-  otlp_config.metrics.instrumentation_scope_metadata_as_tags: "ignored in initial audit 2026-04-23"
   otlp_config.traces.infra_attributes.enabled: "ignored in initial audit 2026-04-23"
   otlp_config.traces.span_name_as_resource_name: "ignored in initial audit 2026-04-23"
   otlp_config.traces.span_name_remappings: "ignored in initial audit 2026-04-23"

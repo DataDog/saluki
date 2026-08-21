@@ -2,12 +2,18 @@
 //! (some dynamic-capable), and debug logging.
 
 use std::collections::HashMap;
+use std::fmt;
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::defaults::{
+    DEFAULT_AGGREGATE_CONTEXT_LIMIT, DEFAULT_AGGREGATE_FLUSH_INTERVAL,
+    DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT, DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+};
 use crate::Error;
 
 // TODO: better name than Domain? Pipeline? Topology? BlueprintConfig?
@@ -37,6 +43,9 @@ pub struct Domain {
 
     /// Per-metric tag include/exclude rules.
     pub tag_filterlist: Vec<MetricTagFilterEntry>,
+
+    /// Per-metric tag value allow-list rules.
+    pub tag_value_allowlist: Vec<MetricTagValueAllowlistEntry>,
 
     /// Extra tags added to every metric.
     pub tags: Vec<String>,
@@ -200,9 +209,8 @@ pub struct Contexts {
 /// Metric aggregation window and flush behavior.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Aggregation {
-    /// Length, in seconds, of each aggregation window; must be non-zero. (not in Datadog Agent
-    /// config schema)
-    pub window_duration_seconds: u64,
+    /// Length, in seconds, of each aggregation window. (not in Datadog Agent config schema)
+    pub window_duration_seconds: NonZeroU64,
 
     /// Maximum number of contexts held per aggregation window. (not in Datadog Agent config schema)
     pub context_limit: usize,
@@ -210,8 +218,9 @@ pub struct Aggregation {
     /// How often aggregated metrics are flushed. (not in Datadog Agent config schema)
     pub flush_interval: Duration,
 
-    /// Whether windows that are still open are flushed on shutdown. (not in Datadog Agent config
-    /// schema)
+    /// Whether windows that are still open are flushed on shutdown.
+    ///
+    /// Set by the Datadog `dogstatsd_flush_incomplete_buckets` key.
     pub flush_open_windows: bool,
 
     /// How long the no-aggregation passthrough waits before flushing while idle. (not in Datadog
@@ -219,13 +228,13 @@ pub struct Aggregation {
     pub passthrough_idle_flush_timeout: Duration,
 
     /// How long, in seconds, a counter value is retained after its last update before expiring.
+    ///
+    /// Set by the Datadog `dogstatsd_expiry_seconds` key. A value of `0` disables zero-value counter
+    /// emission.
     pub counter_expiry_seconds: Option<u64>,
 
     /// How long, in seconds, a context is retained after its last update before expiring.
     pub context_expiry_seconds: u64,
-
-    /// Whether incomplete aggregation buckets are flushed rather than discarded.
-    pub flush_incomplete_buckets: bool,
 
     /// Whether metrics bypass aggregation and are forwarded directly.
     pub no_aggregation_pipeline: bool,
@@ -238,18 +247,16 @@ impl Default for Aggregation {
     fn default() -> Self {
         Self {
             // Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
-            // seeded only when set; absent that, these defaults stand and must match what the
-            // aggregate transform expects. A zero window, in particular, is invalid downstream.
-            window_duration_seconds: 10,
-            context_limit: 1_000_000,
-            flush_interval: Duration::from_secs(15),
-            passthrough_idle_flush_timeout: Duration::from_secs(1),
-            flush_open_windows: false,
+            // seeded only when set; absent that, these defaults stand.
+            window_duration_seconds: DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+            context_limit: DEFAULT_AGGREGATE_CONTEXT_LIMIT,
+            flush_interval: DEFAULT_AGGREGATE_FLUSH_INTERVAL,
+            passthrough_idle_flush_timeout: DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT,
             // Datadog-schema knobs: always written by the witness driver, so these values are
             // placeholders that never survive translation.
+            flush_open_windows: false,
             counter_expiry_seconds: None,
             context_expiry_seconds: 0,
-            flush_incomplete_buckets: false,
             no_aggregation_pipeline: false,
             aggregator_tag_filter_cache_capacity: 0,
         }
@@ -347,6 +354,146 @@ pub struct MetricTagFilterEntry {
 
     /// Tags the action applies to.
     pub tags: Vec<String>,
+}
+
+/// One tag value allow-list entry.
+///
+/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing. Distinct
+/// prefixes must not overlap. Multiple rules may use the same prefix when they target different tags.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct MetricTagValueAllowlistEntry {
+    /// Non-empty metric-name prefix the entry applies to.
+    ///
+    /// Matching is exact and case-sensitive, including any whitespace. Empty prefixes and overlapping distinct
+    /// prefixes are invalid. Multiple rules may use the same prefix when they target different tags.
+    pub metric_prefix: String,
+
+    /// Non-empty tag key whose values are constrained.
+    ///
+    /// Bare tags have no value and are not changed. Key/value tags with an empty value are processed normally. Empty
+    /// names and names containing `:` are invalid. Matching is exact and preserves whitespace.
+    pub tag_name: String,
+
+    /// Tag values retained unchanged.
+    ///
+    /// The default is an empty list, which treats every key/value tag as a mismatch. The empty string is a valid list
+    /// member and retains tags with an empty value. Matching is exact and preserves whitespace.
+    #[serde(default)]
+    pub values: Vec<String>,
+
+    /// Action applied when a tag value is absent from [`values`][Self::values].
+    ///
+    /// The default is [`Remove`][TagValueMismatchAction::Remove].
+    #[serde(default)]
+    pub on_miss: TagValueMismatchAction,
+
+    /// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace].
+    ///
+    /// The default is `other`. This field has no effect when `on_miss` is
+    /// [`Remove`][TagValueMismatchAction::Remove]. The replacement is emitted exactly as configured, including
+    /// whitespace.
+    #[serde(default = "default_tag_value_replacement")]
+    pub replacement: String,
+}
+
+fn default_tag_value_replacement() -> String {
+    "other".to_string()
+}
+
+impl Default for MetricTagValueAllowlistEntry {
+    fn default() -> Self {
+        Self {
+            metric_prefix: String::new(),
+            tag_name: String::new(),
+            values: Vec::new(),
+            on_miss: TagValueMismatchAction::Remove,
+            replacement: default_tag_value_replacement(),
+        }
+    }
+}
+
+/// Reports why a metric tag value allow-list cannot be represented.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvalidMetricTagValueAllowlist(String);
+
+impl fmt::Display for InvalidMetricTagValueAllowlist {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidMetricTagValueAllowlist {}
+
+/// Validates metric tag value allow-list entries.
+///
+/// # Errors
+///
+/// Returns an error for empty prefixes or tag names, tag names containing `:`, overlapping distinct prefixes, or a
+/// duplicate prefix and tag pair.
+pub fn validate_metric_tag_value_allowlists(
+    entries: &[MetricTagValueAllowlistEntry],
+) -> Result<(), InvalidMetricTagValueAllowlist> {
+    for (index, entry) in entries.iter().enumerate() {
+        let rule = index + 1;
+        if entry.metric_prefix.is_empty() {
+            return Err(InvalidMetricTagValueAllowlist(format!(
+                "metric tag value allow-list rule {rule} has an empty `metric_prefix`; configure a non-empty metric-name prefix"
+            )));
+        }
+        if entry.tag_name.is_empty() {
+            return Err(InvalidMetricTagValueAllowlist(format!(
+                "metric tag value allow-list rule {rule} for prefix '{}' has an empty `tag_name`; configure a non-empty tag name",
+                entry.metric_prefix
+            )));
+        }
+        if entry.tag_name.contains(':') {
+            return Err(InvalidMetricTagValueAllowlist(format!(
+                "metric tag value allow-list tag name '{}' contains ':'; configure only the tag key, without a colon or value",
+                entry.tag_name
+            )));
+        }
+    }
+
+    let mut sorted_entries = entries.iter().collect::<Vec<_>>();
+    sorted_entries.sort_unstable_by(|left, right| {
+        left.metric_prefix
+            .cmp(&right.metric_prefix)
+            .then_with(|| left.tag_name.cmp(&right.tag_name))
+    });
+
+    // After sorting by prefix and then tag, duplicate prefix/tag pairs are adjacent. Any distinct prefix that extends
+    // another prefix follows the complete group for the shorter prefix, so one adjacent pair also exposes that overlap.
+    for pair in sorted_entries.windows(2) {
+        let [left, right] = pair else {
+            unreachable!("a two-entry window must contain two entries");
+        };
+        if left.metric_prefix == right.metric_prefix {
+            if left.tag_name == right.tag_name {
+                return Err(InvalidMetricTagValueAllowlist(format!(
+                    "metric prefix '{}' is configured more than once for tag '{}'; configure each prefix and tag pair only once",
+                    left.metric_prefix, left.tag_name
+                )));
+            }
+        } else if right.metric_prefix.starts_with(&left.metric_prefix) {
+            return Err(InvalidMetricTagValueAllowlist(format!(
+                "overlapping metric prefixes '{}' and '{}' are configured; configure distinct prefixes that do not overlap",
+                left.metric_prefix, right.metric_prefix
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Action applied when a tag value is absent from its allow-list.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TagValueMismatchAction {
+    /// Removes the tag.
+    #[default]
+    Remove,
+    /// Replaces the tag value with the configured sentinel.
+    Replace,
 }
 
 /// Whether a tag-filterlist entry includes or excludes the listed tags.

@@ -4,7 +4,7 @@
 use std::time::Duration;
 use std::{num::NonZeroUsize, str::FromStr};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::defaults::DEFAULT_STRING_INTERNER_SIZE_BYTES;
 use crate::{domains::dogstatsd::OriginTagCardinality, Error};
@@ -52,6 +52,12 @@ pub struct Metrics {
     /// semantic-convention mappings that are always applied.
     pub resource_attributes_as_tags: bool,
 
+    /// Whether instrumentation scope name, version, and attributes are added as metric tags.
+    ///
+    /// Defaults to `true`. When `false`, no scope tags are emitted (no `n/a` placeholders).
+    /// Disable this in high-cardinality scope environments where per-scope tag overhead outweighs queryability.
+    pub instrumentation_scope_metadata_as_tags: bool,
+
     /// OTLP sum translation settings.
     pub sums: Sums,
 
@@ -76,6 +82,7 @@ impl Default for Metrics {
             histogram_mode: HistogramMode::default(),
             send_histogram_aggregations: false,
             resource_attributes_as_tags: false,
+            instrumentation_scope_metadata_as_tags: true,
             sums: Sums::default(),
             tags: String::new(),
             summaries: Summaries::default(),
@@ -218,6 +225,41 @@ impl FromStr for SummaryMode {
     }
 }
 
+/// Transport accepted by the OTLP gRPC receiver.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GrpcTransport {
+    /// TCP transport.
+    #[default]
+    Tcp,
+    /// Unix stream socket transport.
+    Unix,
+}
+
+impl GrpcTransport {
+    /// Returns the configuration spelling of this transport.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Unix => "unix",
+        }
+    }
+}
+
+impl FromStr for GrpcTransport {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "tcp" => Ok(Self::Tcp),
+            "unix" => Ok(Self::Unix),
+            other => Err(Error::new_without_source(format!(
+                "unknown gRPC transport `{other}`; expected `tcp` or `unix`"
+            ))),
+        }
+    }
+}
+
 /// OTLP receiver transports and per-signal activation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Receiver {
@@ -250,8 +292,8 @@ pub struct GrpcReceiver {
     /// Maximum inbound message size, in MiB.
     pub max_recv_msg_size_mib: u64,
 
-    /// Transport the gRPC receiver binds (for example, `tcp` or `unix`).
-    pub transport: String,
+    /// Transport the gRPC receiver binds. Defaults to `tcp`.
+    pub transport: GrpcTransport,
 }
 
 /// OTLP HTTP receiver.
@@ -389,7 +431,19 @@ impl Default for Contexts {
 
 #[cfg(test)]
 mod tests {
-    use super::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue};
+    use super::{CumulativeMonotonicMode, GrpcTransport, InitialCumulativeMonotonicValue};
+
+    #[test]
+    fn grpc_transport_parses_known_values() {
+        assert_eq!("tcp".parse::<GrpcTransport>().unwrap(), GrpcTransport::Tcp);
+        assert_eq!("unix".parse::<GrpcTransport>().unwrap(), GrpcTransport::Unix);
+    }
+
+    #[test]
+    fn grpc_transport_rejects_unknown_values() {
+        assert!("tcp4".parse::<GrpcTransport>().is_err());
+        assert!("udp".parse::<GrpcTransport>().is_err());
+    }
 
     #[test]
     fn cumulative_monotonic_mode_parses_known_values() {

@@ -153,10 +153,22 @@ fn field_name_to_go_case(field_name: &str) -> String {
         .join("")
 }
 
+fn protobuf_codegen() -> protobuf_codegen::Codegen {
+    let mut codegen = protobuf_codegen::Codegen::new();
+    codegen.protoc();
+
+    if let Some(protoc) = std::env::var_os("PROTOC") {
+        codegen.protoc_path(Path::new(&protoc));
+    }
+
+    codegen
+}
+
 fn main() {
     // Always rerun if the build script itself changes.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=proto");
+    println!("cargo:rerun-if-env-changed=PROTOC");
 
     // Handle code generation for pure Protocol Buffers message types.
     let codegen_customize = protobuf_codegen::Customize::default()
@@ -167,8 +179,7 @@ fn main() {
     // Two separate invocations are required here because the filename of the trace payload is identical,
     // and `protobuf_codegen` ends up trying to generate code to the same output filename, which
     // means that whichever of the two files that gets processed last overwrites the other.
-    protobuf_codegen::Codegen::new()
-        .protoc()
+    protobuf_codegen()
         .includes(["proto", "proto/datadog-agent"])
         .inputs([
             "proto/agent-payload/agent_payload.proto",
@@ -179,8 +190,7 @@ fn main() {
         .run_from_script();
 
     let staged_trace_root = stage_trace_protos();
-    protobuf_codegen::Codegen::new()
-        .protoc()
+    protobuf_codegen()
         .includes([&staged_trace_root])
         .inputs([
             staged_trace_root.join("datadog/trace/stats.proto"),
@@ -195,8 +205,7 @@ fn main() {
         .customize_callback(SerdeCapableStructs)
         .run_from_script();
 
-    protobuf_codegen::Codegen::new()
-        .protoc()
+    protobuf_codegen()
         .includes(["proto/sketches-go"])
         .inputs(["proto/sketches-go/ddsketch/pb/ddsketch.proto"])
         .cargo_out_dir("sketch_protos")

@@ -46,11 +46,24 @@ impl TestComponentSupervisor {
     ///
     /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
     pub async fn start(id: &str) -> Self {
+        Self::start_with_budget(id, TEST_SHUTDOWN_BUDGET).await
+    }
+
+    /// Starts a supervisor named `id` with a specific shutdown budget.
+    ///
+    /// Use this to assert that a child is bounded by the budget rather than by a deadline of its own: pick a budget
+    /// shorter than the [`Supervisable`][crate::runtime::Supervisable] default of five seconds, and a child that had
+    /// silently acquired its own deadline will miss it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
+    pub async fn start_with_budget(id: &str, budget: Duration) -> Self {
         let mut supervisor = Supervisor::new(id)
             .expect("test supervisor name should be valid")
             .with_auto_shutdown(AutoShutdown::AnySignificant)
             .with_shutdown_mode(ShutdownMode::Concurrent)
-            .with_shutdown_budget(TEST_SHUTDOWN_BUDGET);
+            .with_shutdown_budget(budget);
 
         // Take the handle before moving the supervisor into its task; the handle is usable before the run starts, and
         // is how we observe that it has.

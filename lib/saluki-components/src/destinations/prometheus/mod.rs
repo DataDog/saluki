@@ -26,7 +26,7 @@ use saluki_core::data_model::event::{
 use saluki_error::GenericError;
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
-    server::http::{ErrorHandle, HttpServer},
+    server::http::{ErrorHandle, UnsupervisedHttpServer},
     ListenAddress,
 };
 use serde::Deserialize;
@@ -267,7 +267,7 @@ fn spawn_prom_scrape_service(
         }
     });
 
-    let http_server = HttpServer::from_listener(listener, service);
+    let http_server = UnsupervisedHttpServer::from_listener(listener, service);
     http_server.listen()
 }
 

@@ -83,14 +83,13 @@ tokio = { workspace = true, features = [
   "signal",
   "sync",
 ] }
-tonic = { workspace = true, features = ["router", "server"] }
+tonic = { workspace = true, features = ["router", "server", "channel"] }
 tower = { workspace = true, features = ["limit", "retry", "timeout", "util"] }
 tower-http = { workspace = true, features = ["cors"] }
 tracing = { workspace = true }
 tracing-appender = { workspace = true }
 tracing-rolling-file = { workspace = true }
 url = { workspace = true }
-uuid = { workspace = true, features = ["std", "v7"] }
 zstd = { workspace = true }
 
 [dev-dependencies]
@@ -105,5 +104,5 @@ saluki-metrics = { workspace = true, features = ["test"] }
 saluki-tls = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 test-strategy = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "io-util", "net", "rt"] }
 tokio-rustls = { workspace = true }

@@ -459,20 +459,6 @@ mod tests {
                     "serializer_experimental_use_v3_api.series.endpoints",
                     json!(["https://app.us3.datadoghq.com"]),
                 ),
-                ConfigSetting::explicit("serializer_experimental_use_v3_api.series.validate", json!(true)),
-                ConfigSetting::explicit("serializer_experimental_use_v3_api.series.use_beta", json!(true)),
-                ConfigSetting::explicit(
-                    "serializer_experimental_use_v3_api.series.beta_route",
-                    json!("/api/intake/metrics/custom/series"),
-                ),
-                ConfigSetting::explicit(
-                    "serializer_experimental_use_v3_api.series.shadow_sample_rate",
-                    json!(0.25),
-                ),
-                ConfigSetting::explicit(
-                    "serializer_experimental_use_v3_api.series.shadow_sites",
-                    json!(["us3.datadoghq.com"]),
-                ),
                 ConfigSetting::explicit("use_v2_api.series", json!(false)),
                 ConfigSetting::explicit("use_v3_api.series.enabled", json!("false")),
                 // The Agent sends an object-valued setting whole, and these entry keys contain dots.
@@ -506,12 +492,6 @@ mod tests {
         assert!(!metrics.use_v2_series_api);
         assert_eq!(metrics.v3_api.compression_level, 7);
         assert_eq!(metrics.v3_api.series.endpoints, vec!["https://app.us3.datadoghq.com"]);
-        assert!(metrics.v3_api.series.validate);
-        assert!(metrics.v3_api.series.use_beta);
-        assert_eq!(metrics.v3_api.series.beta_route, "/api/intake/metrics/custom/series");
-        assert_eq!(metrics.v3_api.series.shadow_sample_rate, 0.25);
-        assert_eq!(metrics.v3_api.series.shadow_sites, vec!["us3.datadoghq.com"]);
-
         let opw = &config.shared.endpoints.opw_intake;
         assert!(opw.enabled);
         assert_eq!(opw.url, "https://opw.example.com");
@@ -616,6 +596,20 @@ mod tests {
         let config = translate_strict(&sources).expect("positive trace interner size should translate");
 
         assert_eq!(config.domains.otlp.traces.string_interner_size.get(), 512 * 1024);
+    }
+
+    #[test]
+    fn invalid_metric_tag_value_allowlist_is_rejected_before_publication() {
+        let sources = SourceTree::all_explicit(json!({
+            "metric_tag_value_allowlist": [
+                { "metric_prefix": "requests.", "tag_name": "customer_id" },
+                { "metric_prefix": "requests.api.", "tag_name": "customer_id" }
+            ]
+        }));
+        let error = translate_strict(&sources).expect_err("overlapping allow-list prefixes should fail translation");
+
+        assert!(matches!(error, Error::Deserialize { .. }));
+        assert!(error.to_string().contains("overlapping metric prefixes"));
     }
 
     #[tokio::test]
@@ -753,6 +747,50 @@ mod tests {
             system.config().domains.dogstatsd.origin.tag_cardinality,
             OriginTagCardinality::High
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_metric_tag_value_allowlist_update_keeps_last_known_good() {
+        let initial_allowlist = json!([{
+            "metric_prefix": "requests.",
+            "tag_name": "customer_id",
+            "values": ["customer-1"]
+        }]);
+        let (system, agent_tx) = connected_system(json!({
+            "log_level": "warn",
+            "metric_tag_value_allowlist": initial_allowlist
+        }))
+        .await;
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_tag_value_allowlist",
+                json!([
+                    { "metric_prefix": "requests.", "tag_name": "customer_id" },
+                    { "metric_prefix": "requests.api.", "tag_name": "customer_id" }
+                ]),
+            )))
+            .await
+            .unwrap();
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "log_level",
+                json!("error"),
+            )))
+            .await
+            .unwrap();
+
+        await_config(&system, "the later valid update to take effect", |config| {
+            config.control.logging.level == "error"
+        })
+        .await;
+        let config = system.config();
+        assert_eq!(config.domains.dogstatsd.tag_value_allowlist.len(), 1);
+        assert_eq!(
+            config.domains.dogstatsd.tag_value_allowlist[0].metric_prefix,
+            "requests."
+        );
+        assert_eq!(config.domains.dogstatsd.tag_value_allowlist[0].values, ["customer-1"]);
     }
 
     #[tokio::test]
@@ -1053,5 +1091,24 @@ mod tests {
         assert_eq!(config.shared.endpoints.dd_url.value, "https://custom.example.com");
         // Seeded Saluki-only field.
         assert_eq!(config.domains.dogstatsd.listeners.tcp_port, 8126);
+    }
+
+    /// Datadog-defined aggregation keys reach their typed model fields through the witness translator.
+    #[test]
+    fn datadog_aggregation_keys_reach_the_model() {
+        let sources = SourceTree::all_explicit(json!({
+            "dogstatsd_expiry_seconds": 60,
+            "dogstatsd_flush_incomplete_buckets": true,
+        }));
+        let value = sources.to_value();
+        let datadog: DatadogConfiguration = serde_json::from_value(value.clone()).expect("datadog source deserializes");
+        let saluki: SalukiOnly = serde_json::from_value(value).expect("saluki-only source deserializes");
+
+        let (config, errors) = translate(&datadog, &saluki, &sources);
+        assert!(errors.is_none(), "translation of a valid map records no error");
+
+        let aggregation = &config.domains.dogstatsd.aggregation;
+        assert_eq!(aggregation.counter_expiry_seconds, Some(60));
+        assert!(aggregation.flush_open_windows);
     }
 }

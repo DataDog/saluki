@@ -27,7 +27,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -38,7 +38,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Partial,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_LOGS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
@@ -71,7 +71,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Traces]),
@@ -82,7 +82,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
@@ -93,7 +93,7 @@ crate::declare_annotations! {
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,
-        used_by: &[structs::DATADOG_EVENTS_CONFIGURATION, structs::DATADOG_SERVICE_CHECKS_CONFIGURATION, structs::TYPED_CONFIG_SYSTEM],
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD]),
@@ -164,17 +164,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `serializer_experimental_use_v3_api.series.beta_route`-Beta V3 series API route
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_BETA_ROUTE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_BETA_ROUTE,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::TYPED_CONFIG_SYSTEM],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `serializer_experimental_use_v3_api.series.endpoints`-Endpoints enabled for V3 series API
     SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS = SalukiAnnotation {
         schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_ENDPOINTS,
@@ -186,64 +175,9 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
-    /// `serializer_experimental_use_v3_api.series.shadow_sample_rate`-V3 series shadow mode sample rate
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SAMPLE_RATE,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::TYPED_CONFIG_SYSTEM],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `serializer_experimental_use_v3_api.series.shadow_sites`-V3 series shadow mode enabled sites
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_SHADOW_SITES,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::TYPED_CONFIG_SYSTEM],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `serializer_experimental_use_v3_api.series.use_beta`-Use the beta V3 series API route
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_USE_BETA,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::TYPED_CONFIG_SYSTEM],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `serializer_experimental_use_v3_api.series.validate`-Dual-send v2+v3 series for validation
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SERIES_VALIDATE,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::TYPED_CONFIG_SYSTEM],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
     /// `serializer_experimental_use_v3_api.sketches.endpoints`-Endpoints enabling v3 sketches API
     SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS = SalukiAnnotation {
         schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_ENDPOINTS,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::TYPED_CONFIG_SYSTEM],
-        value_type_override: None,
-        test_json: None,
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
-    };
-    /// `serializer_experimental_use_v3_api.sketches.validate`-Dual-send v2+v3 sketches for validation
-    SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE = SalukiAnnotation {
-        schema: &schema::SERIALIZER_EXPERIMENTAL_USE_V3_API_SKETCHES_VALIDATE,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
         env_var_override: None,

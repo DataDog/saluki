@@ -54,6 +54,7 @@ tagset(s?)
 noop
 bitset(s?)
 uuid(s?)
+temporality
 fargate
 mysql
 sqlite

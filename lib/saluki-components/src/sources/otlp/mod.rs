@@ -14,7 +14,6 @@ use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResou
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
-use saluki_common::task::HandleExt as _;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -118,6 +117,7 @@ impl OtlpConfiguration {
             .with_cumulative_monotonic_mode(self.otlp.metrics.sums.cumulative_monotonic_mode)
             .with_initial_cumulative_monotonic_value(self.otlp.metrics.sums.initial_cumulative_monotonic_value)
             .with_resource_attributes_as_tags(self.otlp.metrics.resource_attributes_as_tags)
+            .with_instrumentation_scope_metadata_as_tags(self.otlp.metrics.instrumentation_scope_metadata_as_tags)
             .with_delta_ttl(self.otlp.metrics.delta_ttl);
         config.tag_cardinality = self.otlp.metrics.tag_cardinality;
         config
@@ -153,15 +153,11 @@ impl SourceBuilder for OtlpConfiguration {
 
         let grpc_listen_str = format!(
             "{}://{}",
-            self.otlp.receiver.grpc.transport, self.otlp.receiver.grpc.endpoint
+            self.otlp.receiver.grpc.transport.as_str(),
+            self.otlp.receiver.grpc.endpoint
         );
         let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
             .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
-
-        // Enforce the current limitation that we only support TCP for gRPC.
-        if !matches!(grpc_endpoint, ListenAddress::Tcp(_)) {
-            return Err(generic_error!("Only 'tcp' transport is supported for OTLP gRPC"));
-        }
 
         let http_endpoint_str = &self.otlp.receiver.http.endpoint;
         let http_socket_addr = http_endpoint_str
@@ -248,8 +244,6 @@ impl Source for Otlp {
         // Create the internal channel for decoupling the servers from the converter.
         let (tx, rx) = mpsc::channel::<OtlpResource>(1024);
 
-        let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
-
         let metrics_translator = OtlpMetricsTranslator::new(
             metrics_translator_config,
             default_hostname,
@@ -258,29 +252,37 @@ impl Source for Otlp {
             metric_tags,
         )?;
 
-        let thread_pool_handle = context.topology_context().global_thread_pool().clone();
-
-        // Spawn the converter task. This task is shared by both servers.
-        thread_pool_handle.spawn_traced_named(
-            "otlp-resource-converter",
-            run_converter(
-                rx,
-                context.clone(),
-                origin_tag_resolver,
-                converter_shutdown_coordinator.register(),
-                metrics_translator,
-                metrics.clone(),
-                traces_translator,
-            ),
-        );
-
+        // Build our gRPC and HTTP servers and spawn them.
         let handler = SourceHandler::new(tx);
         let server_builder =
             OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
-
-        let (http_shutdown, mut http_error) = server_builder
-            .build(handler, memory_limiter.clone(), thread_pool_handle, metrics)
+        server_builder
+            .build(handler, memory_limiter.clone(), metrics.clone(), context.spawner())
             .await?;
+
+        // Run the converter task on the worker pool: translating OTLP resources is highly compute-bound.
+        let converter_context = context.clone();
+
+        let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
+        let converter_shutdown = converter_shutdown_coordinator.register();
+
+        context
+            .spawner()
+            .noninterruptible("resource_converter", |_shutdown| {
+                run_converter(
+                    rx,
+                    converter_context,
+                    origin_tag_resolver,
+                    converter_shutdown,
+                    metrics_translator,
+                    metrics,
+                    traces_translator,
+                )
+            })
+            .on_worker_pool()
+            .spawn()
+            .await
+            .error_context("Failed to spawn OTLP resource converter.")?;
 
         health.mark_ready();
         debug!("OTLP source started.");
@@ -292,19 +294,12 @@ impl Source for Otlp {
                     debug!("Received shutdown signal.");
                     break
                 },
-                error = &mut http_error => {
-                    if let Some(error) = error {
-                        debug!(%error, "HTTP server error.");
-                    }
-                    break;
-                },
                 _ = health.live() => continue,
             }
         }
 
         debug!("Stopping OTLP source...");
 
-        http_shutdown.shutdown();
         converter_shutdown_coordinator.shutdown_and_wait().await;
 
         debug!("OTLP source stopped.");
@@ -662,6 +657,29 @@ mod tests {
                 .metrics_translator_config()
                 .delta_ttl,
             Duration::from_secs(3600)
+        );
+    }
+
+    #[test]
+    fn instrumentation_scope_metadata_as_tags_defaults_to_true() {
+        assert!(
+            config_with_metrics(domains::otlp::Metrics::default())
+                .metrics_translator_config()
+                .instrumentation_scope_metadata_as_tags
+        );
+    }
+
+    #[test]
+    fn instrumentation_scope_metadata_as_tags_flows_to_metrics_translator() {
+        let config = config_with_metrics(domains::otlp::Metrics {
+            instrumentation_scope_metadata_as_tags: false,
+            ..Default::default()
+        });
+
+        assert!(
+            !config
+                .metrics_translator_config()
+                .instrumentation_scope_metadata_as_tags
         );
     }
 

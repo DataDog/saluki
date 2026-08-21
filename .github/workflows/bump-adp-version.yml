@@ -33,7 +33,7 @@ jobs:
               TARGET_BRANCH="main"
               RELEASE_TYPE="minor"
             else
-              TARGET_BRANCH="release/${MAJOR}.${MINOR}.x"
+              TARGET_BRANCH="releases/${MAJOR}.${MINOR}.x"
               RELEASE_TYPE="patch"
             fi
           else
@@ -171,7 +171,7 @@ jobs:
             });
 
             // Look for other open PRs bumping the ADP version on the same target branch, and close them out so this
-            // one takes precedence. Scoping by base branch keeps minor bumps (main) and patch bumps (release/*)
+            // one takes precedence. Scoping by base branch keeps minor bumps (main) and patch bumps (releases/*)
             // from closing each other.
             const { data: labeledPRData } = await github.rest.search.issuesAndPullRequests({
               q: `repo:${context.repo.owner}/${context.repo.repo} is:pr is:open label:"${prLabel}" base:${targetBranch}`

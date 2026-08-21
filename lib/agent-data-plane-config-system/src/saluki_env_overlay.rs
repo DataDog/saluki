@@ -11,14 +11,14 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use datadog_agent_config::{apply_env_at_path, EnvDecode};
-use serde::de::value::{Error as ValueError, StrDeserializer};
+use serde::de::value::{Error as ValueError, SeqDeserializer, StrDeserializer, UnitDeserializer};
 use serde::de::{
     DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, MapAccess, SeqAccess, VariantAccess, Visitor,
 };
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::saluki_only::SalukiOnly;
+use crate::saluki_only::{SalukiOnly, JSON_SEQUENCE_MARKER};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Path discovery: the canonical leaf paths, read off `SalukiOnly` itself.
@@ -121,7 +121,8 @@ impl PathRecorder<'_, '_> {
 
 // `PathRecorder` records a leaf at every scalar (and scalar-like) method, descends at `option` and
 // `newtype_struct`, and recurses at `struct`. The visited value is thrown away, so each leaf feeds
-// the visitor a throwaway of the right shape purely to let deserialization complete. `deserialize_any`
+// the visitor a throwaway of the right shape purely to let deserialization complete. Integers feed
+// `1` rather than `0` because a `NonZero` leaf rejects zero, which would abort discovery. `deserialize_any`
 // is a leaf: it is where `DurationString` and `ByteSize` land. A fieldless (unit-variant) `enum` is
 // also a leaf, recorded as `RawString` since its environment and JSON forms are both a plain string.
 // `tuple`, `tuple_struct`, and enum variants carrying data return an error.
@@ -141,16 +142,16 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
     type Error = ValueError;
 
     record_scalar!(deserialize_bool, visit_bool, false, EnvDecode::Bool);
-    record_scalar!(deserialize_i8, visit_i8, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_i16, visit_i16, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_i32, visit_i32, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_i64, visit_i64, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_i128, visit_i128, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_u8, visit_u8, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_u16, visit_u16, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_u32, visit_u32, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_u64, visit_u64, 0, EnvDecode::Integer);
-    record_scalar!(deserialize_u128, visit_u128, 0, EnvDecode::Integer);
+    record_scalar!(deserialize_i8, visit_i8, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_i16, visit_i16, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_i32, visit_i32, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_i64, visit_i64, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_i128, visit_i128, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_u8, visit_u8, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_u16, visit_u16, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_u32, visit_u32, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_u64, visit_u64, 1, EnvDecode::Integer);
+    record_scalar!(deserialize_u128, visit_u128, 1, EnvDecode::Integer);
     record_scalar!(deserialize_f32, visit_f32, 0.0, EnvDecode::Float);
     record_scalar!(deserialize_f64, visit_f64, 0.0, EnvDecode::Float);
     record_scalar!(deserialize_char, visit_char, '\0', EnvDecode::RawString);
@@ -185,11 +186,17 @@ impl<'de> Deserializer<'de> for PathRecorder<'_, '_> {
         visitor.visit_some(self)
     }
 
-    fn deserialize_newtype_struct<V>(self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_newtype_struct<V>(mut self, name: &'static str, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        visitor.visit_newtype_struct(self)
+        if name == JSON_SEQUENCE_MARKER {
+            self.record_leaf(EnvDecode::JsonValue);
+            let empty = SeqDeserializer::<_, ValueError>::new(std::iter::empty::<UnitDeserializer<ValueError>>());
+            visitor.visit_newtype_struct(empty)
+        } else {
+            visitor.visit_newtype_struct(self)
+        }
     }
 
     fn deserialize_unit_struct<V>(mut self, _name: &'static str, visitor: V) -> Result<V::Value, Self::Error>

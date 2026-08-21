@@ -26,7 +26,7 @@ use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
     DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
@@ -530,7 +530,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_flush_incomplete_buckets(&mut self, value: bool) {
-        self.config.domains.dogstatsd.aggregation.flush_incomplete_buckets = value;
+        self.config.domains.dogstatsd.aggregation.flush_open_windows = value;
     }
 
     fn consume_dogstatsd_log_file(&mut self, value: String) {
@@ -959,6 +959,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.otlp.metrics.resource_attributes_as_tags = value;
     }
 
+    fn consume_otlp_config_metrics_instrumentation_scope_metadata_as_tags(&mut self, value: bool) {
+        self.config.domains.otlp.metrics.instrumentation_scope_metadata_as_tags = value;
+    }
+
     fn consume_otlp_config_metrics_sums_cumulative_monotonic_mode(&mut self, value: String) {
         match value.parse::<CumulativeMonotonicMode>() {
             Ok(mode) => self.config.domains.otlp.metrics.sums.cumulative_monotonic_mode = mode,
@@ -1012,7 +1016,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String) {
-        self.config.domains.otlp.receiver.grpc.transport = value;
+        match value.parse::<GrpcTransport>() {
+            Ok(transport) => self.config.domains.otlp.receiver.grpc.transport = transport,
+            Err(error) => self.record_error(TranslateError::new(
+                "otlp_config.receiver.protocols.grpc.transport",
+                error,
+            )),
+        }
     }
 
     fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String) {
@@ -1090,36 +1100,12 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.metrics_encoding.v3_api.compression_level = value as i32;
     }
 
-    fn consume_serializer_experimental_use_v3_api_series_beta_route(&mut self, value: String) {
-        self.config.shared.metrics_encoding.v3_api.series.beta_route = value;
-    }
-
     fn consume_serializer_experimental_use_v3_api_series_endpoints(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.v3_api.series.endpoints = value;
     }
 
-    fn consume_serializer_experimental_use_v3_api_series_shadow_sample_rate(&mut self, value: f64) {
-        self.config.shared.metrics_encoding.v3_api.series.shadow_sample_rate = value;
-    }
-
-    fn consume_serializer_experimental_use_v3_api_series_shadow_sites(&mut self, value: Vec<String>) {
-        self.config.shared.metrics_encoding.v3_api.series.shadow_sites = value;
-    }
-
-    fn consume_serializer_experimental_use_v3_api_series_use_beta(&mut self, value: bool) {
-        self.config.shared.metrics_encoding.v3_api.series.use_beta = value;
-    }
-
-    fn consume_serializer_experimental_use_v3_api_series_validate(&mut self, value: bool) {
-        self.config.shared.metrics_encoding.v3_api.series.validate = value;
-    }
-
     fn consume_serializer_experimental_use_v3_api_sketches_endpoints(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.v3_api.sketches.endpoints = value;
-    }
-
-    fn consume_serializer_experimental_use_v3_api_sketches_validate(&mut self, value: bool) {
-        self.config.shared.metrics_encoding.v3_api.sketches.validate = value;
     }
 
     fn consume_serializer_max_payload_size(&mut self, value: i64) {
@@ -1143,7 +1129,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_serializer_zstd_compressor_level(&mut self, value: i64) {
-        self.config.shared.endpoints.compression.zstd_compressor_level = value as i32;
+        // ADP keeps its own default of 3 unless an operator asked for the Agent's level, and only
+        // provenance separates a configured 1 from the schema default of 1, because drive delivers the
+        // key either way. `Compression::zstd_compressor_level` applies the precedence.
+        let provenance = self.sources.provenance("serializer_zstd_compressor_level");
+        match i32::try_from(value) {
+            Ok(value) => {
+                self.config.shared.endpoints.compression.agent_zstd_level = ConfigValue::new(value, provenance);
+            }
+            Err(error) => self.record_error(TranslateError::new("serializer_zstd_compressor_level", error)),
+        }
     }
 
     fn consume_site(&mut self, value: String) {
@@ -1264,6 +1259,7 @@ mod tests {
     use std::fmt;
     use std::time::Duration;
 
+    use agent_data_plane_config::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use agent_data_plane_config::domains::{
         dogstatsd::OriginTagCardinality,
         otlp::{
@@ -1566,6 +1562,54 @@ mod tests {
         assert!(errors.is_none());
         assert_defaulted(&config.shared.endpoints.site, "");
         assert_defaulted(&config.shared.endpoints.dd_url, "");
+    }
+
+    // The Agent streams `serializer_zstd_compressor_level` at its schema default of 1 even when the
+    // operator configured nothing. ADP wants its own default of 3, so it applies the Agent's level only
+    // when an input set one. Comparing the value against 1 also discarded an operator who deliberately
+    // asked for 1; provenance separates the two.
+    #[test]
+    fn the_agent_zstd_level_is_honored_only_when_explicit() {
+        let (config, errors) =
+            translate_stream(&[("serializer_zstd_compressor_level", json!(1), StreamProvenance::Default)]);
+
+        assert!(errors.is_none());
+        assert_eq!(
+            DEFAULT_ZSTD_COMPRESSOR_LEVEL,
+            config.shared.endpoints.compression.effective_zstd_level()
+        );
+
+        let (config, errors) = translate_explicit(json!({ "serializer_zstd_compressor_level": 1 }));
+
+        assert!(errors.is_none());
+        assert_eq!(1, config.shared.endpoints.compression.effective_zstd_level());
+    }
+
+    #[test]
+    fn the_adp_zstd_level_wins_over_an_explicit_agent_level() {
+        let (mut config, errors) = translate_explicit(json!({ "serializer_zstd_compressor_level": 5 }));
+        assert!(errors.is_none());
+
+        let saluki_only: SalukiOnly =
+            serde_json::from_value(json!({ "data_plane": { "serializer_zstd_compressor_level": 4 } }))
+                .expect("saluki-only source deserializes");
+        saluki_only.seed(&mut config);
+
+        assert_eq!(4, config.shared.endpoints.compression.effective_zstd_level());
+    }
+
+    #[test]
+    fn an_out_of_range_agent_zstd_level_records_a_translation_error() {
+        let (config, errors) = translate_explicit(json!({
+            "serializer_zstd_compressor_level": i64::from(i32::MAX) + 1,
+        }));
+
+        let errors = errors.expect("out-of-range zstd level should record a translation error");
+        assert!(errors.to_string().contains("serializer_zstd_compressor_level"));
+        assert_eq!(
+            DEFAULT_ZSTD_COMPRESSOR_LEVEL,
+            config.shared.endpoints.compression.effective_zstd_level()
+        );
     }
 
     #[test]

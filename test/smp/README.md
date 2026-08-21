@@ -19,9 +19,11 @@ An experiment picks how much of it to use through `target.command`:
 
 - Most experiments run ADP by itself, in standalone mode, by pointing the command straight at the
   ADP binary. The Core Agent never starts.
-- The tag filtering experiments run the image's own entrypoint, so the Core Agent comes up and
-  supervises ADP. They need it: a `metric_tag_filterlist` is Core Agent configuration, and reaches
-  ADP over the config stream.
+- The whole-tag filtering experiments run the image's own entrypoint, so the Core Agent comes up
+  and supervises ADP. They need it: a `metric_tag_filterlist` is Core Agent configuration, and
+  reaches ADP over the config stream.
+- The tag value allow-list experiments run ADP standalone. `metric_tag_value_allowlist` is an
+  ADP-only key, so loading it directly avoids measuring the Core Agent in those experiments.
 
 Profiling is SMP's to arrange: the SMP experiment runner loads `ddprof` into the target with `LD_PRELOAD` on the
 replicas named by `ddprof_replicas` in `config.yaml`.
@@ -291,12 +293,12 @@ pad differently.
 
 ### Tag filtering, as an example
 
-The tag filtering experiments use all of this. `variables:` fixes the corpora and the filterlist
-size, the lading generator draws from patterns built with `lading_range`, and
-`shared/tagfilter-datadog.yaml.j2` loops over `lading_names` to build the filterlist the Core
-Agent streams to ADP. One set of numbers drives both, so the filterlist can't end up naming
-metrics the generator never sends — which is a silent failure, since the experiment still runs
-green while measuring nothing.
+The tag filtering experiments use all of this. `variables:` fixes the corpora and filter sizes,
+and the lading generator draws from patterns built with `lading_range`.
+`shared/tagfilter-datadog.yaml.j2` loops over `lading_names` to build the whole-tag filterlist the
+Core Agent streams to ADP. `shared/tagvaluefilter.yaml.j2` uses the same helpers to build the
+ADP-only value allow-list. One set of numbers drives the configuration and traffic in each case,
+so a filter can't silently name metrics or values that the generator never sends.
 
 > [!NOTE]
 > The rendered `datadog.yaml` files are large — the 10,000-entry variants are ~12 MiB each. That

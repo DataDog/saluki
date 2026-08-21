@@ -259,8 +259,7 @@ topology-wide graceful shutdown timeout. The default is `2 + 2 = 4` seconds. Set
 Support is partial because ADP does not apply this timeout only to an aggregator component.
 Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
 and the aggregate transform performs its final flush when its input stream ends. Whether open
-aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
-as `dogstatsd_flush_incomplete_buckets`.
+aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
 
 ### `dogstatsd_mapper_cache_size`
 
@@ -390,7 +389,7 @@ is enabled.
 
 ### `serializer_zstd_compressor_level`
 
-The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`; when that is unset, ADP applies this value if it has been changed from the Agent default of 1, otherwise it uses its own default of 3.
+The Core Agent's zstd compression level. ADP prefers `data_plane.serializer_zstd_compressor_level`; when that is unset, ADP applies this value if you set it explicitly, and otherwise uses its own default of 3. Setting this key to the Agent's default of 1 therefore compresses at level 1.
 
 ### `skip_ssl_validation`
 
@@ -500,7 +499,6 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation        |                |
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |                |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |                |
-| `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300            |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint              | localhost:6317 |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
 | `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3              |
@@ -519,6 +517,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
 | `memory_limit`                                                  | Process memory limit                       |                |
 | `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
+| `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list            | []             |
 | `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts   |                |
 | `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts            |                |
 | `otlp_cached_tagsets_limit`                                     | Max cached OTLP tagsets                    |                |
@@ -539,7 +538,7 @@ Temporary development key for setting ADP's OTLP listen endpoints independently 
 
 ### `data_plane.serializer_zstd_compressor_level`
 
-ADP-specific zstd compression level, taking precedence over the Core Agent's `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to `serializer_zstd_compressor_level` if it has been changed from the Agent default of 1, and otherwise uses its own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs 69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` or in ADP-specific configuration.
+ADP-specific zstd compression level, taking precedence over the Core Agent's `serializer_zstd_compressor_level`. When this key is unset, ADP falls back to `serializer_zstd_compressor_level` if you set that key explicitly, and otherwise uses its own default of 3. Level 3 achieves ~6% smaller payloads (65.3 MB vs 69.3 MB) without a net CPU increase, since ADP is more efficient than the Agent and can afford higher compression. Configure via `DD_DATA_PLANE_SERIALIZER_ZSTD_COMPRESSOR_LEVEL` or in ADP-specific configuration.
 
 ### `data_plane.stop_timeout`
 
@@ -548,6 +547,25 @@ ADP uses `data_plane.stop_timeout` as the topology-wide graceful shutdown timeou
 ### `dogstatsd_minimum_sample_rate`
 
 ADP enforces a minimum sample rate on incoming metrics to prevent memory exhaustion from extremely low sample rates on histograms and sketches. Sending metrics with a very high inverse sample rate (for example `@0.0000001`) can cause unbounded memory growth in a sketch; this setting prevents that. The default is conservative enough that normal clients are unaffected.
+
+### `metric_tag_value_allowlist`
+
+Use `metric_tag_value_allowlist` to bound metric cardinality by retaining selected values for a tag. Configure each list item with a `metric_prefix`, a `tag_name`, and the `values` to retain. The rule applies to every metric whose name starts with the prefix. Values not in the list lose the tag by default. To aggregate them under a sentinel instead, set `on_miss: replace` and configure `replacement`; the replacement defaults to `other`.
+
+```yaml
+metric_tag_value_allowlist:
+  - metric_prefix: requests.
+    tag_name: customer_id
+    values: [customer-1, customer-2]
+    on_miss: replace
+    replacement: other
+```
+
+This ADP-only key is independent from `metric_tag_filterlist`. Remote Config updates to `metric_tag_filterlist` therefore do not replace locally configured value allow-lists. Value allow-list changes require an ADP restart in this initial implementation. Rules apply to counters and sketch-backed metrics before aggregation, including instrumented and origin tags. ADP matches `metric_prefix` after DogStatsD mapper rewrites and `statsd_metric_namespace` prefixing, so configure the final metric name produced by those steps.
+
+Whole-tag filtering runs first. If `metric_tag_filterlist` uses `action: include`, add the value-filtered tag key to its `tags` list or the whole-tag rule removes it before value filtering. Value rules do not operate on bare tags such as `customer_id`, because they have no value. An empty string in a key/value tag such as `customer_id:` is a value and is subject to the allow-list; include `""` in `values` to retain it. An empty `values` list treats every key/value tag as a mismatch.
+
+Distinct metric prefixes must not overlap, even when the rules target different tags. Multiple rules may use the same prefix when they target different tags. ADP rejects overlapping rules at startup so each metric matches at most one prefix. ADP also rejects empty metric prefixes and tag names, duplicate prefix and tag pairs, and tag names containing `:`. As with `metric_tag_filterlist`, ADP does not trim configured strings: prefixes, tag names, values, and replacements preserve whitespace and match exactly. Configure a replacement that cannot collide with a real tag value.
 
 ### `dogstatsd_permissive_decoding`
 
@@ -812,6 +830,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
 | `otlp_config.metrics.histograms.mode`                          | OTLP histogram bucket reporting mode               |
 | `otlp_config.metrics.histograms.send_aggregation_metrics`      | Emit OTLP histogram aggregation metrics.           |
+| `otlp_config.metrics.instrumentation_scope_metadata_as_tags`   | Add instrumentation scope metadata as metric tags. |
 | `otlp_config.metrics.resource_attributes_as_tags`              | Add scalar resource attributes as raw tags.        |
 | `otlp_config.metrics.summaries.mode`                           | OTLP summary quantile reporting mode.              |
 | `otlp_config.metrics.sums.cumulative_monotonic_mode`           | Cumulative monotonic sum reporting mode.           |
@@ -835,14 +854,8 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `proxy.no_proxy`                                               | Hosts bypassing proxy                              |
 | `serializer_compressor_kind`                                   | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                      |
-| `serializer_experimental_use_v3_api.series.beta_route`         | Beta V3 series API route                           |
 | `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API                |
-| `serializer_experimental_use_v3_api.series.shadow_sample_rate` | V3 series shadow mode sample rate                  |
-| `serializer_experimental_use_v3_api.series.shadow_sites`       | V3 series shadow mode enabled sites                |
-| `serializer_experimental_use_v3_api.series.use_beta`           | Use the beta V3 series API route                   |
-| `serializer_experimental_use_v3_api.series.validate`           | Dual-send v2+v3 series for validation              |
 | `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API                 |
-| `serializer_experimental_use_v3_api.sketches.validate`         | Dual-send v2+v3 sketches for validation            |
 | `serializer_max_payload_size`                                  | Max compressed payload size (generic)              |
 | `serializer_max_series_payload_size`                           | Max compressed V2 series payload size              |
 | `serializer_max_series_points_per_payload`                     | Max data points per series payload                 |
