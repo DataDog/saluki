@@ -29,20 +29,15 @@ use otlp_protos::opentelemetry::proto::collector::metrics::v1::{
 use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_server::{TraceService, TraceServiceServer};
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
-use saluki_common::sync::shutdown::ShutdownCoordinator;
-use saluki_common::task::HandleExt as _;
 use saluki_core::accounting::MemoryLimiter;
-use saluki_core::components::ComponentContext;
+use saluki_core::components::{ComponentContext, ComponentSpawner};
 use saluki_core::observability::ComponentMetricsExt;
-use saluki_error::{generic_error, GenericError};
-use saluki_io::net::listener::ConnectionOrientedListener;
-use saluki_io::net::server::http::{ErrorHandle, HttpServer};
+use saluki_error::{ErrorContext as _, GenericError};
+use saluki_io::net::server::{grpc::GrpcServer, http::HttpServer};
 use saluki_io::net::util::hyper::TowerToHyperService;
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
 use stringtheory::MetaString;
-use tokio::runtime::Handle;
-use tonic::transport::Server;
 use tonic::{Request as TonicRequest, Response, Status};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::error;
@@ -162,50 +157,42 @@ impl OtlpServerBuilder {
 
     /// Builds and starts the OTLP servers (HTTP and gRPC).
     ///
-    /// Returns the HTTP server shutdown handle and error handle.
+    /// Both servers run on the shared worker pool, since request handling shouldn't contend with the runtime driving
+    /// the topology, and decoding can be compute-heavy for large requests.
+    ///
+    /// # Errors
+    ///
+    /// If the gRPC endpoint isn't a TCP address, the listen addresses can't be bound, or either server can't be
+    /// spawned, an error is returned.
     pub async fn build<H: OtlpHandler>(
-        self, handler: H, memory_limiter: MemoryLimiter, thread_pool_handle: Handle, metrics: Metrics,
-    ) -> Result<(ShutdownCoordinator, ErrorHandle), GenericError> {
+        self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, spawner: &ComponentSpawner,
+    ) -> Result<(), GenericError> {
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
 
         // Create and spawn the gRPC server.
-        let grpc_metrics_server = MetricsServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let inner_grpc = GrpcServiceImpl::new(otlp_handler.clone(), memory_limiter.clone(), metrics.clone());
 
-        let grpc_logs_server = LogsServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let grpc_metrics_server =
+            MetricsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        let grpc_traces_server = TraceServiceServer::new(GrpcServiceImpl::new(
-            otlp_handler.clone(),
-            memory_limiter.clone(),
-            metrics.clone(),
-        ))
-        .max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+        let grpc_logs_server =
+            LogsServiceServer::new(inner_grpc.clone()).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        let grpc_server = Server::builder()
+        let grpc_traces_server =
+            TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
+
+        let grpc_server = GrpcServer::new(self.grpc_endpoint.clone())
             .add_service(grpc_metrics_server)
             .add_service(grpc_logs_server)
             .add_service(grpc_traces_server);
 
-        let grpc_socket_addr = match self.grpc_endpoint {
-            ListenAddress::Tcp(addr) => addr,
-            _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
-        };
-
-        let grpc_listener = tokio::net::TcpListener::bind(grpc_socket_addr)
+        spawner
+            .supervisable(grpc_server)
+            .on_worker_pool()
+            .spawn()
             .await
-            .map_err(|e| generic_error!("Failed to bind OTLP gRPC listener on '{}': {}", grpc_socket_addr, e))?;
-        let grpc_incoming = tonic::transport::server::TcpIncoming::from(grpc_listener);
-        thread_pool_handle.spawn_traced_named("otlp-grpc-server", grpc_server.serve_with_incoming(grpc_incoming));
+            .error_context("Failed to spawn OTLP gRPC server.")?;
 
         // Create and spawn the HTTP server.
         let router = Router::new()
@@ -223,15 +210,16 @@ impl OtlpServerBuilder {
 
         let service = TowerToHyperService::new(router);
 
-        let http_listener = ConnectionOrientedListener::from_listen_address(self.http_endpoint)
+        let http_server = HttpServer::from_listen_address(self.http_endpoint, service);
+
+        spawner
+            .supervisable(http_server)
+            .on_worker_pool()
+            .spawn()
             .await
-            .map_err(|e| generic_error!("Failed to create OTLP HTTP listener: {}", e))?;
+            .error_context("Failed to spawn OTLP HTTP server.")?;
 
-        let (http_shutdown_coordinator, http_error) = HttpServer::from_listener(http_listener, service)
-            .with_executor(thread_pool_handle)
-            .listen();
-
-        Ok((http_shutdown_coordinator, http_error))
+        Ok(())
     }
 }
 
@@ -458,12 +446,18 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    #[cfg(unix)]
+    use std::time::Duration;
 
     use axum::{
         body::Body,
         http::{header, Request},
         routing::post,
     };
+    #[cfg(unix)]
+    use saluki_core::components::ComponentSpawner;
+    #[cfg(unix)]
+    use saluki_core::runtime::Supervisor;
     use saluki_core::{accounting::MemoryLimiter, components::ComponentContext};
     use saluki_metrics::test::TestRecorder;
     use tower::ServiceExt;
@@ -697,5 +691,116 @@ mod tests {
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
         assert!(allowed_methods.contains("POST"));
+    }
+
+    /// Waits for a Unix socket file to appear, retrying briefly to avoid races with async
+    /// server startup.
+    #[cfg(unix)]
+    async fn wait_for_socket(path: &std::path::Path) {
+        for _ in 0..100 {
+            if path.exists() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("Unix socket at {} did not appear within 500ms", path.display());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn build_succeeds_with_unix_grpc_endpoint() {
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let grpc_socket = dir.path().join("grpc.sock");
+        let grpc_endpoint = ListenAddress::try_from(format!("unix://{}", grpc_socket.display()).as_str())
+            .expect("Unix gRPC endpoint should parse");
+        // Use an ephemeral TCP port for HTTP since we are only testing the gRPC path here.
+        let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
+
+        let mut supervisor = Supervisor::new("otlp-test")
+            .expect("test supervisor name should be valid")
+            .with_shutdown_budget(Duration::from_secs(5));
+        let spawner = ComponentSpawner::new(supervisor.handle(), tokio::runtime::Handle::current());
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        // Give the supervisor time to start.
+        tokio::task::yield_now().await;
+
+        let result = OtlpServerBuilder::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+            .build(NoopHandler, MemoryLimiter::noop(), Metrics::for_tests(), &spawner)
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "build should succeed with a Unix gRPC endpoint, got: {:?}",
+            result.err()
+        );
+
+        // Shut down cleanly.
+        let _ = shutdown_tx.send(());
+        let _ = supervisor_task.await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_export_works_over_unix_socket() {
+        use otlp_protos::opentelemetry::proto::collector::metrics::v1::metrics_service_client::MetricsServiceClient;
+
+        let dir = tempfile::tempdir().expect("temp dir should be created");
+        let grpc_socket = dir.path().join("grpc.sock");
+        let grpc_endpoint = ListenAddress::try_from(format!("unix://{}", grpc_socket.display()).as_str())
+            .expect("Unix gRPC endpoint should parse");
+        let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
+
+        let mut supervisor = Supervisor::new("otlp-test")
+            .expect("test supervisor name should be valid")
+            .with_shutdown_budget(Duration::from_secs(5));
+        let spawner = ComponentSpawner::new(supervisor.handle(), tokio::runtime::Handle::current());
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        // Give the supervisor time to start.
+        tokio::task::yield_now().await;
+
+        OtlpServerBuilder::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+            .build(NoopHandler, MemoryLimiter::noop(), Metrics::for_tests(), &spawner)
+            .await
+            .expect("build should succeed");
+
+        wait_for_socket(&grpc_socket).await;
+
+        // Connect a tonic gRPC client over the Unix socket and send a metrics export request.
+        let endpoint_str = format!("unix://{}", grpc_socket.display());
+        let channel = tonic::transport::Endpoint::from_shared(endpoint_str)
+            .expect("endpoint should parse")
+            .connect()
+            .await
+            .expect("should connect to gRPC server over Unix socket");
+
+        let mut client = MetricsServiceClient::new(channel);
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics::default()],
+        };
+        let response = client.export(request).await.expect("export should succeed");
+
+        // A successful response has an empty partial_success (None).
+        assert_eq!(response.into_inner().partial_success, None);
+
+        let _ = shutdown_tx.send(());
+        let _ = supervisor_task.await;
     }
 }

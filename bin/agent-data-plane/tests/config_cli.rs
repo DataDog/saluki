@@ -5,7 +5,7 @@ use http::{Request, Response};
 use http_body_util::Full;
 use hyper::{body::Bytes, service::service_fn};
 use rcgen::{generate_simple_self_signed, CertifiedKey};
-use saluki_io::net::{listener::ConnectionOrientedListener, server::http::HttpServer, ListenAddress};
+use saluki_io::net::{listener::ConnectionOrientedListener, server::http::UnsupervisedHttpServer, ListenAddress};
 use tokio::{process::Command, time::timeout};
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
@@ -40,7 +40,7 @@ async fn run_config_request(extra_args: &[&str], response_body: &'static str) ->
             Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(response_body.as_bytes()))))
         }
     });
-    let (server_shutdown, error_handle) = HttpServer::from_listener(listener, service)
+    let (server_shutdown, error_handle) = UnsupervisedHttpServer::from_listener(listener, service)
         .with_tls_config(server_tls_config)
         .listen();
 

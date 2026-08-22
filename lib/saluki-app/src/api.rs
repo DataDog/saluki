@@ -11,7 +11,7 @@ use saluki_api::APIHandler;
 use saluki_error::GenericError;
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
-    server::{http::HttpServer, multiplex_service::MultiplexService},
+    server::{http::UnsupervisedHttpServer, multiplex_service::MultiplexService},
     util::hyper::TowerToHyperService,
     ListenAddress,
 };
@@ -156,7 +156,7 @@ impl APIBuilder {
         ));
 
         // Create and spawn the HTTP server.
-        let mut http_server = HttpServer::from_listener(listener, multiplexed_service);
+        let mut http_server = UnsupervisedHttpServer::from_listener(listener, multiplexed_service);
         if let Some(tls_config) = self.tls_config {
             http_server = http_server.with_tls_config(tls_config);
         }
