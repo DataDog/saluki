@@ -12,7 +12,9 @@ use saluki_core::{
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
 
+const ERROR_TYPE_FRAMING: &str = "framing";
 const ERROR_TYPE_ORIGIN_DETECTION: &str = "origin_detection";
+const ERROR_TYPE_UNTERMINATED: &str = "unterminated";
 const MAX_ORIGIN_COUNTERS: usize = 200;
 const MESSAGE_TYPE_EVENTS: &str = "events";
 const MESSAGE_TYPE_METRICS: &str = "metrics";
@@ -166,6 +168,7 @@ pub(super) struct Metrics {
     bytes_received: Counter,
     bytes_received_size: Histogram,
     framing_errors: Counter,
+    unterminated_metric_errors: Counter,
     metric_decoder_errors: Counter,
     event_decoder_errors: Counter,
     service_check_decoder_errors: Counter,
@@ -217,6 +220,10 @@ impl Metrics {
 
     pub(super) fn framing_errors(&self) -> &Counter {
         &self.framing_errors
+    }
+
+    pub(super) fn unterminated_metric_errors(&self) -> &Counter {
+        &self.unterminated_metric_errors
     }
 
     pub(super) fn event_decode_failed(&self) -> &Counter {
@@ -291,8 +298,15 @@ pub(super) fn build_metrics(
         bytes_received_size: builder
             .register_trace_histogram_with_tags("component_bytes_received_size", [("listener_type", listener_type)]),
         framing_errors: builder.register_counter_with_tags(
-            "component_errors_total",
-            [("listener_type", listener_type), ("error_type", "framing")],
+            METRIC_ERRORS_TOTAL,
+            [("listener_type", listener_type), ("error_type", ERROR_TYPE_FRAMING)],
+        ),
+        unterminated_metric_errors: builder.register_counter_with_tags(
+            METRIC_ERRORS_TOTAL,
+            [
+                ("listener_type", listener_type),
+                ("error_type", ERROR_TYPE_UNTERMINATED),
+            ],
         ),
         metric_decoder_errors: builder.register_counter_with_tags(
             METRIC_ERRORS_TOTAL,
@@ -306,8 +320,13 @@ pub(super) fn build_metrics(
             METRIC_ERRORS_TOTAL,
             error_tags(MESSAGE_TYPE_SERVICE_CHECKS, listener_type, origin_telemetry_enabled),
         ),
-        origin_detection_errors: builder
-            .register_counter_with_tags(METRIC_ERRORS_TOTAL, [("error_type", ERROR_TYPE_ORIGIN_DETECTION)]),
+        origin_detection_errors: builder.register_counter_with_tags(
+            METRIC_ERRORS_TOTAL,
+            [
+                ("listener_type", listener_type),
+                ("error_type", ERROR_TYPE_ORIGIN_DETECTION),
+            ],
+        ),
         connections_active: builder
             .register_gauge_with_tags("component_connections_active", [("listener_type", listener_type)]),
         packet_receive_success: builder.register_counter_with_tags(
