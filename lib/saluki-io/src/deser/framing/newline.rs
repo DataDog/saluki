@@ -73,10 +73,7 @@ impl Framer for NewlineFramer {
 }
 
 const fn missing_delimiter_err(len: usize) -> FramingError {
-    FramingError::InvalidFrame {
-        frame_len: len,
-        reason: "reached EOF without finding newline delimiter",
-    }
+    FramingError::MissingDelimiter { frame_len: len }
 }
 
 fn find_newline(haystack: &[u8]) -> Option<usize> {
@@ -202,7 +199,7 @@ mod tests {
 
         let maybe_frame = framer.next_frame(&mut buf, true);
 
-        assert_eq!(maybe_frame, Err(missing_delimiter_err(buf_len)));
+        assert_eq!(maybe_frame, Err(FramingError::MissingDelimiter { frame_len: buf_len }));
         assert_eq!(buf.len(), buf_len);
     }
 }
