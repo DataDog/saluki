@@ -464,12 +464,18 @@ metric_aggregation_intervals:
     interval_seconds: 1
   - metric_prefix: archival.
     interval_seconds: 60
+```
+
+Set `DD_METRIC_AGGREGATION_INTERVALS` to the equivalent JSON array when configuring ADP through the environment:
+
+```shell
+DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_seconds":1}]'
 ```"#,
         ),
         value_type: "ValueType::String",
         schema_default: Some("[]"),
-        env_vars: &[],
-        env_var_override: Some(&[]),
+        env_vars: &["DD_METRIC_AGGREGATION_INTERVALS"],
+        env_var_override: None,
         additional_yaml_paths: &[],
         used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: Some(r#"[{"metric_prefix":"smoke.","interval_seconds":5}]"#),

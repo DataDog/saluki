@@ -377,6 +377,26 @@ mod tests {
     }
 
     #[test]
+    fn metric_aggregation_intervals_environment_variable_reaches_the_model() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_metric_intervals_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var(
+            "DD_METRIC_AGGREGATION_INTERVALS",
+            r#"[{"metric_prefix":"high_resolution.","interval_seconds":1}]"#,
+        );
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile)).expect("local sources load");
+
+        std::env::remove_var("DD_METRIC_AGGREGATION_INTERVALS");
+        std::fs::remove_file(&path).ok();
+        let intervals = &loaded.local().domains.dogstatsd.aggregation.metric_intervals;
+        assert_eq!(intervals.len(), 1);
+        assert_eq!(intervals[0].metric_prefix, "high_resolution.");
+        assert_eq!(intervals[0].interval_seconds, 1);
+    }
+
+    #[test]
     fn metric_tag_value_allowlist_from_file_preserves_whitespace() {
         let path = std::env::temp_dir().join(format!("adp_tag_value_allowlist_{}.yaml", std::process::id()));
         std::fs::write(

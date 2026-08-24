@@ -647,6 +647,12 @@ metric_aggregation_intervals:
     interval_seconds: 60
 ```
 
+Set `DD_METRIC_AGGREGATION_INTERVALS` to the equivalent JSON array when configuring ADP through the environment:
+
+```shell
+DD_METRIC_AGGREGATION_INTERVALS='[{"metric_prefix":"high_resolution.","interval_seconds":1}]'
+```
+
 ### `counter_expiry_seconds`
 
 Legacy ADP spelling for `dogstatsd_expiry_seconds`. If both spellings are set, configuration loading fails rather than choosing one.

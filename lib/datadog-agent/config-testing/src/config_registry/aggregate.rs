@@ -47,7 +47,7 @@ static COUNTER_EXPIRY_SECONDS_SCHEMA: SchemaEntry = SchemaEntry {
 static METRIC_AGGREGATION_INTERVALS_SCHEMA: SchemaEntry = SchemaEntry {
     schema: Schema::Saluki,
     yaml_path: "metric_aggregation_intervals",
-    env_vars: &[],
+    env_vars: &["DD_METRIC_AGGREGATION_INTERVALS"],
     value_type: ValueType::String,
     default: Some("[]"),
 };
@@ -190,7 +190,7 @@ crate::declare_annotations! {
         schema: &METRIC_AGGREGATION_INTERVALS_SCHEMA,
         support_level: SupportLevel::Full,
         additional_yaml_paths: &[],
-        env_var_override: Some(&[]),
+        env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: Some(r#"[{"metric_prefix":"smoke.","interval_seconds":5}]"#),
