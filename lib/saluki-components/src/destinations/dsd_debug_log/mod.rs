@@ -306,7 +306,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_drops_metrics_until_stats_are_enabled() {
+    async fn run_starts_and_stops_logging_with_metrics_stats_setting() {
         let tempdir = tempdir().expect("temporary directory should be created");
         let log_file = tempdir.path().join("dogstatsd-stats.log");
         let cell = Arc::new(arc_swap::ArcSwap::from_pointee(SalukiConfiguration::default()));
@@ -376,14 +376,63 @@ mod tests {
         .await
         .expect("metrics should be logged after the runtime setting is enabled");
 
+        let mut updated = (*cell.load_full()).clone();
+        updated.domains.dogstatsd.debug_log.metrics_stats_enable = false;
+        cell.store(Arc::new(updated));
+        tick_tx.send_replace(());
+
+        let line_count_after_disable = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut previous_line_count = read_log_files(&log_file, config.log_file_max_rolls).lines().count();
+            let mut unchanged_samples = 0;
+
+            loop {
+                let mut events = EventsBuffer::default();
+                assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
+                events_tx
+                    .send(events)
+                    .await
+                    .expect("metric should be accepted while disabling");
+                while events_tx.capacity() != 4 {
+                    tokio::task::yield_now().await;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+
+                let current_line_count = read_log_files(&log_file, config.log_file_max_rolls).lines().count();
+                if current_line_count == previous_line_count {
+                    unchanged_samples += 1;
+                    if unchanged_samples == 5 {
+                        break current_line_count;
+                    }
+                } else {
+                    previous_line_count = current_line_count;
+                    unchanged_samples = 0;
+                }
+            }
+        })
+        .await
+        .expect("metrics should stop being logged after the runtime setting is disabled");
+
+        for _ in 0..3 {
+            let mut events = EventsBuffer::default();
+            assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
+            events_tx
+                .send(events)
+                .await
+                .expect("disabled metric should be accepted");
+        }
+        while events_tx.capacity() != 4 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let output = read_log_files(&log_file, config.log_file_max_rolls);
+        assert_eq!(output.lines().count(), line_count_after_disable);
+
         drop(events_tx);
         run_handle
             .await
             .expect("destination task should not panic")
             .expect("destination should stop cleanly");
-
-        let output = read_log_files(&log_file, config.log_file_max_rolls);
-        assert!(output.contains("Metric Name: custom.metric"));
     }
 
     #[tokio::test]
