@@ -606,58 +606,62 @@
 <a href=#606 id=606 data-nosnippet>606</a>    <span class="comment">// ── dogstatsd_mapper.rs ──────────────────────────────────────────────────
 <a href=#607 id=607 data-nosnippet>607</a>    </span>SalukiKey {
 <a href=#608 id=608 data-nosnippet>608</a>        yaml_path: <span class="string">"dogstatsd_mapper_string_interner_size"</span>,
-<a href=#609 id=609 data-nosnippet>609</a>        description: <span class="string">"Mapper string interner capacity"</span>,
-<a href=#610 id=610 data-nosnippet>610</a>        default: <span class="string">""</span>,
-<a href=#611 id=611 data-nosnippet>611</a>        documentation: <span class="prelude-val">None</span>,
-<a href=#612 id=612 data-nosnippet>612</a>        value_type: <span class="string">"ValueType::Integer"</span>,
-<a href=#613 id=613 data-nosnippet>613</a>        schema_default: <span class="prelude-val">None</span>,
-<a href=#614 id=614 data-nosnippet>614</a>        env_vars: <span class="kw-2">&amp;</span>[],
-<a href=#615 id=615 data-nosnippet>615</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#616 id=616 data-nosnippet>616</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#617 id=617 data-nosnippet>617</a>        used_by: <span class="kw-2">&amp;</span>[<span class="string">"DOGSTATSD_MAPPER_CONFIGURATION"</span>],
-<a href=#618 id=618 data-nosnippet>618</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#619 id=619 data-nosnippet>619</a>        pipeline_affinity: <span class="string">"PipelineAffinity::Pipelines(&amp;[Pipeline::DogStatsD])"</span>,
-<a href=#620 id=620 data-nosnippet>620</a>        filename: <span class="string">"dogstatsd_mapper.rs"</span>,
-<a href=#621 id=621 data-nosnippet>621</a>    },
-<a href=#622 id=622 data-nosnippet>622</a>    <span class="comment">// ── accounting.rs ────────────────────────────────────────────────────────
-<a href=#623 id=623 data-nosnippet>623</a>    </span>SalukiKey {
-<a href=#624 id=624 data-nosnippet>624</a>        yaml_path: <span class="string">"memory_limit"</span>,
-<a href=#625 id=625 data-nosnippet>625</a>        description: <span class="string">"Process memory limit"</span>,
-<a href=#626 id=626 data-nosnippet>626</a>        default: <span class="string">""</span>,
-<a href=#627 id=627 data-nosnippet>627</a>        documentation: <span class="prelude-val">Some</span>(
-<a href=#628 id=628 data-nosnippet>628</a>            <span class="string">"### `memory_limit` / `memory_slop_factor`
-<a href=#629 id=629 data-nosnippet>629</a>
-<a href=#630 id=630 data-nosnippet>630</a>\
-<a href=#631 id=631 data-nosnippet>631</a>             ADP uses an explicit process memory limit (`memory_limit`) rather than relying on \
-<a href=#632 id=632 data-nosnippet>632</a>             Go's garbage collector. The `memory_slop_factor` reserves a fraction of the limit \
-<a href=#633 id=633 data-nosnippet>633</a>             to account for allocations not tracked by ADP's internal accounting. When memory \
-<a href=#634 id=634 data-nosnippet>634</a>             usage approaches `memory_limit`, ADP's global limiter begins exerting backpressure \
-<a href=#635 id=635 data-nosnippet>635</a>             (see `enable_global_limiter`)."</span>,
-<a href=#636 id=636 data-nosnippet>636</a>        ),
-<a href=#637 id=637 data-nosnippet>637</a>        value_type: <span class="string">"ValueType::String"</span>,
-<a href=#638 id=638 data-nosnippet>638</a>        schema_default: <span class="prelude-val">None</span>,
-<a href=#639 id=639 data-nosnippet>639</a>        env_vars: <span class="kw-2">&amp;</span>[],
-<a href=#640 id=640 data-nosnippet>640</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#641 id=641 data-nosnippet>641</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#642 id=642 data-nosnippet>642</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#643 id=643 data-nosnippet>643</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#644 id=644 data-nosnippet>644</a>        pipeline_affinity: <span class="string">"PipelineAffinity::CrossCutting"</span>,
-<a href=#645 id=645 data-nosnippet>645</a>        filename: <span class="string">"accounting.rs"</span>,
-<a href=#646 id=646 data-nosnippet>646</a>    },
-<a href=#647 id=647 data-nosnippet>647</a>    SalukiKey {
-<a href=#648 id=648 data-nosnippet>648</a>        yaml_path: <span class="string">"memory_slop_factor"</span>,
-<a href=#649 id=649 data-nosnippet>649</a>        description: <span class="string">"Memory accounting slop fraction"</span>,
-<a href=#650 id=650 data-nosnippet>650</a>        default: <span class="string">"0.25"</span>,
-<a href=#651 id=651 data-nosnippet>651</a>        documentation: <span class="prelude-val">Some</span>(<span class="string">"See `memory_limit` above."</span>),
-<a href=#652 id=652 data-nosnippet>652</a>        value_type: <span class="string">"ValueType::Float"</span>,
-<a href=#653 id=653 data-nosnippet>653</a>        schema_default: <span class="prelude-val">Some</span>(<span class="string">"0.25"</span>),
-<a href=#654 id=654 data-nosnippet>654</a>        env_vars: <span class="kw-2">&amp;</span>[],
-<a href=#655 id=655 data-nosnippet>655</a>        env_var_override: <span class="prelude-val">None</span>,
-<a href=#656 id=656 data-nosnippet>656</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#657 id=657 data-nosnippet>657</a>        used_by: <span class="kw-2">&amp;</span>[],
-<a href=#658 id=658 data-nosnippet>658</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#659 id=659 data-nosnippet>659</a>        pipeline_affinity: <span class="string">"PipelineAffinity::CrossCutting"</span>,
-<a href=#660 id=660 data-nosnippet>660</a>        filename: <span class="string">"accounting.rs"</span>,
-<a href=#661 id=661 data-nosnippet>661</a>    },
-<a href=#662 id=662 data-nosnippet>662</a>];
+<a href=#609 id=609 data-nosnippet>609</a>        description: <span class="string">"Mapper string interner byte capacity"</span>,
+<a href=#610 id=610 data-nosnippet>610</a>        default: <span class="string">"64KiB"</span>,
+<a href=#611 id=611 data-nosnippet>611</a>        documentation: <span class="prelude-val">Some</span>(
+<a href=#612 id=612 data-nosnippet>612</a>            <span class="string">"Controls the pre-allocated byte capacity for interning mapped metric names and tags. The default is \
+<a href=#613 id=613 data-nosnippet>613</a>             `64KiB`. Set this to a nonzero byte count; you can use a bare number of bytes or a human-readable \
+<a href=#614 id=614 data-nosnippet>614</a>             byte-size string such as `64KiB`. Larger values increase memory usage."</span>,
+<a href=#615 id=615 data-nosnippet>615</a>        ),
+<a href=#616 id=616 data-nosnippet>616</a>        value_type: <span class="string">"ValueType::Integer"</span>,
+<a href=#617 id=617 data-nosnippet>617</a>        schema_default: <span class="prelude-val">None</span>,
+<a href=#618 id=618 data-nosnippet>618</a>        env_vars: <span class="kw-2">&amp;</span>[],
+<a href=#619 id=619 data-nosnippet>619</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#620 id=620 data-nosnippet>620</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#621 id=621 data-nosnippet>621</a>        used_by: <span class="kw-2">&amp;</span>[<span class="string">"TYPED_CONFIG_SYSTEM"</span>],
+<a href=#622 id=622 data-nosnippet>622</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#623 id=623 data-nosnippet>623</a>        pipeline_affinity: <span class="string">"PipelineAffinity::Pipelines(&amp;[Pipeline::DogStatsD])"</span>,
+<a href=#624 id=624 data-nosnippet>624</a>        filename: <span class="string">"dogstatsd_mapper.rs"</span>,
+<a href=#625 id=625 data-nosnippet>625</a>    },
+<a href=#626 id=626 data-nosnippet>626</a>    <span class="comment">// ── accounting.rs ────────────────────────────────────────────────────────
+<a href=#627 id=627 data-nosnippet>627</a>    </span>SalukiKey {
+<a href=#628 id=628 data-nosnippet>628</a>        yaml_path: <span class="string">"memory_limit"</span>,
+<a href=#629 id=629 data-nosnippet>629</a>        description: <span class="string">"Process memory limit"</span>,
+<a href=#630 id=630 data-nosnippet>630</a>        default: <span class="string">""</span>,
+<a href=#631 id=631 data-nosnippet>631</a>        documentation: <span class="prelude-val">Some</span>(
+<a href=#632 id=632 data-nosnippet>632</a>            <span class="string">"### `memory_limit` / `memory_slop_factor`
+<a href=#633 id=633 data-nosnippet>633</a>
+<a href=#634 id=634 data-nosnippet>634</a>\
+<a href=#635 id=635 data-nosnippet>635</a>             ADP uses an explicit process memory limit (`memory_limit`) rather than relying on \
+<a href=#636 id=636 data-nosnippet>636</a>             Go's garbage collector. The `memory_slop_factor` reserves a fraction of the limit \
+<a href=#637 id=637 data-nosnippet>637</a>             to account for allocations not tracked by ADP's internal accounting. When memory \
+<a href=#638 id=638 data-nosnippet>638</a>             usage approaches `memory_limit`, ADP's global limiter begins exerting backpressure \
+<a href=#639 id=639 data-nosnippet>639</a>             (see `enable_global_limiter`)."</span>,
+<a href=#640 id=640 data-nosnippet>640</a>        ),
+<a href=#641 id=641 data-nosnippet>641</a>        value_type: <span class="string">"ValueType::String"</span>,
+<a href=#642 id=642 data-nosnippet>642</a>        schema_default: <span class="prelude-val">None</span>,
+<a href=#643 id=643 data-nosnippet>643</a>        env_vars: <span class="kw-2">&amp;</span>[],
+<a href=#644 id=644 data-nosnippet>644</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#645 id=645 data-nosnippet>645</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#646 id=646 data-nosnippet>646</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#647 id=647 data-nosnippet>647</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#648 id=648 data-nosnippet>648</a>        pipeline_affinity: <span class="string">"PipelineAffinity::CrossCutting"</span>,
+<a href=#649 id=649 data-nosnippet>649</a>        filename: <span class="string">"accounting.rs"</span>,
+<a href=#650 id=650 data-nosnippet>650</a>    },
+<a href=#651 id=651 data-nosnippet>651</a>    SalukiKey {
+<a href=#652 id=652 data-nosnippet>652</a>        yaml_path: <span class="string">"memory_slop_factor"</span>,
+<a href=#653 id=653 data-nosnippet>653</a>        description: <span class="string">"Memory accounting slop fraction"</span>,
+<a href=#654 id=654 data-nosnippet>654</a>        default: <span class="string">"0.25"</span>,
+<a href=#655 id=655 data-nosnippet>655</a>        documentation: <span class="prelude-val">Some</span>(<span class="string">"See `memory_limit` above."</span>),
+<a href=#656 id=656 data-nosnippet>656</a>        value_type: <span class="string">"ValueType::Float"</span>,
+<a href=#657 id=657 data-nosnippet>657</a>        schema_default: <span class="prelude-val">Some</span>(<span class="string">"0.25"</span>),
+<a href=#658 id=658 data-nosnippet>658</a>        env_vars: <span class="kw-2">&amp;</span>[],
+<a href=#659 id=659 data-nosnippet>659</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#660 id=660 data-nosnippet>660</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#661 id=661 data-nosnippet>661</a>        used_by: <span class="kw-2">&amp;</span>[],
+<a href=#662 id=662 data-nosnippet>662</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#663 id=663 data-nosnippet>663</a>        pipeline_affinity: <span class="string">"PipelineAffinity::CrossCutting"</span>,
+<a href=#664 id=664 data-nosnippet>664</a>        filename: <span class="string">"accounting.rs"</span>,
+<a href=#665 id=665 data-nosnippet>665</a>    },
+<a href=#666 id=666 data-nosnippet>666</a>];
 </code></pre></div></section></main></body></html>
