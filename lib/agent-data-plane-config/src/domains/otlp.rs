@@ -298,19 +298,22 @@ pub const DEFAULT_GRPC_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct KeepaliveServerParameters {
     /// Maximum time a connection may exist before the server sends GOAWAY. A zero duration means no
-    /// limit.
+    /// limit. Lower this to force periodic connection rotation in long-lived deployments.
     pub max_connection_age: Duration,
 
     /// Grace period after `max_connection_age` before the connection is forcibly closed. A zero
-    /// duration means no limit.
+    /// duration means no limit. Increase this to give in-flight RPCs more time to finish during
+    /// age-based shutdown.
     pub max_connection_age_grace: Duration,
 
     /// Idle time before the server sends a keepalive PING. A zero duration is resolved by the
-    /// translator to the default of 2 hours.
+    /// translator to the default of 2 hours. Lower this to detect dead connections faster at the
+    /// cost of more frequent PING traffic.
     pub time: Duration,
 
     /// Time to wait for a PONG after a keepalive PING before closing the connection. A zero duration
-    /// is resolved by the translator to the default of 20 seconds.
+    /// is resolved by the translator to the default of 20 seconds. Increase this on networks with
+    /// high latency or intermittent delays.
     pub timeout: Duration,
 }
 
