@@ -1,19 +1,15 @@
-//! Serde deserialization for string-list schema fields (`type: array, items: string`).
+//! Serde deserialization for list schema fields with multiple source shapes.
 //!
-//! A string list reaches the configuration system in one of two shapes. A config file or the
-//! remote Agent stream carries a real sequence, while an environment variable carries one
-//! space-separated string (for example, `DD_DOGSTATSD_TAGS="env:prod team:core"`). A single field
-//! must accept both forms.
-//!
-//! Map values containing string lists have a similar compatibility shape: a single value can arrive
-//! as a scalar string, while multiple values arrive as a sequence. Deserializing here keeps those
-//! differences at the boundary, while downstream consumers always receive a `Vec<String>`.
+//! String lists can arrive as sequences or space-separated environment strings. Map values
+//! containing string lists can likewise arrive as scalars or sequences. Free-form object arrays can
+//! arrive as sequences or JSON-encoded strings. These adapters normalize each form at the boundary.
 
 use std::collections::HashMap;
 use std::fmt;
 
 use serde::de::{self, Deserializer, SeqAccess, Visitor};
 use serde::Deserialize;
+use serde_json::Value;
 
 /// Deserialize a `Vec<String>` from either a sequence or a space-separated string.
 ///
@@ -46,6 +42,24 @@ where
     }
 
     deserializer.deserialize_any(SpaceSeparatedOrSeq)
+}
+
+/// Deserialize a free-form JSON array from either a sequence or a JSON-encoded string.
+pub(crate) fn deserialize_json_array_or_string<'de, D>(deserializer: D) -> Result<Vec<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum JsonArrayOrString {
+        Array(Vec<Value>),
+        String(String),
+    }
+
+    match JsonArrayOrString::deserialize(deserializer)? {
+        JsonArrayOrString::Array(values) => Ok(values),
+        JsonArrayOrString::String(value) => serde_json::from_str(&value).map_err(de::Error::custom),
+    }
 }
 
 /// Deserialize string-list map values from either scalar strings or sequences.
@@ -139,5 +153,25 @@ mod tests {
     #[test]
     fn string_map_rejects_non_string_values() {
         assert!(serde_json::from_str::<MapHolder>(r#"{"map":{"endpoint":5}}"#).is_err());
+    }
+
+    #[derive(serde::Deserialize)]
+    struct JsonArrayHolder {
+        #[serde(deserialize_with = "deserialize_json_array_or_string")]
+        values: Vec<Value>,
+    }
+
+    #[test]
+    fn json_array_accepts_a_sequence_or_encoded_string() {
+        let sequence: JsonArrayHolder = serde_json::from_str(r#"{"values":[{"name":"one"}]}"#).unwrap();
+        let encoded: JsonArrayHolder = serde_json::from_str(r#"{"values":"[{\"name\":\"one\"}]"}"#).unwrap();
+
+        assert_eq!(sequence.values, encoded.values);
+        assert_eq!(sequence.values, [serde_json::json!({ "name": "one" })]);
+    }
+
+    #[test]
+    fn json_array_rejects_a_non_array_encoded_string() {
+        assert!(serde_json::from_str::<JsonArrayHolder>(r#"{"values":"{\"name\":\"one\"}"}"#).is_err());
     }
 }

@@ -32,8 +32,9 @@ use saluki_components::{
     transforms::{
         aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
         ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
-        DogStatsDMapperConfiguration, HistogramConfiguration, HostEnrichmentConfiguration,
-        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
+        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
+        TraceSamplerConfiguration,
     },
 };
 use saluki_config::GenericConfiguration;
@@ -774,7 +775,27 @@ async fn add_dsd_pipeline_to_blueprint(
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
     let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
-    let dsd_mapper_config = DogStatsDMapperConfiguration::from_configuration(config)?;
+    let mapper = &typed.domains.dogstatsd.mapper;
+    let mapper_profiles = mapper
+        .profiles
+        .iter()
+        .map(|profile| DogStatsDMapperProfile {
+            name: profile.name.clone(),
+            prefix: profile.prefix.clone(),
+            mappings: profile
+                .mappings
+                .iter()
+                .map(|mapping| DogStatsDMetricMapping {
+                    metric_match: mapping.metric_match.clone(),
+                    match_type: mapping.match_type.clone(),
+                    name: mapping.name.clone(),
+                    tags: mapping.tags.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    let dsd_mapper_config =
+        DogStatsDMapperConfiguration::new(mapper.string_interner_size_bytes, mapper.cache_size, mapper_profiles);
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
     let dogstatsd_config = config_system.live(|config| &config.domains.dogstatsd);
@@ -811,11 +832,26 @@ async fn add_dsd_pipeline_to_blueprint(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
-    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
-        config,
-        PlatformSettings::get_default_dogstatsd_log_file_path(),
-    )
-    .error_context("Failed to configure DogStatsD debug log destination.")?;
+
+    // Resolve the platform default log path when unset.
+    let debug_log = &typed.domains.dogstatsd.debug_log;
+    let debug_log_file = debug_log
+        .log_file
+        .clone()
+        .unwrap_or_else(PlatformSettings::get_default_dogstatsd_log_file_path);
+    if debug_log_file.to_str().is_none() {
+        return Err(generic_error!(
+            "dogstatsd_log_file must be valid UTF-8, got '{}'",
+            debug_log_file.display()
+        ));
+    }
+
+    let dsd_debug_log_config = DogStatsDDebugLogConfiguration {
+        metrics_stats_enabled: config_system.live(|config| &config.domains.dogstatsd.debug_log.metrics_stats_enable),
+        log_file: debug_log_file,
+        log_file_max_size: debug_log.log_file_max_size,
+        log_file_max_rolls: debug_log.log_file_max_rolls,
+    };
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     let stats_api_handler = dsd_stats_config.api_handler();
@@ -858,7 +894,7 @@ async fn add_dsd_pipeline_to_blueprint(
         // Post-aggregation client telemetry for RAR/COAT.
         .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
 
-    if dsd_debug_log_config.enabled() {
+    if debug_log.logging_enabled {
         blueprint
             // DogStatsD debug log.
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
@@ -969,7 +1005,12 @@ fn write_sizing_guide(bounds: ComponentBounds) -> Result<(), GenericError> {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroU64, path::Path, sync::Mutex, time::Duration};
+    use std::{
+        num::{NonZeroU64, NonZeroUsize},
+        path::Path,
+        sync::Mutex,
+        time::Duration,
+    };
 
     use agent_data_plane_config::{
         domains::dogstatsd::{
@@ -986,7 +1027,7 @@ mod tests {
     use saluki_components::transforms::{
         aggregate_context_snapshot_channel, aggregate_context_snapshot_channel_for_test, AggregateConfiguration,
         AggregateContextSnapshotEntry, AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
-        HistogramConfiguration,
+        DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
     };
     use saluki_config::{config_from, GenericConfiguration};
     use saluki_context::Context;
@@ -1023,15 +1064,6 @@ mod tests {
     async fn retained_context_identity_follows_dogstatsd_post_processing() {
         tokio::time::timeout(Duration::from_secs(5), async {
             let config = config_from(json!({
-                "dogstatsd_mapper_profiles": [{
-                    "name": "retained-context-test",
-                    "prefix": "raw.requests.",
-                    "mappings": [{
-                        "match": "raw.requests.*",
-                        "name": "mapped.requests",
-                        "tags": { "route": "$1" }
-                    }]
-                }],
                 "statsd_metric_namespace": "tenant",
                 "statsd_metric_namespace_blocklist": [],
                 "metric_filterlist": ["tenant.raw.blocked"],
@@ -1039,8 +1071,20 @@ mod tests {
             }))
             .await;
 
-            let mapper =
-                DogStatsDMapperConfiguration::from_configuration(&config).expect("mapper configuration should parse");
+            let mapper = DogStatsDMapperConfiguration::new(
+                NonZeroUsize::new(64 * 1024).expect("not zero"),
+                1_000,
+                vec![DogStatsDMapperProfile {
+                    name: "retained-context-test".to_string(),
+                    prefix: "raw.requests.".to_string(),
+                    mappings: vec![DogStatsDMetricMapping {
+                        metric_match: "raw.requests.*".to_string(),
+                        match_type: String::new(),
+                        name: "mapped.requests".to_string(),
+                        tags: [("route".to_string(), "$1".to_string())].into(),
+                    }],
+                }],
+            );
             let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
             let prefix_filter = DogStatsDPrefixFilterConfiguration::from_configuration(&config)
                 .expect("prefix filter configuration should parse");
