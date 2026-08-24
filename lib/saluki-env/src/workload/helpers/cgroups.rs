@@ -539,7 +539,8 @@ fn read_lines(path: &Path) -> io::Result<Vec<String>> {
 ///
 /// # Errors
 ///
-/// If the given path itself can't be queried, an error is returned. Failures below the given path are never fatal.
+/// If the given path itself can't be queried or listed, an error is returned: nothing was seen, so there's no result
+/// worth reporting. Failures below the given path are never fatal.
 fn visit_subdirectories<P, F>(path: P, mut visit: F) -> Result<TraversalResult, GenericError>
 where
     P: AsRef<Path>,
@@ -565,6 +566,17 @@ where
         let dir_reader = match fs::read_dir(&path) {
             Ok(dir_reader) => dir_reader,
             Err(e) => {
+                // Failing on the root is fatal, unlike failing anywhere below it. Every other path costs us one
+                // subtree, but if we can't list the root then we haven't seen anything at all -- and an empty result
+                // that claims to be complete tells callers every cgroup they know about has gone away.
+                //
+                // Note that this is reachable even though we successfully stat'd the root above: listing a directory
+                // needs read permission, while stat'ing it only needs to traverse its parent.
+                if path.as_path() == root {
+                    return Err(e)
+                        .with_error_context(|| format!("Failed to read traversal root ({}).", root.display()));
+                }
+
                 traversal.record_skip(&e, &path);
                 continue;
             }
@@ -1113,6 +1125,30 @@ mod tests {
     }
 
     #[test]
+    fn visit_subdirectories_errors_when_root_is_unreadable() {
+        // Nest the traversal root inside the temporary directory so its mode can be restored for cleanup.
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("root");
+        fs::create_dir_all(root.join("child")).unwrap();
+
+        if !make_unreadable(&root) {
+            return;
+        }
+
+        // Stat'ing the root still succeeds -- that only needs to traverse its parent -- so this exercises the
+        // `read_dir` failure specifically, which is the path that used to be recorded as an ordinary skip.
+        assert!(fs::metadata(&root).is_ok());
+
+        let result = visit_subdirectories(&root, |_| None);
+
+        make_readable(&root);
+
+        // An unreadable root has to be an error rather than an empty-but-complete traversal: we saw nothing, so we
+        // can't let a caller conclude that everything it knew about has gone away.
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn visit_subdirectories_ignores_non_directory_root() {
         let root = tempdir().unwrap();
         let file_path = root.path().join("file");
@@ -1265,6 +1301,27 @@ mod tests {
 
         assert!(!traversal.is_complete());
         assert_eq!(traversal.skipped, 0);
+        assert!(traversal.cgroups.is_empty());
+    }
+
+    #[test]
+    fn get_child_cgroups_reports_incomplete_traversal_when_root_is_unreadable() {
+        let parent = tempdir().unwrap();
+        let root = parent.path().join("root");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(root.join(format!("cri-containerd-{}.scope", CONTAINER_ID_A))).unwrap();
+
+        if !make_unreadable(&root) {
+            return;
+        }
+
+        let traversal = reader_rooted_at(&root).get_child_cgroups();
+
+        make_readable(&root);
+
+        // The container cgroup underneath is real but invisible to us, so reporting this as complete would have the
+        // collector reap every alias it holds.
+        assert!(!traversal.is_complete());
         assert!(traversal.cgroups.is_empty());
     }
 }
