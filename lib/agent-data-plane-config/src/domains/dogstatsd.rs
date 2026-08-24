@@ -526,9 +526,9 @@ pub struct DebugLog {
 
     /// Path of the DogStatsD metric debug log.
     ///
-    /// Defaults to an empty path, which selects the platform-specific Agent log path at startup.
+    /// Defaults to `None`, which selects the platform-specific Agent log path at startup.
     /// Set a path to write the diagnostic log elsewhere.
-    pub log_file: PathBuf,
+    pub log_file: Option<PathBuf>,
 
     /// Number of rotated debug log files retained.
     ///

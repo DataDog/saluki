@@ -533,7 +533,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_log_file(&mut self, value: String) {
-        self.config.domains.dogstatsd.debug_log.log_file = PathBuf::from(value);
+        if !value.is_empty() {
+            self.config.domains.dogstatsd.debug_log.log_file = Some(PathBuf::from(value));
+        }
     }
 
     fn consume_dogstatsd_log_file_max_rolls(&mut self, value: i64) {
@@ -1431,7 +1433,7 @@ mod tests {
         assert!(errors.is_none());
         let debug_log = &config.domains.dogstatsd.debug_log;
         assert!(debug_log.logging_enabled);
-        assert!(debug_log.log_file.as_os_str().is_empty());
+        assert!(debug_log.log_file.is_none());
         assert_eq!(debug_log.log_file_max_rolls, 3);
         assert_eq!(debug_log.log_file_max_size, 10_000_000);
         assert!(!debug_log.metrics_stats_enable);
@@ -1445,7 +1447,7 @@ mod tests {
         }));
         assert!(errors.is_none());
         let debug_log = &config.domains.dogstatsd.debug_log;
-        assert_eq!(debug_log.log_file, std::path::PathBuf::from("/tmp/dsd-debug.log"));
+        assert_eq!(debug_log.log_file, Some(std::path::PathBuf::from("/tmp/dsd-debug.log")));
         assert_eq!(debug_log.log_file_max_rolls, 0);
         assert_eq!(debug_log.log_file_max_size, 42_000_000);
         assert!(!debug_log.logging_enabled);
