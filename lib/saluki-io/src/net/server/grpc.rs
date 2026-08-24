@@ -331,6 +331,7 @@ trait AcceptConnection<S> {
     fn accept(&self) -> impl std::future::Future<Output = std::io::Result<S>> + Send;
 }
 
+#[allow(clippy::manual_async_fn)]
 impl AcceptConnection<tokio::net::TcpStream> for tokio::net::TcpListener {
     fn accept(&self) -> impl std::future::Future<Output = std::io::Result<tokio::net::TcpStream>> + Send {
         async { self.accept().await.map(|(stream, _)| stream) }
@@ -338,6 +339,7 @@ impl AcceptConnection<tokio::net::TcpStream> for tokio::net::TcpListener {
 }
 
 #[cfg(unix)]
+#[allow(clippy::manual_async_fn)]
 impl AcceptConnection<tokio::net::UnixStream> for tokio::net::UnixListener {
     fn accept(&self) -> impl std::future::Future<Output = std::io::Result<tokio::net::UnixStream>> + Send {
         async { self.accept().await.map(|(stream, _)| stream) }
