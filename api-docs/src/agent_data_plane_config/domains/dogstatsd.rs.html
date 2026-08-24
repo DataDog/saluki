@@ -54,7 +54,7 @@
 <a href=#54 id=54 data-nosnippet>54</a>    <span class="doccomment">/// Telemetry emitted by the DogStatsD source.
 <a href=#55 id=55 data-nosnippet>55</a>    </span><span class="kw">pub </span>telemetry: Telemetry,
 <a href=#56 id=56 data-nosnippet>56</a>
-<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// Debug logging for the DogStatsD source.
+<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// Debug-log and verbose-log settings for the DogStatsD source.
 <a href=#58 id=58 data-nosnippet>58</a>    </span><span class="kw">pub </span>debug_log: DebugLog,
 <a href=#59 id=59 data-nosnippet>59</a>}
 <a href=#60 id=60 data-nosnippet>60</a>
@@ -516,25 +516,39 @@
 <a href=#516 id=516 data-nosnippet>516</a>    </span>Exclude,
 <a href=#517 id=517 data-nosnippet>517</a>}
 <a href=#518 id=518 data-nosnippet>518</a>
-<a href=#519 id=519 data-nosnippet>519</a><span class="doccomment">/// DogStatsD debug logging (dynamic-capable).
+<a href=#519 id=519 data-nosnippet>519</a><span class="doccomment">/// DogStatsD debug-log and verbose-log settings.
 <a href=#520 id=520 data-nosnippet>520</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 <a href=#521 id=521 data-nosnippet>521</a></span><span class="kw">pub struct </span>DebugLog {
-<a href=#522 id=522 data-nosnippet>522</a>    <span class="doccomment">/// Whether DogStatsD debug logging is enabled.
-<a href=#523 id=523 data-nosnippet>523</a>    </span><span class="kw">pub </span>logging_enabled: bool,
-<a href=#524 id=524 data-nosnippet>524</a>
-<a href=#525 id=525 data-nosnippet>525</a>    <span class="doccomment">/// Path of the DogStatsD debug log file.
-<a href=#526 id=526 data-nosnippet>526</a>    </span><span class="kw">pub </span>log_file: PathBuf,
-<a href=#527 id=527 data-nosnippet>527</a>
-<a href=#528 id=528 data-nosnippet>528</a>    <span class="doccomment">/// Number of rotated debug log files retained.
-<a href=#529 id=529 data-nosnippet>529</a>    </span><span class="kw">pub </span>log_file_max_rolls: usize,
-<a href=#530 id=530 data-nosnippet>530</a>
-<a href=#531 id=531 data-nosnippet>531</a>    <span class="doccomment">/// Maximum size, in bytes, a debug log file reaches before it is rotated.
-<a href=#532 id=532 data-nosnippet>532</a>    </span><span class="kw">pub </span>log_file_max_size: u64,
-<a href=#533 id=533 data-nosnippet>533</a>
-<a href=#534 id=534 data-nosnippet>534</a>    <span class="doccomment">/// Whether per-metric processing statistics are collected.
-<a href=#535 id=535 data-nosnippet>535</a>    </span><span class="kw">pub </span>metrics_stats_enable: bool,
-<a href=#536 id=536 data-nosnippet>536</a>
-<a href=#537 id=537 data-nosnippet>537</a>    <span class="doccomment">/// Whether verbose per-packet log lines are suppressed.
-<a href=#538 id=538 data-nosnippet>538</a>    </span><span class="kw">pub </span>disable_verbose_logs: bool,
-<a href=#539 id=539 data-nosnippet>539</a>}
+<a href=#522 id=522 data-nosnippet>522</a>    <span class="doccomment">/// Whether the metric debug-log destination is added at startup.
+<a href=#523 id=523 data-nosnippet>523</a>    ///
+<a href=#524 id=524 data-nosnippet>524</a>    /// Defaults to `true`. Set this to `false` to remove the destination from the topology.
+<a href=#525 id=525 data-nosnippet>525</a>    </span><span class="kw">pub </span>logging_enabled: bool,
+<a href=#526 id=526 data-nosnippet>526</a>
+<a href=#527 id=527 data-nosnippet>527</a>    <span class="doccomment">/// Path of the DogStatsD metric debug log.
+<a href=#528 id=528 data-nosnippet>528</a>    ///
+<a href=#529 id=529 data-nosnippet>529</a>    /// Defaults to `None`, which selects the platform-specific Agent log path at startup.
+<a href=#530 id=530 data-nosnippet>530</a>    /// Set a path to write the diagnostic log elsewhere.
+<a href=#531 id=531 data-nosnippet>531</a>    </span><span class="kw">pub </span>log_file: <span class="prelude-ty">Option</span>&lt;PathBuf&gt;,
+<a href=#532 id=532 data-nosnippet>532</a>
+<a href=#533 id=533 data-nosnippet>533</a>    <span class="doccomment">/// Number of rotated debug log files retained.
+<a href=#534 id=534 data-nosnippet>534</a>    ///
+<a href=#535 id=535 data-nosnippet>535</a>    /// Defaults to `3`. The file writer retains one rotated file when this is `0`.
+<a href=#536 id=536 data-nosnippet>536</a>    </span><span class="kw">pub </span>log_file_max_rolls: usize,
+<a href=#537 id=537 data-nosnippet>537</a>
+<a href=#538 id=538 data-nosnippet>538</a>    <span class="doccomment">/// Maximum size, in bytes, of the active debug log file before rotation.
+<a href=#539 id=539 data-nosnippet>539</a>    ///
+<a href=#540 id=540 data-nosnippet>540</a>    /// Defaults to `10,000,000` bytes. A value of `0` is accepted as the rotation threshold.
+<a href=#541 id=541 data-nosnippet>541</a>    /// Set this based on the diagnostic data and disk space to retain.
+<a href=#542 id=542 data-nosnippet>542</a>    </span><span class="kw">pub </span>log_file_max_size: u64,
+<a href=#543 id=543 data-nosnippet>543</a>
+<a href=#544 id=544 data-nosnippet>544</a>    <span class="doccomment">/// Whether per-metric processing statistics are written to the debug log.
+<a href=#545 id=545 data-nosnippet>545</a>    ///
+<a href=#546 id=546 data-nosnippet>546</a>    /// Defaults to `false` and can change at runtime. Enable this when collecting metric-level diagnostics.
+<a href=#547 id=547 data-nosnippet>547</a>    </span><span class="kw">pub </span>metrics_stats_enable: bool,
+<a href=#548 id=548 data-nosnippet>548</a>
+<a href=#549 id=549 data-nosnippet>549</a>    <span class="doccomment">/// Whether per-packet parse errors are logged at debug rather than error level.
+<a href=#550 id=550 data-nosnippet>550</a>    ///
+<a href=#551 id=551 data-nosnippet>551</a>    /// Defaults to `false`. Enable this to reduce error-level log volume from malformed packets.
+<a href=#552 id=552 data-nosnippet>552</a>    </span><span class="kw">pub </span>disable_verbose_logs: bool,
+<a href=#553 id=553 data-nosnippet>553</a>}
 </code></pre></div></section></main></body></html>
