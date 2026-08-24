@@ -5,7 +5,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
-    components::{forwarders::*, ComponentContext},
+    components::{forwarders::*, BuildContext},
     data_model::payload::{PayloadMetadata, PayloadType},
     observability::ComponentMetricsExt as _,
 };
@@ -82,11 +82,11 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let forwarder = TransactionForwarder::from_config(
-            context,
+            context.component_context().clone(),
             self.forwarder_config.clone(),
             Some(self.configuration.clone()),
             get_dd_endpoint_name,

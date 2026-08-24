@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use ottl::{CallbackMap, EnumMap, OttlParser, Value};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
+    components::{transforms::*, BuildContext},
     data_model::event::trace::{Span, Trace},
     topology::EventsBuffer,
 };
@@ -40,7 +40,7 @@ impl SynchronousTransformBuilder for OttlFilterConfiguration {
     /// # Errors
     ///
     /// Returns an error if any OTTL span condition string fails to parse.
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let path_resolvers = span_context::span_filter_path_resolvers();
         let editors = CallbackMap::new();
         let converters = CallbackMap::new();
@@ -138,7 +138,7 @@ mod tests {
     use std::collections::HashMap;
 
     use saluki_core::{
-        components::{transforms::*, ComponentContext},
+        components::{transforms::*, BuildContext},
         data_model::event::{trace::AttributeValue, Event},
         topology::EventsBuffer,
     };
@@ -156,8 +156,8 @@ mod tests {
             .sum()
     }
 
-    fn test_component_context() -> ComponentContext {
-        ComponentContext::test_transform("ottl_filter")
+    fn test_component_context() -> BuildContext {
+        BuildContext::test_transform("ottl_filter")
     }
 
     fn test_config(value: serde_json::Value) -> OttlFilterConfiguration {

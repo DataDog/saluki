@@ -12,7 +12,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::trace::AttributeValue;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
-    components::{encoders::*, ComponentContext},
+    components::{encoders::*, BuildContext},
     data_model::{
         event::{trace::Trace, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -197,8 +197,8 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 

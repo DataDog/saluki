@@ -11,7 +11,7 @@ use datadog_protos::traces::{
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{encoders::*, ComponentContext},
+    components::{encoders::*, BuildContext},
     data_model::{
         event::{
             trace_stats::{ClientGroupedStats, ClientStatsBucket, ClientStatsPayload, TraceStats},
@@ -90,8 +90,8 @@ impl EncoderBuilder for DatadogApmStatsEncoderConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::gzip_default();
 

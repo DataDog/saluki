@@ -5,7 +5,7 @@ use saluki_common::iter::ReusableDeduplicator;
 use saluki_context::tags::Tag;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{encoders::*, ComponentContext},
+    components::{encoders::*, BuildContext},
     data_model::{
         event::{log::Log, Event, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -64,8 +64,8 @@ impl IncrementalEncoderBuilder for DatadogLogsConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Self::Output, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_level);
 

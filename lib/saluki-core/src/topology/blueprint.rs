@@ -18,11 +18,14 @@ use crate::{
     components::{
         decoders::DecoderBuilder, destinations::DestinationBuilder, encoders::EncoderBuilder,
         forwarders::ForwarderBuilder, relays::RelayBuilder, sources::SourceBuilder, transforms::TransformBuilder,
-        ComponentContext, ComponentType,
+        BuildContext, ComponentContext, ComponentType,
     },
     data_model::event::Event,
     health::HealthRegistry,
-    runtime::{state::DataspaceRegistry, InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
+    runtime::{
+        state::{DataspaceRegistry, ResourceRegistry},
+        InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
+    },
     support::SubsystemIdentifier,
     topology::{ids::AsComponentIds, topology_identifier, EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY},
 };
@@ -61,6 +64,7 @@ pub struct TopologyBlueprint {
     build_state: Mutex<Option<TopologyBuildState>>,
     health_registry: Option<HealthRegistry>,
     memory_limiter: Option<MemoryLimiter>,
+    resource_registry: Option<ResourceRegistry>,
 }
 
 /// The consumable build state of a [`TopologyBlueprint`].
@@ -113,6 +117,7 @@ impl TopologyBlueprint {
             build_state: Mutex::new(Some(build_state)),
             health_registry: None,
             memory_limiter: None,
+            resource_registry: None,
         }
     }
 
@@ -162,6 +167,18 @@ impl TopologyBlueprint {
     /// This must be set before the blueprint is added to a supervisor; initialization fails otherwise.
     pub fn with_memory_limiter(&mut self, memory_limiter: MemoryLimiter) -> &mut Self {
         self.memory_limiter = Some(memory_limiter);
+        self
+    }
+
+    /// Sets the resource registry used when the topology is built and spawned.
+    ///
+    /// Components acquire scarce resources, such as bound network sockets, from this registry rather than creating
+    /// them directly, so that the registry outlives them and can hand the same resource back when a component is
+    /// rebuilt.
+    ///
+    /// This must be set before the blueprint is added to a supervisor; initialization fails otherwise.
+    pub fn with_resource_registry(&mut self, resource_registry: ResourceRegistry) -> &mut Self {
+        self.resource_registry = Some(resource_registry);
         self
     }
 
@@ -657,7 +674,7 @@ impl TopologyBuildState {
     /// # Errors
     ///
     /// If any of the components couldn't be built, an error is returned.
-    async fn build(self, name: String) -> Result<BuiltTopology, GenericError> {
+    async fn build(self, name: String, resource_registry: &ResourceRegistry) -> Result<BuiltTopology, GenericError> {
         self.graph.validate().error_context("Failed to build topology graph.")?;
 
         let mut sources = HashMap::new();
@@ -667,7 +684,7 @@ impl TopologyBuildState {
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
             let source = builder
-                .build(component_context.clone())
+                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build source '{}'.", id))?;
@@ -682,7 +699,7 @@ impl TopologyBuildState {
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
             let relay = builder
-                .build(component_context.clone())
+                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build relay '{}'.", id))?;
@@ -697,7 +714,7 @@ impl TopologyBuildState {
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
             let decoder = builder
-                .build(component_context.clone())
+                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build decoder '{}'.", id))?;
@@ -712,7 +729,7 @@ impl TopologyBuildState {
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
             let transform = builder
-                .build(component_context.clone())
+                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build transform '{}'.", id))?;
@@ -727,7 +744,7 @@ impl TopologyBuildState {
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
             let destination = builder
-                .build(component_context.clone())
+                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build destination '{}'.", id))?;
@@ -742,7 +759,7 @@ impl TopologyBuildState {
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
             let encoder = builder
-                .build(component_context.clone())
+                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build encoder '{}'.", id))?;
@@ -757,7 +774,7 @@ impl TopologyBuildState {
                 .component_registry
                 .get_resource_group_token(&component_context.identity());
             let forwarder = builder
-                .build(component_context.clone())
+                .build(BuildContext::new(component_context.clone(), resource_registry.clone()))
                 .track_resources(allocation_token)
                 .await
                 .with_error_context(|| format!("Failed to build forwarder '{}'.", id))?;
@@ -817,6 +834,11 @@ impl Supervisable for TopologyBlueprint {
             .clone()
             .ok_or_else(|| generic_error!("Topology blueprint is missing its memory limiter."))?;
 
+        let resource_registry = self
+            .resource_registry
+            .clone()
+            .ok_or_else(|| generic_error!("Topology blueprint is missing its resource registry."))?;
+
         let dataspace = DataspaceRegistry::try_current()
             .ok_or_else(|| generic_error!("Topology must be initialized within a supervised process context."))?;
 
@@ -830,7 +852,7 @@ impl Supervisable for TopologyBlueprint {
         let environment_ready = build_state.environment_ready.take();
         let ready_signal = build_state.ready_signal.take();
         let shutdown_timeout = build_state.shutdown_timeout;
-        let built = build_state.build(self.name.clone()).await?;
+        let built = build_state.build(self.name.clone(), &resource_registry).await?;
 
         Ok(Box::pin(async move {
             pin!(shutdown);
@@ -895,8 +917,9 @@ mod tests {
 
     use super::{TopologyBlueprint, TopologyReady, WorkerPoolConfiguration};
     use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
+    use crate::components::BuildContext;
     use crate::data_model::event::Event;
-    use crate::runtime::Name;
+    use crate::runtime::{state::ResourceRegistry, Name};
     use crate::test_support::wait_until;
     use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
     use crate::topology::{EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY};
@@ -990,7 +1013,7 @@ mod tests {
             &self.outputs
         }
 
-        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
             Ok(Box::new(ControlSource {
                 started: Arc::clone(&self.started),
                 spawned_child: self.spawned_child.clone(),
@@ -1023,7 +1046,7 @@ mod tests {
             self.input_event_ty
         }
 
-        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
             Ok(Box::new(DrainingDestination))
         }
     }
@@ -1059,7 +1082,7 @@ mod tests {
             self.input_event_ty
         }
 
-        async fn build(&self, _: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+        async fn build(&self, _: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
             Ok(Box::new(StuckDestination {
                 started: Arc::clone(&self.started),
             }))
@@ -1099,7 +1122,8 @@ mod tests {
             .expect("should not fail to connect components");
         blueprint
             .with_health_registry(HealthRegistry::new())
-            .with_memory_limiter(MemoryLimiter::noop());
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
         (blueprint, source_started)
     }
 
@@ -1132,6 +1156,7 @@ mod tests {
         blueprint
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new())
             .with_shutdown_timeout(shutdown_timeout);
         (blueprint, destination_started)
     }
@@ -1364,7 +1389,8 @@ mod tests {
         let mut blueprint = connected_blueprint();
         blueprint
             .with_health_registry(HealthRegistry::new())
-            .with_memory_limiter(MemoryLimiter::noop());
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
 
         let result = run_blueprint_until_exit(
             blueprint,
@@ -1384,7 +1410,8 @@ mod tests {
         let mut blueprint = connected_blueprint();
         blueprint
             .with_health_registry(HealthRegistry::new())
-            .with_memory_limiter(MemoryLimiter::noop());
+            .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new());
 
         let result = run_blueprint_until_exit(blueprint, RestartStrategy::default()).await;
 
@@ -1412,6 +1439,7 @@ mod tests {
         blueprint
             .with_health_registry(HealthRegistry::new())
             .with_memory_limiter(MemoryLimiter::noop())
+            .with_resource_registry(ResourceRegistry::new())
             .with_environment_readiness(gate);
 
         let (tx, handle) = spawn_supervised_blueprint(blueprint);

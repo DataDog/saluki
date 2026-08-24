@@ -12,7 +12,7 @@ use saluki_common::{
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{encoders::*, ComponentContext},
+    components::{encoders::*, BuildContext},
     data_model::{
         event::{
             metric::{Metric, MetricOrigin, MetricValues},
@@ -380,8 +380,8 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let v3_serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
 
