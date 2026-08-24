@@ -54,7 +54,7 @@ pub struct Domain {
     /// Telemetry emitted by the DogStatsD source.
     pub telemetry: Telemetry,
 
-    /// Debug logging for the DogStatsD source.
+    /// Debug-log and verbose-log settings for the DogStatsD source.
     pub debug_log: DebugLog,
 }
 
@@ -516,24 +516,38 @@ pub enum FilterAction {
     Exclude,
 }
 
-/// DogStatsD debug logging (dynamic-capable).
+/// DogStatsD debug-log and verbose-log settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DebugLog {
-    /// Whether DogStatsD debug logging is enabled.
+    /// Whether the metric debug-log destination is added at startup.
+    ///
+    /// Defaults to `true`. Set this to `false` to remove the destination from the topology.
     pub logging_enabled: bool,
 
-    /// Path of the DogStatsD debug log file.
+    /// Path of the DogStatsD metric debug log.
+    ///
+    /// Defaults to an empty path, which selects the platform-specific Agent log path at startup.
+    /// Set a path to write the diagnostic log elsewhere.
     pub log_file: PathBuf,
 
     /// Number of rotated debug log files retained.
+    ///
+    /// Defaults to `3`. The file writer retains one rotated file when this is `0`.
     pub log_file_max_rolls: usize,
 
-    /// Maximum size, in bytes, a debug log file reaches before it is rotated.
+    /// Maximum size, in bytes, of the active debug log file before rotation.
+    ///
+    /// Defaults to `10,000,000` bytes. A value of `0` is accepted as the rotation threshold.
+    /// Set this based on the diagnostic data and disk space to retain.
     pub log_file_max_size: u64,
 
-    /// Whether per-metric processing statistics are collected.
+    /// Whether per-metric processing statistics are written to the debug log.
+    ///
+    /// Defaults to `false` and can change at runtime. Enable this when collecting metric-level diagnostics.
     pub metrics_stats_enable: bool,
 
-    /// Whether verbose per-packet log lines are suppressed.
+    /// Whether per-packet parse errors are logged at debug rather than error level.
+    ///
+    /// Defaults to `false`. Enable this to reduce error-level log volume from malformed packets.
     pub disable_verbose_logs: bool,
 }

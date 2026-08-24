@@ -856,7 +856,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD dedicated log file path"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -865,7 +865,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD log file max roll count"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -875,7 +875,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD log file max size"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"42MB"'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -906,7 +906,7 @@ inventory:
       decoded metric summaries after DogStatsD parsing. The capture settings record raw
       DogStatsD traffic for packet-level investigation.
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1050,7 +1050,7 @@ inventory:
     documentation: "See `dogstatsd_stats_enable`"
     issue: "#1352"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
