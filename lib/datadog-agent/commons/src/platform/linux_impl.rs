@@ -26,16 +26,18 @@ use std::{
 
 /// Default configuration directory for the Datadog Agent.
 ///
-/// This is the FHS layout, used when the common root layout is not selected.
-pub const DATADOG_AGENT_CONF_DIR: &str = "/etc/datadog-agent";
+/// This is the FHS layout, used when the common root layout is not selected. It is deliberately private: callers must
+/// go through [`get_config_dir_path`] so that the common root is never circumvented.
+const DATADOG_AGENT_CONF_DIR: &str = "/etc/datadog-agent";
 
 /// Default log directory for the Datadog Agent.
 ///
-/// This is the FHS layout, used when the common root layout is not selected.
-pub const DATADOG_AGENT_LOG_DIR: &str = "/var/log/datadog";
+/// This is the FHS layout, used when the common root layout is not selected. It is deliberately private: callers must
+/// go through [`get_log_dir_path`] so that the common root is never circumvented.
+const DATADOG_AGENT_LOG_DIR: &str = "/var/log/datadog";
 
 /// Default local syslog URI for the Datadog Agent.
-pub const DATADOG_AGENT_DEFAULT_SYSLOG_URI: &str = "unixgram:///dev/log";
+const DATADOG_AGENT_DEFAULT_SYSLOG_URI: &str = "unixgram:///dev/log";
 
 /// Environment variable that selects the common root layout.
 const COMMON_ROOT_ENV_VAR: &str = "DD_COMMON_ROOT";
@@ -62,6 +64,11 @@ pub fn get_config_dir_path() -> &'static Path {
 /// Returns the path to the default Datadog Agent log directory.
 pub fn get_log_dir_path() -> &'static Path {
     LOG_DIR.get_or_init(|| log_dir_for(common_root().as_deref())).as_path()
+}
+
+/// Returns the default local syslog URI for the Datadog Agent.
+pub const fn get_default_syslog_uri() -> &'static str {
+    DATADOG_AGENT_DEFAULT_SYSLOG_URI
 }
 
 /// Reads the configured common root from the environment.
