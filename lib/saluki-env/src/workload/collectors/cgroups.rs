@@ -167,15 +167,17 @@ impl SynchronousCgroupsManager {
             // Traverse the cgroups hierarchy and collect all child cgroups that we can find that are attached to a
             // container and have a controller inode for us to attach an alias to.
             let traversal = self.reader.get_child_cgroups();
-            let child_cgroups_len = traversal.cgroups.len();
+            let traversal_complete = traversal.is_complete();
+            let skipped = traversal.skipped();
 
-            if traversal.skipped > 0 {
-                self.telemetry
-                    .traversal_paths_skipped_total()
-                    .increment(traversal.skipped as u64);
+            if skipped > 0 {
+                self.telemetry.traversal_paths_skipped_total().increment(skipped as u64);
             }
 
-            for child_cgroup in traversal.cgroups {
+            let child_cgroups = traversal.into_cgroups();
+            let child_cgroups_len = child_cgroups.len();
+
+            for child_cgroup in child_cgroups {
                 if let Some(cgroup_inode) = child_cgroup.inode() {
                     traversed_cgroups.insert(cgroup_inode);
 
@@ -207,7 +209,7 @@ impl SynchronousCgroupsManager {
             // existed. When the traversal reports otherwise, a cgroup we didn't see may well still be live, and
             // dropping its alias would break origin enrichment for it. Holding on to a stale alias for another poll
             // interval is the cheaper mistake.
-            if traversal.complete {
+            if traversal_complete {
                 self.telemetry.traversals_complete_total().increment(1);
 
                 for cgroup_inode in self.active_cgroups.keys() {
@@ -219,7 +221,7 @@ impl SynchronousCgroupsManager {
             } else {
                 self.telemetry.traversals_incomplete_total().increment(1);
                 debug!(
-                    skipped = traversal.skipped,
+                    skipped,
                     "Cgroups hierarchy traversal was incomplete. Skipping removal of cgroups that were not seen."
                 );
             }
