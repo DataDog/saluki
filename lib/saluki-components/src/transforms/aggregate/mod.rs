@@ -1119,7 +1119,7 @@ impl AggregationState {
                         "aggregate counter expiry add does not overflow",
                         { "last_seen": am.last_seen, "counter_expire_secs": counter_expire_secs }
                     );
-                    counter_expire_secs != 0 && am.last_seen.saturating_add(counter_expire_secs) < current_time
+                    counter_expire_secs == 0 || am.last_seen.saturating_add(counter_expire_secs) < current_time
                 }
                 _ => true,
             };
@@ -2430,6 +2430,23 @@ mod tests {
         let flushed_metrics = get_flushed_metrics(flush_ts(5), &mut state).await;
         assert_eq!(flushed_metrics.len(), 1);
         assert_flushed_scalar_metric!(&input_metrics[2], &flushed_metrics[0], [bucket_ts(5) => 3.0]);
+    }
+
+    #[tokio::test]
+    async fn disabled_counter_keep_alive_releases_contexts_after_flush() {
+        let mut state = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(insert_ts(1), Metric::counter("counter", 1.0)));
+        let flushed = get_flushed_metrics(flush_ts(1), &mut state).await;
+
+        assert_eq!(flushed.len(), 1);
+        assert!(state.is_empty());
     }
 
     #[tokio::test]
