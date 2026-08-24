@@ -5,7 +5,9 @@
 //! Saluki-only key's environment name is its canonical path in upper case, with the segments joined
 //! by underscores and a `DD_` prefix, so the nested slot and its environment form stay in lockstep with
 //! the struct by construction. The set of canonical paths is read straight off `SalukiOnly` (see the
-//! discovery section below), so it cannot drift from the fields the deserializer actually reads.
+//! discovery section below), so it cannot drift from the fields the deserializer actually reads. One
+//! legacy key that is now a Datadog-schema alias is applied explicitly to preserve its historical
+//! environment spelling.
 
 use std::collections::HashSet;
 use std::sync::OnceLock;
@@ -50,6 +52,17 @@ pub(crate) fn apply_env(base: &mut Value, overwrite: bool) -> Result<(), String>
         let segments: Vec<&str> = path.iter().map(String::as_str).collect();
         apply_env_at_path(base, &[name.as_str()], &segments, *decode, overwrite)?;
     }
+
+    // `counter_expiry_seconds` predates the typed boundary. It is now a serde alias on the
+    // Datadog-schema `dogstatsd_expiry_seconds` field, so it is intentionally absent from
+    // `SalukiOnly` and cannot be discovered above.
+    apply_env_at_path(
+        base,
+        &["DD_COUNTER_EXPIRY_SECONDS"],
+        &["counter_expiry_seconds"],
+        EnvDecode::Integer,
+        overwrite,
+    )?;
     Ok(())
 }
 

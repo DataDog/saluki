@@ -270,6 +270,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn legacy_counter_expiry_environment_variable_reaches_typed_configuration() {
+        let _guard = test_env_lock();
+        let path = std::env::temp_dir().join(format!("adp_counter_expiry_env_{}.yaml", std::process::id()));
+        std::fs::write(&path, "{}\n").unwrap();
+        std::env::set_var("DD_COUNTER_EXPIRY_SECONDS", "43");
+
+        let loaded = block_on(LoadedConfiguration::load(&path, EnvPrecedence::AfterFile))
+            .expect("legacy counter expiry environment variable loads");
+
+        std::env::remove_var("DD_COUNTER_EXPIRY_SECONDS");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            loaded.local().domains.dogstatsd.aggregation.counter_expiry_seconds,
+            Some(43)
+        );
+    }
+
     #[tokio::test]
     async fn load_rejects_translation_invalid_local_sources() {
         let path = std::env::temp_dir().join(format!("adp_local_bad_{}.yaml", std::process::id()));
