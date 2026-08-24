@@ -930,7 +930,7 @@ inventory:
       mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
     issue: "#1687"
     test_support:
-      used_by: [DogStatsDMapperConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd_mapper.rs
@@ -940,7 +940,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Metric mapping profile definitions"
     test_support:
-      used_by: [DogStatsDMapperConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
       additional_attributes:
         config_registry_filename: dogstatsd_mapper.rs
