@@ -867,12 +867,16 @@ impl AggregationLanes {
     fn snapshot_contexts(&self) -> Vec<AggregateContextSnapshotEntry> {
         let mut snapshot = Vec::with_capacity(self.retained_contexts);
         for state in self.states.values() {
-            snapshot.extend(state.snapshot_contexts());
+            state.append_context_snapshot(&mut snapshot);
         }
         snapshot
     }
 
     fn interval_for_metric(&self, metric: &Metric) -> NonZeroU64 {
+        if self.metric_intervals.is_empty() {
+            return self.default_interval;
+        }
+
         find_matching_prefix(&self.metric_intervals, metric.context().name(), |rule| {
             rule.metric_prefix.as_str()
         })
@@ -885,23 +889,18 @@ impl AggregationLanes {
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
         let interval = self.interval_for_metric(&metric);
-        let is_new_context = !self
+        let state = self
             .states
-            .get(&interval)
-            .expect("every configured interval must have an aggregation lane")
-            .contexts
-            .contains_key(metric.context());
+            .get_mut(&interval)
+            .expect("every configured interval must have an aggregation lane");
+        let is_new_context = !state.contexts.contains_key(metric.context());
 
         if is_new_context && self.retained_contexts >= self.context_limit {
             self.context_limit_breached = true;
             return false;
         }
 
-        let inserted = self
-            .states
-            .get_mut(&interval)
-            .expect("every configured interval must have an aggregation lane")
-            .insert(timestamp, metric);
+        let inserted = state.insert(timestamp, metric);
         if inserted && is_new_context {
             self.retained_contexts += 1;
         }
@@ -972,16 +971,23 @@ impl AggregationState {
         self.contexts.is_empty()
     }
 
+    #[cfg(test)]
     fn snapshot_contexts(&self) -> Vec<AggregateContextSnapshotEntry> {
         let mut snapshot = Vec::with_capacity(self.contexts.len());
-        for (context, aggregated) in &self.contexts {
-            snapshot.push(AggregateContextSnapshotEntry {
-                context: context.clone(),
-                metric_type: AggregateMetricType::from(&aggregated.values),
-                unit: aggregated.metadata.unit.clone(),
-            });
-        }
+        self.append_context_snapshot(&mut snapshot);
         snapshot
+    }
+
+    fn append_context_snapshot(&self, snapshot: &mut Vec<AggregateContextSnapshotEntry>) {
+        snapshot.extend(
+            self.contexts
+                .iter()
+                .map(|(context, aggregated)| AggregateContextSnapshotEntry {
+                    context: context.clone(),
+                    metric_type: AggregateMetricType::from(&aggregated.values),
+                    unit: aggregated.metadata.unit.clone(),
+                }),
+        );
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
