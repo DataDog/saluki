@@ -801,9 +801,12 @@ async fn add_dsd_pipeline_to_blueprint(
         DogStatsDMapperConfiguration::new(mapper.string_interner_size_bytes, mapper.cache_size, mapper_profiles);
     let dsd_enrich_config =
         ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", dsd_mapper_config);
-    let dogstatsd_config = config_system.live(|config| &config.domains.dogstatsd);
-    let dsd_tag_filterlist_config = TagFilterlistConfiguration::from_configuration(dogstatsd_config)
-        .error_context("Failed to configure metric tag filterlist transform.")?;
+    let dsd_tag_filterlist_config = TagFilterlistConfiguration::new(
+        config_system.live(|config| &config.domains.dogstatsd.tag_filterlist),
+        &typed.domains.dogstatsd.tag_value_allowlist,
+        typed.domains.dogstatsd.aggregation.aggregator_tag_filter_cache_capacity,
+    )
+    .error_context("Failed to configure metric tag filterlist transform.")?;
     let aggregation = &typed.domains.dogstatsd.aggregation;
     let histogram = &typed.shared.metrics_encoding.histogram;
     let dsd_hist_config = HistogramConfiguration::try_new(
@@ -1017,8 +1020,7 @@ mod tests {
 
     use agent_data_plane_config::{
         domains::dogstatsd::{
-            Domain as DogStatsDDomain, FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry,
-            TagValueMismatchAction,
+            FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry, TagValueMismatchAction,
         },
         Live,
     };
@@ -1091,23 +1093,22 @@ mod tests {
             let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
             let prefix_filter = DogStatsDPrefixFilterConfiguration::from_configuration(&config)
                 .expect("prefix filter configuration should parse");
-            let dogstatsd_config = DogStatsDDomain {
-                tag_filterlist: vec![MetricTagFilterEntry {
+            let tag_filter = TagFilterlistConfiguration::new(
+                Live::new_fixed(vec![MetricTagFilterEntry {
                     metric_name: "tenant.mapped.requests".to_string(),
                     action: FilterAction::Exclude,
                     tags: vec!["remove".to_string()],
-                }],
-                tag_value_allowlist: vec![MetricTagValueAllowlistEntry {
+                }]),
+                &[MetricTagValueAllowlistEntry {
                     metric_prefix: "tenant.mapped.".to_string(),
                     tag_name: "customer_id".to_string(),
                     values: vec!["top-1".to_string()],
                     on_miss: TagValueMismatchAction::Remove,
                     replacement: "other".to_string(),
                 }],
-                ..Default::default()
-            };
-            let tag_filter = TagFilterlistConfiguration::from_configuration(Live::new_fixed(dogstatsd_config))
-                .expect("tag filter configuration should be valid");
+                0,
+            )
+            .expect("tag filter configuration should be valid");
             let hist_config = HistogramConfiguration::try_new(
                 &[
                     "max".to_string(),

@@ -167,66 +167,40 @@ fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfi
     })
 }
 
-/// The result of parsing one `metric_tag_filterlist` object.
-///
-/// The two failure modes differ in whether the entry can still be used, and the caller relies on
-/// that difference to honor the system's opposite stances on translation errors (strict at startup,
-/// lenient at runtime). A [`Recovered`][Self::Recovered] entry is still usable, so a runtime update
-/// keeps filtering with it while startup still rejects the config on the recorded error. A
-/// [`Malformed`][Self::Malformed] object yields no value, so it is skipped.
-enum TagFilterEntry {
-    /// The object parsed and its `action` was recognized.
-    Valid(MetricTagFilterEntry),
-    /// The object parsed but its `action` was not `include`, `exclude`, or empty. The entry is kept
-    /// with `action` defaulted to `exclude`, matching the component's own tolerance, and the error
-    /// is recorded so a strict startup still rejects the config.
-    Recovered(MetricTagFilterEntry, TranslateError),
-    /// The object could not be deserialized into an entry; no value is recoverable.
-    Malformed(TranslateError),
-}
-
-/// Parses one `metric_tag_filterlist` object into a [`TagFilterEntry`].
+/// Parses one `metric_tag_filterlist` object into a [`MetricTagFilterEntry`].
 ///
 /// Like `parse_mapper_profile`, this imposes the typed model shape on a free-form schema object via
-/// a local `#[derive(Deserialize)]` shim. Unlike it, an unrecognized `action` does not discard the
-/// entry: the schema lets any string through, so the component tolerates typos by defaulting to
-/// `exclude`, and this preserves that behavior while still surfacing the error.
-fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
+/// a local `#[derive(Deserialize)]` shim.
+fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> Result<MetricTagFilterEntry> {
     #[derive(serde::Deserialize)]
     struct RawEntry {
         metric_name: String,
         #[serde(default)]
-        action: String,
+        action: Option<String>,
+        // The Agent decodes an entry with `mapstructure`, so an absent `tags` yields an empty list
+        // and keeps the entry. Requiring it here would reject a configuration the Agent runs with.
         #[serde(default)]
         tags: Vec<String>,
     }
 
-    let parsed: RawEntry = match serde_json::from_value(raw).map_err(|error| TranslateError::new(key, error)) {
-        Ok(parsed) => parsed,
-        Err(error) => return TagFilterEntry::Malformed(error),
+    let parsed: RawEntry = serde_json::from_value(raw).map_err(|error| TranslateError::new(key, error))?;
+    let action = match parsed.action.as_deref() {
+        Some("include") => FilterAction::Include,
+        None | Some("") | Some("exclude") => FilterAction::Exclude,
+        Some(other) => {
+            warn!(
+                action = %other,
+                "`metric_tag_filterlist.*.action` should be either `include` or `exclude`; defaulting to `exclude`."
+            );
+            FilterAction::Exclude
+        }
     };
 
-    let (action, action_error) = match parsed.action.as_str() {
-        "include" => (FilterAction::Include, None),
-        "" | "exclude" => (FilterAction::Exclude, None),
-        other => (
-            FilterAction::Exclude,
-            Some(TranslateError::new_with_message(
-                key,
-                format!("unknown filter action `{other}`"),
-            )),
-        ),
-    };
-
-    let entry = MetricTagFilterEntry {
+    Ok(MetricTagFilterEntry {
         metric_name: parsed.metric_name,
         action,
         tags: parsed.tags,
-    };
-    match action_error {
-        Some(error) => TagFilterEntry::Recovered(entry, error),
-        None => TagFilterEntry::Valid(entry),
-    }
+    })
 }
 
 impl DatadogConfigWitness for DatadogTranslator<'_> {
@@ -429,11 +403,19 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_data_plane_dogstatsd_aggregator_tag_filter_cache_capacity(&mut self, value: i64) {
-        self.config
-            .domains
-            .dogstatsd
-            .aggregation
-            .aggregator_tag_filter_cache_capacity = value.max(0) as usize;
+        match usize::try_from(value) {
+            Ok(capacity) => {
+                self.config
+                    .domains
+                    .dogstatsd
+                    .aggregation
+                    .aggregator_tag_filter_cache_capacity = capacity;
+            }
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "data_plane.dogstatsd.aggregator_tag_filter_cache_capacity",
+                format!("tag filter cache capacity must be greater than or equal to 0, got {value}"),
+            )),
+        }
     }
 
     fn consume_data_plane_dogstatsd_enabled(&mut self, value: bool) {
@@ -865,19 +847,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_metric_tag_filterlist(&mut self, value: Vec<serde_json::Value>) {
-        // A single bad entry must not empty the whole list: startup rejects the config on any
-        // recorded error, but a runtime update stores what translated, so dropping the list here
-        // would silently disable all tag filtering. Keep every entry we can build and record the
-        // errors alongside them.
         let mut entries = Vec::with_capacity(value.len());
         for raw in value {
             match parse_tag_filter_entry("metric_tag_filterlist", raw) {
-                TagFilterEntry::Valid(entry) => entries.push(entry),
-                TagFilterEntry::Recovered(entry, error) => {
-                    self.record_error(error);
-                    entries.push(entry);
-                }
-                TagFilterEntry::Malformed(error) => self.record_error(error),
+                Ok(entry) => entries.push(entry),
+                Err(error) => self.record_error(error),
             }
         }
         self.config.domains.dogstatsd.tag_filterlist = entries;
@@ -1818,34 +1792,93 @@ mod tests {
     }
 
     #[test]
-    fn bad_tag_filter_action_keeps_the_whole_list() {
+    fn tag_filter_actions_preserve_tolerant_parsing() {
         use agent_data_plane_config::domains::dogstatsd::FilterAction;
 
-        // One entry has a typo'd action between two valid entries. The bad action must not discard
-        // the list: the entry is kept with `action` defaulted to `exclude`, an error is recorded
-        // (so a strict startup rejects the config), and the surrounding valid entries survive (so a
-        // lenient runtime update keeps filtering).
         let (config, errors) = translate_explicit(json!({
             "metric_tag_filterlist": [
-                { "metric_name": "a", "action": "include", "tags": ["x"] },
-                { "metric_name": "b", "action": "exlude", "tags": ["y"] },
-                { "metric_name": "c", "action": "exclude", "tags": ["z"] },
+                { "metric_name": "missing", "tags": ["a"] },
+                { "metric_name": "null", "action": null, "tags": ["b"] },
+                { "metric_name": "empty", "action": "", "tags": ["c"] },
+                { "metric_name": "include", "action": "include", "tags": ["d"] },
+                { "metric_name": "exclude", "action": "exclude", "tags": ["e"] },
+                { "metric_name": "unknown", "action": "exlude", "tags": ["f"] },
             ],
         }));
 
+        assert!(errors.is_none());
         let entries = &config.domains.dogstatsd.tag_filterlist;
-        assert_eq!(entries.len(), 3, "a bad action must not drop the other entries");
-        assert_eq!(entries[0].action, FilterAction::Include);
+        let actions: Vec<_> = entries.iter().map(|entry| entry.action).collect();
         assert_eq!(
-            entries[1].action,
-            FilterAction::Exclude,
-            "unknown action defaults to exclude"
+            actions,
+            vec![
+                FilterAction::Exclude,
+                FilterAction::Exclude,
+                FilterAction::Exclude,
+                FilterAction::Include,
+                FilterAction::Exclude,
+                FilterAction::Exclude,
+            ]
         );
-        assert_eq!(entries[1].metric_name, "b");
-        assert_eq!(entries[2].action, FilterAction::Exclude);
+        assert_eq!(entries[0].metric_name, "missing");
+        assert_eq!(entries[5].tags, ["f"]);
+    }
 
-        // The error is still surfaced, so startup's strict gate rejects the config.
-        assert!(errors.is_some(), "an unknown action must record a translation error");
+    #[test]
+    fn tag_filter_entry_without_tags_is_kept_with_no_tags() {
+        let (config, errors) = translate_explicit(json!({
+            "metric_tag_filterlist": [{ "metric_name": "svc.latency" }],
+        }));
+
+        assert!(errors.is_none(), "the Agent accepts an entry without tags");
+        let entries = &config.domains.dogstatsd.tag_filterlist;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].metric_name, "svc.latency");
+        assert!(entries[0].tags.is_empty());
+    }
+
+    #[test]
+    fn malformed_tag_filter_entry_does_not_drop_valid_neighbors() {
+        let (config, errors) = translate_explicit(json!({
+            "metric_tag_filterlist": [
+                { "metric_name": "before", "tags": ["a"] },
+                { "tags": ["orphan"] },
+                { "metric_name": "after", "tags": ["b"] },
+            ],
+        }));
+
+        let names: Vec<_> = config
+            .domains
+            .dogstatsd
+            .tag_filterlist
+            .iter()
+            .map(|entry| entry.metric_name.as_str())
+            .collect();
+        assert_eq!(names, ["before", "after"]);
+        assert!(
+            errors.is_some(),
+            "an entry without a metric name must record a translation error"
+        );
+    }
+
+    #[test]
+    fn negative_tag_filter_cache_capacity_is_rejected() {
+        let (config, errors) = translate_explicit(json!({
+            "data_plane": { "dogstatsd": { "aggregator_tag_filter_cache_capacity": -1 } },
+        }));
+
+        assert_eq!(
+            config
+                .domains
+                .dogstatsd
+                .aggregation
+                .aggregator_tag_filter_cache_capacity,
+            0
+        );
+        let errors = errors.expect("a negative cache capacity must record a translation error");
+        assert!(errors
+            .to_string()
+            .contains("data_plane.dogstatsd.aggregator_tag_filter_cache_capacity"));
     }
 
     #[test]
