@@ -313,6 +313,7 @@ async fn handle_dogstatsd_replay(
     }
 }
 
+#[cfg(any(unix, test))]
 fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
     match config.try_get_typed::<String>("dogstatsd_socket")? {
         Some(path) if !path.is_empty() => Ok(PathBuf::from(path)),
