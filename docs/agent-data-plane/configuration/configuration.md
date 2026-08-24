@@ -548,7 +548,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 
 | Config Key                                                      | Description                                | Default        |
 | --------------------------------------------------------------- | ------------------------------------------ | -------------- |
-| `aggregate_context_limit`                                       | Max contexts per aggregation window        |                |
+| `aggregate_context_limit`                                       | Max contexts across aggregation windows    |                |
 | `aggregate_flush_interval`                                      | Aggregator flush period                    |                |
 | `aggregate_passthrough_idle_flush_timeout`                      | Passthrough buffer flush delay             |                |
 | `aggregate_window_duration_seconds`                             | Aggregation window size                    |                |
@@ -557,6 +557,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `apm_config.obfuscation.sql.keep_sql_alias`                     | Preserve SQL aliases in obfuscation        |                |
 | `apm_config.obfuscation.sql.replace_digits`                     | Replace digits in SQL obfuscation          |                |
 | `apm_config.obfuscation.sql.table_names`                        | Collect table names during obfuscation     |                |
+| `counter_expiry_seconds`                                        | Idle counter keep-alive duration           | 300            |
 | `data_plane.otlp.receiver_grpc_endpoint_temporary`              | ADP OTLP gRPC listen endpoint              | localhost:6317 |
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
 | `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3              |
@@ -575,6 +576,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
 | `memory_limit`                                                  | Process memory limit                       |                |
 | `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
+| `metric_aggregation_intervals`                                  | Per-prefix DogStatsD aggregation windows   | []             |
 | `metric_tag_value_allowlist`                                    | Per-metric tag value allow-list            | []             |
 | `otlp_allow_context_heap_allocs`                                | Allow heap allocations for OTLP contexts   |                |
 | `otlp_cached_contexts_limit`                                    | Max cached OTLP metric contexts            |                |
@@ -632,6 +634,18 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 ### `dogstatsd_string_interner_size_bytes`
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
+### `metric_aggregation_intervals`
+
+Each entry selects an aggregation window from 1 through 60 seconds for a non-empty, case-sensitive metric-name prefix. Prefixes must not overlap. Rules apply after mapper rewrites and metric namespace prefixing.
+
+```yaml
+metric_aggregation_intervals:
+  - metric_prefix: high_resolution.
+    interval_seconds: 1
+  - metric_prefix: archival.
+    interval_seconds: 60
+```
 
 ### `dogstatsd_mapper_string_interner_size`
 

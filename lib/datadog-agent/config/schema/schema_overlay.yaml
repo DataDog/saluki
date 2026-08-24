@@ -840,6 +840,7 @@ inventory:
     description: "Flush open buckets on shutdown"
     test_support:
       used_by: [TypedConfigSystem]
+      additional_yaml_paths: [aggregate_flush_open_windows]
       additional_attributes:
         config_registry_filename: aggregate.rs
 

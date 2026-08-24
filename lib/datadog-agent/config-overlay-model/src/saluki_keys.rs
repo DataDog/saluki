@@ -452,6 +452,31 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         filename: "aggregate.rs",
     },
     SalukiKey {
+        yaml_path: "metric_aggregation_intervals",
+        description: "Per-prefix DogStatsD aggregation windows",
+        default: "[]",
+        documentation: Some(
+            r#"Each entry selects an aggregation window from 1 through 60 seconds for a non-empty, case-sensitive metric-name prefix. Prefixes must not overlap. Rules apply after mapper rewrites and metric namespace prefixing.
+
+```yaml
+metric_aggregation_intervals:
+  - metric_prefix: high_resolution.
+    interval_seconds: 1
+  - metric_prefix: archival.
+    interval_seconds: 60
+```"#,
+        ),
+        value_type: "ValueType::String",
+        schema_default: Some("[]"),
+        env_vars: &[],
+        env_var_override: Some(&[]),
+        additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: Some(r#"[{"metric_prefix":"smoke.","interval_seconds":5}]"#),
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD])",
+        filename: "aggregate.rs",
+    },
+    SalukiKey {
         yaml_path: "aggregate_flush_interval",
         description: "Aggregator flush period",
         default: "",
@@ -468,7 +493,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     },
     SalukiKey {
         yaml_path: "aggregate_context_limit",
-        description: "Max contexts per aggregation window",
+        description: "Max contexts across aggregation windows",
         default: "",
         documentation: None,
         value_type: "ValueType::Integer",
@@ -476,6 +501,21 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         env_vars: &[],
         env_var_override: None,
         additional_yaml_paths: &[],
+        used_by: &["TYPED_CONFIG_SYSTEM"],
+        test_json: None,
+        pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks])",
+        filename: "aggregate.rs",
+    },
+    SalukiKey {
+        yaml_path: "counter_expiry_seconds",
+        description: "Idle counter keep-alive duration",
+        default: "300",
+        documentation: None,
+        value_type: "ValueType::Integer",
+        schema_default: None,
+        env_vars: &[],
+        env_var_override: None,
+        additional_yaml_paths: &["dogstatsd_expiry_seconds"],
         used_by: &["TYPED_CONFIG_SYSTEM"],
         test_json: None,
         pipeline_affinity: "PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Checks])",

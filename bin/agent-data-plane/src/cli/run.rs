@@ -43,7 +43,8 @@ use saluki_components::{
         aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
         AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
-        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
+        MetricAggregationInterval, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
+        TraceSamplerConfiguration,
     },
 };
 use saluki_config::GenericConfiguration;
@@ -928,6 +929,14 @@ async fn add_dsd_pipeline_to_blueprint(
     let (dsd_context_snapshot_handle, dsd_context_snapshot_receiver) = aggregate_context_snapshot_channel();
     let dsd_agg_config = AggregateConfiguration {
         window_duration_seconds: aggregation.window_duration_seconds,
+        metric_intervals: aggregation
+            .metric_intervals
+            .iter()
+            .map(|rule| MetricAggregationInterval {
+                metric_prefix: rule.metric_prefix.clone(),
+                interval_seconds: rule.interval_seconds,
+            })
+            .collect(),
         primary_flush_interval: aggregation.flush_interval,
         context_limit: aggregation.context_limit,
         flush_open_windows: aggregation.flush_open_windows,
@@ -1260,6 +1269,7 @@ mod tests {
             let (snapshot_handle, context_snapshot_receiver) = aggregate_context_snapshot_channel();
             let aggregate = AggregateConfiguration {
                 window_duration_seconds: NonZeroU64::new(10).expect("not zero"),
+                metric_intervals: Vec::new(),
                 // Longer than the test, so the window stays open and contexts stay retained.
                 primary_flush_interval: Duration::from_secs(60),
                 context_limit: 1_000_000,
