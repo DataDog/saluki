@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::defaults::{
     DEFAULT_AGGREGATE_CONTEXT_LIMIT, DEFAULT_AGGREGATE_FLUSH_INTERVAL,
     DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT, DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+    DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
 };
 use crate::Error;
 
@@ -264,7 +265,7 @@ impl Default for Aggregation {
 }
 
 /// DogStatsD metric mapper.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Mapper {
     /// Mapper profiles that rewrite matching metric names and tags.
     pub profiles: Vec<MapperProfile>,
@@ -272,8 +273,19 @@ pub struct Mapper {
     /// Number of mapper match results cached.
     pub cache_size: usize,
 
-    /// Number of entries the mapper's string interner holds. (not in Datadog Agent config schema)
-    pub string_interner_size: u64,
+    /// Byte capacity of the mapper's string interner. (not in Datadog Agent config schema)
+    pub string_interner_size_bytes: NonZeroUsize,
+}
+
+impl Default for Mapper {
+    fn default() -> Self {
+        Self {
+            profiles: Vec::new(),
+            // Written by the Datadog witness driver.
+            cache_size: 0,
+            string_interner_size_bytes: DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
+        }
+    }
 }
 
 /// One mapper profile: a name, a metric prefix, and the mappings under it.

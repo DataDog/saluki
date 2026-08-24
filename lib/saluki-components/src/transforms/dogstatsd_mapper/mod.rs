@@ -1,14 +1,11 @@
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use bytesize::ByteSize;
 use regex::Regex;
 use saluki_common::cache::{Cache, CacheBuilder};
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::SharedTagSet;
 use saluki_context::tags::TagSet;
 use saluki_context::{Context, ContextResolver, ContextResolverBuilder};
@@ -21,8 +18,6 @@ use saluki_core::{
     topology::EventsBuffer,
 };
 use saluki_error::{generic_error, ErrorContext, GenericError};
-use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, PickFirst};
 use stringtheory::MetaString;
 
 const MATCH_TYPE_WILDCARD: &str = "wildcard";
@@ -31,79 +26,62 @@ const MATCH_TYPE_REGEX: &str = "regex";
 static ALLOWED_WILDCARD_MATCH_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9\-_*.]+$").expect("Invalid regex in ALLOWED_WILDCARD_MATCH_PATTERN"));
 
-const fn default_context_string_interner_size() -> ByteSize {
-    ByteSize::kib(64)
-}
-
-const fn default_dogstatsd_mapper_cache_size() -> usize {
-    1000
-}
 /// DogStatsD mapper transform.
-#[serde_as]
-#[derive(Deserialize)]
-#[cfg_attr(test, derive(Debug, PartialEq, serde::Serialize))]
 pub struct DogStatsDMapperConfiguration {
     /// Total size of the string interner used for contexts, in bytes.
-    ///
-    /// This controls the amount of memory that will be pre-allocated for the purpose
-    /// of interning mapped metric names and tags, which can help to avoid unnecessary
-    /// allocations and allocator fragmentation.
-    #[serde(
-        rename = "dogstatsd_mapper_string_interner_size",
-        default = "default_context_string_interner_size"
-    )]
-    context_string_interner_bytes: ByteSize,
+    context_string_interner_bytes: NonZeroUsize,
 
     /// Maximum number of mapped results to cache.
     ///
-    /// When enabled, mapped metrics will be cached by name to avoid repeat evaluation of the configured mapper rules.
-    ///
     /// When set to `0`, the cache is disabled.
-    ///
-    /// Defaults to `1000`.
-    #[serde(
-        rename = "dogstatsd_mapper_cache_size",
-        default = "default_dogstatsd_mapper_cache_size"
-    )]
     cache_size: usize,
 
-    /// Configuration related to metric mapping.
-    #[serde_as(as = "PickFirst<(DisplayFromStr, _)>")]
-    #[serde(default)]
-    dogstatsd_mapper_profiles: MapperProfileConfigs,
+    /// Metric mapping profiles.
+    profiles: Vec<DogStatsDMapperProfile>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-struct MappingProfileConfig {
-    name: String,
-    prefix: String,
-    mappings: Vec<MetricMappingConfig>,
+/// A DogStatsD metric mapping profile.
+pub struct DogStatsDMapperProfile {
+    /// Profile name used in configuration errors.
+    pub name: String,
+
+    /// Metric-name prefix this profile applies to.
+    pub prefix: String,
+
+    /// Metric mappings evaluated for this profile.
+    pub mappings: Vec<DogStatsDMetricMapping>,
 }
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-struct MapperProfileConfigs(pub Vec<MappingProfileConfig>);
 
-impl FromStr for MapperProfileConfigs {
-    type Err = serde_json::Error;
+/// A metric-name mapping in a [`DogStatsDMapperProfile`].
+pub struct DogStatsDMetricMapping {
+    /// Pattern matched against the incoming metric name.
+    pub metric_match: String,
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let profiles: Vec<MappingProfileConfig> = serde_json::from_str(s)?;
-        Ok(MapperProfileConfigs(profiles))
+    /// Pattern type: `wildcard`, `regex`, or empty for the default wildcard behavior.
+    pub match_type: String,
+
+    /// Metric name emitted after a match.
+    pub name: String,
+
+    /// Tags emitted after expanding capture groups.
+    pub tags: HashMap<String, String>,
+}
+
+impl DogStatsDMapperConfiguration {
+    /// Creates a DogStatsD mapper configuration.
+    pub fn new(
+        context_string_interner_bytes: NonZeroUsize, cache_size: usize, profiles: Vec<DogStatsDMapperProfile>,
+    ) -> Self {
+        Self {
+            context_string_interner_bytes,
+            cache_size,
+            profiles,
+        }
     }
-}
 
-#[cfg(test)]
-impl std::fmt::Display for MapperProfileConfigs {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", serde_json::to_string(&self.0).unwrap_or_default())
-    }
-}
-
-impl MapperProfileConfigs {
-    fn build(
-        &self, context: ComponentContext, context_string_interner_bytes: ByteSize, cache_size: usize,
-    ) -> Result<MetricMapper, GenericError> {
-        let mut profiles = Vec::with_capacity(self.0.len());
-        for (i, config_profile) in self.0.iter().enumerate() {
+    fn build_mapper(&self, context: ComponentContext) -> Result<MetricMapper, GenericError> {
+        let mut profiles = Vec::with_capacity(self.profiles.len());
+        for (i, config_profile) in self.profiles.iter().enumerate() {
             if config_profile.name.is_empty() {
                 return Err(generic_error!("missing profile name"));
             }
@@ -155,18 +133,14 @@ impl MapperProfileConfigs {
             profiles.push(profile);
         }
 
-        let context_string_interner_size = NonZeroUsize::new(context_string_interner_bytes.as_u64() as usize)
-            .ok_or_else(|| generic_error!("context_string_interner_size must be greater than 0"))
-            .unwrap();
-
         let context_resolver =
             ContextResolverBuilder::from_name(format!("{}/dsd_mapper/primary", context.component_id()))
                 .expect("resolver name is not empty")
-                .with_interner_capacity_bytes(context_string_interner_size)
+                .with_interner_capacity_bytes(self.context_string_interner_bytes)
                 .with_idle_context_expiration(Duration::from_secs(30))
                 .build();
 
-        let cache = match NonZeroUsize::new(cache_size) {
+        let cache = match NonZeroUsize::new(self.cache_size) {
             Some(capacity) => Some(
                 CacheBuilder::from_identifier(format!("{}/dsd_mapper/result_cache", context.component_id()))?
                     .with_capacity(capacity)
@@ -212,24 +186,6 @@ fn build_regex(match_re: &str, match_type: &str) -> Result<Regex, GenericError> 
             final_pattern, match_type
         )
     })
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
-struct MetricMappingConfig {
-    // The metric name to extract groups from with the Wildcard or Regex match logic.
-    #[serde(rename = "match")]
-    metric_match: String,
-
-    // The type of match to apply to the `metric_match`. Either wildcard or regex.
-    #[serde(default)]
-    match_type: String,
-
-    // The new metric name to send to Datadog with the tags defined in the same group.
-    name: String,
-
-    // Map with the tag key and tag values collected from the `match_type` to inline.
-    #[serde(default)]
-    tags: HashMap<String, String>,
 }
 
 struct MappingProfile {
@@ -359,19 +315,10 @@ impl MetricMapper {
     }
 }
 
-impl DogStatsDMapperConfiguration {
-    /// Creates a new `DogstatsDMapperConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        Ok(config.as_typed()?)
-    }
-}
-
 #[async_trait]
 impl SynchronousTransformBuilder for DogStatsDMapperConfiguration {
     async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
-        let metric_mapper =
-            self.dogstatsd_mapper_profiles
-                .build(context, self.context_string_interner_bytes, self.cache_size)?;
+        let metric_mapper = self.build_mapper(context)?;
         Ok(Box::new(DogStatsDMapper { metric_mapper }))
     }
 }
@@ -384,7 +331,7 @@ impl MemoryBounds for DogStatsDMapperConfiguration {
             .with_single_value::<DogStatsDMapper>("component struct")
             // We also allocate the backing storage for the string interner up front, which is used by our context
             // resolver.
-            .with_fixed_amount("string interner", self.context_string_interner_bytes.as_u64() as usize);
+            .with_fixed_amount("string interner", self.context_string_interner_bytes.get());
 
         // Account for the per-name result cache when enabled.
         if self.cache_size > 0 {
@@ -412,7 +359,9 @@ impl SynchronousTransform for DogStatsDMapper {
 #[cfg(test)]
 mod tests {
 
-    use bytesize::ByteSize;
+    use std::collections::HashMap;
+    use std::num::NonZeroUsize;
+
     use saluki_context::{Context, ContextResolverBuilder};
     use saluki_core::{
         components::{transforms::SynchronousTransform, ComponentContext},
@@ -420,24 +369,62 @@ mod tests {
         topology::EventsBuffer,
     };
     use saluki_error::GenericError;
-    use serde_json::{json, Value};
 
-    use super::{DogStatsDMapper, MapperProfileConfigs, MetricMapper};
+    use super::{
+        DogStatsDMapper, DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, MetricMapper,
+    };
+
+    macro_rules! metric_mapping {
+        (@match_type) => {
+            String::new()
+        };
+        (@match_type $match_type:expr) => {
+            $match_type.to_string()
+        };
+        ({
+            "match": $metric_match:expr,
+            $("match_type": $match_type:expr,)?
+            "name": $name:expr
+            $(, "tags": { $($tag_name:literal: $tag_value:expr),* $(,)? })?
+        }) => {
+            DogStatsDMetricMapping {
+                metric_match: $metric_match.to_string(),
+                match_type: metric_mapping!(@match_type $($match_type)?),
+                name: $name.to_string(),
+                tags: HashMap::from([$($(($tag_name.to_string(), $tag_value.to_string())),*)?]),
+            }
+        };
+    }
+
+    macro_rules! mapper_profiles {
+        ([$({
+            "name": $name:expr,
+            "prefix": $prefix:expr,
+            "mappings": [$($mapping:tt),* $(,)?]
+        }),* $(,)?]) => {
+            vec![$(DogStatsDMapperProfile {
+                name: $name.to_string(),
+                prefix: $prefix.to_string(),
+                mappings: vec![$(metric_mapping!($mapping)),*],
+            }),*]
+        };
+    }
 
     fn counter_metric(name: &'static str, tags: &[&'static str]) -> Metric {
         let context = Context::from_static_parts(name, tags);
         Metric::counter(context, 1.0)
     }
 
-    fn mapper(json_data: Value) -> Result<MetricMapper, GenericError> {
-        mapper_with_cache(json_data, 1000)
+    fn mapper(profiles: Vec<DogStatsDMapperProfile>) -> Result<MetricMapper, GenericError> {
+        mapper_with_cache(profiles, 1000)
     }
 
-    fn mapper_with_cache(json_data: Value, cache_size: usize) -> Result<MetricMapper, GenericError> {
-        let context = ComponentContext::test_transform("test_mapper");
-        let mpc: MapperProfileConfigs = serde_json::from_value(json_data)?;
-        let context_string_interner_bytes = ByteSize::kib(64);
-        mpc.build(context, context_string_interner_bytes, cache_size)
+    fn mapper_with_cache(
+        profiles: Vec<DogStatsDMapperProfile>, cache_size: usize,
+    ) -> Result<MetricMapper, GenericError> {
+        let config =
+            DogStatsDMapperConfiguration::new(NonZeroUsize::new(64 * 1024).expect("not zero"), cache_size, profiles);
+        config.build_mapper(ComponentContext::test_transform("test_mapper"))
     }
 
     fn assert_tags(context: &Context, expected_tags: &[&str]) {
@@ -462,8 +449,8 @@ mod tests {
         );
     }
 
-    fn simple_mapping_profile() -> Value {
-        json!([{
+    fn simple_mapping_profile() -> Vec<DogStatsDMapperProfile> {
+        mapper_profiles!([{
             "name": "test",
             "prefix": "test.",
             "mappings": [
@@ -486,7 +473,7 @@ mod tests {
         // should be remapped, or `None` when it must pass through unmapped.
         struct MapperCase {
             description: &'static str,
-            config: Value,
+            config: Vec<DogStatsDMapperProfile>,
             #[allow(clippy::type_complexity)]
             checks: Vec<(
                 &'static str,
@@ -498,7 +485,7 @@ mod tests {
         let cases = vec![
             MapperCase {
                 description: "wildcard mappings with capture-group tags",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -522,7 +509,7 @@ mod tests {
             },
             MapperCase {
                 description: "partial mapping, second mapping has no tags",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -545,7 +532,7 @@ mod tests {
             },
             MapperCase {
                 description: "regex expansion with ${n} syntax",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -563,7 +550,7 @@ mod tests {
             },
             MapperCase {
                 description: "capture groups expanded into the metric name",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -581,7 +568,7 @@ mod tests {
             },
             MapperCase {
                 description: "wildcard matches a segment before an underscore",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -592,7 +579,7 @@ mod tests {
             },
             MapperCase {
                 description: "mappings without any tags",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -607,7 +594,7 @@ mod tests {
             },
             MapperCase {
                 description: "all allowed wildcard characters",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -622,7 +609,7 @@ mod tests {
             },
             MapperCase {
                 description: "regex match type",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -645,7 +632,7 @@ mod tests {
             },
             MapperCase {
                 description: "complex regex match type",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -663,7 +650,7 @@ mod tests {
             },
             MapperCase {
                 description: "multiple profiles matched by prefix",
-                config: json!([
+                config: mapper_profiles!([
                     {
                         "name": "test",
                         "prefix": "foo.",
@@ -692,7 +679,7 @@ mod tests {
             },
             MapperCase {
                 description: "wildcard prefix matches any metric",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "*",
                     "mappings": [ { "match": "foo.duration.*", "name": "foo.duration", "tags": { "name": "$1" } } ]
@@ -705,7 +692,7 @@ mod tests {
             },
             MapperCase {
                 description: "only the first matching wildcard-prefixed profile applies",
-                config: json!([
+                config: mapper_profiles!([
                     {
                         "name": "test",
                         "prefix": "*",
@@ -726,7 +713,7 @@ mod tests {
             },
             MapperCase {
                 description: "only the first matching profile applies across differing prefixes",
-                config: json!([
+                config: mapper_profiles!([
                     {
                         "name": "test",
                         "prefix": "foo.",
@@ -747,7 +734,7 @@ mod tests {
             },
             MapperCase {
                 description: "regex expansion with (\\w+) groups",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -762,7 +749,7 @@ mod tests {
             },
             MapperCase {
                 description: "existing metric tags are retained alongside mapped tags",
-                config: json!([{
+                config: mapper_profiles!([{
                     "name": "test",
                     "prefix": "test.",
                     "mappings": [
@@ -810,67 +797,49 @@ mod tests {
 
     #[test]
     fn invalid_mapper_configurations_are_rejected() {
-        // Each case is `(description, config, expected_error_substring)`. The empty-field cases exercise
-        // `MapperProfileConfigs::build`'s custom validation, which is only reachable via *present-but-empty* fields:
-        // missing fields are rejected earlier by serde (the required-field cases below), because the corresponding
-        // config fields have no `#[serde(default)]`.
-        let cases: Vec<(&str, Value, &str)> = vec![
+        // Each case is `(description, config, expected_error_substring)`. Empty required values reach the
+        // component's validation; missing fields are rejected at the configuration boundary.
+        let cases: Vec<(&str, Vec<DogStatsDMapperProfile>, &str)> = vec![
             // Custom (present-but-empty) validation branches.
             (
                 "profile with an empty name",
-                json!([{ "name": "", "prefix": "test.", "mappings": [] }]),
+                mapper_profiles!([{ "name": "", "prefix": "test.", "mappings": [] }]),
                 "missing profile name",
             ),
             (
                 "profile with an empty prefix",
-                json!([{ "name": "test", "prefix": "", "mappings": [] }]),
+                mapper_profiles!([{ "name": "test", "prefix": "", "mappings": [] }]),
                 "missing prefix for profile: test",
             ),
             (
                 "mapping with an empty match",
-                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "", "name": "test.mapped" }] }]),
+                mapper_profiles!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "", "name": "test.mapped" }] }]),
                 "match is required",
             ),
             (
                 "mapping with an empty name",
-                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.job.duration.*.*", "name": "", "tags": { "job_type": "$1" } }] }]),
+                mapper_profiles!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.job.duration.*.*", "name": "", "tags": { "job_type": "$1" } }] }]),
                 "name is required",
-            ),
-            // serde required-field rejection (missing fields short-circuit before the custom validation).
-            (
-                "mapping missing its name field",
-                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.job.duration.*.*", "tags": { "job_type": "$1", "job_name": "$2" } }] }]),
-                "missing field `name`",
-            ),
-            (
-                "profile missing its name field",
-                json!([{ "prefix": "test.", "mappings": [{ "match": "test.invalid.duration", "name": "test.job.duration" }] }]),
-                "missing field `name`",
-            ),
-            (
-                "profile missing its prefix field",
-                json!([{ "name": "test", "mappings": [{ "match": "test.invalid.duration", "name": "test.job.duration" }] }]),
-                "missing field `prefix`",
             ),
             // Match compilation / type validation.
             (
                 "wildcard match with disallowed characters",
-                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.[]duration.*.*", "name": "test.job.duration" }] }]),
+                mapper_profiles!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.[]duration.*.*", "name": "test.job.duration" }] }]),
                 "does not match allowed match regex",
             ),
             (
                 "wildcard match anchored with a caret",
-                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "^test.invalid.duration.*.*", "name": "test.job.duration" }] }]),
+                mapper_profiles!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "^test.invalid.duration.*.*", "name": "test.job.duration" }] }]),
                 "does not match allowed match regex",
             ),
             (
                 "wildcard match with consecutive wildcards",
-                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.invalid.duration.**", "name": "test.job.duration" }] }]),
+                mapper_profiles!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.invalid.duration.**", "name": "test.job.duration" }] }]),
                 "consecutive",
             ),
             (
                 "unknown match type",
-                json!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.invalid.duration", "match_type": "invalid", "name": "test.job.duration" }] }]),
+                mapper_profiles!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.invalid.duration", "match_type": "invalid", "name": "test.job.duration" }] }]),
                 "invalid match type",
             ),
         ];
@@ -919,7 +888,7 @@ mod tests {
 
     #[tokio::test]
     async fn mapper_preserves_host_context_dimension() {
-        let json_data = json!([{
+        let profiles = mapper_profiles!([{
           "name": "test",
           "prefix": "test.",
           "mappings": [
@@ -941,7 +910,7 @@ mod tests {
             .resolve_with_host("test.job.duration.worker", "host-b", &[] as &[&str], None)
             .expect("context should resolve");
 
-        let mut mapper = mapper(json_data).expect("should have parsed mapping config");
+        let mut mapper = mapper(profiles).expect("should have built mapper");
         let mapped_a = mapper.try_map(&context_a).expect("should have remapped");
         let mapped_b = mapper.try_map(&context_b).expect("should have remapped");
 
@@ -1037,30 +1006,30 @@ mod tests {
     async fn flood_of_identical_names_populates_single_cache_entry() {
         // Many profiles, only the last one matches the test metric. A flood of identical
         // names should be served from the cache after the first call.
-        let mut profiles: Vec<Value> = (0..50)
-            .map(|i| {
-                json!({
-                    "name": format!("noise-{}", i),
-                    "prefix": format!("noise{}.", i),
-                    "mappings": [{
-                        "match": format!("noise{}.*", i),
-                        "name": "noise.mapped"
-                    }]
-                })
+        let mut profiles: Vec<DogStatsDMapperProfile> = (0..50)
+            .map(|i| DogStatsDMapperProfile {
+                name: format!("noise-{i}"),
+                prefix: format!("noise{i}."),
+                mappings: vec![DogStatsDMetricMapping {
+                    metric_match: format!("noise{i}.*"),
+                    match_type: String::new(),
+                    name: "noise.mapped".to_string(),
+                    tags: HashMap::new(),
+                }],
             })
             .collect();
-        profiles.push(json!({
-            "name": "real",
-            "prefix": "real.",
-            "mappings": [{
-                "match": "real.metric.*",
-                "name": "real.mapped",
-                "tags": { "x": "$1" }
-            }]
-        }));
-        let json_data = Value::Array(profiles);
+        profiles.push(DogStatsDMapperProfile {
+            name: "real".to_string(),
+            prefix: "real.".to_string(),
+            mappings: vec![DogStatsDMetricMapping {
+                metric_match: "real.metric.*".to_string(),
+                match_type: String::new(),
+                name: "real.mapped".to_string(),
+                tags: [("x".to_string(), "$1".to_string())].into(),
+            }],
+        });
 
-        let mut mapper = mapper_with_cache(json_data, 16).expect("should have parsed mapping config");
+        let mut mapper = mapper_with_cache(profiles, 16).expect("should have built mapper");
 
         for _ in 0..10_000 {
             let metric = counter_metric("real.metric.flood", &[]);
@@ -1073,23 +1042,5 @@ mod tests {
             Some(1),
             "flood of identical names should populate exactly one cache entry"
         );
-    }
-}
-
-#[cfg(test)]
-mod config_smoke {
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use serde_json::json;
-
-    use super::DogStatsDMapperConfiguration;
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(structs::DOGSTATSD_MAPPER_CONFIGURATION, &[], json!({}), |cfg| {
-            cfg.as_typed::<DogStatsDMapperConfiguration>()
-                .expect("DogStatsDMapperConfiguration should deserialize")
-        })
-        .await
     }
 }

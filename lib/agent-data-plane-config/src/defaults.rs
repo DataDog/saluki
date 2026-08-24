@@ -25,6 +25,9 @@ pub const DEFAULT_AGGREGATE_FLUSH_INTERVAL: Duration = Duration::from_secs(15);
 /// Default delay before an idle passthrough buffer is flushed.
 pub const DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Default byte capacity of the DogStatsD mapper's string interner.
+pub const DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap();
+
 /// Default timeout before a partially filled encoder payload is flushed.
 pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 

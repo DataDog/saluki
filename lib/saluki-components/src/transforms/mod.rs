@@ -21,7 +21,7 @@ mod host_enrichment;
 pub use self::host_enrichment::HostEnrichmentConfiguration;
 
 mod dogstatsd_mapper;
-pub use self::dogstatsd_mapper::DogStatsDMapperConfiguration;
+pub use self::dogstatsd_mapper::{DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping};
 
 mod metric_router;
 pub use self::metric_router::MetricRouterConfiguration;
