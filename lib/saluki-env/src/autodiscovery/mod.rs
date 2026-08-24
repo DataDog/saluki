@@ -65,23 +65,36 @@ impl From<ProtoKubeNamespacedName> for KubeNamespacedName {
     }
 }
 
+/// Kubernetes endpoints identifier
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KubeEndpointsIdentifier {
+    /// Kubernetes endpoints resource
+    pub kube_namespaced_name: KubeNamespacedName,
+    /// Endpoints resolution mode
+    pub resolve: MetaString,
+}
+
 /// Advanced autodiscovery identifier
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdvancedADIdentifier {
     /// Kubernetes service
     pub kube_service: Option<KubeNamespacedName>,
     /// Kubernetes endpoints
-    pub kube_endpoints: Option<KubeNamespacedName>,
+    pub kube_endpoints: Option<KubeEndpointsIdentifier>,
 }
 
 impl From<ProtoAdvancedAdIdentifier> for AdvancedADIdentifier {
     fn from(value: ProtoAdvancedAdIdentifier) -> Self {
         Self {
             kube_service: value.kube_service.map(Into::into),
-            kube_endpoints: value
-                .kube_endpoints
-                .and_then(|endpoint| endpoint.kube_namespaced_name)
-                .map(Into::into),
+            kube_endpoints: value.kube_endpoints.and_then(|endpoints| {
+                endpoints
+                    .kube_namespaced_name
+                    .map(|namespaced_name| KubeEndpointsIdentifier {
+                        kube_namespaced_name: namespaced_name.into(),
+                        resolve: endpoints.resolve.into(),
+                    })
+            }),
         }
     }
 }
@@ -184,8 +197,32 @@ pub struct CheckConfig {
     pub init_config: Data,
     /// Instance configurations
     pub instances: Vec<Instance>,
+    /// Metric configuration
+    pub metric_config: Data,
+    /// Logs configuration
+    pub logs_config: Data,
+    /// Auto-discovery identifiers
+    pub ad_identifiers: Vec<MetaString>,
+    /// Advanced auto-discovery identifiers
+    pub advanced_ad_identifiers: Vec<AdvancedADIdentifier>,
+    /// Provider that discovered this config
+    pub provider: MetaString,
+    /// Service ID
+    pub service_id: MetaString,
+    /// Tagger entity
+    pub tagger_entity: MetaString,
+    /// Whether this is a cluster check
+    pub cluster_check: bool,
+    /// Node name
+    pub node_name: MetaString,
     /// Source of the configuration
     pub source: MetaString,
+    /// Whether to ignore autodiscovery tags
+    pub ignore_autodiscovery_tags: bool,
+    /// Whether metrics are excluded
+    pub metrics_excluded: bool,
+    /// Whether logs are excluded
+    pub logs_excluded: bool,
 }
 
 impl Config {
@@ -294,19 +331,49 @@ fn instance_name(instance: &Data) -> String {
 impl From<Config> for CheckConfig {
     fn from(config: Config) -> Self {
         let digest = config.digest();
+        let Config {
+            name,
+            init_config,
+            instances,
+            metric_config,
+            logs_config,
+            ad_identifiers,
+            advanced_ad_identifiers,
+            provider,
+            service_id,
+            tagger_entity,
+            cluster_check,
+            node_name,
+            source,
+            ignore_autodiscovery_tags,
+            metrics_excluded,
+            logs_excluded,
+        } = config;
+        let instances = instances
+            .into_iter()
+            .map(|instance_data| Instance {
+                id: instance_id(&name, &instance_data, digest, &init_config),
+                value: instance_data.value,
+            })
+            .collect();
 
-        CheckConfig {
-            name: config.name.clone(),
-            init_config: config.init_config.clone(),
-            instances: config
-                .instances
-                .into_iter()
-                .map(|instance_data| Instance {
-                    id: instance_id(&config.name, &instance_data, digest, &config.init_config),
-                    value: instance_data.value,
-                })
-                .collect(),
-            source: config.source,
+        Self {
+            name,
+            init_config,
+            instances,
+            metric_config,
+            logs_config,
+            ad_identifiers,
+            advanced_ad_identifiers,
+            provider,
+            service_id,
+            tagger_entity,
+            cluster_check,
+            node_name,
+            source,
+            ignore_autodiscovery_tags,
+            metrics_excluded,
+            logs_excluded,
         }
     }
 }
@@ -387,7 +454,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use datadog_protos::agent::{AdvancedAdIdentifier, KubeNamespacedName};
+    use datadog_protos::agent::{
+        AdvancedAdIdentifier, KubeEndpointsIdentifier as ProtoKubeEndpointsIdentifier, KubeNamespacedName,
+    };
 
     use super::*;
 
@@ -522,6 +591,46 @@ mod tests {
         let svc = adv_id.kube_service.as_ref().unwrap();
         assert_eq!(svc.name, "nginx");
         assert_eq!(svc.namespace, "default");
+    }
+
+    #[test]
+    fn test_advanced_ad_identifier_from_proto_retains_endpoints_resolve() {
+        fn proto_id(resolve: &str) -> AdvancedAdIdentifier {
+            AdvancedAdIdentifier {
+                kube_service: None,
+                kube_endpoints: Some(ProtoKubeEndpointsIdentifier {
+                    kube_namespaced_name: Some(KubeNamespacedName {
+                        name: "nginx".to_string(),
+                        namespace: "default".to_string(),
+                    }),
+                    resolve: resolve.to_string(),
+                }),
+            }
+        }
+
+        let adv_id = AdvancedADIdentifier::from(proto_id("ip"));
+
+        assert!(adv_id.kube_service.is_none());
+        let endpoints = adv_id.kube_endpoints.as_ref().expect("endpoints should be present");
+        assert_eq!(endpoints.kube_namespaced_name.name, "nginx");
+        assert_eq!(endpoints.kube_namespaced_name.namespace, "default");
+        assert_eq!(endpoints.resolve, "ip");
+
+        // Identifiers that only differ by their resolution mode must remain distinguishable.
+        assert_ne!(adv_id, AdvancedADIdentifier::from(proto_id("auto")));
+    }
+
+    #[test]
+    fn test_advanced_ad_identifier_from_proto_drops_endpoints_without_namespaced_name() {
+        let proto_id = AdvancedAdIdentifier {
+            kube_service: None,
+            kube_endpoints: Some(ProtoKubeEndpointsIdentifier {
+                kube_namespaced_name: None,
+                resolve: "ip".to_string(),
+            }),
+        };
+
+        assert!(AdvancedADIdentifier::from(proto_id).kube_endpoints.is_none());
     }
 
     #[test]
