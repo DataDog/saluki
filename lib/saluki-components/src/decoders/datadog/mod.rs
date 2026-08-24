@@ -109,7 +109,7 @@ struct DecodedChunk {
 /// Splits a big-endian trace ID byte string into its high and low 64-bit halves.
 ///
 /// IDs longer than 16 bytes use the final 16 bytes, matching `normalizeTraceChunkV1` in the
-/// reference Agent decoder; shorter IDs are right-aligned (high-order bytes treated as zero).
+/// reference decoder; shorter IDs are right-aligned (high-order bytes treated as zero).
 fn split_trace_id(id: &[u8]) -> (u64, u64) {
     let mut buf = [0u8; 16];
     if id.len() >= 16 {
