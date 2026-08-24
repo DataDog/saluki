@@ -21,7 +21,7 @@ use agent_data_plane_config::{
 use async_trait::async_trait;
 use saluki_common::{
     cache::{Cache, CacheBuilder},
-    collections::{FastHashMap, FastHashSet},
+    collections::{find_matching_prefix, FastHashMap, FastHashSet},
 };
 use saluki_context::{tags::Tag, Context, TagSetMutViewState};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -85,14 +85,6 @@ impl CompiledValuePrefixFilters {
 
     fn rule_count(&self) -> usize {
         self.0.iter().map(|filter| filter.value_allowlists.len()).sum()
-    }
-}
-
-fn find_matching_prefix<'a, T>(entries: &'a [T], value: &str, prefix: impl Fn(&T) -> &str) -> Option<&'a T> {
-    match entries.binary_search_by(|candidate| prefix(candidate).cmp(value)) {
-        Ok(index) => Some(&entries[index]),
-        Err(index) if index > 0 && value.starts_with(prefix(&entries[index - 1])) => Some(&entries[index - 1]),
-        _ => None,
     }
 }
 
