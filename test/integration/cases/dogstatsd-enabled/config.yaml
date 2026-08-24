@@ -1,6 +1,6 @@
 type: integration
 name: "dogstatsd-enabled"
-description: "Verifies DogStatsD pipeline starts and listens on UDP port"
+description: "Verifies DogStatsD pipeline starts and listens on UDP port, and that a fatal OTLP TLS config does not crash ADP when OTLP is disabled"
 timeout: 120s
 runtimes: [linux, mac, windows]
 
@@ -11,6 +11,10 @@ env:
   DD_DATA_PLANE_STANDALONE_MODE: "false"
   DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
   DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  # Set a fatal OTLP TLS config (cert_file without key_file) to verify that ADP does not bail when
+  # OTLP is not enabled. If a regression causes ADP to validate OTLP TLS config even when OTLP is off,
+  # this test will catch it.
+  DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE: "/nonexistent/cert.pem"
 
 container:
   exposed_ports:
