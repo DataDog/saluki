@@ -483,13 +483,27 @@ impl TransformBuilder for AggregateConfiguration {
 
 impl MemoryBounds for AggregateConfiguration {
     fn specify_bounds(&self, builder: &mut MemoryBoundsBuilder) {
-        // TODO: While we account for the aggregation state map accurately, what we don't currently account for is the
-        // fact that a metric could have multiple distinct values. For the common pipeline of metrics in via DogStatsD,
-        // this generally shouldn't be a problem because the values don't have a timestamp, so they get aggregated into
-        // the same bucket, leading to two values per `MetricValues` at most, which is already baked into the size of
-        // `MetricValues` due to using `SmallVec`.
-        //
-        // However, there could be many more values in a single metric, and we don't account for that.
+        // Scalar points use four inline SmallVec slots. A shorter configured interval can retain
+        // more buckets between flushes, so account for the slots that spill to the heap. This is a
+        // conservative per-context estimate: non-scalar metric values retain their existing,
+        // workload-dependent accounting limitation.
+        const INLINE_SCALAR_POINTS: usize = 4;
+        let minimum_interval_seconds = self
+            .metric_intervals
+            .iter()
+            .map(|rule| rule.interval_seconds)
+            .chain(std::iter::once(self.window_duration_seconds.get()))
+            .min()
+            .expect("the default aggregation interval is always present");
+        let interval_nanos = u128::from(minimum_interval_seconds) * 1_000_000_000;
+        let retained_scalar_points = self
+            .primary_flush_interval
+            .as_nanos()
+            .div_ceil(interval_nanos)
+            .saturating_add(1)
+            .min(usize::MAX as u128) as usize;
+        let spilled_scalar_points = retained_scalar_points.saturating_sub(INLINE_SCALAR_POINTS);
+        let scalar_point_size = std::mem::size_of::<Option<NonZeroU64>>() + std::mem::size_of::<f64>();
 
         builder
             .minimum()
@@ -504,6 +518,15 @@ impl MemoryBounds for AggregateConfiguration {
                     "context map entry",
                     UsageExpr::struct_size::<Context>("context"),
                     UsageExpr::struct_size::<AggregatedMetric>("aggregated metric"),
+                ),
+                UsageExpr::config("aggregate_context_limit", self.context_limit),
+            ))
+            .with_expr(UsageExpr::product(
+                "spilled scalar aggregation points",
+                UsageExpr::product(
+                    "spilled scalar points per context",
+                    UsageExpr::constant("scalar point", scalar_point_size),
+                    UsageExpr::constant("point count", spilled_scalar_points),
                 ),
                 UsageExpr::config("aggregate_context_limit", self.context_limit),
             ))
@@ -1758,6 +1781,30 @@ mod tests {
         assert_eq!(
             bounds.total_firm_limit_bytes(),
             expected_minimum + aggregation_state_bytes + context_snapshot_bytes
+        );
+    }
+
+    #[test]
+    fn aggregate_memory_bounds_include_short_interval_scalar_spill() {
+        let mut config = AggregateConfiguration::with_defaults();
+        config.context_limit = 17;
+        config.metric_intervals = vec![MetricAggregationInterval {
+            metric_prefix: "high_resolution.".to_string(),
+            interval_seconds: 1,
+        }];
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let bounds = registry.as_bounds();
+
+        let aggregation_state_bytes = config.context_limit * (size_of::<Context>() + size_of::<AggregatedMetric>());
+        let context_snapshot_bytes = config.context_limit * size_of::<AggregateContextSnapshotEntry>();
+        // A 15-second flush cadence retains at most 16 one-second buckets including the open
+        // bucket. ScalarPoints stores four inline, leaving twelve heap slots per context.
+        let scalar_spill_bytes = config.context_limit * 12 * (size_of::<Option<NonZeroU64>>() + size_of::<f64>());
+
+        assert_eq!(
+            bounds.total_firm_limit_bytes(),
+            size_of::<Aggregate>() + aggregation_state_bytes + context_snapshot_bytes + scalar_spill_bytes
         );
     }
 
