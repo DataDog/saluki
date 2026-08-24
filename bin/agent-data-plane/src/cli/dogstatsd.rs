@@ -35,7 +35,9 @@ use tokio::net::UnixDatagram;
 use tokio_util::sync::CancellationToken;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 use tracing::debug;
-use tracing::{error, info, warn};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tracing::warn;
+use tracing::{error, info};
 
 use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
 
@@ -680,9 +682,11 @@ mod tests {
     #[cfg(windows)]
     use tokio::{io::AsyncReadExt as _, net::windows::named_pipe::ServerOptions};
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    use super::ReplaySender;
     use super::{
         compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_replay_target,
-        dogstatsd_socket_path, ReplaySender, ReplayTarget, TimestampResolution,
+        dogstatsd_socket_path, ReplayTarget, TimestampResolution,
     };
 
     #[test]
