@@ -935,6 +935,13 @@ impl AggregationState {
             return false;
         }
 
+        // An empty state has no counters to keep alive. If the lane was skipped while empty, its
+        // last flush can be arbitrarily old; carrying that timestamp into a newly inserted counter
+        // would synthesize zero buckets from before the counter existed.
+        if self.contexts.is_empty() {
+            self.last_flush = 0;
+        }
+
         let (context, mut values, metadata) = metric.into_parts();
 
         // Collapse all non-timestamped values into a single timestamped value.
@@ -2095,6 +2102,38 @@ mod tests {
         assert_eq!(flushed.len(), 2);
         assert!(!state.context_limit_breached());
         assert!(state.insert(71, Metric::gauge("default.two", 1.0)));
+    }
+
+    #[tokio::test]
+    async fn reusing_an_empty_lane_does_not_backfill_counter_zeros() {
+        let rules = vec![MetricAggregationInterval {
+            metric_prefix: "fast.".to_string(),
+            interval_seconds: 1,
+        }];
+        let mut state = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            Some(Duration::from_secs(300)),
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert!(state.insert(1, Metric::gauge("fast.previous", 1.0)));
+        let flushed = get_flushed_lane_metrics(2, false, &mut state).await;
+        assert_eq!(flushed.len(), 1);
+        assert!(state
+            .states
+            .get(&NonZeroU64::new(1).unwrap())
+            .expect("fast lane exists")
+            .is_empty());
+
+        let counter = Metric::counter("fast.counter", 7.0);
+        assert!(state.insert(1_000, counter.clone()));
+        let flushed = get_flushed_lane_metrics(1_001, false, &mut state).await;
+
+        assert_eq!(flushed.len(), 1);
+        assert_flushed_scalar_metric!(&counter, &flushed[0], [1_000 => 7.0]);
     }
 
     #[test]
