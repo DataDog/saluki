@@ -3912,7 +3912,7 @@ mod tests {
         let (pool, shrinker) = build_io_buffer_pool(1, 1, default_buffer_size());
         let (packets_tx, mut packets_rx) = mpsc::channel(1);
         let reader = tokio::spawn(receive_connected_stream(
-            Stream::from(receiver),
+            Stream::from((receiver, ProcessIdentity::Unavailable)),
             pool,
             MemoryLimiter::noop(),
             false,
@@ -3959,7 +3959,7 @@ mod tests {
         let (pool, shrinker) = build_io_buffer_pool(1, 1, default_buffer_size());
         let (packets_tx, mut packets_rx) = mpsc::channel(1);
         let reader = tokio::spawn(receive_connected_stream(
-            Stream::from(receiver),
+            Stream::from((receiver, ProcessIdentity::Unavailable)),
             pool,
             MemoryLimiter::noop(),
             false,

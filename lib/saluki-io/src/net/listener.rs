@@ -1,5 +1,13 @@
 //! Network listeners.
-use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize};
+use std::{
+    collections::VecDeque,
+    future::pending,
+    io,
+    net::SocketAddr,
+    num::NonZeroUsize,
+    pin::Pin,
+    task::{ready, Context, Poll},
+};
 #[cfg(windows)]
 use std::{ffi::c_void, mem, ptr};
 
@@ -7,7 +15,12 @@ use snafu::{ResultExt as _, Snafu};
 use socket2::SockRef;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{NamedPipeServer, ServerOptions};
+#[cfg(unix)]
+use tokio::net::UnixStream;
 use tokio::net::{TcpListener, UdpSocket as TokioUdpSocket};
+use tokio_util::sync::ReusableBoxFuture;
+#[cfg(unix)]
+use tracing::debug;
 use tracing::warn;
 #[cfg(windows)]
 use windows_sys::Win32::{
@@ -26,6 +39,8 @@ use super::{
     addr::ListenAddress,
     stream::{Connection, Stream},
 };
+#[cfg(unix)]
+use super::{ProcessCredentialsError, ProcessIdentity};
 
 const SOCKET_RECV_BUFFER_SIZE_SETTING: &str = "SO_RCVBUF";
 
@@ -113,7 +128,7 @@ enum ListenerInner {
 /// `Listener` is a abstract listener that works in conjunction with `Stream`, providing the ability to listen on
 /// arbitrary addresses and accept new streams of that address family.
 ///
-/// ## Connection-oriented vs connectionless listeners
+/// # Connection-oriented vs connectionless listeners
 ///
 /// For listeners on connection-oriented address families (for example, TCP, Unix domain sockets in stream mode), the listener
 /// will listen for and accept new connections in the typical fashion. However, for connectionless address families
@@ -121,7 +136,7 @@ enum ListenerInner {
 /// continually "accepted." Instead, `Listener` will emit a single `Stream` that can be used to send and receive data
 /// from multiple remote peers.
 ///
-/// ## UDP autoscaling
+/// # UDP autoscaling
 ///
 /// On Linux, UDP listeners can be configured to bind multiple sockets to the same address using `SO_REUSEPORT`,
 /// allowing the kernel to load-balance incoming datagrams across them. The configured number of sockets are yielded
@@ -136,7 +151,7 @@ pub struct Listener {
 impl Listener {
     /// Creates a new `Listener` from the given listen address.
     ///
-    /// ## UDP streams
+    /// # UDP streams
     ///
     /// For UDP listen addresses, `udp_streams` controls how many sockets are bound to the address and how many
     /// `Stream`s the listener will yield from [`accept`](Self::accept) before going pending forever. `None` behaves
@@ -148,7 +163,7 @@ impl Listener {
     ///
     /// For non-UDP listen addresses, `udp_streams` is ignored.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the listen address can't be bound, or if the listener can't be configured correctly, an error is returned.
     pub async fn from_listen_address(
@@ -294,7 +309,7 @@ impl Listener {
     /// to that remote peer. For connectionless address families, this will yield up to the configured number of
     /// pre-bound `Stream`s—one per call—before returning pending forever.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the listener fails to accept a new stream, or if the accepted stream can't be configured correctly, an error
     /// is returned.
@@ -330,20 +345,15 @@ impl Listener {
                 }
             }
             #[cfg(unix)]
-            ListenerInner::Unix(unix) => unix
-                .accept()
-                .await
-                .context(FailedToAccept {
+            ListenerInner::Unix(unix) => {
+                let (socket, _) = unix.accept().await.context(FailedToAccept {
                     address: self.listen_address.clone(),
-                })
-                .and_then(|(socket, _)| {
-                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
-                    enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
-                        setting: "SO_PASSCRED",
-                        stream_type,
-                    })?;
-                    Ok(socket.into())
-                }),
+                })?;
+                configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
+                let ident = get_peer_process_identity(&socket);
+
+                Ok((socket, ident).into())
+            }
             #[cfg(windows)]
             ListenerInner::NamedPipe {
                 server,
@@ -517,7 +527,7 @@ pub struct ConnectionOrientedListener {
 impl ConnectionOrientedListener {
     /// Creates a new `ConnectionOrientedListener` from the given listen address.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the listen address isn't a connection-oriented address family, or if the listen address can't be bound, or
     /// if the listener can't be configured correctly, an error is returned.
@@ -585,7 +595,7 @@ impl ConnectionOrientedListener {
 
     /// Accepts a new connection from the listener.
     ///
-    /// ## Errors
+    /// # Errors
     ///
     /// If the listener fails to accept a new connection, or if the accepted connection can't be configured correctly,
     /// an error is returned.
@@ -602,17 +612,81 @@ impl ConnectionOrientedListener {
             ConnectionOrientedListenerInner::Unix(unix) => unix
                 .accept()
                 .await
+                .map(|(stream, _)| {
+                    let ident = get_peer_process_identity(&stream);
+
+                    Connection::Unix(stream, ident)
+                })
                 .context(FailedToAccept {
                     address: self.listen_address.clone(),
-                })
-                .and_then(|(socket, _)| {
-                    let stream_type = self.listen_address.listener_type();
-                    enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
-                        setting: "SO_PASSCRED",
-                        stream_type,
-                    })?;
-                    Ok(Connection::Unix(socket))
                 }),
+        }
+    }
+
+    /// Consumes the listener and converts it to [`ConnectionOrientedListenerStream`].
+    ///
+    /// See [`ConnectionOrientedListenerStream`] for the semantics of the returned stream.
+    pub fn into_stream(self) -> ConnectionOrientedListenerStream {
+        ConnectionOrientedListenerStream::from(self)
+    }
+}
+
+/// A wrapper over [`ConnectionOrientedListener`] that implements [`Stream`][futures::Stream].
+///
+/// This wrapper emits items of the same type as [`ConnectionOrientedListener::accept`] but in a form that is amenable
+/// to using with libraries/types that require a [`Stream`], such as `tonic` or `hyper`.
+///
+/// # Termination and errors
+///
+/// The stream never terminates: `poll_next` never returns `None`. Errors are yielded as items, matching the return type
+/// of [`ConnectionOrientedListener::accept`], so it's up to the caller to decide whether an error is fatal or whether
+/// to keep polling.
+///
+/// The behavior of [`ConnectionOrientedListener::accept`] otherwise carries over unchanged.
+pub struct ConnectionOrientedListenerStream {
+    inner: ReusableBoxFuture<'static, (Result<Connection, ListenerError>, ConnectionOrientedListener)>,
+}
+
+impl From<ConnectionOrientedListener> for ConnectionOrientedListenerStream {
+    fn from(value: ConnectionOrientedListener) -> Self {
+        Self {
+            inner: ReusableBoxFuture::new(accept_next_connection(value)),
+        }
+    }
+}
+
+impl futures::Stream for ConnectionOrientedListenerStream {
+    type Item = Result<Connection, ListenerError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let (result, listener) = ready!(self.inner.poll(cx));
+        self.inner.set(accept_next_connection(listener));
+
+        Poll::Ready(Some(result))
+    }
+}
+
+async fn accept_next_connection(
+    mut listener: ConnectionOrientedListener,
+) -> (Result<Connection, ListenerError>, ConnectionOrientedListener) {
+    let result = listener.accept().await;
+    (result, listener)
+}
+
+/// Queries the process identity of the peer on the other end of an accepted Unix domain socket connection.
+///
+/// For stream-oriented UDS, we simply query the peer credentials once after accepting the connection to avoid the
+/// per-message overhead. We explicitly ignore any scenarios where the peer might be reusing the socket file descriptor
+/// across multiple processes.
+///
+/// We don't treat failure to query the peer credentials as an error.
+#[cfg(unix)]
+fn get_peer_process_identity(socket: &UnixStream) -> ProcessIdentity {
+    match socket.peer_cred() {
+        Ok(cred) => ProcessIdentity::from(cred),
+        Err(e) => {
+            debug!(error = %e, "Failed to query peer credentials for accepted Unix domain socket connection.");
+            ProcessIdentity::Error(ProcessCredentialsError::InvalidCredentials)
         }
     }
 }
@@ -622,6 +696,8 @@ mod tests {
     use std::time::Duration;
 
     use bytes::BytesMut;
+    #[cfg(unix)]
+    use futures::StreamExt as _;
     use tokio::{net::TcpStream, time::timeout};
 
     use super::*;
@@ -878,6 +954,32 @@ mod tests {
                 "expected receive buffer size >= {REQUESTED_RECV_BUFFER_SIZE}, got {buf_size}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connection_oriented_listener_stream_yields_accepted_connections() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = temp_dir.path().join("connection-oriented-stream.sock");
+        let address = ListenAddress::Unix(socket_path.clone());
+        let listener = ConnectionOrientedListener::from_listen_address(address)
+            .await
+            .expect("listener should bind");
+
+        let client = tokio::spawn(async move { tokio::net::UnixStream::connect(socket_path).await });
+
+        let mut listener_stream = listener.into_stream();
+        let connection = timeout(Duration::from_secs(1), listener_stream.next())
+            .await
+            .expect("next should not time out")
+            .expect("stream should never terminate")
+            .expect("listener should accept UDS connection");
+        assert!(matches!(connection, Connection::Unix(_, _)));
+
+        client
+            .await
+            .expect("client task should complete")
+            .expect("client should connect");
     }
 
     #[cfg(target_os = "linux")]

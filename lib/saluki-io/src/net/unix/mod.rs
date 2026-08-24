@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::BufMut;
-use tokio::net::{UnixDatagram, UnixStream};
+use tokio::net::UnixDatagram;
 use tracing::trace;
 
 #[cfg(target_os = "linux")]
@@ -79,31 +79,6 @@ pub async fn ensure_unix_socket_free<P: AsRef<Path>>(path: P) -> io::Result<()> 
 /// If the underlying system call fails, an error is returned.
 pub async fn set_unix_socket_write_only<P: AsRef<Path>>(path: P) -> io::Result<()> {
     tokio::fs::set_permissions(path, Permissions::from_mode(0o722)).await
-}
-
-/// Receives data from the Unix domain socket.
-///
-/// This function is specifically for Unix domain sockets in stream mode (that's, SOCK_STREAM), which are represented via
-/// `UnixStream` in `tokio`.
-///
-/// On success, returns the number of bytes read and the address from whence the data came.
-///
-/// ## Errors
-///
-/// If the underlying system call fails, an error is returned.
-pub async fn unix_recvmsg<B: BufMut>(socket: &mut UnixStream, buf: &mut B) -> io::Result<(usize, ConnectionAddress)> {
-    // TODO: We technically don't need to do this for SOCK_STREAM because we can do it once when the
-    // connection is accepted, and then just do "normal" reads after that. We do still need to do it
-    // for SOCK_DGRAM, though... so we might want to actually consider updating our `socket2` PR to
-    // include support for even setting SO_PASSCRED (or the OS-specific equivalent) to also include
-    // macOS and FreeBSD (*BSD, really) so that this also works correctly for all
-    // `cfg(unix)`-capable platforms.
-
-    // We manually call `recvmsg` on our domain socket as stdlib/`mio`/`tokio` don't yet expose a way to do out-of-band
-    // reads to get ancillary data such as the socket credentials used to shuttle origin detection information.
-    socket
-        .async_io(tokio::io::Interest::READABLE, || uds_recvmsg(socket, buf))
-        .await
 }
 
 /// Receives data from the Unix domain socket.

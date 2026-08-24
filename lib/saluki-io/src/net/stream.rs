@@ -9,14 +9,18 @@ use bytes::BufMut;
 use pin_project::pin_project;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::NamedPipeServer;
+#[cfg(unix)]
+use tokio::net::{UnixDatagram, UnixStream};
 use tokio::{
     io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf},
     net::{TcpStream, UdpSocket},
 };
+use tonic::transport::server::Connected;
 
-use super::addr::{ConnectionAddress, ProcessIdentity};
+use super::addr::ConnectionAddress;
 #[cfg(unix)]
-use super::unix::{unix_recvmsg, unixgram_recvmsg};
+use super::unix::unixgram_recvmsg;
+use crate::net::ProcessIdentity;
 
 /// A connection-oriented socket.
 ///
@@ -29,7 +33,7 @@ pub enum Connection {
 
     /// A Unix domain socket in stream mode (SOCK_STREAM).
     #[cfg(unix)]
-    Unix(#[pin] tokio::net::UnixStream),
+    Unix(#[pin] tokio::net::UnixStream, ProcessIdentity),
 
     /// A Windows named pipe in byte stream mode.
     #[cfg(windows)]
@@ -41,7 +45,7 @@ impl Connection {
         match self {
             Self::Tcp(inner, addr) => inner.read_buf(buf).await.map(|n| (n, (*addr).into())),
             #[cfg(unix)]
-            Self::Unix(inner) => unix_recvmsg(inner, buf).await,
+            Self::Unix(inner, ident) => inner.read_buf(buf).await.map(|n| (n, (*ident).into())),
             #[cfg(windows)]
             Self::NamedPipe(inner) => inner
                 .read_buf(buf)
@@ -52,9 +56,9 @@ impl Connection {
 
     pub(super) fn remote_addr(&self) -> ConnectionAddress {
         match self {
-            Self::Tcp(_, addr) => ConnectionAddress::SocketLike(*addr),
+            Self::Tcp(_, addr) => (*addr).into(),
             #[cfg(unix)]
-            Self::Unix(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
+            Self::Unix(_, ident) => (*ident).into(),
             #[cfg(windows)]
             Self::NamedPipe(_) => ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable),
         }
@@ -66,7 +70,7 @@ impl AsyncRead for Connection {
         match self.project() {
             ConnectionProjected::Tcp(inner, _) => inner.poll_read(cx, buf),
             #[cfg(unix)]
-            ConnectionProjected::Unix(inner) => inner.poll_read(cx, buf),
+            ConnectionProjected::Unix(inner, _) => inner.poll_read(cx, buf),
             #[cfg(windows)]
             ConnectionProjected::NamedPipe(inner) => inner.poll_read(cx, buf),
         }
@@ -78,7 +82,7 @@ impl AsyncWrite for Connection {
         match self.project() {
             ConnectionProjected::Tcp(inner, _) => inner.poll_write(cx, buf),
             #[cfg(unix)]
-            ConnectionProjected::Unix(inner) => inner.poll_write(cx, buf),
+            ConnectionProjected::Unix(inner, _) => inner.poll_write(cx, buf),
             #[cfg(windows)]
             ConnectionProjected::NamedPipe(inner) => inner.poll_write(cx, buf),
         }
@@ -88,7 +92,7 @@ impl AsyncWrite for Connection {
         match self.project() {
             ConnectionProjected::Tcp(inner, _) => inner.poll_flush(cx),
             #[cfg(unix)]
-            ConnectionProjected::Unix(inner) => inner.poll_flush(cx),
+            ConnectionProjected::Unix(inner, _) => inner.poll_flush(cx),
             #[cfg(windows)]
             ConnectionProjected::NamedPipe(inner) => inner.poll_flush(cx),
         }
@@ -98,10 +102,22 @@ impl AsyncWrite for Connection {
         match self.project() {
             ConnectionProjected::Tcp(inner, _) => inner.poll_shutdown(cx),
             #[cfg(unix)]
-            ConnectionProjected::Unix(inner) => inner.poll_shutdown(cx),
+            ConnectionProjected::Unix(inner, _) => inner.poll_shutdown(cx),
             #[cfg(windows)]
             ConnectionProjected::NamedPipe(inner) => inner.poll_shutdown(cx),
         }
+    }
+}
+
+/// Exposes the remote peer's address to gRPC/HTTP services as a request extension.
+///
+/// For TCP, this is the peer's socket address. For Unix domain sockets, it's the peer's process identity, captured once
+/// from `SO_PEERCRED` when the connection was accepted, and so fixed for the life of the connection.
+impl Connected for Connection {
+    type ConnectInfo = ConnectionAddress;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.remote_addr()
     }
 }
 
@@ -139,14 +155,14 @@ enum StreamInner {
 /// not required to know the exact socket family (for example, TCP, UDP, Unix domain socket) that's being used, and it can be
 /// beneficial to allow abstracting over the differences to facilitate simpler code.
 ///
-/// ## Connection-oriented mode
+/// # Connection-oriented mode
 ///
 /// In connection-oriented mode, the stream is backed by a socket that operates in a connection-oriented manner, which
 /// ensures a reliable, ordered stream of messages to and from the remote peer.
 ///
 /// The connection address returned when receiving data _should_ be stable for the life of the `Stream`.
 ///
-/// ## Connectionless mode
+/// # Connectionless mode
 ///
 /// In connectionless mode, the stream is backed by a socket that operates in a connectionless manner, which doesn't
 /// provide any assurances around reliability and ordering of messages to and from the remote peer. While a stream might
@@ -182,7 +198,7 @@ impl Stream {
             StreamInner::Connection { socket } => match socket {
                 Connection::Tcp(inner, _) => socket2::SockRef::from(inner).recv_buffer_size(),
                 #[cfg(unix)]
-                Connection::Unix(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
+                Connection::Unix(inner, _) => socket2::SockRef::from(inner).recv_buffer_size(),
                 #[cfg(windows)]
                 Connection::NamedPipe(_) => Ok(0),
             },
@@ -216,8 +232,8 @@ impl From<UdpSocket> for Stream {
 }
 
 #[cfg(unix)]
-impl From<tokio::net::UnixDatagram> for Stream {
-    fn from(socket: tokio::net::UnixDatagram) -> Self {
+impl From<UnixDatagram> for Stream {
+    fn from(socket: UnixDatagram) -> Self {
         Self {
             inner: StreamInner::Connectionless {
                 socket: Connectionless::Unixgram(socket),
@@ -227,11 +243,11 @@ impl From<tokio::net::UnixDatagram> for Stream {
 }
 
 #[cfg(unix)]
-impl From<tokio::net::UnixStream> for Stream {
-    fn from(stream: tokio::net::UnixStream) -> Self {
+impl From<(UnixStream, ProcessIdentity)> for Stream {
+    fn from((stream, ident): (UnixStream, ProcessIdentity)) -> Self {
         Self {
             inner: StreamInner::Connection {
-                socket: Connection::Unix(stream),
+                socket: Connection::Unix(stream, ident),
             },
         }
     }
@@ -245,5 +261,56 @@ impl From<NamedPipeServer> for Stream {
                 socket: Connection::NamedPipe(stream),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn connection_connect_info_tcp_peer_address() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener should bind");
+        let local_addr = listener.local_addr().expect("listener should have a local address");
+
+        let client = TcpStream::connect(local_addr).await.expect("client should connect");
+        let client_addr = client.local_addr().expect("client should have a local address");
+
+        let (socket, peer_addr) = listener.accept().await.expect("listener should accept");
+        let connection = Connection::Tcp(socket, peer_addr);
+
+        match connection.connect_info() {
+            ConnectionAddress::SocketLike(addr) => assert_eq!(addr, client_addr),
+            other => panic!("expected a socket-like address, got {other}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn connection_connect_info_uds_peer_address() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = temp_dir.path().join("connect-info.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).expect("listener should bind");
+
+        let _client = tokio::net::UnixStream::connect(&socket_path)
+            .await
+            .expect("client should connect");
+        let (socket, _) = listener.accept().await.expect("listener should accept");
+        let ident = socket
+            .peer_cred()
+            .map(ProcessIdentity::from)
+            .expect("process credentials should be present");
+        let connection = Connection::Unix(socket, ident);
+
+        let connect_info = connection.connect_info();
+        assert!(connect_info.process_credentials().is_some());
+
+        // Make sure the matched process ID of the "peer" is actually us. Our cast is theoretically lossy
+        // but in reality, systems will have a max PID of 4 million or so, so there's practically _zero_
+        // risk of somehow over/underflowing when casting from signed to unsigned.
+        let peer_creds = connect_info.process_credentials().unwrap();
+        assert_eq!(std::process::id(), peer_creds.pid as u32)
     }
 }

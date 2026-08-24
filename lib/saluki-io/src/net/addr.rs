@@ -250,7 +250,7 @@ impl<'a> TryFrom<&'a str> for ListenAddress {
 ///
 /// In some cases, this information can be useful for identifying the remote peer and enriching the received data in an
 /// automatic way.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct ProcessCredentials {
     /// Process ID of the remote peer.
     pub pid: i32,
@@ -297,7 +297,7 @@ impl fmt::Display for ProcessCredentialsError {
 }
 
 /// Process identity associated with a Unix domain socket peer.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub enum ProcessIdentity {
     /// Process credentials were detected.
     Credentials(ProcessCredentials),
@@ -329,6 +329,25 @@ impl ProcessIdentity {
             self,
             Self::Error(ProcessCredentialsError::InvalidCredentials | ProcessCredentialsError::ZeroPid)
         )
+    }
+}
+
+/// Converts the raw components of socket peer credentials into a process identity.
+#[cfg(unix)]
+fn process_identity_from_parts(pid: Option<i32>, uid: u32, gid: u32) -> ProcessIdentity {
+    match pid {
+        // `SO_PEERCRED` reports a PID of zero when the peer's PID can't be translated into our PID namespace. Treat
+        // that the same way the per-message credentials path does: as a detection failure, not as a usable PID.
+        Some(0) => ProcessIdentity::Error(ProcessCredentialsError::ZeroPid),
+        Some(pid) => ProcessIdentity::Credentials(ProcessCredentials { pid, uid, gid }),
+        None => ProcessIdentity::Unavailable,
+    }
+}
+
+#[cfg(unix)]
+impl From<tokio::net::unix::UCred> for ProcessIdentity {
+    fn from(value: tokio::net::unix::UCred) -> Self {
+        process_identity_from_parts(value.pid(), value.uid(), value.gid())
     }
 }
 
@@ -395,6 +414,12 @@ impl From<SocketAddr> for ConnectionAddress {
 impl From<ProcessCredentials> for ConnectionAddress {
     fn from(creds: ProcessCredentials) -> Self {
         Self::ProcessLike(ProcessIdentity::Credentials(creds))
+    }
+}
+
+impl From<ProcessIdentity> for ConnectionAddress {
+    fn from(value: ProcessIdentity) -> Self {
+        Self::ProcessLike(value)
     }
 }
 
@@ -508,6 +533,40 @@ mod tests {
 
         assert!(peer_addr.has_process_credential_error());
         assert!(peer_addr.has_process_credential_telemetry_error());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn peer_credentials_with_a_pid_are_usable() {
+        match process_identity_from_parts(Some(1234), 1000, 2000) {
+            ProcessIdentity::Credentials(creds) => {
+                assert_eq!(creds.pid, 1234);
+                assert_eq!(creds.uid, 1000);
+                assert_eq!(creds.gid, 2000);
+            }
+            _ => panic!("expected credentials to be detected"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn peer_credentials_with_a_zero_pid_are_a_telemetry_error() {
+        // A zero PID means the kernel couldn't translate the peer's PID into our PID namespace, so there's no usable
+        // origin here even though the credentials themselves came back "successfully."
+        let peer_addr = ConnectionAddress::from(process_identity_from_parts(Some(0), 1000, 2000));
+
+        assert!(peer_addr.process_credentials().is_none());
+        assert!(peer_addr.has_process_credential_error());
+        assert!(peer_addr.has_process_credential_telemetry_error());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn peer_credentials_without_a_pid_are_unavailable() {
+        let peer_addr = ConnectionAddress::from(process_identity_from_parts(None, 1000, 2000));
+
+        assert!(peer_addr.process_credentials().is_none());
+        assert!(!peer_addr.has_process_credential_error());
     }
 
     #[test]

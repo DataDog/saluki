@@ -6,18 +6,11 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_core::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
 use saluki_error::ErrorContext as _;
 use tokio::{pin, select, sync::oneshot, time::timeout};
-use tonic::{
-    body::Body,
-    server::NamedService,
-    service::Routes,
-    transport::{server::TcpIncoming, Server},
-};
+use tonic::{body::Body, server::NamedService, service::Routes, transport::Server};
 use tower::Service;
 use tracing::warn;
 
-#[cfg(unix)]
-use crate::net::unix::{ensure_unix_socket_free, set_unix_socket_write_only};
-use crate::net::ListenAddress;
+use crate::net::{listener::ConnectionOrientedListener, ListenAddress};
 
 /// A gRPC server.
 ///
@@ -43,6 +36,9 @@ pub struct GrpcServer {
 
 impl GrpcServer {
     /// Creates an empty server with no attached services, configured to listen on the given address.
+    ///
+    /// Only connection-oriented listen addresses -- TCP and Unix domain sockets in stream mode -- can carry gRPC. Any
+    /// other address family is rejected when the server is initialized, not here.
     pub fn new(listen_addr: ListenAddress) -> Self {
         Self {
             listen_addr,
@@ -96,80 +92,38 @@ impl Supervisable for GrpcServer {
         let routes = self.routes.clone().unwrap_or_default();
         let shutdown_timeout = self.graceful_shutdown_timeout.unwrap_or(Duration::MAX);
 
-        match &self.listen_addr {
-            ListenAddress::Tcp(addr) => {
-                let listener = TcpIncoming::bind(*addr)
-                    .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
+        // `ConnectionOrientedListener` handles the transport-specific details of binding -- including clearing and
+        // permissioning the socket file for Unix addresses -- and rejects any address family that can't carry gRPC.
+        let listener = ConnectionOrientedListener::from_listen_address(self.listen_addr.clone())
+            .await
+            .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", self.listen_addr))?;
+        let incoming = listener.into_stream();
 
-                Ok(Box::pin(async move {
-                    let (drain_tx, drain_rx) = oneshot::channel();
-                    let serve = Server::default().serve_with_incoming_shutdown(routes, listener, async move {
-                        let _ = drain_rx.await;
-                    });
+        Ok(Box::pin(async move {
+            let (drain_tx, drain_rx) = oneshot::channel();
+            let serve = Server::default().serve_with_incoming_shutdown(routes, incoming, async move {
+                let _ = drain_rx.await;
+            });
 
-                    pin!(serve, process_shutdown);
+            pin!(serve, process_shutdown);
 
-                    select! {
-                        result = &mut serve => result.error_context("Failed to serve gRPC server."),
+            select! {
+                result = &mut serve => result.error_context("Failed to serve gRPC server."),
 
-                        _ = &mut process_shutdown => {
-                            let _ = drain_tx.send(());
+                _ = &mut process_shutdown => {
+                    let _ = drain_tx.send(());
 
-                            match timeout(shutdown_timeout, serve).await {
-                                Ok(Ok(())) => Ok(()),
-                                Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
-                                Err(_) => {
-                                    warn!("Failed to gracefully drain gRPC connections.");
-                                    Ok(())
-                                },
-                            }
+                    match timeout(shutdown_timeout, serve).await {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
+                        Err(_) => {
+                            warn!("Failed to gracefully drain gRPC connections.");
+                            Ok(())
                         },
                     }
-                }))
+                },
             }
-            #[cfg(unix)]
-            ListenAddress::Unix(path) => {
-                let path = path.clone();
-                ensure_unix_socket_free(&path)
-                    .await
-                    .with_error_context(|| format!("Failed to clear gRPC Unix socket '{}'.", path.display()))?;
-                let listener = tokio::net::UnixListener::bind(&path)
-                    .with_error_context(|| format!("Failed to bind gRPC Unix listener on '{}'.", path.display()))?;
-                set_unix_socket_write_only(&path).await.with_error_context(|| {
-                    format!("Failed to set permissions on gRPC Unix socket '{}'.", path.display())
-                })?;
-                let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-
-                Ok(Box::pin(async move {
-                    let (drain_tx, drain_rx) = oneshot::channel();
-                    let serve = Server::default().serve_with_incoming_shutdown(routes, incoming, async move {
-                        let _ = drain_rx.await;
-                    });
-
-                    pin!(serve, process_shutdown);
-
-                    select! {
-                        result = &mut serve => result.error_context("Failed to serve gRPC server."),
-
-                        _ = &mut process_shutdown => {
-                            let _ = drain_tx.send(());
-
-                            match timeout(shutdown_timeout, serve).await {
-                                Ok(Ok(())) => Ok(()),
-                                Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
-                                Err(_) => {
-                                    warn!("Failed to gracefully drain gRPC connections.");
-                                    Ok(())
-                                },
-                            }
-                        },
-                    }
-                }))
-            }
-            _ => Err(InitializationError::Failed {
-                source: saluki_error::generic_error!("gRPC endpoint must be a TCP or Unix address."),
-            }),
-        }
+        }))
     }
 }
 
@@ -249,6 +203,57 @@ mod tests {
             StdTcpListener::bind(addr).is_ok(),
             "the server should have released {addr} when its worker finished"
         );
+    }
+
+    #[tokio::test]
+    async fn non_connection_oriented_address_is_an_initialization_error() {
+        // Binding goes through `ConnectionOrientedListener` now, which is what rejects address families that can't
+        // carry gRPC.
+        let address = ListenAddress::Udp(([127, 0, 0, 1], 0).into());
+
+        match GrpcServer::new(address).initialize(ShutdownHandle::noop()).await {
+            Ok(_) => panic!("initialization should have rejected a UDP address"),
+            Err(InitializationError::Failed { source }) => {
+                let error = format!("{source:#}");
+                assert!(
+                    error.contains("listen addresses are supported"),
+                    "unexpected error: {error}"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serves_over_a_unix_socket() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let socket_path = temp_dir.path().join("grpc.sock");
+        let mut coordinator = ShutdownCoordinator::default();
+        let run = GrpcServer::new(ListenAddress::Unix(socket_path.clone()))
+            .with_graceful_shutdown_timeout(Duration::from_secs(1))
+            .initialize(coordinator.register())
+            .await
+            .expect("should initialize");
+
+        assert!(
+            socket_path.exists(),
+            "initialization should have bound the socket at {}",
+            socket_path.display()
+        );
+
+        let run = tokio::spawn(run);
+
+        let client = tokio::net::UnixStream::connect(&socket_path)
+            .await
+            .expect("should connect over the Unix socket");
+        drop(client);
+
+        coordinator.shutdown();
+        timeout(TEST_TIMEOUT, run)
+            .await
+            .expect("server should stop on shutdown")
+            .expect("server task should not panic")
+            .expect("server should stop cleanly");
     }
 
     #[tokio::test]
