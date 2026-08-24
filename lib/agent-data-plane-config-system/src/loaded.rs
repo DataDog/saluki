@@ -255,6 +255,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_counter_expiry_key_reaches_typed_configuration() {
+        let path = std::env::temp_dir().join(format!("adp_counter_expiry_{}.yaml", std::process::id()));
+        std::fs::write(&path, "counter_expiry_seconds: 42\n").unwrap();
+
+        let loaded = LoadedConfiguration::load(&path, EnvPrecedence::Disabled)
+            .await
+            .expect("legacy counter expiry key loads");
+
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            loaded.local().domains.dogstatsd.aggregation.counter_expiry_seconds,
+            Some(42)
+        );
+    }
+
+    #[tokio::test]
     async fn load_rejects_translation_invalid_local_sources() {
         let path = std::env::temp_dir().join(format!("adp_local_bad_{}.yaml", std::process::id()));
         // The compatibility loader accepts this value, but typed translation rejects it.

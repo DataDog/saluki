@@ -829,8 +829,12 @@ inventory:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Counter value expiry (seconds)"
+    documentation: |-
+      ADP also accepts the legacy top-level key `counter_expiry_seconds`. If both spellings are set,
+      configuration loading fails rather than choosing one.
     test_support:
       used_by: [TypedConfigSystem]
+      additional_yaml_paths: [counter_expiry_seconds]
       additional_attributes:
         config_registry_filename: aggregate.rs
 

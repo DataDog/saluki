@@ -156,7 +156,7 @@ crate::declare_annotations! {
     COUNTER_EXPIRY_SECONDS = SalukiAnnotation {
         schema: &COUNTER_EXPIRY_SECONDS_SCHEMA,
         support_level: SupportLevel::Full,
-        additional_yaml_paths: &["dogstatsd_expiry_seconds"],
+        additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
@@ -167,7 +167,7 @@ crate::declare_annotations! {
     DOGSTATSD_EXPIRY_SECONDS = SalukiAnnotation {
         schema: &schema::DOGSTATSD_EXPIRY_SECONDS,
         support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
+        additional_yaml_paths: &["counter_expiry_seconds"],
         env_var_override: None,
         used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,

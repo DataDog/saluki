@@ -133,6 +133,8 @@ pub struct DatadogConfiguration {
     pub dogstatsd_eol_required: Vec<String>,
 
     #[serde(default = "defaults::default_u64::<i64, 300>")]
+    /// Alias defined in schema overlay.
+    #[serde(alias = "counter_expiry_seconds")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub dogstatsd_expiry_seconds: i64,
 
