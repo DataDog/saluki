@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["DataspaceUpdate","Identifier","IdentifierFilter"],"struct":["DataspaceRegistry","Subscription"]};
+window.SIDEBAR_ITEMS = {"enum":["AcquireError","DataspaceUpdate","Identifier","IdentifierFilter","ResourceKind"],"struct":["DataspaceRegistry","ResourceLease","ResourceRegistry","ResourceRegistryAPIHandler","ResourceRegistryState","ResourceRegistryWorker","ResourceStatus","Subscription"],"trait":["ResourceSpecification"]};

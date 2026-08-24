@@ -34,7 +34,7 @@
 <a href=#34 id=34 data-nosnippet>34</a>    Event, EventType,
 <a href=#35 id=35 data-nosnippet>35</a>};
 <a href=#36 id=36 data-nosnippet>36</a><span class="kw">use </span>saluki_core::{
-<a href=#37 id=37 data-nosnippet>37</a>    components::{sources::<span class="kw-2">*</span>, ComponentContext},
+<a href=#37 id=37 data-nosnippet>37</a>    components::{sources::<span class="kw-2">*</span>, BuildContext},
 <a href=#38 id=38 data-nosnippet>38</a>    pooling::{ElasticObjectPool, ObjectPool <span class="kw">as _</span>},
 <a href=#39 id=39 data-nosnippet>39</a>    topology::{EventsBuffer, OutputDefinition},
 <a href=#40 id=40 data-nosnippet>40</a>};
@@ -994,7 +994,7 @@
 <a href=#994 id=994 data-nosnippet>994</a>
 <a href=#995 id=995 data-nosnippet>995</a><span class="attr">#[async_trait]
 <a href=#996 id=996 data-nosnippet>996</a></span><span class="kw">impl </span>SourceBuilder <span class="kw">for </span>DogStatsDConfiguration {
-<a href=#997 id=997 data-nosnippet>997</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Source + Send&gt;, GenericError&gt; {
+<a href=#997 id=997 data-nosnippet>997</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Source + Send&gt;, GenericError&gt; {
 <a href=#998 id=998 data-nosnippet>998</a>        <span class="kw">let </span>listeners = <span class="self">self</span>.build_listeners().<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#999 id=999 data-nosnippet>999</a>        <span class="kw">if </span>listeners.is_empty() {
 <a href=#1000 id=1000 data-nosnippet>1000</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(Error::NoListenersConfigured.into());
@@ -1020,7 +1020,7 @@
 <a href=#1020 id=1020 data-nosnippet>1020</a>        <span class="kw">let </span>maybe_origin_tags_resolver = <span class="self">self</span>.workload_provider.clone().map(|provider| {
 <a href=#1021 id=1021 data-nosnippet>1021</a>            DogStatsDOriginTagResolver::new(<span class="self">self</span>.origin_enrichment.clone(), provider, captured_tagger.clone())
 <a href=#1022 id=1022 data-nosnippet>1022</a>        });
-<a href=#1023 id=1023 data-nosnippet>1023</a>        <span class="kw">let </span>context_resolvers = ContextResolvers::new(<span class="self">self</span>, <span class="kw-2">&amp;</span>context, maybe_origin_tags_resolver)
+<a href=#1023 id=1023 data-nosnippet>1023</a>        <span class="kw">let </span>context_resolvers = ContextResolvers::new(<span class="self">self</span>, context.component_context(), maybe_origin_tags_resolver)
 <a href=#1024 id=1024 data-nosnippet>1024</a>            .error_context(<span class="string">"Failed to create context resolvers."</span>)<span class="question-mark">?</span>;
 <a href=#1025 id=1025 data-nosnippet>1025</a>
 <a href=#1026 id=1026 data-nosnippet>1026</a>        <span class="kw">let </span>codec_config = DogStatsDCodecConfiguration::default()

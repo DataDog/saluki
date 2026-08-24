@@ -21,7 +21,7 @@
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_core::{
 <a href=#22 id=22 data-nosnippet>22</a>    components::{
 <a href=#23 id=23 data-nosnippet>23</a>        sources::{Source, SourceBuilder, SourceContext},
-<a href=#24 id=24 data-nosnippet>24</a>        ComponentContext,
+<a href=#24 id=24 data-nosnippet>24</a>        BuildContext,
 <a href=#25 id=25 data-nosnippet>25</a>    },
 <a href=#26 id=26 data-nosnippet>26</a>    data_model::event::EventType,
 <a href=#27 id=27 data-nosnippet>27</a>    topology::{EventsBuffer, OutputDefinition},
@@ -144,7 +144,7 @@
 <a href=#144 id=144 data-nosnippet>144</a>        <span class="kw-2">&amp;</span>OUTPUTS
 <a href=#145 id=145 data-nosnippet>145</a>    }
 <a href=#146 id=146 data-nosnippet>146</a>
-<a href=#147 id=147 data-nosnippet>147</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Source + Send&gt;, GenericError&gt; {
+<a href=#147 id=147 data-nosnippet>147</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Source + Send&gt;, GenericError&gt; {
 <a href=#148 id=148 data-nosnippet>148</a>        <span class="kw">if </span>!<span class="self">self</span>.otlp.receiver.metrics_enabled &amp;&amp; !<span class="self">self</span>.otlp.receiver.logs_enabled &amp;&amp; !<span class="self">self</span>.otlp.traces.enabled {
 <a href=#149 id=149 data-nosnippet>149</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(<span class="macro">generic_error!</span>(
 <a href=#150 id=150 data-nosnippet>150</a>                <span class="string">"OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
@@ -170,14 +170,14 @@
 <a href=#170 id=170 data-nosnippet>170</a>
 <a href=#171 id=171 data-nosnippet>171</a>        <span class="comment">// Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
 <a href=#172 id=172 data-nosnippet>172</a>        // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
-<a href=#173 id=173 data-nosnippet>173</a>        </span><span class="kw">let </span>context_resolver = build_context_resolver(<span class="kw-2">&amp;</span><span class="self">self</span>.otlp.contexts, <span class="kw-2">&amp;</span>context, <span class="prelude-val">None</span>)<span class="question-mark">?</span>;
+<a href=#173 id=173 data-nosnippet>173</a>        </span><span class="kw">let </span>context_resolver = build_context_resolver(<span class="kw-2">&amp;</span><span class="self">self</span>.otlp.contexts, context.component_context(), <span class="prelude-val">None</span>)<span class="question-mark">?</span>;
 <a href=#174 id=174 data-nosnippet>174</a>        <span class="kw">let </span>metrics_translator_config = <span class="self">self</span>.metrics_translator_config();
 <a href=#175 id=175 data-nosnippet>175</a>
 <a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">let </span>metric_tags = parse_configured_metric_tags(<span class="kw-2">&amp;</span><span class="self">self</span>.otlp.metrics.tags);
 <a href=#177 id=177 data-nosnippet>177</a>        <span class="kw">let </span>traces_translator = OtlpTracesTranslator::new(<span class="self">self</span>.otlp.traces.clone());
 <a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">let </span>grpc_max_recv_msg_size_bytes = <span class="self">self</span>.otlp.receiver.grpc.max_recv_msg_size_mib <span class="kw">as </span>usize * <span class="number">1024 </span>* <span class="number">1024</span>;
 <a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">let </span>cors = cors_configuration(<span class="kw-2">&amp;</span><span class="self">self</span>.otlp.receiver.http.cors);
-<a href=#180 id=180 data-nosnippet>180</a>        <span class="kw">let </span>metrics = build_metrics(<span class="kw-2">&amp;</span>context);
+<a href=#180 id=180 data-nosnippet>180</a>        <span class="kw">let </span>metrics = build_metrics(context.component_context());
 <a href=#181 id=181 data-nosnippet>181</a>
 <a href=#182 id=182 data-nosnippet>182</a>        <span class="prelude-val">Ok</span>(Box::new(Otlp {
 <a href=#183 id=183 data-nosnippet>183</a>            context_resolver,

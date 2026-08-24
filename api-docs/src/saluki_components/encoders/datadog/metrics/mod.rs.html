@@ -12,7 +12,7 @@
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>saluki_context::tags::{SharedTagSet, Tag};
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>saluki_core::{
-<a href=#15 id=15 data-nosnippet>15</a>    components::{encoders::<span class="kw-2">*</span>, ComponentContext},
+<a href=#15 id=15 data-nosnippet>15</a>    components::{encoders::<span class="kw-2">*</span>, BuildContext},
 <a href=#16 id=16 data-nosnippet>16</a>    data_model::{
 <a href=#17 id=17 data-nosnippet>17</a>        event::{
 <a href=#18 id=18 data-nosnippet>18</a>            metric::{Metric, MetricOrigin, MetricValues},
@@ -380,8 +380,8 @@
 <a href=#380 id=380 data-nosnippet>380</a>        PayloadType::Http
 <a href=#381 id=381 data-nosnippet>381</a>    }
 <a href=#382 id=382 data-nosnippet>382</a>
-<a href=#383 id=383 data-nosnippet>383</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Encoder + Send&gt;, GenericError&gt; {
-<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(<span class="kw-2">&amp;</span>context);
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Encoder + Send&gt;, GenericError&gt; {
+<a href=#384 id=384 data-nosnippet>384</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(context.component_context());
 <a href=#385 id=385 data-nosnippet>385</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
 <a href=#386 id=386 data-nosnippet>386</a>        <span class="kw">let </span>v3_serializer_telemetry = V3SerializerTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
 <a href=#387 id=387 data-nosnippet>387</a>

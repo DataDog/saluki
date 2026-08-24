@@ -3,7 +3,7 @@
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_core::data_model::event::EventType;
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_core::{
-<a href=#6 id=6 data-nosnippet>6</a>    components::{transforms::<span class="kw-2">*</span>, ComponentContext},
+<a href=#6 id=6 data-nosnippet>6</a>    components::{transforms::<span class="kw-2">*</span>, BuildContext},
 <a href=#7 id=7 data-nosnippet>7</a>    topology::OutputDefinition,
 <a href=#8 id=8 data-nosnippet>8</a>};
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_error::GenericError;
@@ -55,7 +55,7 @@
 <a href=#55 id=55 data-nosnippet>55</a>
 <a href=#56 id=56 data-nosnippet>56</a><span class="attr">#[async_trait]
 <a href=#57 id=57 data-nosnippet>57</a></span><span class="kw">impl </span>TransformBuilder <span class="kw">for </span>ChainedConfiguration {
-<a href=#58 id=58 data-nosnippet>58</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Transform + Send&gt;, GenericError&gt; {
+<a href=#58 id=58 data-nosnippet>58</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Transform + Send&gt;, GenericError&gt; {
 <a href=#59 id=59 data-nosnippet>59</a>        <span class="kw">let </span><span class="kw-2">mut </span>subtransforms = Vec::new();
 <a href=#60 id=60 data-nosnippet>60</a>        <span class="kw">for </span>(subtransform_id, subtransform_builder) <span class="kw">in </span><span class="kw-2">&amp;</span><span class="self">self</span>.subtransform_builders {
 <a href=#61 id=61 data-nosnippet>61</a>            <span class="kw">let </span>subtransform = subtransform_builder.build(context.clone()).<span class="kw">await</span><span class="question-mark">?</span>;

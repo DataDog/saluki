@@ -3,7 +3,7 @@
 <a href=#3 id=3 data-nosnippet>3</a>
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span><span class="kw">super</span>::Forwarder;
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span><span class="kw">crate</span>::accounting::MemoryBounds;
-<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>crate::{components::ComponentContext, data_model::payload::PayloadType};
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>crate::{components::BuildContext, data_model::payload::PayloadType};
 <a href=#7 id=7 data-nosnippet>7</a>
 <a href=#8 id=8 data-nosnippet>8</a><span class="doccomment">/// A forwarder builder.
 <a href=#9 id=9 data-nosnippet>9</a>///
@@ -19,6 +19,6 @@
 <a href=#19 id=19 data-nosnippet>19</a>    /// ## Errors
 <a href=#20 id=20 data-nosnippet>20</a>    ///
 <a href=#21 id=21 data-nosnippet>21</a>    /// If the forwarder can't be built for any reason, an error is returned.
-<a href=#22 id=22 data-nosnippet>22</a>    </span><span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Forwarder + Send&gt;, GenericError&gt;;
+<a href=#22 id=22 data-nosnippet>22</a>    </span><span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Forwarder + Send&gt;, GenericError&gt;;
 <a href=#23 id=23 data-nosnippet>23</a>}
 </code></pre></div></section></main></body></html>

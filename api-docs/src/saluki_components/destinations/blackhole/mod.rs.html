@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a>
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>async_trait::async_trait;
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_core::components::{destinations::<span class="kw-2">*</span>, ComponentContext};
+<a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_core::components::{destinations::<span class="kw-2">*</span>, BuildContext};
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>saluki_core::data_model::event::EventType;
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>saluki_error::GenericError;
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>tokio::select;
@@ -21,7 +21,7 @@
 <a href=#21 id=21 data-nosnippet>21</a>        EventType::all_bits()
 <a href=#22 id=22 data-nosnippet>22</a>    }
 <a href=#23 id=23 data-nosnippet>23</a>
-<a href=#24 id=24 data-nosnippet>24</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Destination + Send&gt;, GenericError&gt; {
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Destination + Send&gt;, GenericError&gt; {
 <a href=#25 id=25 data-nosnippet>25</a>        <span class="prelude-val">Ok</span>(Box::new(Blackhole))
 <a href=#26 id=26 data-nosnippet>26</a>    }
 <a href=#27 id=27 data-nosnippet>27</a>}

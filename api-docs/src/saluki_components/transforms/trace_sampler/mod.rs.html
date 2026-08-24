@@ -17,7 +17,7 @@
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span>saluki_common::collections::FastHashMap;
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_core::{
-<a href=#20 id=20 data-nosnippet>20</a>    components::{transforms::<span class="kw-2">*</span>, ComponentContext},
+<a href=#20 id=20 data-nosnippet>20</a>    components::{transforms::<span class="kw-2">*</span>, BuildContext},
 <a href=#21 id=21 data-nosnippet>21</a>    data_model::event::{
 <a href=#22 id=22 data-nosnippet>22</a>        trace::{AttributeValue, Span, Trace},
 <a href=#23 id=23 data-nosnippet>23</a>        Event,
@@ -107,7 +107,7 @@
 <a href=#107 id=107 data-nosnippet>107</a>
 <a href=#108 id=108 data-nosnippet>108</a><span class="attr">#[async_trait]
 <a href=#109 id=109 data-nosnippet>109</a></span><span class="kw">impl </span>SynchronousTransformBuilder <span class="kw">for </span>TraceSamplerConfiguration {
-<a href=#110 id=110 data-nosnippet>110</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>SynchronousTransform + Send&gt;, GenericError&gt; {
+<a href=#110 id=110 data-nosnippet>110</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>SynchronousTransform + Send&gt;, GenericError&gt; {
 <a href=#111 id=111 data-nosnippet>111</a>        <span class="comment">// TODO: Need to support remote configuration changing these at runtime
 <a href=#112 id=112 data-nosnippet>112</a>        // See https://github.com/DataDog/saluki/issues/1326
 <a href=#113 id=113 data-nosnippet>113</a>        </span><span class="kw">let </span>sampler = TraceSampler {

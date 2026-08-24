@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>saluki_config::GenericConfiguration;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>saluki_core::{
-<a href=#14 id=14 data-nosnippet>14</a>    components::{forwarders::<span class="kw-2">*</span>, ComponentContext},
+<a href=#14 id=14 data-nosnippet>14</a>    components::{forwarders::<span class="kw-2">*</span>, BuildContext},
 <a href=#15 id=15 data-nosnippet>15</a>    data_model::payload::PayloadType,
 <a href=#16 id=16 data-nosnippet>16</a>    observability::ComponentMetricsExt <span class="kw">as _</span>,
 <a href=#17 id=17 data-nosnippet>17</a>};
@@ -80,12 +80,12 @@
 <a href=#80 id=80 data-nosnippet>80</a>        PayloadType::Http
 <a href=#81 id=81 data-nosnippet>81</a>    }
 <a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Forwarder + Send&gt;, GenericError&gt; {
-<a href=#84 id=84 data-nosnippet>84</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(<span class="kw-2">&amp;</span>context);
+<a href=#83 id=83 data-nosnippet>83</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Forwarder + Send&gt;, GenericError&gt; {
+<a href=#84 id=84 data-nosnippet>84</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(context.component_context());
 <a href=#85 id=85 data-nosnippet>85</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
 <a href=#86 id=86 data-nosnippet>86</a>        <span class="kw">let </span>endpoint_request_mapper_factory = cluster_agent_request_mapper_factory(<span class="self">self</span>.auth_header_value.clone());
 <a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">let </span>forwarder = TransactionForwarder::from_config_with_endpoint_request_mapper(
-<a href=#88 id=88 data-nosnippet>88</a>            context,
+<a href=#88 id=88 data-nosnippet>88</a>            context.component_context().clone(),
 <a href=#89 id=89 data-nosnippet>89</a>            <span class="self">self</span>.forwarder_config.clone(),
 <a href=#90 id=90 data-nosnippet>90</a>            <span class="prelude-val">None</span>,
 <a href=#91 id=91 data-nosnippet>91</a>            get_cluster_agent_endpoint_name,

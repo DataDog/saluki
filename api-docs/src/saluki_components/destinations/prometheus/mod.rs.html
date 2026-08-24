@@ -18,7 +18,7 @@
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span>saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator, sync::shutdown::ShutdownCoordinator};
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span>saluki_context::{tags::Tag, Context};
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_core::components::{destinations::<span class="kw-2">*</span>, ComponentContext};
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span>saluki_core::components::{destinations::<span class="kw-2">*</span>, BuildContext};
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">use </span>saluki_core::data_model::event::{
 <a href=#23 id=23 data-nosnippet>23</a>    metric::{Histogram, Metric, MetricValues},
 <a href=#24 id=24 data-nosnippet>24</a>    EventType,
@@ -129,7 +129,7 @@
 <a href=#129 id=129 data-nosnippet>129</a>        EventType::Metric
 <a href=#130 id=130 data-nosnippet>130</a>    }
 <a href=#131 id=131 data-nosnippet>131</a>
-<a href=#132 id=132 data-nosnippet>132</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Destination + Send&gt;, GenericError&gt; {
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Destination + Send&gt;, GenericError&gt; {
 <a href=#133 id=133 data-nosnippet>133</a>        <span class="prelude-val">Ok</span>(Box::new(Prometheus {
 <a href=#134 id=134 data-nosnippet>134</a>            listener: ConnectionOrientedListener::from_listen_address(<span class="self">self</span>.listen_addr.clone()).<span class="kw">await</span><span class="question-mark">?</span>,
 <a href=#135 id=135 data-nosnippet>135</a>            additional_routes: <span class="self">self</span>.additional_routes.clone(),

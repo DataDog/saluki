@@ -5,7 +5,7 @@
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_core::{
 <a href=#6 id=6 data-nosnippet>6</a>    components::{
 <a href=#7 id=7 data-nosnippet>7</a>        transforms::{Transform, TransformBuilder, TransformContext},
-<a href=#8 id=8 data-nosnippet>8</a>        ComponentContext,
+<a href=#8 id=8 data-nosnippet>8</a>        BuildContext,
 <a href=#9 id=9 data-nosnippet>9</a>    },
 <a href=#10 id=10 data-nosnippet>10</a>    data_model::event::{Event, EventType},
 <a href=#11 id=11 data-nosnippet>11</a>    topology::{EventsBuffer, OutputDefinition},
@@ -93,7 +93,7 @@
 <a href=#93 id=93 data-nosnippet>93</a>
 <a href=#94 id=94 data-nosnippet>94</a><span class="attr">#[async_trait]
 <a href=#95 id=95 data-nosnippet>95</a></span><span class="kw">impl </span>TransformBuilder <span class="kw">for </span>MetricRouterConfiguration {
-<a href=#96 id=96 data-nosnippet>96</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Transform + Send&gt;, GenericError&gt; {
+<a href=#96 id=96 data-nosnippet>96</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Transform + Send&gt;, GenericError&gt; {
 <a href=#97 id=97 data-nosnippet>97</a>        <span class="prelude-val">Ok</span>(Box::new(MetricRouter::new(<span class="self">self</span>.clone())<span class="question-mark">?</span>))
 <a href=#98 id=98 data-nosnippet>98</a>    }
 <a href=#99 id=99 data-nosnippet>99</a>

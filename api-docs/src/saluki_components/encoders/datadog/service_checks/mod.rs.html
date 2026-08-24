@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a><span class="kw">use </span>http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_core::{
-<a href=#5 id=5 data-nosnippet>5</a>    components::{encoders::<span class="kw-2">*</span>, ComponentContext},
+<a href=#5 id=5 data-nosnippet>5</a>    components::{encoders::<span class="kw-2">*</span>, BuildContext},
 <a href=#6 id=6 data-nosnippet>6</a>    data_model::{
 <a href=#7 id=7 data-nosnippet>7</a>        event::{service_check::ServiceCheck, Event, EventType},
 <a href=#8 id=8 data-nosnippet>8</a>        payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -82,8 +82,8 @@
 <a href=#82 id=82 data-nosnippet>82</a>        PayloadType::Http
 <a href=#83 id=83 data-nosnippet>83</a>    }
 <a href=#84 id=84 data-nosnippet>84</a>
-<a href=#85 id=85 data-nosnippet>85</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>::Output, GenericError&gt; {
-<a href=#86 id=86 data-nosnippet>86</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(<span class="kw-2">&amp;</span>context);
+<a href=#85 id=85 data-nosnippet>85</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>::Output, GenericError&gt; {
+<a href=#86 id=86 data-nosnippet>86</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(context.component_context());
 <a href=#87 id=87 data-nosnippet>87</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
 <a href=#88 id=88 data-nosnippet>88</a>        <span class="kw">let </span>compression_scheme = CompressionScheme::new(<span class="kw-2">&amp;</span><span class="self">self</span>.compressor_kind, <span class="self">self</span>.zstd_level);
 <a href=#89 id=89 data-nosnippet>89</a>

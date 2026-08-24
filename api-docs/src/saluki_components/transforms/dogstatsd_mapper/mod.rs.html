@@ -13,7 +13,7 @@
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>saluki_core::{
 <a href=#14 id=14 data-nosnippet>14</a>    components::{
 <a href=#15 id=15 data-nosnippet>15</a>        transforms::{SynchronousTransform, SynchronousTransformBuilder},
-<a href=#16 id=16 data-nosnippet>16</a>        ComponentContext,
+<a href=#16 id=16 data-nosnippet>16</a>        BuildContext,
 <a href=#17 id=17 data-nosnippet>17</a>    },
 <a href=#18 id=18 data-nosnippet>18</a>    topology::EventsBuffer,
 <a href=#19 id=19 data-nosnippet>19</a>};
@@ -79,7 +79,7 @@
 <a href=#79 id=79 data-nosnippet>79</a>        }
 <a href=#80 id=80 data-nosnippet>80</a>    }
 <a href=#81 id=81 data-nosnippet>81</a>
-<a href=#82 id=82 data-nosnippet>82</a>    <span class="kw">fn </span>build_mapper(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;MetricMapper, GenericError&gt; {
+<a href=#82 id=82 data-nosnippet>82</a>    <span class="kw">fn </span>build_mapper(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;MetricMapper, GenericError&gt; {
 <a href=#83 id=83 data-nosnippet>83</a>        <span class="kw">let </span><span class="kw-2">mut </span>profiles = Vec::with_capacity(<span class="self">self</span>.profiles.len());
 <a href=#84 id=84 data-nosnippet>84</a>        <span class="kw">for </span>config_profile <span class="kw">in </span><span class="kw-2">&amp;</span><span class="self">self</span>.profiles {
 <a href=#85 id=85 data-nosnippet>85</a>            <span class="kw">if </span>config_profile.name.is_empty() {
@@ -317,7 +317,7 @@
 <a href=#317 id=317 data-nosnippet>317</a>
 <a href=#318 id=318 data-nosnippet>318</a><span class="attr">#[async_trait]
 <a href=#319 id=319 data-nosnippet>319</a></span><span class="kw">impl </span>SynchronousTransformBuilder <span class="kw">for </span>DogStatsDMapperConfiguration {
-<a href=#320 id=320 data-nosnippet>320</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>SynchronousTransform + Send&gt;, GenericError&gt; {
+<a href=#320 id=320 data-nosnippet>320</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>SynchronousTransform + Send&gt;, GenericError&gt; {
 <a href=#321 id=321 data-nosnippet>321</a>        <span class="kw">let </span>metric_mapper = <span class="self">self</span>.build_mapper(context)<span class="question-mark">?</span>;
 <a href=#322 id=322 data-nosnippet>322</a>        <span class="prelude-val">Ok</span>(Box::new(DogStatsDMapper { metric_mapper }))
 <a href=#323 id=323 data-nosnippet>323</a>    }
@@ -364,7 +364,7 @@
 <a href=#364 id=364 data-nosnippet>364</a>
 <a href=#365 id=365 data-nosnippet>365</a>    <span class="kw">use </span>saluki_context::{Context, ContextResolverBuilder};
 <a href=#366 id=366 data-nosnippet>366</a>    <span class="kw">use </span>saluki_core::{
-<a href=#367 id=367 data-nosnippet>367</a>        components::{transforms::SynchronousTransform, ComponentContext},
+<a href=#367 id=367 data-nosnippet>367</a>        components::{transforms::SynchronousTransform, BuildContext},
 <a href=#368 id=368 data-nosnippet>368</a>        data_model::event::{metric::Metric, Event},
 <a href=#369 id=369 data-nosnippet>369</a>        topology::EventsBuffer,
 <a href=#370 id=370 data-nosnippet>370</a>    };
@@ -424,7 +424,7 @@
 <a href=#424 id=424 data-nosnippet>424</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;MetricMapper, GenericError&gt; {
 <a href=#425 id=425 data-nosnippet>425</a>        <span class="kw">let </span>config =
 <a href=#426 id=426 data-nosnippet>426</a>            DogStatsDMapperConfiguration::new(NonZeroUsize::new(<span class="number">64 </span>* <span class="number">1024</span>).expect(<span class="string">"not zero"</span>), cache_size, profiles);
-<a href=#427 id=427 data-nosnippet>427</a>        config.build_mapper(ComponentContext::test_transform(<span class="string">"test_mapper"</span>))
+<a href=#427 id=427 data-nosnippet>427</a>        config.build_mapper(BuildContext::test_transform(<span class="string">"test_mapper"</span>))
 <a href=#428 id=428 data-nosnippet>428</a>    }
 <a href=#429 id=429 data-nosnippet>429</a>
 <a href=#430 id=430 data-nosnippet>430</a>    <span class="kw">fn </span>assert_tags(context: <span class="kw-2">&amp;</span>Context, expected_tags: <span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str]) {

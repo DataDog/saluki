@@ -5,7 +5,7 @@
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_common::sync::shutdown::ShutdownCoordinator;
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>saluki_core::{
-<a href=#8 id=8 data-nosnippet>8</a>    components::{encoders::<span class="kw-2">*</span>, ComponentContext},
+<a href=#8 id=8 data-nosnippet>8</a>    components::{encoders::<span class="kw-2">*</span>, BuildContext},
 <a href=#9 id=9 data-nosnippet>9</a>    data_model::{event::EventType, payload::PayloadType},
 <a href=#10 id=10 data-nosnippet>10</a>    observability::ComponentMetricsExt,
 <a href=#11 id=11 data-nosnippet>11</a>};
@@ -63,8 +63,8 @@
 <a href=#63 id=63 data-nosnippet>63</a>        <span class="self">self</span>.encoder_builder.output_payload_type()
 <a href=#64 id=64 data-nosnippet>64</a>    }
 <a href=#65 id=65 data-nosnippet>65</a>
-<a href=#66 id=66 data-nosnippet>66</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Encoder + Send&gt;, GenericError&gt; {
-<a href=#67 id=67 data-nosnippet>67</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(<span class="kw-2">&amp;</span>context);
+<a href=#66 id=66 data-nosnippet>66</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Encoder + Send&gt;, GenericError&gt; {
+<a href=#67 id=67 data-nosnippet>67</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(context.component_context());
 <a href=#68 id=68 data-nosnippet>68</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
 <a href=#69 id=69 data-nosnippet>69</a>
 <a href=#70 id=70 data-nosnippet>70</a>        <span class="kw">let </span>encoder = <span class="self">self</span>.encoder_builder.build(context).<span class="kw">await</span><span class="question-mark">?</span>;

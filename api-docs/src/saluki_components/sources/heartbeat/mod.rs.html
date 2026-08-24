@@ -3,7 +3,7 @@
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>async_trait::async_trait;
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>saluki_context::Context;
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>saluki_core::components::{sources::<span class="kw-2">*</span>, ComponentContext};
+<a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>saluki_core::components::{sources::<span class="kw-2">*</span>, BuildContext};
 <a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>saluki_core::data_model::event::{metric::Metric, Event, EventType};
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>saluki_core::topology::OutputDefinition;
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>saluki_error::GenericError;
@@ -75,7 +75,7 @@
 <a href=#75 id=75 data-nosnippet>75</a>
 <a href=#76 id=76 data-nosnippet>76</a><span class="attr">#[async_trait]
 <a href=#77 id=77 data-nosnippet>77</a></span><span class="kw">impl </span>SourceBuilder <span class="kw">for </span>HeartbeatConfiguration {
-<a href=#78 id=78 data-nosnippet>78</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Source + Send&gt;, GenericError&gt; {
+<a href=#78 id=78 data-nosnippet>78</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Source + Send&gt;, GenericError&gt; {
 <a href=#79 id=79 data-nosnippet>79</a>        <span class="prelude-val">Ok</span>(Box::new(Heartbeat {
 <a href=#80 id=80 data-nosnippet>80</a>            heartbeat_interval_secs: <span class="self">self</span>.heartbeat_interval_secs,
 <a href=#81 id=81 data-nosnippet>81</a>        }))

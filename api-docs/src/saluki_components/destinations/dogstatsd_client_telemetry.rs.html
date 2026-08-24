@@ -2,7 +2,7 @@
 <a href=#2 id=2 data-nosnippet>2</a><span class="kw">use </span>metrics::Counter;
 <a href=#3 id=3 data-nosnippet>3</a><span class="kw">use </span>saluki_core::{
 <a href=#4 id=4 data-nosnippet>4</a>    accounting::{MemoryBounds, MemoryBoundsBuilder},
-<a href=#5 id=5 data-nosnippet>5</a>    components::{destinations::<span class="kw-2">*</span>, ComponentContext},
+<a href=#5 id=5 data-nosnippet>5</a>    components::{destinations::<span class="kw-2">*</span>, BuildContext},
 <a href=#6 id=6 data-nosnippet>6</a>    data_model::event::{
 <a href=#7 id=7 data-nosnippet>7</a>        metric::{Metric, MetricValues},
 <a href=#8 id=8 data-nosnippet>8</a>        Event, EventType,
@@ -24,9 +24,9 @@
 <a href=#24 id=24 data-nosnippet>24</a>        EventType::Metric
 <a href=#25 id=25 data-nosnippet>25</a>    }
 <a href=#26 id=26 data-nosnippet>26</a>
-<a href=#27 id=27 data-nosnippet>27</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Destination + Send&gt;, GenericError&gt; {
+<a href=#27 id=27 data-nosnippet>27</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Destination + Send&gt;, GenericError&gt; {
 <a href=#28 id=28 data-nosnippet>28</a>        <span class="prelude-val">Ok</span>(Box::new(DogStatsDClientTelemetry::new(
-<a href=#29 id=29 data-nosnippet>29</a>            MetricsBuilder::from_component_context(<span class="kw-2">&amp;</span>context),
+<a href=#29 id=29 data-nosnippet>29</a>            MetricsBuilder::from_component_context(context.component_context()),
 <a href=#30 id=30 data-nosnippet>30</a>        )))
 <a href=#31 id=31 data-nosnippet>31</a>    }
 <a href=#32 id=32 data-nosnippet>32</a>}

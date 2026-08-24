@@ -8,7 +8,7 @@
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>saluki_core::{
 <a href=#9 id=9 data-nosnippet>9</a>    components::{
 <a href=#10 id=10 data-nosnippet>10</a>        transforms::{Transform, TransformBuilder, TransformContext},
-<a href=#11 id=11 data-nosnippet>11</a>        ComponentContext,
+<a href=#11 id=11 data-nosnippet>11</a>        BuildContext,
 <a href=#12 id=12 data-nosnippet>12</a>    },
 <a href=#13 id=13 data-nosnippet>13</a>    data_model::event::{Event, EventType},
 <a href=#14 id=14 data-nosnippet>14</a>    topology::{EventsBuffer, OutputDefinition},
@@ -131,7 +131,7 @@
 <a href=#131 id=131 data-nosnippet>131</a>
 <a href=#132 id=132 data-nosnippet>132</a><span class="attr">#[async_trait]
 <a href=#133 id=133 data-nosnippet>133</a></span><span class="kw">impl </span>TransformBuilder <span class="kw">for </span>MrfMetricsGatewayConfiguration {
-<a href=#134 id=134 data-nosnippet>134</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Transform + Send&gt;, GenericError&gt; {
+<a href=#134 id=134 data-nosnippet>134</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Transform + Send&gt;, GenericError&gt; {
 <a href=#135 id=135 data-nosnippet>135</a>        <span class="prelude-val">Ok</span>(Box::new(MrfMetricsGateway::new(
 <a href=#136 id=136 data-nosnippet>136</a>            <span class="self">self</span>.mrf_config.clone(),
 <a href=#137 id=137 data-nosnippet>137</a>            <span class="self">self</span>.configuration.clone(),

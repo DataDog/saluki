@@ -14,7 +14,7 @@
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span>saluki_core::data_model::payload::Payload;
 <a href=#16 id=16 data-nosnippet>16</a><span class="kw">use </span>saluki_core::{
-<a href=#17 id=17 data-nosnippet>17</a>    components::{forwarders::<span class="kw-2">*</span>, ComponentContext},
+<a href=#17 id=17 data-nosnippet>17</a>    components::{forwarders::<span class="kw-2">*</span>, BuildContext},
 <a href=#18 id=18 data-nosnippet>18</a>    data_model::payload::PayloadType,
 <a href=#19 id=19 data-nosnippet>19</a>};
 <a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span>saluki_error::ErrorContext <span class="kw">as _</span>;
@@ -51,7 +51,7 @@
 <a href=#51 id=51 data-nosnippet>51</a>        PayloadType::Grpc
 <a href=#52 id=52 data-nosnippet>52</a>    }
 <a href=#53 id=53 data-nosnippet>53</a>
-<a href=#54 id=54 data-nosnippet>54</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Forwarder + Send&gt;, GenericError&gt; {
+<a href=#54 id=54 data-nosnippet>54</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, _context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Forwarder + Send&gt;, GenericError&gt; {
 <a href=#55 id=55 data-nosnippet>55</a>        <span class="kw">let </span>trace_agent_endpoint = <span class="macro">format!</span>(<span class="string">"http://localhost:{}"</span>, <span class="self">self</span>.core_agent_traces_internal_port);
 <a href=#56 id=56 data-nosnippet>56</a>        <span class="kw">let </span>trace_agent_channel = Channel::from_shared(trace_agent_endpoint.clone())
 <a href=#57 id=57 data-nosnippet>57</a>            .error_context(<span class="string">"Failed to construct gRPC channel due to an invalid endpoint."</span>)<span class="question-mark">?

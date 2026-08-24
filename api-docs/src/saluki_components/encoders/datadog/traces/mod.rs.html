@@ -12,7 +12,7 @@
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>saluki_core::data_model::event::trace::AttributeValue;
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span>saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span>saluki_core::{
-<a href=#15 id=15 data-nosnippet>15</a>    components::{encoders::<span class="kw-2">*</span>, ComponentContext},
+<a href=#15 id=15 data-nosnippet>15</a>    components::{encoders::<span class="kw-2">*</span>, BuildContext},
 <a href=#16 id=16 data-nosnippet>16</a>    data_model::{
 <a href=#17 id=17 data-nosnippet>17</a>        event::{trace::Trace, EventType},
 <a href=#18 id=18 data-nosnippet>18</a>        payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -197,8 +197,8 @@
 <a href=#197 id=197 data-nosnippet>197</a>        PayloadType::Http
 <a href=#198 id=198 data-nosnippet>198</a>    }
 <a href=#199 id=199 data-nosnippet>199</a>
-<a href=#200 id=200 data-nosnippet>200</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: ComponentContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Encoder + Send&gt;, GenericError&gt; {
-<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(<span class="kw-2">&amp;</span>context);
+<a href=#200 id=200 data-nosnippet>200</a>    <span class="kw">async fn </span>build(<span class="kw-2">&amp;</span><span class="self">self</span>, context: BuildContext) -&gt; <span class="prelude-ty">Result</span>&lt;Box&lt;<span class="kw">dyn </span>Encoder + Send&gt;, GenericError&gt; {
+<a href=#201 id=201 data-nosnippet>201</a>        <span class="kw">let </span>metrics_builder = MetricsBuilder::from_component_context(context.component_context());
 <a href=#202 id=202 data-nosnippet>202</a>        <span class="kw">let </span>telemetry = ComponentTelemetry::from_builder(<span class="kw-2">&amp;</span>metrics_builder);
 <a href=#203 id=203 data-nosnippet>203</a>        <span class="kw">let </span>compression_scheme = CompressionScheme::new(<span class="kw-2">&amp;</span><span class="self">self</span>.compressor_kind, <span class="self">self</span>.zstd_compressor_level);
 <a href=#204 id=204 data-nosnippet>204</a>
