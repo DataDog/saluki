@@ -9,7 +9,7 @@ use std::{
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use hashbrown::{hash_map::Entry, HashMap};
-use saluki_common::time::get_unix_timestamp;
+use saluki_common::{collections::find_matching_prefix, time::get_unix_timestamp};
 use saluki_context::Context;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
@@ -285,6 +285,36 @@ pub struct MetricAggregationInterval {
     pub interval_seconds: u64,
 }
 
+fn sort_and_validate_metric_intervals(rules: &mut [MetricAggregationInterval]) -> Result<(), GenericError> {
+    for rule in rules.iter() {
+        if rule.metric_prefix.is_empty() {
+            return Err(GenericError::msg(
+                "metric aggregation intervals must use non-empty metric prefixes",
+            ));
+        }
+        if rule.interval_seconds == 0 {
+            return Err(GenericError::msg(
+                "metric aggregation interval durations must be non-zero",
+            ));
+        }
+    }
+
+    rules.sort_unstable_by(|left, right| left.metric_prefix.cmp(&right.metric_prefix));
+    for pair in rules.windows(2) {
+        let [left, right] = pair else {
+            unreachable!("a two-entry window must contain two entries");
+        };
+        if right.metric_prefix.starts_with(&left.metric_prefix) {
+            return Err(GenericError::msg(format!(
+                "metric aggregation interval prefixes {:?} and {:?} overlap",
+                left.metric_prefix, right.metric_prefix
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Aggregate transform.
 ///
 /// Aggregates metrics into fixed-size windows, flushing them at a regular interval.
@@ -314,9 +344,6 @@ pub struct AggregateConfiguration {
 
     /// Metric-name prefix rules that override the default aggregation window.
     pub metric_intervals: Vec<MetricAggregationInterval>,
-
-    /// Metric-name prefix rules that override the default aggregation window.
-    metric_intervals: Vec<MetricAggregationInterval>,
 
     /// How often to flush buckets.
     ///
@@ -415,9 +442,11 @@ impl TransformBuilder for AggregateConfiguration {
         let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = Telemetry::new(&metrics_builder);
 
+        let mut metric_intervals = self.metric_intervals.clone();
+        sort_and_validate_metric_intervals(&mut metric_intervals)?;
         let state = AggregationLanes::new(
             self.window_duration_seconds,
-            &self.metric_intervals,
+            &metric_intervals,
             self.context_limit,
             self.counter_expiry_seconds.filter(|s| *s != 0).map(Duration::from_secs),
             self.hist_config.clone(),
@@ -764,6 +793,10 @@ impl AggregationLanes {
         default_interval: NonZeroU64, metric_intervals: &[MetricAggregationInterval], context_limit: usize,
         counter_expiration: Option<Duration>, hist_config: HistogramConfiguration, telemetry: Telemetry,
     ) -> Self {
+        debug_assert!(metric_intervals.windows(2).all(|pair| {
+            pair[0].metric_prefix < pair[1].metric_prefix && !pair[1].metric_prefix.starts_with(&pair[0].metric_prefix)
+        }));
+
         let mut states = BTreeMap::new();
         states.insert(
             default_interval,
@@ -817,14 +850,14 @@ impl AggregationLanes {
     }
 
     fn interval_for_metric(&self, metric: &Metric) -> NonZeroU64 {
-        self.metric_intervals
-            .iter()
-            .find(|rule| metric.context().name().starts_with(&rule.metric_prefix))
-            .map(|rule| {
-                NonZeroU64::new(rule.interval_seconds)
-                    .expect("typed metric aggregation intervals must have non-zero durations")
-            })
-            .unwrap_or(self.default_interval)
+        find_matching_prefix(&self.metric_intervals, metric.context().name(), |rule| {
+            rule.metric_prefix.as_str()
+        })
+        .map(|rule| {
+            NonZeroU64::new(rule.interval_seconds)
+                .expect("typed metric aggregation intervals must have non-zero durations")
+        })
+        .unwrap_or(self.default_interval)
     }
 
     fn insert(&mut self, timestamp: u64, metric: Metric) -> bool {
@@ -1959,6 +1992,55 @@ mod tests {
         }
     }
 
+    #[test]
+    fn metric_interval_rules_are_compiled_for_binary_search() {
+        let mut rules = (0..10_000)
+            .rev()
+            .map(|index| MetricAggregationInterval {
+                metric_prefix: format!("metric.{index:05}."),
+                interval_seconds: 5,
+            })
+            .collect::<Vec<_>>();
+
+        sort_and_validate_metric_intervals(&mut rules).expect("non-overlapping rules should compile");
+        let state = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            None,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+
+        assert_eq!(
+            state
+                .interval_for_metric(&Metric::gauge("metric.09999.requests", 1.0))
+                .get(),
+            5
+        );
+        assert_eq!(
+            state.interval_for_metric(&Metric::gauge("unmatched.requests", 1.0)),
+            BUCKET_WIDTH_SECS
+        );
+    }
+
+    #[test]
+    fn metric_interval_rules_reject_overlapping_prefixes() {
+        let mut rules = vec![
+            MetricAggregationInterval {
+                metric_prefix: "requests.api.".to_string(),
+                interval_seconds: 5,
+            },
+            MetricAggregationInterval {
+                metric_prefix: "requests.".to_string(),
+                interval_seconds: 10,
+            },
+        ];
+
+        let error = sort_and_validate_metric_intervals(&mut rules).expect_err("overlapping prefixes must fail");
+        assert!(error.to_string().contains("overlap"));
+    }
+
     proptest::proptest! {
         #[test]
         fn property_test_interval_routing_and_bucket_alignment(
@@ -2009,12 +2091,12 @@ mod tests {
     async fn routes_metrics_to_epoch_aligned_interval_lanes() {
         let rules = vec![
             MetricAggregationInterval {
-                metric_prefix: "high_resolution.".to_string(),
-                interval_seconds: 1,
-            },
-            MetricAggregationInterval {
                 metric_prefix: "archival.".to_string(),
                 interval_seconds: 60,
+            },
+            MetricAggregationInterval {
+                metric_prefix: "high_resolution.".to_string(),
+                interval_seconds: 1,
             },
         ];
         let mut state = AggregationLanes::new(
@@ -2140,16 +2222,16 @@ mod tests {
     fn rules_with_the_same_interval_share_a_lane() {
         let rules = vec![
             MetricAggregationInterval {
+                metric_prefix: "default.".to_string(),
+                interval_seconds: 10,
+            },
+            MetricAggregationInterval {
                 metric_prefix: "first.".to_string(),
                 interval_seconds: 5,
             },
             MetricAggregationInterval {
                 metric_prefix: "second.".to_string(),
                 interval_seconds: 5,
-            },
-            MetricAggregationInterval {
-                metric_prefix: "default.".to_string(),
-                interval_seconds: 10,
             },
         ];
         let state = AggregationLanes::new(

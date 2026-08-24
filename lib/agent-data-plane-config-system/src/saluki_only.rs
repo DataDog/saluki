@@ -258,16 +258,17 @@ impl ValidateJsonSequence for MetricAggregationIntervalSource {
             }
         }
 
-        for (index, rule) in rules.iter().enumerate() {
-            for other in &rules[index + 1..] {
-                if rule.metric_prefix.starts_with(&other.metric_prefix)
-                    || other.metric_prefix.starts_with(&rule.metric_prefix)
-                {
-                    return Err(format!(
-                        "metric_aggregation_intervals prefixes {:?} and {:?} overlap",
-                        rule.metric_prefix, other.metric_prefix
-                    ));
-                }
+        let mut sorted_rules = rules.iter().collect::<Vec<_>>();
+        sorted_rules.sort_unstable_by(|left, right| left.metric_prefix.cmp(&right.metric_prefix));
+        for pair in sorted_rules.windows(2) {
+            let [left, right] = pair else {
+                unreachable!("a two-entry window must contain two entries");
+            };
+            if right.metric_prefix.starts_with(&left.metric_prefix) {
+                return Err(format!(
+                    "metric_aggregation_intervals prefixes {:?} and {:?} overlap",
+                    left.metric_prefix, right.metric_prefix
+                ));
             }
         }
 
