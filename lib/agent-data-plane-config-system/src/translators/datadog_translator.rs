@@ -146,6 +146,7 @@ fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfi
     struct RawProfile {
         name: String,
         prefix: String,
+        #[serde(default)]
         mappings: Vec<RawMapping>,
     }
 
@@ -1461,7 +1462,6 @@ mod tests {
         for profile in [
             json!({ "prefix": "worker.", "mappings": [] }),
             json!({ "name": "workers", "mappings": [] }),
-            json!({ "name": "workers", "prefix": "worker." }),
             json!({
                 "name": "workers",
                 "prefix": "worker.",
@@ -1474,6 +1474,17 @@ mod tests {
             let error = errors.expect("a malformed mapper profile should record an error");
             assert!(error.to_string().contains("dogstatsd_mapper_profiles"));
         }
+    }
+
+    #[test]
+    fn mapper_profile_without_mappings_is_accepted() {
+        let (config, errors) = translate_explicit(json!({
+            "dogstatsd_mapper_profiles": [{ "name": "workers", "prefix": "worker." }]
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.mapper.profiles.len(), 1);
+        assert!(config.domains.dogstatsd.mapper.profiles[0].mappings.is_empty());
     }
 
     #[test]
