@@ -1475,12 +1475,18 @@ mod tests {
     }
 
     async fn get_flushed_metrics(timestamp: u64, state: &mut AggregationState) -> Vec<Metric> {
+        get_flushed_metrics_with_open_windows(timestamp, true, state).await
+    }
+
+    async fn get_flushed_metrics_with_open_windows(
+        timestamp: u64, flush_open_buckets: bool, state: &mut AggregationState,
+    ) -> Vec<Metric> {
         let (dispatcher, mut dispatcher_receiver) = build_basic_dispatcher();
         let mut buffered_dispatcher = dispatcher.buffered().expect("default output should always exist");
 
         // Flush the metrics to an event buffer.
         state
-            .flush(timestamp, true, &mut buffered_dispatcher)
+            .flush(timestamp, flush_open_buckets, &mut buffered_dispatcher)
             .await
             .expect("should not fail to flush aggregation state");
 
@@ -2166,6 +2172,70 @@ mod tests {
             get_flushed_lane_metrics(80, true, &mut lanes).await,
             get_flushed_metrics(80, &mut existing).await
         );
+    }
+
+    #[tokio::test]
+    async fn configured_lanes_match_independent_aggregation_states() {
+        let rules = vec![
+            MetricAggregationInterval {
+                metric_prefix: "archival.".to_string(),
+                interval_seconds: 60,
+            },
+            MetricAggregationInterval {
+                metric_prefix: "fast.".to_string(),
+                interval_seconds: 1,
+            },
+        ];
+        let mut lanes = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &rules,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let mut reference = [
+            AggregationState::new(
+                NonZeroU64::new(1).unwrap(),
+                10,
+                COUNTER_EXPIRE,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            ),
+            AggregationState::new(
+                BUCKET_WIDTH_SECS,
+                10,
+                COUNTER_EXPIRE,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            ),
+            AggregationState::new(
+                NonZeroU64::new(60).unwrap(),
+                10,
+                COUNTER_EXPIRE,
+                HistogramConfiguration::default(),
+                Telemetry::noop(),
+            ),
+        ];
+        let metrics = [
+            (0, Metric::gauge("fast.requests", 1.0)),
+            (1, Metric::counter("ordinary.requests", 2.0)),
+            (2, Metric::gauge("archival.requests", 3.0)),
+        ];
+        for (reference_index, metric) in metrics {
+            assert!(lanes.insert(61, metric.clone()));
+            assert!(reference[reference_index].insert(61, metric));
+        }
+
+        for timestamp in [70, 120] {
+            let actual = get_flushed_lane_metrics(timestamp, false, &mut lanes).await;
+            let mut expected = Vec::new();
+            for state in &mut reference {
+                expected.extend(get_flushed_metrics_with_open_windows(timestamp, false, state).await);
+            }
+            expected.sort_by(|left, right| left.context().name().cmp(right.context().name()));
+            assert_eq!(actual, expected);
+        }
     }
 
     #[tokio::test]
