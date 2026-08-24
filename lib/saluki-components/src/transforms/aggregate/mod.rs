@@ -2135,6 +2135,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_interval_rules_match_the_existing_aggregation_state() {
+        let mut lanes = AggregationLanes::new(
+            BUCKET_WIDTH_SECS,
+            &[],
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let mut existing = AggregationState::new(
+            BUCKET_WIDTH_SECS,
+            10,
+            COUNTER_EXPIRE,
+            HistogramConfiguration::default(),
+            Telemetry::noop(),
+        );
+        let metrics = [Metric::gauge("requests.active", 3.0), Metric::counter("requests", 7.0)];
+
+        for metric in metrics {
+            assert!(lanes.insert(61, metric.clone()));
+            assert!(existing.insert(61, metric));
+        }
+
+        assert_eq!(
+            get_flushed_lane_metrics(70, true, &mut lanes).await,
+            get_flushed_metrics(70, &mut existing).await
+        );
+        assert_eq!(
+            get_flushed_lane_metrics(80, true, &mut lanes).await,
+            get_flushed_metrics(80, &mut existing).await
+        );
+    }
+
+    #[tokio::test]
     async fn routes_metrics_to_epoch_aligned_interval_lanes() {
         let rules = vec![
             MetricAggregationInterval {
