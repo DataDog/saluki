@@ -183,6 +183,28 @@ The action fails if the command exits with a nonzero status or exceeds its timeo
   timeout: 30s
 ```
 
+#### `dogstatsd_replay`
+
+Captures traffic sent by `sender`, replays the completed capture through the tested ADP binary, and verifies that `expected_metrics` appear in a statistics collection that runs concurrently with the replay. This action invokes the tested ADP CLI with the test's configuration and environment, so it works on Linux, macOS, and Windows without exposing runtime-specific configuration paths to the sender command.
+
+`capture_duration` uses the [duration format](#duration-format). `stats_duration_secs` controls the bounded post-capture statistics collection. The sender must emit all capture traffic before `capture_duration` elapses. `timeout` applies to each target command and defaults to `30s`.
+
+```yaml
+- action: dogstatsd_replay
+  sender:
+    - "python3"
+    - "-c"
+    - |
+      import socket
+      client = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+      client.connect("/tmp/datadog-dogstatsd.sock")
+      client.send(b"replay.example:1|c")
+  capture_duration: 2s
+  stats_duration_secs: 3
+  expected_metrics: ["replay.example"]
+  timeout: 30s
+```
+
 #### `core_agent_cli`
 
 Invokes the tested Core Agent target binary with the target's configuration and environment on Linux, macOS, or Windows. The required `args` list is appended as direct process arguments, without a shell, so shell syntax and metacharacters are not interpreted. The optional `timeout` uses the [duration format](#duration-format) and defaults to `30s`.
