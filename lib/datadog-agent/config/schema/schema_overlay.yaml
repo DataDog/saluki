@@ -1853,7 +1853,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Metric name blocklist"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem, DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -1862,7 +1862,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Blocklist uses prefix matching"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem, DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2910,7 +2910,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "List of metric names to block/drop"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem, DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2919,7 +2919,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Treat blocklist entries as prefixes"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem, DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 

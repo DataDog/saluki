@@ -828,8 +828,12 @@ async fn add_dsd_pipeline_to_blueprint(
         hist_config: dsd_hist_config,
         context_snapshot_receiver: dsd_context_snapshot_receiver,
     };
-    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::from_configuration(config)
-        .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
+    let dsd_post_agg_filter_config = DogStatsDPostAggregateFilterConfiguration::new(
+        config_system.live(|config| &config.domains.dogstatsd.metric_filter),
+        &histogram.aggregates,
+        &histogram.percentiles,
+    )
+    .error_context("Failed to configure DogStatsD post-aggregate filter transform.")?;
     let events_enrich_config = ChainedConfiguration::default().with_transform_builder(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),

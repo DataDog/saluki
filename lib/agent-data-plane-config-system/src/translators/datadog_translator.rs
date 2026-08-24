@@ -835,15 +835,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_metric_filterlist(&mut self, value: Vec<String>) {
-        self.config.domains.dogstatsd.prefix_filter.metric_filterlist = value;
+        // A non-empty current filterlist takes precedence over the legacy blocklist.
+        if !self.datadog.metric_filterlist.is_empty() {
+            self.config.domains.dogstatsd.metric_filter.values = value;
+        }
     }
 
     fn consume_metric_filterlist_match_prefix(&mut self, value: bool) {
-        self.config
-            .domains
-            .dogstatsd
-            .prefix_filter
-            .metric_filterlist_match_prefix = value;
+        if !self.datadog.metric_filterlist.is_empty() {
+            self.config.domains.dogstatsd.metric_filter.match_prefix = value;
+        }
     }
 
     fn consume_metric_tag_filterlist(&mut self, value: Vec<serde_json::Value>) {
@@ -1174,15 +1175,16 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_statsd_metric_blocklist(&mut self, value: Vec<String>) {
-        self.config.domains.dogstatsd.prefix_filter.metric_blocklist = value;
+        // The legacy blocklist is effective only when the current filterlist is empty.
+        if self.datadog.metric_filterlist.is_empty() {
+            self.config.domains.dogstatsd.metric_filter.values = value;
+        }
     }
 
     fn consume_statsd_metric_blocklist_match_prefix(&mut self, value: bool) {
-        self.config
-            .domains
-            .dogstatsd
-            .prefix_filter
-            .metric_blocklist_match_prefix = value;
+        if self.datadog.metric_filterlist.is_empty() {
+            self.config.domains.dogstatsd.metric_filter.match_prefix = value;
+        }
     }
 
     fn consume_statsd_metric_namespace(&mut self, value: String) {
@@ -1272,7 +1274,7 @@ mod tests {
 
     use agent_data_plane_config::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
     use agent_data_plane_config::domains::{
-        dogstatsd::OriginTagCardinality,
+        dogstatsd::{MetricFilter, OriginTagCardinality},
         otlp::{
             CumulativeMonotonicMode, InitialCumulativeMonotonicValue, SummaryMode, DEFAULT_DELTA_TTL,
             DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
@@ -1813,6 +1815,43 @@ mod tests {
         assert_eq!(None, mrf.site);
         assert_eq!(None, mrf.dd_url);
         assert_eq!(None, mrf.metrics_endpoint_url());
+    }
+
+    #[test]
+    fn metric_filter_resolves_current_and_legacy_precedence() {
+        let cases = [
+            (
+                json!({
+                    "metric_filterlist": ["current"],
+                    "metric_filterlist_match_prefix": true,
+                    "statsd_metric_blocklist": ["legacy"],
+                    "statsd_metric_blocklist_match_prefix": false,
+                }),
+                MetricFilter {
+                    values: vec!["current".to_string()],
+                    match_prefix: true,
+                },
+            ),
+            (
+                json!({
+                    "metric_filterlist": [],
+                    "metric_filterlist_match_prefix": true,
+                    "statsd_metric_blocklist": ["legacy"],
+                    "statsd_metric_blocklist_match_prefix": false,
+                }),
+                MetricFilter {
+                    values: vec!["legacy".to_string()],
+                    match_prefix: false,
+                },
+            ),
+            (json!({}), MetricFilter::default()),
+        ];
+
+        for (source, expected) in cases {
+            let (config, errors) = translate_explicit(source);
+            assert!(errors.is_none());
+            assert_eq!(config.domains.dogstatsd.metric_filter, expected);
+        }
     }
 
     #[test]
