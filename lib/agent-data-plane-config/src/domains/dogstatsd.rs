@@ -330,12 +330,12 @@ impl Default for Aggregation {
 /// An aggregation-window override selected by metric-name prefix.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct MetricAggregationInterval {
-    /// Non-empty, case-sensitive metric-name prefix used for matching. Prefixes cannot contain
-    /// leading or trailing whitespace or overlap another configured prefix.
+    /// Non-empty, case-sensitive metric-name prefix used for matching. Prefixes cannot overlap
+    /// another configured prefix. Whitespace is preserved and matched exactly.
     pub metric_prefix: String,
 
-    /// Aggregation window length in whole seconds, in the inclusive range `1..=60`. Shorter
-    /// intervals provide finer granularity at higher point, CPU, and memory cost.
+    /// Non-zero aggregation window length in whole seconds. Shorter intervals provide finer
+    /// granularity at higher point, CPU, and memory cost.
     pub interval_seconds: u64,
 }
 

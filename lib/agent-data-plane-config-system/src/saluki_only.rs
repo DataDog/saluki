@@ -244,16 +244,10 @@ impl ValidateJsonSequence for MetricAggregationIntervalSource {
             if rule.metric_prefix.is_empty() {
                 return Err("metric_aggregation_intervals contains an empty metric_prefix".to_string());
             }
-            if rule.metric_prefix.trim() != rule.metric_prefix {
+            if rule.interval_seconds == 0 {
                 return Err(format!(
-                    "metric_aggregation_intervals prefix {:?} has leading or trailing whitespace",
+                    "metric_aggregation_intervals prefix {:?} has an interval_seconds value of 0; configure a non-zero whole number of seconds",
                     rule.metric_prefix
-                ));
-            }
-            if !(1..=60).contains(&rule.interval_seconds) {
-                return Err(format!(
-                    "metric_aggregation_intervals prefix {:?} has interval_seconds {}; expected a whole number from 1 through 60",
-                    rule.metric_prefix, rule.interval_seconds
                 ));
             }
         }
@@ -935,12 +929,31 @@ mod tests {
     }
 
     #[test]
+    fn metric_aggregation_intervals_preserve_prefixes_and_accept_long_windows() {
+        let source: SalukiOnly = serde_json::from_value(json!({
+            "metric_aggregation_intervals": [
+                { "metric_prefix": " archival. ", "interval_seconds": 300 }
+            ]
+        }))
+        .expect("valid metric aggregation intervals deserialize");
+        let mut config = SalukiConfiguration::default();
+        source.seed(&mut config);
+
+        assert_eq!(
+            config.domains.dogstatsd.aggregation.metric_intervals[0].metric_prefix,
+            " archival. "
+        );
+        assert_eq!(
+            config.domains.dogstatsd.aggregation.metric_intervals[0].interval_seconds,
+            300
+        );
+    }
+
+    #[test]
     fn metric_aggregation_intervals_reject_invalid_rules() {
         let invalid_rules = [
             json!([{ "metric_prefix": "", "interval_seconds": 10 }]),
-            json!([{ "metric_prefix": " spaced", "interval_seconds": 10 }]),
             json!([{ "metric_prefix": "zero.", "interval_seconds": 0 }]),
-            json!([{ "metric_prefix": "too_long.", "interval_seconds": 61 }]),
             json!([
                 { "metric_prefix": "overlap.", "interval_seconds": 10 },
                 { "metric_prefix": "overlap.child.", "interval_seconds": 20 }

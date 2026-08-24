@@ -456,7 +456,7 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
         description: "Per-prefix DogStatsD aggregation windows",
         default: "[]",
         documentation: Some(
-            r#"Each entry selects an aggregation window from 1 through 60 seconds for a non-empty, case-sensitive metric-name prefix. Prefixes must not overlap. Rules apply after mapper rewrites and metric namespace prefixing.
+            r#"Each entry selects a non-zero aggregation window in whole seconds for a non-empty, case-sensitive metric-name prefix. Prefixes must not overlap. Whitespace is preserved and matched exactly. Rules apply after mapper rewrites and metric namespace prefixing.
 
 ```yaml
 metric_aggregation_intervals:
