@@ -70,7 +70,7 @@ Rules selecting the same duration share a lane. A rule also shares the default l
 
 The aggregate component:
 
-- compiles the prefix rules once at startup;
+- sorts the prefix rules once at startup and uses the same binary-search prefix lookup as metric tag value allow-lists;
 - routes each metric to exactly one lane;
 - applies one global context limit across all lanes; existing contexts continue accepting samples at the limit, while samples that introduce another context are dropped until any lane releases capacity;
 - coordinates flush, shutdown, telemetry, and context snapshots; and
@@ -100,13 +100,13 @@ For a fixed startup configuration:
 - The total retained context count across all lanes, including idle counters retained for zero emission, does not exceed `aggregate_context_limit`.
 - Timestamped no-aggregation metrics are unaffected.
 
-Unit tests should cover exact matching and window examples. A model-based property test should compare randomized insert and flush sequences against a naive reference model and check routing, bucket alignment, value conservation, flush-schedule independence, and the global context limit.
+Unit tests cover exact matching, window examples, the unchanged no-rule path, and lane reuse. Differential tests compare lane output with independent instances of the existing single-interval aggregation state. Prefix-scaling SMP experiments cover zero, 500, and 10,000 rules, including full-table misses.
 
 ## Resource trade-offs
 
-Short intervals create more points and may retain several closed buckets between flushes. Long intervals retain set values, histogram samples, and distribution state for longer. Both effects can increase memory beyond the assumptions of the current single-interval memory bound.
+Short intervals create more points and may retain several closed buckets between flushes. Memory accounting reserves scalar point storage based on the shortest configured interval and the existing flush cadence. Long intervals retain set values, histogram samples, and distribution state for longer; those variable-size values retain the existing aggregator's workload-dependent accounting limitation.
 
-Memory accounting must include all lanes and the number of buckets retained between flushes. Flush scheduling should avoid scanning every long-interval context at the shortest configured interval.
+All lanes keep the existing flush cadence. This avoids additional timers and does not scan long-interval contexts more often than the current aggregator runs its flush loop.
 
 ## Out of scope
 
