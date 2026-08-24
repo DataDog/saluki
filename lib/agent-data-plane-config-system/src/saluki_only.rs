@@ -365,12 +365,19 @@ pub struct OtlpConfigReceiverProtocolsHttp {
     pub transport: Option<String>,
 }
 
-fn byte_size_to_nonzero_usize<E>(size: ByteSize) -> Result<NonZeroUsize, E>
+fn byte_size_to_bounded_nonzero_usize<E>(size: ByteSize) -> Result<NonZeroUsize, E>
 where
     E: serde::de::Error,
 {
     let bytes = usize::try_from(size.as_u64()).map_err(E::custom)?;
-    NonZeroUsize::new(bytes).ok_or_else(|| E::custom("value of bytes must be greater than zero"))
+    let size = NonZeroUsize::new(bytes).ok_or_else(|| E::custom("value of bytes must be greater than zero"))?;
+    if size > MAX_STRING_INTERNER_SIZE_BYTES {
+        return Err(E::custom(format!(
+            "value of bytes must not exceed {} bytes",
+            MAX_STRING_INTERNER_SIZE_BYTES
+        )));
+    }
+    Ok(size)
 }
 
 fn deserialize_optional_nonzero_byte_size<'de, D>(deserializer: D) -> Result<Option<NonZeroUsize>, D::Error>
@@ -378,7 +385,7 @@ where
     D: Deserializer<'de>,
 {
     Option::<ByteSize>::deserialize(deserializer)?
-        .map(byte_size_to_nonzero_usize)
+        .map(byte_size_to_bounded_nonzero_usize)
         .transpose()
 }
 
@@ -386,14 +393,7 @@ fn deserialize_string_interner_size<'de, D>(deserializer: D) -> Result<NonZeroUs
 where
     D: Deserializer<'de>,
 {
-    let size = byte_size_to_nonzero_usize(ByteSize::deserialize(deserializer)?)?;
-    if size > MAX_STRING_INTERNER_SIZE_BYTES {
-        return Err(serde::de::Error::custom(format!(
-            "value of bytes must not exceed {} bytes",
-            MAX_STRING_INTERNER_SIZE_BYTES
-        )));
-    }
-    Ok(size)
+    byte_size_to_bounded_nonzero_usize(ByteSize::deserialize(deserializer)?)
 }
 
 /// `otlp_config.traces.*`.
@@ -669,6 +669,7 @@ mod tests {
         DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS, DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
         DEFAULT_ENCODER_FLUSH_TIMEOUT, DEFAULT_ERROR_SAMPLING_ENABLED, DEFAULT_RARE_SAMPLER_CARDINALITY,
         DEFAULT_RARE_SAMPLER_COOLDOWN_SECS, DEFAULT_RARE_SAMPLER_TPS, DEFAULT_TRACE_ENV,
+        MAX_STRING_INTERNER_SIZE_BYTES,
     };
     use agent_data_plane_config::domains::dogstatsd::TagValueMismatchAction;
     use serde_json::json;
@@ -907,6 +908,14 @@ mod tests {
         let result: Result<SalukiOnly, _> =
             serde_json::from_value(json!({ "dogstatsd_mapper_string_interner_size": 0 }));
         assert!(result.is_err(), "a zero mapper string interner must be rejected");
+    }
+
+    #[test]
+    fn an_oversized_mapper_string_interner_size_is_rejected() {
+        let result: Result<SalukiOnly, _> = serde_json::from_value(json!({
+            "dogstatsd_mapper_string_interner_size": MAX_STRING_INTERNER_SIZE_BYTES.get() + 1
+        }));
+        assert!(result.is_err(), "an oversized mapper string interner must be rejected");
     }
 
     /// An unknown field under `ottl_filter_config` or `ottl_transform_config` must fail

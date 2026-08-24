@@ -81,7 +81,7 @@ impl DogStatsDMapperConfiguration {
 
     fn build_mapper(&self, context: ComponentContext) -> Result<MetricMapper, GenericError> {
         let mut profiles = Vec::with_capacity(self.profiles.len());
-        for (i, config_profile) in self.profiles.iter().enumerate() {
+        for config_profile in &self.profiles {
             if config_profile.name.is_empty() {
                 return Err(generic_error!("missing profile name"));
             }
@@ -94,7 +94,7 @@ impl DogStatsDMapperConfiguration {
                 mappings: Vec::with_capacity(config_profile.mappings.len()),
             };
 
-            for mapping in &config_profile.mappings {
+            for (mapping_index, mapping) in config_profile.mappings.iter().enumerate() {
                 let match_type = match mapping.match_type.as_str() {
                     // Default to wildcard when not set.
                     "" => MATCH_TYPE_WILDCARD,
@@ -104,7 +104,7 @@ impl DogStatsDMapperConfiguration {
                         return Err(generic_error!(
                             "profile: {}, mapping num {}: invalid match type `{}`, expected `wildcard` or `regex`",
                             config_profile.name,
-                            i,
+                            mapping_index,
                             unknown,
                         ))
                     }
@@ -113,14 +113,14 @@ impl DogStatsDMapperConfiguration {
                     return Err(generic_error!(
                         "profile: {}, mapping num {}: name is required",
                         config_profile.name,
-                        i
+                        mapping_index
                     ));
                 }
                 if mapping.metric_match.is_empty() {
                     return Err(generic_error!(
                         "profile: {}, mapping num {}: match is required",
                         config_profile.name,
-                        i
+                        mapping_index
                     ));
                 }
                 let regex = build_regex(&mapping.metric_match, match_type)?;
@@ -820,6 +820,18 @@ mod tests {
                 "mapping with an empty name",
                 mapper_profiles!([{ "name": "test", "prefix": "test.", "mappings": [{ "match": "test.job.duration.*.*", "name": "", "tags": { "job_type": "$1" } }] }]),
                 "name is required",
+            ),
+            (
+                "second mapping with an empty name",
+                mapper_profiles!([{
+                    "name": "test",
+                    "prefix": "test.",
+                    "mappings": [
+                        { "match": "test.valid", "name": "mapped" },
+                        { "match": "test.invalid", "name": "" }
+                    ]
+                }]),
+                "mapping num 1: name is required",
             ),
             // Match compilation / type validation.
             (

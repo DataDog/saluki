@@ -58,5 +58,5 @@ pub const DEFAULT_RARE_SAMPLER_CARDINALITY: usize = 200;
 /// Default OTLP trace string interner capacity: 512 KiB.
 pub const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap();
 
-/// Maximum OTLP trace string interner capacity: 1 GiB. Arbitrary to stop @blt from blowing us up.
+/// Maximum string interner capacity: 1 GiB. Arbitrary to stop @blt from blowing us up.
 pub const MAX_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(1024 * 1024 * 1024).unwrap();
