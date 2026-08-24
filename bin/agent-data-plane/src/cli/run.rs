@@ -832,11 +832,26 @@ async fn add_dsd_pipeline_to_blueprint(
         "host_enrichment",
         HostEnrichmentConfiguration::from_environment_provider(env_provider.clone()),
     );
-    let dsd_debug_log_config = DogStatsDDebugLogConfiguration::from_configuration(
-        config,
-        PlatformSettings::get_default_dogstatsd_log_file_path(),
-    )
-    .error_context("Failed to configure DogStatsD debug log destination.")?;
+
+    // Resolve the platform default log path when unset.
+    let debug_log = &typed.domains.dogstatsd.debug_log;
+    let debug_log_file = debug_log
+        .log_file
+        .clone()
+        .unwrap_or_else(PlatformSettings::get_default_dogstatsd_log_file_path);
+    if debug_log_file.to_str().is_none() {
+        return Err(generic_error!(
+            "dogstatsd_log_file must be valid UTF-8, got '{}'",
+            debug_log_file.display()
+        ));
+    }
+
+    let dsd_debug_log_config = DogStatsDDebugLogConfiguration {
+        metrics_stats_enabled: config_system.live(|config| &config.domains.dogstatsd.debug_log.metrics_stats_enable),
+        log_file: debug_log_file,
+        log_file_max_size: debug_log.log_file_max_size,
+        log_file_max_rolls: debug_log.log_file_max_rolls,
+    };
     let dsd_stats_config = DogStatsDStatisticsConfiguration::new();
 
     let stats_api_handler = dsd_stats_config.api_handler();
@@ -879,7 +894,7 @@ async fn add_dsd_pipeline_to_blueprint(
         // Post-aggregation client telemetry for RAR/COAT.
         .connect_components("dsd_post_agg_filter", "dsd_client_telemetry_out")?;
 
-    if dsd_debug_log_config.enabled() {
+    if debug_log.logging_enabled {
         blueprint
             // DogStatsD debug log.
             .add_destination("dsd_debug_log_out", dsd_debug_log_config)?
