@@ -30,7 +30,6 @@ use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
-use saluki_tls::ServerTLSConfigBuilder;
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -38,7 +37,9 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
-use crate::common::otlp::{build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerBuilder};
+use crate::common::otlp::{
+    build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
+};
 
 mod logs;
 mod metrics;
@@ -73,41 +74,33 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
     }
 }
 
-/// Builds a `rustls::ServerConfig` from resolved TLS settings, if TLS is enabled.
+/// Builds an `OtlpTlsConfiguration` from resolved TLS settings, if TLS is enabled.
 ///
 /// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
 /// requests client certificates and verifies them against the CA certificates in that file, but does not require a
-/// client certificate (optional verification). Mandatory client verification (`client_ca_file`) is not yet supported.
+/// client certificate (optional verification).
 ///
 /// # Errors
 ///
 /// Returns an error if only one of `cert_file` or `key_file` is set. Both must be provided together to enable TLS;
 /// setting only one is treated as a configuration error rather than silently downgrading to plaintext.
-fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<rustls::ServerConfig>, GenericError> {
+fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<OtlpTlsConfiguration>, GenericError> {
     match (tls.cert_file.is_empty(), tls.key_file.is_empty()) {
-        (true, true) => return Ok(None),
-        (false, false) => {}
-        (true, false) => {
-            return Err(generic_error!(
-                "OTLP receiver TLS `key_file` is set but `cert_file` is empty. Both must be provided to enable TLS."
-            ))
+        (true, true) => Ok(None),
+        (false, false) => {
+            let mut config = OtlpTlsConfiguration::new(tls.cert_file.clone().into(), tls.key_file.clone().into());
+            if !tls.ca_file.is_empty() {
+                config = config.with_ca_file(tls.ca_file.clone().into());
+            }
+            Ok(Some(config))
         }
-        (false, true) => {
-            return Err(generic_error!(
-                "OTLP receiver TLS `cert_file` is set but `key_file` is empty. Both must be provided to enable TLS."
-            ))
-        }
+        (true, false) => Err(generic_error!(
+            "OTLP receiver TLS `key_file` is set but `cert_file` is empty. Both must be provided to enable TLS."
+        )),
+        (false, true) => Err(generic_error!(
+            "OTLP receiver TLS `cert_file` is set but `key_file` is empty. Both must be provided to enable TLS."
+        )),
     }
-
-    let mut builder = ServerTLSConfigBuilder::new()
-        .with_cert_file(&tls.cert_file)
-        .with_key_file(&tls.key_file);
-
-    if !tls.ca_file.is_empty() {
-        builder = builder.with_ca_file(&tls.ca_file);
-    }
-
-    builder.build().map(Some)
 }
 
 /// Applies resolved static tags using replacement semantics.
@@ -257,8 +250,8 @@ pub struct Otlp {
     default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
     cors: CorsConfiguration,
-    http_tls_config: Option<rustls::ServerConfig>,
-    grpc_tls_config: Option<rustls::ServerConfig>,
+    http_tls_config: Option<OtlpTlsConfiguration>,
+    grpc_tls_config: Option<OtlpTlsConfiguration>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
@@ -300,17 +293,17 @@ impl Source for Otlp {
 
         // Build our gRPC and HTTP servers and spawn them.
         let handler = SourceHandler::new(tx);
-        let mut server_builder =
-            OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
+        let mut server_config =
+            OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
 
-        if let Some(tls_config) = http_tls_config {
-            server_builder = server_builder.with_http_tls_config(tls_config);
+        if let Some(tls) = http_tls_config {
+            server_config = server_config.with_http_tls(tls);
         }
-        if let Some(tls_config) = grpc_tls_config {
-            server_builder = server_builder.with_grpc_tls_config(tls_config);
+        if let Some(tls) = grpc_tls_config {
+            server_config = server_config.with_grpc_tls(tls);
         }
 
-        server_builder
+        server_config
             .build(handler, memory_limiter.clone(), metrics.clone(), context.spawner())
             .await?;
 
