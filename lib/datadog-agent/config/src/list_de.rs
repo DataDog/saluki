@@ -1,8 +1,8 @@
 //! Serde deserialization for list schema fields with multiple source shapes.
 //!
 //! String lists can arrive as sequences or space-separated environment strings. Map values
-//! containing string lists can likewise arrive as scalars or sequences. Free-form object arrays can
-//! arrive as sequences or JSON-encoded strings. These adapters normalize each form at the boundary.
+//! containing string lists can likewise arrive as scalars or sequences. JSON arrays can arrive as
+//! sequences or JSON-encoded strings. These adapters normalize each form at the boundary.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -44,7 +44,7 @@ where
     deserializer.deserialize_any(SpaceSeparatedOrSeq)
 }
 
-/// Deserialize a free-form JSON array from either a sequence or a JSON-encoded string.
+/// Deserialize a JSON array from either a sequence or a JSON-encoded string.
 pub(crate) fn deserialize_json_array_or_string<'de, D>(deserializer: D) -> Result<Vec<Value>, D::Error>
 where
     D: Deserializer<'de>,

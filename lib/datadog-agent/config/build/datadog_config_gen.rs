@@ -16,7 +16,7 @@
 //! bare number from reaching the translator as an ambiguous unit.
 //!
 //! List fields also get shape-tolerant decoders. String lists accept the Agent's scalar forms, and
-//! free-form object arrays accept either sequences or JSON-encoded strings. Handling these shapes at
+//! object arrays without an `items` schema accept either sequences or JSON-encoded strings. Handling these shapes at
 //! the deserialization boundary keeps downstream types consistent; see `listize` and
 //! `crate::list_de`.
 //!
@@ -385,7 +385,7 @@ fn duration_defaults_module(durations: &BTreeMap<String, u64>) -> String {
 /// String lists arrive as a real sequence from a file or the remote Agent stream, but as a single
 /// space-separated string from an environment variable (`DD_DOGSTATSD_TAGS="a b"`), so each field
 /// must accept both. Map values containing string lists may likewise arrive as either one scalar or
-/// a sequence. Free-form object arrays also accept a JSON-encoded string.
+/// a sequence. Object arrays without an `items` schema also accept a JSON-encoded string.
 ///
 /// We push an extra `#[serde(deserialize_with = ...)]` attribute rather than replacing the field's
 /// existing serde attributes: serde merges multiple `#[serde(...)]`, so the field keeps its

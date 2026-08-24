@@ -7,7 +7,9 @@
 //! to its `SalukiConfiguration` destination.
 //!
 //! Most keys assign a single field directly. The endpoint keys (`api_key`, `dd_url`, `site`,
-//! `additional_endpoints`) are copied into the model without selecting a primary endpoint here.
+//! `additional_endpoints`) are copied into the model without selecting a primary endpoint here. An
+//! object array without an `items` schema arrives as `Vec<serde_json::Value>`; the translator
+//! deserializes each value using [`array_objects`] before mapping it to the ADP model.
 //!
 //! A key whose meaning depends on whether its value was set explicitly or set by default is typed
 //! as a [`ConfigValue`] which preserves that provenance.
@@ -33,7 +35,7 @@ use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
 use bytesize::ByteSize;
 use datadog_agent_config::{
-    cast_to_string, drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors,
+    array_objects, cast_to_string, drive, DatadogConfigWitness, DatadogConfiguration, TranslateError, TranslateErrors,
 };
 use tracing::warn;
 
@@ -125,88 +127,14 @@ fn to_port(value: i64) -> u16 {
     value.clamp(0, u16::MAX as i64) as u16
 }
 
-/// Parses one `dogstatsd_mapper_profiles` object into a [`MapperProfile`].
+/// Classifies a `metric_tag_filterlist` element's `action` string.
 ///
-/// The vendored Datadog schema declares `dogstatsd_mapper_profiles` (and `metric_tag_filterlist`)
-/// as arrays of free-form objects, so the generated witness can only surface them as
-/// `Vec<serde_json::Value>`. This parser imposes the typed model shape at the configuration
-/// boundary via a local `#[derive(Deserialize)]` shim.
-fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfile> {
-    #[derive(serde::Deserialize)]
-    struct RawMapping {
-        #[serde(rename = "match")]
-        metric_match: String,
-        #[serde(default)]
-        match_type: String,
-        name: String,
-        #[serde(default)]
-        tags: HashMap<String, String>,
-    }
-    #[derive(serde::Deserialize)]
-    struct RawProfile {
-        name: String,
-        prefix: String,
-        #[serde(default)]
-        mappings: Vec<RawMapping>,
-    }
-
-    let parsed: RawProfile = serde_json::from_value(raw).map_err(|error| TranslateError::new(key, error))?;
-    Ok(MapperProfile {
-        name: parsed.name,
-        prefix: parsed.prefix,
-        mappings: parsed
-            .mappings
-            .into_iter()
-            .map(|m| MetricMapping {
-                metric_match: m.metric_match,
-                match_type: m.match_type,
-                name: m.name,
-                tags: m.tags,
-            })
-            .collect(),
-    })
-}
-
-/// The result of parsing one `metric_tag_filterlist` object.
-///
-/// The two failure modes differ in whether the entry can still be used, and the caller relies on
-/// that difference to honor the system's opposite stances on translation errors (strict at startup,
-/// lenient at runtime). A [`Recovered`][Self::Recovered] entry is still usable, so a runtime update
-/// keeps filtering with it while startup still rejects the config on the recorded error. A
-/// [`Malformed`][Self::Malformed] object yields no value, so it is skipped.
-enum TagFilterEntry {
-    /// The object parsed and its `action` was recognized.
-    Valid(MetricTagFilterEntry),
-    /// The object parsed but its `action` was not `include`, `exclude`, or empty. The entry is kept
-    /// with `action` defaulted to `exclude`, matching the component's own tolerance, and the error
-    /// is recorded so a strict startup still rejects the config.
-    Recovered(MetricTagFilterEntry, TranslateError),
-    /// The object could not be deserialized into an entry; no value is recoverable.
-    Malformed(TranslateError),
-}
-
-/// Parses one `metric_tag_filterlist` object into a [`TagFilterEntry`].
-///
-/// Like `parse_mapper_profile`, this imposes the typed model shape on a free-form schema object via
-/// a local `#[derive(Deserialize)]` shim. Unlike it, an unrecognized `action` does not discard the
-/// entry: the schema lets any string through, so the component tolerates typos by defaulting to
-/// `exclude`, and this preserves that behavior while still surfacing the error.
-fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
-    #[derive(serde::Deserialize)]
-    struct RawEntry {
-        metric_name: String,
-        #[serde(default)]
-        action: String,
-        #[serde(default)]
-        tags: Vec<String>,
-    }
-
-    let parsed: RawEntry = match serde_json::from_value(raw).map_err(|error| TranslateError::new(key, error)) {
-        Ok(parsed) => parsed,
-        Err(error) => return TagFilterEntry::Malformed(error),
-    };
-
-    let (action, action_error) = match parsed.action.as_str() {
+/// The schema types `action` as a free string, and the Agent defaults an unrecognized value to
+/// `exclude` instead of rejecting the entry, so the entry stays usable. The error is still returned
+/// so a strict startup rejects the configuration while a lenient runtime update keeps filtering with
+/// the recovered entry.
+fn parse_filter_action(key: &str, action: &str) -> (FilterAction, Option<TranslateError>) {
+    match action {
         "include" => (FilterAction::Include, None),
         "" | "exclude" => (FilterAction::Exclude, None),
         other => (
@@ -216,16 +144,6 @@ fn parse_tag_filter_entry(key: &str, raw: serde_json::Value) -> TagFilterEntry {
                 format!("unknown filter action `{other}`"),
             )),
         ),
-    };
-
-    let entry = MetricTagFilterEntry {
-        metric_name: parsed.metric_name,
-        action,
-        tags: parsed.tags,
-    };
-    match action_error {
-        Some(error) => TagFilterEntry::Recovered(entry, error),
-        None => TagFilterEntry::Valid(entry),
     }
 }
 
@@ -564,13 +482,28 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_dogstatsd_mapper_profiles(&mut self, value: Vec<serde_json::Value>) {
         let mut profiles = Vec::with_capacity(value.len());
         for raw in value {
-            match parse_mapper_profile("dogstatsd_mapper_profiles", raw) {
-                Ok(profile) => profiles.push(profile),
+            let profile: array_objects::MapperProfile = match serde_json::from_value(raw) {
+                Ok(profile) => profile,
                 Err(error) => {
-                    self.record_error(error);
+                    self.record_error(TranslateError::new("dogstatsd_mapper_profiles", error));
                     return;
                 }
-            }
+            };
+
+            profiles.push(MapperProfile {
+                name: profile.name,
+                prefix: profile.prefix,
+                mappings: profile
+                    .mappings
+                    .into_iter()
+                    .map(|mapping| MetricMapping {
+                        metric_match: mapping.metric_match,
+                        match_type: mapping.match_type,
+                        name: mapping.name,
+                        tags: mapping.tags,
+                    })
+                    .collect(),
+            });
         }
         self.config.domains.dogstatsd.mapper.profiles = profiles;
     }
@@ -863,14 +796,23 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         // errors alongside them.
         let mut entries = Vec::with_capacity(value.len());
         for raw in value {
-            match parse_tag_filter_entry("metric_tag_filterlist", raw) {
-                TagFilterEntry::Valid(entry) => entries.push(entry),
-                TagFilterEntry::Recovered(entry, error) => {
-                    self.record_error(error);
-                    entries.push(entry);
+            let entry: array_objects::MetricTagFilterlistEntry = match serde_json::from_value(raw) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    self.record_error(TranslateError::new("metric_tag_filterlist", error));
+                    continue;
                 }
-                TagFilterEntry::Malformed(error) => self.record_error(error),
+            };
+
+            let (action, action_error) = parse_filter_action("metric_tag_filterlist", &entry.action);
+            if let Some(error) = action_error {
+                self.record_error(error);
             }
+            entries.push(MetricTagFilterEntry {
+                metric_name: entry.metric_name,
+                action,
+                tags: entry.tags,
+            });
         }
         self.config.domains.dogstatsd.tag_filterlist = entries;
     }

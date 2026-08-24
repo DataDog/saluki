@@ -7,6 +7,9 @@ mod duration_de;
 
 /// Decoders that turn a raw environment-variable string into the JSON shape a schema leaf declares.
 pub mod env_decode;
+
+/// Source types for object arrays without `items` schemas.
+pub mod array_objects;
 mod list_de;
 
 /// A Figment provider that reads the schema's environment variables into their canonical shape.
