@@ -269,3 +269,4 @@ configgrpc
 configtls
 keyspace
 Kueue
+plaintext

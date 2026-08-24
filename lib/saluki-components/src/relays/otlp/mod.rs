@@ -9,7 +9,7 @@ use saluki_core::components::relays::{Relay, RelayBuilder, RelayContext};
 use saluki_core::components::ComponentContext;
 use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, PayloadType};
 use saluki_core::topology::OutputDefinition;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::ListenAddress;
 use saluki_tls::ServerTLSConfigBuilder;
 use stringtheory::MetaString;
@@ -37,9 +37,25 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
 /// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
 /// requests client certificates and verifies them against the CA certificates in that file, but does not require a
 /// client certificate (optional verification). Mandatory client verification (`client_ca_file`) is not yet supported.
+///
+/// # Errors
+///
+/// Returns an error if only one of `cert_file` or `key_file` is set. Both must be provided together to enable TLS;
+/// setting only one is treated as a configuration error rather than silently downgrading to plaintext.
 fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<rustls::ServerConfig>, GenericError> {
-    if tls.cert_file.is_empty() || tls.key_file.is_empty() {
-        return Ok(None);
+    match (tls.cert_file.is_empty(), tls.key_file.is_empty()) {
+        (true, true) => return Ok(None),
+        (false, false) => {}
+        (true, false) => {
+            return Err(generic_error!(
+                "OTLP receiver TLS `key_file` is set but `cert_file` is empty. Both must be provided to enable TLS."
+            ))
+        }
+        (false, true) => {
+            return Err(generic_error!(
+                "OTLP receiver TLS `cert_file` is set but `key_file` is empty. Both must be provided to enable TLS."
+            ))
+        }
     }
 
     let mut builder = ServerTLSConfigBuilder::new()
