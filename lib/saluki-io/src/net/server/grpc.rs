@@ -21,25 +21,24 @@ use crate::net::ListenAddress;
 
 /// Resolved keepalive parameters for a gRPC server.
 ///
-/// All fields are already resolved by the caller before constructing this struct. `None` means
-/// "do not apply this setting." When constructed via `resolve_grpc_keepalive`, unset `time` and
-/// `timeout` default to 2 hours and 20 seconds respectively; `max_connection_age` and
-/// `max_connection_age_grace` default to no limit.
+/// All fields are already resolved by the caller before constructing this struct. A zero duration
+/// means "do not apply this setting."
 #[derive(Clone, Debug, Default)]
 pub struct GrpcKeepalive {
-    /// Interval between HTTP/2 keepalive PING frames. `None` disables server-initiated keepalive.
-    pub http2_keepalive_interval: Option<Duration>,
+    /// Interval between HTTP/2 keepalive PING frames. A zero duration disables server-initiated
+    /// keepalive.
+    pub http2_keepalive_interval: Duration,
 
     /// Timeout for receiving a PONG after a keepalive PING before closing the connection.
-    pub http2_keepalive_timeout: Option<Duration>,
+    pub http2_keepalive_timeout: Duration,
 
-    /// Maximum duration a connection may exist before the server sends GOAWAY. `None` means no
-    /// limit.
-    pub max_connection_age: Option<Duration>,
+    /// Maximum duration a connection may exist before the server sends GOAWAY. A zero duration
+    /// means no limit.
+    pub max_connection_age: Duration,
 
-    /// Grace period after `max_connection_age` before the connection is forcibly closed. `None` means
-    /// no limit.
-    pub max_connection_age_grace: Option<Duration>,
+    /// Grace period after `max_connection_age` before the connection is forcibly closed. A zero
+    /// duration means no limit.
+    pub max_connection_age_grace: Duration,
 }
 
 /// A gRPC server.
@@ -130,15 +129,17 @@ impl Supervisable for GrpcServer {
         // Build the tonic server with keepalive settings applied.
         let mut server = Server::default();
         if let Some(ref ka) = self.keepalive {
-            server = server.http2_keepalive_interval(ka.http2_keepalive_interval);
-            if let Some(timeout) = ka.http2_keepalive_timeout {
-                server = server.http2_keepalive_timeout(Some(timeout));
+            if ka.http2_keepalive_interval != Duration::ZERO {
+                server = server.http2_keepalive_interval(Some(ka.http2_keepalive_interval));
             }
-            if let Some(age) = ka.max_connection_age {
-                server = server.max_connection_age(age);
+            if ka.http2_keepalive_timeout != Duration::ZERO {
+                server = server.http2_keepalive_timeout(Some(ka.http2_keepalive_timeout));
             }
-            if let Some(grace) = ka.max_connection_age_grace {
-                server = server.max_connection_age_grace(grace);
+            if ka.max_connection_age != Duration::ZERO {
+                server = server.max_connection_age(ka.max_connection_age);
+            }
+            if ka.max_connection_age_grace != Duration::ZERO {
+                server = server.max_connection_age_grace(ka.max_connection_age_grace);
             }
         }
 

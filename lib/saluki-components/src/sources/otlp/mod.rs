@@ -72,22 +72,19 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
     }
 }
 
-/// Resolves keepalive server parameters into tonic-compatible settings, applying defaults for
-/// unset `time` and `timeout`.
+/// Converts keepalive server parameters into tonic-compatible settings.
 ///
-/// Unset `time` and `timeout` are replaced with their defaults. The age and grace fields default
-/// to no limit, which matches tonic's `None` default.
+/// Defaults are already resolved by the configuration layer; this function only maps the typed
+/// values into the tonic-facing struct.
 fn resolve_grpc_keepalive(keepalive: &Option<domains::otlp::KeepaliveServerParameters>) -> GrpcKeepalive {
-    let params = keepalive.as_ref();
-    GrpcKeepalive {
-        http2_keepalive_interval: Some(
-            params
-                .and_then(|p| p.time)
-                .unwrap_or(domains::otlp::DEFAULT_GRPC_KEEPALIVE_TIME),
-        ),
-        http2_keepalive_timeout: params.and_then(|p| p.timeout),
-        max_connection_age: params.and_then(|p| p.max_connection_age),
-        max_connection_age_grace: params.and_then(|p| p.max_connection_age_grace),
+    match keepalive.as_ref() {
+        Some(params) => GrpcKeepalive {
+            http2_keepalive_interval: params.time,
+            http2_keepalive_timeout: params.timeout,
+            max_connection_age: params.max_connection_age,
+            max_connection_age_grace: params.max_connection_age_grace,
+        },
+        None => GrpcKeepalive::default(),
     }
 }
 

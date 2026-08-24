@@ -292,23 +292,26 @@ pub const DEFAULT_GRPC_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Server-side keepalive parameters for the OTLP gRPC receiver.
 ///
-/// All fields are `Option<Duration>`. `None` means "unset"; the component layer applies defaults
-/// for `time` and `timeout` and leaves the age fields as "no limit."
+/// All fields are `Duration`. A zero duration is the sentinel for "unset": the translator
+/// resolves `time` and `timeout` to their effective defaults, and treats `max_connection_age` and
+/// `max_connection_age_grace` as "no limit."
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct KeepaliveServerParameters {
-    /// Maximum time a connection may exist before the server sends GOAWAY. `None` means no limit.
-    pub max_connection_age: Option<Duration>,
+    /// Maximum time a connection may exist before the server sends GOAWAY. A zero duration means no
+    /// limit.
+    pub max_connection_age: Duration,
 
-    /// Grace period after `max_connection_age` before the connection is forcibly closed. `None`
-    /// means no limit.
-    pub max_connection_age_grace: Option<Duration>,
+    /// Grace period after `max_connection_age` before the connection is forcibly closed. A zero
+    /// duration means no limit.
+    pub max_connection_age_grace: Duration,
 
-    /// Idle time before the server sends a keepalive PING. `None` means unset.
-    pub time: Option<Duration>,
+    /// Idle time before the server sends a keepalive PING. A zero duration is resolved by the
+    /// translator to the default of 2 hours.
+    pub time: Duration,
 
-    /// Time to wait for a PONG after a keepalive PING before closing the connection. `None` means
-    /// unset.
-    pub timeout: Option<Duration>,
+    /// Time to wait for a PONG after a keepalive PING before closing the connection. A zero duration
+    /// is resolved by the translator to the default of 20 seconds.
+    pub timeout: Duration,
 }
 
 /// OTLP gRPC receiver.
