@@ -228,8 +228,8 @@ impl CgroupsReader {
     /// Individual paths that can't be traversed -- most commonly because a container exited and its cgroup was removed
     /// while we were walking the hierarchy -- are skipped rather than aborting the traversal. If any of those skips
     /// could have hidden a cgroup that still exists, the returned traversal is marked as incomplete. See
-    /// [`CgroupsTraversal::complete`] for why that distinction matters.
-    pub fn get_child_cgroups(&self) -> CgroupsTraversal {
+    /// [`TraversalResult::is_complete`] for why that distinction matters.
+    pub fn get_child_cgroups(&self) -> TraversalResult {
         // Walk the cgroups hierarchy and collect all cgroups that we can find that are related to containers..
         let root_path = self.hierarchy_reader.root_path();
 
@@ -240,7 +240,7 @@ impl CgroupsReader {
                 // misconfigured cgroupfs path rather than a transient condition.
                 warn!(error = %e, cgroups_root = %root_path.display(), "Failed to visit cgroups hierarchy.");
 
-                CgroupsTraversal::unreadable()
+                TraversalResult::unreadable()
             }
         }
     }
@@ -251,13 +251,13 @@ impl CgroupsReader {
 /// This accumulates as the traversal runs: [`visit_subdirectories`] creates one, records each cgroup it's handed and
 /// each path it couldn't read, and returns it.
 #[derive(Default)]
-pub struct CgroupsTraversal {
+pub struct TraversalResult {
     cgroups: Vec<Cgroup>,
     skipped: usize,
     obscured: usize,
 }
 
-impl CgroupsTraversal {
+impl TraversalResult {
     /// Creates a traversal representing a hierarchy that couldn't be read at all.
     ///
     /// The result is empty and not [complete][Self::is_complete], since failing to read the root hides everything
@@ -539,13 +539,13 @@ fn read_lines(path: &Path) -> io::Result<Vec<String>> {
 /// Visits every subdirectory beneath the given path, collecting the cgroups that `visit` identifies.
 ///
 /// Subdirectories that can't be read are skipped, along with everything beneath them, and recorded in the returned
-/// [`CgroupsTraversal`]. Callers that need to distinguish "this subdirectory is gone" from "we couldn't see this
-/// subdirectory" **MUST** check [`CgroupsTraversal::is_complete`].
+/// [`TraversalResult`]. Callers that need to distinguish "this subdirectory is gone" from "we couldn't see this
+/// subdirectory" **MUST** check [`TraversalResult::is_complete`].
 ///
 /// # Errors
 ///
 /// If the given path itself can't be queried, an error is returned. Failures below the given path are never fatal.
-fn visit_subdirectories<P, F>(path: P, mut visit: F) -> Result<CgroupsTraversal, GenericError>
+fn visit_subdirectories<P, F>(path: P, mut visit: F) -> Result<TraversalResult, GenericError>
 where
     P: AsRef<Path>,
     F: FnMut(&Path) -> Option<Cgroup>,
@@ -556,10 +556,10 @@ where
     let metadata = fs::metadata(root)
         .with_error_context(|| format!("Failed to query metadata for traversal root ({}).", root.display()))?;
     if !metadata.is_dir() {
-        return Ok(CgroupsTraversal::default());
+        return Ok(TraversalResult::default());
     }
 
-    let mut traversal = CgroupsTraversal::default();
+    let mut traversal = TraversalResult::default();
 
     // Do an initial pass on our path to get all of its subdirectories, which we'll visit, and then also use as the seed
     // for further visiting.
@@ -684,7 +684,7 @@ mod tests {
 
     use super::{
         extract_container_id, get_container_id_from_cgroup_lines, is_usable_controller_inode, visit_subdirectories,
-        CgroupControllerEntry, CgroupsReader, CgroupsTraversal, HierarchyReader, DEFAULT_PROCFS_ROOT,
+        CgroupControllerEntry, CgroupsReader, HierarchyReader, TraversalResult, DEFAULT_PROCFS_ROOT,
     };
 
     #[test]
@@ -869,7 +869,7 @@ mod tests {
 
     #[test]
     fn record_skip_classifies_by_error_kind() {
-        let mut traversal = CgroupsTraversal::default();
+        let mut traversal = TraversalResult::default();
 
         // A path that's gone takes its subdirectories with it, and a path we can't read never showed us any, so
         // neither can be hiding anything from us.
