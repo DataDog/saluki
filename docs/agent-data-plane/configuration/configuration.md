@@ -509,7 +509,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128            |
 | `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 |                |
 | `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         |                |
-| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner capacity            |                |
+| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity       | 64KiB          |
 | `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              |                |
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
@@ -574,6 +574,10 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 ### `dogstatsd_string_interner_size_bytes`
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
+
+### `dogstatsd_mapper_string_interner_size`
+
+Controls the pre-allocated byte capacity for interning mapped metric names and tags. The default is `64KiB`. Set this to a nonzero byte count; you can use a bare number of bytes or a human-readable byte-size string such as `64KiB`. Larger values increase memory usage.
 
 ### `memory_limit` / `memory_slop_factor`
 

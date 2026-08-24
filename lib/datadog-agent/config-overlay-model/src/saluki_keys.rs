@@ -606,9 +606,13 @@ pub static SALUKI_KEYS: &[SalukiKey] = &[
     // ── dogstatsd_mapper.rs ──────────────────────────────────────────────────
     SalukiKey {
         yaml_path: "dogstatsd_mapper_string_interner_size",
-        description: "Mapper string interner capacity",
-        default: "",
-        documentation: None,
+        description: "Mapper string interner byte capacity",
+        default: "64KiB",
+        documentation: Some(
+            "Controls the pre-allocated byte capacity for interning mapped metric names and tags. The default is \
+             `64KiB`. Set this to a nonzero byte count; you can use a bare number of bytes or a human-readable \
+             byte-size string such as `64KiB`. Larger values increase memory usage.",
+        ),
         value_type: "ValueType::Integer",
         schema_default: None,
         env_vars: &[],
