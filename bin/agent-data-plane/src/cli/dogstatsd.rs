@@ -1,25 +1,17 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
-#[cfg(any(unix, windows))]
-use std::path::Path;
-use std::path::PathBuf;
-use std::time::Duration;
-#[cfg(any(unix, windows))]
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use agent_data_plane_config_system::LoadedConfiguration;
 use argh::{FromArgValue, FromArgs};
 use comfy_table::{presets::ASCII_FULL_CONDENSED, Cell, ContentArrangement, Row, Table};
-#[cfg(any(unix, windows))]
 use saluki_app::util::wait_for_shutdown_signal;
 use saluki_components::sources::DEFAULT_REPLAY_LOOPS;
 #[cfg(target_os = "linux")]
 use saluki_components::sources::REPLAY_CREDENTIALS_GID;
-#[cfg(any(unix, windows, test))]
 use saluki_components::sources::{TimestampResolution, TrafficCaptureReader};
-use saluki_config::DurationString;
-#[cfg(any(unix, windows, test))]
-use saluki_config::GenericConfiguration;
+use saluki_config::{DurationString, GenericConfiguration};
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 #[cfg(target_os = "windows")]
 use saluki_io::net::ListenAddress;
@@ -31,13 +23,8 @@ use tokio::io::{self, AsyncWriteExt};
 use tokio::net::windows::named_pipe::ClientOptions;
 #[cfg(unix)]
 use tokio::net::UnixDatagram;
-#[cfg(any(unix, windows))]
 use tokio_util::sync::CancellationToken;
-#[cfg(any(unix, windows))]
-use tracing::debug;
-#[cfg(any(windows, all(unix, not(target_os = "linux"))))]
-use tracing::warn;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use crate::cli::utils::{get_api_client_or_exit, DataPlaneAPIClient};
 
@@ -201,24 +188,11 @@ async fn run_dogstatsd_command(local_config: &LoadedConfiguration, cmd: Dogstats
                 .error_context("Failed to start DogStatsD capture")
         }
         DogstatsdSubcommand::Replay(config) => {
-            #[cfg(any(unix, windows))]
-            {
-                let mut api_client = get_api_client_or_exit(local_config).await;
-                let raw_config = local_config.raw_config();
-                handle_dogstatsd_replay(&mut api_client, &raw_config, config)
-                    .await
-                    .error_context("Failed to replay DogStatsD traffic")
-            }
-
-            #[cfg(not(any(unix, windows)))]
-            {
-                let ReplayCommand {
-                    replay_file_path,
-                    loops,
-                } = config;
-                let _ = (replay_file_path, loops);
-                Err(generic_error!("DogStatsD replay is unsupported on this platform."))
-            }
+            let mut api_client = get_api_client_or_exit(local_config).await;
+            let raw_config = local_config.raw_config();
+            handle_dogstatsd_replay(&mut api_client, &raw_config, config)
+                .await
+                .error_context("Failed to replay DogStatsD traffic")
         }
         DogstatsdSubcommand::Top(config) => {
             let config = config.validate();
@@ -284,7 +258,6 @@ async fn handle_dogstatsd_capture(
     Ok(())
 }
 
-#[cfg(any(unix, windows))]
 async fn handle_dogstatsd_replay(
     api_client: &mut DataPlaneAPIClient, config: &GenericConfiguration, cmd: ReplayCommand,
 ) -> Result<(), GenericError> {
@@ -293,7 +266,7 @@ async fn handle_dogstatsd_replay(
     info!("Preparing DogStatsD replay from '{}'.", cmd.replay_file_path.display());
 
     #[cfg(not(target_os = "linux"))]
-    warn!(
+    tracing::warn!(
         "DogStatsD replay cannot preserve captured PID-based origin tags on this platform. Replayed metrics may still \
          receive origin tags from client-supplied metadata and the current live workload state."
     );
@@ -340,7 +313,6 @@ async fn handle_dogstatsd_replay(
     }
 }
 
-#[cfg(any(unix, test))]
 fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, GenericError> {
     match config.try_get_typed::<String>("dogstatsd_socket")? {
         Some(path) if !path.is_empty() => Ok(PathBuf::from(path)),
@@ -350,7 +322,6 @@ fn dogstatsd_socket_path(config: &GenericConfiguration) -> Result<PathBuf, Gener
     }
 }
 
-#[cfg(any(unix, windows))]
 #[derive(Debug)]
 enum ReplayTarget {
     #[cfg(unix)]
@@ -359,7 +330,6 @@ enum ReplayTarget {
     NamedPipe(String),
 }
 
-#[cfg(any(unix, windows))]
 fn dogstatsd_replay_target(config: &GenericConfiguration) -> Result<ReplayTarget, GenericError> {
     #[cfg(unix)]
     {
@@ -383,7 +353,6 @@ fn dogstatsd_replay_target(config: &GenericConfiguration) -> Result<ReplayTarget
     }
 }
 
-#[cfg(any(unix, windows))]
 enum ReplaySender {
     #[cfg(unix)]
     UnixDatagram(UnixDatagram),
@@ -391,7 +360,6 @@ enum ReplaySender {
     NamedPipe(tokio::net::windows::named_pipe::NamedPipeClient),
 }
 
-#[cfg(any(unix, windows))]
 impl ReplaySender {
     async fn connect(target: ReplayTarget) -> Result<Self, GenericError> {
         match target {
@@ -461,7 +429,6 @@ impl ReplaySender {
     }
 }
 
-#[cfg(any(unix, windows))]
 async fn run_dogstatsd_replay(
     replay_file_path: &Path, target: ReplayTarget, loops: u32, cancel: &CancellationToken,
 ) -> Result<(), GenericError> {
@@ -486,7 +453,6 @@ async fn run_dogstatsd_replay(
     }
 }
 
-#[cfg(any(unix, windows))]
 async fn replay_one_iteration(
     replay_file_path: &Path, sender: &mut ReplaySender, cancel: &CancellationToken,
 ) -> Result<(), GenericError> {
@@ -527,7 +493,6 @@ async fn replay_one_iteration(
     }
 }
 
-#[cfg(any(unix, windows, test))]
 fn compute_target_offset(timestamp: i64, first_timestamp: i64, resolution: TimestampResolution) -> Duration {
     let delta = timestamp.saturating_sub(first_timestamp).max(0) as u64;
     match resolution {
@@ -677,13 +642,7 @@ mod tests {
 
     use saluki_config::ConfigurationLoader;
     use serde_json::json;
-    #[cfg(all(unix, not(target_os = "linux")))]
-    use tokio::net::UnixDatagram;
-    #[cfg(windows)]
-    use tokio::{io::AsyncReadExt as _, net::windows::named_pipe::ServerOptions};
 
-    #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
-    use super::ReplaySender;
     use super::{
         compute_target_offset, default_capture_duration, default_replay_loops, dogstatsd_replay_target,
         dogstatsd_socket_path, ReplayTarget, TimestampResolution,
@@ -769,8 +728,8 @@ mod tests {
     async fn non_linux_unix_replay_sender_delivers_the_capture_payload() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         let socket_path = directory.path().join("replay.sock");
-        let receiver = UnixDatagram::bind(&socket_path).expect("receiver should bind");
-        let mut sender = ReplaySender::connect(ReplayTarget::UnixDatagram(socket_path))
+        let receiver = tokio::net::UnixDatagram::bind(&socket_path).expect("receiver should bind");
+        let mut sender = super::ReplaySender::connect(ReplayTarget::UnixDatagram(socket_path))
             .await
             .expect("sender should connect");
 
@@ -787,8 +746,10 @@ mod tests {
     #[cfg(windows)]
     #[tokio::test]
     async fn named_pipe_replay_sender_delimits_each_capture_payload_with_a_newline() {
+        use tokio::io::AsyncReadExt as _;
+
         let pipe_path = format!(r"\\.\pipe\saluki-replay-sender-{}", uuid::Uuid::new_v4());
-        let mut server = ServerOptions::new()
+        let mut server = tokio::net::windows::named_pipe::ServerOptions::new()
             .create(&pipe_path)
             .expect("named pipe server should bind");
         let receive = tokio::spawn(async move {
@@ -800,7 +761,7 @@ mod tests {
                 .expect("named pipe server should read payload");
             buffer.to_vec()
         });
-        let mut sender = ReplaySender::connect(ReplayTarget::NamedPipe(pipe_path))
+        let mut sender = super::ReplaySender::connect(ReplayTarget::NamedPipe(pipe_path))
             .await
             .expect("sender should connect");
 
