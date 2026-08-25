@@ -497,8 +497,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_buffer_size(&mut self, value: i64) {
-        // A zero-length receive buffer truncates every payload, so a negative size cannot be clamped
-        // into something usable.
+        // A negative buffer size is invalid and must be rejected.
         match usize::try_from(value) {
             Ok(buffer_size) => self.config.domains.dogstatsd.listeners.buffer_size = buffer_size,
             Err(_) => self.record_error(TranslateError::new_with_message(
