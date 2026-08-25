@@ -2342,10 +2342,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::{DogStatsDOriginTagResolver, Listener};
 
-    /// Windows named pipe SDDL the Datadog Agent schema defaults to.
     const TEST_WINDOWS_PIPE_SECURITY_DESCRIPTOR: &str = "D:AI(A;;GA;;;WD)";
-
-    /// Packet receive buffer size the Datadog Agent schema defaults to.
     const TEST_BUFFER_SIZE: usize = 8192;
 
     const LINUX_EAFNOSUPPORT: i32 = 97;

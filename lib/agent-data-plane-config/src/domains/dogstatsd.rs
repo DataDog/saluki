@@ -138,15 +138,13 @@ pub struct Listeners {
 impl Default for Listeners {
     fn default() -> Self {
         Self {
-            // Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
-            // seeded only when set; absent that, these defaults stand.
+            // Saluki-only settings retain these defaults when unset.
             buffer_count: DEFAULT_DOGSTATSD_BUFFER_COUNT,
             buffer_count_max: DEFAULT_DOGSTATSD_BUFFER_COUNT_MAX,
             permissive_decoding: DEFAULT_DOGSTATSD_PERMISSIVE_DECODING,
             tcp_port: 0,
             autoscale_udp_listeners: false,
-            // Datadog-schema knobs: always written by the witness driver, so these values are
-            // placeholders that never survive translation.
+            // Witnessed settings are overwritten during translation.
             port: 0,
             socket: None,
             stream_socket: None,
@@ -252,15 +250,13 @@ pub struct Contexts {
 impl Default for Contexts {
     fn default() -> Self {
         Self {
-            // Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
-            // seeded only when set; absent that, these defaults stand.
+            // Saluki-only settings retain these defaults when unset.
             cached_contexts_limit: DEFAULT_DOGSTATSD_CACHED_CONTEXTS_LIMIT,
             cached_tagsets_limit: DEFAULT_DOGSTATSD_CACHED_TAGSETS_LIMIT,
             string_interner_size_bytes: None,
             allow_context_heap_allocs: DEFAULT_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS,
             minimum_sample_rate: DEFAULT_DOGSTATSD_MINIMUM_SAMPLE_RATE,
-            // Datadog-schema knob: always written by the witness driver, so this value is a
-            // placeholder that never survives translation.
+            // Witnessed settings are overwritten during translation.
             string_interner_size: 0,
         }
     }
