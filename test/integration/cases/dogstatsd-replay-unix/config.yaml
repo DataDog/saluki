@@ -19,7 +19,7 @@ procedure:
     timeout: 30s
   - action: dogstatsd_replay
     sender:
-      - "/opt/datadog-agent/embedded/bin/python3"
+      - "python3"
       - "-c"
       - |
         import socket
