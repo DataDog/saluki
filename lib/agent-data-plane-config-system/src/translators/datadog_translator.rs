@@ -1855,6 +1855,31 @@ mod tests {
     }
 
     #[test]
+    fn metric_namespace_translates_schema_default_and_blocklist_alias() {
+        let (default_config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert_eq!(
+            default_config
+                .domains
+                .dogstatsd
+                .prefix_filter
+                .metric_namespace_blocklist,
+            DatadogConfiguration::default().statsd_metric_namespace_blacklist
+        );
+
+        let (config, errors) = translate_explicit(json!({
+            "statsd_metric_namespace": "tenant",
+            "statsd_metric_namespace_blocklist": ["custom"],
+        }));
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.prefix_filter.metric_namespace, "tenant");
+        assert_eq!(
+            config.domains.dogstatsd.prefix_filter.metric_namespace_blocklist,
+            vec!["custom".to_string()]
+        );
+    }
+
+    #[test]
     fn tag_filter_actions_preserve_tolerant_parsing() {
         use agent_data_plane_config::domains::dogstatsd::FilterAction;
 
