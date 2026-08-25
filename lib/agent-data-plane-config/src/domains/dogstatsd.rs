@@ -117,7 +117,7 @@ pub struct Listeners {
 
     /// Maximum number of captured packets queued for persistence.
     ///
-    /// The capture writer raises a depth below its own minimum, so `0` selects that minimum.
+    /// The capture writer raises a depth below its own minimum, so the default, 0, selects that minimum.
     pub capture_depth: usize,
 
     /// End-of-line markers required to terminate a stream-socket message.
