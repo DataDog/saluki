@@ -28,6 +28,34 @@ pub const DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT: Duration = Duration:
 /// Default byte capacity of the DogStatsD mapper's string interner.
 pub const DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap();
 
+/// Default number of DogStatsD packet receive buffers allocated at startup.
+pub const DEFAULT_DOGSTATSD_BUFFER_COUNT: usize = 128;
+
+/// Default ceiling on DogStatsD packet receive buffers.
+///
+/// 32768 buffers at the default 8 KiB buffer size provide 256 MiB of payload capacity.
+pub const DEFAULT_DOGSTATSD_BUFFER_COUNT_MAX: usize = 32_768;
+
+/// Whether the DogStatsD decoder relaxes its strictness by default.
+///
+/// Matches the Datadog Agent, which accepts payloads that violate the DogStatsD spec.
+pub const DEFAULT_DOGSTATSD_PERMISSIVE_DECODING: bool = true;
+
+/// Default maximum number of DogStatsD metric contexts held in the cache.
+pub const DEFAULT_DOGSTATSD_CACHED_CONTEXTS_LIMIT: usize = 500_000;
+
+/// Default maximum number of DogStatsD tagsets held in the cache.
+pub const DEFAULT_DOGSTATSD_CACHED_TAGSETS_LIMIT: usize = 500_000;
+
+/// Whether DogStatsD contexts may be heap-allocated when the string interner is full by default.
+pub const DEFAULT_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS: bool = true;
+
+/// Default floor applied to DogStatsD metric sample rates, which is roughly 260M samples.
+///
+/// Sample rates below this floor are clamped, bounding how many equivalent samples a single metric
+/// can contribute.
+pub const DEFAULT_DOGSTATSD_MINIMUM_SAMPLE_RATE: f64 = 0.000000003845;
+
 /// Default timeout before a partially filled encoder payload is flushed.
 pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 

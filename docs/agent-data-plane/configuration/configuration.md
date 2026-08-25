@@ -497,14 +497,14 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
 | `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3              |
 | `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived        |
-| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |                |
-| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |                |
+| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        | true           |
+| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT | false          |
 | `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count               | 32768          |
 | `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128            |
-| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 |                |
-| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         |                |
+| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 | 500000         |
+| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         | 500000         |
 | `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity       | 64KiB          |
-| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              |                |
+| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              | 0.000000003845 |
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
 | `dogstatsd_tcp_port`                                            | TCP listen port for DSD                    |                |
