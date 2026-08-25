@@ -27,7 +27,7 @@ const MIN_BYTES_PER_MAP_ENTRY: u32 = 2;
 
 /// Maximum nesting depth when skipping an unknown value.
 ///
-/// Bounds recursion so a deeply nested unknown field cannot overflow the stack. Matches default OTEL limit.
+/// Bounds recursion so a deeply nested unknown field cannot overflow the stack. Matches default OTel limit.
 const MAX_SKIP_DEPTH: usize = 64;
 
 /// Builds a closure that maps a MessagePack decoder error into a [`DecodeError::Msgpack`] carrying
