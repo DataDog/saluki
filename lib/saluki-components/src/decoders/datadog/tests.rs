@@ -21,12 +21,12 @@ use super::error::DecodeError;
 use super::string_table::StringTable;
 use super::{decode_span, decode_v1_payload, read, split_trace_id, value};
 
+/// Fixture cases, each pairing a base64-encoded payload with the value it must decode to.
+const FIXTURE_CASES_JSON: &str = include_str!("testdata/v1_decoder_cases.json");
+
 fn ms(s: &str) -> MetaString {
     MetaString::from(s)
 }
-
-/// Fixture cases, each pairing a base64-encoded payload with the value it must decode to.
-const FIXTURE_CASES_JSON: &str = include_str!("testdata/v1_decoder_cases.json");
 
 #[derive(Deserialize)]
 struct FixtureDoc {

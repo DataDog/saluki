@@ -25,6 +25,11 @@ const MIN_BYTES_PER_ARRAY_ELEMENT: u32 = 1;
 /// one byte.
 const MIN_BYTES_PER_MAP_ENTRY: u32 = 2;
 
+/// Maximum nesting depth when skipping an unknown value.
+///
+/// Bounds recursion so a deeply nested unknown field cannot overflow the stack. Matches default OTEL limit.
+const MAX_SKIP_DEPTH: usize = 64;
+
 /// Builds a closure that maps a MessagePack decoder error into a [`DecodeError::Msgpack`] carrying
 /// the given static context.
 fn mp<E: Display>(context: &'static str) -> impl FnOnce(E) -> DecodeError {
@@ -190,11 +195,6 @@ pub fn peek_is_map(r: &&[u8]) -> bool {
 fn is_fixstr(b: u8) -> bool {
     b & 0xe0 == 0xa0
 }
-
-/// Maximum nesting depth when skipping an unknown value.
-///
-/// Bounds recursion so a deeply nested unknown field cannot overflow the stack.
-const MAX_SKIP_DEPTH: usize = 200;
 
 /// Advances the cursor by `n` bytes, returning an error if fewer remain.
 fn advance(r: &mut &[u8], n: usize, context: &'static str) -> Result<(), DecodeError> {
