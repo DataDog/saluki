@@ -29,9 +29,9 @@ container:
 procedure:
   # HTTP succeeds over TLS. Certificate verification is intentionally skipped because the mounted
   # test certificate is self-signed. A 405 response confirms the TLS handshake completed and the
-  # server responded (GET is not allowed on /v1/traces, only POST).
+  # server responded (GET is not allowed on /v1/metrics, only POST).
   - assertion: http_check
-    endpoint: "https://localhost:56318/v1/tr1/traces"
+    endpoint: "https://localhost:56318/v1/metrics"
     status:
       equal: 405
     insecure_skip_verify: true

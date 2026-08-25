@@ -21,7 +21,7 @@ use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::EventType,
     topology::{EventsBuffer, OutputDefinition},
@@ -175,7 +175,7 @@ impl SourceBuilder for OtlpConfiguration {
         &OUTPUTS
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         if !self.otlp.receiver.metrics_enabled && !self.otlp.receiver.logs_enabled && !self.otlp.traces.enabled {
             return Err(generic_error!(
                 "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
@@ -201,7 +201,7 @@ impl SourceBuilder for OtlpConfiguration {
 
         // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
         // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
-        let context_resolver = build_context_resolver(&self.otlp.contexts, &context, None)?;
+        let context_resolver = build_context_resolver(&self.otlp.contexts, context.component_context(), None)?;
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
@@ -210,7 +210,7 @@ impl SourceBuilder for OtlpConfiguration {
         let cors = cors_configuration(&self.otlp.receiver.http.cors);
         let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
         let grpc_tls_config = build_tls_config(&self.otlp.receiver.grpc.tls)?;
-        let metrics = build_metrics(&context);
+        let metrics = build_metrics(context.component_context());
 
         Ok(Box::new(Otlp {
             context_resolver,

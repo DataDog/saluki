@@ -5,7 +5,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{Event, EventType},
     topology::{EventsBuffer, OutputDefinition},
@@ -93,7 +93,7 @@ impl MetricRouter {
 
 #[async_trait]
 impl TransformBuilder for MetricRouterConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         Ok(Box::new(MetricRouter::new(self.clone())?))
     }
 

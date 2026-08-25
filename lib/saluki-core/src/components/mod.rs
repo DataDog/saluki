@@ -12,6 +12,9 @@ pub mod relays;
 pub mod sources;
 pub mod transforms;
 
+mod build_context;
+pub use self::build_context::BuildContext;
+
 mod spawner;
 pub use self::spawner::{BuilderState, ChildBuilder, ComponentSpawner, OneShot, Restartable};
 

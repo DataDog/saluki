@@ -161,6 +161,7 @@ pub struct DatadogConfiguration {
     pub dogstatsd_mapper_cache_size: i64,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub dogstatsd_mapper_profiles: Vec<::serde_json::Value>,
 
     #[serde(default)]
@@ -404,6 +405,7 @@ pub struct DatadogConfiguration {
     pub metric_filterlist_match_prefix: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub metric_tag_filterlist: Vec<::serde_json::Value>,
 
     #[serde(default = "defaults::datadog_configuration_min_tls_version")]

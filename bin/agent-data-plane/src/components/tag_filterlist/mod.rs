@@ -28,7 +28,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{
         metric::{Metric, MetricValues},
@@ -285,8 +285,8 @@ impl TransformBuilder for TagFilterlistConfiguration {
         OUTPUTS
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = Telemetry::new(&metrics_builder);
         let filters = compile_filters_with_values(&self.entries, self.value_prefix_filters.clone());
         telemetry.set_size(filters.rule_count());
@@ -502,14 +502,17 @@ mod tests {
     use saluki_core::components::ComponentSpawner;
     use saluki_core::components::{
         transforms::{TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext, ComponentContext,
     };
     use saluki_core::data_model::event::{
         metric::{Metric, MetricValues},
         Event,
     };
     use saluki_core::health::HealthRegistry;
-    use saluki_core::runtime::{state::DataspaceRegistry, Supervisor};
+    use saluki_core::runtime::{
+        state::{DataspaceRegistry, ResourceRegistry},
+        Supervisor,
+    };
     use saluki_core::topology::interconnect::{Consumer, Dispatcher};
     use saluki_core::topology::{EventsBuffer, OutputName, TopologyContext};
     use saluki_metrics::{test::TestRecorder, MetricsBuilder};
@@ -1405,7 +1408,7 @@ mod tests {
 
         let component_context = ComponentContext::test_transform("tag_filterlist");
         let transform = builder
-            .build(component_context.clone())
+            .build(BuildContext::new(component_context.clone(), ResourceRegistry::new()))
             .await
             .expect("tag filterlist should build");
 

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use saluki_context::{origin::OriginTagCardinality, tags::TagSet};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
+    components::{transforms::*, BuildContext},
     data_model::event::{
         trace::{AttributeValue, Trace},
         trace_stats::{ClientStatsPayload, TraceStats},
@@ -100,7 +100,7 @@ impl ApmStatsTransformConfiguration {
 
 #[async_trait]
 impl TransformBuilder for ApmStatsTransformConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let agent_hostname = MetaString::from(self.default_hostname.clone().unwrap_or_default());
         let concentrator = SpanConcentrator::new(
             self.compute_stats_by_span_kind,

@@ -3,7 +3,7 @@ use saluki_error::GenericError;
 
 use super::Destination;
 use crate::accounting::MemoryBounds;
-use crate::{components::ComponentContext, data_model::event::EventType};
+use crate::{components::BuildContext, data_model::event::EventType};
 
 /// A destination builder.
 ///
@@ -19,5 +19,5 @@ pub trait DestinationBuilder: MemoryBounds {
     /// ## Errors
     ///
     /// If the destination can't be built for any reason, an error is returned.
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError>;
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError>;
 }

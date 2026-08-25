@@ -129,9 +129,8 @@ fn to_port(value: i64) -> u16 {
 ///
 /// The vendored Datadog schema declares `dogstatsd_mapper_profiles` (and `metric_tag_filterlist`)
 /// as arrays of free-form objects, so the generated witness can only surface them as
-/// `Vec<serde_json::Value>`. This parser imposes the typed model shape via a local
-/// `#[derive(Deserialize)]` shim, mirroring how the `saluki-components` `dogstatsd_mapper`
-/// deserializes profiles.
+/// `Vec<serde_json::Value>`. This parser imposes the typed model shape at the configuration
+/// boundary via a local `#[derive(Deserialize)]` shim.
 fn parse_mapper_profile(key: &str, raw: serde_json::Value) -> Result<MapperProfile> {
     #[derive(serde::Deserialize)]
     struct RawMapping {
@@ -534,11 +533,19 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_log_file(&mut self, value: String) {
-        self.config.domains.dogstatsd.debug_log.log_file = PathBuf::from(value);
+        if !value.is_empty() {
+            self.config.domains.dogstatsd.debug_log.log_file = Some(PathBuf::from(value));
+        }
     }
 
     fn consume_dogstatsd_log_file_max_rolls(&mut self, value: i64) {
-        self.config.domains.dogstatsd.debug_log.log_file_max_rolls = value.max(0) as usize;
+        match usize::try_from(value) {
+            Ok(max_rolls) => self.config.domains.dogstatsd.debug_log.log_file_max_rolls = max_rolls,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_log_file_max_rolls",
+                "log file max rolls must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_dogstatsd_log_file_max_size(&mut self, value: String) {
@@ -553,7 +560,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_mapper_cache_size(&mut self, value: i64) {
-        self.config.domains.dogstatsd.mapper.cache_size = value.max(0) as usize;
+        match usize::try_from(value) {
+            Ok(cache_size) => self.config.domains.dogstatsd.mapper.cache_size = cache_size,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_mapper_cache_size",
+                "mapper cache size must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_dogstatsd_mapper_profiles(&mut self, value: Vec<serde_json::Value>) {
@@ -1436,6 +1449,111 @@ mod tests {
         let errors = errors.expect("negative worker count should record a translation error");
         assert!(errors.to_string().contains("dogstatsd_workers_count"));
         assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn dogstatsd_debug_log_configuration_translates() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        let debug_log = &config.domains.dogstatsd.debug_log;
+        assert!(debug_log.logging_enabled);
+        assert!(debug_log.log_file.is_none());
+        assert_eq!(debug_log.log_file_max_rolls, 3);
+        assert_eq!(debug_log.log_file_max_size, 10_000_000);
+        assert!(!debug_log.metrics_stats_enable);
+
+        let (config, errors) = translate_explicit(json!({
+            "dogstatsd_log_file": "/tmp/dsd-debug.log",
+            "dogstatsd_log_file_max_rolls": 0,
+            "dogstatsd_log_file_max_size": "42MB",
+            "dogstatsd_logging_enabled": false,
+            "dogstatsd_metrics_stats_enable": true,
+        }));
+        assert!(errors.is_none());
+        let debug_log = &config.domains.dogstatsd.debug_log;
+        assert_eq!(debug_log.log_file, Some(std::path::PathBuf::from("/tmp/dsd-debug.log")));
+        assert_eq!(debug_log.log_file_max_rolls, 0);
+        assert_eq!(debug_log.log_file_max_size, 42_000_000);
+        assert!(!debug_log.logging_enabled);
+        assert!(debug_log.metrics_stats_enable);
+    }
+
+    #[test]
+    fn negative_dogstatsd_log_file_max_rolls_records_translation_error() {
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_log_file_max_rolls": -1 }));
+
+        assert_eq!(config.domains.dogstatsd.debug_log.log_file_max_rolls, 0);
+        let error = errors.expect("negative log file max rolls should record an error");
+        assert!(error.to_string().contains("dogstatsd_log_file_max_rolls"));
+        assert!(error.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn negative_dogstatsd_mapper_cache_size_records_translation_error() {
+        let (config, errors) = translate_explicit(json!({ "dogstatsd_mapper_cache_size": -1 }));
+
+        assert_eq!(config.domains.dogstatsd.mapper.cache_size, 0);
+        let error = errors.expect("a negative mapper cache size should record an error");
+        assert!(error.to_string().contains("dogstatsd_mapper_cache_size"));
+        assert!(error.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn dogstatsd_mapper_profiles_translate_from_a_sequence_or_json_string() {
+        let profiles = json!([{
+            "name": "workers",
+            "prefix": "worker.",
+            "mappings": [{
+                "match": "worker.*",
+                "match_type": "wildcard",
+                "name": "worker",
+                "tags": { "worker_name": "$1" }
+            }]
+        }]);
+
+        for source in [profiles.clone(), Value::String(profiles.to_string())] {
+            let (config, errors) = translate_explicit(json!({ "dogstatsd_mapper_profiles": source }));
+
+            assert!(errors.is_none());
+            let profile = &config.domains.dogstatsd.mapper.profiles[0];
+            assert_eq!(profile.name, "workers");
+            assert_eq!(profile.prefix, "worker.");
+            let mapping = &profile.mappings[0];
+            assert_eq!(mapping.metric_match, "worker.*");
+            assert_eq!(mapping.match_type, "wildcard");
+            assert_eq!(mapping.name, "worker");
+            assert_eq!(mapping.tags["worker_name"], "$1");
+        }
+    }
+
+    #[test]
+    fn malformed_dogstatsd_mapper_profiles_record_translation_errors() {
+        for profile in [
+            json!({ "prefix": "worker.", "mappings": [] }),
+            json!({ "name": "workers", "mappings": [] }),
+            json!({
+                "name": "workers",
+                "prefix": "worker.",
+                "mappings": [{ "match": "worker.*" }]
+            }),
+        ] {
+            let (config, errors) = translate_explicit(json!({ "dogstatsd_mapper_profiles": [profile] }));
+
+            assert!(config.domains.dogstatsd.mapper.profiles.is_empty());
+            let error = errors.expect("a malformed mapper profile should record an error");
+            assert!(error.to_string().contains("dogstatsd_mapper_profiles"));
+        }
+    }
+
+    #[test]
+    fn mapper_profile_without_mappings_is_accepted() {
+        let (config, errors) = translate_explicit(json!({
+            "dogstatsd_mapper_profiles": [{ "name": "workers", "prefix": "worker." }]
+        }));
+
+        assert!(errors.is_none());
+        assert_eq!(config.domains.dogstatsd.mapper.profiles.len(), 1);
+        assert!(config.domains.dogstatsd.mapper.profiles[0].mappings.is_empty());
     }
 
     #[test]
