@@ -517,7 +517,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_context_expiry_seconds(&mut self, value: i64) {
-        self.config.domains.dogstatsd.aggregation.context_expiry_seconds = value.max(0) as u64;
+        // A negative expiry is invalid and must be rejected.
+        match u64::try_from(value) {
+            Ok(expiry_seconds) => self.config.domains.dogstatsd.aggregation.context_expiry_seconds = expiry_seconds,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_context_expiry_seconds",
+                "context expiry seconds must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_dogstatsd_disable_verbose_logs(&mut self, value: bool) {
@@ -626,7 +633,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.so_rcvbuf = value.max(0) as usize;
+        // A negative receive buffer size is invalid and must be rejected.
+        match usize::try_from(value) {
+            Ok(so_rcvbuf) => self.config.domains.dogstatsd.listeners.so_rcvbuf = so_rcvbuf,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_so_rcvbuf",
+                "socket receive buffer size must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_dogstatsd_socket(&mut self, value: Option<String>) {
@@ -1485,6 +1499,30 @@ mod tests {
         assert_eq!(config.domains.dogstatsd.listeners.buffer_size, 0);
         let errors = errors.expect("negative buffer size should record a translation error");
         assert!(errors.to_string().contains("dogstatsd_buffer_size"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn negative_dogstatsd_context_expiry_seconds_records_translation_error() {
+        let (_, errors) = translate_explicit(json!({
+            "dogstatsd_context_expiry_seconds": -1,
+        }));
+
+        let errors = errors.expect("a negative context expiry should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_context_expiry_seconds"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn negative_dogstatsd_so_rcvbuf_records_translation_error() {
+        let (config, errors) = translate_explicit(json!({
+            "dogstatsd_so_rcvbuf": -1,
+        }));
+
+        // Zero is a meaningful value here, so the invalid size must not silently select the OS default.
+        assert_eq!(config.domains.dogstatsd.listeners.so_rcvbuf, 0);
+        let errors = errors.expect("a negative socket receive buffer size should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_so_rcvbuf"));
         assert!(errors.to_string().contains("greater than or equal to 0"));
     }
 
