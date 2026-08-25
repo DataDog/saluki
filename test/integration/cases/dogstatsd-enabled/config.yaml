@@ -15,6 +15,10 @@ env:
   # OTLP is not enabled. If a regression causes ADP to validate OTLP TLS config even when OTLP is off,
   # this test will catch it.
   DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE: "/nonexistent/cert.pem"
+  # Set an unsupported high-severity OTLP TLS config to verify that ADP does not bail when OTLP is
+  # not enabled. Unsupported keys with high severity should only be fatal when the OTLP pipeline is
+  # active; when OTLP is off, they must not affect the DogStatsD pipeline.
+  DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_OWNER_AUTH: "unused-test-value"
 
 container:
   exposed_ports:

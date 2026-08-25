@@ -39,11 +39,21 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
 ///
 /// # Errors
 ///
-/// Returns an error if only one of `cert_file` or `key_file` is set. Both must be provided together to enable TLS;
-/// setting only one is treated as a configuration error rather than silently downgrading to plaintext.
+/// Returns an error if any TLS field is set without the others required to form a valid TLS configuration. Both
+/// `cert_file` and `key_file` must be provided together to enable TLS, and `ca_file` must not be set without them.
+/// Setting only a subset is treated as a configuration error rather than silently downgrading to plaintext.
 fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<OtlpTlsConfiguration>, GenericError> {
     match (tls.cert_file.is_empty(), tls.key_file.is_empty()) {
-        (true, true) => Ok(None),
+        (true, true) => {
+            if !tls.ca_file.is_empty() {
+                Err(generic_error!(
+                    "OTLP receiver TLS `ca_file` is set but `cert_file` and `key_file` are empty. All three must \
+                     be provided together, or `ca_file` must be omitted when TLS is disabled."
+                ))
+            } else {
+                Ok(None)
+            }
+        }
         (false, false) => {
             let mut config = OtlpTlsConfiguration::new(tls.cert_file.clone().into(), tls.key_file.clone().into());
             if !tls.ca_file.is_empty() {
