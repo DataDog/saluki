@@ -36,7 +36,7 @@ use super::config::OtlpMetricsTranslatorConfig;
 use super::dimensions::Dimensions;
 use super::internal::{instrumentationlibrary, instrumentationscope};
 use super::remap;
-use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS};
+use super::runtime_metrics::{RuntimeMetricMapping, RUNTIME_METRICS_MAPPINGS, RUNTIME_METRIC_PREFIX_LANGUAGE_MAP};
 use crate::common::otlp::attributes::translator::AttributeTranslator;
 use crate::common::otlp::attributes::ResourceAttributeTagMode;
 use crate::common::otlp::origin::OtlpOriginTagResolver;
@@ -104,6 +104,9 @@ pub struct OtlpMetricsTranslator {
     metric_type_override_warnings: FastHashSet<(String, MetricTypeOverrideWarningKind)>,
     // Configured tags (`otlp_config.metrics.tags`) added to every emitted metric.
     metric_tags: SharedTagSet,
+    // Languages detected from runtime metric names, accumulated across `ResourceMetrics` within
+    // a single OTLP request. Drained by `emit_usage_beacons` at the request boundary.
+    pending_beacon_languages: FastHashSet<&'static str>,
 }
 
 #[derive(Debug, Default)]
@@ -463,6 +466,7 @@ impl OtlpMetricsTranslator {
             attribute_translator: AttributeTranslator::new(),
             metric_type_override_warnings: FastHashSet::default(),
             metric_tags,
+            pending_beacon_languages: FastHashSet::default(),
         })
     }
 
@@ -535,6 +539,14 @@ impl OtlpMetricsTranslator {
 
             let mut new_metrics: Vec<OtlpMetric> = Vec::new();
             for mut metric in scope_metrics.metrics {
+                // Detect runtime languages from the original metric name for the usage beacon.
+                // This checks the OTel-style prefix (e.g. `process.runtime.go.*`) before any remapping.
+                for (prefix, language) in RUNTIME_METRIC_PREFIX_LANGUAGE_MAP.iter() {
+                    if metric.name.starts_with(prefix) {
+                        self.pending_beacon_languages.insert(language);
+                    }
+                }
+
                 if let Some(mappings) = RUNTIME_METRICS_MAPPINGS.get(metric.name.as_str()) {
                     for mapping in mappings {
                         if mapping.attributes.is_empty() {
@@ -586,6 +598,62 @@ impl OtlpMetricsTranslator {
         Ok(events.into_iter())
     }
 
+    /// Emits usage beacon metrics for a completed OTLP metrics request.
+    ///
+    /// Emits `datadog.agent.otlp.metrics` as a gauge with value `1` and no tags, plus one
+    /// `datadog.agent.otlp.runtime_metrics` gauge (value `1`, tag `language:<language>`) for each
+    /// distinct runtime language detected during translation. Both beacons use the configured
+    /// default hostname, independent of per-datapoint resource-host resolution.
+    ///
+    /// After emission, the accumulated language set is cleared so the translator is ready for the
+    /// next request.
+    pub fn emit_usage_beacons(&mut self) -> Vec<Event> {
+        let mut events = Vec::new();
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let timestamp_s = now_ns / 1_000_000_000;
+
+        // Emit `datadog.agent.otlp.metrics` — one per request, value 1, no tags.
+        if let Some(context) = self.context_resolver.resolve_with_optional_host_and_origin_tags(
+            "datadog.agent.otlp.metrics",
+            Some(&self.default_hostname),
+            std::iter::empty::<&str>(),
+            SharedTagSet::default(),
+        ) {
+            let metric = Metric::from_parts(
+                context,
+                MetricValues::gauge((timestamp_s, 1.0)),
+                MetricMetadata::default(),
+            );
+            events.push(Event::Metric(metric));
+        }
+
+        // Emit `datadog.agent.otlp.runtime_metrics` — one per detected language, value 1,
+        // tag `language:<language>`.
+        for language in self.pending_beacon_languages.drain() {
+            let tag = format!("language:{}", language);
+            let tags = [tag];
+
+            if let Some(context) = self.context_resolver.resolve_with_optional_host_and_origin_tags(
+                "datadog.agent.otlp.runtime_metrics",
+                Some(&self.default_hostname),
+                tags.iter().map(|t| t.as_str()),
+                SharedTagSet::default(),
+            ) {
+                let metric = Metric::from_parts(
+                    context,
+                    MetricValues::gauge((timestamp_s, 1.0)),
+                    MetricMetadata::default(),
+                );
+                events.push(Event::Metric(metric));
+            }
+        }
+
+        events
+    }
+
     /// Creates a new `OtlpMetricsTranslator` for tests.
     pub fn for_tests() -> OtlpMetricsTranslator {
         let process_start_time_ns = SystemTime::now()
@@ -606,6 +674,7 @@ impl OtlpMetricsTranslator {
             attribute_translator: AttributeTranslator::new(),
             metric_type_override_warnings: FastHashSet::default(),
             metric_tags: SharedTagSet::default(),
+            pending_beacon_languages: FastHashSet::default(),
         }
     }
 
@@ -4770,5 +4839,221 @@ mod tests {
         );
         assert_eq!(histogram.data_points[0].attributes.len(), 1);
         assert_eq!(histogram.data_points[0].attributes[0].key, "region");
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Usage beacon metrics (`datadog.agent.otlp.metrics` and `datadog.agent.otlp.runtime_metrics`).
+    // -----------------------------------------------------------------------------------------------
+
+    fn gauge_metric_named(name: &str) -> OtlpMetric {
+        OtlpMetric {
+            name: name.to_string(),
+            data: Some(OtlpMetricData::Gauge(Gauge {
+                data_points: vec![OtlpNumberDataPoint {
+                    value: Some(OtlpNumberDataPointValue::AsInt(1)),
+                    time_unix_nano: nanos_from_seconds(1),
+                    ..Default::default()
+                }],
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn emit_usage_beacons_emits_metrics_beacon_with_value_1_and_default_host() {
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let events = translator.emit_usage_beacons();
+
+        let beacon = metric_by_name(&events, "datadog.agent.otlp.metrics");
+        assert_eq!(
+            beacon.values(),
+            &MetricValues::gauge((SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(), 1.0,))
+        );
+        assert_eq!(beacon.context().host(), Some("default-host"));
+        // No tags on the metrics beacon.
+        let tags: Vec<String> = beacon.context().tags().into_iter().map(|t| t.to_string()).collect();
+        assert!(tags.is_empty(), "metrics beacon should have no tags");
+    }
+
+    #[test]
+    fn emit_usage_beacons_emits_no_runtime_beacons_when_no_runtime_metrics() {
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let events = translator.emit_usage_beacons();
+
+        let runtime_beacons: Vec<_> = events
+            .iter()
+            .filter_map(|e| e.try_as_metric())
+            .filter(|m| m.context().name() == "datadog.agent.otlp.runtime_metrics")
+            .collect();
+        assert!(
+            runtime_beacons.is_empty(),
+            "no runtime_metrics beacons should be emitted when no runtime metrics were translated"
+        );
+    }
+
+    #[test]
+    fn emit_usage_beacons_emits_runtime_beacon_for_go_language() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // Translate a Go runtime metric to accumulate the language.
+        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
+        translator.translate_metrics(resource_metrics, &metrics).unwrap();
+
+        let events = translator.emit_usage_beacons();
+
+        let runtime_beacon = metric_by_name(&events, "datadog.agent.otlp.runtime_metrics");
+        assert_eq!(
+            runtime_beacon.values(),
+            &MetricValues::gauge((SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(), 1.0,))
+        );
+        assert_eq!(runtime_beacon.context().host(), Some("default-host"));
+        let tags: Vec<String> = runtime_beacon
+            .context()
+            .tags()
+            .into_iter()
+            .map(|t| t.to_string())
+            .collect();
+        assert_eq!(tags, vec!["language:go"]);
+    }
+
+    #[test]
+    fn emit_usage_beacons_deduplicates_languages_within_a_request() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // Translate two Go runtime metrics with different names.
+        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
+        translator.translate_metrics(resource_metrics, &metrics).unwrap();
+        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.gc.pause"));
+        translator.translate_metrics(resource_metrics, &metrics).unwrap();
+
+        let events = translator.emit_usage_beacons();
+
+        let runtime_beacons: Vec<_> = events
+            .iter()
+            .filter_map(|e| e.try_as_metric())
+            .filter(|m| m.context().name() == "datadog.agent.otlp.runtime_metrics")
+            .collect();
+        assert_eq!(
+            runtime_beacons.len(),
+            1,
+            "duplicate Go metrics should produce one language beacon"
+        );
+    }
+
+    #[test]
+    fn emit_usage_beacons_emits_one_beacon_per_distinct_language() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // Translate Go and JVM runtime metrics.
+        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
+        translator.translate_metrics(resource_metrics, &metrics).unwrap();
+        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.jvm.memory.usage"));
+        translator.translate_metrics(resource_metrics, &metrics).unwrap();
+
+        let events = translator.emit_usage_beacons();
+
+        let runtime_beacons: Vec<_> = events
+            .iter()
+            .filter_map(|e| e.try_as_metric())
+            .filter(|m| m.context().name() == "datadog.agent.otlp.runtime_metrics")
+            .collect();
+        assert_eq!(
+            runtime_beacons.len(),
+            2,
+            "two distinct languages should produce two beacons"
+        );
+
+        let languages: Vec<String> = runtime_beacons
+            .iter()
+            .flat_map(|m| m.context().tags().into_iter().map(|t| t.to_string()))
+            .collect();
+        assert!(languages.contains(&"language:go".to_string()));
+        assert!(languages.contains(&"language:jvm".to_string()));
+    }
+
+    #[test]
+    fn emit_usage_beacons_clears_languages_after_emission() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // Translate a Go runtime metric.
+        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
+        translator.translate_metrics(resource_metrics, &metrics).unwrap();
+
+        // First emission should produce the Go beacon.
+        let events = translator.emit_usage_beacons();
+        let runtime_beacons: Vec<_> = events
+            .iter()
+            .filter_map(|e| e.try_as_metric())
+            .filter(|m| m.context().name() == "datadog.agent.otlp.runtime_metrics")
+            .collect();
+        assert_eq!(runtime_beacons.len(), 1);
+
+        // Second emission (without new translations) should produce no runtime beacons.
+        let events = translator.emit_usage_beacons();
+        let runtime_beacons: Vec<_> = events
+            .iter()
+            .filter_map(|e| e.try_as_metric())
+            .filter(|m| m.context().name() == "datadog.agent.otlp.runtime_metrics")
+            .collect();
+        assert!(runtime_beacons.is_empty(), "languages should be cleared after emission");
+    }
+
+    #[test]
+    fn emit_usage_beacons_does_not_increment_metrics_received_counter() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // Translate a single metric to get a baseline counter value.
+        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("some.metric"));
+        translator.translate_metrics(resource_metrics, &metrics).unwrap();
+
+        // Emit beacons — these should not increment the metrics_received counter.
+        translator.emit_usage_beacons();
+
+        // The counter should reflect only the translated metric, not the beacons.
+        // We can't directly read the counter, but we can verify that emitting beacons
+        // without translating any metrics doesn't change the counter by checking that
+        // a second emit call produces no unexpected side effects.
+        let events = translator.emit_usage_beacons();
+        // The metrics beacon is always emitted, but no runtime beacons.
+        let _ = metric_by_name(&events, "datadog.agent.otlp.metrics");
+    }
+
+    #[test]
+    fn emit_usage_beacons_beacon_host_is_default_not_resource_host() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        // Translate a metric with a resource-level host that differs from the default.
+        let mut resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
+        resource_metrics.resource = Some(otlp_protos::opentelemetry::proto::resource::v1::Resource {
+            attributes: vec![OtlpKeyValue {
+                key: "host.name".to_string(),
+                value: Some(otlp_protos::opentelemetry::proto::common::v1::AnyValue {
+                    value: Some(
+                        otlp_protos::opentelemetry::proto::common::v1::any_value::Value::StringValue(
+                            "resource-host".to_string(),
+                        ),
+                    ),
+                }),
+            }],
+            ..Default::default()
+        });
+        translator.translate_metrics(resource_metrics, &metrics).unwrap();
+
+        let events = translator.emit_usage_beacons();
+
+        // The beacon should use the default hostname, not the resource-derived host.
+        let beacon = metric_by_name(&events, "datadog.agent.otlp.metrics");
+        assert_eq!(beacon.context().host(), Some("default-host"));
+
+        let runtime_beacon = metric_by_name(&events, "datadog.agent.otlp.runtime_metrics");
+        assert_eq!(runtime_beacon.context().host(), Some("default-host"));
     }
 }

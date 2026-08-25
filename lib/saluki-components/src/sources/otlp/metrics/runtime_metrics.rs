@@ -20,8 +20,9 @@ pub(super) struct RuntimeMetricAttribute {
     pub values: &'static [&'static str],
 }
 
-// runtimeMetricPrefixLanguageMap defines the runtime metric prefixes and which languages they map to
-#[allow(dead_code)]
+// Maps runtime metric prefixes to the language they represent. Used by the usage beacon
+// (`datadog.agent.otlp.runtime_metrics`) to report which language runtimes are present in each
+// OTLP metrics request.
 pub(super) static RUNTIME_METRIC_PREFIX_LANGUAGE_MAP: LazyLock<HashMap<&'static str, &'static str>> =
     LazyLock::new(|| {
         let mut m = HashMap::new();
