@@ -4563,10 +4563,6 @@ mod tests {
 
     #[test]
     fn exponential_histogram_cumulative_temporality_is_dropped_via_translate_metrics() {
-        // Exercises the `map_to_dd_format` dispatch path (not `map_exponential_histogram_metrics`
-        // directly): a Cumulative-temporality exponential histogram must produce no events. The
-        // drop is logged at debug level, not warn, to avoid operator noise for unsupported input
-        // that is handled as expected. See issue #2073.
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
