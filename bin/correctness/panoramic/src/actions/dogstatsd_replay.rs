@@ -139,7 +139,7 @@ impl Action for DogstatsdReplayAction {
                             .expected_metrics
                             .iter()
                             .map(String::as_str)
-                            .filter(|metric| !stats_output.contains(metric))
+                            .filter(|metric| !stats_output_contains_metric(&stats_output, metric))
                             .collect();
                         if missing_metrics.is_empty() {
                             break;
@@ -184,6 +184,15 @@ fn duration_as_go_duration(duration: Duration) -> String {
     format!("{}ms", duration.as_millis())
 }
 
+fn stats_output_contains_metric(output: &str, expected_metric: &str) -> bool {
+    output.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix('|')
+            .and_then(|row| row.split_once('|'))
+            .is_some_and(|(metric, _)| metric.trim() == expected_metric)
+    })
+}
+
 fn capture_path_from_output(output: &str) -> Result<String, saluki_error::GenericError> {
     let (_, after_prefix) = output
         .rsplit_once("Data will be written to '")
@@ -201,7 +210,7 @@ fn capture_path_from_output(output: &str) -> Result<String, saluki_error::Generi
 mod tests {
     use std::time::Duration;
 
-    use super::{capture_path_from_output, duration_as_go_duration};
+    use super::{capture_path_from_output, duration_as_go_duration, stats_output_contains_metric};
 
     #[test]
     fn capture_path_parser_extracts_path_from_cli_output() {
@@ -213,5 +222,19 @@ mod tests {
     #[test]
     fn capture_duration_is_rendered_in_go_duration_syntax() {
         assert_eq!(duration_as_go_duration(Duration::from_millis(1250)), "1250ms");
+    }
+
+    #[test]
+    fn stats_output_requires_an_exact_metric_name_match() {
+        let output = concat!(
+            "+------------------+------+-------+-----------+\n",
+            "| Metric           | Tags | Count | Last Seen |\n",
+            "+------------------+------+-------+-----------+\n",
+            "| replay.requests  |      | 1     |           |\n",
+            "+------------------+------+-------+-----------+\n",
+        );
+
+        assert!(stats_output_contains_metric(output, "replay.requests"));
+        assert!(!stats_output_contains_metric(output, "replay.request"));
     }
 }
