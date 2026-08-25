@@ -444,8 +444,9 @@ mod tests {
         let metric_filter = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
             &config.domains.dogstatsd.metric_filter
         });
-        let mut filter = noop_filter(vec!["request.duration.max"], false);
+        let mut filter = noop_filter(vec![], false);
         filter.metric_filter = metric_filter;
+        filter.sync_matcher();
 
         assert!(filter.should_filter_metric(&Metric::gauge("request.duration.max", 1.0)));
         assert!(!filter.should_filter_metric(&Metric::gauge("request.duration.avg", 1.0)));
