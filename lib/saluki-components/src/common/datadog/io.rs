@@ -1127,7 +1127,7 @@ mod tests {
     use http_body_util::Empty;
     use rustls::{version::TLS12, RootCertStore, ServerConfig};
     use saluki_common::buf::FrozenChunkedBytesBuffer;
-    use saluki_config::{config_from, ConfigurationLoader};
+    use saluki_config::config_from;
     use saluki_core::{
         observability::ComponentMetricsExt as _,
         runtime::state::{DataspaceRegistry, DataspaceUpdate, IdentifierFilter},
@@ -1166,8 +1166,7 @@ mod tests {
     }
 
     async fn forwarder_config_from(shared: SharedConfiguration) -> ForwarderConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        ForwarderConfiguration::from_configuration(&shared, &config)
+        ForwarderConfiguration::from_configuration(&shared)
     }
 
     #[test]

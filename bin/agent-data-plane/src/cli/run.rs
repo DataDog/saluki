@@ -30,11 +30,10 @@ use saluki_components::{
     relays::otlp::OtlpRelayConfiguration,
     sources::{ChecksIPCConfiguration, DogStatsDConfiguration, OtlpConfiguration},
     transforms::{
-        aggregate_context_snapshot_channel, AggregateConfiguration, AggregateContextSnapshotHandle,
-        ApmStatsTransformConfiguration, AutoscalingFailoverGatewayConfiguration, ChainedConfiguration,
-        DogStatsDMapperConfiguration, DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
-        HostEnrichmentConfiguration, MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration,
-        TraceSamplerConfiguration,
+        aggregate_context_snapshot_channel, AggregateConfiguration, ApmStatsTransformConfiguration,
+        AutoscalingFailoverGatewayConfiguration, ChainedConfiguration, DogStatsDMapperConfiguration,
+        DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration, HostEnrichmentConfiguration,
+        MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
 use saluki_config::GenericConfiguration;
@@ -583,7 +582,7 @@ fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     let af_gateway_config = AutoscalingFailoverGatewayConfiguration::new(af_config);
     let af_metrics_config = DatadogMetricsConfiguration::from_configuration(shared).with_v2_series_only();
     let cluster_agent_forwarder_config =
-        ClusterAgentForwarderConfiguration::from_configuration(shared, config, ca_url, ca_token)
+        ClusterAgentForwarderConfiguration::from_configuration(shared, ca_url, ca_token)
             .error_context("Failed to configure Cluster Agent forwarder.")?;
 
     blueprint
@@ -707,22 +706,8 @@ async fn add_baseline_traces_pipeline_to_blueprint(
     Ok(())
 }
 
-fn build_dogstatsd_context_dump_api_handler(
-    config: &GenericConfiguration, snapshot_handle: AggregateContextSnapshotHandle,
-) -> Result<DogStatsDContextDumpAPIHandler, GenericError> {
-    let run_path = config
-        .try_get_typed::<PathBuf>("run_path")
-        .error_context("Failed to read configured `run_path` for DogStatsD context dumps.")?
-        .unwrap_or_default();
-
-    Ok(DogStatsDContextDumpAPIHandler::new(vec![snapshot_handle], run_path))
-}
-
 async fn add_dsd_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint,
-    config: &GenericConfiguration,
-    // Supplies the typed configuration used to resolve source-wide static tags.
-    config_system: &ConfigurationSystem,
+    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, config_system: &ConfigurationSystem,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<DogStatsDControlSurface, GenericError> {
     // We're creating the "front half" of the DogStatsD pipeline, which deals solely with accepting DogStatsD payloads,
@@ -771,7 +756,7 @@ async fn add_dsd_pipeline_to_blueprint(
         &typed.shared.tags,
         features::is_ecs_fargate(),
     );
-    let dsd_config = DogStatsDConfiguration::from_configuration(config)
+    let dsd_config = DogStatsDConfiguration::from_configuration(config, &typed.shared.run_path)
         .error_context("Failed to configure DogStatsD source.")?
         .with_static_tags(static_tags)
         .with_default_hostname(default_hostname)
@@ -872,7 +857,10 @@ async fn add_dsd_pipeline_to_blueprint(
     let stats_api_handler = dsd_stats_config.api_handler();
     let capture_api_handler = dsd_config.capture_api_handler();
     let replay_api_handler = dsd_config.replay_api_handler();
-    let context_dump_api_handler = build_dogstatsd_context_dump_api_handler(config, dsd_context_snapshot_handle)?;
+    let context_dump_api_handler = DogStatsDContextDumpAPIHandler::new(
+        vec![dsd_context_snapshot_handle],
+        typed.shared.run_path.clone().unwrap_or_default(),
+    );
 
     blueprint
         // Components.
@@ -1043,7 +1031,6 @@ mod tests {
         AggregateContextSnapshotEntry, AggregateMetricType, ChainedConfiguration, DogStatsDMapperConfiguration,
         DogStatsDMapperProfile, DogStatsDMetricMapping, HistogramConfiguration,
     };
-    use saluki_config::{config_from, GenericConfiguration};
     use saluki_context::Context;
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter},
@@ -1058,12 +1045,10 @@ mod tests {
         topology::{OutputDefinition, TopologyBlueprint},
     };
     use saluki_error::{generic_error, GenericError};
-    use serde_json::json;
     use stringtheory::MetaString;
     use tokio::sync::{mpsc, oneshot};
     use tower::ServiceExt as _;
 
-    use super::build_dogstatsd_context_dump_api_handler;
     use crate::{
         components::{
             dogstatsd_prefix_filter::DogStatsDPrefixFilterConfiguration, tag_filterlist::TagFilterlistConfiguration,
@@ -1265,13 +1250,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_dump_handler_reads_configured_run_path_and_uses_supplied_owner() {
+    async fn context_dump_handler_uses_supplied_run_path_and_owner() {
         let run_directory = tempfile::tempdir().expect("run directory should be created");
-        let config = context_dump_config(Some(run_directory.path())).await;
         let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
 
-        let handler = build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
-            .expect("configured handler should build");
+        let handler = DogStatsDContextDumpAPIHandler::new(vec![snapshot_handle], run_directory.path());
         let owner = tokio::spawn(async move {
             snapshot_responder
                 .respond(vec![snapshot_entry("from.supplied.aggregate")])
@@ -1291,15 +1274,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_dump_handler_keeps_missing_and_empty_run_path_empty_until_publication() {
+    async fn context_dump_handler_keeps_empty_run_path_empty_until_publication() {
         let cwd_artifact = std::env::current_dir().unwrap().join(CONTEXT_DUMP_FILENAME);
         assert!(!cwd_artifact.exists(), "test requires no pre-existing cwd artifact");
 
         for run_path in [None, Some(Path::new(""))] {
-            let config = context_dump_config(run_path).await;
+            let run_path = run_path.map(Path::to_path_buf).unwrap_or_default();
             let (snapshot_handle, mut snapshot_responder) = aggregate_context_snapshot_channel_for_test();
-            let handler = build_dogstatsd_context_dump_api_handler(&config, snapshot_handle)
-                .expect("empty run path should reach publication");
+            let handler = DogStatsDContextDumpAPIHandler::new(vec![snapshot_handle], run_path);
             let owner = tokio::spawn(async move { snapshot_responder.respond(Vec::new()).await });
 
             let response = send(&handler, context_dump_post()).await;
@@ -1385,14 +1367,6 @@ mod tests {
 
     impl MemoryBounds for DrainingMetricDestinationBuilder {
         fn specify_bounds(&self, _builder: &mut MemoryBoundsBuilder) {}
-    }
-
-    async fn context_dump_config(run_path: Option<&Path>) -> GenericConfiguration {
-        let mut values = json!({});
-        if let Some(run_path) = run_path {
-            values["run_path"] = json!(run_path);
-        }
-        config_from(values).await
     }
 
     fn context_dump_post() -> Request<Empty<Bytes>> {

@@ -48,7 +48,7 @@ impl DatadogForwarderConfiguration {
     /// `config` is retained so that endpoints can refresh their API keys as configuration changes.
     pub fn from_configuration(shared: &SharedConfiguration, config: &GenericConfiguration) -> Self {
         Self {
-            forwarder_config: ForwarderConfiguration::from_configuration(shared, config),
+            forwarder_config: ForwarderConfiguration::from_configuration(shared),
             configuration: config.clone(),
         }
     }
@@ -70,7 +70,7 @@ impl DatadogForwarderConfiguration {
         };
 
         Self {
-            forwarder_config: ForwarderConfiguration::for_single_destination(shared, config, &destination),
+            forwarder_config: ForwarderConfiguration::for_single_destination(shared, &destination),
             configuration: config.clone(),
         }
     }

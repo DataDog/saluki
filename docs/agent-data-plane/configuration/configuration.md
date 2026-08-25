@@ -865,6 +865,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `proxy.http`                                                   | HTTP proxy URL                                     |
 | `proxy.https`                                                  | HTTPS proxy URL                                    |
 | `proxy.no_proxy`                                               | Hosts bypassing proxy                              |
+| `run_path`                                                     | Runtime state directory                            |
 | `serializer_compressor_kind`                                   | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                      |
 | `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API                |
