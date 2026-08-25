@@ -1798,7 +1798,7 @@ mod tests {
 
     #[test]
     fn aggregate_memory_bounds_include_short_interval_scalar_spill() {
-        let mut config = AggregateConfiguration::with_defaults();
+        let mut config = AggregateConfiguration::for_test();
         config.context_limit = 17;
         config.metric_intervals = vec![MetricAggregationInterval {
             metric_prefix: "high_resolution.".to_string(),
