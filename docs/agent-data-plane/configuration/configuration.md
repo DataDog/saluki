@@ -507,7 +507,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              | 0.000000003845 |
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
-| `dogstatsd_tcp_port`                                            | TCP listen port for DSD                    |                |
+| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP  | 0              |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
 | `memory_limit`                                                  | Process memory limit                       |                |
 | `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |

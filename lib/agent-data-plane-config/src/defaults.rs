@@ -28,6 +28,14 @@ pub const DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT: Duration = Duration:
 /// Default byte capacity of the DogStatsD mapper's string interner.
 pub const DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap();
 
+/// Default DogStatsD TCP listen port.
+///
+/// A value of `0` disables the TCP listener.
+pub const DEFAULT_DOGSTATSD_TCP_PORT: u16 = 0;
+
+/// Whether DogStatsD UDP listener autoscaling is enabled by default.
+pub const DEFAULT_DOGSTATSD_AUTOSCALE_UDP_LISTENERS: bool = false;
+
 /// Default number of DogStatsD packet receive buffers allocated at startup.
 pub const DEFAULT_DOGSTATSD_BUFFER_COUNT: usize = 128;
 

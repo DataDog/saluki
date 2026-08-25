@@ -73,7 +73,7 @@ static DOGSTATSD_TCP_PORT_SCHEMA: SchemaEntry = SchemaEntry {
     yaml_path: "dogstatsd_tcp_port",
     env_vars: &[],
     value_type: ValueType::Integer,
-    default: None,
+    default: Some("0"),
 };
 
 static DOGSTATSD_BUFFER_COUNT_MAX_SCHEMA: SchemaEntry = SchemaEntry {
