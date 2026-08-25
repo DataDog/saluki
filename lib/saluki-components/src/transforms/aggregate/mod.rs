@@ -12,7 +12,7 @@ use saluki_common::time::get_unix_timestamp;
 use saluki_context::Context;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
+    components::{transforms::*, BuildContext},
     data_model::event::{metric::*, Event, EventType},
     observability::ComponentMetricsExt as _,
     topology::{interconnect::BufferedDispatcher, OutputDefinition},
@@ -392,9 +392,9 @@ impl AggregateConfiguration {
 
 #[async_trait]
 impl TransformBuilder for AggregateConfiguration {
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let context_snapshot_requests = self.context_snapshot_receiver.take_receiver()?;
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = Telemetry::new(&metrics_builder);
 
         let state = AggregationState::new(
@@ -1127,7 +1127,7 @@ mod tests {
             ComponentContext,
         },
         health::HealthRegistry,
-        runtime::Supervisor,
+        runtime::{state::ResourceRegistry, Supervisor},
         support::SubsystemIdentifier,
         topology::{interconnect::Dispatcher, OutputDefinition, OutputName, TopologyBlueprint},
     };
@@ -1193,7 +1193,7 @@ mod tests {
             &self.outputs
         }
 
-        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
             let events = self
                 .events
                 .lock()
@@ -1226,7 +1226,7 @@ mod tests {
             EventType::Metric
         }
 
-        async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+        async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
             Ok(Box::new(DrainingMetricDestination))
         }
     }
@@ -1606,6 +1606,7 @@ mod tests {
             blueprint
                 .with_health_registry(HealthRegistry::new())
                 .with_memory_limiter(MemoryLimiter::noop())
+                .with_resource_registry(ResourceRegistry::new())
                 .with_ambient_worker_pool();
 
             let mut supervisor =
@@ -1718,10 +1719,10 @@ mod tests {
     #[tokio::test]
     async fn aggregate_configuration_receiver_can_only_be_taken_once() {
         let config = AggregateConfiguration::for_test();
-        let first = config.build(ComponentContext::test_transform("aggregate_one")).await;
+        let first = config.build(BuildContext::test_transform("aggregate_one")).await;
         assert!(first.is_ok());
 
-        let second = config.build(ComponentContext::test_transform("aggregate_two")).await;
+        let second = config.build(BuildContext::test_transform("aggregate_two")).await;
         let error = match second {
             Ok(_) => panic!("second build should not take the snapshot receiver again"),
             Err(error) => error,

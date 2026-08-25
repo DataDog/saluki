@@ -7,7 +7,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{Transform, TransformBuilder, TransformContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{
         metric::{Metric, MetricValues},
@@ -110,8 +110,8 @@ impl TransformBuilder for DogStatsDPostAggregateFilterConfiguration {
         OUTPUTS
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let histogram_suffixes =
             HistogramSuffixes::from_configuration(&self.histogram_aggregates, &self.histogram_percentiles)?;
         let effective_filterlist = EffectiveFilterlist::new(

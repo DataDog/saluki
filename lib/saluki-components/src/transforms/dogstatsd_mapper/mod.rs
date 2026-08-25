@@ -13,7 +13,7 @@ use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         transforms::{SynchronousTransform, SynchronousTransformBuilder},
-        ComponentContext,
+        BuildContext,
     },
     topology::EventsBuffer,
 };
@@ -79,7 +79,7 @@ impl DogStatsDMapperConfiguration {
         }
     }
 
-    fn build_mapper(&self, context: ComponentContext) -> Result<MetricMapper, GenericError> {
+    fn build_mapper(&self, context: BuildContext) -> Result<MetricMapper, GenericError> {
         let mut profiles = Vec::with_capacity(self.profiles.len());
         for config_profile in &self.profiles {
             if config_profile.name.is_empty() {
@@ -317,7 +317,7 @@ impl MetricMapper {
 
 #[async_trait]
 impl SynchronousTransformBuilder for DogStatsDMapperConfiguration {
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let metric_mapper = self.build_mapper(context)?;
         Ok(Box::new(DogStatsDMapper { metric_mapper }))
     }
@@ -364,7 +364,7 @@ mod tests {
 
     use saluki_context::{Context, ContextResolverBuilder};
     use saluki_core::{
-        components::{transforms::SynchronousTransform, ComponentContext},
+        components::{transforms::SynchronousTransform, BuildContext},
         data_model::event::{metric::Metric, Event},
         topology::EventsBuffer,
     };
@@ -424,7 +424,7 @@ mod tests {
     ) -> Result<MetricMapper, GenericError> {
         let config =
             DogStatsDMapperConfiguration::new(NonZeroUsize::new(64 * 1024).expect("not zero"), cache_size, profiles);
-        config.build_mapper(ComponentContext::test_transform("test_mapper"))
+        config.build_mapper(BuildContext::test_transform("test_mapper"))
     }
 
     fn assert_tags(context: &Context, expected_tags: &[&str]) {

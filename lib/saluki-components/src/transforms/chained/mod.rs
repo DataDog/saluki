@@ -3,7 +3,7 @@ use saluki_common::strings::lower_alphanumeric;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::EventType;
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
+    components::{transforms::*, BuildContext},
     topology::OutputDefinition,
 };
 use saluki_error::GenericError;
@@ -55,7 +55,7 @@ impl MemoryBounds for ChainedConfiguration {
 
 #[async_trait]
 impl TransformBuilder for ChainedConfiguration {
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError> {
         let mut subtransforms = Vec::new();
         for (subtransform_id, subtransform_builder) in &self.subtransform_builders {
             let subtransform = subtransform_builder.build(context.clone()).await?;
