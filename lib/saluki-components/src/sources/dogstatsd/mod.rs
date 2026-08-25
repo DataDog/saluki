@@ -1840,6 +1840,7 @@ impl DogStatsDDecoder {
             match frame_result {
                 Ok(Some(frame)) => {
                     if matches!(listen_addr, ListenAddress::NamedPipe { .. }) {
+                        capture_named_pipe_frame(&self.traffic_capture, &frame);
                         metrics.packet_receive_success().increment(1);
                     }
                     self.decode_frame(frame, listen_addr, peer_addr, process_origin, metrics, packet_forwarder)
@@ -2107,6 +2108,12 @@ fn log_parse_failure(
         debug!(%listen_addr, %peer_addr, %frame, %error, "Failed to parse frame.");
     } else {
         warn!(%listen_addr, %peer_addr, %frame, %error, "Failed to parse frame.");
+    }
+}
+
+fn capture_named_pipe_frame(traffic_capture: &TrafficCapture, frame: &[u8]) {
+    if !frame.is_empty() && traffic_capture.is_ongoing() {
+        let _ = traffic_capture.enqueue(build_capture_record(None, None, frame));
     }
 }
 
@@ -2549,7 +2556,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc, Mutex as StdMutex, OnceLock,
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use bytes::Buf as _;
@@ -2596,7 +2603,7 @@ mod tests {
     };
 
     use super::{
-        build_io_buffer_pool, default_buffer_size, default_decoder_worker_count,
+        build_io_buffer_pool, capture_named_pipe_frame, default_buffer_size, default_decoder_worker_count,
         default_windows_pipe_security_descriptor,
         filters::EnablePayloadsFilter,
         forwarder::{
@@ -2607,8 +2614,8 @@ mod tests {
         origin_detection_failed_for_telemetry, resolve_process_origin, resolve_process_origin_if_needed,
         shutdown_listeners_and_drain_datagram_decoders, BufferDecodeContext, BufferDecodeMode, ContextResolvers,
         DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsDConfiguration, DogStatsDDecoder, ProcessOrigin,
-        QueuedDatagram, ReceivedBuffer, TrafficCapture, DEFAULT_BUFFER_COUNT_MAX, DOGSTATSD_CAPTURE_DIR,
-        MIN_CAPTURE_DEPTH,
+        QueuedDatagram, ReceivedBuffer, TrafficCapture, TrafficCaptureReader, DEFAULT_BUFFER_COUNT_MAX,
+        DOGSTATSD_CAPTURE_DIR, MIN_CAPTURE_DEPTH,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
@@ -2767,6 +2774,40 @@ mod tests {
         let mut buffer: BytesBuffer = get_pooled_object_via_builder(|| FixedSizeVec::with_capacity(capacity));
         buffer.put_slice(payload);
         buffer
+    }
+
+    #[test]
+    fn named_pipe_frames_are_written_to_an_active_capture() {
+        let capture_directory = tempfile::tempdir().expect("temporary capture directory should be created");
+        let capture = TrafficCapture::new(capture_directory.path().to_path_buf(), 1);
+        let capture_path = capture
+            .start_capture(None, Duration::from_secs(30), false)
+            .expect("capture should start");
+
+        capture_named_pipe_frame(&capture, b"captured.named_pipe.one:1|c");
+        capture_named_pipe_frame(&capture, b"captured.named_pipe.two:1|c");
+        capture.stop_capture();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while capture.is_ongoing() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!capture.is_ongoing(), "capture should stop after its sender is dropped");
+
+        let mut reader = TrafficCaptureReader::from_path(&capture_path).expect("capture should be readable");
+        let first_record = reader
+            .read_next()
+            .expect("first capture record should decode")
+            .expect("first named-pipe frame should be captured");
+        let second_record = reader
+            .read_next()
+            .expect("second capture record should decode")
+            .expect("second named-pipe frame should be captured");
+        assert_eq!(first_record.payload, b"captured.named_pipe.one:1|c");
+        assert_eq!(first_record.pid, 0);
+        assert_eq!(second_record.payload, b"captured.named_pipe.two:1|c");
+        assert_eq!(second_record.pid, 0);
+        assert!(reader.read_next().expect("capture should terminate cleanly").is_none());
     }
 
     #[tokio::test]

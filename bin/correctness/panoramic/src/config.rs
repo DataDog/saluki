@@ -268,6 +268,21 @@ pub enum ActionConfig {
         timeout: HumanDuration,
     },
 
+    /// Capture, replay, and verify DogStatsD traffic through the tested ADP process.
+    DogstatsdReplay {
+        /// Command that sends the traffic to be captured in the target environment.
+        sender: Vec<String>,
+        /// How long the capture remains active after it starts.
+        capture_duration: HumanDuration,
+        /// Number of seconds the post-replay statistics collection runs.
+        stats_duration_secs: u64,
+        /// Metric names that must appear during the post-replay statistics collection.
+        expected_metrics: Vec<String>,
+        /// Timeout for each target command invoked by the action.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+
     /// Invoke the Core Agent binary as a CLI command.
     CoreAgentCli {
         /// Arguments appended after the runtime-specific Core Agent binary and global configuration prefix.
@@ -457,6 +472,15 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(output_contains, vars);
                 }
             }
+            ActionConfig::DogstatsdReplay {
+                sender,
+                expected_metrics,
+                ..
+            } => {
+                for arg in sender.iter_mut().chain(expected_metrics) {
+                    crate::dynamic_vars::resolve_placeholders(arg, vars);
+                }
+            }
             ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
@@ -491,6 +515,15 @@ impl ActionConfig {
                 }
                 if let Some(output_contains) = output_contains {
                     crate::dynamic_vars::find_unresolved(output_contains, &mut out);
+                }
+            }
+            ActionConfig::DogstatsdReplay {
+                sender,
+                expected_metrics,
+                ..
+            } => {
+                for arg in sender.iter().chain(expected_metrics) {
+                    crate::dynamic_vars::find_unresolved(arg, &mut out);
                 }
             }
             ActionConfig::TargetExec { command, .. } => {
@@ -1126,6 +1159,37 @@ timeout: 12s
         };
         assert_eq!(command, vec!["pwsh", "-File", "C:\\test\\send.ps1"]);
         assert_eq!(timeout.0, Duration::from_secs(12));
+    }
+
+    #[test]
+    fn dogstatsd_replay_action_deserializes_capture_and_stats_configuration() {
+        let action: ActionConfig = serde_yaml::from_str(
+            r#"
+action: dogstatsd_replay
+sender: ["python3", "/tmp/send.py"]
+capture_duration: 2s
+stats_duration_secs: 3
+expected_metrics: ["replay.one", "replay.two"]
+timeout: 30s
+"#,
+        )
+        .unwrap();
+
+        let ActionConfig::DogstatsdReplay {
+            sender,
+            capture_duration,
+            stats_duration_secs,
+            expected_metrics,
+            timeout,
+        } = action
+        else {
+            panic!("expected dogstatsd_replay action");
+        };
+        assert_eq!(sender, vec!["python3", "/tmp/send.py"]);
+        assert_eq!(capture_duration.0, Duration::from_secs(2));
+        assert_eq!(stats_duration_secs, 3);
+        assert_eq!(expected_metrics, vec!["replay.one", "replay.two"]);
+        assert_eq!(timeout.0, Duration::from_secs(30));
     }
 
     #[test]

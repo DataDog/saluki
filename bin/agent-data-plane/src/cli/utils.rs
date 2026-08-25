@@ -4,13 +4,8 @@ use agent_data_plane_config_system::LoadedConfiguration;
 use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config};
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
-use http_body_util::BodyExt as _;
-#[cfg(target_os = "linux")]
-use http_body_util::Full;
-#[cfg(target_os = "linux")]
-use hyper::body::Bytes;
-use hyper::body::Incoming;
-#[cfg(target_os = "linux")]
+use http_body_util::{BodyExt as _, Full};
+use hyper::body::{Bytes, Incoming};
 use prost::Message as _;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
 use saluki_io::net::{
@@ -52,7 +47,6 @@ struct DogStatsDCaptureResponseBody {
     path: String,
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Deserialize)]
 struct DogStatsDReplaySessionResponseBody {
     session_id: String,
@@ -285,7 +279,6 @@ impl DataPlaneAPIClient {
     ///
     /// If the request fails, if ADP rejects the session, or if the response body can't be decoded, an error is
     /// returned.
-    #[cfg(target_os = "linux")]
     pub async fn dogstatsd_replay_start_session(
         &mut self, state: Option<&datadog_protos::agent::TaggerState>,
     ) -> Result<String, GenericError> {
@@ -312,7 +305,6 @@ impl DataPlaneAPIClient {
     /// # Errors
     ///
     /// If the request fails, or if ADP rejects the session release, an error is returned.
-    #[cfg(target_os = "linux")]
     pub async fn dogstatsd_replay_finish_session(&mut self, session_id: &str) -> Result<(), GenericError> {
         let uri = self.build_uri(&format!("/dogstatsd/replay/session/{session_id}"), None);
         let req = Request::delete(uri)
@@ -454,7 +446,6 @@ fn body_when_capture_success(resp: Response<String>) -> Result<String, GenericEr
     }
 }
 
-#[cfg(target_os = "linux")]
 fn body_when_replay_session_success(resp: Response<String>) -> Result<String, GenericError> {
     match resp.status() {
         status if status.is_success() => Ok(resp.into_body()),
@@ -493,7 +484,6 @@ fn empty_when_success(resp: Response<String>) -> Result<(), GenericError> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn empty_when_replay_session_success(resp: Response<String>) -> Result<(), GenericError> {
     match resp.status() {
         status if status.is_success() => Ok(()),
@@ -512,9 +502,10 @@ mod tests {
 
     use http::{Method, Response, StatusCode, Uri};
 
-    use super::{body_when_capture_success, build_dogstatsd_contexts_dump_request, path_when_context_dump_success};
-    #[cfg(target_os = "linux")]
-    use super::{body_when_replay_session_success, empty_when_replay_session_success};
+    use super::{
+        body_when_capture_success, body_when_replay_session_success, build_dogstatsd_contexts_dump_request,
+        empty_when_replay_session_success, path_when_context_dump_success,
+    };
     use crate::dogstatsd_contexts::CONTEXT_DUMP_ROUTE;
 
     #[test]
@@ -552,7 +543,6 @@ mod tests {
         assert!(message.contains("route not found"));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn dogstatsd_replay_session_conflict_surfaces_server_message() {
         let response = Response::builder()
@@ -564,7 +554,6 @@ mod tests {
         assert_eq!(error.to_string(), "DogStatsD replay already in progress.");
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn dogstatsd_replay_finish_conflict_surfaces_server_message() {
         let response = Response::builder()
