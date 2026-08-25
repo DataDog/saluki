@@ -458,11 +458,10 @@ fn unknown_field_nested_strings_are_harvested() {
 
 #[test]
 fn unknown_field_depth_cap_enforced() {
-    // Nesting an unknown field's value past the depth cap must error rather than overflow the stack.
     let mut buf = Vec::new();
     encode::write_map_len(&mut buf, 1).unwrap();
     encode::write_uint(&mut buf, 99).unwrap();
-    for _ in 0..205 {
+    for _ in 0..70 {
         encode::write_array_len(&mut buf, 1).unwrap();
     }
     encode::write_uint(&mut buf, 0).unwrap();
@@ -470,7 +469,20 @@ fn unknown_field_depth_cap_enforced() {
     let mut strings = StringTable::new();
     let mut r = buf.as_slice();
     let err = decode_span(&mut r, &mut strings).unwrap_err();
-    assert!(matches!(err, DecodeError::DepthExceeded { .. }));
+    assert!(matches!(err, DecodeError::DepthExceeded { max: 64 }));
+}
+
+#[test]
+fn skip_value_depth_cap_enforced() {
+    let mut buf = Vec::new();
+    for _ in 0..70 {
+        encode::write_array_len(&mut buf, 1).unwrap();
+    }
+    encode::write_uint(&mut buf, 0).unwrap();
+
+    let mut r = buf.as_slice();
+    let err = read::skip_value(&mut r, "test").unwrap_err();
+    assert!(matches!(err, DecodeError::DepthExceeded { max: 64 }));
 }
 
 #[test]
@@ -539,7 +551,7 @@ fn unknown_fields_at_every_level_are_harvested() {
 fn any_value_depth_cap_enforced() {
     // Nest arrays past the depth cap: each level is `[type=6, arraylen=2, <inner element>]`.
     let mut buf = Vec::new();
-    for _ in 0..205 {
+    for _ in 0..70 {
         encode::write_uint(&mut buf, 6).unwrap();
         encode::write_array_len(&mut buf, 2).unwrap();
     }
@@ -549,7 +561,7 @@ fn any_value_depth_cap_enforced() {
     let mut strings = StringTable::new();
     let mut r = buf.as_slice();
     let err = value::read_any_value(&mut r, &mut strings).unwrap_err();
-    assert!(matches!(err, DecodeError::DepthExceeded { .. }));
+    assert!(matches!(err, DecodeError::DepthExceeded { max: 64 }));
 }
 
 #[test]

@@ -12,8 +12,8 @@ use super::string_table::StringTable;
 /// Maximum `AnyValue` nesting depth.
 ///
 /// Without a bound, a deeply nested payload could drive the decoder into unbounded recursion and
-/// overflow the stack. Matches the reference decoder's limit.
-const MAX_ANY_VALUE_DEPTH: usize = 200;
+/// overflow the stack. Matches default OTEL limit.
+const MAX_ANY_VALUE_DEPTH: usize = 64;
 
 /// Reads a streaming string and resolves it to an owned [`MetaString`].
 ///
