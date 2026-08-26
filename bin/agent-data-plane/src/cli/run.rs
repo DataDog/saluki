@@ -777,7 +777,12 @@ async fn add_dsd_pipeline_to_blueprint(
         .with_default_hostname(default_hostname)
         .with_workload_provider(env_provider.workload().clone())
         .with_capture_entity_resolver(env_provider.workload().clone());
-    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::from_configuration(config)?;
+    let prefix_filter = &typed.domains.dogstatsd.prefix_filter;
+    let dsd_prefix_filter_configuration = DogStatsDPrefixFilterConfiguration::new(
+        prefix_filter.metric_namespace.clone(),
+        prefix_filter.metric_namespace_blocklist.clone(),
+        config_system.live(|config| &config.domains.dogstatsd.metric_filter),
+    );
     let mapper = &typed.domains.dogstatsd.mapper;
     let mapper_profiles = mapper
         .profiles
@@ -1024,7 +1029,7 @@ mod tests {
 
     use agent_data_plane_config::{
         domains::dogstatsd::{
-            FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry, TagValueMismatchAction,
+            FilterAction, MetricFilter, MetricTagFilterEntry, MetricTagValueAllowlistEntry, TagValueMismatchAction,
         },
         Live,
     };
@@ -1072,14 +1077,6 @@ mod tests {
     #[tokio::test]
     async fn retained_context_identity_follows_dogstatsd_post_processing() {
         tokio::time::timeout(Duration::from_secs(5), async {
-            let config = config_from(json!({
-                "statsd_metric_namespace": "tenant",
-                "statsd_metric_namespace_blocklist": [],
-                "metric_filterlist": ["tenant.raw.blocked"],
-                "metric_filterlist_match_prefix": false
-            }))
-            .await;
-
             let mapper = DogStatsDMapperConfiguration::new(
                 NonZeroUsize::new(64 * 1024).expect("not zero"),
                 1_000,
@@ -1095,8 +1092,14 @@ mod tests {
                 }],
             );
             let mapper_chain = ChainedConfiguration::default().with_transform_builder("dogstatsd_mapper", mapper);
-            let prefix_filter = DogStatsDPrefixFilterConfiguration::from_configuration(&config)
-                .expect("prefix filter configuration should parse");
+            let prefix_filter = DogStatsDPrefixFilterConfiguration::new(
+                "tenant".to_string(),
+                Vec::new(),
+                Live::new_fixed(MetricFilter {
+                    values: vec!["tenant.raw.blocked".to_string()],
+                    match_prefix: false,
+                }),
+            );
             let tag_filter = TagFilterlistConfiguration::new(
                 Live::new_fixed(vec![MetricTagFilterEntry {
                     metric_name: "tenant.mapped.requests".to_string(),
