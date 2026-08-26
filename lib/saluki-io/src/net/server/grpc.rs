@@ -1,6 +1,7 @@
 use std::{
     convert::Infallible,
     io,
+    net::SocketAddr,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -11,7 +12,10 @@ use async_trait::async_trait;
 use http::Request;
 use rustls::ServerConfig;
 use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_core::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
+use saluki_core::runtime::{
+    state::{DataspaceRegistry, Identifier},
+    InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
+};
 use saluki_error::ErrorContext as _;
 use saluki_tls::ensure_server_config_fips_compliant;
 use tokio::{
@@ -36,7 +40,7 @@ use tracing::{debug, warn};
 
 #[cfg(unix)]
 use crate::net::unix::{ensure_unix_socket_free, set_unix_socket_write_only};
-use crate::net::ListenAddress;
+use crate::net::{server::BoundServerAddress, ListenAddress};
 
 /// A gRPC server.
 ///
@@ -59,6 +63,7 @@ pub struct GrpcServer {
     routes: Option<Routes>,
     graceful_shutdown_timeout: Option<Duration>,
     tls_config: Option<ServerConfig>,
+    bound_address_id: Option<Identifier>,
 }
 
 impl GrpcServer {
@@ -69,7 +74,16 @@ impl GrpcServer {
             routes: None,
             graceful_shutdown_timeout: None,
             tls_config: None,
+            bound_address_id: None,
         }
+    }
+
+    /// Sets the identifier used to publish the bound TCP address.
+    ///
+    /// Defaults to not publishing the address. Unix listen addresses never publish an address.
+    pub fn with_bound_address_id(mut self, id: impl Into<Identifier>) -> Self {
+        self.bound_address_id = Some(id.into());
+        self
     }
 
     /// Sets the graceful shutdown timeout for this server.
@@ -94,6 +108,23 @@ impl GrpcServer {
     pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
         self.tls_config = Some(config);
         self
+    }
+
+    fn publish_bound_address<F>(&self, local_addr: F, configured_addr: &SocketAddr) -> Result<(), InitializationError>
+    where
+        F: FnOnce() -> io::Result<SocketAddr>,
+    {
+        let Some(id) = self.bound_address_id.clone() else {
+            return Ok(());
+        };
+
+        let bound_address = local_addr()
+            .with_error_context(|| format!("Failed to query bound address for gRPC server ({}).", configured_addr))?;
+        let dataspace = DataspaceRegistry::try_current()
+            .ok_or_else(|| saluki_error::generic_error!("Dataspace not available for gRPC server."))?;
+        dataspace.assert(BoundServerAddress(bound_address), id);
+
+        Ok(())
     }
 
     /// Adds a new service to this server.
@@ -146,6 +177,7 @@ impl Supervisable for GrpcServer {
                     let listener = tokio::net::TcpListener::bind(*addr)
                         .await
                         .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
+                    self.publish_bound_address(|| listener.local_addr(), addr)?;
 
                     // Spawn each TLS handshake concurrently so a stalled client cannot block the accept loop.
                     let incoming = spawn_tls_handshake_loop(listener, acceptor);
@@ -178,6 +210,7 @@ impl Supervisable for GrpcServer {
                 } else {
                     let listener = TcpIncoming::bind(*addr)
                         .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
+                    self.publish_bound_address(|| listener.local_addr(), addr)?;
 
                     Ok(Box::pin(async move {
                         let (drain_tx, drain_rx) = oneshot::channel();
@@ -384,11 +417,19 @@ mod tests {
     use std::net::{SocketAddr, TcpListener as StdTcpListener};
 
     use saluki_common::sync::shutdown::ShutdownCoordinator;
+    #[cfg(unix)]
+    use saluki_core::runtime::state::IdentifierFilter;
+    use saluki_tls::test_util::SelfSignedCert;
+    #[cfg(unix)]
+    use tokio::io::AsyncReadExt as _;
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::TcpStream;
     use tokio::time::timeout;
 
     use super::*;
+    use crate::net::server::test_util::ServerTestHarness;
+    #[cfg(unix)]
+    use crate::net::server::{test_util::connect_unix, BoundServerAddress};
 
     /// Bound on any server await in these tests, so a hang fails rather than stalling the suite.
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -399,6 +440,86 @@ mod tests {
         let addr = listener.local_addr().expect("should have a local address");
         drop(listener);
         addr
+    }
+
+    #[tokio::test]
+    async fn publishes_bound_tcp_address() {
+        let harness = ServerTestHarness::start("grpc-bound-address", |supervisor| {
+            let listen_address = ListenAddress::Tcp("127.0.0.1:0".parse().expect("address should parse"));
+            let server = GrpcServer::new(listen_address).with_bound_address_id("grpc-bound-address");
+            supervisor.add_worker(server);
+        })
+        .await;
+
+        let address = harness.bound_address("grpc-bound-address").await;
+        assert_ne!(address.port(), 0);
+        let stream = TcpStream::connect(address)
+            .await
+            .expect("should connect to published address");
+        drop(stream);
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn tls_server_publishes_bound_tcp_address() {
+        let _ = saluki_tls::initialize_default_crypto_provider();
+        let cert = SelfSignedCert::localhost();
+        let tls_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(cert.cert_chain(), cert.private_key())
+            .expect("should build TLS config");
+        let harness = ServerTestHarness::start("grpc-tls-bound-address", move |supervisor| {
+            let listen_address = ListenAddress::Tcp("127.0.0.1:0".parse().expect("address should parse"));
+            let server = GrpcServer::new(listen_address)
+                .with_tls_config(tls_config)
+                .with_bound_address_id("grpc-tls-bound-address");
+            supervisor.add_worker(server);
+        })
+        .await;
+
+        let address = harness.bound_address("grpc-tls-bound-address").await;
+        assert_ne!(address.port(), 0);
+        let stream = TcpStream::connect(address)
+            .await
+            .expect("should connect to published address");
+        drop(stream);
+
+        harness.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_listener_does_not_publish_bound_address() {
+        let tempdir = tempfile::tempdir().expect("should create temp dir");
+        let socket_path = tempdir.path().join("grpc.sock");
+        let listen_address = ListenAddress::Unix(socket_path.clone());
+        let harness = ServerTestHarness::start("grpc-unix-bound-address", move |supervisor| {
+            let server = GrpcServer::new(listen_address).with_bound_address_id("grpc-unix-bound-address");
+            supervisor.add_worker(server);
+        })
+        .await;
+
+        let mut stream = connect_unix(&socket_path).await;
+        stream
+            .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+            .await
+            .expect("should write HTTP/2 preface");
+        let mut response = [0; 1];
+        timeout(TEST_TIMEOUT, stream.read_exact(&mut response))
+            .await
+            .expect("server should respond over Unix listener")
+            .expect("should read server response");
+        assert!(
+            harness
+                .dataspace
+                .current_values::<BoundServerAddress>(IdentifierFilter::all())
+                .is_empty(),
+            "Unix listener should not publish a bound address"
+        );
+        drop(stream);
+
+        harness.shutdown().await;
     }
 
     #[tokio::test]
