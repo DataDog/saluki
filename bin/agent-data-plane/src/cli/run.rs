@@ -118,7 +118,7 @@ pub async fn handle_run_command(
         (config_sys, None)
     } else {
         // Blocks until the Core Agent acknowledges registration.
-        let client_config = remote_agent_client_configuration(local_config.local(), &local_config.raw_config())?;
+        let client_config = remote_agent_client_configuration(local_config.local())?;
         let ra_bootstrap = RemoteAgentBootstrap::new(&client_config, &bootstrap_dp_config)
             .await
             .error_context("Failed to bootstrap remote agent state.")?;
@@ -174,10 +174,7 @@ pub async fn handle_run_command(
     let remote_agent_client_config = if standalone {
         None
     } else {
-        Some(remote_agent_client_configuration(
-            &config_sys.config(),
-            &config_sys.raw_map(),
-        )?)
+        Some(remote_agent_client_configuration(&config_sys.config())?)
     };
 
     // Set up all of the building blocks for building our topologies and launching internal processes.

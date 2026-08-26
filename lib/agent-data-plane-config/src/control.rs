@@ -4,7 +4,7 @@
 //! components. It carries pipeline activation gates, topology-shaping decisions, listen addresses,
 //! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 use serde::Serialize;
 
@@ -116,6 +116,16 @@ pub struct Logging {
 /// effective default of each field is the one the Datadog schema declares, noted per field below.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ControlIpc {
+    /// Path to the Agent authentication token file.
+    ///
+    /// Defaults to an empty path, which selects the platform-specific Agent authentication token path.
+    pub auth_token_file_path: PathBuf,
+
+    /// Path to the shared Agent IPC mTLS identity file.
+    ///
+    /// Defaults to an empty path, which selects `ipc_cert.pem` beside the resolved authentication token path.
+    pub ipc_cert_file_path: PathBuf,
+
     /// TCP port the command API listens on.
     ///
     /// Defaults to `5001`.

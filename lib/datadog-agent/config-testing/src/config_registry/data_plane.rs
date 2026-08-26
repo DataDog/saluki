@@ -48,6 +48,17 @@ crate::declare_annotations! {
         test_json: Some("4194304"),
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
+    /// `auth_token_file_path`-Agent authentication token file path
+    AUTH_TOKEN_FILE_PATH = SalukiAnnotation {
+        schema: &schema::AUTH_TOKEN_FILE_PATH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `basic_telemetry_add_container_tags`-Add container tags to basic telemetry signals
     BASIC_TELEMETRY_ADD_CONTAINER_TAGS = SalukiAnnotation {
         schema: &schema::BASIC_TELEMETRY_ADD_CONTAINER_TAGS,
@@ -198,6 +209,17 @@ crate::declare_annotations! {
         additional_yaml_paths: &[],
         env_var_override: None,
         used_by: &[structs::GET_TYPED],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `ipc_cert_file_path`-Agent IPC certificate file path
+    IPC_CERT_FILE_PATH = SalukiAnnotation {
+        schema: &schema::IPC_CERT_FILE_PATH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
         value_type_override: None,
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,

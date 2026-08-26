@@ -178,6 +178,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::Float,
     },
     EnvKey {
+        env_vars: &["DD_AUTH_TOKEN_FILE_PATH"],
+        path: &["auth_token_file_path"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_AUTOSCALING_FAILOVER_ENABLED"],
         path: &["autoscaling", "failover", "enabled"],
         decode: EnvDecode::Bool,
@@ -649,6 +654,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_HISTOGRAM_PERCENTILES"],
         path: &["histogram_percentiles"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_IPC_CERT_FILE_PATH"],
+        path: &["ipc_cert_file_path"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_KUBERNETES_KUBELET_NODENAME"],

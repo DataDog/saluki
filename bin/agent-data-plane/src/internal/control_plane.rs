@@ -57,7 +57,10 @@ pub async fn create_control_plane_supervisor(
     let secure_api_listen_address = dp.secure_api_listen_address()?;
 
     supervisor.add_worker(DynamicAPIBuilder::new(EndpointType::Unprivileged, api_listen_address));
-    let ipc_config = IpcAuthConfiguration::from_configuration(&raw_map)?;
+    let ipc_config = IpcAuthConfiguration::new(
+        config.control.ipc.auth_token_file_path.clone(),
+        config.control.ipc.ipc_cert_file_path.clone(),
+    );
     let tls_config = build_ipc_server_tls_config(ipc_config.ipc_cert_file_path()).await?;
 
     let mut privileged_api =

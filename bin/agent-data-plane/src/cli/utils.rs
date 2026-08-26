@@ -57,17 +57,16 @@ impl DataPlaneAPIClient {
     ///
     /// # Errors
     ///
-    /// If the IPC authentication configuration can't be loaded, the IPC certificate can't be read or parsed into a
-    /// client TLS configuration, the privileged API endpoint isn't connection-oriented, or the HTTP client can't be
-    /// constructed, an error is returned.
+    /// If the IPC certificate can't be read or parsed into a client TLS configuration, the privileged API endpoint
+    /// isn't connection-oriented, or the HTTP client can't be constructed, an error is returned.
     pub async fn from_configuration(loaded_config: &LoadedConfiguration) -> Result<Self, GenericError> {
         let config = loaded_config.local();
-        let raw_config = loaded_config.raw_config();
         let dp = DataPlaneConfiguration::from_configuration(config);
         let listen_address = dp.secure_api_listen_address()?;
-        let ipc_config = IpcAuthConfiguration::from_configuration(&raw_config)
-            .error_context("Failed to load IPC authentication configuration for privileged API client.")?;
-
+        let ipc_config = IpcAuthConfiguration::new(
+            config.control.ipc.auth_token_file_path.clone(),
+            config.control.ipc.ipc_cert_file_path.clone(),
+        );
         let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
         let client_tls_config = build_ipc_client_ipc_tls_config(&ipc_cert_file_path)
             .await
