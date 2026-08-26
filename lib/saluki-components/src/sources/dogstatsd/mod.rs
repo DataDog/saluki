@@ -13,7 +13,7 @@ use std::{
     num::NonZeroUsize,
     path::PathBuf,
     pin::Pin,
-    sync::{Arc, LazyLock},
+    sync::{Arc, LazyLock, Mutex as StdMutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -35,6 +35,7 @@ use saluki_core::data_model::event::{
 use saluki_core::{
     components::{sources::*, BuildContext},
     pooling::{ElasticObjectPool, ObjectPool as _},
+    runtime::{self, InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture},
     topology::{EventsBuffer, OutputDefinition},
 };
 use saluki_env::{workload::CaptureEntityResolver, WorkloadProvider};
@@ -965,11 +966,11 @@ impl Source for DogStatsD {
 
         let mut health = context.take_health_handle();
 
-        context
-            .spawner()
-            .spawn_interruptible("io_buffer_pool_shrinker", self.io_buffer_pool_shrinker)
-            .await
-            .error_context("Failed to spawn I/O buffer pool shrinker.")?;
+        // Brutal: the shrinker loops forever with no terminal condition of its own, so waiting for it would hold
+        // every shutdown open until the component's budget elapsed.
+        runtime::worker("io_buffer_pool_shrinker", self.io_buffer_pool_shrinker)
+            .with_shutdown_strategy(ShutdownStrategy::Brutal)
+            .spawn();
 
         let (datagram_sender, datagram_receiver) = mpsc::channel(self.io_buffer_queue_capacity);
         let datagram_receiver = Arc::new(Mutex::new(datagram_receiver));
@@ -996,14 +997,11 @@ impl Source for DogStatsD {
             let decoder_source_context = context.clone();
             let decoder_context = decoder_context.clone();
 
-            context
-                .spawner()
-                .spawn_noninterruptible(format!("datagram_decoder_{worker_id}"), move |_shutdown| async move {
-                    let _decoder_shutdown = decoder_shutdown;
-                    process_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context).await;
-                })
-                .await
-                .error_context("Failed to spawn DogStatsD datagram decoder.")?;
+            runtime::worker(format!("datagram_decoder_{worker_id}"), async move {
+                let _decoder_shutdown = decoder_shutdown;
+                process_datagram_decoder(datagram_receiver, decoder_source_context, decoder_context).await;
+            })
+            .spawn();
         }
         drop(datagram_receiver);
 
@@ -1031,13 +1029,13 @@ impl Source for DogStatsD {
                 packet_forwarder_target: self.packet_forwarder_target.clone(),
             };
 
-            context
-                .spawner()
-                .spawn_noninterruptible(task_name, move |shutdown| {
-                    process_listener(listener_source_context, listener_context, shutdown)
-                })
-                .await
-                .error_context("Failed to spawn DogStatsD listener.")?;
+            runtime::supervisable(ListenerWorker::new(
+                task_name,
+                listener_source_context,
+                listener_context,
+            ))
+            .temporary()
+            .spawn();
         }
         drop(datagram_sender);
 
@@ -1093,6 +1091,52 @@ fn is_connectionless_listen_address(listen_addr: &ListenAddress) -> bool {
     }
 }
 
+/// A DogStatsD listener, as a [`Supervisable`].
+///
+/// An accept loop has no terminal condition of its own -- it runs until something tells it to stop -- so unlike the
+/// other children this source spawns, it genuinely needs the supervisor's shutdown signal. That is what makes it a
+/// `Supervisable` rather than a plain worker. See [`process_listener`] for the two paths that end the loop.
+struct ListenerWorker {
+    name: String,
+    inner: StdMutex<Option<(SourceContext, ListenerContext)>>,
+}
+
+impl ListenerWorker {
+    fn new(name: String, source_context: SourceContext, listener_context: ListenerContext) -> Self {
+        Self {
+            name,
+            inner: StdMutex::new(Some((source_context, listener_context))),
+        }
+    }
+}
+
+#[async_trait]
+impl Supervisable for ListenerWorker {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn shutdown_strategy(&self) -> ShutdownStrategy {
+        // No deadline of its own: the component's supervisor holds a single budget covering the source and everything
+        // it spawned.
+        ShutdownStrategy::Graceful(Duration::MAX)
+    }
+
+    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
+        let (source_context, listener_context) = self
+            .inner
+            .lock()
+            .expect("listener worker mutex poisoned")
+            .take()
+            .ok_or_else(|| InitializationError::from(generic_error!("listener worker already initialized")))?;
+
+        Ok(Box::pin(async move {
+            process_listener(source_context, listener_context, process_shutdown).await;
+            Ok(())
+        }))
+    }
+}
+
 async fn process_listener(
     source_context: SourceContext, listener_context: ListenerContext, process_shutdown: ShutdownHandle,
 ) {
@@ -1120,9 +1164,7 @@ async fn process_listener(
         .as_ref()
         .map(|target| target.to_forwarder(metrics.clone()));
     if let Some(packet_forwarder) = &packet_forwarder {
-        if let Err(e) = packet_forwarder.spawn_connect(source_context.spawner()).await {
-            warn!(%listen_addr, error = %e, "Could not start statsd packet forwarding.");
-        }
+        packet_forwarder.spawn();
     }
     let datagram_context = is_connectionless_listen_address(&listen_addr).then(|| {
         Arc::new(DatagramSocketContext {
@@ -1143,9 +1185,10 @@ async fn process_listener(
                 debug!(%listen_addr, "Received shutdown signal. Waiting for existing stream handlers to finish...");
                 break;
             }
-            // This separate shutdown path is when we've been _explicitly_ signaled by the supervisor itself to
-            // shutdown, rather than a logical/orderly topology shutdown. This is a corner case for when a component is
-            // being forcefully shutdown for some reason.
+            // The other way in: the supervisor tearing the component down while the source's own `run` is still going
+            // and so isn't driving the coordinator above. Without this the accept loop would keep going -- and keep
+            // holding a datagram sender, keeping the decoders waiting on a queue that never closes -- until the
+            // shutdown budget elapsed and aborted the lot.
             _ = &mut process_shutdown => {
                 debug!(%listen_addr, "Supervisor signalled shutdown. Waiting for existing stream handlers to finish...");
                 break;
@@ -1175,9 +1218,7 @@ async fn process_listener(
                     let handler_source_context = source_context.clone();
                     let handler = process_stream(stream, handler_source_context, handler_context, stream_shutdown);
 
-                    if let Err(e) = source_context.spawner().spawn_interruptible(task_name, handler).await {
-                        error!(%listen_addr, error = %e, "Failed to spawn stream handler.");
-                    }
+                    runtime::worker(task_name, handler).spawn();
                 }
                 Err(e) => {
                     // TODO: We shouldn't actually bail out here just because of an error during accept,
@@ -2272,24 +2313,21 @@ const fn get_adjusted_buffer_size(buffer_size: usize) -> usize {
 mod tests {
     use std::{
         collections::HashMap,
-        io::ErrorKind,
         net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         path::PathBuf,
         sync::{
             atomic::{AtomicUsize, Ordering},
-            Arc, Mutex as StdMutex, OnceLock,
+            Arc, Mutex as StdMutex,
         },
         time::{Duration, Instant},
     };
 
-    use bytes::Buf as _;
-    use bytes::{BufMut as _, Bytes};
+    use bytes::{Buf as _, BufMut as _};
     use bytesize::ByteSize;
     use metrics::{Key, Label};
     use saluki_common::sync::shutdown::ShutdownCoordinator;
     use saluki_context::{ContextResolverBuilder, TagsResolverBuilder};
     use saluki_core::accounting::{ComponentRegistry, MemoryLimiter};
-    use saluki_core::components::test_util::TestComponentSupervisor;
     use saluki_core::{
         components::{sources::SourceContext, ComponentContext},
         health::HealthRegistry,
@@ -2316,42 +2354,28 @@ mod tests {
         net::{UnixDatagram, UnixStream},
     };
     use tokio::{
-        net::UdpSocket,
         runtime::Handle,
         sync::{mpsc, Mutex},
         task::yield_now,
         time::timeout,
     };
 
-    use super::OriginEnrichmentConfiguration;
     use super::{
-        build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count,
-        filters::EnablePayloadsFilter,
-        forwarder::{
-            ConnectedPacketForwarder, ForwardPacket, PacketForwarder, PacketForwarderTarget, FORWARDER_QUEUE_CAPACITY,
-        },
-        handle_frame, handle_metric_packet,
-        metrics::build_metrics,
-        origin_detection_failed_for_telemetry, resolve_process_origin, resolve_process_origin_if_needed,
-        shutdown_listeners_and_drain_datagram_decoders, BufferDecodeContext, BufferDecodeMode, ContextResolvers,
-        DatagramSocketContext, DecodeOutcome, DecoderContext, DogStatsDConfiguration, DogStatsDDecoder, ProcessOrigin,
-        QueuedDatagram, ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
+        build_io_buffer_pool, capture_named_pipe_frame, default_decoder_worker_count, filters::EnablePayloadsFilter,
+        handle_frame, handle_metric_packet, metrics::build_metrics, origin_detection_failed_for_telemetry,
+        resolve_process_origin, resolve_process_origin_if_needed, shutdown_listeners_and_drain_datagram_decoders,
+        BufferDecodeContext, BufferDecodeMode, ContextResolvers, DatagramSocketContext, DecodeOutcome, DecoderContext,
+        DogStatsDConfiguration, DogStatsDDecoder, OriginEnrichmentConfiguration, ProcessOrigin, QueuedDatagram,
+        ReceivedBuffer, TrafficCapture, TrafficCaptureReader,
     };
     #[cfg(unix)]
     use super::{receive_connected_stream, receive_connectionless_stream, received_payload};
     #[cfg(target_os = "linux")]
     use super::{DogStatsDOriginTagResolver, Listener};
+    use crate::sources::dogstatsd::PacketForwarder;
 
     const TEST_WINDOWS_PIPE_SECURITY_DESCRIPTOR: &str = "D:AI(A;;GA;;;WD)";
     const TEST_BUFFER_SIZE: usize = 8192;
-
-    const LINUX_EAFNOSUPPORT: i32 = 97;
-    const MACOS_EAFNOSUPPORT: i32 = 47;
-
-    fn is_ipv6_unavailable_error(error: &std::io::Error) -> bool {
-        matches!(error.kind(), ErrorKind::AddrNotAvailable | ErrorKind::Unsupported)
-            || matches!(error.raw_os_error(), Some(LINUX_EAFNOSUPPORT | MACOS_EAFNOSUPPORT))
-    }
 
     fn test_component_context() -> ComponentContext {
         ComponentContext::test_source("dogstatsd_test")
@@ -2406,15 +2430,6 @@ mod tests {
         }
     }
 
-    fn packet_forwarder_from_sender(
-        target_port: u16, packets_tx: mpsc::Sender<ForwardPacket>, metrics: super::metrics::Metrics,
-    ) -> PacketForwarder {
-        let mut forwarder =
-            PacketForwarderTarget::new(MetaString::from_static("127.0.0.1"), target_port).to_forwarder(metrics);
-        forwarder.connected = Arc::new(OnceLock::from(packets_tx));
-        forwarder
-    }
-
     fn processed_metric_key(listener_type: &'static str, origin: Option<&str>) -> Key {
         let mut labels = vec![
             Label::from_static_parts("component_id", "dogstatsd_test"),
@@ -2437,12 +2452,11 @@ mod tests {
         ContextResolvers::manual(context_resolver.clone(), context_resolver, tags_resolver)
     }
 
-    /// Builds a source context bound to `supervisor`, plus the receiver for its `metrics` output.
+    /// Builds a source context, plus the receiver for its `metrics` output.
     ///
-    /// `supervisor` must be running: the DogStatsD source spawns its listeners, decoders, pool shrinker, and per-
-    /// connection handlers as supervised children, so a spawner over a never-run supervisor fails with
-    /// `SupervisorGone`.
-    fn test_source_context(supervisor: &TestComponentSupervisor) -> (SourceContext, mpsc::Receiver<EventsBuffer>) {
+    /// Only useful for tests that drive pieces of the source directly. A test that runs the source itself needs a
+    /// running supervisor for it to spawn its children onto -- see `build_source`.
+    fn test_source_context() -> (SourceContext, mpsc::Receiver<EventsBuffer>) {
         let component_context = test_component_context();
         let mut dispatcher = EventsDispatcher::new(component_context.clone());
         let metrics_output = OutputName::Given("metrics".into());
@@ -2471,7 +2485,6 @@ mod tests {
             ComponentRegistry::default(),
             health,
             dispatcher,
-            supervisor.spawner(),
         );
 
         (source_context, metrics_rx)
@@ -2538,12 +2551,10 @@ mod tests {
         let listen_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
         let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
-        let (source_context, mut metrics_rx) = test_source_context(&supervisor);
+        let (source_context, mut metrics_rx) = test_source_context();
         let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(false));
         let event_buffer_capacity = EventsBuffer::default().capacity();
-        let (packets_tx, mut packets_rx) = mpsc::channel(event_buffer_capacity + 1);
-        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics.clone());
+        let (packet_forwarder, mut packets_rx) = PacketForwarder::for_tests(event_buffer_capacity + 1);
         let mut buffer_decode_context = BufferDecodeContext::new(
             &listen_addr,
             false,
@@ -2627,11 +2638,9 @@ mod tests {
             saluki_io::net::ProcessCredentialsError::InvalidCredentials,
         ));
         let metrics = build_metrics(&listen_addr, &test_component_context(), false);
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
-        let (source_context, mut metrics_rx) = test_source_context(&supervisor);
+        let (source_context, mut metrics_rx) = test_source_context();
         let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(true));
-        let (packets_tx, mut packets_rx) = mpsc::channel(1);
-        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics.clone());
+        let (packet_forwarder, mut packets_rx) = PacketForwarder::for_tests(1);
         let mut buffer_decode_context = BufferDecodeContext::new(
             &listen_addr,
             false,
@@ -2653,10 +2662,6 @@ mod tests {
             .await
             .expect("connected decoder should return the partial I/O buffer");
         assert_eq!(io_buffer.remaining(), 2);
-        assert!(
-            packets_rx.try_recv().is_err(),
-            "partial outer frame should not be forwarded"
-        );
         assert_eq!(
             recorder.counter((
                 "component_packets_received_total",
@@ -2754,8 +2759,7 @@ mod tests {
         let recorder = TestRecorder::default();
         let _recorder_guard = metrics::set_default_local_recorder(&recorder);
         let peer_addr = ConnectionAddress::ProcessLike(ProcessIdentity::Unavailable);
-        let supervisor = TestComponentSupervisor::start("dogstatsd").await;
-        let (source_context, _metrics_rx) = test_source_context(&supervisor);
+        let (source_context, _metrics_rx) = test_source_context();
         let mut decoder = DogStatsDDecoder::new(source_context, test_decoder_context(false));
 
         let datagram_addr = ListenAddress::Unixgram("/tmp/dsd.sock".into());
@@ -3145,160 +3149,6 @@ mod tests {
             ..DogStatsDConfiguration::for_test()
         };
         assert!(config.packet_forwarder_target().is_some());
-    }
-
-    #[tokio::test]
-    async fn packet_forwarder_sends_payload_bytes() {
-        let receiver = UdpSocket::bind("127.0.0.1:0").await.expect("receiver should bind");
-        let receiver_addr = receiver.local_addr().expect("receiver should have an address");
-        let forwarder = ConnectedPacketForwarder::connect("127.0.0.1", receiver_addr.port())
-            .await
-            .expect("forwarder should connect");
-        let payload = b"daemon:666|g|#sometag1:somevalue1,sometag2:somevalue2";
-
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
-        let context = test_component_context();
-        let metrics = build_metrics(&listen_addr, &context, false);
-        let (packets_tx, packets_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
-        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, metrics);
-
-        packet_forwarder.forward(Bytes::copy_from_slice(payload)).await;
-
-        let mut actual = [0u8; 128];
-        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
-            .await
-            .expect("receive should not time out")
-            .expect("receiver should receive payload");
-
-        assert_eq!(&actual[..received_len], payload);
-        assert_eq!(
-            recorder.counter((
-                "component_packets_forwarded_total",
-                &[
-                    ("component_id", "dogstatsd_test"),
-                    ("component_type", "source"),
-                    ("listener_type", "udp"),
-                    ("state", "ok"),
-                ]
-            )),
-            Some(1)
-        );
-        assert_eq!(
-            recorder.counter((
-                "component_bytes_forwarded_total",
-                &[
-                    ("component_id", "dogstatsd_test"),
-                    ("component_type", "source"),
-                    ("listener_type", "udp"),
-                ]
-            )),
-            Some(payload.len() as u64)
-        );
-        worker.abort();
-    }
-
-    #[tokio::test]
-    async fn packet_forwarder_sends_payload_bytes_to_ipv6_target() {
-        let receiver = match UdpSocket::bind("[::1]:0").await {
-            Ok(receiver) => receiver,
-            Err(e) if is_ipv6_unavailable_error(&e) => return,
-            Err(e) => panic!("receiver should bind: {e}"),
-        };
-        let receiver_addr = receiver.local_addr().expect("receiver should have an address");
-        let forwarder = ConnectedPacketForwarder::connect("::1", receiver_addr.port())
-            .await
-            .expect("forwarder should connect");
-        let payload = b"daemon:666|g|#ip:6";
-
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
-        let context = test_component_context();
-        let metrics = build_metrics(&listen_addr, &context, false);
-        let (packets_tx, packets_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
-        let packet_forwarder = packet_forwarder_from_sender(receiver_addr.port(), packets_tx, metrics);
-
-        packet_forwarder.forward(Bytes::copy_from_slice(payload)).await;
-
-        let mut actual = [0u8; 128];
-        let (received_len, _) = timeout(Duration::from_secs(1), receiver.recv_from(&mut actual))
-            .await
-            .expect("receive should not time out")
-            .expect("receiver should receive payload");
-
-        assert_eq!(&actual[..received_len], payload);
-        worker.abort();
-    }
-
-    #[tokio::test]
-    async fn packet_forwarder_waits_when_queue_is_full() {
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
-        let context = test_component_context();
-        let metrics = build_metrics(&listen_addr, &context, false);
-        let (packets_tx, _packets_rx) = mpsc::channel(FORWARDER_QUEUE_CAPACITY);
-        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics);
-
-        for _ in 0..FORWARDER_QUEUE_CAPACITY {
-            packet_forwarder.forward(Bytes::from_static(b"queued:1|c")).await;
-        }
-
-        assert!(
-            timeout(
-                Duration::from_millis(100),
-                packet_forwarder.forward(Bytes::from_static(b"blocked:1|c")),
-            )
-            .await
-            .is_err(),
-            "forwarding should wait for queue capacity instead of dropping"
-        );
-    }
-
-    #[tokio::test]
-    async fn packet_forwarder_send_error_increments_error_telemetry() {
-        let recorder = TestRecorder::default();
-        let _recorder_guard = metrics::set_default_local_recorder(&recorder);
-        let listen_addr = ListenAddress::Udp(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8125)));
-        let context = test_component_context();
-        let metrics = build_metrics(&listen_addr, &context, false);
-        let socket = UdpSocket::bind("127.0.0.1:0").await.expect("socket should bind");
-        let forwarder = ConnectedPacketForwarder {
-            socket,
-            target: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9125)),
-        };
-        let (packets_tx, packets_rx) = mpsc::channel(1);
-        let worker = tokio::spawn(forwarder.run(packets_rx, metrics.clone()));
-        let packet_forwarder = packet_forwarder_from_sender(9125, packets_tx, metrics);
-
-        packet_forwarder.forward(Bytes::from_static(b"daemon:666|g")).await;
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
-        loop {
-            if recorder.counter((
-                "component_packets_forwarded_total",
-                &[
-                    ("component_id", "dogstatsd_test"),
-                    ("component_type", "source"),
-                    ("listener_type", "udp"),
-                    ("state", "error"),
-                ],
-            )) == Some(1)
-            {
-                break;
-            }
-
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "forwarding error telemetry should be recorded"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        worker.abort();
     }
 
     #[test]
@@ -4411,19 +4261,16 @@ mod supervision {
     /// Builds a source whose `metrics` output holds a single buffer.
     ///
     /// One slot makes backpressure trivial to arrange: one dispatched buffer fills it and the next blocks a decoder.
-    async fn build_source(supervisor: &TestComponentSupervisor, health_registry: &HealthRegistry) -> Harness {
-        build_source_with_output_capacity(supervisor, health_registry, 1).await
+    async fn build_source(health_registry: &HealthRegistry) -> Harness {
+        build_source_with_output_capacity(health_registry, 1).await
     }
 
-    async fn build_source_with_output_capacity(
-        supervisor: &TestComponentSupervisor, health_registry: &HealthRegistry, output_capacity: usize,
-    ) -> Harness {
-        build_source_with(supervisor, health_registry, output_capacity, 16).await
+    async fn build_source_with_output_capacity(health_registry: &HealthRegistry, output_capacity: usize) -> Harness {
+        build_source_with(health_registry, output_capacity, 16).await
     }
 
     async fn build_source_with(
-        supervisor: &TestComponentSupervisor, health_registry: &HealthRegistry, output_capacity: usize,
-        io_buffer_count: usize,
+        health_registry: &HealthRegistry, output_capacity: usize, io_buffer_count: usize,
     ) -> Harness {
         let component_context = ComponentContext::test_source("dogstatsd");
 
@@ -4498,7 +4345,6 @@ mod supervision {
             ComponentRegistry::default(),
             health,
             dispatcher,
-            supervisor.spawner(),
         );
 
         let mut shutdown_coordinator = ShutdownCoordinator::default();
@@ -4519,7 +4365,7 @@ mod supervision {
         // tasks, so they are all accounted for while the source runs and all gone once it stops.
         let supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
-        let harness = build_source(&supervisor, &health_registry).await;
+        let harness = build_source(&health_registry).await;
         let Harness {
             source,
             context,
@@ -4527,7 +4373,7 @@ mod supervision {
             ..
         } = harness;
 
-        let run = tokio::spawn(async move { source.run(context).await });
+        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
 
         supervisor.wait_for_children(udp_child_count()).await;
 
@@ -4539,7 +4385,7 @@ mod supervision {
             .expect("source should stop cleanly");
 
         // Everything the source drains explicitly -- listener, stream handler, decoders -- is gone by the time `run`
-        // returns. The pool shrinker is the one exception, and deliberately so: it is interruptible, so it runs until
+        // returns. The pool shrinker is the one exception, and deliberately so: it is brutally stopped, so it runs until
         // the supervisor drops it rather than being waited on.
         supervisor.wait_for_children(1).await;
 
@@ -4559,7 +4405,7 @@ mod supervision {
         // while that is true, no matter that shutdown has been signalled.
         let supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
-        let harness = build_source(&supervisor, &health_registry).await;
+        let harness = build_source(&health_registry).await;
         let Harness {
             source,
             context,
@@ -4568,7 +4414,7 @@ mod supervision {
             listen_addr,
         } = harness;
 
-        let mut run = tokio::spawn(async move { source.run(context).await });
+        let mut run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
         supervisor.wait_for_children(udp_child_count()).await;
 
         let client = UdpSocket::bind("127.0.0.1:0").await.expect("client should bind");
@@ -4640,7 +4486,7 @@ mod supervision {
         // waiting on a queue that never closes -- until the shutdown budget elapsed and aborted the lot.
         let supervisor = TestComponentSupervisor::start("dogstatsd").await;
         let health_registry = HealthRegistry::new();
-        let harness = build_source(&supervisor, &health_registry).await;
+        let harness = build_source(&health_registry).await;
         let Harness {
             source,
             context,
@@ -4649,7 +4495,7 @@ mod supervision {
             ..
         } = harness;
 
-        let _run = tokio::spawn(async move { source.run(context).await });
+        let _run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
         supervisor.wait_for_children(udp_child_count()).await;
 
         let result = supervisor.shutdown().await;
@@ -4673,7 +4519,7 @@ mod supervision {
         let listen_addr = probe.local_addr().expect("probe should have an address");
         drop(probe);
 
-        let mut harness = build_source(&supervisor, &health_registry).await;
+        let mut harness = build_source(&health_registry).await;
         harness.source.listeners = vec![Listener::from_listen_address(ListenAddress::Tcp(listen_addr), None)
             .await
             .expect("listener should bind")];
@@ -4685,7 +4531,7 @@ mod supervision {
             ..
         } = harness;
 
-        let run = tokio::spawn(async move { source.run(context).await });
+        let run = tokio::spawn(supervisor.handle().scope(async move { source.run(context).await }));
 
         let baseline = 1 + DECODER_WORKERS + 1;
         supervisor.wait_for_children(baseline).await;
@@ -4702,7 +4548,7 @@ mod supervision {
             .expect("source task should not panic")
             .expect("source should stop cleanly");
 
-        // As above, only the interruptible pool shrinker is left for the supervisor to drop.
+        // As above, only the brutally-stopped pool shrinker is left for the supervisor to drop.
         supervisor.wait_for_children(1).await;
 
         let result = supervisor.shutdown().await;

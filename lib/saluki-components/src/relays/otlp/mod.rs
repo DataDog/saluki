@@ -191,7 +191,12 @@ impl Relay for OtlpRelay {
         }
 
         server_config
-            .build(handler, memory_limiter, metrics, context.spawner())
+            .build(
+                handler,
+                memory_limiter,
+                metrics,
+                context.topology_context().global_thread_pool(),
+            )
             .await?;
 
         health.mark_ready();

@@ -31,11 +31,12 @@ use otlp_protos::opentelemetry::proto::collector::trace::v1::trace_service_serve
 use otlp_protos::opentelemetry::proto::collector::trace::v1::{ExportTraceServiceRequest, ExportTraceServiceResponse};
 use prost::Message;
 use saluki_core::accounting::MemoryLimiter;
-use saluki_core::components::{ComponentContext, ComponentSpawner};
+use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
+use saluki_core::runtime;
 #[cfg(test)]
 use saluki_core::runtime::state::Identifier;
-use saluki_error::{ErrorContext as _, GenericError};
+use saluki_error::GenericError;
 use saluki_io::net::server::{
     grpc::{GrpcKeepalive, GrpcServer},
     http::HttpServer,
@@ -45,6 +46,7 @@ use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
 use saluki_tls::ServerTLSConfigBuilder;
 use stringtheory::MetaString;
+use tokio::runtime::Handle;
 use tonic::{Request as TonicRequest, Response, Status};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::error;
@@ -272,15 +274,16 @@ impl OtlpServerConfiguration {
 
     /// Builds and starts the OTLP servers (HTTP and gRPC).
     ///
-    /// Both servers run on the shared worker pool, since request handling shouldn't contend with the runtime driving
-    /// the topology, and decoding can be compute-heavy for large requests.
+    /// Both servers are spawned on the ambient supervisor -- the component's own -- so they stop with the component.
+    /// They run on `worker_pool` rather than the component's runtime, since request handling shouldn't contend with
+    /// the runtime driving the topology, and decoding can be compute-heavy for large requests.
     ///
     /// # Errors
     ///
-    /// If the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound, the TLS configuration
-    /// is invalid, or either server can't be spawned, an error is returned.
+    /// If the gRPC endpoint isn't a TCP or Unix address, the listen addresses can't be bound, or the TLS
+    /// configuration is invalid, an error is returned.
     pub async fn build<H: OtlpHandler>(
-        self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, spawner: &ComponentSpawner,
+        self, handler: H, memory_limiter: MemoryLimiter, metrics: Metrics, worker_pool: &Handle,
     ) -> Result<(), GenericError> {
         let otlp_handler = Arc::new(handler);
         let metrics = Arc::new(metrics);
@@ -322,12 +325,9 @@ impl OtlpServerConfiguration {
             grpc_server = grpc_server.with_tls_config(tls_config);
         }
 
-        spawner
-            .supervisable(grpc_server)
-            .on_worker_pool()
-            .spawn()
-            .await
-            .error_context("Failed to spawn OTLP gRPC server.")?;
+        runtime::supervisable(grpc_server)
+            .on_runtime(worker_pool.clone())
+            .spawn();
 
         // Create and spawn the HTTP server.
         let router = Router::new()
@@ -355,12 +355,9 @@ impl OtlpServerConfiguration {
             http_server = http_server.with_tls_config(tls_config);
         }
 
-        spawner
-            .supervisable(http_server)
-            .on_worker_pool()
-            .spawn()
-            .await
-            .error_context("Failed to spawn OTLP HTTP server.")?;
+        runtime::supervisable(http_server)
+            .on_runtime(worker_pool.clone())
+            .spawn();
 
         Ok(())
     }
@@ -596,8 +593,6 @@ mod tests {
         routing::post,
     };
     use rustls::pki_types::ServerName;
-    #[cfg(unix)]
-    use saluki_core::components::ComponentSpawner;
     #[cfg(unix)]
     use saluki_core::runtime::Supervisor;
     use saluki_core::{
@@ -859,6 +854,21 @@ mod tests {
         panic!("Unix socket at {} did not appear within 500ms", path.display());
     }
 
+    /// Polls `port` until something accepts a connection on it.
+    ///
+    /// Spawning only queues the servers for the supervisor, so their listeners come up a moment after `build` returns
+    /// rather than synchronously with it.
+    async fn wait_for_port(port: u16) {
+        let addr = format!("127.0.0.1:{}", port);
+        for _ in 0..200 {
+            if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("nothing was listening on port {} within a second", port);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn build_succeeds_with_unix_grpc_endpoint() {
@@ -872,7 +882,7 @@ mod tests {
         let mut supervisor = Supervisor::new("otlp-test")
             .expect("test supervisor name should be valid")
             .with_shutdown_budget(Duration::from_secs(5));
-        let spawner = ComponentSpawner::new(supervisor.handle(), tokio::runtime::Handle::current());
+        let supervisor_handle = supervisor.handle();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let supervisor_task = tokio::spawn(async move {
@@ -886,8 +896,16 @@ mod tests {
         // Give the supervisor time to start.
         tokio::task::yield_now().await;
 
-        let result = OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
-            .build(NoopHandler, MemoryLimiter::noop(), Metrics::for_tests(), &spawner)
+        // The servers spawn on the ambient supervisor, so the build has to run under the one they belong to.
+        let result = supervisor_handle
+            .scope(
+                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                    NoopHandler,
+                    MemoryLimiter::noop(),
+                    Metrics::for_tests(),
+                    &tokio::runtime::Handle::current(),
+                ),
+            )
             .await;
 
         assert!(
@@ -915,7 +933,7 @@ mod tests {
         let mut supervisor = Supervisor::new("otlp-test")
             .expect("test supervisor name should be valid")
             .with_shutdown_budget(Duration::from_secs(5));
-        let spawner = ComponentSpawner::new(supervisor.handle(), tokio::runtime::Handle::current());
+        let supervisor_handle = supervisor.handle();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let supervisor_task = tokio::spawn(async move {
@@ -929,8 +947,15 @@ mod tests {
         // Give the supervisor time to start.
         tokio::task::yield_now().await;
 
-        OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
-            .build(NoopHandler, MemoryLimiter::noop(), Metrics::for_tests(), &spawner)
+        supervisor_handle
+            .scope(
+                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024).build(
+                    NoopHandler,
+                    MemoryLimiter::noop(),
+                    Metrics::for_tests(),
+                    &tokio::runtime::Handle::current(),
+                ),
+            )
             .await
             .expect("build should succeed");
 
@@ -971,7 +996,6 @@ mod tests {
     async fn start_otlp_server_with_tls() -> (u16, u16, SelfSignedCert, TestComponentSupervisor) {
         let _ = saluki_tls::initialize_default_crypto_provider();
         let supervisor = TestComponentSupervisor::start("otlp-tls-test").await;
-        let spawner = supervisor.spawner();
 
         let cert = SelfSignedCert::localhost();
         let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().unwrap());
@@ -990,13 +1014,20 @@ mod tests {
             .with_http_tls(tls_config.clone())
             .with_grpc_tls(tls_config);
 
-        server_config
-            .build(NoopHandler, MemoryLimiter::noop(), Metrics::for_tests(), &spawner)
+        supervisor
+            .scope(server_config.build(
+                NoopHandler,
+                MemoryLimiter::noop(),
+                Metrics::for_tests(),
+                &tokio::runtime::Handle::current(),
+            ))
             .await
             .expect("OTLP server with TLS should start");
 
         let http_port = bound_port(&supervisor, HTTP_BOUND_ADDRESS_ID).await;
         let grpc_port = bound_port(&supervisor, GRPC_BOUND_ADDRESS_ID).await;
+        wait_for_port(http_port).await;
+        wait_for_port(grpc_port).await;
 
         (http_port, grpc_port, cert, supervisor)
     }

@@ -11,6 +11,7 @@ use saluki_common::{
 };
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::runtime;
 use saluki_core::{
     components::{encoders::*, BuildContext},
     data_model::{
@@ -568,13 +569,9 @@ impl Encoder for DatadogMetrics {
             flush_timeout,
             log_payloads,
         );
-        context
-            .spawner()
-            .noninterruptible("request_builder", |_shutdown| request_builder_fut)
-            .on_worker_pool()
-            .spawn()
-            .await
-            .error_context("Failed to spawn request builder task.")?;
+        runtime::worker("request_builder", request_builder_fut)
+            .on_runtime(context.topology_context().global_thread_pool().clone())
+            .spawn();
 
         health.mark_ready();
         debug!("Datadog Metrics encoder started.");

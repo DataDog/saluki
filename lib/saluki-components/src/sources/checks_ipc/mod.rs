@@ -19,12 +19,13 @@ use saluki_core::data_model::event::log::Log;
 use saluki_core::data_model::event::metric::Metric;
 use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
 use saluki_core::data_model::event::{Event, EventType};
+use saluki_core::runtime;
 use saluki_core::topology::OutputDefinition;
 use saluki_core::{
     components::{sources::*, BuildContext},
     data_model::event::log::LogStatus,
 };
-use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{server::grpc::GrpcServer, ListenAddress};
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
@@ -109,13 +110,9 @@ impl Source for ChecksIPC {
                 default_hostname,
             }));
 
-        context
-            .spawner()
-            .supervisable(grpc_server)
-            .on_worker_pool()
-            .spawn()
-            .await
-            .error_context("Failed to spawn Checks IPC gRPC server.")?;
+        runtime::supervisable(grpc_server)
+            .on_runtime(context.topology_context().global_thread_pool().clone())
+            .spawn();
 
         health.mark_ready();
         debug!("Checks IPC source started.");

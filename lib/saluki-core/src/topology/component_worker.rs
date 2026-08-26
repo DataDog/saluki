@@ -43,6 +43,17 @@ use crate::runtime::{InitializationError, ShutdownStrategy, Supervisable, Superv
 /// differences live: which context type is used, and whether the supervisor-provided shutdown handle is
 /// installed into the context (sources and relays) or ignored (everything else).
 pub(super) trait RunnableComponent: Send + 'static {
+    /// Whether this component kind observes the shutdown signal it is handed.
+    ///
+    /// True for the kinds that install it into their context (sources and relays), false for the kinds that stop when
+    /// their upstream channels close and drop it. Forwarded to
+    /// [`Supervisable::wants_shutdown_signal`][crate::runtime::Supervisable::wants_shutdown_signal] so the supervisor
+    /// can skip creating a coordinator it would never usefully fire -- for the majority of components, as it happens.
+    ///
+    /// This has to be a constant rather than a method on the value: the component is consumed by `initialize`, so
+    /// there is nothing left to ask by the time the supervisor wants an answer.
+    const WANTS_SHUTDOWN_SIGNAL: bool;
+
     /// Consumes the component and its context, returning the future that runs the component.
     ///
     /// `process_shutdown` is the shutdown signal of the component's dedicated supervisor. The run-future's
@@ -84,6 +95,10 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
         ShutdownStrategy::Graceful(Duration::MAX)
     }
 
+    fn wants_shutdown_signal(&self) -> bool {
+        C::WANTS_SHUTDOWN_SIGNAL
+    }
+
     async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
         // The component is already built; there is no async initialization. Take it out of the take-once
         // slot and hand back its run-future. A second initialization is a bug (a component runs once).
@@ -111,7 +126,9 @@ impl<C: RunnableComponent> Supervisable for ComponentWorker<C> {
 /// Generates a [`RunnableComponent`] implementation for a component kind.
 ///
 /// `$inject_shutdown` controls whether the supervisor-provided shutdown handle is installed into the
-/// context (sources and relays) or dropped (the channel-draining kinds).
+/// context (sources and relays) or dropped (the channel-draining kinds), and sets
+/// [`RunnableComponent::WANTS_SHUTDOWN_SIGNAL`] to match so the supervisor doesn't create a coordinator for a handle
+/// that is thrown away.
 macro_rules! runnable_component {
     ($name:ident, $component:path, $context:ty, inject_shutdown) => {
         /// Pairs a built component with its context for supervised execution.
@@ -121,6 +138,8 @@ macro_rules! runnable_component {
         }
 
         impl RunnableComponent for $name {
+            const WANTS_SHUTDOWN_SIGNAL: bool = true;
+
             fn run_with_shutdown(self, process_shutdown: ShutdownHandle) -> SupervisorFuture {
                 let Self {
                     component,
@@ -139,6 +158,8 @@ macro_rules! runnable_component {
         }
 
         impl RunnableComponent for $name {
+            const WANTS_SHUTDOWN_SIGNAL: bool = false;
+
             fn run_with_shutdown(self, _process_shutdown: ShutdownHandle) -> SupervisorFuture {
                 // This kind has no shutdown handle of its own: it stops when its upstream channels close.
                 let Self { component, context } = self;

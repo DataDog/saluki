@@ -1,7 +1,7 @@
 use crate::accounting::ComponentRegistry;
 use crate::health::Health;
 use crate::{
-    components::{ComponentContext, ComponentSpawner},
+    components::ComponentContext,
     topology::{PayloadsConsumer, TopologyContext},
 };
 
@@ -12,7 +12,6 @@ pub struct ForwarderContext {
     component_registry: ComponentRegistry,
     health_handle: Option<Health>,
     consumer: PayloadsConsumer,
-    spawner: ComponentSpawner,
 }
 
 impl ForwarderContext {
@@ -20,7 +19,6 @@ impl ForwarderContext {
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
         component_registry: ComponentRegistry, health_handle: Health, consumer: PayloadsConsumer,
-        spawner: ComponentSpawner,
     ) -> Self {
         Self {
             topology_context: topology_context.clone(),
@@ -28,7 +26,6 @@ impl ForwarderContext {
             component_registry,
             health_handle: Some(health_handle),
             consumer,
-            spawner,
         }
     }
 
@@ -59,13 +56,5 @@ impl ForwarderContext {
     /// Returns a mutable reference to the payloads consumer.
     pub fn payloads(&mut self) -> &mut PayloadsConsumer {
         &mut self.consumer
-    }
-
-    /// Returns a spawner for supervised child tasks belonging to this component.
-    ///
-    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
-    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
-    pub fn spawner(&self) -> &ComponentSpawner {
-        &self.spawner
     }
 }

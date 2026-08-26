@@ -10,6 +10,7 @@ use datadog_protos::traces::{
 };
 use http::{uri::PathAndQuery, HeaderValue, Method, Uri};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::runtime;
 use saluki_core::{
     components::{encoders::*, BuildContext},
     data_model::{
@@ -162,13 +163,9 @@ impl Encoder for DatadogStats {
         // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
         // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
         let request_builder_fut = run_request_builder(stats_rb, telemetry, events_rx, payloads_tx, flush_timeout);
-        context
-            .spawner()
-            .noninterruptible("request_builder", |_shutdown| request_builder_fut)
-            .on_worker_pool()
-            .spawn()
-            .await
-            .error_context("Failed to spawn request builder task.")?;
+        runtime::worker("request_builder", request_builder_fut)
+            .on_runtime(context.topology_context().global_thread_pool().clone())
+            .spawn();
 
         health.mark_ready();
         debug!("Datadog APM Stats encoder started.");
