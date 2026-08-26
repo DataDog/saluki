@@ -13,8 +13,8 @@ use std::{collections::hash_map::Entry, num::NonZeroUsize, time::Duration};
 
 use agent_data_plane_config::{
     domains::dogstatsd::{
-        validate_metric_tag_value_allowlists, Domain as DogStatsDDomain, FilterAction, MetricTagFilterEntry,
-        MetricTagValueAllowlistEntry, TagValueMismatchAction,
+        validate_metric_tag_value_allowlists, FilterAction, MetricTagFilterEntry, MetricTagValueAllowlistEntry,
+        TagValueMismatchAction,
     },
     Live,
 };
@@ -258,18 +258,20 @@ pub struct TagFilterlistConfiguration {
 }
 
 impl TagFilterlistConfiguration {
-    /// Creates a new `TagFilterlistConfiguration` from typed DogStatsD configuration.
+    /// Creates a new `TagFilterlistConfiguration`.
     ///
     /// # Errors
     ///
     /// Returns an error when the initial value allow-list rules are invalid.
-    pub fn from_configuration(config: Live<DogStatsDDomain>) -> Result<Self, GenericError> {
-        let entries = config.project(|config| &config.tag_filterlist);
-        let value_prefix_filters = compile_all_filters(&[], &config.tag_value_allowlist)?.value_prefix_filters;
+    pub fn new(
+        entries: Live<Vec<MetricTagFilterEntry>>, value_allowlists: &[MetricTagValueAllowlistEntry],
+        context_cache_capacity: usize,
+    ) -> Result<Self, GenericError> {
+        let value_prefix_filters = compile_all_filters(&[], value_allowlists)?.value_prefix_filters;
         Ok(Self {
             entries,
             value_prefix_filters,
-            context_cache_capacity: config.aggregation.aggregator_tag_filter_cache_capacity,
+            context_cache_capacity,
         })
     }
 }
@@ -1080,15 +1082,6 @@ mod tests {
     }
 
     #[test]
-    fn context_cache_capacity_comes_from_typed_dogstatsd_configuration() {
-        let mut config = DogStatsDDomain::default();
-        config.aggregation.aggregator_tag_filter_cache_capacity = 512;
-        let builder = TagFilterlistConfiguration::from_configuration(Live::new_fixed(config))
-            .expect("typed configuration should be valid");
-        assert_eq!(builder.context_cache_capacity, 512);
-    }
-
-    #[test]
     fn origin_tags_preserved_after_filtering() {
         let context = Context::from_static_parts("my.dist", &["env:prod", "host:h1"]);
         let tag_set: TagSet = [Tag::from("service:web")].into_iter().collect();
@@ -1389,21 +1382,19 @@ mod tests {
         //      that share a (name, tags) context resolve to a single cache entry, and every metric sharing that
         //      context is filtered identically (the second and later occurrences take the cache-hit branch).
 
-        let mut config = DogStatsDDomain::default();
-        config.aggregation.aggregator_tag_filter_cache_capacity = 100_000;
-        config.tag_filterlist = vec![MetricTagFilterEntry {
+        let entries = vec![MetricTagFilterEntry {
             metric_name: "svc.latency".to_string(),
             action: FilterAction::Exclude,
             tags: vec!["host".to_string()],
         }];
-        config.tag_value_allowlist = vec![value_allowlist(
+        let value_allowlists = vec![value_allowlist(
             "svc.",
             "customer_id",
             &[],
             TagValueMismatchAction::Replace,
             "other",
         )];
-        let builder = TagFilterlistConfiguration::from_configuration(Live::new_fixed(config))
+        let builder = TagFilterlistConfiguration::new(Live::new_fixed(entries), &value_allowlists, 100_000)
             .expect("typed configuration should be valid");
 
         let component_context = ComponentContext::test_transform("tag_filterlist");
