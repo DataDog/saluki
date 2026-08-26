@@ -163,11 +163,6 @@ fn non_empty_trimmed(s: String) -> Option<String> {
     }
 }
 
-/// Clamps a raw `i64` port into the `u16` range.
-fn to_port(value: i64) -> u16 {
-    value.clamp(0, u16::MAX as i64) as u16
-}
-
 /// Parses one `dogstatsd_mapper_profiles` object into a [`MapperProfile`].
 ///
 /// The vendored Datadog schema declares `dogstatsd_mapper_profiles` (and `metric_tag_filterlist`)
@@ -252,7 +247,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_agent_ipc_grpc_max_message_size(&mut self, value: i64) {
-        self.config.control.ipc.grpc_max_message_size = value;
+        match usize::try_from(value) {
+            Ok(max_message_size) => self.config.control.ipc.grpc_max_message_size = max_message_size,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "agent_ipc.grpc_max_message_size",
+                "maximum message size must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_aggregator_stop_timeout(&mut self, value: i64) {
@@ -430,7 +431,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_cmd_port(&mut self, value: i64) {
-        self.config.control.ipc.cmd_port = to_port(value);
+        if let Some(port) = self.parse_port("cmd_port", value) {
+            self.config.control.ipc.cmd_port = port;
+        }
     }
 
     fn consume_cri_connection_timeout(&mut self, value: i64) {
@@ -2157,6 +2160,47 @@ mod tests {
             errors.is_some(),
             "an entry without a metric name must record a translation error"
         );
+    }
+
+    #[test]
+    fn ipc_settings_default_to_schema_values_when_unset() {
+        // The typed model derives `Default`, so a translation that silently skipped these keys would
+        // leave zeroes behind and still look healthy. Pin the schema defaults instead.
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        assert_eq!(config.control.ipc.cmd_port, 5001);
+        assert_eq!(config.control.ipc.grpc_max_message_size, 128 * 1024 * 1024);
+        assert_eq!(config.control.ipc.vsock_addr, "");
+    }
+
+    #[test]
+    fn cmd_port_preserves_u16_validation() {
+        for value in [0, 5001, u16::MAX as i64] {
+            let (config, errors) = translate_explicit(json!({ "cmd_port": value }));
+
+            assert!(errors.is_none());
+            assert_eq!(config.control.ipc.cmd_port, value as u16);
+        }
+
+        for value in [-1, u16::MAX as i64 + 1] {
+            let (config, errors) = translate_explicit(json!({ "cmd_port": value }));
+
+            assert_eq!(config.control.ipc.cmd_port, 0);
+            let errors = errors.expect("an out-of-range port should record a translation error");
+            assert!(errors.to_string().contains("cmd_port"));
+        }
+    }
+
+    #[test]
+    fn negative_ipc_grpc_max_message_size_is_rejected() {
+        let (config, errors) = translate_explicit(json!({
+            "agent_ipc": { "grpc_max_message_size": -1 },
+        }));
+
+        assert_eq!(config.control.ipc.grpc_max_message_size, 0);
+        let errors = errors.expect("a negative maximum message size must record a translation error");
+        assert!(errors.to_string().contains("agent_ipc.grpc_max_message_size"));
     }
 
     #[test]

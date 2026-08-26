@@ -2,9 +2,13 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use agent_data_plane_config::SalukiConfiguration;
+use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
 use datadog_agent_config::classifier::Pipeline;
+use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
+#[cfg(not(target_os = "linux"))]
+use tracing::warn;
 
 /// General data plane configuration.
 ///
@@ -13,6 +17,38 @@ use saluki_io::net::ListenAddress;
 #[derive(Clone, Debug)]
 pub struct DataPlaneConfiguration<'a> {
     config: &'a SalukiConfiguration,
+}
+
+/// Translates typed IPC settings and the remaining raw authentication settings into client configuration.
+pub(crate) fn remote_agent_client_configuration(
+    config: &SalukiConfiguration, raw_map: &GenericConfiguration,
+) -> Result<RemoteAgentClientConfiguration, GenericError> {
+    #[cfg(target_os = "linux")]
+    let vsock_cid = match config.control.ipc.vsock_addr.as_str() {
+        "" => None,
+        "host" => Some(2),
+        "hypervisor" => Some(0),
+        "local" => Some(3),
+        other => {
+            return Err(generic_error!(
+                "invalid vsock address '{}'; expected one of: host, hypervisor, local",
+                other
+            ))
+        }
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    if !config.control.ipc.vsock_addr.is_empty() {
+        warn!("`vsock_addr` is configured but vsock is only supported on Linux. Setting will be ignored.");
+    }
+
+    Ok(RemoteAgentClientConfiguration {
+        cmd_port: config.control.ipc.cmd_port,
+        auth: IpcAuthConfiguration::from_configuration(raw_map)?,
+        grpc_max_message_size: config.control.ipc.grpc_max_message_size,
+        #[cfg(target_os = "linux")]
+        vsock_cid,
+    })
 }
 
 impl<'a> DataPlaneConfiguration<'a> {
@@ -176,6 +212,51 @@ impl<'a> DataPlaneConfiguration<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    async fn empty_raw_config() -> GenericConfiguration {
+        let (config, _) = saluki_config::ConfigurationLoader::for_tests(None, None, false).await;
+        config
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn remote_agent_client_configuration_resolves_vsock_addresses() {
+        let raw_map = empty_raw_config().await;
+
+        for (value, expected_cid) in [
+            ("", None),
+            ("host", Some(2)),
+            ("hypervisor", Some(0)),
+            ("local", Some(3)),
+        ] {
+            let mut config = SalukiConfiguration::default();
+            config.control.ipc.cmd_port = 5001;
+            config.control.ipc.grpc_max_message_size = 4 * 1024 * 1024;
+            config.control.ipc.vsock_addr = value.to_string();
+
+            let client_config = remote_agent_client_configuration(&config, &raw_map).expect("valid IPC configuration");
+            assert_eq!(client_config.vsock_cid, expected_cid);
+            assert_eq!(client_config.cmd_port, 5001);
+            assert_eq!(client_config.grpc_max_message_size, 4 * 1024 * 1024);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn remote_agent_client_configuration_rejects_invalid_vsock_addresses() {
+        let raw_map = empty_raw_config().await;
+
+        for value in ["invalid", "2", "HOST", "host ", "vm0"] {
+            let mut config = SalukiConfiguration::default();
+            config.control.ipc.vsock_addr = value.to_string();
+
+            assert!(
+                remote_agent_client_configuration(&config, &raw_map).is_err(),
+                "expected error for input: {value:?}",
+            );
+        }
+    }
 
     fn pipeline_configuration(
         checks_enabled: bool, dogstatsd_enabled: bool, otlp_enabled: bool, otlp_proxy_enabled: bool,

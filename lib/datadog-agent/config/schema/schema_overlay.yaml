@@ -60,10 +60,10 @@ inventory:
     pipelines: [cross_cutting]
     description: "Max inbound gRPC message size for IPC client"
     test_support:
-      used_by: [RemoteAgentClientConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "4194304"
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: data_plane.rs
 
   aggregator_buffer_size:
     support: none
@@ -539,10 +539,10 @@ inventory:
     pipelines: [cross_cutting]
     description: "Core Agent CMD API port for ADP gRPC IPC"
     test_support:
-      used_by: [RemoteAgentClientConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: "5101"
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: data_plane.rs
 
   config_id:
     support: none
@@ -1403,7 +1403,9 @@ inventory:
     pipelines: [cross_cutting]
     description: "How long startup host tags are attached"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: shared.rs
 
   extra_tags:
     support: full
@@ -3203,10 +3205,10 @@ inventory:
     pipelines: [cross_cutting]
     description: "vsock address for Agent IPC endpoint"
     test_support:
-      used_by: [RemoteAgentClientConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"host"'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: data_plane.rs
 
 excluded:
   GUI_host: "ignored in initial audit 2026-04-23"

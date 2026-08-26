@@ -109,17 +109,27 @@ pub struct Logging {
     pub file_max_size: u64,
 }
 
-/// Bootstrap IPC and remote-agent connection parameters, read before runtime authority exists.
+/// IPC and remote-agent connection parameters, read once at bootstrap before runtime authority
+/// exists and again from the authoritative configuration once it does.
+///
+/// The derived `Default` is all zeroes and serves only as the starting point for translation. The
+/// effective default of each field is the one the Datadog schema declares, noted per field below.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct ControlIpc {
     /// TCP port the command API listens on.
+    ///
+    /// Defaults to `5001`.
     pub cmd_port: u16,
 
     /// vsock address used for guest/host IPC.
+    ///
+    /// Defaults to empty, which reaches the Core Agent over TCP on localhost at `cmd_port`.
     pub vsock_addr: String,
 
     /// Maximum gRPC message size, in bytes, accepted over the remote-agent IPC channel.
-    pub grpc_max_message_size: i64,
+    ///
+    /// Defaults to `134217728` (128 MiB).
+    pub grpc_max_message_size: usize,
 
     /// Timeout for establishing a connection to the container runtime interface.
     pub cri_connection_timeout: i64,

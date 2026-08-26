@@ -52,8 +52,6 @@ pub mod structs {
     pub const DATADOG_EVENTS_CONFIGURATION: &str = "DatadogEventsConfiguration";
     /// Identifier for `DatadogServiceChecksConfiguration`.
     pub const DATADOG_SERVICE_CHECKS_CONFIGURATION: &str = "DatadogServiceChecksConfiguration";
-    /// Identifier for `RemoteAgentClientConfiguration`.
-    pub const REMOTE_AGENT_CLIENT_CONFIGURATION: &str = "RemoteAgentClientConfiguration";
     /// Keys consumed through the typed configuration translation system.
     pub const TYPED_CONFIG_SYSTEM: &str = "TypedConfigSystem";
     /// Keys read via `get_typed` / `try_get_typed` rather than struct deserialization.
