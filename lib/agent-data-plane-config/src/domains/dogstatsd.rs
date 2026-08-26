@@ -39,7 +39,10 @@ pub struct Domain {
     /// Which payload types are emitted.
     pub enable_payloads: EnablePayloads,
 
-    /// Metric-name prefix filtering.
+    /// Metric-name filtering.
+    pub metric_filter: MetricFilter,
+
+    /// Metric namespace prefixing.
     pub prefix_filter: PrefixFilter,
 
     /// Per-metric tag include/exclude rules.
@@ -333,21 +336,23 @@ pub struct EnablePayloads {
     pub sketches: bool,
 }
 
-/// Metric-name prefix filtering (dynamic-capable).
+/// Metric-name filtering (dynamic-capable).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct MetricFilter {
+    /// Metric names or prefixes that are dropped.
+    ///
+    /// Defaults to an empty list, which disables metric-name filtering.
+    pub values: Vec<String>,
+
+    /// Whether entries match by prefix rather than exact name.
+    ///
+    /// Defaults to `false`, which requires exact matches.
+    pub match_prefix: bool,
+}
+
+/// Metric namespace prefixing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct PrefixFilter {
-    /// Metric names (or prefixes) that are allowed through; others are dropped.
-    pub metric_filterlist: Vec<String>,
-
-    /// Whether filterlist entries match by prefix rather than exact name.
-    pub metric_filterlist_match_prefix: bool,
-
-    /// Metric names (or prefixes) that are blocked.
-    pub metric_blocklist: Vec<String>,
-
-    /// Whether blocklist entries match by prefix rather than exact name.
-    pub metric_blocklist_match_prefix: bool,
-
     /// Namespace prepended to every metric name.
     pub metric_namespace: String,
 
