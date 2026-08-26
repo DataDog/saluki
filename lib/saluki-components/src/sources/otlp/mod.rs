@@ -10,9 +10,9 @@ use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceReq
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
-use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
+use saluki_common::collections::FastHashSet;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
@@ -291,7 +291,7 @@ impl Source for Otlp {
         let memory_limiter = context.topology_context().memory_limiter();
 
         // Create the internal channel for decoupling the servers from the converter.
-        let (tx, rx) = mpsc::channel::<OtlpMessage>(1024);
+        let (tx, rx) = mpsc::channel::<OtlpSignal>(1024);
 
         let metrics_translator = OtlpMetricsTranslator::new(
             metrics_translator_config,
@@ -366,28 +366,18 @@ impl Source for Otlp {
 }
 
 enum OtlpSignal {
-    Metrics(OtlpResourceMetrics),
+    Metrics(ExportMetricsServiceRequest),
     Logs(OtlpResourceLogs),
     Traces(OtlpResourceSpans),
 }
 
-/// Messages flowing through the converter channel.
-///
-/// Most messages carry an OTLP signal (`Signal`), but control signals like
-/// `MetricsRequestEnd` mark request boundaries for usage beacon emission.
-enum OtlpMessage {
-    Signal(OtlpSignal),
-    /// Signals the end of an OTLP metrics request, used to trigger usage beacon emission.
-    MetricsRequestEnd,
-}
-
 /// Handler that decodes OTLP bytes and sends resources to the converter.
 struct SourceHandler {
-    tx: mpsc::Sender<OtlpMessage>,
+    tx: mpsc::Sender<OtlpSignal>,
 }
 
 impl SourceHandler {
-    fn new(tx: mpsc::Sender<OtlpMessage>) -> Self {
+    fn new(tx: mpsc::Sender<OtlpSignal>) -> Self {
         Self { tx }
     }
 }
@@ -396,19 +386,15 @@ impl SourceHandler {
 impl OtlpHandler for SourceHandler {
     async fn handle_metrics(&self, body: Bytes) -> Result<(), GenericError> {
         let request =
-            ExportMetricsServiceRequest::decode(body).error_context("Failed to decode metrics export request.")?;
+            ExportMetricsServiceRequest::decode(body).error_context("Failed to decode metrics export request")?;
 
-        for resource_metrics in request.resource_metrics {
-            self.tx
-                .send(OtlpMessage::Signal(OtlpSignal::Metrics(resource_metrics)))
-                .await
-                .error_context("Failed to send resource metrics to converter: channel is closed.")?;
-        }
-        // Signal the end of the request so the converter can emit usage beacons.
+        // Send the entire request as a single channel message so the converter processes it
+        // atomically. This preserves the request boundary for usage beacon emission without
+        // needing control markers or shared state across concurrent requests.
         self.tx
-            .send(OtlpMessage::MetricsRequestEnd)
+            .send(OtlpSignal::Metrics(request))
             .await
-            .error_context("Failed to send metrics request end marker to converter: channel is closed.")?;
+            .error_context("Failed to send metrics request to converter: channel is closed.")?;
         Ok(())
     }
 
@@ -417,7 +403,7 @@ impl OtlpHandler for SourceHandler {
 
         for resource_logs in request.resource_logs {
             self.tx
-                .send(OtlpMessage::Signal(OtlpSignal::Logs(resource_logs)))
+                .send(OtlpSignal::Logs(resource_logs))
                 .await
                 .error_context("Failed to send resource logs to converter: channel is closed.")?;
         }
@@ -430,7 +416,7 @@ impl OtlpHandler for SourceHandler {
 
         for resource_spans in request.resource_spans {
             self.tx
-                .send(OtlpMessage::Signal(OtlpSignal::Traces(resource_spans)))
+                .send(OtlpSignal::Traces(resource_spans))
                 .await
                 .error_context("Failed to send resource spans to converter: channel is closed.")?;
         }
@@ -439,7 +425,7 @@ impl OtlpHandler for SourceHandler {
 }
 
 async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpMessage>, source_context: SourceContext,
+    mut receiver: mpsc::Receiver<OtlpSignal>, source_context: SourceContext,
     origin_tag_resolver: OtlpOriginTagResolver, shutdown_handle: ShutdownHandle,
     mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, mut traces_translator: OtlpTracesTranslator,
 ) {
@@ -458,31 +444,35 @@ async fn run_converter(
 
     loop {
         select! {
-            Some(otlp_message) = receiver.recv() => {
-                match otlp_message {
-                    OtlpMessage::Signal(OtlpSignal::Metrics(resource_metrics)) => {
-                        match metrics_translator.translate_metrics(resource_metrics, &metrics) {
-                            Ok(events) => {
-                                for event in events {
-                                    let dispatcher = metrics_dispatcher.get_or_insert_with(|| {
-                                        source_context
-                                            .dispatcher()
-                                            .buffered_named("metrics")
-                                            .expect("metrics output should exist")
-                                    });
-                                    if let Err(e) = dispatcher.push(event).await {
-                                        error!(error = %e, "Failed to dispatch metric event.");
+            Some(otlp_signal) = receiver.recv() => {
+                match otlp_signal {
+                    OtlpSignal::Metrics(request) => {
+                        let mut detected_languages = FastHashSet::default();
+
+                        for resource_metrics in request.resource_metrics {
+                            match metrics_translator.translate_metrics(resource_metrics, &metrics) {
+                                Ok((events, languages)) => {
+                                    detected_languages.extend(languages);
+                                    for event in events {
+                                        let dispatcher = metrics_dispatcher.get_or_insert_with(|| {
+                                            source_context
+                                                .dispatcher()
+                                                .buffered_named("metrics")
+                                                .expect("metrics output should exist")
+                                        });
+                                        if let Err(e) = dispatcher.push(event).await {
+                                            error!(error = %e, "Failed to dispatch metric event.");
+                                        }
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                error!(error = %e, "Failed to handle resource metrics.");
+                                Err(e) => {
+                                    error!(error = %e, "Failed to handle resource metrics.");
+                                }
                             }
                         }
-                    }
-                    OtlpMessage::MetricsRequestEnd => {
+
                         // Emit usage beacon metrics for the completed request.
-                        for event in metrics_translator.emit_usage_beacons() {
+                        for event in metrics_translator.emit_usage_beacons(detected_languages) {
                             let dispatcher = metrics_dispatcher.get_or_insert_with(|| {
                                 source_context
                                     .dispatcher()
@@ -494,7 +484,7 @@ async fn run_converter(
                             }
                         }
                     }
-                    OtlpMessage::Signal(OtlpSignal::Logs(resource_logs)) => {
+                    OtlpSignal::Logs(resource_logs) => {
                         let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, &origin_tag_resolver);
                         for log_event in translator {
                             metrics.logs_received().increment(1);
@@ -510,7 +500,7 @@ async fn run_converter(
                             }
                         }
                     }
-                    OtlpMessage::Signal(OtlpSignal::Traces(resource_spans)) => {
+                    OtlpSignal::Traces(resource_spans) => {
                         for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
                             let dispatcher = traces_dispatcher.get_or_insert_with(|| {
                                 source_context

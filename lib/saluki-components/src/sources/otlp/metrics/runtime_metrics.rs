@@ -23,7 +23,7 @@ pub(super) struct RuntimeMetricAttribute {
 // Maps runtime metric prefixes to the language they represent. Used by the usage beacon
 // (`datadog.agent.otlp.runtime_metrics`) to report which language runtimes are present in each
 // OTLP metrics request.
-pub(super) static RUNTIME_METRIC_PREFIX_LANGUAGE_MAP: LazyLock<HashMap<&'static str, &'static str>> =
+pub(crate) static RUNTIME_METRIC_PREFIX_LANGUAGE_MAP: LazyLock<HashMap<&'static str, &'static str>> =
     LazyLock::new(|| {
         let mut m = HashMap::new();
         m.insert("process.runtime.go", "go");
