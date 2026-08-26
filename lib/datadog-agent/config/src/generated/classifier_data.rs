@@ -285,6 +285,13 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         default: DefaultValue::Json("8192"),
     },
     ClassifierEntry {
+        yaml_path: "otlp_config.receiver.protocols.grpc.include_metadata",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+        default: DefaultValue::Json("false"),
+    },
+    ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time",
         aliases: &[],
         support_level: SupportLevel::Incompatible(Severity::Medium),
@@ -304,6 +311,13 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::Medium),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+    },
+    ClassifierEntry {
+        yaml_path: "otlp_config.receiver.protocols.grpc.read_buffer_size",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+        default: DefaultValue::Json("524288"),
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.grpc.tls.ca_pem",
@@ -409,6 +423,20 @@ pub(crate) static CLASSIFIER_ENTRIES: &[ClassifierEntry] = &[
         support_level: SupportLevel::Incompatible(Severity::High),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
         default: DefaultValue::Missing,
+    },
+    ClassifierEntry {
+        yaml_path: "otlp_config.receiver.protocols.grpc.write_buffer_size",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+        default: DefaultValue::Json("0"),
+    },
+    ClassifierEntry {
+        yaml_path: "otlp_config.receiver.protocols.http.include_metadata",
+        aliases: &[],
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+        default: DefaultValue::Json("false"),
     },
     ClassifierEntry {
         yaml_path: "otlp_config.receiver.protocols.http.tls.ca_pem",

@@ -191,6 +191,7 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(
         &mut self, value: std::time::Duration,
     );
+    fn consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_tls_ca_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_grpc_tls_cert_file(&mut self, value: Option<String>);
@@ -201,6 +202,7 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_receiver_protocols_http_cors_exposed_headers(&mut self, value: Vec<String>);
     fn consume_otlp_config_receiver_protocols_http_cors_max_age(&mut self, value: Option<i64>);
     fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_http_max_request_body_size(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_http_tls_ca_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_http_tls_cert_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_http_tls_key_file(&mut self, value: Option<String>);
@@ -534,6 +536,15 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
             .timeout
             .clone(),
     );
+    consumer.consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .max_concurrent_streams
+            .clone(),
+    );
     consumer.consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(
         config.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib.clone(),
     );
@@ -563,6 +574,9 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer.consume_otlp_config_receiver_protocols_http_endpoint(
         config.otlp_config.receiver.protocols.http.endpoint.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_max_request_body_size(
+        config.otlp_config.receiver.protocols.http.max_request_body_size.clone(),
     );
     consumer.consume_otlp_config_receiver_protocols_http_tls_ca_file(
         config.otlp_config.receiver.protocols.http.tls.ca_file.clone(),

@@ -898,6 +898,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::DurationString,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_CONCURRENT_STREAMS"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "max_concurrent_streams"],
+        decode: EnvDecode::Integer,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB"],
         path: &["otlp_config", "receiver", "protocols", "grpc", "max_recv_msg_size_mib"],
         decode: EnvDecode::Integer,
@@ -967,6 +972,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_ENDPOINT"],
         path: &["otlp_config", "receiver", "protocols", "http", "endpoint"],
         decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_MAX_REQUEST_BODY_SIZE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "max_request_body_size"],
+        decode: EnvDecode::Integer,
     },
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE"],

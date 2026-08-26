@@ -15,7 +15,7 @@ use std::sync::Arc;
 use ::metrics::Counter;
 use async_trait::async_trait;
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderName, Method, StatusCode};
 use axum::routing::post;
 use axum::Router;
@@ -230,11 +230,20 @@ impl OtlpTlsConfiguration {
 ///
 /// Holds the raw inputs needed to construct and start the OTLP HTTP and gRPC servers. Call [`build`][Self::build] to
 /// validate the configuration and spawn the servers.
+/// The default HTTP request body size limit (20 MiB) applied when `max_request_body_size` is `0`.
+const HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE: usize = 20 * 1024 * 1024;
+
+/// OTLP server configuration.
+///
+/// Holds the raw inputs needed to construct and start the OTLP HTTP and gRPC servers. Call [`build`][Self::build] to
+/// validate the configuration and spawn the servers.
 pub struct OtlpServerConfiguration {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_keepalive: GrpcKeepalive,
+    grpc_max_concurrent_streams: u32,
+    http_max_request_body_size: u64,
     cors: CorsConfiguration,
     http_tls: Option<OtlpTlsConfiguration>,
     grpc_tls: Option<OtlpTlsConfiguration>,
@@ -254,6 +263,8 @@ impl OtlpServerConfiguration {
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_keepalive: GrpcKeepalive::default(),
+            grpc_max_concurrent_streams: 0,
+            http_max_request_body_size: 0,
             cors: CorsConfiguration::default(),
             http_tls: None,
             grpc_tls: None,
@@ -267,6 +278,24 @@ impl OtlpServerConfiguration {
     /// Sets the gRPC keepalive parameters.
     pub fn with_grpc_keepalive(mut self, keepalive: GrpcKeepalive) -> Self {
         self.grpc_keepalive = keepalive;
+        self
+    }
+
+    /// Sets the HTTP/2 maximum concurrent streams per connection for the gRPC receiver.
+    ///
+    /// A value of `0` (the default) means no limit. A positive value sets the
+    /// `SETTINGS_MAX_CONCURRENT_STREAMS` HTTP/2 setting.
+    pub fn with_grpc_max_concurrent_streams(mut self, max_concurrent_streams: u32) -> Self {
+        self.grpc_max_concurrent_streams = max_concurrent_streams;
+        self
+    }
+
+    /// Sets the maximum HTTP request body size in bytes for the HTTP receiver.
+    ///
+    /// A value of `0` (the default) applies the 20 MiB limit used by the Datadog Agent. A positive
+    /// value sets the limit in bytes.
+    pub fn with_http_max_request_body_size(mut self, max_request_body_size: u64) -> Self {
+        self.http_max_request_body_size = max_request_body_size;
         self
     }
 
@@ -343,7 +372,9 @@ impl OtlpServerConfiguration {
             .add_service(grpc_logs_server)
             .add_service(grpc_traces_server);
 
-        let mut grpc_server = grpc_server.with_keepalive(self.grpc_keepalive);
+        let mut grpc_server = grpc_server
+            .with_keepalive(self.grpc_keepalive)
+            .with_max_concurrent_streams(self.grpc_max_concurrent_streams);
 
         #[cfg(test)]
         if let Some(id) = self.grpc_bound_address_id {
@@ -358,10 +389,19 @@ impl OtlpServerConfiguration {
             .spawn();
 
         // Create and spawn the HTTP server.
+        // Apply an explicit body-size limit. A configured `0` selects the Agent's 20 MiB default; a positive value is
+        // the limit in bytes. Axum's own default is not the Agent's default and must not be left implicit.
+        let max_body_size = if self.http_max_request_body_size == 0 {
+            HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE
+        } else {
+            self.http_max_request_body_size as usize
+        };
+
         let router = Router::new()
             .route("/v1/metrics", post(http_metrics_handler::<H>))
             .route("/v1/logs", post(http_logs_handler::<H>))
             .route("/v1/traces", post(http_traces_handler::<H>))
+            .layer(DefaultBodyLimit::max(max_body_size))
             .with_state((otlp_handler, memory_limiter, metrics));
 
         // Apply CORS middleware when origins are configured.
@@ -880,6 +920,33 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
         panic!("Unix socket at {} did not appear within 500ms", path.display());
+    }
+
+    #[tokio::test]
+    async fn http_body_limit_rejects_oversized_request() {
+        // The default body limit (when max_request_body_size is 0) is 20 MiB. An explicit small limit should reject
+        // requests that exceed it.
+        let handler = Arc::new(NoopHandler);
+        let max_body_size = 64;
+        let app = Router::new()
+            .route("/v1/metrics", post(http_metrics_handler::<NoopHandler>))
+            .layer(DefaultBodyLimit::max(max_body_size))
+            .with_state((handler, MemoryLimiter::noop(), Arc::new(Metrics::for_tests())));
+
+        let oversized_body = vec![0u8; max_body_size + 1];
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/metrics")
+                    .header("content-type", "application/x-protobuf")
+                    .body(Body::from(oversized_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     /// Polls `port` until something accepts a connection on it.

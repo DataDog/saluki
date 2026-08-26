@@ -1092,6 +1092,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         }
     }
 
+    fn consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(&mut self, value: i64) {
+        self.config.domains.otlp.receiver.grpc.max_concurrent_streams = u32::try_from(value.max(0)).unwrap_or(0);
+    }
+
     fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(
         &mut self, value: std::time::Duration,
     ) {
@@ -1160,6 +1164,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
                 )),
             }
         }
+    }
+
+    fn consume_otlp_config_receiver_protocols_http_max_request_body_size(&mut self, value: i64) {
+        self.config.domains.otlp.receiver.http.max_request_body_size = value.max(0) as u64;
     }
 
     fn consume_otlp_config_receiver_protocols_http_tls_ca_file(&mut self, value: Option<String>) {
