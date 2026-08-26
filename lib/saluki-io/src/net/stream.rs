@@ -2,6 +2,7 @@ use std::{
     io,
     net::SocketAddr,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -109,13 +110,19 @@ impl AsyncWrite for Connection {
 ///
 /// This type wraps network sockets that operate in a connectionless manner, such as UDP or Unix domain sockets in
 /// datagram mode.
+/// A connectionless socket, shared with the listener that yielded it.
+///
+/// The socket is held behind an `Arc` rather than owned outright: for connectionless families the bound socket *is* the
+/// stream, so moving it out would take it away from the listener, and a listener owned by a
+/// [`ResourceRegistry`][saluki_core::runtime::state::ResourceRegistry] has to keep the sockets it was created with.
+/// Each stream still gets its own distinct socket -- the listener never yields the same one twice.
 enum Connectionless {
     /// A UDP socket.
-    Udp(UdpSocket),
+    Udp(Arc<UdpSocket>),
 
     /// A Unix domain socket in datagram mode (SOCK_DGRAM).
     #[cfg(unix)]
-    Unixgram(tokio::net::UnixDatagram),
+    Unixgram(Arc<tokio::net::UnixDatagram>),
 }
 
 impl Connectionless {
@@ -187,9 +194,9 @@ impl Stream {
                 Connection::NamedPipe(_) => Ok(0),
             },
             StreamInner::Connectionless { socket } => match socket {
-                Connectionless::Udp(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
+                Connectionless::Udp(inner) => socket2::SockRef::from(&**inner).recv_buffer_size(),
                 #[cfg(unix)]
-                Connectionless::Unixgram(inner) => socket2::SockRef::from(inner).recv_buffer_size(),
+                Connectionless::Unixgram(inner) => socket2::SockRef::from(&**inner).recv_buffer_size(),
             },
         }
     }
@@ -205,8 +212,8 @@ impl From<(TcpStream, SocketAddr)> for Stream {
     }
 }
 
-impl From<UdpSocket> for Stream {
-    fn from(socket: UdpSocket) -> Self {
+impl From<Arc<UdpSocket>> for Stream {
+    fn from(socket: Arc<UdpSocket>) -> Self {
         Self {
             inner: StreamInner::Connectionless {
                 socket: Connectionless::Udp(socket),
@@ -215,14 +222,27 @@ impl From<UdpSocket> for Stream {
     }
 }
 
+impl From<UdpSocket> for Stream {
+    fn from(socket: UdpSocket) -> Self {
+        Self::from(Arc::new(socket))
+    }
+}
+
 #[cfg(unix)]
-impl From<tokio::net::UnixDatagram> for Stream {
-    fn from(socket: tokio::net::UnixDatagram) -> Self {
+impl From<Arc<tokio::net::UnixDatagram>> for Stream {
+    fn from(socket: Arc<tokio::net::UnixDatagram>) -> Self {
         Self {
             inner: StreamInner::Connectionless {
                 socket: Connectionless::Unixgram(socket),
             },
         }
+    }
+}
+
+#[cfg(unix)]
+impl From<tokio::net::UnixDatagram> for Stream {
+    fn from(socket: tokio::net::UnixDatagram) -> Self {
+        Self::from(Arc::new(socket))
     }
 }
 
