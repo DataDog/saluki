@@ -5,7 +5,7 @@ use saluki_common::{
 };
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
+    components::{transforms::*, BuildContext},
     data_model::event::trace::{AttributeValue, Span, Trace},
     topology::EventsBuffer,
 };
@@ -29,7 +29,7 @@ pub struct ApmOnboardingConfiguration;
 
 #[async_trait]
 impl SynchronousTransformBuilder for ApmOnboardingConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         let install_info = match InstallInfo::load_or_create().await {
             Ok(info) => Some(info),
             Err(e) => {

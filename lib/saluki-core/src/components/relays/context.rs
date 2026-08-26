@@ -52,6 +52,15 @@ impl RelayContext {
         self.shutdown_handle = Some(shutdown_handle);
     }
 
+    /// Installs the shutdown handle for this relay context, for tests.
+    ///
+    /// The topology runtime does this itself before a relay runs, using the shutdown signal of the component's
+    /// dedicated supervisor. A test that drives a relay through a real shutdown has to stand in for it.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_shutdown_handle_for_test(&mut self, shutdown_handle: ShutdownHandle) {
+        self.set_shutdown_handle(shutdown_handle);
+    }
+
     /// Consumes the shutdown handle of this relay context.
     ///
     /// # Panics

@@ -4,7 +4,7 @@
 use std::time::Duration;
 use std::{num::NonZeroUsize, str::FromStr};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::defaults::DEFAULT_STRING_INTERNER_SIZE_BYTES;
 use crate::{domains::dogstatsd::OriginTagCardinality, Error};
@@ -225,6 +225,41 @@ impl FromStr for SummaryMode {
     }
 }
 
+/// Transport accepted by the OTLP gRPC receiver.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GrpcTransport {
+    /// TCP transport.
+    #[default]
+    Tcp,
+    /// Unix stream socket transport.
+    Unix,
+}
+
+impl GrpcTransport {
+    /// Returns the configuration spelling of this transport.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Unix => "unix",
+        }
+    }
+}
+
+impl FromStr for GrpcTransport {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "tcp" => Ok(Self::Tcp),
+            "unix" => Ok(Self::Unix),
+            other => Err(Error::new_without_source(format!(
+                "unknown gRPC transport `{other}`; expected `tcp` or `unix`"
+            ))),
+        }
+    }
+}
+
 /// OTLP receiver transports and per-signal activation.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Receiver {
@@ -248,6 +283,31 @@ pub struct Receiver {
 /// always carries an effective limit.
 pub const DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB: u64 = 4;
 
+/// TLS settings for an OTLP receiver (gRPC or HTTP).
+///
+/// These configure server-side TLS for the receiver. When `cert_file` and `key_file` are both set, the receiver
+/// accepts encrypted connections. When `ca_file` is also set, the server requests client certificates and verifies
+/// them if presented, but does not require them (optional verification).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Tls {
+    /// Path to the PEM-encoded certificate chain file.
+    ///
+    /// When set together with `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+    pub cert_file: String,
+
+    /// Path to the PEM-encoded private key file.
+    ///
+    /// The private key must correspond to the leaf certificate in `cert_file`. Defaults to empty (TLS disabled).
+    pub key_file: String,
+
+    /// Path to the PEM-encoded CA certificate file for verifying client certificates.
+    ///
+    /// When set, the server requests client certificates and verifies them against the CA certificates in this file.
+    /// Clients that present a certificate must provide a valid one; clients that present no certificate are still
+    /// accepted. Defaults to empty (no client certificate verification).
+    pub ca_file: String,
+}
+
 /// OTLP gRPC receiver.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct GrpcReceiver {
@@ -257,8 +317,11 @@ pub struct GrpcReceiver {
     /// Maximum inbound message size, in MiB.
     pub max_recv_msg_size_mib: u64,
 
-    /// Transport the gRPC receiver binds (for example, `tcp` or `unix`).
-    pub transport: String,
+    /// Transport the gRPC receiver binds. Defaults to `tcp`.
+    pub transport: GrpcTransport,
+
+    /// TLS settings for the gRPC receiver.
+    pub tls: Tls,
 }
 
 /// OTLP HTTP receiver.
@@ -273,6 +336,9 @@ pub struct HttpReceiver {
 
     /// CORS configuration for the HTTP receiver.
     pub cors: Cors,
+
+    /// TLS settings for the HTTP receiver.
+    pub tls: Tls,
 }
 
 impl Default for HttpReceiver {
@@ -282,6 +348,7 @@ impl Default for HttpReceiver {
             endpoint: String::new(),
             transport: "tcp".to_string(),
             cors: Cors::default(),
+            tls: Tls::default(),
         }
     }
 }
@@ -396,7 +463,19 @@ impl Default for Contexts {
 
 #[cfg(test)]
 mod tests {
-    use super::{CumulativeMonotonicMode, InitialCumulativeMonotonicValue};
+    use super::{CumulativeMonotonicMode, GrpcTransport, InitialCumulativeMonotonicValue};
+
+    #[test]
+    fn grpc_transport_parses_known_values() {
+        assert_eq!("tcp".parse::<GrpcTransport>().unwrap(), GrpcTransport::Tcp);
+        assert_eq!("unix".parse::<GrpcTransport>().unwrap(), GrpcTransport::Unix);
+    }
+
+    #[test]
+    fn grpc_transport_rejects_unknown_values() {
+        assert!("tcp4".parse::<GrpcTransport>().is_err());
+        assert!("udp".parse::<GrpcTransport>().is_err());
+    }
 
     #[test]
     fn cumulative_monotonic_mode_parses_known_values() {

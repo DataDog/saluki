@@ -14,7 +14,6 @@ use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResou
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
-use saluki_common::task::HandleExt as _;
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -22,7 +21,7 @@ use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::EventType,
     topology::{EventsBuffer, OutputDefinition},
@@ -38,7 +37,9 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
-use crate::common::otlp::{build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerBuilder};
+use crate::common::otlp::{
+    build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
+};
 
 mod logs;
 mod metrics;
@@ -70,6 +71,45 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
         allowed_headers: cors.allowed_headers.clone(),
         exposed_headers: cors.exposed_headers.clone(),
         max_age: cors.max_age,
+    }
+}
+
+/// Builds an `OtlpTlsConfiguration` from resolved TLS settings, if TLS is enabled.
+///
+/// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
+/// requests client certificates and verifies them against the CA certificates in that file, but does not require a
+/// client certificate (optional verification).
+///
+/// # Errors
+///
+/// Returns an error if any TLS field is set without the others required to form a valid TLS configuration. Both
+/// `cert_file` and `key_file` must be provided together to enable TLS, and `ca_file` must not be set without them.
+/// Setting only a subset is treated as a configuration error rather than silently downgrading to plaintext.
+fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<OtlpTlsConfiguration>, GenericError> {
+    match (tls.cert_file.is_empty(), tls.key_file.is_empty()) {
+        (true, true) => {
+            if !tls.ca_file.is_empty() {
+                Err(generic_error!(
+                    "OTLP receiver TLS `ca_file` is set but `cert_file` and `key_file` are empty. All three must \
+                     be provided together, or `ca_file` must be omitted when TLS is disabled."
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+        (false, false) => {
+            let mut config = OtlpTlsConfiguration::new(tls.cert_file.clone().into(), tls.key_file.clone().into());
+            if !tls.ca_file.is_empty() {
+                config = config.with_ca_file(tls.ca_file.clone().into());
+            }
+            Ok(Some(config))
+        }
+        (true, false) => Err(generic_error!(
+            "OTLP receiver TLS `key_file` is set but `cert_file` is empty. Both must be provided to enable TLS."
+        )),
+        (false, true) => Err(generic_error!(
+            "OTLP receiver TLS `cert_file` is set but `key_file` is empty. Both must be provided to enable TLS."
+        )),
     }
 }
 
@@ -145,7 +185,7 @@ impl SourceBuilder for OtlpConfiguration {
         &OUTPUTS
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         if !self.otlp.receiver.metrics_enabled && !self.otlp.receiver.logs_enabled && !self.otlp.traces.enabled {
             return Err(generic_error!(
                 "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
@@ -154,15 +194,11 @@ impl SourceBuilder for OtlpConfiguration {
 
         let grpc_listen_str = format!(
             "{}://{}",
-            self.otlp.receiver.grpc.transport, self.otlp.receiver.grpc.endpoint
+            self.otlp.receiver.grpc.transport.as_str(),
+            self.otlp.receiver.grpc.endpoint
         );
         let grpc_endpoint = ListenAddress::try_from(grpc_listen_str.as_str())
             .map_err(|e| generic_error!("Invalid gRPC endpoint address '{}': {}", grpc_listen_str, e))?;
-
-        // Enforce the current limitation that we only support TCP for gRPC.
-        if !matches!(grpc_endpoint, ListenAddress::Tcp(_)) {
-            return Err(generic_error!("Only 'tcp' transport is supported for OTLP gRPC"));
-        }
 
         let http_endpoint_str = &self.otlp.receiver.http.endpoint;
         let http_socket_addr = http_endpoint_str
@@ -175,14 +211,16 @@ impl SourceBuilder for OtlpConfiguration {
 
         // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
         // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
-        let context_resolver = build_context_resolver(&self.otlp.contexts, &context, None)?;
+        let context_resolver = build_context_resolver(&self.otlp.contexts, context.component_context(), None)?;
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
         let cors = cors_configuration(&self.otlp.receiver.http.cors);
-        let metrics = build_metrics(&context);
+        let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
+        let grpc_tls_config = build_tls_config(&self.otlp.receiver.grpc.tls)?;
+        let metrics = build_metrics(context.component_context());
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -195,6 +233,8 @@ impl SourceBuilder for OtlpConfiguration {
             default_hostname: self.default_hostname.clone(),
             traces_translator,
             cors,
+            http_tls_config,
+            grpc_tls_config,
             metrics,
         }))
     }
@@ -220,6 +260,8 @@ pub struct Otlp {
     default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
     cors: CorsConfiguration,
+    http_tls_config: Option<OtlpTlsConfiguration>,
+    grpc_tls_config: Option<OtlpTlsConfiguration>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
@@ -237,6 +279,8 @@ impl Source for Otlp {
             default_hostname,
             traces_translator,
             cors,
+            http_tls_config,
+            grpc_tls_config,
             metrics,
         } = *self;
 
@@ -249,8 +293,6 @@ impl Source for Otlp {
         // Create the internal channel for decoupling the servers from the converter.
         let (tx, rx) = mpsc::channel::<OtlpResource>(1024);
 
-        let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
-
         let metrics_translator = OtlpMetricsTranslator::new(
             metrics_translator_config,
             default_hostname,
@@ -259,29 +301,45 @@ impl Source for Otlp {
             metric_tags,
         )?;
 
-        let thread_pool_handle = context.topology_context().global_thread_pool().clone();
-
-        // Spawn the converter task. This task is shared by both servers.
-        thread_pool_handle.spawn_traced_named(
-            "otlp-resource-converter",
-            run_converter(
-                rx,
-                context.clone(),
-                origin_tag_resolver,
-                converter_shutdown_coordinator.register(),
-                metrics_translator,
-                metrics.clone(),
-                traces_translator,
-            ),
-        );
-
+        // Build our gRPC and HTTP servers and spawn them.
         let handler = SourceHandler::new(tx);
-        let server_builder =
-            OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
+        let mut server_config =
+            OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
 
-        let (http_shutdown, mut http_error) = server_builder
-            .build(handler, memory_limiter.clone(), thread_pool_handle, metrics)
+        if let Some(tls) = http_tls_config {
+            server_config = server_config.with_http_tls(tls);
+        }
+        if let Some(tls) = grpc_tls_config {
+            server_config = server_config.with_grpc_tls(tls);
+        }
+
+        server_config
+            .build(handler, memory_limiter.clone(), metrics.clone(), context.spawner())
             .await?;
+
+        // Run the converter task on the worker pool: translating OTLP resources is highly compute-bound.
+        let converter_context = context.clone();
+
+        let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
+        let converter_shutdown = converter_shutdown_coordinator.register();
+
+        context
+            .spawner()
+            .noninterruptible("resource_converter", |_shutdown| {
+                run_converter(
+                    rx,
+                    converter_context,
+                    origin_tag_resolver,
+                    converter_shutdown,
+                    metrics_translator,
+                    metrics,
+                    traces_translator,
+                )
+            })
+            .on_worker_pool()
+            .spawn()
+            .await
+            .error_context("Failed to spawn OTLP resource converter.")?;
 
         health.mark_ready();
         debug!("OTLP source started.");
@@ -293,19 +351,12 @@ impl Source for Otlp {
                     debug!("Received shutdown signal.");
                     break
                 },
-                error = &mut http_error => {
-                    if let Some(error) = error {
-                        debug!(%error, "HTTP server error.");
-                    }
-                    break;
-                },
                 _ = health.live() => continue,
             }
         }
 
         debug!("Stopping OTLP source...");
 
-        http_shutdown.shutdown();
         converter_shutdown_coordinator.shutdown_and_wait().await;
 
         debug!("OTLP source stopped.");

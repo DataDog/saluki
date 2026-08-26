@@ -147,8 +147,7 @@ inventory:
       Support is partial because ADP does not apply this timeout only to an aggregator component.
       Shutdown is coordinated by the Saluki topology: sources stop first, downstream inputs close,
       and the aggregate transform performs its final flush when its input stream ends. Whether open
-      aggregation windows are included is controlled by `aggregate_flush_open_windows`, also aliased
-      as `dogstatsd_flush_incomplete_buckets`.
+      aggregation windows are included is controlled by `dogstatsd_flush_incomplete_buckets`.
     issue: "#1681"
     test_support:
       used_by: [get_typed]
@@ -828,18 +827,19 @@ inventory:
 
   dogstatsd_expiry_seconds:
     support: full
-    pipelines: [dogstatsd]
+    pipelines: [dogstatsd, checks]
     description: "Counter value expiry (seconds)"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: aggregate.rs
 
   dogstatsd_flush_incomplete_buckets:
     support: full
     pipelines: [dogstatsd, checks]
     description: "Flush open buckets on shutdown"
     test_support:
-      used_by: [AggregateConfiguration]
-      additional_yaml_paths: [aggregate_flush_open_windows]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -856,7 +856,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD dedicated log file path"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -865,7 +865,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD log file max roll count"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -875,7 +875,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD log file max size"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '"42MB"'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -906,7 +906,7 @@ inventory:
       decoded metric summaries after DogStatsD parsing. The capture settings record raw
       DogStatsD traffic for packet-level investigation.
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -930,7 +930,7 @@ inventory:
       mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
     issue: "#1687"
     test_support:
-      used_by: [DogStatsDMapperConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd_mapper.rs
@@ -940,7 +940,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Metric mapping profile definitions"
     test_support:
-      used_by: [DogStatsDMapperConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
       additional_attributes:
         config_registry_filename: dogstatsd_mapper.rs
@@ -1050,7 +1050,7 @@ inventory:
     documentation: "See `dogstatsd_stats_enable`"
     issue: "#1352"
     test_support:
-      used_by: [DogStatsDDebugLogConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1059,7 +1059,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Enable no-agg timestamped path"
     test_support:
-      used_by: [AggregateConfiguration, DogStatsDConfiguration]
+      used_by: [TypedConfigSystem, DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1709,7 +1709,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Histogram aggregate statistics"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       test_json: '["count"]'
       additional_attributes:
         config_registry_filename: aggregate.rs
@@ -1719,7 +1719,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Copy histograms to distributions"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1728,7 +1728,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Prefix for hist-to-dist copies"
     test_support:
-      used_by: [AggregateConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1737,7 +1737,10 @@ inventory:
     pipelines: [checks, dogstatsd]
     description: "Histogram percentile aggregates"
     test_support:
-      used_by: [NO_SMOKE]
+      used_by: [TypedConfigSystem]
+      test_json: '["0.95"]'
+      additional_attributes:
+        config_registry_filename: aggregate.rs
 
   kubernetes_kubelet_nodename:
     support: full
@@ -1850,7 +1853,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Metric name blocklist"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -1859,7 +1862,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Blocklist uses prefix matching"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2262,75 +2265,151 @@ inventory:
     description: "gRPC read buffer size"
 
   otlp_config.receiver.protocols.grpc.tls.ca_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS CA file path"
+    documentation: |-
+      Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
+      When set, the server requests client certificates and verifies them if presented, but does not require them.
+      Defaults to empty (no client certificate verification).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS CA PEM"
+    documentation: |-
+      Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.cert_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS cert file path"
+    documentation: |-
+      Path to the PEM-encoded certificate chain file for the OTLP gRPC receiver. When set together with
+      `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS cert PEM"
+    documentation: |-
+      Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.cipher_suites:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS cipher suites"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS client CA file"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS client CA reload"
 
   otlp_config.receiver.protocols.grpc.tls.curve_preferences:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS curve preferences"
 
   otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS include system CA pool"
 
   otlp_config.receiver.protocols.grpc.tls.key_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "gRPC TLS key file path"
+    documentation: |-
+      Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
+      certificate in `cert_file`. Defaults to empty (TLS disabled).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS key PEM"
+    documentation: |-
+      Not supported. Use `key_file` to provide the private key for the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.max_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS max version"
 
   otlp_config.receiver.protocols.grpc.tls.min_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS min version"
 
   otlp_config.receiver.protocols.grpc.tls.reload_interval:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS reload interval"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM auth"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.enabled:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM enabled"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM owner auth"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.path:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "gRPC TLS TPM path"
 
   otlp_config.receiver.protocols.grpc.transport:
@@ -2432,75 +2511,151 @@ inventory:
     description: "HTTP response headers"
 
   otlp_config.receiver.protocols.http.tls.ca_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS CA file path"
+    documentation: |-
+      Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
+      When set, the server requests client certificates and verifies them if presented, but does not require them.
+      Defaults to empty (no client certificate verification).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS CA PEM"
+    documentation: |-
+      Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.cert_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS cert file path"
+    documentation: |-
+      Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When set together with
+      `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS cert PEM"
+    documentation: |-
+      Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.cipher_suites:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS cipher suites"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS client CA file"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file_reload:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS client CA reload"
 
   otlp_config.receiver.protocols.http.tls.curve_preferences:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS curve preferences"
 
   otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS include system CA pool"
 
   otlp_config.receiver.protocols.http.tls.key_file:
-    support: unknown
+    support: full
+    pipelines: [otlp]
     description: "HTTP TLS key file path"
+    documentation: |-
+      Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
+      certificate in `cert_file`. Defaults to empty (TLS disabled).
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.key_pem:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS key PEM"
+    documentation: |-
+      Not supported. Use `key_file` to provide the private key for the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.max_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS max version"
 
   otlp_config.receiver.protocols.http.tls.min_version:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS min version"
 
   otlp_config.receiver.protocols.http.tls.reload_interval:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS reload interval"
 
   otlp_config.receiver.protocols.http.tls.tpm.auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM auth"
 
   otlp_config.receiver.protocols.http.tls.tpm.enabled:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM enabled"
 
   otlp_config.receiver.protocols.http.tls.tpm.owner_auth:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM owner auth"
 
   otlp_config.receiver.protocols.http.tls.tpm.path:
-    support: unknown
+    support: none
+    severity: high
+    planned: false
+    pipelines: [otlp]
     description: "HTTP TLS TPM path"
 
   otlp_config.receiver.protocols.http.traces_url_path:
@@ -2755,7 +2910,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "List of metric names to block/drop"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2764,7 +2919,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Treat blocklist entries as prefixes"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2773,7 +2928,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Prefix prepended to all metric names"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2782,7 +2937,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Prefixes exempt from namespace"
     test_support:
-      used_by: [DogStatsDPrefixFilterConfiguration]
+      used_by: [TypedConfigSystem]
       additional_yaml_paths: [statsd_metric_namespace_blocklist]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs

@@ -31,7 +31,7 @@ use saluki_core::runtime::{
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
-    server::{http::HttpServer, multiplex_service::MultiplexService},
+    server::{http::UnsupervisedHttpServer, multiplex_service::MultiplexService},
     util::hyper::TowerToHyperService,
     ListenAddress,
 };
@@ -214,7 +214,7 @@ impl Supervisable for DynamicAPIBuilder {
 
         let multiplexed_service = TowerToHyperService::new(MultiplexService::new(outer_http, outer_grpc));
 
-        let mut http_server = HttpServer::from_listener(listener, multiplexed_service);
+        let mut http_server = UnsupervisedHttpServer::from_listener(listener, multiplexed_service);
         if let Some(tls_config) = self.tls_config.clone() {
             http_server = http_server.with_tls_config(tls_config);
         }

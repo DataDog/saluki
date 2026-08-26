@@ -3,12 +3,18 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::defaults::{
+    DEFAULT_AGGREGATE_CONTEXT_LIMIT, DEFAULT_AGGREGATE_FLUSH_INTERVAL,
+    DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT, DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+    DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
+};
 use crate::Error;
 
 // TODO: better name than Domain? Pipeline? Topology? BlueprintConfig?
@@ -33,7 +39,10 @@ pub struct Domain {
     /// Which payload types are emitted.
     pub enable_payloads: EnablePayloads,
 
-    /// Metric-name prefix filtering.
+    /// Metric-name filtering.
+    pub metric_filter: MetricFilter,
+
+    /// Metric namespace prefixing.
     pub prefix_filter: PrefixFilter,
 
     /// Per-metric tag include/exclude rules.
@@ -48,7 +57,7 @@ pub struct Domain {
     /// Telemetry emitted by the DogStatsD source.
     pub telemetry: Telemetry,
 
-    /// Debug logging for the DogStatsD source.
+    /// Debug-log and verbose-log settings for the DogStatsD source.
     pub debug_log: DebugLog,
 }
 
@@ -204,9 +213,8 @@ pub struct Contexts {
 /// Metric aggregation window and flush behavior.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Aggregation {
-    /// Length, in seconds, of each aggregation window; must be non-zero. (not in Datadog Agent
-    /// config schema)
-    pub window_duration_seconds: u64,
+    /// Length, in seconds, of each aggregation window. (not in Datadog Agent config schema)
+    pub window_duration_seconds: NonZeroU64,
 
     /// Maximum number of contexts held per aggregation window. (not in Datadog Agent config schema)
     pub context_limit: usize,
@@ -214,8 +222,9 @@ pub struct Aggregation {
     /// How often aggregated metrics are flushed. (not in Datadog Agent config schema)
     pub flush_interval: Duration,
 
-    /// Whether windows that are still open are flushed on shutdown. (not in Datadog Agent config
-    /// schema)
+    /// Whether windows that are still open are flushed on shutdown.
+    ///
+    /// Set by the Datadog `dogstatsd_flush_incomplete_buckets` key.
     pub flush_open_windows: bool,
 
     /// How long the no-aggregation passthrough waits before flushing while idle. (not in Datadog
@@ -223,13 +232,13 @@ pub struct Aggregation {
     pub passthrough_idle_flush_timeout: Duration,
 
     /// How long, in seconds, a counter value is retained after its last update before expiring.
+    ///
+    /// Set by the Datadog `dogstatsd_expiry_seconds` key. A value of `0` disables zero-value counter
+    /// emission.
     pub counter_expiry_seconds: Option<u64>,
 
     /// How long, in seconds, a context is retained after its last update before expiring.
     pub context_expiry_seconds: u64,
-
-    /// Whether incomplete aggregation buckets are flushed rather than discarded.
-    pub flush_incomplete_buckets: bool,
 
     /// Whether metrics bypass aggregation and are forwarded directly.
     pub no_aggregation_pipeline: bool,
@@ -242,18 +251,16 @@ impl Default for Aggregation {
     fn default() -> Self {
         Self {
             // Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
-            // seeded only when set; absent that, these defaults stand and must match what the
-            // aggregate transform expects. A zero window, in particular, is invalid downstream.
-            window_duration_seconds: 10,
-            context_limit: 1_000_000,
-            flush_interval: Duration::from_secs(15),
-            passthrough_idle_flush_timeout: Duration::from_secs(1),
-            flush_open_windows: false,
+            // seeded only when set; absent that, these defaults stand.
+            window_duration_seconds: DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+            context_limit: DEFAULT_AGGREGATE_CONTEXT_LIMIT,
+            flush_interval: DEFAULT_AGGREGATE_FLUSH_INTERVAL,
+            passthrough_idle_flush_timeout: DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT,
             // Datadog-schema knobs: always written by the witness driver, so these values are
             // placeholders that never survive translation.
+            flush_open_windows: false,
             counter_expiry_seconds: None,
             context_expiry_seconds: 0,
-            flush_incomplete_buckets: false,
             no_aggregation_pipeline: false,
             aggregator_tag_filter_cache_capacity: 0,
         }
@@ -261,7 +268,7 @@ impl Default for Aggregation {
 }
 
 /// DogStatsD metric mapper.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Mapper {
     /// Mapper profiles that rewrite matching metric names and tags.
     pub profiles: Vec<MapperProfile>,
@@ -269,8 +276,19 @@ pub struct Mapper {
     /// Number of mapper match results cached.
     pub cache_size: usize,
 
-    /// Number of entries the mapper's string interner holds. (not in Datadog Agent config schema)
-    pub string_interner_size: u64,
+    /// Byte capacity of the mapper's string interner. (not in Datadog Agent config schema)
+    pub string_interner_size_bytes: NonZeroUsize,
+}
+
+impl Default for Mapper {
+    fn default() -> Self {
+        Self {
+            profiles: Vec::new(),
+            // Written by the Datadog witness driver.
+            cache_size: 0,
+            string_interner_size_bytes: DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
+        }
+    }
 }
 
 /// One mapper profile: a name, a metric prefix, and the mappings under it.
@@ -318,21 +336,23 @@ pub struct EnablePayloads {
     pub sketches: bool,
 }
 
-/// Metric-name prefix filtering (dynamic-capable).
+/// Metric-name filtering (dynamic-capable).
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct MetricFilter {
+    /// Metric names or prefixes that are dropped.
+    ///
+    /// Defaults to an empty list, which disables metric-name filtering.
+    pub values: Vec<String>,
+
+    /// Whether entries match by prefix rather than exact name.
+    ///
+    /// Defaults to `false`, which requires exact matches.
+    pub match_prefix: bool,
+}
+
+/// Metric namespace prefixing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct PrefixFilter {
-    /// Metric names (or prefixes) that are allowed through; others are dropped.
-    pub metric_filterlist: Vec<String>,
-
-    /// Whether filterlist entries match by prefix rather than exact name.
-    pub metric_filterlist_match_prefix: bool,
-
-    /// Metric names (or prefixes) that are blocked.
-    pub metric_blocklist: Vec<String>,
-
-    /// Whether blocklist entries match by prefix rather than exact name.
-    pub metric_blocklist_match_prefix: bool,
-
     /// Namespace prepended to every metric name.
     pub metric_namespace: String,
 
@@ -501,24 +521,38 @@ pub enum FilterAction {
     Exclude,
 }
 
-/// DogStatsD debug logging (dynamic-capable).
+/// DogStatsD debug-log and verbose-log settings.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct DebugLog {
-    /// Whether DogStatsD debug logging is enabled.
+    /// Whether the metric debug-log destination is added at startup.
+    ///
+    /// Defaults to `true`. Set this to `false` to remove the destination from the topology.
     pub logging_enabled: bool,
 
-    /// Path of the DogStatsD debug log file.
-    pub log_file: PathBuf,
+    /// Path of the DogStatsD metric debug log.
+    ///
+    /// Defaults to `None`, which selects the platform-specific Agent log path at startup.
+    /// Set a path to write the diagnostic log elsewhere.
+    pub log_file: Option<PathBuf>,
 
     /// Number of rotated debug log files retained.
+    ///
+    /// Defaults to `3`. The file writer retains one rotated file when this is `0`.
     pub log_file_max_rolls: usize,
 
-    /// Maximum size, in bytes, a debug log file reaches before it is rotated.
+    /// Maximum size, in bytes, of the active debug log file before rotation.
+    ///
+    /// Defaults to `10,000,000` bytes. A value of `0` is accepted as the rotation threshold.
+    /// Set this based on the diagnostic data and disk space to retain.
     pub log_file_max_size: u64,
 
-    /// Whether per-metric processing statistics are collected.
+    /// Whether per-metric processing statistics are written to the debug log.
+    ///
+    /// Defaults to `false` and can change at runtime. Enable this when collecting metric-level diagnostics.
     pub metrics_stats_enable: bool,
 
-    /// Whether verbose per-packet log lines are suppressed.
+    /// Whether per-packet parse errors are logged at debug rather than error level.
+    ///
+    /// Defaults to `false`. Enable this to reduce error-level log volume from malformed packets.
     pub disable_verbose_logs: bool,
 }

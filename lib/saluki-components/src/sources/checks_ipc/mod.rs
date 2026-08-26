@@ -11,7 +11,6 @@ use datadog_protos::checks::{
     service_check::{ServiceCheck as ProtoServiceCheck, Status as ServiceCheckStatus},
     SendCheckPayloadRequest, SendCheckPayloadResponse,
 };
-use saluki_common::task::HandleExt as _;
 use saluki_context::tags::{Tag, TagSet};
 use saluki_context::Context;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
@@ -22,15 +21,14 @@ use saluki_core::data_model::event::service_check::{CheckStatus, ServiceCheck};
 use saluki_core::data_model::event::{Event, EventType};
 use saluki_core::topology::OutputDefinition;
 use saluki_core::{
-    components::{sources::*, ComponentContext},
+    components::{sources::*, BuildContext},
     data_model::event::log::LogStatus,
 };
-use saluki_error::{generic_error, GenericError};
-use saluki_io::net::ListenAddress;
+use saluki_error::{generic_error, ErrorContext as _, GenericError};
+use saluki_io::net::{server::grpc::GrpcServer, ListenAddress};
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
-use tonic::transport::Server;
 use tonic::{Response, Status};
 use tracing::{debug, trace, warn};
 
@@ -66,7 +64,7 @@ impl SourceBuilder for ChecksIPCConfiguration {
         &OUTPUTS
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(ChecksIPC {
             grpc_endpoint: self.grpc_endpoint.clone(),
             default_hostname: self.default_hostname.clone(),
@@ -101,19 +99,23 @@ impl Source for ChecksIPC {
 
         let (events_tx, mut events_rx) = mpsc::channel(16);
 
-        let grpc_server = Server::builder().add_service(ChecksServer::new(ChecksService {
-            events_tx,
-            default_hostname,
-        }));
-
-        let grpc_socket_addr = match grpc_endpoint {
-            ListenAddress::Tcp(addr) => addr,
-            _ => return Err(generic_error!("OTLP gRPC endpoint must be a TCP address.")),
+        let ListenAddress::Tcp(grpc_socket_addr) = grpc_endpoint else {
+            return Err(generic_error!("Checks IPC gRPC endpoint must be a TCP address."));
         };
+
+        let grpc_server =
+            GrpcServer::new(ListenAddress::Tcp(grpc_socket_addr)).add_service(ChecksServer::new(ChecksService {
+                events_tx,
+                default_hostname,
+            }));
+
         context
-            .topology_context()
-            .global_thread_pool()
-            .spawn_traced_named("checks-ipc-grpc-server", grpc_server.serve(grpc_socket_addr));
+            .spawner()
+            .supervisable(grpc_server)
+            .on_worker_pool()
+            .spawn()
+            .await
+            .error_context("Failed to spawn Checks IPC gRPC server.")?;
 
         health.mark_ready();
         debug!("Checks IPC source started.");

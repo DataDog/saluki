@@ -18,7 +18,7 @@ use prometheus_exposition::{MetricType, PrometheusRenderer};
 use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator, sync::shutdown::ShutdownCoordinator};
 use saluki_context::{tags::Tag, Context};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
-use saluki_core::components::{destinations::*, ComponentContext};
+use saluki_core::components::{destinations::*, BuildContext};
 use saluki_core::data_model::event::{
     metric::{Histogram, Metric, MetricValues},
     EventType,
@@ -26,7 +26,7 @@ use saluki_core::data_model::event::{
 use saluki_error::GenericError;
 use saluki_io::net::{
     listener::ConnectionOrientedListener,
-    server::http::{ErrorHandle, HttpServer},
+    server::http::{ErrorHandle, UnsupervisedHttpServer},
     ListenAddress,
 };
 use serde::Deserialize;
@@ -129,7 +129,7 @@ impl DestinationBuilder for PrometheusConfiguration {
         EventType::Metric
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
         Ok(Box::new(Prometheus {
             listener: ConnectionOrientedListener::from_listen_address(self.listen_addr.clone()).await?,
             additional_routes: self.additional_routes.clone(),
@@ -267,7 +267,7 @@ fn spawn_prom_scrape_service(
         }
     });
 
-    let http_server = HttpServer::from_listener(listener, service);
+    let http_server = UnsupervisedHttpServer::from_listener(listener, service);
     http_server.listen()
 }
 

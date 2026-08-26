@@ -3,7 +3,7 @@ use saluki_error::GenericError;
 
 use super::Relay;
 use crate::accounting::MemoryBounds;
-use crate::{components::ComponentContext, data_model::payload::PayloadType, topology::OutputDefinition};
+use crate::{components::BuildContext, data_model::payload::PayloadType, topology::OutputDefinition};
 
 /// A relay builder.
 ///
@@ -19,5 +19,5 @@ pub trait RelayBuilder: MemoryBounds {
     /// ## Errors
     ///
     /// If the relay can't be built for any reason, an error is returned.
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Relay + Send>, GenericError>;
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Relay + Send>, GenericError>;
 }

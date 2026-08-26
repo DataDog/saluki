@@ -1,18 +1,21 @@
 //! Adapts a built topology component into a [`Supervisable`] worker.
 //!
-//! Each component in a topology runs as the sole, _significant_ child of its own dedicated supervisor
-//! (see [`BuiltTopology::spawn_inner`][super::built::BuiltTopology::spawn_inner]). To be supervised, a
-//! component must be presented as a [`Supervisable`]: [`ComponentWorker`] wraps an already-built
-//! component together with its context and bridges the two.
+//! Each component in a topology runs as the sole, _significant_ child of its own dedicated supervisor (see
+//! [`BuiltTopology::spawn_inner`][super::built::BuiltTopology::spawn_inner]). To be supervised, a component must be
+//! presented as a [`Supervisable`]: [`ComponentWorker`] wraps an already-built component together with its context and
+//! bridges the two.
 //!
-//! A component is built once (during topology initialization) and run once, so the wrapped component is
-//! held behind a take-once [`Mutex`] and consumed by [`Supervisable::initialize`]. Sources and relays
-//! drive their own shutdown, so the supervisor-provided shutdown handle is installed into their context;
-//! the remaining component kinds stop when their upstream channels close and ignore it.
+//! A component is built once (during topology initialization) and run once, so the wrapped component is held behind a
+//! take-once [`Mutex`] and consumed by [`Supervisable::initialize`]. Sources and relays drive their own shutdown, so
+//! the supervisor-provided shutdown handle is installed into their context; the remaining component kinds stop when
+//! their upstream channels close and ignore it.
 //!
-//! A component carries no shutdown deadline of its own. Its supervisor holds one budget covering the
-//! component and every task it spawned, so the whole subtree is bounded by a single number rather than a
-//! guess per worker. See [`Supervisor::with_shutdown_budget`][crate::runtime::Supervisor::with_shutdown_budget].
+//! A component carries no shutdown deadline of its own. Its supervisor holds one budget covering the component and
+//! every task it spawned, so the subtree is bounded by a single number rather than a guess per worker. See
+//! [`Supervisor::with_shutdown_budget`][crate::runtime::Supervisor::with_shutdown_budget].
+//!
+//! The one exception is a child spawned from a hand-written [`Supervisable`][crate::runtime::Supervisable], which
+//! reports its own shutdown strategy; that child is held to whichever of its deadline and the budget elapses first.
 
 use std::sync::Mutex;
 use std::time::Duration;

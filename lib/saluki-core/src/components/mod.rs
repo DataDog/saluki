@@ -12,8 +12,11 @@ pub mod relays;
 pub mod sources;
 pub mod transforms;
 
+mod build_context;
+pub use self::build_context::BuildContext;
+
 mod spawner;
-pub use self::spawner::{ChildBuilder, ComponentSpawner};
+pub use self::spawner::{BuilderState, ChildBuilder, ComponentSpawner, OneShot, Restartable};
 
 #[cfg(any(test, feature = "test-util"))]
 pub mod test_util;

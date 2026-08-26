@@ -71,6 +71,15 @@ while syslog logging is enabled, ADP uses the platform default local syslog sock
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
 when the receiving syslog daemon expects the Agent's RFC-style header.
 
+### DogStatsD metric blocklists
+
+A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`: ADP
+uses `metric_filterlist_match_prefix` as the active match mode. Clearing `metric_filterlist`
+restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
+
+Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
+changes to any of these settings update filtering.
+
 ### UDS origin detection on macOS
 
 ADP supports PID-based UDS origin detection on Linux. On macOS and other non-Linux platforms,
