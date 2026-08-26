@@ -9,6 +9,9 @@ pub mod dns;
 pub mod listener;
 pub mod server;
 
+mod resource;
+pub use self::resource::{ConnectionOrientedSocketSpecification, SocketSpecification};
+
 mod stream;
 pub use self::stream::{Connection, Stream};
 

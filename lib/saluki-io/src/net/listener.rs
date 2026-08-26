@@ -1,7 +1,7 @@
 //! Network listeners.
 #[cfg(unix)]
 use std::path::PathBuf;
-use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize};
+use std::{collections::VecDeque, future::pending, io, net::SocketAddr, num::NonZeroUsize, sync::Arc};
 #[cfg(windows)]
 use std::{ffi::c_void, mem, ptr};
 
@@ -99,9 +99,31 @@ pub enum ListenerError {
 
 enum ListenerInner {
     Tcp(TcpListener, SocketAddr),
-    Udp(VecDeque<TokioUdpSocket>, SocketAddr),
+
+    /// Pre-bound UDP sockets, how many have been handed out so far, and the address they are bound to.
+    ///
+    /// The sockets are retained rather than moved out by [`Listener::accept`], so a listener returned to a
+    /// [`ResourceRegistry`][saluki_core::runtime::state::ResourceRegistry] still holds every socket it was created
+    /// with. Each socket is bound independently with `SO_REUSEPORT`, so the kernel load-balances across them; sharing
+    /// one socket would defeat that entirely.
+    ///
+    /// The bound address is recorded separately because the caller may have asked for port `0`, in which case it is
+    /// only knowable after the first socket is bound.
+    Udp {
+        sockets: Vec<Arc<TokioUdpSocket>>,
+        handed_out: usize,
+        bound_addr: SocketAddr,
+    },
+
+    /// A single pre-bound Unix datagram socket, whether it has been handed out, and the path it is bound to.
+    ///
+    /// Unlike UDP there is only ever one, since `SO_REUSEPORT` doesn't apply.
     #[cfg(unix)]
-    Unixgram(Option<UnixDatagram>, PathBuf),
+    Unixgram {
+        socket: Arc<UnixDatagram>,
+        handed_out: bool,
+        bound_path: PathBuf,
+    },
     #[cfg(unix)]
     Unix(UnixListener, PathBuf),
     #[cfg(windows)]
@@ -176,7 +198,11 @@ impl Listener {
                 let (sockets, bound_addr) = bind_udp_sockets(*addr, udp_streams).await.context(FailedToBind {
                     address: listen_address.clone(),
                 })?;
-                ListenerInner::Udp(sockets, bound_addr)
+                ListenerInner::Udp {
+                    sockets: sockets.into_iter().map(Arc::new).collect(),
+                    handed_out: 0,
+                    bound_addr,
+                }
             }
             #[cfg(unix)]
             ListenAddress::Unixgram(addr) => {
@@ -185,8 +211,11 @@ impl Listener {
                 })?;
 
                 let listener = UnixDatagram::bind(addr)
-                    .map(Some)
-                    .map(|listener| ListenerInner::Unixgram(listener, addr.clone()))
+                    .map(|socket| ListenerInner::Unixgram {
+                        socket: Arc::new(socket),
+                        handed_out: false,
+                        bound_path: addr.clone(),
+                    })
                     .context(FailedToBind {
                         address: listen_address.clone(),
                     })?;
@@ -278,9 +307,9 @@ impl Listener {
     pub fn bound_listen_address(&self) -> BoundListenAddress {
         match &self.inner {
             ListenerInner::Tcp(_, bound_addr) => BoundListenAddress::Tcp(*bound_addr),
-            ListenerInner::Udp(_, bound_addr) => BoundListenAddress::Udp(*bound_addr),
+            ListenerInner::Udp { bound_addr, .. } => BoundListenAddress::Udp(*bound_addr),
             #[cfg(unix)]
-            ListenerInner::Unixgram(_, bound_addr) => BoundListenAddress::Unixgram(bound_addr.clone()),
+            ListenerInner::Unixgram { bound_path, .. } => BoundListenAddress::Unixgram(bound_path.clone()),
             #[cfg(unix)]
             ListenerInner::Unix(_, bound_addr) => BoundListenAddress::Unix(bound_addr.clone()),
             #[cfg(windows)]
@@ -295,13 +324,32 @@ impl Listener {
     pub fn min_buffer_reservation(&self) -> usize {
         match &self.inner {
             ListenerInner::Tcp(_, _) => 1,
-            ListenerInner::Udp(sockets, _) => sockets.len(),
+            ListenerInner::Udp { sockets, .. } => sockets.len(),
             #[cfg(unix)]
-            ListenerInner::Unixgram(_, _) => 1,
+            ListenerInner::Unixgram { .. } => 1,
             #[cfg(unix)]
             ListenerInner::Unix(_, _) => 1,
             #[cfg(windows)]
             ListenerInner::NamedPipe { .. } => 1,
+        }
+    }
+
+    /// Makes every connectionless stream available again.
+    ///
+    /// A listener hands out each of its pre-bound connectionless sockets once, so a listener that has already been used
+    /// looks exhausted to its next holder. This resets that bookkeeping without touching the sockets themselves, which
+    /// is what lets a listener be lent out, returned, and lent out again. Connection-oriented listeners have nothing to
+    /// reset, since `accept` draws from the kernel's backlog rather than a fixed supply.
+    pub(crate) fn rearm(&mut self) {
+        match &mut self.inner {
+            ListenerInner::Udp { handed_out, .. } => *handed_out = 0,
+            #[cfg(unix)]
+            ListenerInner::Unixgram { handed_out, .. } => *handed_out = false,
+            ListenerInner::Tcp(_, _) => {}
+            #[cfg(unix)]
+            ListenerInner::Unix(_, _) => {}
+            #[cfg(windows)]
+            ListenerInner::NamedPipe { .. } => {}
         }
     }
 
@@ -325,26 +373,38 @@ impl Listener {
                 configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
                 Ok((socket, addr).into())
             }
-            ListenerInner::Udp(udp, _) => {
-                if let Some(socket) = udp.pop_front() {
-                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
-                    Ok(socket.into())
-                } else {
-                    pending().await
+            ListenerInner::Udp {
+                sockets, handed_out, ..
+            } => {
+                match sockets.get(*handed_out) {
+                    Some(socket) => {
+                        *handed_out += 1;
+
+                        configure_stream_socket_receive_buffer_size(
+                            &**socket,
+                            self.socket_receive_buffer_size,
+                            stream_type,
+                        )?;
+                        Ok(Arc::clone(socket).into())
+                    }
+                    // Every socket is already in use. There is nothing further to yield, but the caller is typically an
+                    // accept loop, so go quiet rather than returning an error.
+                    None => pending().await,
                 }
             }
             #[cfg(unix)]
-            ListenerInner::Unixgram(unix, _) => {
-                if let Some(socket) = unix.take() {
-                    configure_stream_socket_receive_buffer_size(&socket, self.socket_receive_buffer_size, stream_type)?;
-                    enable_uds_socket_credentials(&socket).context(FailedToConfigureStream {
-                        setting: "SO_PASSCRED",
-                        stream_type,
-                    })?;
-                    Ok(socket.into())
-                } else {
-                    pending().await
+            ListenerInner::Unixgram { socket, handed_out, .. } => {
+                if *handed_out {
+                    return pending().await;
                 }
+                *handed_out = true;
+
+                configure_stream_socket_receive_buffer_size(&**socket, self.socket_receive_buffer_size, stream_type)?;
+                enable_uds_socket_credentials(&**socket).context(FailedToConfigureStream {
+                    setting: "SO_PASSCRED",
+                    stream_type,
+                })?;
+                Ok(Arc::clone(socket).into())
             }
             #[cfg(unix)]
             ListenerInner::Unix(unix, _) => unix
@@ -899,9 +959,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn udp_socket_ports(listener: &Listener) -> Vec<u16> {
         match &listener.inner {
-            ListenerInner::Udp(sockets, _) => sockets
+            ListenerInner::Udp { sockets, .. } => sockets
                 .iter()
-                .map(|s| s.local_addr().expect("socket should have local addr").port())
+                .map(|socket| socket.local_addr().expect("socket should have local addr").port())
                 .collect(),
             _ => panic!("expected UDP listener"),
         }
@@ -916,7 +976,7 @@ mod tests {
 
     fn udp_local_addr(listener: &Listener) -> SocketAddr {
         match &listener.inner {
-            ListenerInner::Udp(_, local_addr) => *local_addr,
+            ListenerInner::Udp { bound_addr, .. } => *bound_addr,
             _ => panic!("expected UDP listener"),
         }
     }
