@@ -534,6 +534,7 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
     use std::sync::Arc;
     #[cfg(unix)]
     use std::time::Duration;
@@ -559,6 +560,9 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    /// Number of times to reserve ports and try to start the TLS servers on them before giving up.
+    const START_ATTEMPTS: usize = 5;
 
     struct NoopHandler;
 
@@ -913,39 +917,54 @@ mod tests {
     /// the self-signed certificate (so callers can build a matching client config).
     async fn start_otlp_server_with_tls() -> (u16, u16, SelfSignedCert, TestComponentSupervisor) {
         let _ = saluki_tls::initialize_default_crypto_provider();
-        let supervisor = TestComponentSupervisor::start("otlp-tls-test").await;
-        let spawner = supervisor.spawner();
 
-        // Bind listeners ourselves first to get ephemeral ports, then drop them and let the builder re-bind.
-        let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let http_port = http_listener.local_addr().unwrap().port();
-        let grpc_port = grpc_listener.local_addr().unwrap().port();
-        drop(http_listener);
-        drop(grpc_listener);
-
+        // Write the cert and key to temp files so OtlpTlsConfiguration can load them. Done up front so that reserving
+        // the ports and handing them to the servers are back to back.
         let cert = SelfSignedCert::localhost();
-        let http_endpoint = ListenAddress::Tcp(format!("127.0.0.1:{}", http_port).parse().unwrap());
-        let grpc_endpoint = ListenAddress::Tcp(format!("127.0.0.1:{}", grpc_port).parse().unwrap());
-
-        // Write the cert and key to temp files so OtlpTlsConfiguration can load them.
         let tempdir = tempfile::tempdir().expect("temp dir should be created");
         let cert_path = tempdir.path().join("cert.pem");
         let key_path = tempdir.path().join("key.pem");
         cert.write_cert_pem(&cert_path);
         cert.write_key_pem(&key_path);
-
         let tls_config = OtlpTlsConfiguration::new(cert_path, key_path);
-        let server_config = OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+
+        // Reserving the ports releases them before the servers rebind, so anything else on the host can take them
+        // first. Retry on a lost race, with a fresh supervisor, since a failed bind takes the old one down.
+        let mut last_error = None;
+        for _ in 0..START_ATTEMPTS {
+            let supervisor = TestComponentSupervisor::start("otlp-tls-test").await;
+            let http_addr = free_local_addr();
+            let grpc_addr = free_local_addr();
+
+            let result = OtlpServerConfiguration::new(
+                ListenAddress::Tcp(http_addr),
+                ListenAddress::Tcp(grpc_addr),
+                4 * 1024 * 1024,
+            )
             .with_http_tls(tls_config.clone())
-            .with_grpc_tls(tls_config);
+            .with_grpc_tls(tls_config.clone())
+            .build(
+                NoopHandler,
+                MemoryLimiter::noop(),
+                Metrics::for_tests(),
+                &supervisor.spawner(),
+            )
+            .await;
 
-        server_config
-            .build(NoopHandler, MemoryLimiter::noop(), Metrics::for_tests(), &spawner)
-            .await
-            .expect("OTLP server with TLS should start");
+            match result {
+                Ok(()) => return (http_addr.port(), grpc_addr.port(), cert, supervisor),
+                Err(e) => last_error = Some(e),
+            }
+        }
 
-        (http_port, grpc_port, cert, supervisor)
+        panic!("OTLP server with TLS should start: {}", last_error.unwrap());
+    }
+
+    /// Reserves a loopback port and releases it, yielding an address a server can bind.
+    fn free_local_addr() -> SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
+
+        listener.local_addr().expect("should have a local address")
     }
 
     #[tokio::test]
