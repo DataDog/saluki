@@ -7,13 +7,12 @@ use http::{uri::PathAndQuery, HeaderName, HeaderValue, Method, Uri};
 use piecemeal::{ScratchBuffer, ScratchWriter};
 use saluki_common::collections::{FastHashMap, FastIndexSet};
 use saluki_common::strings::StringBuilder;
-use saluki_common::task::HandleExt as _;
 use saluki_context::tags::TagSet;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::data_model::event::trace::AttributeValue;
 use saluki_core::topology::{EventsBuffer, PayloadsBuffer};
 use saluki_core::{
-    components::{encoders::*, ComponentContext},
+    components::{encoders::*, BuildContext},
     data_model::{
         event::{trace::Trace, EventType},
         payload::{HttpPayload, Payload, PayloadMetadata, PayloadType},
@@ -198,8 +197,8 @@ impl EncoderBuilder for DatadogTraceConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let compression_scheme = CompressionScheme::new(&self.compressor_kind, self.zstd_compressor_level);
 
@@ -274,17 +273,21 @@ impl Encoder for DatadogTrace {
 
         let mut health = context.take_health_handle();
 
-        // The encoder runs two async loops, the main encoder loop and the request builder loop,
-        // this channel is used to send events from the main encoder loop to the request builder loop safely.
         let (events_tx, events_rx) = mpsc::channel(8);
-        // adds a channel to send payloads to the dispatcher and a channel to receive them.
         let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        // Run our request builder task on the worker pool.
+        //
+        // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
+        // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
         let request_builder_fut = run_request_builder(trace_rb, telemetry, events_rx, payloads_tx, flush_timeout);
-        // Spawn the request builder task on the global thread pool, this task is responsible for encoding traces and flushing requests.
-        let request_builder_handle = context
-            .topology_context()
-            .global_thread_pool() // Use the shared Tokio runtime thread pool.
-            .spawn_traced_named("dd-traces-request-builder", request_builder_fut);
+        context
+            .spawner()
+            .noninterruptible("request_builder", |_shutdown| request_builder_fut)
+            .on_worker_pool()
+            .spawn()
+            .await
+            .error_context("Failed to spawn request builder task.")?;
 
         health.mark_ready();
         debug!("Datadog Trace encoder started.");
@@ -321,13 +324,8 @@ impl Encoder for DatadogTrace {
             }
         }
 
-        // Request build task should now be stopped.
-        match request_builder_handle.await {
-            Ok(Ok(())) => debug!("Request builder task stopped."),
-            Ok(Err(e)) => error!(error = %e, "Request builder task failed."),
-            Err(e) => error!(error = %e, "Request builder task panicked."),
-        }
-
+        // Draining `payloads_rx` to completion already implies the request builder finished: it owns the only sender,
+        // so the channel only closes once that child's future has run to completion (or been dropped).
         debug!("Datadog Trace encoder stopped.");
 
         Ok(())

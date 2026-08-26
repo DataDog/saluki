@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
 use saluki_core::{
-    components::ComponentContext,
+    components::BuildContext,
     data_model::event::{eventd::EventD, service_check::ServiceCheck},
 };
 use saluki_env::{EnvironmentProvider, HostProvider};
@@ -30,7 +30,7 @@ where
     E: EnvironmentProvider + Send + Sync + 'static,
     <E::Host as HostProvider>::Error: Into<GenericError>,
 {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(
             HostEnrichment::from_environment_provider(&self.env_provider).await?,
         ))

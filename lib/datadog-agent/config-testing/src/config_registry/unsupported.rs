@@ -489,6 +489,336 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `otlp_config.receiver.protocols.grpc.tls.ca_pem`-gRPC TLS CA PEM
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_PEM = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_PEM,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.cert_pem`-gRPC TLS cert PEM
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_PEM = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_PEM,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.cipher_suites`-gRPC TLS cipher suites
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CIPHER_SUITES = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CIPHER_SUITES,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.client_ca_file`-gRPC TLS client CA file
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CLIENT_CA_FILE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CLIENT_CA_FILE,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload`-gRPC TLS client CA reload
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CLIENT_CA_FILE_RELOAD = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CLIENT_CA_FILE_RELOAD,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.curve_preferences`-gRPC TLS curve preferences
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CURVE_PREFERENCES = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CURVE_PREFERENCES,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool`-gRPC TLS include system CA pool
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_INCLUDE_SYSTEM_CA_CERTS_POOL = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_INCLUDE_SYSTEM_CA_CERTS_POOL,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.key_pem`-gRPC TLS key PEM
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_PEM = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_PEM,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.max_version`-gRPC TLS max version
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_MAX_VERSION = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_MAX_VERSION,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.min_version`-gRPC TLS min version
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_MIN_VERSION = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_MIN_VERSION,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.reload_interval`-gRPC TLS reload interval
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_RELOAD_INTERVAL = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_RELOAD_INTERVAL,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.tpm.auth`-gRPC TLS TPM auth
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_AUTH = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_AUTH,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.tpm.enabled`-gRPC TLS TPM enabled
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_ENABLED = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_ENABLED,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth`-gRPC TLS TPM owner auth
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_OWNER_AUTH = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_OWNER_AUTH,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.tls.tpm.path`-gRPC TLS TPM path
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_PATH = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_TPM_PATH,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.ca_pem`-HTTP TLS CA PEM
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_PEM = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_PEM,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.cert_pem`-HTTP TLS cert PEM
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_PEM = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_PEM,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.cipher_suites`-HTTP TLS cipher suites
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CIPHER_SUITES = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CIPHER_SUITES,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.client_ca_file`-HTTP TLS client CA file
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CLIENT_CA_FILE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CLIENT_CA_FILE,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.client_ca_file_reload`-HTTP TLS client CA reload
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CLIENT_CA_FILE_RELOAD = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CLIENT_CA_FILE_RELOAD,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.curve_preferences`-HTTP TLS curve preferences
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CURVE_PREFERENCES = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CURVE_PREFERENCES,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool`-HTTP TLS include system CA pool
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_INCLUDE_SYSTEM_CA_CERTS_POOL = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_INCLUDE_SYSTEM_CA_CERTS_POOL,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.key_pem`-HTTP TLS key PEM
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_PEM = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_PEM,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.max_version`-HTTP TLS max version
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_MAX_VERSION = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_MAX_VERSION,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.min_version`-HTTP TLS min version
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_MIN_VERSION = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_MIN_VERSION,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.reload_interval`-HTTP TLS reload interval
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_RELOAD_INTERVAL = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_RELOAD_INTERVAL,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.tpm.auth`-HTTP TLS TPM auth
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_TPM_AUTH = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_TPM_AUTH,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.tpm.enabled`-HTTP TLS TPM enabled
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_TPM_ENABLED = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_TPM_ENABLED,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.tpm.owner_auth`-HTTP TLS TPM owner auth
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_TPM_OWNER_AUTH = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_TPM_OWNER_AUTH,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.http.tls.tpm.path`-HTTP TLS TPM path
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_TPM_PATH = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_TPM_PATH,
+        support_level: SupportLevel::Incompatible(Severity::High),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `use_dogstatsd`-Master DogStatsD enable toggle
     USE_DOGSTATSD = SalukiAnnotation {
         schema: &schema::USE_DOGSTATSD,

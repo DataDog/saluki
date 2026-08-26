@@ -317,6 +317,31 @@ pub struct KeepaliveServerParameters {
     pub timeout: Duration,
 }
 
+/// TLS settings for an OTLP receiver (gRPC or HTTP).
+///
+/// These configure server-side TLS for the receiver. When `cert_file` and `key_file` are both set, the receiver
+/// accepts encrypted connections. When `ca_file` is also set, the server requests client certificates and verifies
+/// them if presented, but does not require them (optional verification).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Tls {
+    /// Path to the PEM-encoded certificate chain file.
+    ///
+    /// When set together with `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
+    pub cert_file: String,
+
+    /// Path to the PEM-encoded private key file.
+    ///
+    /// The private key must correspond to the leaf certificate in `cert_file`. Defaults to empty (TLS disabled).
+    pub key_file: String,
+
+    /// Path to the PEM-encoded CA certificate file for verifying client certificates.
+    ///
+    /// When set, the server requests client certificates and verifies them against the CA certificates in this file.
+    /// Clients that present a certificate must provide a valid one; clients that present no certificate are still
+    /// accepted. Defaults to empty (no client certificate verification).
+    pub ca_file: String,
+}
+
 /// OTLP gRPC receiver.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct GrpcReceiver {
@@ -332,6 +357,9 @@ pub struct GrpcReceiver {
     /// Server-side keepalive parameters. `None` means keepalive is not configured; the component
     /// layer applies defaults.
     pub keepalive: Option<KeepaliveServerParameters>,
+
+    /// TLS settings for the gRPC receiver.
+    pub tls: Tls,
 }
 
 /// OTLP HTTP receiver.
@@ -346,6 +374,9 @@ pub struct HttpReceiver {
 
     /// CORS configuration for the HTTP receiver.
     pub cors: Cors,
+
+    /// TLS settings for the HTTP receiver.
+    pub tls: Tls,
 }
 
 impl Default for HttpReceiver {
@@ -355,6 +386,7 @@ impl Default for HttpReceiver {
             endpoint: String::new(),
             transport: "tcp".to_string(),
             cors: Cors::default(),
+            tls: Tls::default(),
         }
     }
 }

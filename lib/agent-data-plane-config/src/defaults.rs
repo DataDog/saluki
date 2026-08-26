@@ -25,6 +25,9 @@ pub const DEFAULT_AGGREGATE_FLUSH_INTERVAL: Duration = Duration::from_secs(15);
 /// Default delay before an idle passthrough buffer is flushed.
 pub const DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Default byte capacity of the DogStatsD mapper's string interner.
+pub const DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap();
+
 /// Default timeout before a partially filled encoder payload is flushed.
 pub const DEFAULT_ENCODER_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -55,5 +58,5 @@ pub const DEFAULT_RARE_SAMPLER_CARDINALITY: usize = 200;
 /// Default OTLP trace string interner capacity: 512 KiB.
 pub const DEFAULT_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(512 * 1024).unwrap();
 
-/// Maximum OTLP trace string interner capacity: 1 GiB. Arbitrary to stop @blt from blowing us up.
+/// Maximum string interner capacity: 1 GiB. Arbitrary to stop @blt from blowing us up.
 pub const MAX_STRING_INTERNER_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(1024 * 1024 * 1024).unwrap();

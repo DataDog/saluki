@@ -8,12 +8,11 @@ use protobuf::{rt::WireType, CodedOutputStream};
 use saluki_common::{
     buf::{ChunkedBytesBuffer, FrozenChunkedBytesBuffer},
     iter::ReusableDeduplicator,
-    task::HandleExt as _,
 };
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{encoders::*, ComponentContext},
+    components::{encoders::*, BuildContext},
     data_model::{
         event::{
             metric::{Metric, MetricOrigin, MetricValues},
@@ -381,8 +380,8 @@ impl EncoderBuilder for DatadogMetricsConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let v3_serializer_telemetry = V3SerializerTelemetry::from_builder(&metrics_builder);
 
@@ -550,9 +549,13 @@ impl Encoder for DatadogMetrics {
 
         let mut health = context.take_health_handle();
 
-        // Spawn our request builder task.
         let (events_tx, events_rx) = mpsc::channel(8);
         let (payloads_tx, mut payloads_rx) = mpsc::channel(8);
+
+        // Run our request builder task on the worker pool.
+        //
+        // The request builder task ignores the shutdown signal on purpose: it drains its incoming event buffer channel
+        // until the channel closes, which is what guarantees every buffered metric is encoded and dispatched.
         let request_builder_fut = run_request_builder(
             v2_series_builder,
             v2_sketch_builder,
@@ -565,10 +568,13 @@ impl Encoder for DatadogMetrics {
             flush_timeout,
             log_payloads,
         );
-        let request_builder_handle = context
-            .topology_context()
-            .global_thread_pool()
-            .spawn_traced_named("dd-metrics-request-builder", request_builder_fut);
+        context
+            .spawner()
+            .noninterruptible("request_builder", |_shutdown| request_builder_fut)
+            .on_worker_pool()
+            .spawn()
+            .await
+            .error_context("Failed to spawn request builder task.")?;
 
         health.mark_ready();
         debug!("Datadog Metrics encoder started.");
@@ -628,13 +634,8 @@ impl Encoder for DatadogMetrics {
             }
         }
 
-        // Request build task should now be stopped.
-        match request_builder_handle.await {
-            Ok(Ok(())) => debug!("Request builder task stopped."),
-            Ok(Err(e)) => error!(error = %e, "Request builder task failed."),
-            Err(e) => error!(error = %e, "Request builder task panicked."),
-        }
-
+        // Draining `payloads_rx` to completion already implies the request builder finished: it owns the only sender,
+        // so the channel only closes once that child's future has run to completion (or been dropped).
         debug!("Datadog Metrics encoder stopped.");
 
         Ok(())

@@ -67,6 +67,36 @@ architecture is fundamentally different or the feature is platform-specific.
 | `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`              | gRPC keepalive: min time between pings             | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream` | gRPC keepalive: allow no-stream pings              | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle`    | gRPC keepalive: max connection idle                | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.tls.ca_pem`                                         | gRPC TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.                                                                                                                                                                |
+| `otlp_config.receiver.protocols.grpc.tls.cert_pem`                                       | gRPC TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.                                                                                                                                                                               |
+| `otlp_config.receiver.protocols.grpc.tls.cipher_suites`                                  | gRPC TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.client_ca_file`                                 | gRPC TLS client CA file                            |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload`                          | gRPC TLS client CA reload                          |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.curve_preferences`                              | gRPC TLS curve preferences                         |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool`                   | gRPC TLS include system CA pool                    |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.key_pem`                                        | gRPC TLS key PEM                                   | Not supported. Use `key_file` to provide the private key for the OTLP gRPC receiver.                                                                                                                                                                                      |
+| `otlp_config.receiver.protocols.grpc.tls.max_version`                                    | gRPC TLS max version                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.min_version`                                    | gRPC TLS min version                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.reload_interval`                                | gRPC TLS reload interval                           |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.tpm.auth`                                       | gRPC TLS TPM auth                                  |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.tpm.enabled`                                    | gRPC TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth`                                 | gRPC TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.tpm.path`                                       | gRPC TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.ca_pem`                                         | HTTP TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.                                                                                                                                                                |
+| `otlp_config.receiver.protocols.http.tls.cert_pem`                                       | HTTP TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.                                                                                                                                                                               |
+| `otlp_config.receiver.protocols.http.tls.cipher_suites`                                  | HTTP TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.client_ca_file`                                 | HTTP TLS client CA file                            |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.client_ca_file_reload`                          | HTTP TLS client CA reload                          |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.curve_preferences`                              | HTTP TLS curve preferences                         |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool`                   | HTTP TLS include system CA pool                    |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.key_pem`                                        | HTTP TLS key PEM                                   | Not supported. Use `key_file` to provide the private key for the OTLP HTTP receiver.                                                                                                                                                                                      |
+| `otlp_config.receiver.protocols.http.tls.max_version`                                    | HTTP TLS max version                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.min_version`                                    | HTTP TLS min version                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.reload_interval`                                | HTTP TLS reload interval                           |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.tpm.auth`                                       | HTTP TLS TPM auth                                  |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.tpm.enabled`                                    | HTTP TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.tpm.owner_auth`                                 | HTTP TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.tpm.path`                                       | HTTP TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
 | `telemetry.dogstatsd.aggregator_channel_latency_buckets`                                 | Histogram buckets: DSD-to-aggregator channel lag   | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
 | `telemetry.dogstatsd.listeners_channel_latency_buckets`                                  | Histogram buckets: listener packet-channel latency | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
 | `telemetry.dogstatsd.listeners_latency_buckets`                                          | Histogram buckets: listener processing latency     | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
@@ -489,62 +519,26 @@ and tracks send failures through telemetry.
 The following settings need further investigation. ADP behavior may differ from the core agent in
 ways that are not yet fully characterized.
 
-| Config Key                                                             | Description                      | Issue   |
-| ---------------------------------------------------------------------- | -------------------------------- | ------- |
-| `forwarder_low_prio_buffer_size`                                       | Low-priority request queue size  | [#1362] |
-| `otlp_config.receiver.protocols.grpc.dialer.timeout`                   | gRPC dialer timeout              |         |
-| `otlp_config.receiver.protocols.grpc.include_metadata`                 | gRPC include metadata in context |         |
-| `otlp_config.receiver.protocols.grpc.max_concurrent_streams`           | gRPC max concurrent streams      |         |
-| `otlp_config.receiver.protocols.grpc.read_buffer_size`                 | gRPC read buffer size            |         |
-| `otlp_config.receiver.protocols.grpc.tls.ca_file`                      | gRPC TLS CA file path            |         |
-| `otlp_config.receiver.protocols.grpc.tls.ca_pem`                       | gRPC TLS CA PEM                  |         |
-| `otlp_config.receiver.protocols.grpc.tls.cert_file`                    | gRPC TLS cert file path          |         |
-| `otlp_config.receiver.protocols.grpc.tls.cert_pem`                     | gRPC TLS cert PEM                |         |
-| `otlp_config.receiver.protocols.grpc.tls.cipher_suites`                | gRPC TLS cipher suites           |         |
-| `otlp_config.receiver.protocols.grpc.tls.client_ca_file`               | gRPC TLS client CA file          |         |
-| `otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload`        | gRPC TLS client CA reload        |         |
-| `otlp_config.receiver.protocols.grpc.tls.curve_preferences`            | gRPC TLS curve preferences       |         |
-| `otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool` | gRPC TLS include system CA pool  |         |
-| `otlp_config.receiver.protocols.grpc.tls.key_file`                     | gRPC TLS key file path           |         |
-| `otlp_config.receiver.protocols.grpc.tls.key_pem`                      | gRPC TLS key PEM                 |         |
-| `otlp_config.receiver.protocols.grpc.tls.max_version`                  | gRPC TLS max version             |         |
-| `otlp_config.receiver.protocols.grpc.tls.min_version`                  | gRPC TLS min version             |         |
-| `otlp_config.receiver.protocols.grpc.tls.reload_interval`              | gRPC TLS reload interval         |         |
-| `otlp_config.receiver.protocols.grpc.tls.tpm.auth`                     | gRPC TLS TPM auth                |         |
-| `otlp_config.receiver.protocols.grpc.tls.tpm.enabled`                  | gRPC TLS TPM enabled             |         |
-| `otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth`               | gRPC TLS TPM owner auth          |         |
-| `otlp_config.receiver.protocols.grpc.tls.tpm.path`                     | gRPC TLS TPM path                |         |
-| `otlp_config.receiver.protocols.grpc.write_buffer_size`                | gRPC write buffer size           |         |
-| `otlp_config.receiver.protocols.http.compression_algorithms`           | HTTP compression algorithms      |         |
-| `otlp_config.receiver.protocols.http.idle_timeout`                     | HTTP idle timeout                |         |
-| `otlp_config.receiver.protocols.http.include_metadata`                 | HTTP include metadata in context |         |
-| `otlp_config.receiver.protocols.http.keep_alives_enabled`              | HTTP keep-alives enabled         |         |
-| `otlp_config.receiver.protocols.http.logs_url_path`                    | HTTP logs URL path               |         |
-| `otlp_config.receiver.protocols.http.max_request_body_size`            | HTTP max request body size       |         |
-| `otlp_config.receiver.protocols.http.metrics_url_path`                 | HTTP metrics URL path            |         |
-| `otlp_config.receiver.protocols.http.read_header_timeout`              | HTTP read header timeout         |         |
-| `otlp_config.receiver.protocols.http.read_timeout`                     | HTTP read timeout                |         |
-| `otlp_config.receiver.protocols.http.response_headers`                 | HTTP response headers            |         |
-| `otlp_config.receiver.protocols.http.tls.ca_file`                      | HTTP TLS CA file path            |         |
-| `otlp_config.receiver.protocols.http.tls.ca_pem`                       | HTTP TLS CA PEM                  |         |
-| `otlp_config.receiver.protocols.http.tls.cert_file`                    | HTTP TLS cert file path          |         |
-| `otlp_config.receiver.protocols.http.tls.cert_pem`                     | HTTP TLS cert PEM                |         |
-| `otlp_config.receiver.protocols.http.tls.cipher_suites`                | HTTP TLS cipher suites           |         |
-| `otlp_config.receiver.protocols.http.tls.client_ca_file`               | HTTP TLS client CA file          |         |
-| `otlp_config.receiver.protocols.http.tls.client_ca_file_reload`        | HTTP TLS client CA reload        |         |
-| `otlp_config.receiver.protocols.http.tls.curve_preferences`            | HTTP TLS curve preferences       |         |
-| `otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool` | HTTP TLS include system CA pool  |         |
-| `otlp_config.receiver.protocols.http.tls.key_file`                     | HTTP TLS key file path           |         |
-| `otlp_config.receiver.protocols.http.tls.key_pem`                      | HTTP TLS key PEM                 |         |
-| `otlp_config.receiver.protocols.http.tls.max_version`                  | HTTP TLS max version             |         |
-| `otlp_config.receiver.protocols.http.tls.min_version`                  | HTTP TLS min version             |         |
-| `otlp_config.receiver.protocols.http.tls.reload_interval`              | HTTP TLS reload interval         |         |
-| `otlp_config.receiver.protocols.http.tls.tpm.auth`                     | HTTP TLS TPM auth                |         |
-| `otlp_config.receiver.protocols.http.tls.tpm.enabled`                  | HTTP TLS TPM enabled             |         |
-| `otlp_config.receiver.protocols.http.tls.tpm.owner_auth`               | HTTP TLS TPM owner auth          |         |
-| `otlp_config.receiver.protocols.http.tls.tpm.path`                     | HTTP TLS TPM path                |         |
-| `otlp_config.receiver.protocols.http.traces_url_path`                  | HTTP traces URL path             |         |
-| `otlp_config.receiver.protocols.http.write_timeout`                    | HTTP write timeout               |         |
+| Config Key                                                   | Description                      | Issue   |
+| ------------------------------------------------------------ | -------------------------------- | ------- |
+| `forwarder_low_prio_buffer_size`                             | Low-priority request queue size  | [#1362] |
+| `otlp_config.receiver.protocols.grpc.dialer.timeout`         | gRPC dialer timeout              |         |
+| `otlp_config.receiver.protocols.grpc.include_metadata`       | gRPC include metadata in context |         |
+| `otlp_config.receiver.protocols.grpc.max_concurrent_streams` | gRPC max concurrent streams      |         |
+| `otlp_config.receiver.protocols.grpc.read_buffer_size`       | gRPC read buffer size            |         |
+| `otlp_config.receiver.protocols.grpc.write_buffer_size`      | gRPC write buffer size           |         |
+| `otlp_config.receiver.protocols.http.compression_algorithms` | HTTP compression algorithms      |         |
+| `otlp_config.receiver.protocols.http.idle_timeout`           | HTTP idle timeout                |         |
+| `otlp_config.receiver.protocols.http.include_metadata`       | HTTP include metadata in context |         |
+| `otlp_config.receiver.protocols.http.keep_alives_enabled`    | HTTP keep-alives enabled         |         |
+| `otlp_config.receiver.protocols.http.logs_url_path`          | HTTP logs URL path               |         |
+| `otlp_config.receiver.protocols.http.max_request_body_size`  | HTTP max request body size       |         |
+| `otlp_config.receiver.protocols.http.metrics_url_path`       | HTTP metrics URL path            |         |
+| `otlp_config.receiver.protocols.http.read_header_timeout`    | HTTP read header timeout         |         |
+| `otlp_config.receiver.protocols.http.read_timeout`           | HTTP read timeout                |         |
+| `otlp_config.receiver.protocols.http.response_headers`       | HTTP response headers            |         |
+| `otlp_config.receiver.protocols.http.traces_url_path`        | HTTP traces URL path             |         |
+| `otlp_config.receiver.protocols.http.write_timeout`          | HTTP write timeout               |         |
 
 ## ADP-Only Settings
 
@@ -573,7 +567,7 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128            |
 | `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 |                |
 | `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         |                |
-| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner capacity            |                |
+| `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity       | 64KiB          |
 | `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              |                |
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
@@ -639,6 +633,10 @@ By default, ADP parses DogStatsD packets with the same leniency as the core agen
 
 Accepts a bare integer number of bytes or a human-readable byte-size string such as `12MiB`. When unset, ADP derives the byte budget from `dogstatsd_string_interner_size`.
 
+### `dogstatsd_mapper_string_interner_size`
+
+Controls the pre-allocated byte capacity for interning mapped metric names and tags. The default is `64KiB`. Set this to a nonzero byte count; you can use a bare number of bytes or a human-readable byte-size string such as `64KiB`. Larger values increase memory usage.
+
 ### `memory_limit` / `memory_slop_factor`
 
 ADP uses an explicit process memory limit (`memory_limit`) rather than relying on Go's garbage collector. The `memory_slop_factor` reserves a fraction of the limit to account for allocations not tracked by ADP's internal accounting. When memory usage approaches `memory_limit`, ADP's global limiter begins exerting backpressure (see `enable_global_limiter`).
@@ -659,6 +657,15 @@ To enable syslog logging, set `log_to_syslog: true`. Console logging remains con
 while syslog logging is enabled, ADP uses the platform default local syslog socket:
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
 when the receiving syslog daemon expects the Agent's RFC-style header.
+
+### DogStatsD metric blocklists
+
+A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`: ADP
+uses `metric_filterlist_match_prefix` as the active match mode. Clearing `metric_filterlist`
+restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
+
+Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
+changes to any of these settings update filtering.
 
 ### UDS origin detection on macOS
 
@@ -907,12 +914,18 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time`                     | gRPC keepalive: ping time                          |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout`                  | gRPC keepalive: ping timeout                       |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`                                | Max OTLP inbound gRPC message size (MiB)           |
+| `otlp_config.receiver.protocols.grpc.tls.ca_file`                                          | gRPC TLS CA file path                              |
+| `otlp_config.receiver.protocols.grpc.tls.cert_file`                                        | gRPC TLS cert file path                            |
+| `otlp_config.receiver.protocols.grpc.tls.key_file`                                         | gRPC TLS key file path                             |
 | `otlp_config.receiver.protocols.grpc.transport`                                            | otlp_config.receiver.protocols.grpc.transport      |
 | `otlp_config.receiver.protocols.http.cors.allowed_headers`                                 | HTTP CORS allowed headers                          |
 | `otlp_config.receiver.protocols.http.cors.allowed_origins`                                 | HTTP CORS allowed origins                          |
 | `otlp_config.receiver.protocols.http.cors.exposed_headers`                                 | HTTP CORS exposed headers                          |
 | `otlp_config.receiver.protocols.http.cors.max_age`                                         | HTTP CORS max age                                  |
 | `otlp_config.receiver.protocols.http.endpoint`                                             | otlp_config.receiver.protocols.http.endpoint       |
+| `otlp_config.receiver.protocols.http.tls.ca_file`                                          | HTTP TLS CA file path                              |
+| `otlp_config.receiver.protocols.http.tls.cert_file`                                        | HTTP TLS cert file path                            |
+| `otlp_config.receiver.protocols.http.tls.key_file`                                         | HTTP TLS key file path                             |
 | `otlp_config.traces.enabled`                                                               | otlp_config.traces.enabled                         |
 | `otlp_config.traces.internal_port`                                                         | otlp_config.traces.internal_port                   |
 | `otlp_config.traces.probabilistic_sampler.sampling_percentage`                             | OTLP trace sampling percentage                     |

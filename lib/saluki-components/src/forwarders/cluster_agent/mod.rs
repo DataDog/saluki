@@ -11,7 +11,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
-    components::{forwarders::*, ComponentContext},
+    components::{forwarders::*, BuildContext},
     data_model::payload::PayloadType,
     observability::ComponentMetricsExt as _,
 };
@@ -80,12 +80,12 @@ impl ForwarderBuilder for ClusterAgentForwarderConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let endpoint_request_mapper_factory = cluster_agent_request_mapper_factory(self.auth_header_value.clone());
         let forwarder = TransactionForwarder::from_config_with_endpoint_request_mapper(
-            context,
+            context.component_context().clone(),
             self.forwarder_config.clone(),
             None,
             get_cluster_agent_endpoint_name,

@@ -1,108 +1,51 @@
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::{io::Write, path::PathBuf};
 
+use agent_data_plane_config::Live;
 use async_trait::async_trait;
-use bytesize::ByteSize;
 use chrono::{DateTime, Utc};
 use saluki_common::collections::FastHashMap;
-use saluki_config::GenericConfiguration;
 use saluki_context::tags::TagSet;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
     components::{
         destinations::{Destination, DestinationBuilder, DestinationContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::{metric::Metric, Event, EventType},
 };
 use saluki_error::{generic_error, GenericError};
-use serde::Deserialize;
 use stringtheory::MetaString;
 use tokio::select;
 use tracing::{debug, warn};
 use tracing_appender::non_blocking::{NonBlocking, NonBlockingBuilder, WorkerGuard};
 use tracing_rolling_file::{RollingConditionBase, RollingFileAppenderBase};
 
-const DEFAULT_DOGSTATSD_LOG_FILE_MAX_SIZE: ByteSize = ByteSize::mb(10);
-const DEFAULT_DOGSTATSD_LOG_FILE_MAX_ROLLS: usize = 3;
 const DEBUG_LOG_WRITER_BUFFER_LINES: usize = 4096;
-const DOGSTATSD_METRICS_STATS_ENABLE_KEY: &str = "dogstatsd_metrics_stats_enable";
-
-const fn default_true() -> bool {
-    true
-}
-
-const fn default_log_file_max_size() -> ByteSize {
-    DEFAULT_DOGSTATSD_LOG_FILE_MAX_SIZE
-}
-
-const fn default_log_file_max_rolls() -> usize {
-    DEFAULT_DOGSTATSD_LOG_FILE_MAX_ROLLS
-}
 
 /// Configuration for the DogStatsD debug log destination.
-#[derive(Clone, Debug, Deserialize)]
-#[cfg_attr(test, derive(serde::Serialize))]
 pub struct DogStatsDDebugLogConfiguration {
     /// Whether DogStatsD metric-level statistics are enabled.
     ///
-    /// The debug log destination is always present when `dogstatsd_logging_enabled` is `true`,
-    /// but it drops metrics until this runtime flag becomes `true`, and only during that period.
-    ///
-    /// Defaults to `false`.
-    #[serde(rename = "dogstatsd_metrics_stats_enable", default)]
-    metrics_stats_enabled: bool,
-
-    #[serde(skip)]
-    configuration: Option<GenericConfiguration>,
-
-    /// Whether DogStatsD metric-level statistics should also be written to a log file.
-    ///
-    /// This controls whether the destination is added to the topology.
-    /// Defaults to `true`.
-    #[serde(rename = "dogstatsd_logging_enabled", default = "default_true")]
-    logging_enabled: bool,
+    /// The destination drops metrics while this runtime setting is `false`.
+    pub metrics_stats_enabled: Live<bool>,
 
     /// Path to the DogStatsD debug log file.
-    ///
-    /// This defaults to the platform-specific core Agent DogStatsD stats log path when the configured value is empty.
-    #[serde(rename = "dogstatsd_log_file", default)]
-    log_file: PathBuf,
+    pub log_file: PathBuf,
 
-    /// Maximum size of the active debug log file before rotation.
-    ///
-    /// Defaults to `10Mb`.
-    #[serde(rename = "dogstatsd_log_file_max_size", default = "default_log_file_max_size")]
-    log_file_max_size: ByteSize,
+    /// Maximum size of the active debug log file before rotation, in bytes.
+    pub log_file_max_size: u64,
 
     /// Number of rotated debug log files to keep.
-    ///
-    /// Defaults to `3`.
-    #[serde(rename = "dogstatsd_log_file_max_rolls", default = "default_log_file_max_rolls")]
-    log_file_max_rolls: usize,
-}
-
-#[cfg(test)]
-impl PartialEq for DogStatsDDebugLogConfiguration {
-    fn eq(&self, other: &Self) -> bool {
-        self.metrics_stats_enabled == other.metrics_stats_enabled
-            && self.logging_enabled == other.logging_enabled
-            && self.log_file == other.log_file
-            && self.log_file_max_size == other.log_file_max_size
-            && self.log_file_max_rolls == other.log_file_max_rolls
-    }
+    pub log_file_max_rolls: usize,
 }
 
 /// DogStatsD destination that writes metric debug lines to a rotating file.
 struct DogStatsDDebugLog {
     log_file: PathBuf,
-    log_file_max_size: ByteSize,
+    log_file_max_size: u64,
     log_file_max_rolls: usize,
     writer: Option<DebugLogWriter>,
-    metrics_stats_enabled: bool,
-    configuration: GenericConfiguration,
+    metrics_stats_enabled: Live<bool>,
     stats: FastHashMap<ContextNoOrigin, MetricSample>,
 }
 
@@ -123,68 +66,18 @@ struct ContextNoOrigin {
     tags: TagSet,
 }
 
-impl DogStatsDDebugLogConfiguration {
-    /// Creates a new `DogStatsDDebugLogConfiguration` from the given configuration.
-    ///
-    /// If `dogstatsd_log_file` is empty, `default_log_file_path` is used.
-    pub fn from_configuration(
-        config: &GenericConfiguration, default_log_file_path: PathBuf,
-    ) -> Result<Self, GenericError> {
-        let mut cfg: Self = config.as_typed()?;
-
-        if cfg.log_file.as_os_str().is_empty() {
-            cfg.log_file = default_log_file_path;
-        }
-
-        if cfg.log_file.to_str().is_none() {
-            return Err(generic_error!(
-                "dogstatsd_log_file must be valid UTF-8, got '{}'",
-                cfg.log_file.display()
-            ));
-        }
-
-        cfg.configuration = Some(config.clone());
-
-        Ok(cfg)
-    }
-
-    /// Returns `true` if the debug log destination should be added to the topology.
-    pub const fn enabled(&self) -> bool {
-        self.logging_enabled
-    }
-
-    /// Returns the DogStatsD debug log file path.
-    pub fn log_file(&self) -> &Path {
-        &self.log_file
-    }
-
-    /// Returns the maximum size of the active debug log file before rotation.
-    pub const fn log_file_max_size(&self) -> ByteSize {
-        self.log_file_max_size
-    }
-
-    /// Returns the number of rotated debug log files to keep.
-    pub const fn log_file_max_rolls(&self) -> usize {
-        self.log_file_max_rolls
-    }
-}
-
 impl DogStatsDDebugLog {
-    fn from_configuration(config: &DogStatsDDebugLogConfiguration) -> Result<Self, GenericError> {
+    fn new(config: &DogStatsDDebugLogConfiguration) -> Result<Self, GenericError> {
         let mut destination = Self {
             log_file: config.log_file.clone(),
             log_file_max_size: config.log_file_max_size,
             log_file_max_rolls: config.log_file_max_rolls,
             writer: None,
-            metrics_stats_enabled: config.metrics_stats_enabled,
-            configuration: config
-                .configuration
-                .clone()
-                .expect("configuration must be set via from_configuration"),
+            metrics_stats_enabled: config.metrics_stats_enabled.clone(),
             stats: FastHashMap::default(),
         };
 
-        if destination.metrics_stats_enabled {
+        if *destination.metrics_stats_enabled {
             destination.ensure_writer()?;
         }
 
@@ -192,7 +85,7 @@ impl DogStatsDDebugLog {
     }
 
     fn process_metric(&mut self, metric: &Metric) -> Result<(), GenericError> {
-        if !self.metrics_stats_enabled {
+        if !*self.metrics_stats_enabled {
             return Ok(());
         }
 
@@ -238,7 +131,7 @@ impl DogStatsDDebugLog {
 
         let appender = RollingFileAppenderBase::new(
             &self.log_file,
-            RollingConditionBase::new().max_size(self.log_file_max_size.as_u64()),
+            RollingConditionBase::new().max_size(self.log_file_max_size),
             self.log_file_max_rolls,
         )
         .map_err(|e| generic_error!("Failed to open dogstatsd_log_file '{}': {}", self.log_file.display(), e))?;
@@ -262,9 +155,6 @@ impl Destination for DogStatsDDebugLog {
         let mut health = context.take_health_handle();
         health.mark_ready();
 
-        let mut metrics_stats_enabled_watcher =
-            self.configuration.watch_for_updates(DOGSTATSD_METRICS_STATS_ENABLE_KEY);
-
         loop {
             select! {
                 _ = health.live() => continue,
@@ -280,11 +170,8 @@ impl Destination for DogStatsDDebugLog {
                     },
                     None => break,
                 },
-                (_, maybe_metrics_stats_enabled) = metrics_stats_enabled_watcher.changed::<bool>() => {
-                    if let Some(metrics_stats_enabled) = maybe_metrics_stats_enabled {
-                        self.metrics_stats_enabled = metrics_stats_enabled;
-                        debug!(metrics_stats_enabled, "Updated DogStatsD metrics stats debug logging gate.");
-                    }
+                metrics_stats_enabled = self.metrics_stats_enabled.changed() => {
+                    debug!(metrics_stats_enabled, "Updated DogStatsD metrics stats debug logging gate.");
                 },
             }
         }
@@ -299,9 +186,8 @@ impl DestinationBuilder for DogStatsDDebugLogConfiguration {
         EventType::Metric
     }
 
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Destination + Send>, GenericError> {
-        DogStatsDDebugLog::from_configuration(self)
-            .map(|destination| Box::new(destination) as Box<dyn Destination + Send>)
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Destination + Send>, GenericError> {
+        DogStatsDDebugLog::new(self).map(|destination| Box::new(destination) as Box<dyn Destination + Send>)
     }
 }
 
@@ -340,114 +226,30 @@ mod tests {
         fs,
         path::{Path, PathBuf},
     };
+    use std::{sync::Arc, time::Duration};
 
-    use bytesize::ByteSize;
-    use datadog_agent_config_testing::config_registry::structs;
-    use datadog_agent_config_testing::run_config_smoke_tests;
-    use saluki_config::config_from;
+    use agent_data_plane_config::{Live, SalukiConfiguration};
     use saluki_context::Context;
-    use saluki_core::data_model::event::metric::Metric;
-    use serde_json::json;
+    use saluki_core::{
+        accounting::{ComponentRegistry, MemoryLimiter},
+        components::{destinations::DestinationContext, ComponentContext, ComponentSpawner},
+        data_model::event::{metric::Metric, Event},
+        health::HealthRegistry,
+        runtime::{state::DataspaceRegistry, Supervisor},
+        topology::{interconnect::Consumer, EventsBuffer, TopologyContext},
+    };
     use tempfile::tempdir;
+    use tokio::{runtime::Handle, sync::mpsc};
 
-    use super::{DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
+    use super::{Destination, DogStatsDDebugLog, DogStatsDDebugLogConfiguration};
 
-    fn test_default_log_file_path() -> PathBuf {
-        PathBuf::from("/tmp/default-dogstatsd-stats.log")
-    }
-
-    async fn deser_config(raw_json: &str) -> DogStatsDDebugLogConfiguration {
-        let value = serde_json::from_str(raw_json).expect("test config should be valid JSON");
-        DogStatsDDebugLogConfiguration::from_configuration(&config_from(value).await, test_default_log_file_path())
-            .expect("DogStatsDDebugLogConfiguration should deserialize")
-    }
-
-    #[tokio::test]
-    async fn defaults_match_core_agent() {
-        let config = deser_config("{}").await;
-
-        assert!(config.enabled());
-        assert!(!config.metrics_stats_enabled);
-        assert!(config.logging_enabled);
-        assert_eq!(config.log_file(), test_default_log_file_path());
-        assert_eq!(config.log_file_max_size(), ByteSize::mb(10));
-        assert_eq!(config.log_file_max_rolls(), 3);
-    }
-
-    #[tokio::test]
-    async fn logging_enabled_controls_topology_wiring() {
-        let config = deser_config(r#"{ "dogstatsd_metrics_stats_enable": true }"#).await;
-        assert!(config.enabled());
-        assert!(config.metrics_stats_enabled);
-
-        let config = deser_config(
-            r#"{
-                "dogstatsd_metrics_stats_enable": true,
-                "dogstatsd_logging_enabled": true
-            }"#,
-        )
-        .await;
-        assert!(config.enabled());
-        assert!(config.metrics_stats_enabled);
-
-        let config = deser_config(
-            r#"{
-                "dogstatsd_metrics_stats_enable": true,
-                "dogstatsd_logging_enabled": false
-            }"#,
-        )
-        .await;
-        assert!(!config.enabled());
-        assert!(config.metrics_stats_enabled);
-
-        let config = deser_config(
-            r#"{
-                "dogstatsd_metrics_stats_enable": false,
-                "dogstatsd_logging_enabled": true
-            }"#,
-        )
-        .await;
-        assert!(config.enabled());
-        assert!(!config.metrics_stats_enabled);
-    }
-
-    #[tokio::test]
-    async fn explicit_log_file_path_is_preserved() {
-        let config = deser_config(r#"{ "dogstatsd_log_file": "/tmp/dsd-debug.log" }"#).await;
-
-        assert_eq!(config.log_file(), std::path::Path::new("/tmp/dsd-debug.log"));
-    }
-
-    #[tokio::test]
-    async fn negative_log_file_max_rolls_is_rejected() {
-        let value = json!({ "dogstatsd_log_file_max_rolls": -1 });
-        let config = config_from(value).await;
-
-        let result = DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path());
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn smoke_test() {
-        run_config_smoke_tests(structs::DOGSTATSD_DEBUG_LOG_CONFIGURATION, &[], json!({}), |cfg| {
-            DogStatsDDebugLogConfiguration::from_configuration(&cfg, test_default_log_file_path())
-                .expect("DogStatsDDebugLogConfiguration should deserialize")
-        })
-        .await
-    }
-
-    async fn test_config(log_file: PathBuf, max_size: ByteSize, max_rolls: usize) -> DogStatsDDebugLogConfiguration {
-        let config = config_from(json!({
-            "dogstatsd_metrics_stats_enable": true,
-            "dogstatsd_logging_enabled": true,
-            "dogstatsd_log_file": log_file.display().to_string(),
-            "dogstatsd_log_file_max_size": max_size.as_u64(),
-            "dogstatsd_log_file_max_rolls": max_rolls,
-        }))
-        .await;
-
-        DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path())
-            .expect("DogStatsDDebugLogConfiguration should deserialize")
+    fn test_config(log_file: PathBuf, max_size: u64, max_rolls: usize) -> DogStatsDDebugLogConfiguration {
+        DogStatsDDebugLogConfiguration {
+            metrics_stats_enabled: Live::new_fixed(true),
+            log_file,
+            log_file_max_size: max_size,
+            log_file_max_rolls: max_rolls,
+        }
     }
 
     fn read_log_files(log_file: &Path, max_rolls: usize) -> String {
@@ -480,11 +282,10 @@ mod tests {
     async fn writes_metric_debug_lines_and_updates_count() {
         let tempdir = tempdir().expect("temporary directory should be created");
         let log_file = tempdir.path().join("dogstatsd-stats.log");
-        let config = test_config(log_file.clone(), ByteSize::kb(64), 3).await;
+        let config = test_config(log_file.clone(), 64_000, 3);
         let metric = tagged_metric();
 
-        let mut destination =
-            DogStatsDDebugLog::from_configuration(&config).expect("debug log destination should be built");
+        let mut destination = DogStatsDDebugLog::new(&config).expect("debug log destination should be built");
         destination
             .write_metric(&metric)
             .expect("first metric should be written");
@@ -493,7 +294,7 @@ mod tests {
             .expect("second metric should be written");
         drop(destination);
 
-        let output = read_log_files(&log_file, config.log_file_max_rolls());
+        let output = read_log_files(&log_file, config.log_file_max_rolls);
         let lines = output.lines().collect::<Vec<_>>();
 
         assert_eq!(lines.len(), 2);
@@ -505,88 +306,133 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dynamically_drops_until_metrics_stats_are_enabled() {
-        use std::time::Duration;
-
-        use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
-
+    async fn run_starts_and_stops_logging_with_metrics_stats_setting() {
         let tempdir = tempdir().expect("temporary directory should be created");
         let log_file = tempdir.path().join("dogstatsd-stats.log");
-        let (config, sender) = saluki_config::ConfigurationLoader::for_tests(
-            Some(json!({
-                "dogstatsd_log_file": log_file.display().to_string(),
-                "dogstatsd_log_file_max_size": "64kb",
-                "dogstatsd_log_file_max_rolls": 3,
-                "dogstatsd_logging_enabled": true
-            })),
-            None,
-            true,
-        )
-        .await;
-        let sender = sender.expect("dynamic sender should be present");
-        sender
-            .send(ConfigUpdate::snapshot([]))
+        let cell = Arc::new(arc_swap::ArcSwap::from_pointee(SalukiConfiguration::default()));
+        let (tick_tx, tick_rx) = tokio::sync::watch::channel(());
+        let mut config = test_config(log_file.clone(), 64_000, 3);
+        config.metrics_stats_enabled = Live::new_dynamic(Arc::clone(&cell), tick_rx, |config| {
+            &config.domains.dogstatsd.debug_log.metrics_stats_enable
+        });
+        let destination = DogStatsDDebugLog::new(&config).expect("debug log destination should be built");
+
+        let component_context = ComponentContext::test_destination("test");
+        let (events_tx, events_rx) = mpsc::channel::<EventsBuffer>(4);
+        let consumer = Consumer::new(component_context.clone(), events_rx);
+        let topology_context = TopologyContext::new(
+            Arc::from("test"),
+            MemoryLimiter::noop(),
+            HealthRegistry::new(),
+            Handle::current(),
+            DataspaceRegistry::new(),
+        );
+        let health = HealthRegistry::new()
+            .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
+            .expect("component was not previously registered");
+        let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
+        let spawner = ComponentSpawner::new(supervisor_handle, Handle::current());
+        let context = DestinationContext::new(
+            &topology_context,
+            &component_context,
+            ComponentRegistry::default(),
+            health,
+            consumer,
+            spawner,
+        );
+        let run_handle = tokio::spawn(async move { Box::new(destination).run(context).await });
+
+        let mut events = EventsBuffer::default();
+        assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
+        events_tx
+            .send(events)
             .await
-            .expect("initial dynamic snapshot should be sent");
-        config.ready().await;
-
-        let dsd_config = DogStatsDDebugLogConfiguration::from_configuration(&config, test_default_log_file_path())
-            .expect("DogStatsDDebugLogConfiguration should deserialize");
-        assert!(dsd_config.enabled());
-        assert!(!dsd_config.metrics_stats_enabled);
-
-        let metric = tagged_metric();
-        let mut destination =
-            DogStatsDDebugLog::from_configuration(&dsd_config).expect("debug log destination should be built");
-        let mut watcher = destination
-            .configuration
-            .watch_for_updates(super::DOGSTATSD_METRICS_STATS_ENABLE_KEY);
-        destination
-            .process_metric(&metric)
-            .expect("disabled metric should be dropped cleanly");
+            .expect("disabled metric should be accepted");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while events_tx.capacity() != 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("disabled metric should be consumed");
         assert!(!log_file.exists());
 
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "dogstatsd_metrics_stats_enable",
-                json!(true),
-            )))
+        let mut updated = (*cell.load_full()).clone();
+        updated.domains.dogstatsd.debug_log.metrics_stats_enable = true;
+        cell.store(Arc::new(updated));
+        tick_tx.send_replace(());
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let mut events = EventsBuffer::default();
+                assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
+                events_tx.send(events).await.expect("enabled metric should be accepted");
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                if fs::read_to_string(&log_file).is_ok_and(|output| output.contains("Metric Name: custom.metric")) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("metrics should be logged after the runtime setting is enabled");
+
+        let mut updated = (*cell.load_full()).clone();
+        updated.domains.dogstatsd.debug_log.metrics_stats_enable = false;
+        cell.store(Arc::new(updated));
+        tick_tx.send_replace(());
+
+        let line_count_after_disable = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut previous_line_count = read_log_files(&log_file, config.log_file_max_rolls).lines().count();
+            let mut unchanged_samples = 0;
+
+            loop {
+                let mut events = EventsBuffer::default();
+                assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
+                events_tx
+                    .send(events)
+                    .await
+                    .expect("metric should be accepted while disabling");
+                while events_tx.capacity() != 4 {
+                    tokio::task::yield_now().await;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+
+                let current_line_count = read_log_files(&log_file, config.log_file_max_rolls).lines().count();
+                if current_line_count == previous_line_count {
+                    unchanged_samples += 1;
+                    if unchanged_samples == 5 {
+                        break current_line_count;
+                    }
+                } else {
+                    previous_line_count = current_line_count;
+                    unchanged_samples = 0;
+                }
+            }
+        })
+        .await
+        .expect("metrics should stop being logged after the runtime setting is disabled");
+
+        for _ in 0..3 {
+            let mut events = EventsBuffer::default();
+            assert!(events.try_push(Event::Metric(tagged_metric())).is_none());
+            events_tx
+                .send(events)
+                .await
+                .expect("disabled metric should be accepted");
+        }
+        while events_tx.capacity() != 4 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let output = read_log_files(&log_file, config.log_file_max_rolls);
+        assert_eq!(output.lines().count(), line_count_after_disable);
+
+        drop(events_tx);
+        run_handle
             .await
-            .expect("dynamic update should be sent");
-
-        let (_, maybe_enabled) = tokio::time::timeout(Duration::from_secs(2), watcher.changed::<bool>())
-            .await
-            .expect("metrics stats flag should receive enabled update");
-        destination.metrics_stats_enabled = maybe_enabled.expect("metrics stats update should have a new value");
-
-        destination
-            .process_metric(&metric)
-            .expect("enabled metric should be written");
-
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "dogstatsd_metrics_stats_enable",
-                json!(false),
-            )))
-            .await
-            .expect("dynamic update should be sent");
-
-        let (_, maybe_enabled) = tokio::time::timeout(Duration::from_secs(2), watcher.changed::<bool>())
-            .await
-            .expect("metrics stats flag should receive disabled update");
-        destination.metrics_stats_enabled = maybe_enabled.expect("metrics stats update should have a new value");
-
-        destination
-            .process_metric(&metric)
-            .expect("disabled metric should be dropped cleanly");
-        drop(destination);
-
-        let output = read_log_files(&log_file, dsd_config.log_file_max_rolls());
-        let lines = output.lines().collect::<Vec<_>>();
-
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].contains("Metric Name: custom.metric"));
-        assert!(lines[0].contains("Count: 1"));
+            .expect("destination task should not panic")
+            .expect("destination should stop cleanly");
     }
 
     #[tokio::test]
@@ -595,11 +441,10 @@ mod tests {
         let log_file = tempdir.path().join("dogstatsd-stats.log");
         let min_debug_line_len =
             "Metric Name: custom.metric | Tags: {env:prod service:web} | Count: 1 | Last Seen: ".len();
-        let config = test_config(log_file.clone(), ByteSize::b(min_debug_line_len as u64), 2).await;
+        let config = test_config(log_file.clone(), min_debug_line_len as u64, 2);
         let metric = tagged_metric();
 
-        let mut destination =
-            DogStatsDDebugLog::from_configuration(&config).expect("debug log destination should be built");
+        let mut destination = DogStatsDDebugLog::new(&config).expect("debug log destination should be built");
         for _ in 0..12 {
             destination.write_metric(&metric).expect("metric should be written");
         }
@@ -610,7 +455,7 @@ mod tests {
         assert!(rolled_path(&log_file, 2).exists());
         assert!(!rolled_path(&log_file, 3).exists());
 
-        let output = read_log_files(&log_file, config.log_file_max_rolls());
+        let output = read_log_files(&log_file, config.log_file_max_rolls);
         assert!(output.contains("Metric Name: custom.metric"));
     }
 
@@ -620,9 +465,9 @@ mod tests {
         let blocked_parent = tempdir.path().join("not-a-directory");
         fs::write(&blocked_parent, "not a directory").expect("blocking file should be written");
         let log_file = blocked_parent.join("dogstatsd-stats.log");
-        let config = test_config(log_file.clone(), ByteSize::kb(64), 3).await;
+        let config = test_config(log_file.clone(), 64_000, 3);
 
-        let err = match DogStatsDDebugLog::from_configuration(&config) {
+        let err = match DogStatsDDebugLog::new(&config) {
             Ok(_) => panic!("build should fail"),
             Err(err) => err,
         };

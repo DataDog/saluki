@@ -11,7 +11,7 @@ use saluki_context::{
 };
 use saluki_core::{
     accounting::{MemoryBounds, MemoryBoundsBuilder},
-    components::{sources::*, ComponentContext},
+    components::{sources::*, BuildContext},
     data_model::event::{
         metric::Metric,
         service_check::{CheckStatus, ServiceCheck},
@@ -76,7 +76,7 @@ impl LivenessConfiguration {
 
 #[async_trait]
 impl SourceBuilder for LivenessConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         Ok(Box::new(Liveness::new(
             self.hostname.clone(),
             self.version.clone(),

@@ -4,6 +4,7 @@ use crate::assertions::{AssertionContext, AssertionResult};
 use crate::config::ActionConfig;
 
 mod core_agent_config_set;
+mod dogstatsd_replay;
 mod target_cli;
 mod target_exec;
 
@@ -31,6 +32,19 @@ pub fn create_action(config: &ActionConfig) -> Result<Box<dyn Action>, GenericEr
             target_cli::TargetCli::Adp,
             args.clone(),
             None,
+            timeout.0,
+        ))),
+        ActionConfig::DogstatsdReplay {
+            sender,
+            capture_duration,
+            stats_duration_secs,
+            expected_metrics,
+            timeout,
+        } => Ok(Box::new(dogstatsd_replay::DogstatsdReplayAction::new(
+            sender.clone(),
+            capture_duration.0,
+            *stats_duration_secs,
+            expected_metrics.clone(),
             timeout.0,
         ))),
         ActionConfig::CoreAgentCli {

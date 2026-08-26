@@ -190,12 +190,18 @@ pub trait DatadogConfigWitness {
         &mut self, value: std::time::Duration,
     );
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
+    fn consume_otlp_config_receiver_protocols_grpc_tls_ca_file(&mut self, value: Option<String>);
+    fn consume_otlp_config_receiver_protocols_grpc_tls_cert_file(&mut self, value: Option<String>);
+    fn consume_otlp_config_receiver_protocols_grpc_tls_key_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_grpc_transport(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_http_cors_allowed_headers(&mut self, value: Vec<String>);
     fn consume_otlp_config_receiver_protocols_http_cors_allowed_origins(&mut self, value: Vec<String>);
     fn consume_otlp_config_receiver_protocols_http_cors_exposed_headers(&mut self, value: Vec<String>);
     fn consume_otlp_config_receiver_protocols_http_cors_max_age(&mut self, value: Option<i64>);
     fn consume_otlp_config_receiver_protocols_http_endpoint(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_http_tls_ca_file(&mut self, value: Option<String>);
+    fn consume_otlp_config_receiver_protocols_http_tls_cert_file(&mut self, value: Option<String>);
+    fn consume_otlp_config_receiver_protocols_http_tls_key_file(&mut self, value: Option<String>);
     fn consume_otlp_config_traces_enabled(&mut self, value: bool);
     fn consume_otlp_config_traces_internal_port(&mut self, value: i64);
     fn consume_otlp_config_traces_probabilistic_sampler_sampling_percentage(&mut self, value: f64);
@@ -526,6 +532,15 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(
         config.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib.clone(),
     );
+    consumer.consume_otlp_config_receiver_protocols_grpc_tls_ca_file(
+        config.otlp_config.receiver.protocols.grpc.tls.ca_file.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_tls_cert_file(
+        config.otlp_config.receiver.protocols.grpc.tls.cert_file.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_tls_key_file(
+        config.otlp_config.receiver.protocols.grpc.tls.key_file.clone(),
+    );
     consumer.consume_otlp_config_receiver_protocols_grpc_transport(
         config.otlp_config.receiver.protocols.grpc.transport.clone(),
     );
@@ -543,6 +558,15 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     );
     consumer.consume_otlp_config_receiver_protocols_http_endpoint(
         config.otlp_config.receiver.protocols.http.endpoint.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_tls_ca_file(
+        config.otlp_config.receiver.protocols.http.tls.ca_file.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_tls_cert_file(
+        config.otlp_config.receiver.protocols.http.tls.cert_file.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_http_tls_key_file(
+        config.otlp_config.receiver.protocols.http.tls.key_file.clone(),
     );
     consumer.consume_otlp_config_traces_enabled(config.otlp_config.traces.enabled.clone());
     consumer.consume_otlp_config_traces_internal_port(config.otlp_config.traces.internal_port.clone());

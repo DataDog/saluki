@@ -14,6 +14,7 @@ pub struct SelfSignedCert {
     cert_der: CertificateDer<'static>,
     key_der: Vec<u8>,
     cert_pem: String,
+    key_pem: String,
 }
 
 impl SelfSignedCert {
@@ -35,6 +36,7 @@ impl SelfSignedCert {
             cert_der: cert.der().clone(),
             key_der: signing_key.serialize_der(),
             cert_pem: cert.pem(),
+            key_pem: signing_key.serialize_pem(),
         }
     }
 
@@ -58,6 +60,11 @@ impl SelfSignedCert {
         &self.cert_pem
     }
 
+    /// Returns the private key encoded as PEM.
+    pub fn key_pem(&self) -> &str {
+        &self.key_pem
+    }
+
     /// Writes the PEM-encoded certificate to `path`.
     ///
     /// # Panics
@@ -65,6 +72,15 @@ impl SelfSignedCert {
     /// Panics if the file cannot be written.
     pub fn write_cert_pem(&self, path: &Path) {
         fs::write(path, &self.cert_pem).expect("should write self-signed certificate to path");
+    }
+
+    /// Writes the PEM-encoded private key to `path`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the file cannot be written.
+    pub fn write_key_pem(&self, path: &Path) {
+        fs::write(path, &self.key_pem).expect("should write self-signed private key to path");
     }
 }
 

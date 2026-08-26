@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use saluki_common::collections::FastHashMap;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
+    components::{transforms::*, BuildContext},
     data_model::event::{
         trace::{AttributeValue, Span, Trace},
         Event,
@@ -107,7 +107,7 @@ impl TraceSamplerConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for TraceSamplerConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         // TODO: Need to support remote configuration changing these at runtime
         // See https://github.com/DataDog/saluki/issues/1326
         let sampler = TraceSampler {
