@@ -415,7 +415,7 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_cluster_agent_auth_token(&mut self, value: String) {
-        self.config.shared.cluster_agent.auth_token = non_empty(value);
+        self.config.shared.cluster_agent.auth_token = non_empty_trimmed(value);
     }
 
     fn consume_cluster_agent_enabled(&mut self, value: bool) {
@@ -423,11 +423,13 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_cluster_agent_kubernetes_service_name(&mut self, value: String) {
-        self.config.shared.cluster_agent.kubernetes_service_name = non_empty(value);
+        // An empty name is meaningful here: it turns Kubernetes service discovery off, so the value is trimmed but
+        // kept rather than collapsed into the schema default.
+        self.config.shared.cluster_agent.kubernetes_service_name = value.trim().to_string();
     }
 
     fn consume_cluster_agent_url(&mut self, value: String) {
-        self.config.shared.cluster_agent.url = non_empty(value);
+        self.config.shared.cluster_agent.url = non_empty_trimmed(value);
     }
 
     fn consume_cluster_name(&mut self, value: String) {
@@ -2037,6 +2039,59 @@ mod tests {
         assert_eq!(None, mrf.site);
         assert_eq!(None, mrf.dd_url);
         assert_eq!(None, mrf.metrics_endpoint_url());
+    }
+
+    #[test]
+    fn cluster_agent_settings_default_to_schema_values_when_unset() {
+        let (config, errors) = translate_explicit(json!({}));
+
+        assert!(errors.is_none());
+        let cluster_agent = &config.shared.cluster_agent;
+        assert!(!cluster_agent.enabled);
+        assert_eq!(None, cluster_agent.url);
+        assert_eq!(None, cluster_agent.auth_token);
+        assert_eq!("datadog-cluster-agent", cluster_agent.kubernetes_service_name);
+    }
+
+    #[test]
+    fn padded_cluster_agent_settings_are_trimmed() {
+        // Whitespace around the endpoint would travel into the request URL, and whitespace around the
+        // token would be sent as part of the credential.
+        let (config, errors) = translate_explicit(json!({
+            "cluster_agent": {
+                "enabled": true,
+                "url": " https://cluster-agent.example.com ",
+                "auth_token": " cluster-agent-token ",
+                "kubernetes_service_name": " custom-cluster-agent "
+            }
+        }));
+
+        assert!(errors.is_none());
+        let cluster_agent = &config.shared.cluster_agent;
+        assert_eq!(Some("https://cluster-agent.example.com"), cluster_agent.url.as_deref());
+        assert_eq!(Some("cluster-agent-token"), cluster_agent.auth_token.as_deref());
+        assert_eq!("custom-cluster-agent", cluster_agent.kubernetes_service_name);
+    }
+
+    #[test]
+    fn a_blank_cluster_agent_setting_is_unset() {
+        // A blank URL or token says no more than an absent one. A blank service name is different: it
+        // is the way to ask that the injected Kubernetes environment variables be ignored, so it stays
+        // empty instead of falling back to the schema default.
+        let (config, errors) = translate_explicit(json!({
+            "cluster_agent": {
+                "enabled": true,
+                "url": "  ",
+                "auth_token": "\t",
+                "kubernetes_service_name": "   "
+            }
+        }));
+
+        assert!(errors.is_none());
+        let cluster_agent = &config.shared.cluster_agent;
+        assert_eq!(None, cluster_agent.url);
+        assert_eq!(None, cluster_agent.auth_token);
+        assert_eq!("", cluster_agent.kubernetes_service_name);
     }
 
     #[test]

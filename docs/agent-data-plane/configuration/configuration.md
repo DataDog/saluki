@@ -796,7 +796,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `bind_host`                                                                                | Global listen host fallback                        |
 | `cluster_agent.auth_token`                                                                 | Bearer token for Cluster Agent requests            |
 | `cluster_agent.enabled`                                                                    | Enable Cluster Agent communication                 |
-| `cluster_agent.kubernetes_service_name`                                                    | Cluster Agent Kubernetes service name              |
+| `cluster_agent.kubernetes_service_name`                                                    | Cluster Agent service name; blank skips lookup     |
 | `cluster_agent.url`                                                                        | Cluster Agent HTTPS endpoint                       |
 | `cluster_name`                                                                             | EKS Fargate cluster name static tag                |
 | `cmd_port`                                                                                 | Core Agent CMD API port for ADP gRPC IPC           |

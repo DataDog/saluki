@@ -542,7 +542,7 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         shared,
         &config.domains.multi_region_failover,
     )?;
-    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, &config_system.raw_map(), shared)?;
+    add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
     Ok(())
 }
@@ -593,14 +593,19 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 }
 
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
     let af_config = AutoscalingFailoverConfiguration::new(
         shared.autoscaling_failover.enabled,
         shared.autoscaling_failover.metrics.clone(),
     );
-    let ca_config = ClusterAgentConfiguration::from_configuration(config)
-        .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
+    let cluster_agent = &shared.cluster_agent;
+    let ca_config = ClusterAgentConfiguration {
+        enabled: cluster_agent.enabled,
+        url: cluster_agent.url.clone(),
+        auth_token: cluster_agent.auth_token.clone(),
+        kubernetes_service_name: cluster_agent.kubernetes_service_name.clone(),
+    };
 
     let Some((ca_url, ca_token)) = ca_config.endpoint_and_token() else {
         if af_config.is_branch_requested() {
