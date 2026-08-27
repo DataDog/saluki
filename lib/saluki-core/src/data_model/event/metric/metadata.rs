@@ -5,6 +5,7 @@ use stringtheory::MetaString;
 const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
+const ORIGIN_SUBPRODUCT_OTLP: u32 = 17;
 const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 
 /// Metric metadata.
@@ -159,6 +160,19 @@ impl MetricOrigin {
         }
     }
 
+    /// Creates a `MetricOrigin` for any metric ingested via OTLP.
+    ///
+    /// OTLP metrics always use product `10` and the OTLP subproduct (`17`). The product detail is provided by the
+    /// caller — typically derived from the instrumentation scope name — and falls back to `0` (unknown) when the
+    /// scope is absent or does not map to a known receiver.
+    pub fn otlp(product_detail: u32) -> Self {
+        Self::OriginMetadata {
+            product: ORIGIN_PRODUCT_AGENT,
+            subproduct: ORIGIN_SUBPRODUCT_OTLP,
+            product_detail,
+        }
+    }
+
     /// Returns `true` if the origin of the metric is DogStatsD.
     pub fn is_dogstatsd(&self) -> bool {
         matches!(self, Self::OriginMetadata { subproduct, .. } if *subproduct == ORIGIN_SUBPRODUCT_DOGSTATSD)
@@ -219,6 +233,7 @@ fn subproduct_id_to_str(subproduct_id: u32) -> &'static str {
     match subproduct_id {
         ORIGIN_SUBPRODUCT_DOGSTATSD => "dogstatsd",
         ORIGIN_SUBPRODUCT_INTEGRATION => "integration",
+        ORIGIN_SUBPRODUCT_OTLP => "otlp",
         _ => "unknown_subproduct",
     }
 }
