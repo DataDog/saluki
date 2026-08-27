@@ -283,65 +283,6 @@ pub struct Receiver {
 /// always carries an effective limit.
 pub const DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB: u64 = 4;
 
-/// Default gRPC keepalive ping interval: idle time before the server sends a PING to check the
-/// connection is still alive.
-pub const DEFAULT_GRPC_KEEPALIVE_TIME: Duration = Duration::from_secs(2 * 60 * 60);
-
-/// Default gRPC keepalive ping timeout: time to wait for a PONG before closing the connection.
-pub const DEFAULT_GRPC_KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// Server-side keepalive parameters for the OTLP gRPC receiver.
-///
-/// All fields are `Duration`. A zero duration is the sentinel for "unset": the translator
-/// resolves `time` and `timeout` to their effective defaults, and treats `max_connection_age` and
-/// `max_connection_age_grace` as "no limit."
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct KeepaliveServerParameters {
-    /// Maximum time a connection may exist before the server sends GOAWAY. A zero duration means no
-    /// limit. Lower this to force periodic connection rotation in long-lived deployments.
-    pub max_connection_age: Duration,
-
-    /// Grace period after `max_connection_age` before the connection is forcibly closed. A zero
-    /// duration means no limit. Increase this to give in-flight RPCs more time to finish during
-    /// age-based shutdown.
-    pub max_connection_age_grace: Duration,
-
-    /// Idle time before the server sends a keepalive PING. A zero duration is resolved by the
-    /// translator to the default of 2 hours. Lower this to detect dead connections faster at the
-    /// cost of more frequent PING traffic.
-    pub time: Duration,
-
-    /// Time to wait for a PONG after a keepalive PING before closing the connection. A zero duration
-    /// is resolved by the translator to the default of 20 seconds. Increase this on networks with
-    /// high latency or intermittent delays.
-    pub timeout: Duration,
-}
-
-/// TLS settings for an OTLP receiver (gRPC or HTTP).
-///
-/// These configure server-side TLS for the receiver. When `cert_file` and `key_file` are both set, the receiver
-/// accepts encrypted connections. When `ca_file` is also set, the server requests client certificates and verifies
-/// them if presented, but does not require them (optional verification).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct Tls {
-    /// Path to the PEM-encoded certificate chain file.
-    ///
-    /// When set together with `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
-    pub cert_file: String,
-
-    /// Path to the PEM-encoded private key file.
-    ///
-    /// The private key must correspond to the leaf certificate in `cert_file`. Defaults to empty (TLS disabled).
-    pub key_file: String,
-
-    /// Path to the PEM-encoded CA certificate file for verifying client certificates.
-    ///
-    /// When set, the server requests client certificates and verifies them against the CA certificates in this file.
-    /// Clients that present a certificate must provide a valid one; clients that present no certificate are still
-    /// accepted. Defaults to empty (no client certificate verification).
-    pub ca_file: String,
-}
-
 /// OTLP gRPC receiver.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct GrpcReceiver {
@@ -353,13 +294,6 @@ pub struct GrpcReceiver {
 
     /// Transport the gRPC receiver binds. Defaults to `tcp`.
     pub transport: GrpcTransport,
-
-    /// Server-side keepalive parameters. Always present; zero durations are resolved to the
-    /// grpc-go defaults (2 h interval, 20 s timeout) by the translator.
-    pub keepalive: KeepaliveServerParameters,
-
-    /// TLS settings for the gRPC receiver.
-    pub tls: Tls,
 }
 
 /// OTLP HTTP receiver.
@@ -374,9 +308,6 @@ pub struct HttpReceiver {
 
     /// CORS configuration for the HTTP receiver.
     pub cors: Cors,
-
-    /// TLS settings for the HTTP receiver.
-    pub tls: Tls,
 }
 
 impl Default for HttpReceiver {
@@ -386,7 +317,6 @@ impl Default for HttpReceiver {
             endpoint: String::new(),
             transport: "tcp".to_string(),
             cors: Cors::default(),
-            tls: Tls::default(),
         }
     }
 }

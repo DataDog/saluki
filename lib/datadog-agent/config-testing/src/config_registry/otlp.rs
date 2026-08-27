@@ -377,6 +377,50 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age`-gRPC keepalive: max connection age
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace`-gRPC keepalive: max conn age grace
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE_GRACE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE_GRACE,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time`-gRPC keepalive: ping time
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIME = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIME,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout`-gRPC keepalive: ping timeout
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIMEOUT = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIMEOUT,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `otlp_config.receiver.protocols.grpc.tls.ca_file`-gRPC TLS CA file path
     OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE,

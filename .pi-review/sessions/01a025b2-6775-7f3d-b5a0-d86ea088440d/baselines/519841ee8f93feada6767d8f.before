@@ -262,8 +262,6 @@ subprocess(es)?
 PR
 uninterrupible
 keepalive
-SDK(s?)
-untrusted
 recurse
 recurses
 otlpreceiver
@@ -271,4 +269,3 @@ configgrpc
 configtls
 keyspace
 Kueue
-plaintext

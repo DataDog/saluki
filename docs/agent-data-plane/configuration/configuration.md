@@ -25,79 +25,82 @@ If you find an error on this page, please [open an issue].
 The following settings exist in the core agent but are not planned for ADP, typically because ADP's
 architecture is fundamentally different or the feature is platform-specific.
 
-| Config Key                                                             | Description                                        | Reason                                                                                                                                                                                                                                                                    |
-| ---------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `aggregator_buffer_size`                                               | Channel buffer depth for aggregator queues         | See below                                                                                                                                                                                                                                                                 |
-| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`       | Parallel flush: series/sketch buffer size          | See below                                                                                                                                                                                                                                                                 |
-| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`         | Parallel flush: channel size                       | See below                                                                                                                                                                                                                                                                 |
-| `aggregator_use_tags_store`                                            | Enable shared tag deduplication store              | See below                                                                                                                                                                                                                                                                 |
-| `config_id`                                                            | Fleet Automation config ID tag                     | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
-| `data_plane.telemetry_enabled`                                         | ADP telemetry toggle                               | See below                                                                                                                                                                                                                                                                 |
-| `data_plane.telemetry_listen_addr`                                     | ADP telemetry listen address                       | See below                                                                                                                                                                                                                                                                 |
-| `dogstatsd_host_socket_path`                                           | Host UDS socket dir for DSD                        | Not read by DSD server; admission controller only.                                                                                                                                                                                                                        |
-| `dogstatsd_mem_based_rate_limiter.enabled`                             | Memory-based rate limiter toggle                   | See below                                                                                                                                                                                                                                                                 |
-| `dogstatsd_mem_based_rate_limiter.go_gc`                               | Memory rate limiter GC percent                     | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.high_soft_limit`                     | Memory rate limiter high soft limit                | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.low_soft_limit`                      | Memory rate limiter low soft limit                 | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.memory_ballast`                      | Memory rate limiter heap ballast size              | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.rate_check.factor`                   | Memory rate limiter check factor                   | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.rate_check.max`                      | Memory rate limiter check max interval             | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.rate_check.min`                      | Memory rate limiter check min interval             | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.factor`      | Memory rate limiter FreeOS check factor            | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max`         | Memory rate limiter FreeOS check max               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min`         | Memory rate limiter FreeOS check min               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
-| `dogstatsd_no_aggregation_pipeline_batch_size`                         | No-aggregation pipeline batch size                 | Fixed in ADP topology.                                                                                                                                                                                                                                                    |
-| `dogstatsd_packet_buffer_flush_timeout`                                | Packet buffer flush timeout                        | ADP queues individual datagrams without packet batching.                                                                                                                                                                                                                  |
-| `dogstatsd_packet_buffer_size`                                         | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
-| `dogstatsd_pipeline_autoadjust`                                        | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_pipeline_count`                                             | Parallel processing pipelines                      | ADP uses async tasks.                                                                                                                                                                                                                                                     |
-| `dogstatsd_queue_size`                                                 | Packet channel buffer size                         | ADP bounds datagram queues with `dogstatsd_buffer_count_max`.                                                                                                                                                                                                             |
-| `dogstatsd_stats_buffer`                                               | Internal stats buffer size                         | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
-| `dogstatsd_stats_enable`                                               | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
-| `dogstatsd_stats_port`                                                 | Internal stats endpoint port                       | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
-| `dogstatsd_telemetry_enabled_listener_id`                              | Per-listener telemetry tagging                     | Not feasible to thread listener identity through ADP's async decode pipeline.                                                                                                                                                                                             |
-| `enable_json_stream_shared_compressor_buffers`                         | Pre-allocate shared compressor buffers             | ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.                                                                                                                                               |
-| `entity_id`                                                            | Agent pod entity ID                                | ADP internal DogStatsD telemetry uses OpenMetrics.                                                                                                                                                                                                                        |
-| `forwarder_requeue_buffer_size`                                        | In-memory re-queue buffer size                     | See below                                                                                                                                                                                                                                                                 |
-| `heroku_dyno`                                                          | Heroku dyno telemetry mode                         | See below                                                                                                                                                                                                                                                                 |
-| `logging_frequency`                                                    | Transaction success log interval                   | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
-| `otlp_config.metrics.batch.flush_timeout`                              | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
-| `otlp_config.metrics.batch.max_size`                                   | Maximum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
-| `otlp_config.metrics.batch.min_size`                                   | Minimum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
-| `otlp_config.receiver.protocols.grpc.tls.ca_pem`                       | gRPC TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.                                                                                                                                                                |
-| `otlp_config.receiver.protocols.grpc.tls.cert_pem`                     | gRPC TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.                                                                                                                                                                               |
-| `otlp_config.receiver.protocols.grpc.tls.cipher_suites`                | gRPC TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.client_ca_file`               | gRPC TLS client CA file                            |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload`        | gRPC TLS client CA reload                          |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.curve_preferences`            | gRPC TLS curve preferences                         |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool` | gRPC TLS include system CA pool                    |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.key_pem`                      | gRPC TLS key PEM                                   | Not supported. Use `key_file` to provide the private key for the OTLP gRPC receiver.                                                                                                                                                                                      |
-| `otlp_config.receiver.protocols.grpc.tls.max_version`                  | gRPC TLS max version                               |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.min_version`                  | gRPC TLS min version                               |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.reload_interval`              | gRPC TLS reload interval                           |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.tpm.auth`                     | gRPC TLS TPM auth                                  |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.tpm.enabled`                  | gRPC TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth`               | gRPC TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.grpc.tls.tpm.path`                     | gRPC TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.ca_pem`                       | HTTP TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.                                                                                                                                                                |
-| `otlp_config.receiver.protocols.http.tls.cert_pem`                     | HTTP TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.                                                                                                                                                                               |
-| `otlp_config.receiver.protocols.http.tls.cipher_suites`                | HTTP TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.client_ca_file`               | HTTP TLS client CA file                            |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.client_ca_file_reload`        | HTTP TLS client CA reload                          |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.curve_preferences`            | HTTP TLS curve preferences                         |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool` | HTTP TLS include system CA pool                    |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.key_pem`                      | HTTP TLS key PEM                                   | Not supported. Use `key_file` to provide the private key for the OTLP HTTP receiver.                                                                                                                                                                                      |
-| `otlp_config.receiver.protocols.http.tls.max_version`                  | HTTP TLS max version                               |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.min_version`                  | HTTP TLS min version                               |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.reload_interval`              | HTTP TLS reload interval                           |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.tpm.auth`                     | HTTP TLS TPM auth                                  |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.tpm.enabled`                  | HTTP TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.tpm.owner_auth`               | HTTP TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
-| `otlp_config.receiver.protocols.http.tls.tpm.path`                     | HTTP TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
-| `telemetry.dogstatsd.aggregator_channel_latency_buckets`               | Histogram buckets: DSD-to-aggregator channel lag   | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
-| `telemetry.dogstatsd.listeners_channel_latency_buckets`                | Histogram buckets: listener packet-channel latency | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
-| `telemetry.dogstatsd.listeners_latency_buckets`                        | Histogram buckets: listener processing latency     | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
-| `use_dogstatsd`                                                        | Master DogStatsD enable toggle                     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.                                                                                                                                                                                                             |
+| Config Key                                                                               | Description                                        | Reason                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `aggregator_buffer_size`                                                                 | Channel buffer depth for aggregator queues         | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_flush_metrics_and_serialize_in_parallel_buffer_size`                         | Parallel flush: series/sketch buffer size          | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_flush_metrics_and_serialize_in_parallel_chan_size`                           | Parallel flush: channel size                       | See below                                                                                                                                                                                                                                                                 |
+| `aggregator_use_tags_store`                                                              | Enable shared tag deduplication store              | See below                                                                                                                                                                                                                                                                 |
+| `config_id`                                                                              | Fleet Automation config ID tag                     | Core Agent uses this only on Agent HA telemetry metrics.                                                                                                                                                                                                                  |
+| `data_plane.telemetry_enabled`                                                           | ADP telemetry toggle                               | See below                                                                                                                                                                                                                                                                 |
+| `data_plane.telemetry_listen_addr`                                                       | ADP telemetry listen address                       | See below                                                                                                                                                                                                                                                                 |
+| `dogstatsd_host_socket_path`                                                             | Host UDS socket dir for DSD                        | Not read by DSD server; admission controller only.                                                                                                                                                                                                                        |
+| `dogstatsd_mem_based_rate_limiter.enabled`                                               | Memory-based rate limiter toggle                   | See below                                                                                                                                                                                                                                                                 |
+| `dogstatsd_mem_based_rate_limiter.go_gc`                                                 | Memory rate limiter GC percent                     | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.high_soft_limit`                                       | Memory rate limiter high soft limit                | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.low_soft_limit`                                        | Memory rate limiter low soft limit                 | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.memory_ballast`                                        | Memory rate limiter heap ballast size              | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.rate_check.factor`                                     | Memory rate limiter check factor                   | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.rate_check.max`                                        | Memory rate limiter check max interval             | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.rate_check.min`                                        | Memory rate limiter check min interval             | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.factor`                        | Memory rate limiter FreeOS check factor            | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.max`                           | Memory rate limiter FreeOS check max               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_mem_based_rate_limiter.soft_limit_freeos_check.min`                           | Memory rate limiter FreeOS check min               | Go GC-specific; ADP uses `memory_limit` instead.                                                                                                                                                                                                                          |
+| `dogstatsd_no_aggregation_pipeline_batch_size`                                           | No-aggregation pipeline batch size                 | Fixed in ADP topology.                                                                                                                                                                                                                                                    |
+| `dogstatsd_packet_buffer_flush_timeout`                                                  | Packet buffer flush timeout                        | ADP queues individual datagrams without packet batching.                                                                                                                                                                                                                  |
+| `dogstatsd_packet_buffer_size`                                                           | Datagrams per packet buffer                        | ADP queues individual datagrams in its bounded I/O buffer pool.                                                                                                                                                                                                           |
+| `dogstatsd_pipeline_autoadjust`                                                          | Auto-adjust pipeline workers                       | ADP uses async tasks.                                                                                                                                                                                                                                                     |
+| `dogstatsd_pipeline_count`                                                               | Parallel processing pipelines                      | ADP uses async tasks.                                                                                                                                                                                                                                                     |
+| `dogstatsd_queue_size`                                                                   | Packet channel buffer size                         | ADP bounds datagram queues with `dogstatsd_buffer_count_max`.                                                                                                                                                                                                             |
+| `dogstatsd_stats_buffer`                                                                 | Internal stats buffer size                         | ADP does not expose the core agent's packet-per-second expvar endpoint, so there is no persistent stats endpoint buffer to configure.                                                                                                                                     |
+| `dogstatsd_stats_enable`                                                                 | Enable internal stats endpoint                     | See below                                                                                                                                                                                                                                                                 |
+| `dogstatsd_stats_port`                                                                   | Internal stats endpoint port                       | ADP does not expose the core agent's packet-per-second expvar endpoint, so `dogstatsd_stats_port` has no effect.                                                                                                                                                          |
+| `dogstatsd_telemetry_enabled_listener_id`                                                | Per-listener telemetry tagging                     | Not feasible to thread listener identity through ADP's async decode pipeline.                                                                                                                                                                                             |
+| `enable_json_stream_shared_compressor_buffers`                                           | Pre-allocate shared compressor buffers             | ADP does not use a shared compressor buffer pool; Rust request builders own fixed-capacity scratch and compression buffers.                                                                                                                                               |
+| `entity_id`                                                                              | Agent pod entity ID                                | ADP internal DogStatsD telemetry uses OpenMetrics.                                                                                                                                                                                                                        |
+| `forwarder_requeue_buffer_size`                                                          | In-memory re-queue buffer size                     | See below                                                                                                                                                                                                                                                                 |
+| `heroku_dyno`                                                                            | Heroku dyno telemetry mode                         | See below                                                                                                                                                                                                                                                                 |
+| `logging_frequency`                                                                      | Transaction success log interval                   | The core agent uses `logging_frequency` to throttle repetitive successful transaction logs. ADP logs successful forwarder operations below the default `info` level, so there is no matching info-level success-log stream to throttle. This key is intentionally unused. |
+| `otlp_config.metrics.batch.flush_timeout`                                                | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.metrics.batch.max_size`                                                     | Maximum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.metrics.batch.min_size`                                                     | Minimum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`              | gRPC keepalive: min time between pings             | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream` | gRPC keepalive: allow no-stream pings              | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle`    | gRPC keepalive: max connection idle                | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.tls.ca_pem`                                         | gRPC TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.                                                                                                                                                                |
+| `otlp_config.receiver.protocols.grpc.tls.cert_pem`                                       | gRPC TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.                                                                                                                                                                               |
+| `otlp_config.receiver.protocols.grpc.tls.cipher_suites`                                  | gRPC TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.client_ca_file`                                 | gRPC TLS client CA file                            |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload`                          | gRPC TLS client CA reload                          |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.curve_preferences`                              | gRPC TLS curve preferences                         |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool`                   | gRPC TLS include system CA pool                    |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.key_pem`                                        | gRPC TLS key PEM                                   | Not supported. Use `key_file` to provide the private key for the OTLP gRPC receiver.                                                                                                                                                                                      |
+| `otlp_config.receiver.protocols.grpc.tls.max_version`                                    | gRPC TLS max version                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.min_version`                                    | gRPC TLS min version                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.reload_interval`                                | gRPC TLS reload interval                           |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.tpm.auth`                                       | gRPC TLS TPM auth                                  |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.tpm.enabled`                                    | gRPC TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth`                                 | gRPC TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.tls.tpm.path`                                       | gRPC TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.ca_pem`                                         | HTTP TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.                                                                                                                                                                |
+| `otlp_config.receiver.protocols.http.tls.cert_pem`                                       | HTTP TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.                                                                                                                                                                               |
+| `otlp_config.receiver.protocols.http.tls.cipher_suites`                                  | HTTP TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.client_ca_file`                                 | HTTP TLS client CA file                            |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.client_ca_file_reload`                          | HTTP TLS client CA reload                          |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.curve_preferences`                              | HTTP TLS curve preferences                         |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool`                   | HTTP TLS include system CA pool                    |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.key_pem`                                        | HTTP TLS key PEM                                   | Not supported. Use `key_file` to provide the private key for the OTLP HTTP receiver.                                                                                                                                                                                      |
+| `otlp_config.receiver.protocols.http.tls.max_version`                                    | HTTP TLS max version                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.min_version`                                    | HTTP TLS min version                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.reload_interval`                                | HTTP TLS reload interval                           |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.tpm.auth`                                       | HTTP TLS TPM auth                                  |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.tpm.enabled`                                    | HTTP TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.tpm.owner_auth`                                 | HTTP TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.http.tls.tpm.path`                                       | HTTP TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
+| `telemetry.dogstatsd.aggregator_channel_latency_buckets`                                 | Histogram buckets: DSD-to-aggregator channel lag   | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
+| `telemetry.dogstatsd.listeners_channel_latency_buckets`                                  | Histogram buckets: listener packet-channel latency | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
+| `telemetry.dogstatsd.listeners_latency_buckets`                                          | Histogram buckets: listener processing latency     | ADP already tracks this latency with histogram buckets determined by logarithmic calculation, so pre-defined bucket configuration is not applicable.                                                                                                                      |
+| `use_dogstatsd`                                                                          | Master DogStatsD enable toggle                     | Core Agent evaluates and sets `data_plane.dogstatsd.enabled`.                                                                                                                                                                                                             |
 
 ### `aggregator_buffer_size`
 
@@ -248,6 +251,74 @@ ADP's architecture does not have the same batching mechanism and is unaffected b
 
 The core Agent batches OTLP metric input before translation through its serializer exporter queue.
 ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
+
+### `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`
+
+The Core Agent's OTLP gRPC receiver (grpc-go) uses this to rate-limit client keepalive PINGs:
+a client that pings more often than `min_time` receives a GOAWAY with `ENHANCE_YOUR_CALM` and
+the connection is closed. The default is `5m`.
+
+These defaults originate in grpc-go, a general-purpose gRPC library that must be safe for any
+server, including public-facing ones with untrusted or malicious clients. It therefore ships
+conservative defaults that protect against ping-spam and resource-exhaustion attacks. These
+defaults propagated unchanged through the OpenTelemetry Collector and into the Datadog Agent
+config schema; they are not a considered decision for ADP's deployment model.
+
+ADP's clients are trusted OpenTelemetry SDKs on the same host, not adversarial actors, so the
+threat model this policy defends against does not apply. Additionally, ADP uses tonic/h2 for its
+HTTP/2 stack, which has no enforcement policy hook: h2 auto-acks every inbound PING
+unconditionally, with no observation point to rate-limit or send GOAWAY.
+
+Setting `min_time` has no effect in ADP. The default (`5m`) is accepted silently; a non-default
+value emits a warning.
+
+### `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream`
+
+The Core Agent's OTLP gRPC receiver (grpc-go) uses this to control whether clients may send
+keepalive PINGs when no stream (RPC) is active. When `false` (the grpc-go default), a client
+that pings without an active stream receives a GOAWAY and the connection is closed.
+
+These defaults originate in grpc-go, a general-purpose gRPC library that must be safe for any
+server, including public-facing ones with untrusted or malicious clients. It therefore ships
+conservative defaults that protect against idle-connection squatting and resource exhaustion.
+These defaults propagated unchanged through the OpenTelemetry Collector and into the Datadog
+Agent config schema; they are not a considered decision for ADP's deployment model.
+
+ADP's clients are trusted OpenTelemetry SDKs on the same host that benefit from warm idle
+connections, so the threat model this policy defends against does not apply. Additionally, ADP
+uses tonic/h2 for its HTTP/2 stack, which has no enforcement policy hook: h2 auto-acks every
+inbound PING regardless of active streams, with no observation point to reject no-stream pings.
+
+Setting `permit_without_stream` has no effect in ADP. ADP always permits PINGs without an active
+stream.
+
+### `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle`
+
+The Core Agent's OTLP gRPC receiver (grpc-go) uses this to close connections that have had zero
+active RPC streams for the given duration, by sending GOAWAY and draining the connection.
+Idleness is based on RPC stream count, not on traffic: a connection with no active RPCs is
+considered idle even if the client is sending keepalive PINGs to keep it warm. The default is
+infinity (never close idle connections).
+
+This is a stricter form of idle reclamation than `server_parameters.time`/`timeout`, which only
+closes connections that are fully silent (no frames at all for the idle period). A warm idle
+connection (no RPCs, but the client is pinging) is closed by `max_connection_idle` but is not
+closed by `time`/`timeout`, because the client PINGs count as read activity. So `time`/`timeout`
+is not a full substitute: it covers the dead-connection case, while `max_connection_idle` covers
+the warm-but-no-RPCs resource-reclamation case.
+
+ADP uses tonic/h2 for its HTTP/2 stack, which has no `max_connection_idle` equivalent. tonic,
+hyper, and hyper-util expose no idle-connection-close builder, and h2 does not expose the
+per-connection hooks (active stream count, GOAWAY trigger) through tonic's server loop. The raw
+`h2::server::Connection` has the primitives (`has_streams`, `graceful_shutdown`), but tonic
+owns the connection lifecycle and does not hand the `h2` connection back to caller code.
+
+The grpc-go default is infinity, so the Core Agent at its default does not reclaim warm-idle
+connections either: it relies on `time`/`timeout` for dead-connection detection, which ADP
+supports. At the default configuration, ADP's behavior matches the Core Agent on this axis.
+
+Setting `max_connection_idle` has no effect in ADP. The default (infinity) is accepted silently;
+a non-default value emits a warning.
 
 
 ## Behavioral Differences
@@ -448,33 +519,26 @@ and tracks send failures through telemetry.
 The following settings need further investigation. ADP behavior may differ from the core agent in
 ways that are not yet fully characterized.
 
-| Config Key                                                                                 | Description                            | Issue   |
-| ------------------------------------------------------------------------------------------ | -------------------------------------- | ------- |
-| `forwarder_low_prio_buffer_size`                                                           | Low-priority request queue size        | [#1362] |
-| `otlp_config.receiver.protocols.grpc.dialer.timeout`                                       | gRPC dialer timeout                    |         |
-| `otlp_config.receiver.protocols.grpc.include_metadata`                                     | gRPC include metadata in context       |         |
-| `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`                | gRPC keepalive: min time between pings |         |
-| `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream`   | gRPC keepalive: allow no-stream pings  |         |
-| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age`       | gRPC keepalive: max connection age     |         |
-| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace` | gRPC keepalive: max conn age grace     |         |
-| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle`      | gRPC keepalive: max connection idle    |         |
-| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time`                     | gRPC keepalive: ping time              |         |
-| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout`                  | gRPC keepalive: ping timeout           |         |
-| `otlp_config.receiver.protocols.grpc.max_concurrent_streams`                               | gRPC max concurrent streams            |         |
-| `otlp_config.receiver.protocols.grpc.read_buffer_size`                                     | gRPC read buffer size                  |         |
-| `otlp_config.receiver.protocols.grpc.write_buffer_size`                                    | gRPC write buffer size                 |         |
-| `otlp_config.receiver.protocols.http.compression_algorithms`                               | HTTP compression algorithms            |         |
-| `otlp_config.receiver.protocols.http.idle_timeout`                                         | HTTP idle timeout                      |         |
-| `otlp_config.receiver.protocols.http.include_metadata`                                     | HTTP include metadata in context       |         |
-| `otlp_config.receiver.protocols.http.keep_alives_enabled`                                  | HTTP keep-alives enabled               |         |
-| `otlp_config.receiver.protocols.http.logs_url_path`                                        | HTTP logs URL path                     |         |
-| `otlp_config.receiver.protocols.http.max_request_body_size`                                | HTTP max request body size             |         |
-| `otlp_config.receiver.protocols.http.metrics_url_path`                                     | HTTP metrics URL path                  |         |
-| `otlp_config.receiver.protocols.http.read_header_timeout`                                  | HTTP read header timeout               |         |
-| `otlp_config.receiver.protocols.http.read_timeout`                                         | HTTP read timeout                      |         |
-| `otlp_config.receiver.protocols.http.response_headers`                                     | HTTP response headers                  |         |
-| `otlp_config.receiver.protocols.http.traces_url_path`                                      | HTTP traces URL path                   |         |
-| `otlp_config.receiver.protocols.http.write_timeout`                                        | HTTP write timeout                     |         |
+| Config Key                                                   | Description                      | Issue   |
+| ------------------------------------------------------------ | -------------------------------- | ------- |
+| `forwarder_low_prio_buffer_size`                             | Low-priority request queue size  | [#1362] |
+| `otlp_config.receiver.protocols.grpc.dialer.timeout`         | gRPC dialer timeout              |         |
+| `otlp_config.receiver.protocols.grpc.include_metadata`       | gRPC include metadata in context |         |
+| `otlp_config.receiver.protocols.grpc.max_concurrent_streams` | gRPC max concurrent streams      |         |
+| `otlp_config.receiver.protocols.grpc.read_buffer_size`       | gRPC read buffer size            |         |
+| `otlp_config.receiver.protocols.grpc.write_buffer_size`      | gRPC write buffer size           |         |
+| `otlp_config.receiver.protocols.http.compression_algorithms` | HTTP compression algorithms      |         |
+| `otlp_config.receiver.protocols.http.idle_timeout`           | HTTP idle timeout                |         |
+| `otlp_config.receiver.protocols.http.include_metadata`       | HTTP include metadata in context |         |
+| `otlp_config.receiver.protocols.http.keep_alives_enabled`    | HTTP keep-alives enabled         |         |
+| `otlp_config.receiver.protocols.http.logs_url_path`          | HTTP logs URL path               |         |
+| `otlp_config.receiver.protocols.http.max_request_body_size`  | HTTP max request body size       |         |
+| `otlp_config.receiver.protocols.http.metrics_url_path`       | HTTP metrics URL path            |         |
+| `otlp_config.receiver.protocols.http.read_header_timeout`    | HTTP read header timeout         |         |
+| `otlp_config.receiver.protocols.http.read_timeout`           | HTTP read timeout                |         |
+| `otlp_config.receiver.protocols.http.response_headers`       | HTTP response headers            |         |
+| `otlp_config.receiver.protocols.http.traces_url_path`        | HTTP traces URL path             |         |
+| `otlp_config.receiver.protocols.http.write_timeout`          | HTTP write timeout               |         |
 
 ## ADP-Only Settings
 
@@ -690,211 +754,215 @@ For machine-readable configuration inspection, use these commands:
 
 Both commands scrub recognized secret values before writing JSON to standard output.
 
-| Config Key                                                     | Description                                        |
-| -------------------------------------------------------------- | -------------------------------------------------- |
-| `additional_endpoints`                                         | Dual-ship to extra endpoints                       |
-| `agent_ipc.grpc_max_message_size`                              | Max inbound gRPC message size for IPC client       |
-| `allow_arbitrary_tags`                                         | Relax backend tag validation via HTTP header       |
-| `api_key`                                                      | API key for endpoint auth                          |
-| `apm_config.compute_stats_by_span_kind`                        | Compute APM stats per span kind                    |
-| `apm_config.enable_rare_sampler`                               | Enable the APM rare-span sampler                   |
-| `apm_config.error_tracking_standalone.enabled`                 | Enable Error Tracking standalone                   |
-| `apm_config.errors_per_second`                                 | APM error-span sampling rate (per sec)             |
-| `apm_config.obfuscation.credit_cards.enabled`                  | apm_config.obfuscation.credit_cards.enabled        |
-| `apm_config.obfuscation.credit_cards.keep_values`              | apm_config.obfuscation.credit_cards.keep_values    |
-| `apm_config.obfuscation.credit_cards.luhn`                     | apm_config.obfuscation.credit_cards.luhn           |
-| `apm_config.obfuscation.elasticsearch.enabled`                 | apm_config.obfuscation.elasticsearch.enabled       |
-| `apm_config.obfuscation.elasticsearch.keep_values`             | apm_config.obfuscation.elasticsearch.keep_values   |
-| `apm_config.obfuscation.elasticsearch.obfuscate_sql_values`    | Obfuscate SQL values in ES queries                 |
-| `apm_config.obfuscation.http.remove_paths_with_digits`         | Strip numeric segments from HTTP paths             |
-| `apm_config.obfuscation.http.remove_query_string`              | apm_config.obfuscation.http.remove_query_string    |
-| `apm_config.obfuscation.memcached.enabled`                     | apm_config.obfuscation.memcached.enabled           |
-| `apm_config.obfuscation.memcached.keep_command`                | apm_config.obfuscation.memcached.keep_command      |
-| `apm_config.obfuscation.mongodb.enabled`                       | apm_config.obfuscation.mongodb.enabled             |
-| `apm_config.obfuscation.mongodb.keep_values`                   | apm_config.obfuscation.mongodb.keep_values         |
-| `apm_config.obfuscation.mongodb.obfuscate_sql_values`          | Obfuscate SQL values in MongoDB queries            |
-| `apm_config.obfuscation.opensearch.enabled`                    | apm_config.obfuscation.opensearch.enabled          |
-| `apm_config.obfuscation.opensearch.keep_values`                | apm_config.obfuscation.opensearch.keep_values      |
-| `apm_config.obfuscation.opensearch.obfuscate_sql_values`       | Obfuscate SQL values in OpenSearch queries         |
-| `apm_config.obfuscation.redis.enabled`                         | apm_config.obfuscation.redis.enabled               |
-| `apm_config.obfuscation.redis.remove_all_args`                 | apm_config.obfuscation.redis.remove_all_args       |
-| `apm_config.obfuscation.valkey.enabled`                        | apm_config.obfuscation.valkey.enabled              |
-| `apm_config.obfuscation.valkey.remove_all_args`                | apm_config.obfuscation.valkey.remove_all_args      |
-| `apm_config.peer_tags`                                         | Extra peer tags for stats aggregation              |
-| `apm_config.peer_tags_aggregation`                             | Aggregate APM stats by peer tags                   |
-| `apm_config.probabilistic_sampler.enabled`                     | Enable APM probabilistic sampler                   |
-| `apm_config.probabilistic_sampler.sampling_percentage`         | Probabilistic sampler percentage                   |
-| `apm_config.target_traces_per_second`                          | Target sampled traces per second                   |
-| `autoscaling.failover.enabled`                                 | Enable autoscaling failover metric routing         |
-| `autoscaling.failover.metrics`                                 | Metric names forwarded to DCA for failover         |
-| `basic_telemetry_add_container_tags`                           | Add container tags to basic telemetry signals      |
-| `bind_host`                                                    | Global listen host fallback                        |
-| `cluster_agent.auth_token`                                     | Bearer token for Cluster Agent requests            |
-| `cluster_agent.enabled`                                        | Enable Cluster Agent communication                 |
-| `cluster_agent.kubernetes_service_name`                        | Cluster Agent Kubernetes service name              |
-| `cluster_agent.url`                                            | Cluster Agent HTTPS endpoint                       |
-| `cluster_name`                                                 | EKS Fargate cluster name static tag                |
-| `cmd_port`                                                     | Core Agent CMD API port for ADP gRPC IPC           |
-| `cri_connection_timeout`                                       | CRI container runtime connection timeout (s)       |
-| `cri_query_timeout`                                            | CRI container runtime query timeout (s)            |
-| `data_plane.api_listen_address`                                | Unprivileged API listen address                    |
-| `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`    | Tag-filter deduplication cache size                |
-| `data_plane.dogstatsd.enabled`                                 | Enable the DogStatsD pipeline                      |
-| `data_plane.enabled`                                           | Enable the data plane                              |
-| `data_plane.log_file`                                          | ADP log file path                                  |
-| `data_plane.otlp.enabled`                                      | Enable the OTLP pipeline                           |
-| `data_plane.otlp.proxy.enabled`                                | Enable OTLP proxy to Core Agent                    |
-| `data_plane.otlp.proxy.logs.enabled`                           | Proxy OTLP logs to Core Agent                      |
-| `data_plane.otlp.proxy.metrics.enabled`                        | Proxy OTLP metrics to Core Agent                   |
-| `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`       | OTLP proxy gRPC receiver endpoint                  |
-| `data_plane.otlp.proxy.traces.enabled`                         | Proxy OTLP traces to Core Agent                    |
-| `data_plane.remote_agent_enabled`                              | Enable remote agent mode                           |
-| `data_plane.secure_api_listen_address`                         | mTLS-authenticated privileged API address          |
-| `data_plane.use_new_config_stream_endpoint`                    | Use new config stream endpoint                     |
-| `dd_url`                                                       | Override intake endpoint URL                       |
-| `disable_file_logging`                                         | Disable writing logs to a file                     |
-| `dogstatsd_buffer_size`                                        | Receive buffer size (bytes)                        |
-| `dogstatsd_capture_depth`                                      | Traffic capture channel depth                      |
-| `dogstatsd_capture_path`                                       | Traffic capture file location                      |
-| `dogstatsd_context_expiry_seconds`                             | Context cache TTL (seconds)                        |
-| `dogstatsd_disable_verbose_logs`                               | Suppress noisy parse error logs                    |
-| `dogstatsd_entity_id_precedence`                               | Entity ID over auto-detection                      |
-| `dogstatsd_eol_required`                                       | Require newline-terminated messages                |
-| `dogstatsd_expiry_seconds`                                     | Counter value expiry (seconds)                     |
-| `dogstatsd_flush_incomplete_buckets`                           | Flush open buckets on shutdown                     |
-| `dogstatsd_log_file`                                           | DSD dedicated log file path                        |
-| `dogstatsd_log_file_max_rolls`                                 | DSD log file max roll count                        |
-| `dogstatsd_log_file_max_size`                                  | DSD log file max size                              |
-| `dogstatsd_logging_enabled`                                    | Enables DSD metric logging                         |
-| `dogstatsd_mapper_profiles`                                    | Metric mapping profile definitions                 |
-| `dogstatsd_no_aggregation_pipeline`                            | Enable no-agg timestamped path                     |
-| `dogstatsd_non_local_traffic`                                  | Accept non-localhost UDP/TCP                       |
-| `dogstatsd_origin_detection`                                   | Enable UDS origin detection                        |
-| `dogstatsd_origin_detection_client`                            | Honor client origin proto fields                   |
-| `dogstatsd_origin_optout_enabled`                              | Allow clients to opt out origin                    |
-| `dogstatsd_pipe_name`                                          | Windows named pipe path                            |
-| `dogstatsd_port`                                               | UDP listen port                                    |
-| `dogstatsd_so_rcvbuf`                                          | Socket receive buffer size                         |
-| `dogstatsd_socket`                                             | UDS datagram socket path                           |
-| `dogstatsd_stream_log_too_big`                                 | Log oversized UDS stream frames                    |
-| `dogstatsd_stream_socket`                                      | UDS stream socket path                             |
-| `dogstatsd_string_interner_size`                               | String interner capacity                           |
-| `dogstatsd_tag_cardinality`                                    | Default tag cardinality level                      |
-| `dogstatsd_tags`                                               | Extra tags added to all DSD data                   |
-| `dogstatsd_windows_pipe_security_descriptor`                   | Windows named pipe ACL descriptor                  |
-| `eks_fargate`                                                  | Enable EKS Fargate static tags                     |
-| `enable_payloads.events`                                       | Allow sending event payloads                       |
-| `enable_payloads.series`                                       | Allow sending series payloads                      |
-| `enable_payloads.service_checks`                               | Allow sending service check payloads               |
-| `enable_payloads.sketches`                                     | Allow sending sketch payloads                      |
-| `env`                                                          | Agent environment name                             |
-| `expected_tags_duration`                                       | How long startup host tags are attached            |
-| `extra_tags`                                                   | Additional EKS Fargate OTLP metric tags            |
-| `forwarder_backoff_base`                                       | Retry backoff base (secs)                          |
-| `forwarder_backoff_factor`                                     | Retry backoff jitter factor                        |
-| `forwarder_backoff_max`                                        | Retry backoff ceiling (secs)                       |
-| `forwarder_connection_reset_interval`                          | HTTP conn reset interval (secs)                    |
-| `forwarder_flush_to_disk_mem_ratio`                            | Mem-to-disk flush ratio                            |
-| `forwarder_http_protocol`                                      | HTTP version selection (auto/http1/http2)          |
-| `forwarder_max_concurrent_requests`                            | Max concurrent HTTP requests                       |
-| `forwarder_outdated_file_in_days`                              | Days before retry files are deleted                |
-| `forwarder_recovery_interval`                                  | Backoff recovery decrease factor                   |
-| `forwarder_recovery_reset`                                     | Reset errors on success                            |
-| `forwarder_retry_queue_capacity_time_interval_sec`             | Retry queue time-based capacity                    |
-| `forwarder_retry_queue_max_size`                               | Retry queue max size (deprecated)                  |
-| `forwarder_retry_queue_payloads_max_size`                      | Retry queue max size (bytes)                       |
-| `forwarder_storage_max_disk_ratio`                             | Max disk usage ratio for retry                     |
-| `forwarder_storage_max_size_in_bytes`                          | Max on-disk retry storage size                     |
-| `forwarder_storage_path`                                       | On-disk retry storage directory                    |
-| `forwarder_timeout`                                            | Forwarder HTTP request timeout                     |
-| `histogram_aggregates`                                         | Histogram aggregate statistics                     |
-| `histogram_copy_to_distribution`                               | Copy histograms to distributions                   |
-| `histogram_copy_to_distribution_prefix`                        | Prefix for hist-to-dist copies                     |
-| `histogram_percentiles`                                        | Histogram percentile aggregates                    |
-| `kubernetes_kubelet_nodename`                                  | Kubernetes node name for EKS Fargate static tags   |
-| `log_file_max_rolls`                                           | Max rolled log files to retain                     |
-| `log_file_max_size`                                            | Max log file size before rolling                   |
-| `log_format_json`                                              | Emit logs as JSON                                  |
-| `log_format_rfc3339`                                           | Use RFC 3339 timestamps in log output              |
-| `log_payloads`                                                 | Debug-log decoded payload contents before encoding |
-| `log_to_console`                                               | Write logs to the console                          |
-| `log_to_syslog`                                                | Write logs to syslog                               |
-| `metric_filterlist`                                            | Metric name blocklist                              |
-| `metric_filterlist_match_prefix`                               | Blocklist uses prefix matching                     |
-| `metric_tag_filterlist`                                        | Per-metric tag allow/deny filter list              |
-| `multi_region_failover.api_key`                                | API key for the failover-region endpoint           |
-| `multi_region_failover.dd_url`                                 | Failover intake URL                                |
-| `multi_region_failover.failover_metrics`                       | Enable metrics forwarding to failover region       |
-| `multi_region_failover.metric_allowlist`                       | Metric name allowlist for MRF forwarding           |
-| `multi_region_failover.site`                                   | Datadog site for the failover region               |
-| `no_proxy_nonexact_match`                                      | Domain/CIDR `no_proxy` matching                    |
-| `observability_pipelines_worker.metrics.enabled`               | Route metrics to OPW instance                      |
-| `observability_pipelines_worker.metrics.url`                   | OPW metrics intake URL                             |
-| `observability_pipelines_worker.metrics.use_v3_api.series`     | Use V3 series for OPW                              |
-| `origin_detection_unified`                                     | Unified origin detection mode                      |
-| `otlp_config.logs.enabled`                                     | otlp_config.logs.enabled                           |
-| `otlp_config.metrics.delta_ttl`                                | TTL (seconds) for cached delta-conversion points   |
-| `otlp_config.metrics.enabled`                                  | otlp_config.metrics.enabled                        |
-| `otlp_config.metrics.histograms.mode`                          | OTLP histogram bucket reporting mode               |
-| `otlp_config.metrics.histograms.send_aggregation_metrics`      | Emit OTLP histogram aggregation metrics.           |
-| `otlp_config.metrics.instrumentation_scope_metadata_as_tags`   | Add instrumentation scope metadata as metric tags. |
-| `otlp_config.metrics.resource_attributes_as_tags`              | Add scalar resource attributes as raw tags.        |
-| `otlp_config.metrics.summaries.mode`                           | OTLP summary quantile reporting mode.              |
-| `otlp_config.metrics.sums.cumulative_monotonic_mode`           | Cumulative monotonic sum reporting mode.           |
-| `otlp_config.metrics.sums.initial_cumulative_monotonic_value`  | Initial cumulative sum reporting behavior.         |
-| `otlp_config.metrics.tag_cardinality`                          | Tag cardinality for OTLP metric entity enrichment. |
-| `otlp_config.metrics.tags`                                     | Comma-separated tags for all OTLP metrics.         |
-| `otlp_config.receiver.protocols.grpc.endpoint`                 | otlp_config.receiver.protocols.grpc.endpoint       |
-| `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`    | Max OTLP inbound gRPC message size (MiB)           |
-| `otlp_config.receiver.protocols.grpc.tls.ca_file`              | gRPC TLS CA file path                              |
-| `otlp_config.receiver.protocols.grpc.tls.cert_file`            | gRPC TLS cert file path                            |
-| `otlp_config.receiver.protocols.grpc.tls.key_file`             | gRPC TLS key file path                             |
-| `otlp_config.receiver.protocols.grpc.transport`                | otlp_config.receiver.protocols.grpc.transport      |
-| `otlp_config.receiver.protocols.http.cors.allowed_headers`     | HTTP CORS allowed headers                          |
-| `otlp_config.receiver.protocols.http.cors.allowed_origins`     | HTTP CORS allowed origins                          |
-| `otlp_config.receiver.protocols.http.cors.exposed_headers`     | HTTP CORS exposed headers                          |
-| `otlp_config.receiver.protocols.http.cors.max_age`             | HTTP CORS max age                                  |
-| `otlp_config.receiver.protocols.http.endpoint`                 | otlp_config.receiver.protocols.http.endpoint       |
-| `otlp_config.receiver.protocols.http.tls.ca_file`              | HTTP TLS CA file path                              |
-| `otlp_config.receiver.protocols.http.tls.cert_file`            | HTTP TLS cert file path                            |
-| `otlp_config.receiver.protocols.http.tls.key_file`             | HTTP TLS key file path                             |
-| `otlp_config.traces.enabled`                                   | otlp_config.traces.enabled                         |
-| `otlp_config.traces.internal_port`                             | otlp_config.traces.internal_port                   |
-| `otlp_config.traces.probabilistic_sampler.sampling_percentage` | OTLP trace sampling percentage                     |
-| `provider_kind`                                                | Provider kind static tag                           |
-| `proxy.http`                                                   | HTTP proxy URL                                     |
-| `proxy.https`                                                  | HTTPS proxy URL                                    |
-| `proxy.no_proxy`                                               | Hosts bypassing proxy                              |
-| `run_path`                                                     | Runtime state directory                            |
-| `serializer_compressor_kind`                                   | Payload compression algorithm                      |
-| `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                      |
-| `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API                |
-| `serializer_experimental_use_v3_api.sketches.endpoints`        | Endpoints enabling v3 sketches API                 |
-| `serializer_max_payload_size`                                  | Max compressed payload size (generic)              |
-| `serializer_max_series_payload_size`                           | Max compressed V2 series payload size              |
-| `serializer_max_series_points_per_payload`                     | Max data points per series payload                 |
-| `serializer_max_series_uncompressed_payload_size`              | Max uncompressed V2 series payload size            |
-| `serializer_max_uncompressed_payload_size`                     | Max uncompressed payload size (generic)            |
-| `site`                                                         | Datadog site domain                                |
-| `sslkeylogfile`                                                | Write TLS session keys to file                     |
-| `statsd_forward_port`                                          | UDP packet forwarding destination port             |
-| `statsd_metric_blocklist`                                      | List of metric names to block/drop                 |
-| `statsd_metric_blocklist_match_prefix`                         | Treat blocklist entries as prefixes                |
-| `statsd_metric_namespace`                                      | Prefix prepended to all metric names               |
-| `statsd_metric_namespace_blacklist`                            | Prefixes exempt from namespace                     |
-| `syslog_rfc`                                                   | Use RFC-style syslog header                        |
-| `syslog_uri`                                                   | Syslog destination URI                             |
-| `tags`                                                         | Global tags for EKS Fargate OTLP metrics           |
-| `telemetry.dogstatsd_origin`                                   | Per-origin processed-metrics telemetry             |
-| `tls_handshake_timeout`                                        | HTTP TLS handshake timeout                         |
-| `use_proxy_for_cloud_metadata`                                 | Proxy cloud metadata endpoints                     |
-| `use_v2_api.series`                                            | Send series via V2 protobuf endpoint               |
-| `use_v3_api.series.enabled`                                    | Global V3 series mode                              |
-| `use_v3_api.series.endpoints`                                  | Per-endpoint V3 series modes                       |
-| `vector.metrics.enabled`                                       | Route metrics to OPW (legacy alias)                |
-| `vector.metrics.url`                                           | OPW metrics intake URL (legacy alias)              |
-| `vector.metrics.use_v3_api.series`                             | Use V3 series for Vector                           |
-| `vsock_addr`                                                   | vsock address for Agent IPC endpoint               |
+| Config Key                                                                                 | Description                                        |
+| ------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| `additional_endpoints`                                                                     | Dual-ship to extra endpoints                       |
+| `agent_ipc.grpc_max_message_size`                                                          | Max inbound gRPC message size for IPC client       |
+| `allow_arbitrary_tags`                                                                     | Relax backend tag validation via HTTP header       |
+| `api_key`                                                                                  | API key for endpoint auth                          |
+| `apm_config.compute_stats_by_span_kind`                                                    | Compute APM stats per span kind                    |
+| `apm_config.enable_rare_sampler`                                                           | Enable the APM rare-span sampler                   |
+| `apm_config.error_tracking_standalone.enabled`                                             | Enable Error Tracking standalone                   |
+| `apm_config.errors_per_second`                                                             | APM error-span sampling rate (per sec)             |
+| `apm_config.obfuscation.credit_cards.enabled`                                              | apm_config.obfuscation.credit_cards.enabled        |
+| `apm_config.obfuscation.credit_cards.keep_values`                                          | apm_config.obfuscation.credit_cards.keep_values    |
+| `apm_config.obfuscation.credit_cards.luhn`                                                 | apm_config.obfuscation.credit_cards.luhn           |
+| `apm_config.obfuscation.elasticsearch.enabled`                                             | apm_config.obfuscation.elasticsearch.enabled       |
+| `apm_config.obfuscation.elasticsearch.keep_values`                                         | apm_config.obfuscation.elasticsearch.keep_values   |
+| `apm_config.obfuscation.elasticsearch.obfuscate_sql_values`                                | Obfuscate SQL values in ES queries                 |
+| `apm_config.obfuscation.http.remove_paths_with_digits`                                     | Strip numeric segments from HTTP paths             |
+| `apm_config.obfuscation.http.remove_query_string`                                          | apm_config.obfuscation.http.remove_query_string    |
+| `apm_config.obfuscation.memcached.enabled`                                                 | apm_config.obfuscation.memcached.enabled           |
+| `apm_config.obfuscation.memcached.keep_command`                                            | apm_config.obfuscation.memcached.keep_command      |
+| `apm_config.obfuscation.mongodb.enabled`                                                   | apm_config.obfuscation.mongodb.enabled             |
+| `apm_config.obfuscation.mongodb.keep_values`                                               | apm_config.obfuscation.mongodb.keep_values         |
+| `apm_config.obfuscation.mongodb.obfuscate_sql_values`                                      | Obfuscate SQL values in MongoDB queries            |
+| `apm_config.obfuscation.opensearch.enabled`                                                | apm_config.obfuscation.opensearch.enabled          |
+| `apm_config.obfuscation.opensearch.keep_values`                                            | apm_config.obfuscation.opensearch.keep_values      |
+| `apm_config.obfuscation.opensearch.obfuscate_sql_values`                                   | Obfuscate SQL values in OpenSearch queries         |
+| `apm_config.obfuscation.redis.enabled`                                                     | apm_config.obfuscation.redis.enabled               |
+| `apm_config.obfuscation.redis.remove_all_args`                                             | apm_config.obfuscation.redis.remove_all_args       |
+| `apm_config.obfuscation.valkey.enabled`                                                    | apm_config.obfuscation.valkey.enabled              |
+| `apm_config.obfuscation.valkey.remove_all_args`                                            | apm_config.obfuscation.valkey.remove_all_args      |
+| `apm_config.peer_tags`                                                                     | Extra peer tags for stats aggregation              |
+| `apm_config.peer_tags_aggregation`                                                         | Aggregate APM stats by peer tags                   |
+| `apm_config.probabilistic_sampler.enabled`                                                 | Enable APM probabilistic sampler                   |
+| `apm_config.probabilistic_sampler.sampling_percentage`                                     | Probabilistic sampler percentage                   |
+| `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |
+| `autoscaling.failover.enabled`                                                             | Enable autoscaling failover metric routing         |
+| `autoscaling.failover.metrics`                                                             | Metric names forwarded to DCA for failover         |
+| `basic_telemetry_add_container_tags`                                                       | Add container tags to basic telemetry signals      |
+| `bind_host`                                                                                | Global listen host fallback                        |
+| `cluster_agent.auth_token`                                                                 | Bearer token for Cluster Agent requests            |
+| `cluster_agent.enabled`                                                                    | Enable Cluster Agent communication                 |
+| `cluster_agent.kubernetes_service_name`                                                    | Cluster Agent Kubernetes service name              |
+| `cluster_agent.url`                                                                        | Cluster Agent HTTPS endpoint                       |
+| `cluster_name`                                                                             | EKS Fargate cluster name static tag                |
+| `cmd_port`                                                                                 | Core Agent CMD API port for ADP gRPC IPC           |
+| `cri_connection_timeout`                                                                   | CRI container runtime connection timeout (s)       |
+| `cri_query_timeout`                                                                        | CRI container runtime query timeout (s)            |
+| `data_plane.api_listen_address`                                                            | Unprivileged API listen address                    |
+| `data_plane.dogstatsd.aggregator_tag_filter_cache_capacity`                                | Tag-filter deduplication cache size                |
+| `data_plane.dogstatsd.enabled`                                                             | Enable the DogStatsD pipeline                      |
+| `data_plane.enabled`                                                                       | Enable the data plane                              |
+| `data_plane.log_file`                                                                      | ADP log file path                                  |
+| `data_plane.otlp.enabled`                                                                  | Enable the OTLP pipeline                           |
+| `data_plane.otlp.proxy.enabled`                                                            | Enable OTLP proxy to Core Agent                    |
+| `data_plane.otlp.proxy.logs.enabled`                                                       | Proxy OTLP logs to Core Agent                      |
+| `data_plane.otlp.proxy.metrics.enabled`                                                    | Proxy OTLP metrics to Core Agent                   |
+| `data_plane.otlp.proxy.receiver.protocols.grpc.endpoint`                                   | OTLP proxy gRPC receiver endpoint                  |
+| `data_plane.otlp.proxy.traces.enabled`                                                     | Proxy OTLP traces to Core Agent                    |
+| `data_plane.remote_agent_enabled`                                                          | Enable remote agent mode                           |
+| `data_plane.secure_api_listen_address`                                                     | mTLS-authenticated privileged API address          |
+| `data_plane.use_new_config_stream_endpoint`                                                | Use new config stream endpoint                     |
+| `dd_url`                                                                                   | Override intake endpoint URL                       |
+| `disable_file_logging`                                                                     | Disable writing logs to a file                     |
+| `dogstatsd_buffer_size`                                                                    | Receive buffer size (bytes)                        |
+| `dogstatsd_capture_depth`                                                                  | Traffic capture channel depth                      |
+| `dogstatsd_capture_path`                                                                   | Traffic capture file location                      |
+| `dogstatsd_context_expiry_seconds`                                                         | Context cache TTL (seconds)                        |
+| `dogstatsd_disable_verbose_logs`                                                           | Suppress noisy parse error logs                    |
+| `dogstatsd_entity_id_precedence`                                                           | Entity ID over auto-detection                      |
+| `dogstatsd_eol_required`                                                                   | Require newline-terminated messages                |
+| `dogstatsd_expiry_seconds`                                                                 | Counter value expiry (seconds)                     |
+| `dogstatsd_flush_incomplete_buckets`                                                       | Flush open buckets on shutdown                     |
+| `dogstatsd_log_file`                                                                       | DSD dedicated log file path                        |
+| `dogstatsd_log_file_max_rolls`                                                             | DSD log file max roll count                        |
+| `dogstatsd_log_file_max_size`                                                              | DSD log file max size                              |
+| `dogstatsd_logging_enabled`                                                                | Enables DSD metric logging                         |
+| `dogstatsd_mapper_profiles`                                                                | Metric mapping profile definitions                 |
+| `dogstatsd_no_aggregation_pipeline`                                                        | Enable no-agg timestamped path                     |
+| `dogstatsd_non_local_traffic`                                                              | Accept non-localhost UDP/TCP                       |
+| `dogstatsd_origin_detection`                                                               | Enable UDS origin detection                        |
+| `dogstatsd_origin_detection_client`                                                        | Honor client origin proto fields                   |
+| `dogstatsd_origin_optout_enabled`                                                          | Allow clients to opt out origin                    |
+| `dogstatsd_pipe_name`                                                                      | Windows named pipe path                            |
+| `dogstatsd_port`                                                                           | UDP listen port                                    |
+| `dogstatsd_so_rcvbuf`                                                                      | Socket receive buffer size                         |
+| `dogstatsd_socket`                                                                         | UDS datagram socket path                           |
+| `dogstatsd_stream_log_too_big`                                                             | Log oversized UDS stream frames                    |
+| `dogstatsd_stream_socket`                                                                  | UDS stream socket path                             |
+| `dogstatsd_string_interner_size`                                                           | String interner capacity                           |
+| `dogstatsd_tag_cardinality`                                                                | Default tag cardinality level                      |
+| `dogstatsd_tags`                                                                           | Extra tags added to all DSD data                   |
+| `dogstatsd_windows_pipe_security_descriptor`                                               | Windows named pipe ACL descriptor                  |
+| `eks_fargate`                                                                              | Enable EKS Fargate static tags                     |
+| `enable_payloads.events`                                                                   | Allow sending event payloads                       |
+| `enable_payloads.series`                                                                   | Allow sending series payloads                      |
+| `enable_payloads.service_checks`                                                           | Allow sending service check payloads               |
+| `enable_payloads.sketches`                                                                 | Allow sending sketch payloads                      |
+| `env`                                                                                      | Agent environment name                             |
+| `expected_tags_duration`                                                                   | How long startup host tags are attached            |
+| `extra_tags`                                                                               | Additional EKS Fargate OTLP metric tags            |
+| `forwarder_backoff_base`                                                                   | Retry backoff base (secs)                          |
+| `forwarder_backoff_factor`                                                                 | Retry backoff jitter factor                        |
+| `forwarder_backoff_max`                                                                    | Retry backoff ceiling (secs)                       |
+| `forwarder_connection_reset_interval`                                                      | HTTP conn reset interval (secs)                    |
+| `forwarder_flush_to_disk_mem_ratio`                                                        | Mem-to-disk flush ratio                            |
+| `forwarder_http_protocol`                                                                  | HTTP version selection (auto/http1/http2)          |
+| `forwarder_max_concurrent_requests`                                                        | Max concurrent HTTP requests                       |
+| `forwarder_outdated_file_in_days`                                                          | Days before retry files are deleted                |
+| `forwarder_recovery_interval`                                                              | Backoff recovery decrease factor                   |
+| `forwarder_recovery_reset`                                                                 | Reset errors on success                            |
+| `forwarder_retry_queue_capacity_time_interval_sec`                                         | Retry queue time-based capacity                    |
+| `forwarder_retry_queue_max_size`                                                           | Retry queue max size (deprecated)                  |
+| `forwarder_retry_queue_payloads_max_size`                                                  | Retry queue max size (bytes)                       |
+| `forwarder_storage_max_disk_ratio`                                                         | Max disk usage ratio for retry                     |
+| `forwarder_storage_max_size_in_bytes`                                                      | Max on-disk retry storage size                     |
+| `forwarder_storage_path`                                                                   | On-disk retry storage directory                    |
+| `forwarder_timeout`                                                                        | Forwarder HTTP request timeout                     |
+| `histogram_aggregates`                                                                     | Histogram aggregate statistics                     |
+| `histogram_copy_to_distribution`                                                           | Copy histograms to distributions                   |
+| `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
+| `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
+| `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
+| `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |
+| `log_file_max_size`                                                                        | Max log file size before rolling                   |
+| `log_format_json`                                                                          | Emit logs as JSON                                  |
+| `log_format_rfc3339`                                                                       | Use RFC 3339 timestamps in log output              |
+| `log_payloads`                                                                             | Debug-log decoded payload contents before encoding |
+| `log_to_console`                                                                           | Write logs to the console                          |
+| `log_to_syslog`                                                                            | Write logs to syslog                               |
+| `metric_filterlist`                                                                        | Metric name blocklist                              |
+| `metric_filterlist_match_prefix`                                                           | Blocklist uses prefix matching                     |
+| `metric_tag_filterlist`                                                                    | Per-metric tag allow/deny filter list              |
+| `multi_region_failover.api_key`                                                            | API key for the failover-region endpoint           |
+| `multi_region_failover.dd_url`                                                             | Failover intake URL                                |
+| `multi_region_failover.failover_metrics`                                                   | Enable metrics forwarding to failover region       |
+| `multi_region_failover.metric_allowlist`                                                   | Metric name allowlist for MRF forwarding           |
+| `multi_region_failover.site`                                                               | Datadog site for the failover region               |
+| `no_proxy_nonexact_match`                                                                  | Domain/CIDR `no_proxy` matching                    |
+| `observability_pipelines_worker.metrics.enabled`                                           | Route metrics to OPW instance                      |
+| `observability_pipelines_worker.metrics.url`                                               | OPW metrics intake URL                             |
+| `observability_pipelines_worker.metrics.use_v3_api.series`                                 | Use V3 series for OPW                              |
+| `origin_detection_unified`                                                                 | Unified origin detection mode                      |
+| `otlp_config.logs.enabled`                                                                 | otlp_config.logs.enabled                           |
+| `otlp_config.metrics.delta_ttl`                                                            | TTL (seconds) for cached delta-conversion points   |
+| `otlp_config.metrics.enabled`                                                              | otlp_config.metrics.enabled                        |
+| `otlp_config.metrics.histograms.mode`                                                      | OTLP histogram bucket reporting mode               |
+| `otlp_config.metrics.histograms.send_aggregation_metrics`                                  | Emit OTLP histogram aggregation metrics.           |
+| `otlp_config.metrics.instrumentation_scope_metadata_as_tags`                               | Add instrumentation scope metadata as metric tags. |
+| `otlp_config.metrics.resource_attributes_as_tags`                                          | Add scalar resource attributes as raw tags.        |
+| `otlp_config.metrics.summaries.mode`                                                       | OTLP summary quantile reporting mode.              |
+| `otlp_config.metrics.sums.cumulative_monotonic_mode`                                       | Cumulative monotonic sum reporting mode.           |
+| `otlp_config.metrics.sums.initial_cumulative_monotonic_value`                              | Initial cumulative sum reporting behavior.         |
+| `otlp_config.metrics.tag_cardinality`                                                      | Tag cardinality for OTLP metric entity enrichment. |
+| `otlp_config.metrics.tags`                                                                 | Comma-separated tags for all OTLP metrics.         |
+| `otlp_config.receiver.protocols.grpc.endpoint`                                             | otlp_config.receiver.protocols.grpc.endpoint       |
+| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age`       | gRPC keepalive: max connection age                 |
+| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace` | gRPC keepalive: max conn age grace                 |
+| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time`                     | gRPC keepalive: ping time                          |
+| `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout`                  | gRPC keepalive: ping timeout                       |
+| `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`                                | Max OTLP inbound gRPC message size (MiB)           |
+| `otlp_config.receiver.protocols.grpc.tls.ca_file`                                          | gRPC TLS CA file path                              |
+| `otlp_config.receiver.protocols.grpc.tls.cert_file`                                        | gRPC TLS cert file path                            |
+| `otlp_config.receiver.protocols.grpc.tls.key_file`                                         | gRPC TLS key file path                             |
+| `otlp_config.receiver.protocols.grpc.transport`                                            | otlp_config.receiver.protocols.grpc.transport      |
+| `otlp_config.receiver.protocols.http.cors.allowed_headers`                                 | HTTP CORS allowed headers                          |
+| `otlp_config.receiver.protocols.http.cors.allowed_origins`                                 | HTTP CORS allowed origins                          |
+| `otlp_config.receiver.protocols.http.cors.exposed_headers`                                 | HTTP CORS exposed headers                          |
+| `otlp_config.receiver.protocols.http.cors.max_age`                                         | HTTP CORS max age                                  |
+| `otlp_config.receiver.protocols.http.endpoint`                                             | otlp_config.receiver.protocols.http.endpoint       |
+| `otlp_config.receiver.protocols.http.tls.ca_file`                                          | HTTP TLS CA file path                              |
+| `otlp_config.receiver.protocols.http.tls.cert_file`                                        | HTTP TLS cert file path                            |
+| `otlp_config.receiver.protocols.http.tls.key_file`                                         | HTTP TLS key file path                             |
+| `otlp_config.traces.enabled`                                                               | otlp_config.traces.enabled                         |
+| `otlp_config.traces.internal_port`                                                         | otlp_config.traces.internal_port                   |
+| `otlp_config.traces.probabilistic_sampler.sampling_percentage`                             | OTLP trace sampling percentage                     |
+| `provider_kind`                                                                            | Provider kind static tag                           |
+| `proxy.http`                                                                               | HTTP proxy URL                                     |
+| `proxy.https`                                                                              | HTTPS proxy URL                                    |
+| `proxy.no_proxy`                                                                           | Hosts bypassing proxy                              |
+| `run_path`                                                                                 | Runtime state directory                            |
+| `serializer_compressor_kind`                                                               | Payload compression algorithm                      |
+| `serializer_experimental_use_v3_api.compression_level`                                     | V3 API zstd compression level                      |
+| `serializer_experimental_use_v3_api.series.endpoints`                                      | Endpoints enabled for V3 series API                |
+| `serializer_experimental_use_v3_api.sketches.endpoints`                                    | Endpoints enabling v3 sketches API                 |
+| `serializer_max_payload_size`                                                              | Max compressed payload size (generic)              |
+| `serializer_max_series_payload_size`                                                       | Max compressed V2 series payload size              |
+| `serializer_max_series_points_per_payload`                                                 | Max data points per series payload                 |
+| `serializer_max_series_uncompressed_payload_size`                                          | Max uncompressed V2 series payload size            |
+| `serializer_max_uncompressed_payload_size`                                                 | Max uncompressed payload size (generic)            |
+| `site`                                                                                     | Datadog site domain                                |
+| `sslkeylogfile`                                                                            | Write TLS session keys to file                     |
+| `statsd_forward_port`                                                                      | UDP packet forwarding destination port             |
+| `statsd_metric_blocklist`                                                                  | List of metric names to block/drop                 |
+| `statsd_metric_blocklist_match_prefix`                                                     | Treat blocklist entries as prefixes                |
+| `statsd_metric_namespace`                                                                  | Prefix prepended to all metric names               |
+| `statsd_metric_namespace_blacklist`                                                        | Prefixes exempt from namespace                     |
+| `syslog_rfc`                                                                               | Use RFC-style syslog header                        |
+| `syslog_uri`                                                                               | Syslog destination URI                             |
+| `tags`                                                                                     | Global tags for EKS Fargate OTLP metrics           |
+| `telemetry.dogstatsd_origin`                                                               | Per-origin processed-metrics telemetry             |
+| `tls_handshake_timeout`                                                                    | HTTP TLS handshake timeout                         |
+| `use_proxy_for_cloud_metadata`                                                             | Proxy cloud metadata endpoints                     |
+| `use_v2_api.series`                                                                        | Send series via V2 protobuf endpoint               |
+| `use_v3_api.series.enabled`                                                                | Global V3 series mode                              |
+| `use_v3_api.series.endpoints`                                                              | Per-endpoint V3 series modes                       |
+| `vector.metrics.enabled`                                                                   | Route metrics to OPW (legacy alias)                |
+| `vector.metrics.url`                                                                       | OPW metrics intake URL (legacy alias)              |
+| `vector.metrics.use_v3_api.series`                                                         | Use V3 series for Vector                           |
+| `vsock_addr`                                                                               | vsock address for Agent IPC endpoint               |
 
 
 [#178]: https://github.com/DataDog/saluki/issues/178

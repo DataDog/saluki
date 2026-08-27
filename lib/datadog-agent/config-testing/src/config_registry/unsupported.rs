@@ -456,6 +456,39 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
     };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`-gRPC keepalive: min time between pings
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_ENFORCEMENT_POLICY_MIN_TIME = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_ENFORCEMENT_POLICY_MIN_TIME,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream`-gRPC keepalive: allow no-stream pings
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_ENFORCEMENT_POLICY_PERMIT_WITHOUT_STREAM = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_ENFORCEMENT_POLICY_PERMIT_WITHOUT_STREAM,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
+    /// `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle`-gRPC keepalive: max connection idle
+    OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_IDLE = SalukiAnnotation {
+        schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_IDLE,
+        support_level: SupportLevel::Incompatible(Severity::Medium),
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Otlp]),
+    };
     /// `otlp_config.receiver.protocols.grpc.tls.ca_pem`-gRPC TLS CA PEM
     OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_PEM = SalukiAnnotation {
         schema: &schema::OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_PEM,

@@ -283,6 +283,7 @@ pub struct Receiver {
 /// always carries an effective limit.
 pub const DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB: u64 = 4;
 
+<<<<<<< HEAD
 /// Default gRPC keepalive ping interval: idle time before the server sends a PING to check the
 /// connection is still alive.
 pub const DEFAULT_GRPC_KEEPALIVE_TIME: Duration = Duration::from_secs(2 * 60 * 60);
@@ -315,8 +316,7 @@ pub struct KeepaliveServerParameters {
     /// is resolved by the translator to the default of 20 seconds. Increase this on networks with
     /// high latency or intermittent delays.
     pub timeout: Duration,
-}
-
+=======
 /// TLS settings for an OTLP receiver (gRPC or HTTP).
 ///
 /// These configure server-side TLS for the receiver. When `cert_file` and `key_file` are both set, the receiver
@@ -340,6 +340,7 @@ pub struct Tls {
     /// Clients that present a certificate must provide a valid one; clients that present no certificate are still
     /// accepted. Defaults to empty (no client certificate verification).
     pub ca_file: String,
+>>>>>>> origin/main
 }
 
 /// OTLP gRPC receiver.
@@ -354,12 +355,14 @@ pub struct GrpcReceiver {
     /// Transport the gRPC receiver binds. Defaults to `tcp`.
     pub transport: GrpcTransport,
 
-    /// Server-side keepalive parameters. Always present; zero durations are resolved to the
-    /// grpc-go defaults (2 h interval, 20 s timeout) by the translator.
-    pub keepalive: KeepaliveServerParameters,
-
+<<<<<<< HEAD
+    /// Server-side keepalive parameters. `None` means keepalive is not configured; the component
+    /// layer applies defaults.
+    pub keepalive: Option<KeepaliveServerParameters>,
+=======
     /// TLS settings for the gRPC receiver.
     pub tls: Tls,
+>>>>>>> origin/main
 }
 
 /// OTLP HTTP receiver.

@@ -177,6 +177,18 @@ pub trait DatadogConfigWitness {
     fn consume_otlp_config_metrics_tag_cardinality(&mut self, value: String);
     fn consume_otlp_config_metrics_tags(&mut self, value: String);
     fn consume_otlp_config_receiver_protocols_grpc_endpoint(&mut self, value: String);
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(
+        &mut self, value: std::time::Duration,
+    );
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace(
+        &mut self, value: std::time::Duration,
+    );
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time(
+        &mut self, value: std::time::Duration,
+    );
+    fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(
+        &mut self, value: std::time::Duration,
+    );
     fn consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(&mut self, value: i64);
     fn consume_otlp_config_receiver_protocols_grpc_tls_ca_file(&mut self, value: Option<String>);
     fn consume_otlp_config_receiver_protocols_grpc_tls_cert_file(&mut self, value: Option<String>);
@@ -473,6 +485,50 @@ pub fn drive(config: &DatadogConfiguration, consumer: &mut impl DatadogConfigWit
     consumer.consume_otlp_config_metrics_tags(config.otlp_config.metrics.tags.clone());
     consumer.consume_otlp_config_receiver_protocols_grpc_endpoint(
         config.otlp_config.receiver.protocols.grpc.endpoint.clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .keepalive
+            .server_parameters
+            .max_connection_age
+            .clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .keepalive
+            .server_parameters
+            .max_connection_age_grace
+            .clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .keepalive
+            .server_parameters
+            .time
+            .clone(),
+    );
+    consumer.consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(
+        config
+            .otlp_config
+            .receiver
+            .protocols
+            .grpc
+            .keepalive
+            .server_parameters
+            .timeout
+            .clone(),
     );
     consumer.consume_otlp_config_receiver_protocols_grpc_max_recv_msg_size_mib(
         config.otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib.clone(),

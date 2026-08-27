@@ -481,7 +481,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Global listen host fallback"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -759,7 +759,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Receive buffer size (bytes)"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -770,7 +770,7 @@ inventory:
     description: "Traffic capture channel depth"
     issue: "#1381"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -781,7 +781,7 @@ inventory:
     description: "Traffic capture file location"
     issue: "#1381"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -790,7 +790,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Context cache TTL (seconds)"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -801,7 +801,7 @@ inventory:
     description: "Suppress noisy parse error logs"
     issue: "#1350"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -810,7 +810,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Entity ID over auto-detection"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       env_var_override: [DD_DOGSTATSD_ENTITY_ID_PRECEDENCE]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -820,7 +820,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Require newline-terminated messages"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       test_json: '["udp"]'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -856,7 +856,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD dedicated log file path"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDDebugLogConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -865,7 +865,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD log file max roll count"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDDebugLogConfiguration]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -875,7 +875,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "DSD log file max size"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDDebugLogConfiguration]
       test_json: '"42MB"'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -906,7 +906,7 @@ inventory:
       decoded metric summaries after DogStatsD parsing. The capture settings record raw
       DogStatsD traffic for packet-level investigation.
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDDebugLogConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -930,7 +930,7 @@ inventory:
       mapper, clear `dogstatsd_mapper_profiles` instead when running ADP.
     issue: "#1687"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDMapperConfiguration]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd_mapper.rs
@@ -940,7 +940,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Metric mapping profile definitions"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDMapperConfiguration]
       test_json: '[{"name":"test","prefix":"test.","mappings":[]}]'
       additional_attributes:
         config_registry_filename: dogstatsd_mapper.rs
@@ -1050,7 +1050,7 @@ inventory:
     documentation: "See `dogstatsd_stats_enable`"
     issue: "#1352"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDDebugLogConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1059,7 +1059,7 @@ inventory:
     pipelines: [dogstatsd, checks]
     description: "Enable no-agg timestamped path"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [TypedConfigSystem, DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: aggregate.rs
 
@@ -1076,7 +1076,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Accept non-localhost UDP/TCP"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1085,7 +1085,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Enable UDS origin detection"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1095,7 +1095,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Honor client origin proto fields"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       env_var_override: [DD_DOGSTATSD_ORIGIN_DETECTION_CLIENT]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1105,7 +1105,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow clients to opt out origin"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       env_var_override: [DD_DOGSTATSD_ORIGIN_OPTOUT_ENABLED]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1131,7 +1131,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Windows named pipe path"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1156,7 +1156,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDP listen port"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1174,7 +1174,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Socket receive buffer size"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1184,7 +1184,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDS datagram socket path"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1247,7 +1247,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Log oversized UDS stream frames"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1256,7 +1256,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDS stream socket path"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1265,7 +1265,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "String interner capacity"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -1275,7 +1275,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Default tag cardinality level"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       env_var_override: [DD_DOGSTATSD_TAG_CARDINALITY]
       test_json: '"high"'
       additional_attributes:
@@ -1286,7 +1286,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Extra tags added to all DSD data"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1303,7 +1303,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Windows named pipe ACL descriptor"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1322,7 +1322,7 @@ inventory:
       workers. Connection-oriented listeners continue to use one decoder per connection.
     issue: "#2079"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1349,7 +1349,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending event payloads"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1358,7 +1358,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending series payloads"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1367,7 +1367,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending service check payloads"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1376,7 +1376,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Allow sending sketch payloads"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -1853,7 +1853,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Metric name blocklist"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -1862,7 +1862,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Blocklist uses prefix matching"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -2030,7 +2030,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Unified origin detection mode"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       env_var_override: [DD_ORIGIN_DETECTION_UNIFIED]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -2219,123 +2219,32 @@ inventory:
     description: "gRPC include metadata in context"
 
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time:
-    support: none
-    severity: medium
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC keepalive: min time between pings"
-    documentation: |-
-      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to rate-limit client keepalive PINGs:
-      a client that pings more often than `min_time` receives a GOAWAY with `ENHANCE_YOUR_CALM` and
-      the connection is closed. The default is `5m`.
-
-      These defaults originate in grpc-go, a general-purpose gRPC library that must be safe for any
-      server, including public-facing ones with untrusted or malicious clients. It therefore ships
-      conservative defaults that protect against ping-spam and resource-exhaustion attacks. These
-      defaults propagated unchanged through the OpenTelemetry Collector and into the Datadog Agent
-      config schema; they are not a considered decision for ADP's deployment model.
-
-      ADP's clients are trusted OpenTelemetry SDKs on the same host, not adversarial actors, so the
-      threat model this policy defends against does not apply. Additionally, ADP uses tonic/h2 for its
-      HTTP/2 stack, which has no enforcement policy hook: h2 auto-acks every inbound PING
-      unconditionally, with no observation point to rate-limit or send GOAWAY.
-
-      Setting `min_time` has no effect in ADP. The default (`5m`) is accepted silently; a non-default
-      value emits a warning.
 
   otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream:
-    support: none
-    severity: medium
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC keepalive: allow no-stream pings"
-    documentation: |-
-      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to control whether clients may send
-      keepalive PINGs when no stream (RPC) is active. When `false` (the grpc-go default), a client
-      that pings without an active stream receives a GOAWAY and the connection is closed.
-
-      These defaults originate in grpc-go, a general-purpose gRPC library that must be safe for any
-      server, including public-facing ones with untrusted or malicious clients. It therefore ships
-      conservative defaults that protect against idle-connection squatting and resource exhaustion.
-      These defaults propagated unchanged through the OpenTelemetry Collector and into the Datadog
-      Agent config schema; they are not a considered decision for ADP's deployment model.
-
-      ADP's clients are trusted OpenTelemetry SDKs on the same host that benefit from warm idle
-      connections, so the threat model this policy defends against does not apply. Additionally, ADP
-      uses tonic/h2 for its HTTP/2 stack, which has no enforcement policy hook: h2 auto-acks every
-      inbound PING regardless of active streams, with no observation point to reject no-stream pings.
-
-      Setting `permit_without_stream` has no effect in ADP. ADP always permits PINGs without an active
-      stream.
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC keepalive: max connection age"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC keepalive: max conn age grace"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle:
-    support: none
-    severity: medium
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC keepalive: max connection idle"
-    documentation: |-
-      The Core Agent's OTLP gRPC receiver (grpc-go) uses this to close connections that have had zero
-      active RPC streams for the given duration, by sending GOAWAY and draining the connection.
-      Idleness is based on RPC stream count, not on traffic: a connection with no active RPCs is
-      considered idle even if the client is sending keepalive PINGs to keep it warm. The default is
-      infinity (never close idle connections).
-
-      This is a stricter form of idle reclamation than `server_parameters.time`/`timeout`, which only
-      closes connections that are fully silent (no frames at all for the idle period). A warm idle
-      connection (no RPCs, but the client is pinging) is closed by `max_connection_idle` but is not
-      closed by `time`/`timeout`, because the client PINGs count as read activity. So `time`/`timeout`
-      is not a full substitute: it covers the dead-connection case, while `max_connection_idle` covers
-      the warm-but-no-RPCs resource-reclamation case.
-
-      ADP uses tonic/h2 for its HTTP/2 stack, which has no `max_connection_idle` equivalent. tonic,
-      hyper, and hyper-util expose no idle-connection-close builder, and h2 does not expose the
-      per-connection hooks (active stream count, GOAWAY trigger) through tonic's server loop. The raw
-      `h2::server::Connection` has the primitives (`has_streams`, `graceful_shutdown`), but tonic
-      owns the connection lifecycle and does not hand the `h2` connection back to caller code.
-
-      The grpc-go default is infinity, so the Core Agent at its default does not reclaim warm-idle
-      connections either: it relies on `time`/`timeout` for dead-connection detection, which ADP
-      supports. At the default configuration, ADP's behavior matches the Core Agent on this axis.
-
-      Setting `max_connection_idle` has no effect in ADP. The default (infinity) is accepted silently;
-      a non-default value emits a warning.
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC keepalive: ping time"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC keepalive: ping timeout"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.max_concurrent_streams:
     support: unknown
@@ -2356,151 +2265,75 @@ inventory:
     description: "gRPC read buffer size"
 
   otlp_config.receiver.protocols.grpc.tls.ca_file:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS CA file path"
-    documentation: |-
-      Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP gRPC receiver.
-      When set, the server requests client certificates and verifies them if presented, but does not require them.
-      Defaults to empty (no client certificate verification).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.ca_pem:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS CA PEM"
-    documentation: |-
-      Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.cert_file:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS cert file path"
-    documentation: |-
-      Path to the PEM-encoded certificate chain file for the OTLP gRPC receiver. When set together with
-      `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.cert_pem:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS cert PEM"
-    documentation: |-
-      Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.cipher_suites:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS cipher suites"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS client CA file"
 
   otlp_config.receiver.protocols.grpc.tls.client_ca_file_reload:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS client CA reload"
 
   otlp_config.receiver.protocols.grpc.tls.curve_preferences:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS curve preferences"
 
   otlp_config.receiver.protocols.grpc.tls.include_system_ca_certs_pool:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS include system CA pool"
 
   otlp_config.receiver.protocols.grpc.tls.key_file:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS key file path"
-    documentation: |-
-      Path to the PEM-encoded private key file for the OTLP gRPC receiver. The key must correspond to the leaf
-      certificate in `cert_file`. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.grpc.tls.key_pem:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS key PEM"
-    documentation: |-
-      Not supported. Use `key_file` to provide the private key for the OTLP gRPC receiver.
 
   otlp_config.receiver.protocols.grpc.tls.max_version:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS max version"
 
   otlp_config.receiver.protocols.grpc.tls.min_version:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS min version"
 
   otlp_config.receiver.protocols.grpc.tls.reload_interval:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS reload interval"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.auth:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS TPM auth"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.enabled:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS TPM enabled"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS TPM owner auth"
 
   otlp_config.receiver.protocols.grpc.tls.tpm.path:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "gRPC TLS TPM path"
 
   otlp_config.receiver.protocols.grpc.transport:
@@ -2602,151 +2435,75 @@ inventory:
     description: "HTTP response headers"
 
   otlp_config.receiver.protocols.http.tls.ca_file:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS CA file path"
-    documentation: |-
-      Path to a PEM-encoded CA certificate file for verifying client certificates on the OTLP HTTP receiver.
-      When set, the server requests client certificates and verifies them if presented, but does not require them.
-      Defaults to empty (no client certificate verification).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.ca_pem:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS CA PEM"
-    documentation: |-
-      Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.cert_file:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS cert file path"
-    documentation: |-
-      Path to the PEM-encoded certificate chain file for the OTLP HTTP receiver. When set together with
-      `key_file`, enables TLS on the receiver. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.cert_pem:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS cert PEM"
-    documentation: |-
-      Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.cipher_suites:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS cipher suites"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS client CA file"
 
   otlp_config.receiver.protocols.http.tls.client_ca_file_reload:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS client CA reload"
 
   otlp_config.receiver.protocols.http.tls.curve_preferences:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS curve preferences"
 
   otlp_config.receiver.protocols.http.tls.include_system_ca_certs_pool:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS include system CA pool"
 
   otlp_config.receiver.protocols.http.tls.key_file:
-    support: full
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS key file path"
-    documentation: |-
-      Path to the PEM-encoded private key file for the OTLP HTTP receiver. The key must correspond to the leaf
-      certificate in `cert_file`. Defaults to empty (TLS disabled).
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: otlp.rs
 
   otlp_config.receiver.protocols.http.tls.key_pem:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS key PEM"
-    documentation: |-
-      Not supported. Use `key_file` to provide the private key for the OTLP HTTP receiver.
 
   otlp_config.receiver.protocols.http.tls.max_version:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS max version"
 
   otlp_config.receiver.protocols.http.tls.min_version:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS min version"
 
   otlp_config.receiver.protocols.http.tls.reload_interval:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS reload interval"
 
   otlp_config.receiver.protocols.http.tls.tpm.auth:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS TPM auth"
 
   otlp_config.receiver.protocols.http.tls.tpm.enabled:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS TPM enabled"
 
   otlp_config.receiver.protocols.http.tls.tpm.owner_auth:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS TPM owner auth"
 
   otlp_config.receiver.protocols.http.tls.tpm.path:
-    support: none
-    severity: high
-    planned: false
-    pipelines: [otlp]
+    support: unknown
     description: "HTTP TLS TPM path"
 
   otlp_config.receiver.protocols.http.traces_url_path:
@@ -2824,15 +2581,6 @@ inventory:
       env_var_override: [DD_PROXY_NO_PROXY]
       additional_attributes:
         config_registry_filename: proxy.rs
-
-  run_path:
-    support: full
-    pipelines: [cross_cutting]
-    description: "Runtime state directory"
-    test_support:
-      used_by: [TypedConfigSystem]
-      additional_attributes:
-        config_registry_filename: shared.rs
 
   serializer_compressor_kind:
     support: full
@@ -2989,7 +2737,7 @@ inventory:
       be split differently while carrying the same DogStatsD messages. ADP logs setup failures
       and tracks send failures through telemetry.
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       test_json: '"127.0.0.1"'
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -2999,7 +2747,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDP packet forwarding destination port"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       value_type_override: integer
       test_json: "9125"
       additional_attributes:
@@ -3010,7 +2758,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "List of metric names to block/drop"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -3019,7 +2767,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Treat blocklist entries as prefixes"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -3028,7 +2776,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Prefix prepended to all metric names"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDPrefixFilterConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
 
@@ -3037,7 +2785,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Prefixes exempt from namespace"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDPrefixFilterConfiguration]
       additional_yaml_paths: [statsd_metric_namespace_blocklist]
       additional_attributes:
         config_registry_filename: dogstatsd_prefix_filter.rs
@@ -3101,7 +2849,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Per-origin processed-metrics telemetry"
     test_support:
-      used_by: [TypedConfigSystem]
+      used_by: [DogStatsDConfiguration]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
 
@@ -4665,6 +4413,7 @@ excluded:
   reverse_dns_enrichment.rate_limiter.recovery_intervals: "ignored in initial audit 2026-04-23"
   reverse_dns_enrichment.rate_limiter.throttle_error_threshold: "ignored in initial audit 2026-04-23"
   reverse_dns_enrichment.workers: "ignored in initial audit 2026-04-23"
+  run_path: "ignored in second bulk edit 2026-05-06"
   runtime_security_config.activity_dump.remote_storage.endpoints.additional_endpoints: "ignored in initial audit 2026-04-23"
   runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_content_size: "ignored in initial audit 2026-04-23"
