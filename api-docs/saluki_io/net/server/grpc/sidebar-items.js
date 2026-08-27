@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["GrpcServer"]};
+window.SIDEBAR_ITEMS = {"struct":["GrpcKeepalive","GrpcServer"]};
