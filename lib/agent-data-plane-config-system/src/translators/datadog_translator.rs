@@ -1104,6 +1104,23 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.proxy.no_proxy = value;
     }
 
+    fn consume_run_path(&mut self, value: String) {
+        // In the vendored schema, run_path is defaulted to the placeholder ${run_path}. Though it
+        // seems highly unlikely this could slip through to ADP, we check for it, warn and treat
+        // the value as unset.
+        //
+        // Note that for this config, we do not care whether provenance is explicit or default. We
+        // just want to know whether we have a value or not.
+        if value == "${run_path}" {
+            warn!("`run_path` contains the unresolved schema placeholder '${{run_path}}'. Treating it as unset.");
+            self.config.shared.run_path = None;
+        } else if value.is_empty() {
+            self.config.shared.run_path = None;
+        } else {
+            self.config.shared.run_path = Some(PathBuf::from(value))
+        }
+    }
+
     fn consume_serializer_compressor_kind(&mut self, value: String) {
         self.config.shared.endpoints.compression.compressor_kind = value;
     }

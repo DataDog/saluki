@@ -2734,6 +2734,15 @@ inventory:
       additional_attributes:
         config_registry_filename: proxy.rs
 
+  run_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Runtime state directory"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: shared.rs
+
   serializer_compressor_kind:
     support: full
     pipelines: [cross_cutting]
@@ -4565,7 +4574,6 @@ excluded:
   reverse_dns_enrichment.rate_limiter.recovery_intervals: "ignored in initial audit 2026-04-23"
   reverse_dns_enrichment.rate_limiter.throttle_error_threshold: "ignored in initial audit 2026-04-23"
   reverse_dns_enrichment.workers: "ignored in initial audit 2026-04-23"
-  run_path: "ignored in second bulk edit 2026-05-06"
   runtime_security_config.activity_dump.remote_storage.endpoints.additional_endpoints: "ignored in initial audit 2026-04-23"
   runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_concurrent_send: "ignored in initial audit 2026-04-23"
   runtime_security_config.activity_dump.remote_storage.endpoints.batch_max_content_size: "ignored in initial audit 2026-04-23"

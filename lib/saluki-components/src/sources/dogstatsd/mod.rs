@@ -703,9 +703,9 @@ async fn resolve_bind_host(host: &str) -> Result<std::net::IpAddr, Error> {
 
 impl DogStatsDConfiguration {
     /// Creates a new `DogStatsDConfiguration` from the given configuration.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
+    pub fn from_configuration(config: &GenericConfiguration, run_path: &Option<PathBuf>) -> Result<Self, GenericError> {
         let mut dogstatsd_config: Self = config.as_typed()?;
-        dogstatsd_config.fix_empty_capture_path(config);
+        dogstatsd_config.fix_empty_capture_path(run_path);
         dogstatsd_config.fix_capture_depth();
         Ok(dogstatsd_config)
     }
@@ -866,26 +866,16 @@ impl DogStatsDConfiguration {
         DogStatsDReplayAPIHandler::new(self.replay_control.clone())
     }
 
-    fn fix_empty_capture_path(&mut self, config: &GenericConfiguration) {
+    fn fix_empty_capture_path(&mut self, run_path: &Option<PathBuf>) {
         if self.capture_path.parent().is_some() {
             return;
         }
 
-        let capture_path = match config.try_get_typed::<PathBuf>("run_path") {
-            Ok(Some(mut run_path)) => {
-                run_path.push(DOGSTATSD_CAPTURE_DIR);
-                run_path
-            }
-            Ok(None) => {
+        let capture_path = match run_path {
+            Some(found_it) => found_it.join(DOGSTATSD_CAPTURE_DIR),
+            None => {
                 debug!(
                     "`dogstatsd_capture_path` and `run_path` were empty. Default DogStatsD capture path is unavailable."
-                );
-                return;
-            }
-            Err(e) => {
-                debug!(
-                    error = %e,
-                    "Failed to read `run_path` from configuration. Default DogStatsD capture path is unavailable."
                 );
                 return;
             }
@@ -4510,10 +4500,11 @@ mod tests {
     async fn fix_empty_capture_path_sets_path_from_run_path() {
         const RUN_PATH: &str = "/my/little/run_path";
 
-        let base_config_values = json!({ "run_path": RUN_PATH });
+        let base_config_values = json!({});
         let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
 
-        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config, &Some(PathBuf::from(RUN_PATH)))
+            .expect("should deserialize");
 
         let expected = PathBuf::from(RUN_PATH).join(DOGSTATSD_CAPTURE_DIR);
         assert_eq!(expected, dogstatsd_config.capture_path);
@@ -4524,10 +4515,11 @@ mod tests {
         const RUN_PATH: &str = "/my/little/run_path";
         const CAPTURE_PATH: &str = "/custom/path/to/capture";
 
-        let base_config_values = json!({ "run_path": RUN_PATH, "dogstatsd_capture_path": CAPTURE_PATH });
+        let base_config_values = json!({ "dogstatsd_capture_path": CAPTURE_PATH });
         let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
 
-        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+        let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config, &Some(PathBuf::from(RUN_PATH)))
+            .expect("should deserialize");
 
         assert_eq!(PathBuf::from(CAPTURE_PATH), dogstatsd_config.capture_path);
     }
@@ -4542,7 +4534,8 @@ mod tests {
 
         for (base_config_values, expected_depth) in cases {
             let (config, _) = ConfigurationLoader::for_tests(Some(base_config_values), None, false).await;
-            let dogstatsd_config = DogStatsDConfiguration::from_configuration(&config).expect("should deserialize");
+            let dogstatsd_config =
+                DogStatsDConfiguration::from_configuration(&config, &None).expect("should deserialize");
 
             assert_eq!(expected_depth, dogstatsd_config.capture_depth);
         }
