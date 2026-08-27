@@ -7,10 +7,9 @@ use std::{
     fmt::{Debug, Formatter},
     fs::{File, OpenOptions},
     io::{self, Write},
-    path::Path,
 };
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -22,7 +21,8 @@ use rustls::{
         Resumption,
     },
     crypto::CryptoProvider,
-    pki_types::{CertificateDer, ServerName, UnixTime},
+    pki_types::{pem::PemObject as _, CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+    server::WebPkiClientVerifier,
     version::{TLS12, TLS13},
     ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme, SupportedProtocolVersion,
 };
@@ -371,6 +371,148 @@ impl ClientTLSConfigBuilder {
     }
 }
 
+/// A TLS server configuration builder.
+///
+/// Exposes options for configuring a server's TLS configuration by loading certificates and keys from PEM files
+/// on disk, and provides sane defaults for many common options.
+///
+/// # Missing
+///
+/// - ability to configure TLS key logging
+/// - ability to configure minimum/maximum TLS protocol versions
+/// - ability to configure cipher suites and curve preferences
+pub struct ServerTLSConfigBuilder {
+    cert_file: Option<PathBuf>,
+    key_file: Option<PathBuf>,
+    ca_file: Option<PathBuf>,
+}
+
+impl ServerTLSConfigBuilder {
+    /// Creates a new server TLS configuration builder with no certificates or keys configured.
+    pub fn new() -> Self {
+        Self {
+            cert_file: None,
+            key_file: None,
+            ca_file: None,
+        }
+    }
+
+    /// Sets the path to the PEM-encoded certificate chain file.
+    ///
+    /// The file may contain a single certificate (leaf) or a full certificate chain (leaf followed by intermediates).
+    /// All certificates in the file are presented to clients during the TLS handshake.
+    pub fn with_cert_file<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        self.cert_file = Some(path.into());
+        self
+    }
+
+    /// Sets the path to the PEM-encoded private key file.
+    ///
+    /// The private key must correspond to the leaf certificate in the certificate chain.
+    pub fn with_key_file<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        self.key_file = Some(path.into());
+        self
+    }
+
+    /// Sets the path to the PEM-encoded CA certificate file used to verify client certificates.
+    ///
+    /// When set, the server requests client certificates and verifies them against the CA certificates in this file,
+    /// but does not require a client certificate. If the client presents a certificate, it must be valid; if the
+    /// client presents no certificate, the connection is still accepted.
+    ///
+    /// The file may contain multiple CA certificates in PEM format.
+    pub fn with_ca_file<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        self.ca_file = Some(path.into());
+        self
+    }
+
+    /// Builds the server TLS configuration.
+    ///
+    /// # Errors
+    ///
+    /// If the certificate or key files cannot be read or parsed, or if the resulting configuration isn't FIPS
+    /// compliant, an error will be returned.
+    pub fn build(self) -> Result<ServerConfig, GenericError> {
+        let cert_file = self
+            .cert_file
+            .ok_or_else(|| generic_error!("No certificate file configured for server TLS."))?;
+        let key_file = self
+            .key_file
+            .ok_or_else(|| generic_error!("No private key file configured for server TLS."))?;
+
+        // Load the certificate chain.
+        let cert_bytes = std::fs::read(&cert_file)
+            .map_err(|e| generic_error!("Failed to read certificate file '{}': {}", cert_file.display(), e))?;
+        let cert_chain: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&cert_bytes)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| generic_error!("Failed to parse certificate file '{}': {}", cert_file.display(), e))?;
+
+        if cert_chain.is_empty() {
+            return Err(generic_error!(
+                "No PEM-encoded certificates found in certificate file '{}'.",
+                cert_file.display()
+            ));
+        }
+
+        // Load the private key.
+        let key_bytes = std::fs::read(&key_file)
+            .map_err(|e| generic_error!("Failed to read private key file '{}': {}", key_file.display(), e))?;
+        let private_key = PrivateKeyDer::from_pem_slice(&key_bytes)
+            .map_err(|e| generic_error!("Failed to parse private key file '{}': {}", key_file.display(), e))?;
+
+        let mut config = if let Some(ca_file) = self.ca_file {
+            build_server_config_with_client_verifier(&ca_file, cert_chain, private_key)?
+        } else {
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(cert_chain, private_key)
+                .map_err(|e| generic_error!("Failed to build server TLS configuration: {}", e))?
+        };
+
+        ensure_server_config_fips_compliant(&mut config)?;
+
+        Ok(config)
+    }
+}
+
+/// Builds a `ServerConfig` with a client certificate verifier loaded from a CA file.
+///
+/// The server requests client certificates and verifies them if presented, but does not require them (optional
+/// verification). This matches the OpenTelemetry Collector's `ca_file` semantics for a server.
+fn build_server_config_with_client_verifier(
+    ca_file: &Path, cert_chain: Vec<CertificateDer<'static>>, private_key: PrivateKeyDer<'static>,
+) -> Result<ServerConfig, GenericError> {
+    let ca_bytes = std::fs::read(ca_file)
+        .map_err(|e| generic_error!("Failed to read CA certificate file '{}': {}", ca_file.display(), e))?;
+    let mut root_cert_store = RootCertStore::empty();
+    let ca_certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&ca_bytes)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| generic_error!("Failed to parse CA certificate file '{}': {}", ca_file.display(), e))?;
+
+    if ca_certs.is_empty() {
+        return Err(generic_error!(
+            "No PEM-encoded certificates found in CA file '{}'.",
+            ca_file.display()
+        ));
+    }
+
+    for ca_cert in ca_certs {
+        root_cert_store
+            .add(ca_cert)
+            .map_err(|e| generic_error!("Failed to add CA certificate to root store: {}", e))?;
+    }
+
+    let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_store))
+        .allow_unauthenticated()
+        .build()
+        .map_err(|e| generic_error!("Failed to build client certificate verifier: {}", e))?;
+
+    ServerConfig::builder()
+        .with_client_cert_verifier(client_verifier)
+        .with_single_cert(cert_chain, private_key)
+        .map_err(|e| generic_error!("Failed to build server TLS configuration: {}", e))
+}
+
 /// Ensures that a client TLS configuration is FIPS compliant.
 ///
 /// In FIPS builds, this checks the Rustls FIPS marker on the configuration. In non-FIPS builds, this is a no-op.
@@ -626,7 +768,6 @@ pub fn load_platform_root_certificates_inner() -> Result<RootCertStore, GenericE
 
 #[cfg(test)]
 mod tests {
-    #[cfg(not(feature = "fips"))]
     use std::fs;
     #[cfg(all(unix, not(feature = "fips")))]
     use std::os::unix::fs::PermissionsExt;
@@ -651,7 +792,7 @@ mod tests {
     use super::{build_nss_key_log_line, open_key_log_file};
     use super::{
         ensure_client_config_fips_compliant, ensure_server_config_fips_compliant, AcceptAllServerCertVerifier,
-        ClientTLSConfigBuilder, TlsMinimumVersion,
+        ClientTLSConfigBuilder, ServerTLSConfigBuilder, TlsMinimumVersion,
     };
 
     /// Builds a client TLS configuration that logs key material to `path`, initializing the default crypto provider
@@ -923,5 +1064,117 @@ mod tests {
         config.key_log.log("CLIENT_RANDOM", &[0xab, 0xcd], &[0x01, 0x23]);
 
         assert!(!key_log_path.exists(), "FIPS builds must not create a TLS key log file");
+    }
+
+    #[test]
+    fn server_tls_config_builder_loads_cert_and_key_files() {
+        let _ = super::initialize_default_crypto_provider();
+        let cert = SelfSignedCert::localhost();
+        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
+        let cert_path = tempdir.path().join("cert.pem");
+        let key_path = tempdir.path().join("key.pem");
+        cert.write_cert_pem(&cert_path);
+        cert.write_key_pem(&key_path);
+
+        ServerTLSConfigBuilder::new()
+            .with_cert_file(&cert_path)
+            .with_key_file(&key_path)
+            .build()
+            .expect("server TLS config should build from cert and key files");
+    }
+
+    #[test]
+    fn server_tls_config_builder_loads_ca_file_for_client_auth() {
+        let _ = super::initialize_default_crypto_provider();
+        let server_cert = SelfSignedCert::localhost();
+        let ca_cert = SelfSignedCert::new(["test-ca"]);
+        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
+        let cert_path = tempdir.path().join("server-cert.pem");
+        let key_path = tempdir.path().join("server-key.pem");
+        let ca_path = tempdir.path().join("ca.pem");
+        server_cert.write_cert_pem(&cert_path);
+        server_cert.write_key_pem(&key_path);
+        ca_cert.write_cert_pem(&ca_path);
+
+        ServerTLSConfigBuilder::new()
+            .with_cert_file(&cert_path)
+            .with_key_file(&key_path)
+            .with_ca_file(&ca_path)
+            .build()
+            .expect("server TLS config with CA should build");
+    }
+
+    #[test]
+    fn server_tls_config_builder_errors_without_cert_file() {
+        let _ = super::initialize_default_crypto_provider();
+
+        let error = ServerTLSConfigBuilder::new()
+            .with_key_file("/tmp/key.pem")
+            .build()
+            .expect_err("server TLS config should fail without a cert file");
+
+        assert!(
+            error.to_string().contains("No certificate file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn server_tls_config_builder_errors_without_key_file() {
+        let _ = super::initialize_default_crypto_provider();
+
+        let error = ServerTLSConfigBuilder::new()
+            .with_cert_file("/tmp/cert.pem")
+            .build()
+            .expect_err("server TLS config should fail without a key file");
+
+        assert!(
+            error.to_string().contains("No private key file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn server_tls_config_builder_errors_on_unreadable_cert_file() {
+        let _ = super::initialize_default_crypto_provider();
+        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
+        let key_path = tempdir.path().join("key.pem");
+        let cert_path = tempdir.path().join("nonexistent.pem");
+        let cert = SelfSignedCert::localhost();
+        cert.write_key_pem(&key_path);
+
+        let error = ServerTLSConfigBuilder::new()
+            .with_cert_file(&cert_path)
+            .with_key_file(&key_path)
+            .build()
+            .expect_err("server TLS config should fail with unreadable cert file");
+
+        assert!(
+            error.to_string().contains("Failed to read certificate file"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn server_tls_config_builder_errors_on_non_pem_cert_file() {
+        let _ = super::initialize_default_crypto_provider();
+        let tempdir = tempfile::tempdir().expect("temporary directory should be created");
+        let cert_path = tempdir.path().join("cert.pem");
+        let key_path = tempdir.path().join("key.pem");
+        // Write garbage that is not valid PEM.
+        fs::write(&cert_path, "this is not a certificate").expect("should write garbage file");
+        let cert = SelfSignedCert::localhost();
+        cert.write_key_pem(&key_path);
+
+        let error = ServerTLSConfigBuilder::new()
+            .with_cert_file(&cert_path)
+            .with_key_file(&key_path)
+            .build()
+            .expect_err("server TLS config should fail with non-PEM cert file");
+
+        assert!(
+            error.to_string().contains("No PEM-encoded certificates found"),
+            "unexpected error: {error}"
+        );
     }
 }

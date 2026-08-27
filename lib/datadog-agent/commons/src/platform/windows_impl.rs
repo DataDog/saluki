@@ -10,18 +10,12 @@ use windows_registry::{Key, LOCAL_MACHINE};
 /// The Datadog Agent Windows installer stores the effective configuration root in
 /// `HKLM\\SOFTWARE\\Datadog\\Datadog Agent\\ConfigRoot`. This constant is the fallback
 /// used when the registry value is unavailable.
-pub const DATADOG_AGENT_CONF_DIR: &str = r"C:\ProgramData\Datadog";
-
-/// Default log directory for the Datadog Agent.
-///
-/// The effective log directory is derived from the registry-backed configuration root at runtime.
-/// This constant is the fallback used when the registry value is unavailable.
-pub const DATADOG_AGENT_LOG_DIR: &str = r"C:\ProgramData\Datadog\logs";
+const DATADOG_AGENT_CONF_DIR: &str = r"C:\ProgramData\Datadog";
 
 /// Default local syslog URI for the Datadog Agent.
 ///
 /// The core Agent does not support syslog logging on Windows.
-pub const DATADOG_AGENT_DEFAULT_SYSLOG_URI: &str = "";
+const DATADOG_AGENT_DEFAULT_SYSLOG_URI: &str = "";
 
 const DATADOG_AGENT_REGISTRY_SUBKEY: &str = r"SOFTWARE\Datadog\Datadog Agent";
 const DATADOG_AGENT_CONFIG_ROOT_VALUE: &str = "ConfigRoot";
@@ -39,6 +33,11 @@ pub fn get_config_dir_path() -> &'static Path {
 /// Returns the path to the default Datadog Agent log directory.
 pub fn get_log_dir_path() -> &'static Path {
     LOG_DIR.get_or_init(|| get_config_dir_path().join("logs")).as_path()
+}
+
+/// Returns the default local syslog URI for the Datadog Agent.
+pub const fn get_default_syslog_uri() -> &'static str {
+    DATADOG_AGENT_DEFAULT_SYSLOG_URI
 }
 
 fn read_config_root_from_registry() -> Option<PathBuf> {

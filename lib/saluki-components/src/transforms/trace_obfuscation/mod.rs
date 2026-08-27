@@ -14,7 +14,7 @@ use agent_data_plane_config::domains;
 use async_trait::async_trait;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{
-    components::{transforms::*, ComponentContext},
+    components::{transforms::*, BuildContext},
     data_model::event::{
         trace::{AttributeValue, Span},
         Event,
@@ -43,7 +43,7 @@ impl TraceObfuscationConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for TraceObfuscationConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         Ok(Box::new(TraceObfuscation {
             obfuscator: Obfuscator::new(self.config.clone()),
         }))

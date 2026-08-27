@@ -6,7 +6,7 @@ use saluki_error::GenericError;
 use super::{Encoder, IncrementalEncoder};
 use crate::accounting::MemoryBounds;
 use crate::{
-    components::ComponentContext,
+    components::BuildContext,
     data_model::{event::EventType, payload::PayloadType},
 };
 
@@ -28,7 +28,7 @@ pub trait EncoderBuilder: MemoryBounds {
     /// # Errors
     ///
     /// If the encoder can't be built for any reason, an error is returned.
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Encoder + Send>, GenericError>;
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Encoder + Send>, GenericError>;
 }
 
 /// An incremental encoder builder.
@@ -52,5 +52,5 @@ pub trait IncrementalEncoderBuilder: MemoryBounds {
     /// # Errors
     ///
     /// If the incremental encoder can't be built for any reason, an error is returned.
-    async fn build(&self, context: ComponentContext) -> Result<Self::Output, GenericError>;
+    async fn build(&self, context: BuildContext) -> Result<Self::Output, GenericError>;
 }

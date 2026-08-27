@@ -61,7 +61,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "Entity ID over auto-detection"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       env_var_override: [DD_DOGSTATSD_ENTITY_ID_PRECEDENCE]
       additional_attributes:
         config_registry_filename: dogstatsd.rs
@@ -71,7 +71,7 @@ inventory:
     pipelines: [dogstatsd]
     description: "UDP listen port"
     test_support:
-      used_by: [DogStatsDConfiguration]
+      used_by: [TypedConfigSystem]
       value_type_override: integer
       additional_attributes:
         config_registry_filename: dogstatsd.rs

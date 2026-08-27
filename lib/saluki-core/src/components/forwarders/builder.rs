@@ -3,7 +3,7 @@ use saluki_error::GenericError;
 
 use super::Forwarder;
 use crate::accounting::MemoryBounds;
-use crate::{components::ComponentContext, data_model::payload::PayloadType};
+use crate::{components::BuildContext, data_model::payload::PayloadType};
 
 /// A forwarder builder.
 ///
@@ -19,5 +19,5 @@ pub trait ForwarderBuilder: MemoryBounds {
     /// ## Errors
     ///
     /// If the forwarder can't be built for any reason, an error is returned.
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError>;
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError>;
 }

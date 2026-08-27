@@ -161,6 +161,7 @@ pub struct DatadogConfiguration {
     pub dogstatsd_mapper_cache_size: i64,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub dogstatsd_mapper_profiles: Vec<::serde_json::Value>,
 
     #[serde(default)]
@@ -404,6 +405,7 @@ pub struct DatadogConfiguration {
     pub metric_filterlist_match_prefix: bool,
 
     #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+    #[serde(deserialize_with = "crate::list_de::deserialize_json_array_or_string")]
     pub metric_tag_filterlist: Vec<::serde_json::Value>,
 
     #[serde(default = "defaults::datadog_configuration_min_tls_version")]
@@ -433,6 +435,10 @@ pub struct DatadogConfiguration {
 
     #[serde(default)]
     pub proxy: Proxy,
+
+    #[serde(default = "defaults::datadog_configuration_run_path")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub run_path: String,
 
     #[serde(default = "defaults::datadog_configuration_serializer_compressor_kind")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
@@ -653,6 +659,7 @@ impl Default for DatadogConfiguration {
             otlp_config: Default::default(),
             provider_kind: Default::default(),
             proxy: Default::default(),
+            run_path: defaults::datadog_configuration_run_path(),
             serializer_compressor_kind: defaults::datadog_configuration_serializer_compressor_kind(),
             serializer_experimental_use_v3_api: Default::default(),
             serializer_max_payload_size: defaults::default_u64::<i64, 2621440>(),
@@ -1615,8 +1622,14 @@ pub struct OtlpConfigReceiverProtocolsGrpc {
     pub endpoint: String,
 
     #[serde(default)]
+    pub keepalive: OtlpConfigReceiverProtocolsGrpcKeepalive,
+
+    #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_i64")]
     pub max_recv_msg_size_mib: i64,
+
+    #[serde(default)]
+    pub tls: OtlpConfigReceiverProtocolsGrpcTls,
 
     #[serde(
         default = "defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport"
@@ -1629,8 +1642,91 @@ impl Default for OtlpConfigReceiverProtocolsGrpc {
     fn default() -> Self {
         Self {
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_endpoint(),
+            keepalive: Default::default(),
             max_recv_msg_size_mib: Default::default(),
+            tls: Default::default(),
             transport: defaults::datadog_configuration_otlp_config_receiver_protocols_grpc_transport(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsGrpcKeepalive {
+    #[serde(default)]
+    pub server_parameters: OtlpConfigReceiverProtocolsGrpcKeepaliveServerParameters,
+}
+
+impl Default for OtlpConfigReceiverProtocolsGrpcKeepalive {
+    fn default() -> Self {
+        Self {
+            server_parameters: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsGrpcKeepaliveServerParameters {
+    #[serde(
+        default = "duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub max_connection_age: std::time::Duration,
+
+    #[serde(
+        default = "duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub max_connection_age_grace: std::time::Duration,
+
+    #[serde(
+        default = "duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub time: std::time::Duration,
+
+    #[serde(
+        default = "duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout",
+
+        deserialize_with = "crate::duration_de::deserialize_go_duration"
+    )]
+    pub timeout: std::time::Duration,
+}
+
+impl Default for OtlpConfigReceiverProtocolsGrpcKeepaliveServerParameters {
+    fn default() -> Self {
+        Self {
+            max_connection_age: duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(),
+            max_connection_age_grace: duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace(),
+            time: duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time(),
+            timeout: duration_defaults::otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsGrpcTls {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub ca_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub cert_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub key_file: Option<String>,
+}
+
+impl Default for OtlpConfigReceiverProtocolsGrpcTls {
+    fn default() -> Self {
+        Self {
+            ca_file: Default::default(),
+            cert_file: Default::default(),
+            key_file: Default::default(),
         }
     }
 }
@@ -1645,6 +1741,9 @@ pub struct OtlpConfigReceiverProtocolsHttp {
     )]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub endpoint: String,
+
+    #[serde(default)]
+    pub tls: OtlpConfigReceiverProtocolsHttpTls,
 }
 
 impl Default for OtlpConfigReceiverProtocolsHttp {
@@ -1652,6 +1751,7 @@ impl Default for OtlpConfigReceiverProtocolsHttp {
         Self {
             cors: Default::default(),
             endpoint: defaults::datadog_configuration_otlp_config_receiver_protocols_http_endpoint(),
+            tls: Default::default(),
         }
     }
 }
@@ -1682,6 +1782,31 @@ impl Default for OtlpConfigReceiverProtocolsHttpCors {
             allowed_origins: Default::default(),
             exposed_headers: Default::default(),
             max_age: Default::default(),
+        }
+    }
+}
+
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+pub struct OtlpConfigReceiverProtocolsHttpTls {
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub ca_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub cert_file: Option<String>,
+
+    #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_optional_string")]
+    pub key_file: Option<String>,
+}
+
+impl Default for OtlpConfigReceiverProtocolsHttpTls {
+    fn default() -> Self {
+        Self {
+            ca_file: Default::default(),
+            cert_file: Default::default(),
+            key_file: Default::default(),
         }
     }
 }
@@ -1977,6 +2102,9 @@ pub mod defaults {
     pub(super) fn datadog_configuration_min_tls_version() -> String {
         "tlsv1.2".to_string()
     }
+    pub(super) fn datadog_configuration_run_path() -> String {
+        "${run_path}".to_string()
+    }
     pub(super) fn datadog_configuration_serializer_compressor_kind() -> String {
         "zstd".to_string()
     }
@@ -2071,6 +2199,18 @@ pub mod defaults {
 
 mod duration_defaults {
     pub(super) fn expected_tags_duration() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time() -> std::time::Duration {
+        std::time::Duration::from_nanos(0)
+    }
+    pub(super) fn otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout() -> std::time::Duration {
         std::time::Duration::from_nanos(0)
     }
     pub(super) fn tls_handshake_timeout() -> std::time::Duration {

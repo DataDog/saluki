@@ -500,7 +500,7 @@ mod tests {
             url: "http://opw.example.com".to_string(),
             use_v3_series: false,
         };
-        let forwarder_config = ForwarderConfiguration::from_configuration(&shared, &config);
+        let forwarder_config = ForwarderConfiguration::from_configuration(&shared);
         let mut endpoints = forwarder_config
             .build_routable_endpoints(Some(config))
             .expect("endpoints should resolve");
@@ -547,7 +547,7 @@ mod tests {
             "http://additional.example.com".to_string(),
             vec!["old-additional-key".to_string()],
         )]);
-        let forwarder_config = ForwarderConfiguration::from_configuration(&shared, &config);
+        let forwarder_config = ForwarderConfiguration::from_configuration(&shared);
         let mut endpoints = forwarder_config
             .build_routable_endpoints(Some(config.clone()))
             .expect("endpoints should resolve");
@@ -626,8 +626,7 @@ mod tests {
         // A validation server that rejects the key with a 403, so validation concludes it is invalid.
         let invalid_url = start_validation_server(StatusCode::FORBIDDEN).await;
         let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
-        let forwarder_config =
-            ForwarderConfiguration::from_configuration(&shared_configuration_for(&invalid_url), &config);
+        let forwarder_config = ForwarderConfiguration::from_configuration(&shared_configuration_for(&invalid_url));
         let mut endpoints = forwarder_config
             .build_routable_endpoints(Some(config))
             .expect("endpoints should resolve");
@@ -663,8 +662,7 @@ mod tests {
         // A validation server that accepts the key, so validation concludes it is valid.
         let valid_url = start_validation_server(StatusCode::OK).await;
         let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
-        let forwarder_config =
-            ForwarderConfiguration::from_configuration(&shared_configuration_for(&valid_url), &config);
+        let forwarder_config = ForwarderConfiguration::from_configuration(&shared_configuration_for(&valid_url));
         let mut endpoints = forwarder_config
             .build_routable_endpoints(Some(config))
             .expect("endpoints should resolve");

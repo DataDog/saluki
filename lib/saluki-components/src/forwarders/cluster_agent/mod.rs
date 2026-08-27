@@ -8,10 +8,9 @@ use http::{
     HeaderName, HeaderValue, Request, Uri,
 };
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
-    components::{forwarders::*, ComponentContext},
+    components::{forwarders::*, BuildContext},
     data_model::payload::PayloadType,
     observability::ComponentMetricsExt as _,
 };
@@ -55,7 +54,7 @@ impl ClusterAgentForwarderConfiguration {
     ///
     /// Returns an error if the bearer token cannot be represented in an HTTP header.
     pub fn from_configuration(
-        shared: &SharedConfiguration, config: &GenericConfiguration, endpoint_url: String, auth_token: String,
+        shared: &SharedConfiguration, endpoint_url: String, auth_token: String,
     ) -> Result<Self, GenericError> {
         let auth_header_value = bearer_auth_header_value(&auth_token)?;
         let destination = SingleDestination {
@@ -64,8 +63,8 @@ impl ClusterAgentForwarderConfiguration {
             api_key_refresh_config_path: None,
             accepts_v3_series: false,
         };
-        let forwarder_config = ForwarderConfiguration::for_single_destination(shared, config, &destination)
-            .with_allow_arbitrary_tags(false);
+        let forwarder_config =
+            ForwarderConfiguration::for_single_destination(shared, &destination).with_allow_arbitrary_tags(false);
 
         Ok(Self {
             forwarder_config,
@@ -80,12 +79,12 @@ impl ForwarderBuilder for ClusterAgentForwarderConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let endpoint_request_mapper_factory = cluster_agent_request_mapper_factory(self.auth_header_value.clone());
         let forwarder = TransactionForwarder::from_config_with_endpoint_request_mapper(
-            context,
+            context.component_context().clone(),
             self.forwarder_config.clone(),
             None,
             get_cluster_agent_endpoint_name,
@@ -215,7 +214,6 @@ mod tests {
         ConfigValue,
     };
     use http::Method;
-    use saluki_config::ConfigurationLoader;
 
     use super::*;
     use crate::common::datadog::{endpoints::EndpointRoute, test_util::shared_configuration};
@@ -257,7 +255,6 @@ mod tests {
         // Every configured Datadog intake setting here conflicts with the Cluster Agent destination:
         // a different API key, an explicit `dd_url`, a `site`, an additional endpoint, an alternate
         // metrics intake, and V3 series routing. None of them may reach the built forwarder.
-        let (raw_config, _) = ConfigurationLoader::for_tests(None, None, false).await;
         let mut shared = shared_configuration();
         shared.endpoints.api_key = "primary-api-key".to_string();
         shared.endpoints.site = ConfigValue::explicit("datadoghq.eu".to_string());
@@ -276,12 +273,11 @@ mod tests {
             HashMap::from([("https://app.datadoghq.com".to_string(), V3SeriesMode::Enabled)]);
 
         // The same configuration drives a plain Datadog forwarder, which does honor all of it.
-        let datadog_forwarder = ForwarderConfiguration::from_configuration(&shared, &raw_config);
+        let datadog_forwarder = ForwarderConfiguration::from_configuration(&shared);
         assert_eq!(V3SeriesMode::Enabled, datadog_forwarder.use_v3_api_series().enabled);
 
         let config = ClusterAgentForwarderConfiguration::from_configuration(
             &shared,
-            &raw_config,
             "https://cluster-agent.example.com".to_string(),
             "secret-token".to_string(),
         )

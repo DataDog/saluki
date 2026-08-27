@@ -49,4 +49,15 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD, Pipeline::Otlp]),
     };
+    /// `run_path`-Runtime state directory
+    RUN_PATH = SalukiAnnotation {
+        schema: &schema::RUN_PATH,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
 }

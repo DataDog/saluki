@@ -10,9 +10,9 @@ use otlp_protos::opentelemetry::proto::collector::logs::v1::ExportLogsServiceReq
 use otlp_protos::opentelemetry::proto::collector::metrics::v1::ExportMetricsServiceRequest;
 use otlp_protos::opentelemetry::proto::collector::trace::v1::ExportTraceServiceRequest;
 use otlp_protos::opentelemetry::proto::logs::v1::ResourceLogs as OtlpResourceLogs;
-use otlp_protos::opentelemetry::proto::metrics::v1::ResourceMetrics as OtlpResourceMetrics;
 use otlp_protos::opentelemetry::proto::trace::v1::ResourceSpans as OtlpResourceSpans;
 use prost::Message;
+use saluki_common::collections::FastHashSet;
 use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
@@ -21,7 +21,7 @@ use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
     components::{
         sources::{Source, SourceBuilder, SourceContext},
-        ComponentContext,
+        BuildContext,
     },
     data_model::event::EventType,
     topology::{EventsBuffer, OutputDefinition},
@@ -29,7 +29,7 @@ use saluki_core::{
 use saluki_env::WorkloadProvider;
 use saluki_error::ErrorContext as _;
 use saluki_error::{generic_error, GenericError};
-use saluki_io::net::ListenAddress;
+use saluki_io::net::{server::grpc::GrpcKeepalive, ListenAddress};
 use stringtheory::MetaString;
 use tokio::pin;
 use tokio::select;
@@ -37,7 +37,10 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
-use crate::common::otlp::{build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerBuilder};
+use crate::common::otlp::{
+    build_metrics, resolve_grpc_keepalive, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
+    OtlpTlsConfiguration,
+};
 
 mod logs;
 mod metrics;
@@ -69,6 +72,45 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
         allowed_headers: cors.allowed_headers.clone(),
         exposed_headers: cors.exposed_headers.clone(),
         max_age: cors.max_age,
+    }
+}
+
+/// Builds an `OtlpTlsConfiguration` from resolved TLS settings, if TLS is enabled.
+///
+/// TLS is enabled when both `cert_file` and `key_file` are non-empty. When `ca_file` is also non-empty, the server
+/// requests client certificates and verifies them against the CA certificates in that file, but does not require a
+/// client certificate (optional verification).
+///
+/// # Errors
+///
+/// Returns an error if any TLS field is set without the others required to form a valid TLS configuration. Both
+/// `cert_file` and `key_file` must be provided together to enable TLS, and `ca_file` must not be set without them.
+/// Setting only a subset is treated as a configuration error rather than silently downgrading to plaintext.
+fn build_tls_config(tls: &domains::otlp::Tls) -> Result<Option<OtlpTlsConfiguration>, GenericError> {
+    match (tls.cert_file.is_empty(), tls.key_file.is_empty()) {
+        (true, true) => {
+            if !tls.ca_file.is_empty() {
+                Err(generic_error!(
+                    "OTLP receiver TLS `ca_file` is set but `cert_file` and `key_file` are empty. All three must \
+                     be provided together, or `ca_file` must be omitted when TLS is disabled."
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+        (false, false) => {
+            let mut config = OtlpTlsConfiguration::new(tls.cert_file.clone().into(), tls.key_file.clone().into());
+            if !tls.ca_file.is_empty() {
+                config = config.with_ca_file(tls.ca_file.clone().into());
+            }
+            Ok(Some(config))
+        }
+        (true, false) => Err(generic_error!(
+            "OTLP receiver TLS `key_file` is set but `cert_file` is empty. Both must be provided to enable TLS."
+        )),
+        (false, true) => Err(generic_error!(
+            "OTLP receiver TLS `cert_file` is set but `key_file` is empty. Both must be provided to enable TLS."
+        )),
     }
 }
 
@@ -144,7 +186,7 @@ impl SourceBuilder for OtlpConfiguration {
         &OUTPUTS
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Source + Send>, GenericError> {
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Source + Send>, GenericError> {
         if !self.otlp.receiver.metrics_enabled && !self.otlp.receiver.logs_enabled && !self.otlp.traces.enabled {
             return Err(generic_error!(
                 "OTLP metrics, logs and traces support is disabled. Please enable at least one of them."
@@ -170,14 +212,17 @@ impl SourceBuilder for OtlpConfiguration {
 
         // Metrics resolve their full OTLP entity list at the resource boundary. Keep the context resolver free of an
         // origin resolver so it cannot apply the legacy RawOrigin-only lookup a second time. Logs retain that resolver.
-        let context_resolver = build_context_resolver(&self.otlp.contexts, &context, None)?;
+        let context_resolver = build_context_resolver(&self.otlp.contexts, context.component_context(), None)?;
         let metrics_translator_config = self.metrics_translator_config();
 
         let metric_tags = parse_configured_metric_tags(&self.otlp.metrics.tags);
         let traces_translator = OtlpTracesTranslator::new(self.otlp.traces.clone());
         let grpc_max_recv_msg_size_bytes = self.otlp.receiver.grpc.max_recv_msg_size_mib as usize * 1024 * 1024;
+        let grpc_keepalive = resolve_grpc_keepalive(&self.otlp.receiver.grpc.keepalive);
         let cors = cors_configuration(&self.otlp.receiver.http.cors);
-        let metrics = build_metrics(&context);
+        let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
+        let grpc_tls_config = build_tls_config(&self.otlp.receiver.grpc.tls)?;
+        let metrics = build_metrics(context.component_context());
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -185,11 +230,14 @@ impl SourceBuilder for OtlpConfiguration {
             grpc_endpoint,
             http_endpoint: ListenAddress::Tcp(http_socket_addr),
             grpc_max_recv_msg_size_bytes,
+            grpc_keepalive,
             metrics_translator_config,
             metric_tags,
             default_hostname: self.default_hostname.clone(),
             traces_translator,
             cors,
+            http_tls_config,
+            grpc_tls_config,
             metrics,
         }))
     }
@@ -210,11 +258,14 @@ pub struct Otlp {
     grpc_endpoint: ListenAddress,
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    grpc_keepalive: GrpcKeepalive,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
     metric_tags: SharedTagSet,
     default_hostname: MetaString,
     traces_translator: OtlpTracesTranslator,
     cors: CorsConfiguration,
+    http_tls_config: Option<OtlpTlsConfiguration>,
+    grpc_tls_config: Option<OtlpTlsConfiguration>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
 }
 
@@ -227,11 +278,14 @@ impl Source for Otlp {
             grpc_endpoint,
             http_endpoint,
             grpc_max_recv_msg_size_bytes,
+            grpc_keepalive,
             metrics_translator_config,
             metric_tags,
             default_hostname,
             traces_translator,
             cors,
+            http_tls_config,
+            grpc_tls_config,
             metrics,
         } = *self;
 
@@ -242,7 +296,7 @@ impl Source for Otlp {
         let memory_limiter = context.topology_context().memory_limiter();
 
         // Create the internal channel for decoupling the servers from the converter.
-        let (tx, rx) = mpsc::channel::<OtlpResource>(1024);
+        let (tx, rx) = mpsc::channel::<OtlpSignal>(1024);
 
         let metrics_translator = OtlpMetricsTranslator::new(
             metrics_translator_config,
@@ -254,9 +308,19 @@ impl Source for Otlp {
 
         // Build our gRPC and HTTP servers and spawn them.
         let handler = SourceHandler::new(tx);
-        let server_builder =
-            OtlpServerBuilder::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes).with_cors(cors);
-        server_builder
+        let mut server_config =
+            OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, grpc_max_recv_msg_size_bytes)
+                .with_cors(cors)
+                .with_grpc_keepalive(grpc_keepalive);
+
+        if let Some(tls) = http_tls_config {
+            server_config = server_config.with_http_tls(tls);
+        }
+        if let Some(tls) = grpc_tls_config {
+            server_config = server_config.with_grpc_tls(tls);
+        }
+
+        server_config
             .build(handler, memory_limiter.clone(), metrics.clone(), context.spawner())
             .await?;
 
@@ -308,19 +372,19 @@ impl Source for Otlp {
     }
 }
 
-enum OtlpResource {
-    Metrics(OtlpResourceMetrics),
+enum OtlpSignal {
+    Metrics(ExportMetricsServiceRequest),
     Logs(OtlpResourceLogs),
     Traces(OtlpResourceSpans),
 }
 
 /// Handler that decodes OTLP bytes and sends resources to the converter.
 struct SourceHandler {
-    tx: mpsc::Sender<OtlpResource>,
+    tx: mpsc::Sender<OtlpSignal>,
 }
 
 impl SourceHandler {
-    fn new(tx: mpsc::Sender<OtlpResource>) -> Self {
+    fn new(tx: mpsc::Sender<OtlpSignal>) -> Self {
         Self { tx }
     }
 }
@@ -329,14 +393,15 @@ impl SourceHandler {
 impl OtlpHandler for SourceHandler {
     async fn handle_metrics(&self, body: Bytes) -> Result<(), GenericError> {
         let request =
-            ExportMetricsServiceRequest::decode(body).error_context("Failed to decode metrics export request.")?;
+            ExportMetricsServiceRequest::decode(body).error_context("Failed to decode metrics export request")?;
 
-        for resource_metrics in request.resource_metrics {
-            self.tx
-                .send(OtlpResource::Metrics(resource_metrics))
-                .await
-                .error_context("Failed to send resource metrics to converter: channel is closed.")?;
-        }
+        // Send the entire request as a single channel message so the converter processes it
+        // atomically. This preserves the request boundary for usage beacon emission without
+        // needing control markers or shared state across concurrent requests.
+        self.tx
+            .send(OtlpSignal::Metrics(request))
+            .await
+            .error_context("Failed to send metrics request to converter: channel is closed.")?;
         Ok(())
     }
 
@@ -345,7 +410,7 @@ impl OtlpHandler for SourceHandler {
 
         for resource_logs in request.resource_logs {
             self.tx
-                .send(OtlpResource::Logs(resource_logs))
+                .send(OtlpSignal::Logs(resource_logs))
                 .await
                 .error_context("Failed to send resource logs to converter: channel is closed.")?;
         }
@@ -358,7 +423,7 @@ impl OtlpHandler for SourceHandler {
 
         for resource_spans in request.resource_spans {
             self.tx
-                .send(OtlpResource::Traces(resource_spans))
+                .send(OtlpSignal::Traces(resource_spans))
                 .await
                 .error_context("Failed to send resource spans to converter: channel is closed.")?;
         }
@@ -367,7 +432,7 @@ impl OtlpHandler for SourceHandler {
 }
 
 async fn run_converter(
-    mut receiver: mpsc::Receiver<OtlpResource>, source_context: SourceContext,
+    mut receiver: mpsc::Receiver<OtlpSignal>, source_context: SourceContext,
     origin_tag_resolver: OtlpOriginTagResolver, shutdown_handle: ShutdownHandle,
     mut metrics_translator: OtlpMetricsTranslator, metrics: Metrics, mut traces_translator: OtlpTracesTranslator,
 ) {
@@ -386,29 +451,47 @@ async fn run_converter(
 
     loop {
         select! {
-            Some(otlp_resource) = receiver.recv() => {
-                match otlp_resource {
-                    OtlpResource::Metrics(resource_metrics) => {
-                        match metrics_translator.translate_metrics(resource_metrics, &metrics) {
-                            Ok(events) => {
-                                for event in events {
-                                    let dispatcher = metrics_dispatcher.get_or_insert_with(|| {
-                                        source_context
-                                            .dispatcher()
-                                            .buffered_named("metrics")
-                                            .expect("metrics output should exist")
-                                    });
-                                    if let Err(e) = dispatcher.push(event).await {
-                                        error!(error = %e, "Failed to dispatch metric event.");
+            Some(otlp_signal) = receiver.recv() => {
+                match otlp_signal {
+                    OtlpSignal::Metrics(request) => {
+                        let mut detected_languages = FastHashSet::default();
+
+                        for resource_metrics in request.resource_metrics {
+                            match metrics_translator.translate_metrics(resource_metrics, &metrics) {
+                                Ok((events, languages)) => {
+                                    detected_languages.extend(languages);
+                                    for event in events {
+                                        let dispatcher = metrics_dispatcher.get_or_insert_with(|| {
+                                            source_context
+                                                .dispatcher()
+                                                .buffered_named("metrics")
+                                                .expect("metrics output should exist")
+                                        });
+                                        if let Err(e) = dispatcher.push(event).await {
+                                            error!(error = %e, "Failed to dispatch metric event.");
+                                        }
                                     }
                                 }
+                                Err(e) => {
+                                    error!(error = %e, "Failed to handle resource metrics.");
+                                }
                             }
-                            Err(e) => {
-                                error!(error = %e, "Failed to handle resource metrics.");
+                        }
+
+                        // Emit usage beacon metrics for the completed request.
+                        for event in metrics_translator.emit_usage_beacons(detected_languages) {
+                            let dispatcher = metrics_dispatcher.get_or_insert_with(|| {
+                                source_context
+                                    .dispatcher()
+                                    .buffered_named("metrics")
+                                    .expect("metrics output should exist")
+                            });
+                            if let Err(e) = dispatcher.push(event).await {
+                                error!(error = %e, "Failed to dispatch usage beacon metric event.");
                             }
                         }
                     }
-                    OtlpResource::Logs(resource_logs) => {
+                    OtlpSignal::Logs(resource_logs) => {
                         let translator = OtlpLogsTranslator::from_resource_logs(resource_logs, &origin_tag_resolver);
                         for log_event in translator {
                             metrics.logs_received().increment(1);
@@ -424,7 +507,7 @@ async fn run_converter(
                             }
                         }
                     }
-                    OtlpResource::Traces(resource_spans) => {
+                    OtlpSignal::Traces(resource_spans) => {
                         for trace_event in traces_translator.translate_spans(resource_spans, &metrics) {
                             let dispatcher = traces_dispatcher.get_or_insert_with(|| {
                                 source_context

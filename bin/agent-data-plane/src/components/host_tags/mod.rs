@@ -9,7 +9,7 @@ use saluki_config::{DurationString, GenericConfiguration};
 use saluki_context::tags::{SharedTagSet, Tag};
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
 use saluki_core::{components::transforms::*, topology::EventsBuffer};
-use saluki_core::{components::ComponentContext, data_model::event::metric::Metric};
+use saluki_core::{components::BuildContext, data_model::event::metric::Metric};
 use saluki_error::GenericError;
 use stringtheory::MetaString;
 
@@ -50,7 +50,7 @@ impl HostTagsConfiguration {
 
 #[async_trait]
 impl SynchronousTransformBuilder for HostTagsConfiguration {
-    async fn build(&self, _context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
+    async fn build(&self, _context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError> {
         // Only fetch host tags when enrichment is enabled (`expected_tags_duration > 0`), matching the Core
         // Agent; at the default of 0 the tags are discarded immediately. Fetching always would block `build()`
         // on the Core Agent's slow `GetHostTags` RPC, delaying DogStatsD draining and starving origin detection.

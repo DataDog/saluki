@@ -1019,6 +1019,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_metric_filter_follows_current_and_legacy_precedence() {
+        // Regression: clearing `metric_filterlist` must restore the legacy list and match mode.
+        let (system, agent_tx) = connected_system(json!({})).await;
+        let mut metric_filter = system.live(|c| &c.domains.dogstatsd.metric_filter);
+        assert!(metric_filter.values.is_empty());
+
+        agent_tx
+            .send(ConfigUpdate::snapshot([
+                ConfigSetting::explicit("metric_filterlist", json!(["current.duration.max"])),
+                ConfigSetting::explicit("metric_filterlist_match_prefix", json!(false)),
+                ConfigSetting::explicit("statsd_metric_blocklist", json!(["legacy.duration"])),
+                ConfigSetting::explicit("statsd_metric_blocklist_match_prefix", json!(true)),
+            ]))
+            .await
+            .unwrap();
+
+        let current = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
+            .await
+            .expect("view observes the current filterlist taking precedence");
+        assert_eq!(current.values, vec!["current.duration.max".to_string()]);
+        assert!(!current.match_prefix);
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_filterlist",
+                json!([]),
+            )))
+            .await
+            .unwrap();
+
+        let legacy = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
+            .await
+            .expect("view observes the fallback to the legacy blocklist");
+        assert_eq!(legacy.values, vec!["legacy.duration".to_string()]);
+        assert!(legacy.match_prefix);
+
+        agent_tx
+            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
+                "metric_filterlist",
+                json!(["current.duration.avg"]),
+            )))
+            .await
+            .unwrap();
+
+        let restored = tokio::time::timeout(Duration::from_secs(2), metric_filter.changed())
+            .await
+            .expect("view observes the current filterlist shadowing the legacy blocklist again");
+        assert_eq!(restored.values, vec!["current.duration.avg".to_string()]);
+        assert!(!restored.match_prefix);
+    }
+
+    #[tokio::test]
     async fn fixed_view_never_changes() {
         let mut view: Live<bool> = Live::new_fixed(true);
         assert!(*view);

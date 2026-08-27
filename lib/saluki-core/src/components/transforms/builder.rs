@@ -3,7 +3,7 @@ use saluki_error::GenericError;
 
 use super::{SynchronousTransform, Transform};
 use crate::accounting::MemoryBounds;
-use crate::{components::ComponentContext, data_model::event::EventType, topology::OutputDefinition};
+use crate::{components::BuildContext, data_model::event::EventType, topology::OutputDefinition};
 
 /// A transform builder.
 ///
@@ -23,7 +23,7 @@ pub trait TransformBuilder: MemoryBounds {
     /// ## Errors
     ///
     /// If the transform can't be built for any reason, an error is returned.
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Transform + Send>, GenericError>;
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Transform + Send>, GenericError>;
 }
 
 /// A synchronous transform builder.
@@ -40,5 +40,5 @@ pub trait SynchronousTransformBuilder: MemoryBounds {
     /// ## Errors
     ///
     /// If the synchronous transform can't be built for any reason, an error is returned.
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError>;
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn SynchronousTransform + Send>, GenericError>;
 }

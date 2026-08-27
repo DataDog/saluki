@@ -309,6 +309,27 @@ mod tests {
             .join("test_data")
     }
 
+    fn check_config(name: &'static str) -> CheckConfig {
+        CheckConfig {
+            name: MetaString::from_static(name),
+            init_config: Data::default(),
+            instances: Vec::new(),
+            metric_config: Data::default(),
+            logs_config: Data::default(),
+            ad_identifiers: Vec::new(),
+            advanced_ad_identifiers: Vec::new(),
+            provider: MetaString::default(),
+            service_id: MetaString::default(),
+            tagger_entity: MetaString::default(),
+            cluster_check: false,
+            node_name: MetaString::default(),
+            source: MetaString::from_static("local"),
+            ignore_autodiscovery_tags: false,
+            metrics_excluded: false,
+            logs_excluded: false,
+        }
+    }
+
     // Copy a `<check>.d` directory from test_data into the temp directory, preserving the structure.
     async fn copy_test_check_dir(check_dir_name: &str, temp_dir: &Path) {
         let source_dir = test_data_path().join(check_dir_name);
@@ -456,12 +477,7 @@ mod tests {
 
         let subscribers = Arc::new(Mutex::new(vec![sender1, sender2, closed_sender]));
         let event = AutodiscoveryEvent::CheckSchedule {
-            config: CheckConfig {
-                name: MetaString::from("test-check"),
-                init_config: Data::default(),
-                instances: Vec::new(),
-                source: MetaString::from_static("local"),
-            },
+            config: check_config("test-check"),
         };
 
         send_to_subscribers(&subscribers, event).await;
@@ -484,15 +500,7 @@ mod tests {
         let mut known_configs = HashSet::new();
         known_configs.insert("removed-config".to_string());
         let mut configs = BTreeMap::new();
-        configs.insert(
-            "removed-config".to_string(),
-            CheckConfig {
-                name: MetaString::from("removed-config"),
-                init_config: Data::default(),
-                instances: Vec::new(),
-                source: MetaString::from_static("local"),
-            },
-        );
+        configs.insert("removed-config".to_string(), check_config("removed-config"));
 
         let (sender, mut receiver) = mpsc::channel::<AutodiscoveryEvent>(10);
         let subscribers = Arc::new(Mutex::new(vec![sender]));

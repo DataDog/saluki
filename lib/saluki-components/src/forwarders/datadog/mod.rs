@@ -5,7 +5,7 @@ use saluki_common::buf::FrozenChunkedBytesBuffer;
 use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
-    components::{forwarders::*, ComponentContext},
+    components::{forwarders::*, BuildContext},
     data_model::payload::{PayloadMetadata, PayloadType},
     observability::ComponentMetricsExt as _,
 };
@@ -48,7 +48,7 @@ impl DatadogForwarderConfiguration {
     /// `config` is retained so that endpoints can refresh their API keys as configuration changes.
     pub fn from_configuration(shared: &SharedConfiguration, config: &GenericConfiguration) -> Self {
         Self {
-            forwarder_config: ForwarderConfiguration::from_configuration(shared, config),
+            forwarder_config: ForwarderConfiguration::from_configuration(shared),
             configuration: config.clone(),
         }
     }
@@ -70,7 +70,7 @@ impl DatadogForwarderConfiguration {
         };
 
         Self {
-            forwarder_config: ForwarderConfiguration::for_single_destination(shared, config, &destination),
+            forwarder_config: ForwarderConfiguration::for_single_destination(shared, &destination),
             configuration: config.clone(),
         }
     }
@@ -82,11 +82,11 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
         PayloadType::Http
     }
 
-    async fn build(&self, context: ComponentContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
-        let metrics_builder = MetricsBuilder::from_component_context(&context);
+    async fn build(&self, context: BuildContext) -> Result<Box<dyn Forwarder + Send>, GenericError> {
+        let metrics_builder = MetricsBuilder::from_component_context(context.component_context());
         let telemetry = ComponentTelemetry::from_builder(&metrics_builder);
         let forwarder = TransactionForwarder::from_config(
-            context,
+            context.component_context().clone(),
             self.forwarder_config.clone(),
             Some(self.configuration.clone()),
             get_dd_endpoint_name,

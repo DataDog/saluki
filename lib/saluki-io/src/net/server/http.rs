@@ -29,14 +29,17 @@ use saluki_common::{
     sync::shutdown::{ShutdownCoordinator, ShutdownHandle},
     task::{spawn_traced_named, HandleExt as _},
 };
-use saluki_core::runtime::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
+use saluki_core::runtime::{
+    state::{DataspaceRegistry, Identifier},
+    InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
+};
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_tls::ensure_server_config_fips_compliant;
 use tokio::{pin, runtime::Handle, select, sync::oneshot, time::timeout};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info, warn};
 
-use crate::net::{listener::ConnectionOrientedListener, ListenAddress};
+use crate::net::{listener::ConnectionOrientedListener, server::BoundServerAddress, ListenAddress};
 
 fn build_conn_builder() -> Builder<TokioExecutor> {
     let mut builder = Builder::new(TokioExecutor::new());
@@ -65,6 +68,7 @@ pub struct HttpServer<S> {
     tls_config: Option<ServerConfig>,
     conn_builder: Builder<TokioExecutor>,
     graceful_shutdown_timeout: Option<Duration>,
+    bound_address_id: Option<Identifier>,
     service: S,
 }
 
@@ -76,8 +80,17 @@ impl<S> HttpServer<S> {
             tls_config: None,
             conn_builder: build_conn_builder(),
             graceful_shutdown_timeout: None,
+            bound_address_id: None,
             service,
         }
+    }
+
+    /// Sets the identifier used to publish the bound TCP address.
+    ///
+    /// Defaults to not publishing the address. Unix listen addresses never publish an address.
+    pub fn with_bound_address_id(mut self, id: impl Into<Identifier>) -> Self {
+        self.bound_address_id = Some(id.into());
+        self
     }
 
     /// Sets the graceful shutdown timeout for this server.
@@ -129,6 +142,18 @@ where
         let listener = ConnectionOrientedListener::from_listen_address(self.listen_address.clone())
             .await
             .with_error_context(|| format!("Failed to bind listener for HTTP server ({}).", self.listen_address))?;
+
+        if let (Some(id), ListenAddress::Tcp(_)) = (&self.bound_address_id, &self.listen_address) {
+            let bound_address = listener.local_addr().with_error_context(|| {
+                format!(
+                    "Failed to query bound address for HTTP server ({}).",
+                    self.listen_address
+                )
+            })?;
+            let dataspace = DataspaceRegistry::try_current()
+                .ok_or_else(|| saluki_error::generic_error!("Dataspace not available for HTTP server."))?;
+            dataspace.assert(BoundServerAddress(bound_address), id.clone());
+        }
 
         let conn_builder = self.conn_builder.clone();
         let service = self.service.clone();
@@ -392,11 +417,16 @@ mod tests {
     use http_body_util::Full;
     use hyper::service::service_fn;
     use saluki_common::sync::shutdown::ShutdownCoordinator;
+    #[cfg(unix)]
+    use saluki_core::runtime::state::IdentifierFilter;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::net::TcpStream;
     use tokio::time::timeout;
 
     use super::*;
+    use crate::net::server::test_util::ServerTestHarness;
+    #[cfg(unix)]
+    use crate::net::server::{test_util::connect_unix, BoundServerAddress};
 
     /// Bound on any server await in these tests, so a hang fails rather than stalling the suite.
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -414,7 +444,7 @@ mod tests {
 
     /// Builds a server whose handler runs `f` for every request.
     fn server_with<F, Fut>(
-        addr: SocketAddr, f: F,
+        listen_address: ListenAddress, f: F,
     ) -> HttpServer<
         impl Service<
                 Request<Incoming>,
@@ -431,7 +461,7 @@ mod tests {
         Fut: Future<Output = Result<Response<Full<bytes::Bytes>>, std::convert::Infallible>> + Send + 'static,
     {
         let service = service_fn(move |_req: Request<Incoming>| f());
-        HttpServer::from_listen_address(ListenAddress::Tcp(addr), service)
+        HttpServer::from_listen_address(listen_address, service)
     }
 
     /// A handler that responds immediately.
@@ -440,11 +470,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn publishes_bound_tcp_address() {
+        let harness = ServerTestHarness::start("http-bound-address", |supervisor| {
+            let server = server_with(
+                ListenAddress::Tcp("127.0.0.1:0".parse().expect("address should parse")),
+                ok_response,
+            )
+            .with_bound_address_id("http-bound-address");
+            supervisor.add_worker(server);
+        })
+        .await;
+
+        let address = harness.bound_address("http-bound-address").await;
+        assert_ne!(address.port(), 0);
+        let stream = TcpStream::connect(address)
+            .await
+            .expect("should connect to published address");
+        drop(stream);
+
+        harness.shutdown().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_listener_does_not_publish_bound_address() {
+        let tempdir = tempfile::tempdir().expect("should create temp dir");
+        let socket_path = tempdir.path().join("http.sock");
+        let listen_address = ListenAddress::Unix(socket_path.clone());
+        let harness = ServerTestHarness::start("http-unix-bound-address", move |supervisor| {
+            let server = server_with(listen_address, ok_response).with_bound_address_id("http-unix-bound-address");
+            supervisor.add_worker(server);
+        })
+        .await;
+
+        let mut stream = connect_unix(&socket_path).await;
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .expect("should write request");
+        let mut response = Vec::new();
+        timeout(TEST_TIMEOUT, stream.read_to_end(&mut response))
+            .await
+            .expect("server should respond over Unix listener")
+            .expect("should read response");
+        assert!(response.ends_with(b"ok"));
+        assert!(
+            harness
+                .dataspace
+                .current_values::<BoundServerAddress>(IdentifierFilter::all())
+                .is_empty(),
+            "Unix listener should not publish a bound address"
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn binds_during_initialization() {
         // The listener is bound by `initialize`, not by the worker future, so the port is already taken before anything
         // starts serving. That is what makes a bind failure a non-restartable initialization error.
         let addr = free_local_addr();
-        let server = server_with(addr, ok_response);
+        let server = server_with(ListenAddress::Tcp(addr), ok_response);
 
         let run = server
             .initialize(ShutdownHandle::noop())
@@ -466,7 +552,7 @@ mod tests {
         let addr = free_local_addr();
         let _held = StdTcpListener::bind(addr).expect("should hold the address");
 
-        let server = server_with(addr, ok_response);
+        let server = server_with(ListenAddress::Tcp(addr), ok_response);
         match server.initialize(ShutdownHandle::noop()).await {
             Ok(_) => panic!("initialization should have failed to bind {addr}"),
             Err(e) => {
@@ -481,7 +567,7 @@ mod tests {
         // The whole reason for supervising the server: when its worker stops, the socket is gone. Previously the
         // acceptor was a detached task that outlived whatever spawned it.
         let addr = free_local_addr();
-        let server = server_with(addr, ok_response);
+        let server = server_with(ListenAddress::Tcp(addr), ok_response);
 
         let mut coordinator = ShutdownCoordinator::default();
         let run = server
@@ -508,7 +594,8 @@ mod tests {
         // deadline, one such socket stalled shutdown indefinitely -- for the OTLP receivers that meant every ADP
         // shutdown hanging until the component budget forced an abort.
         let addr = free_local_addr();
-        let server = server_with(addr, ok_response).with_graceful_shutdown_timeout(Duration::from_secs(1));
+        let server =
+            server_with(ListenAddress::Tcp(addr), ok_response).with_graceful_shutdown_timeout(Duration::from_secs(1));
 
         let mut coordinator = ShutdownCoordinator::default();
         let run = server
@@ -543,7 +630,7 @@ mod tests {
 
         let handler_started = Arc::new(AtomicBool::new(false));
         let started = Arc::clone(&handler_started);
-        let server = server_with(addr, move || {
+        let server = server_with(ListenAddress::Tcp(addr), move || {
             let started = Arc::clone(&started);
             async move {
                 started.store(true, Ordering::SeqCst);

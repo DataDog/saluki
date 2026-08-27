@@ -836,9 +836,76 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "grpc",
+            "keepalive",
+            "server_parameters",
+            "max_connection_age",
+        ],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_MAX_CONNECTION_AGE_GRACE"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "grpc",
+            "keepalive",
+            "server_parameters",
+            "max_connection_age_grace",
+        ],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIME"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "grpc",
+            "keepalive",
+            "server_parameters",
+            "time",
+        ],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_KEEPALIVE_SERVER_PARAMETERS_TIMEOUT"],
+        path: &[
+            "otlp_config",
+            "receiver",
+            "protocols",
+            "grpc",
+            "keepalive",
+            "server_parameters",
+            "timeout",
+        ],
+        decode: EnvDecode::DurationString,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_MAX_RECV_MSG_SIZE_MIB"],
         path: &["otlp_config", "receiver", "protocols", "grpc", "max_recv_msg_size_mib"],
         decode: EnvDecode::Integer,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CA_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "ca_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_CERT_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "cert_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TLS_KEY_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "grpc", "tls", "key_file"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_GRPC_TRANSPORT"],
@@ -892,6 +959,21 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::RawString,
     },
     EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CA_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "ca_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_CERT_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "cert_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
+        env_vars: &["DD_OTLP_CONFIG_RECEIVER_PROTOCOLS_HTTP_TLS_KEY_FILE"],
+        path: &["otlp_config", "receiver", "protocols", "http", "tls", "key_file"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_OTLP_CONFIG_TRACES_ENABLED"],
         path: &["otlp_config", "traces", "enabled"],
         decode: EnvDecode::Bool,
@@ -925,6 +1007,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         env_vars: &["DD_PROXY_NO_PROXY"],
         path: &["proxy", "no_proxy"],
         decode: EnvDecode::StringList,
+    },
+    EnvKey {
+        env_vars: &["DD_RUN_PATH"],
+        path: &["run_path"],
+        decode: EnvDecode::RawString,
     },
     EnvKey {
         env_vars: &["DD_SERIALIZER_COMPRESSOR_KIND"],
