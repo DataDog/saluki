@@ -595,8 +595,10 @@ fn add_mrf_metrics_pipeline_to_blueprint(
 fn add_autoscaling_failover_metrics_pipeline_to_blueprint(
     blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
 ) -> Result<(), GenericError> {
-    let af_config = AutoscalingFailoverConfiguration::from_configuration(config)
-        .error_context("Failed to configure autoscaling failover metrics pipeline.")?;
+    let af_config = AutoscalingFailoverConfiguration::new(
+        shared.autoscaling_failover.enabled,
+        shared.autoscaling_failover.metrics.clone(),
+    );
     let ca_config = ClusterAgentConfiguration::from_configuration(config)
         .error_context("Failed to configure Cluster Agent metrics forwarding.")?;
 

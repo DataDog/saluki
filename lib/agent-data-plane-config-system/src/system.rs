@@ -526,6 +526,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unset_autoscaling_failover_keeps_its_schema_defaults() {
+        // Nothing is set here, so both fields must come back as the schema defaults; the component
+        // layer no longer supplies fallbacks of its own.
+        let system = standalone_system(Some(json!({})), None).await.expect("system builds");
+        let config = system.config();
+
+        assert!(!config.shared.autoscaling_failover.enabled);
+        assert_eq!(
+            config.shared.autoscaling_failover.metrics,
+            vec!["container.memory.usage".to_string(), "container.cpu.usage".to_string()]
+        );
+    }
+
+    #[tokio::test]
     async fn nested_saluki_only_key_seeds_the_model() {
         let system = standalone_system(Some(json!({ "data_plane": { "standalone_mode": true } })), None)
             .await
