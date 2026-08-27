@@ -13,547 +13,601 @@
 <a href=#13 id=13 data-nosnippet>13</a><span class="kw">use </span><span class="kw">crate</span>::defaults::{
 <a href=#14 id=14 data-nosnippet>14</a>    DEFAULT_AGGREGATE_CONTEXT_LIMIT, DEFAULT_AGGREGATE_FLUSH_INTERVAL,
 <a href=#15 id=15 data-nosnippet>15</a>    DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT, DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
-<a href=#16 id=16 data-nosnippet>16</a>    DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
-<a href=#17 id=17 data-nosnippet>17</a>};
-<a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span><span class="kw">crate</span>::Error;
-<a href=#19 id=19 data-nosnippet>19</a>
-<a href=#20 id=20 data-nosnippet>20</a><span class="comment">// TODO: better name than Domain? Pipeline? Topology? BlueprintConfig?
-<a href=#21 id=21 data-nosnippet>21</a></span><span class="doccomment">/// Resolved DogStatsD configuration.
-<a href=#22 id=22 data-nosnippet>22</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#23 id=23 data-nosnippet>23</a></span><span class="kw">pub struct </span>Domain {
-<a href=#24 id=24 data-nosnippet>24</a>    <span class="doccomment">/// Source listeners and packet-decoding options.
-<a href=#25 id=25 data-nosnippet>25</a>    </span><span class="kw">pub </span>listeners: Listeners,
-<a href=#26 id=26 data-nosnippet>26</a>
-<a href=#27 id=27 data-nosnippet>27</a>    <span class="doccomment">/// Origin detection and tag cardinality.
-<a href=#28 id=28 data-nosnippet>28</a>    </span><span class="kw">pub </span>origin: OriginDetection,
+<a href=#16 id=16 data-nosnippet>16</a>    DEFAULT_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS, DEFAULT_DOGSTATSD_AUTOSCALE_UDP_LISTENERS,
+<a href=#17 id=17 data-nosnippet>17</a>    DEFAULT_DOGSTATSD_BUFFER_COUNT, DEFAULT_DOGSTATSD_BUFFER_COUNT_MAX, DEFAULT_DOGSTATSD_CACHED_CONTEXTS_LIMIT,
+<a href=#18 id=18 data-nosnippet>18</a>    DEFAULT_DOGSTATSD_CACHED_TAGSETS_LIMIT, DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
+<a href=#19 id=19 data-nosnippet>19</a>    DEFAULT_DOGSTATSD_MINIMUM_SAMPLE_RATE, DEFAULT_DOGSTATSD_PERMISSIVE_DECODING, DEFAULT_DOGSTATSD_TCP_PORT,
+<a href=#20 id=20 data-nosnippet>20</a>};
+<a href=#21 id=21 data-nosnippet>21</a><span class="kw">use </span><span class="kw">crate</span>::Error;
+<a href=#22 id=22 data-nosnippet>22</a>
+<a href=#23 id=23 data-nosnippet>23</a><span class="comment">// TODO: better name than Domain? Pipeline? Topology? BlueprintConfig?
+<a href=#24 id=24 data-nosnippet>24</a></span><span class="doccomment">/// Resolved DogStatsD configuration.
+<a href=#25 id=25 data-nosnippet>25</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#26 id=26 data-nosnippet>26</a></span><span class="kw">pub struct </span>Domain {
+<a href=#27 id=27 data-nosnippet>27</a>    <span class="doccomment">/// Source listeners and packet-decoding options.
+<a href=#28 id=28 data-nosnippet>28</a>    </span><span class="kw">pub </span>listeners: Listeners,
 <a href=#29 id=29 data-nosnippet>29</a>
-<a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// Context cache sizing and the sample-rate floor.
-<a href=#31 id=31 data-nosnippet>31</a>    </span><span class="kw">pub </span>contexts: Contexts,
+<a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// Origin detection and tag cardinality.
+<a href=#31 id=31 data-nosnippet>31</a>    </span><span class="kw">pub </span>origin: OriginDetection,
 <a href=#32 id=32 data-nosnippet>32</a>
-<a href=#33 id=33 data-nosnippet>33</a>    <span class="doccomment">/// Metric aggregation window and flush behavior.
-<a href=#34 id=34 data-nosnippet>34</a>    </span><span class="kw">pub </span>aggregation: Aggregation,
+<a href=#33 id=33 data-nosnippet>33</a>    <span class="doccomment">/// Context cache sizing and the sample-rate floor.
+<a href=#34 id=34 data-nosnippet>34</a>    </span><span class="kw">pub </span>contexts: Contexts,
 <a href=#35 id=35 data-nosnippet>35</a>
-<a href=#36 id=36 data-nosnippet>36</a>    <span class="doccomment">/// Metric-name mapper.
-<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="kw">pub </span>mapper: Mapper,
+<a href=#36 id=36 data-nosnippet>36</a>    <span class="doccomment">/// Metric aggregation window and flush behavior.
+<a href=#37 id=37 data-nosnippet>37</a>    </span><span class="kw">pub </span>aggregation: Aggregation,
 <a href=#38 id=38 data-nosnippet>38</a>
-<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// Which payload types are emitted.
-<a href=#40 id=40 data-nosnippet>40</a>    </span><span class="kw">pub </span>enable_payloads: EnablePayloads,
+<a href=#39 id=39 data-nosnippet>39</a>    <span class="doccomment">/// Metric-name mapper.
+<a href=#40 id=40 data-nosnippet>40</a>    </span><span class="kw">pub </span>mapper: Mapper,
 <a href=#41 id=41 data-nosnippet>41</a>
-<a href=#42 id=42 data-nosnippet>42</a>    <span class="doccomment">/// Metric-name filtering.
-<a href=#43 id=43 data-nosnippet>43</a>    </span><span class="kw">pub </span>metric_filter: MetricFilter,
+<a href=#42 id=42 data-nosnippet>42</a>    <span class="doccomment">/// Which payload types are emitted.
+<a href=#43 id=43 data-nosnippet>43</a>    </span><span class="kw">pub </span>enable_payloads: EnablePayloads,
 <a href=#44 id=44 data-nosnippet>44</a>
-<a href=#45 id=45 data-nosnippet>45</a>    <span class="doccomment">/// Metric namespace prefixing.
-<a href=#46 id=46 data-nosnippet>46</a>    </span><span class="kw">pub </span>prefix_filter: PrefixFilter,
+<a href=#45 id=45 data-nosnippet>45</a>    <span class="doccomment">/// Metric-name filtering.
+<a href=#46 id=46 data-nosnippet>46</a>    </span><span class="kw">pub </span>metric_filter: MetricFilter,
 <a href=#47 id=47 data-nosnippet>47</a>
-<a href=#48 id=48 data-nosnippet>48</a>    <span class="doccomment">/// Per-metric tag include/exclude rules.
-<a href=#49 id=49 data-nosnippet>49</a>    </span><span class="kw">pub </span>tag_filterlist: Vec&lt;MetricTagFilterEntry&gt;,
+<a href=#48 id=48 data-nosnippet>48</a>    <span class="doccomment">/// Metric namespace prefixing.
+<a href=#49 id=49 data-nosnippet>49</a>    </span><span class="kw">pub </span>prefix_filter: PrefixFilter,
 <a href=#50 id=50 data-nosnippet>50</a>
-<a href=#51 id=51 data-nosnippet>51</a>    <span class="doccomment">/// Per-metric tag value allow-list rules.
-<a href=#52 id=52 data-nosnippet>52</a>    </span><span class="kw">pub </span>tag_value_allowlist: Vec&lt;MetricTagValueAllowlistEntry&gt;,
+<a href=#51 id=51 data-nosnippet>51</a>    <span class="doccomment">/// Per-metric tag include/exclude rules.
+<a href=#52 id=52 data-nosnippet>52</a>    </span><span class="kw">pub </span>tag_filterlist: Vec&lt;MetricTagFilterEntry&gt;,
 <a href=#53 id=53 data-nosnippet>53</a>
-<a href=#54 id=54 data-nosnippet>54</a>    <span class="doccomment">/// Extra tags added to every metric.
-<a href=#55 id=55 data-nosnippet>55</a>    </span><span class="kw">pub </span>tags: Vec&lt;String&gt;,
+<a href=#54 id=54 data-nosnippet>54</a>    <span class="doccomment">/// Per-metric tag value allow-list rules.
+<a href=#55 id=55 data-nosnippet>55</a>    </span><span class="kw">pub </span>tag_value_allowlist: Vec&lt;MetricTagValueAllowlistEntry&gt;,
 <a href=#56 id=56 data-nosnippet>56</a>
-<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// Telemetry emitted by the DogStatsD source.
-<a href=#58 id=58 data-nosnippet>58</a>    </span><span class="kw">pub </span>telemetry: Telemetry,
+<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// Extra tags added to every metric.
+<a href=#58 id=58 data-nosnippet>58</a>    </span><span class="kw">pub </span>tags: Vec&lt;String&gt;,
 <a href=#59 id=59 data-nosnippet>59</a>
-<a href=#60 id=60 data-nosnippet>60</a>    <span class="doccomment">/// Debug-log and verbose-log settings for the DogStatsD source.
-<a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">pub </span>debug_log: DebugLog,
-<a href=#62 id=62 data-nosnippet>62</a>}
-<a href=#63 id=63 data-nosnippet>63</a>
-<a href=#64 id=64 data-nosnippet>64</a><span class="doccomment">/// Source listeners and packet-decoding options.
-<a href=#65 id=65 data-nosnippet>65</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#66 id=66 data-nosnippet>66</a></span><span class="kw">pub struct </span>Listeners {
-<a href=#67 id=67 data-nosnippet>67</a>    <span class="doccomment">/// UDP port DogStatsD listens on.
-<a href=#68 id=68 data-nosnippet>68</a>    </span><span class="kw">pub </span>port: u16,
-<a href=#69 id=69 data-nosnippet>69</a>
-<a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// TCP port DogStatsD listens on. (not in Datadog Agent config schema)
-<a href=#71 id=71 data-nosnippet>71</a>    </span><span class="kw">pub </span>tcp_port: u16,
+<a href=#60 id=60 data-nosnippet>60</a>    <span class="doccomment">/// Telemetry emitted by the DogStatsD source.
+<a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">pub </span>telemetry: Telemetry,
+<a href=#62 id=62 data-nosnippet>62</a>
+<a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// Debug-log and verbose-log settings for the DogStatsD source.
+<a href=#64 id=64 data-nosnippet>64</a>    </span><span class="kw">pub </span>debug_log: DebugLog,
+<a href=#65 id=65 data-nosnippet>65</a>}
+<a href=#66 id=66 data-nosnippet>66</a>
+<a href=#67 id=67 data-nosnippet>67</a><span class="doccomment">/// Source listeners and packet-decoding options.
+<a href=#68 id=68 data-nosnippet>68</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Serialize)]
+<a href=#69 id=69 data-nosnippet>69</a></span><span class="kw">pub struct </span>Listeners {
+<a href=#70 id=70 data-nosnippet>70</a>    <span class="doccomment">/// UDP port DogStatsD listens on.
+<a href=#71 id=71 data-nosnippet>71</a>    </span><span class="kw">pub </span>port: u16,
 <a href=#72 id=72 data-nosnippet>72</a>
-<a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// Path of the Unix datagram socket DogStatsD listens on.
-<a href=#74 id=74 data-nosnippet>74</a>    </span><span class="kw">pub </span>socket: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#75 id=75 data-nosnippet>75</a>
-<a href=#76 id=76 data-nosnippet>76</a>    <span class="doccomment">/// Path of the Unix stream socket DogStatsD listens on.
-<a href=#77 id=77 data-nosnippet>77</a>    </span><span class="kw">pub </span>stream_socket: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#78 id=78 data-nosnippet>78</a>
-<a href=#79 id=79 data-nosnippet>79</a>    <span class="doccomment">/// Windows named pipe name DogStatsD listens on. Unset when no named pipe is configured.
-<a href=#80 id=80 data-nosnippet>80</a>    </span><span class="kw">pub </span>pipe_name: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#81 id=81 data-nosnippet>81</a>
-<a href=#82 id=82 data-nosnippet>82</a>    <span class="doccomment">/// SDDL security descriptor applied to the Windows named pipe listener.
-<a href=#83 id=83 data-nosnippet>83</a>    </span><span class="kw">pub </span>windows_pipe_security_descriptor: String,
-<a href=#84 id=84 data-nosnippet>84</a>
-<a href=#85 id=85 data-nosnippet>85</a>    <span class="doccomment">/// Whether the UDP listener accepts traffic from non-local addresses.
-<a href=#86 id=86 data-nosnippet>86</a>    </span><span class="kw">pub </span>non_local_traffic: bool,
-<a href=#87 id=87 data-nosnippet>87</a>
-<a href=#88 id=88 data-nosnippet>88</a>    <span class="doccomment">/// Host the UDP listener binds to.
-<a href=#89 id=89 data-nosnippet>89</a>    </span><span class="kw">pub </span>bind_host: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#90 id=90 data-nosnippet>90</a>
-<a href=#91 id=91 data-nosnippet>91</a>    <span class="doccomment">/// Size, in bytes, requested for the socket receive buffer.
-<a href=#92 id=92 data-nosnippet>92</a>    </span><span class="kw">pub </span>so_rcvbuf: usize,
-<a href=#93 id=93 data-nosnippet>93</a>
-<a href=#94 id=94 data-nosnippet>94</a>    <span class="doccomment">/// Size, in bytes, of each packet receive buffer.
-<a href=#95 id=95 data-nosnippet>95</a>    </span><span class="kw">pub </span>buffer_size: usize,
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a>    <span class="doccomment">/// Number of receive buffers allocated. (not in Datadog Agent config schema)
-<a href=#98 id=98 data-nosnippet>98</a>    </span><span class="kw">pub </span>buffer_count: usize,
-<a href=#99 id=99 data-nosnippet>99</a>
-<a href=#100 id=100 data-nosnippet>100</a>    <span class="doccomment">/// Maximum number of receive buffers. (not in Datadog Agent config schema)
-<a href=#101 id=101 data-nosnippet>101</a>    </span><span class="kw">pub </span>buffer_count_max: usize,
-<a href=#102 id=102 data-nosnippet>102</a>
-<a href=#103 id=103 data-nosnippet>103</a>    <span class="doccomment">/// Number of connectionless packet decoder workers.
-<a href=#104 id=104 data-nosnippet>104</a>    </span><span class="kw">pub </span>workers_count: usize,
-<a href=#105 id=105 data-nosnippet>105</a>
-<a href=#106 id=106 data-nosnippet>106</a>    <span class="doccomment">/// Whether to bind multiple UDP sockets via `SO_REUSEPORT`. (not in Datadog Agent config
-<a href=#107 id=107 data-nosnippet>107</a>    /// schema)
-<a href=#108 id=108 data-nosnippet>108</a>    </span><span class="kw">pub </span>autoscale_udp_listeners: bool,
-<a href=#109 id=109 data-nosnippet>109</a>
-<a href=#110 id=110 data-nosnippet>110</a>    <span class="doccomment">/// Path a traffic capture is written to or replayed from.
-<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="kw">pub </span>capture_path: PathBuf,
-<a href=#112 id=112 data-nosnippet>112</a>
-<a href=#113 id=113 data-nosnippet>113</a>    <span class="doccomment">/// Maximum recursion depth when replaying a traffic capture.
-<a href=#114 id=114 data-nosnippet>114</a>    </span><span class="kw">pub </span>capture_depth: usize,
-<a href=#115 id=115 data-nosnippet>115</a>
-<a href=#116 id=116 data-nosnippet>116</a>    <span class="doccomment">/// End-of-line markers required to terminate a stream-socket message.
-<a href=#117 id=117 data-nosnippet>117</a>    </span><span class="kw">pub </span>eol_required: Vec&lt;String&gt;,
-<a href=#118 id=118 data-nosnippet>118</a>
-<a href=#119 id=119 data-nosnippet>119</a>    <span class="doccomment">/// Whether to log stream messages that exceed the buffer size.
-<a href=#120 id=120 data-nosnippet>120</a>    </span><span class="kw">pub </span>stream_log_too_big: bool,
-<a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Whether to relax decoder strictness on malformed packets. (not in Datadog Agent config
-<a href=#123 id=123 data-nosnippet>123</a>    /// schema)
-<a href=#124 id=124 data-nosnippet>124</a>    </span><span class="kw">pub </span>permissive_decoding: bool,
+<a href=#73 id=73 data-nosnippet>73</a>    <span class="doccomment">/// TCP port DogStatsD listens on. (not in Datadog Agent config schema)
+<a href=#74 id=74 data-nosnippet>74</a>    ///
+<a href=#75 id=75 data-nosnippet>75</a>    /// Defaults to `0`, which disables TCP.
+<a href=#76 id=76 data-nosnippet>76</a>    </span><span class="kw">pub </span>tcp_port: u16,
+<a href=#77 id=77 data-nosnippet>77</a>
+<a href=#78 id=78 data-nosnippet>78</a>    <span class="doccomment">/// Path of the Unix datagram socket DogStatsD listens on.
+<a href=#79 id=79 data-nosnippet>79</a>    </span><span class="kw">pub </span>socket: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#80 id=80 data-nosnippet>80</a>
+<a href=#81 id=81 data-nosnippet>81</a>    <span class="doccomment">/// Path of the Unix stream socket DogStatsD listens on.
+<a href=#82 id=82 data-nosnippet>82</a>    </span><span class="kw">pub </span>stream_socket: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#83 id=83 data-nosnippet>83</a>
+<a href=#84 id=84 data-nosnippet>84</a>    <span class="doccomment">/// Windows named pipe name DogStatsD listens on. Unset when no named pipe is configured.
+<a href=#85 id=85 data-nosnippet>85</a>    </span><span class="kw">pub </span>pipe_name: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#86 id=86 data-nosnippet>86</a>
+<a href=#87 id=87 data-nosnippet>87</a>    <span class="doccomment">/// SDDL security descriptor applied to the Windows named pipe listener.
+<a href=#88 id=88 data-nosnippet>88</a>    </span><span class="kw">pub </span>windows_pipe_security_descriptor: String,
+<a href=#89 id=89 data-nosnippet>89</a>
+<a href=#90 id=90 data-nosnippet>90</a>    <span class="doccomment">/// Whether the UDP listener accepts traffic from non-local addresses.
+<a href=#91 id=91 data-nosnippet>91</a>    </span><span class="kw">pub </span>non_local_traffic: bool,
+<a href=#92 id=92 data-nosnippet>92</a>
+<a href=#93 id=93 data-nosnippet>93</a>    <span class="doccomment">/// Host the UDP listener binds to.
+<a href=#94 id=94 data-nosnippet>94</a>    </span><span class="kw">pub </span>bind_host: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#95 id=95 data-nosnippet>95</a>
+<a href=#96 id=96 data-nosnippet>96</a>    <span class="doccomment">/// Size, in bytes, requested for the socket receive buffer.
+<a href=#97 id=97 data-nosnippet>97</a>    </span><span class="kw">pub </span>so_rcvbuf: usize,
+<a href=#98 id=98 data-nosnippet>98</a>
+<a href=#99 id=99 data-nosnippet>99</a>    <span class="doccomment">/// Size, in bytes, of each packet receive buffer.
+<a href=#100 id=100 data-nosnippet>100</a>    </span><span class="kw">pub </span>buffer_size: usize,
+<a href=#101 id=101 data-nosnippet>101</a>
+<a href=#102 id=102 data-nosnippet>102</a>    <span class="doccomment">/// Number of receive buffers allocated. (not in Datadog Agent config schema)
+<a href=#103 id=103 data-nosnippet>103</a>    </span><span class="kw">pub </span>buffer_count: usize,
+<a href=#104 id=104 data-nosnippet>104</a>
+<a href=#105 id=105 data-nosnippet>105</a>    <span class="doccomment">/// Maximum number of receive buffers. (not in Datadog Agent config schema)
+<a href=#106 id=106 data-nosnippet>106</a>    </span><span class="kw">pub </span>buffer_count_max: usize,
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="doccomment">/// Number of connectionless packet decoder workers.
+<a href=#109 id=109 data-nosnippet>109</a>    </span><span class="kw">pub </span>workers_count: usize,
+<a href=#110 id=110 data-nosnippet>110</a>
+<a href=#111 id=111 data-nosnippet>111</a>    <span class="doccomment">/// Whether to bind multiple UDP sockets via `SO_REUSEPORT`. (not in Datadog Agent config
+<a href=#112 id=112 data-nosnippet>112</a>    /// schema)
+<a href=#113 id=113 data-nosnippet>113</a>    </span><span class="kw">pub </span>autoscale_udp_listeners: bool,
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a>    <span class="doccomment">/// Path a traffic capture is written to or replayed from.
+<a href=#116 id=116 data-nosnippet>116</a>    </span><span class="kw">pub </span>capture_path: PathBuf,
+<a href=#117 id=117 data-nosnippet>117</a>
+<a href=#118 id=118 data-nosnippet>118</a>    <span class="doccomment">/// Maximum number of captured packets queued for persistence.
+<a href=#119 id=119 data-nosnippet>119</a>    ///
+<a href=#120 id=120 data-nosnippet>120</a>    /// The capture writer raises a depth below its own minimum, so the default, 0, selects that minimum.
+<a href=#121 id=121 data-nosnippet>121</a>    </span><span class="kw">pub </span>capture_depth: usize,
+<a href=#122 id=122 data-nosnippet>122</a>
+<a href=#123 id=123 data-nosnippet>123</a>    <span class="doccomment">/// End-of-line markers required to terminate a stream-socket message.
+<a href=#124 id=124 data-nosnippet>124</a>    </span><span class="kw">pub </span>eol_required: Vec&lt;String&gt;,
 <a href=#125 id=125 data-nosnippet>125</a>
-<a href=#126 id=126 data-nosnippet>126</a>    <span class="doccomment">/// Host that received metrics are additionally forwarded to.
-<a href=#127 id=127 data-nosnippet>127</a>    </span><span class="kw">pub </span>forward_host: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#126 id=126 data-nosnippet>126</a>    <span class="doccomment">/// Whether to log stream messages that exceed the buffer size.
+<a href=#127 id=127 data-nosnippet>127</a>    </span><span class="kw">pub </span>stream_log_too_big: bool,
 <a href=#128 id=128 data-nosnippet>128</a>
-<a href=#129 id=129 data-nosnippet>129</a>    <span class="doccomment">/// Port that received metrics are additionally forwarded to.
-<a href=#130 id=130 data-nosnippet>130</a>    </span><span class="kw">pub </span>forward_port: u16,
-<a href=#131 id=131 data-nosnippet>131</a>}
+<a href=#129 id=129 data-nosnippet>129</a>    <span class="doccomment">/// Whether to relax decoder strictness on malformed packets. (not in Datadog Agent config
+<a href=#130 id=130 data-nosnippet>130</a>    /// schema)
+<a href=#131 id=131 data-nosnippet>131</a>    </span><span class="kw">pub </span>permissive_decoding: bool,
 <a href=#132 id=132 data-nosnippet>132</a>
-<a href=#133 id=133 data-nosnippet>133</a><span class="doccomment">/// Origin detection and tag cardinality.
-<a href=#134 id=134 data-nosnippet>134</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#135 id=135 data-nosnippet>135</a></span><span class="kw">pub struct </span>OriginDetection {
-<a href=#136 id=136 data-nosnippet>136</a>    <span class="doccomment">/// Whether origin detection tags metrics with their source workload.
-<a href=#137 id=137 data-nosnippet>137</a>    </span><span class="kw">pub </span>detection: bool,
-<a href=#138 id=138 data-nosnippet>138</a>
-<a href=#139 id=139 data-nosnippet>139</a>    <span class="doccomment">/// Whether client-supplied origin information is honored.
-<a href=#140 id=140 data-nosnippet>140</a>    </span><span class="kw">pub </span>detection_client: bool,
-<a href=#141 id=141 data-nosnippet>141</a>
-<a href=#142 id=142 data-nosnippet>142</a>    <span class="doccomment">/// Whether the unified origin-detection scheme is used.
-<a href=#143 id=143 data-nosnippet>143</a>    </span><span class="kw">pub </span>unified: bool,
-<a href=#144 id=144 data-nosnippet>144</a>
-<a href=#145 id=145 data-nosnippet>145</a>    <span class="doccomment">/// Whether a client may opt out of origin detection per metric.
-<a href=#146 id=146 data-nosnippet>146</a>    </span><span class="kw">pub </span>optout_enabled: bool,
-<a href=#147 id=147 data-nosnippet>147</a>
-<a href=#148 id=148 data-nosnippet>148</a>    <span class="doccomment">/// Whether a client-supplied entity ID takes precedence over the detected origin.
-<a href=#149 id=149 data-nosnippet>149</a>    </span><span class="kw">pub </span>entity_id_precedence: bool,
-<a href=#150 id=150 data-nosnippet>150</a>
-<a href=#151 id=151 data-nosnippet>151</a>    <span class="doccomment">/// Tag cardinality applied to origin-detected tags.
-<a href=#152 id=152 data-nosnippet>152</a>    </span><span class="kw">pub </span>tag_cardinality: OriginTagCardinality,
-<a href=#153 id=153 data-nosnippet>153</a>}
-<a href=#154 id=154 data-nosnippet>154</a>
-<a href=#155 id=155 data-nosnippet>155</a><span class="doccomment">/// Tag cardinality applied during origin detection.
-<a href=#156 id=156 data-nosnippet>156</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-<a href=#157 id=157 data-nosnippet>157</a></span><span class="kw">pub enum </span>OriginTagCardinality {
-<a href=#158 id=158 data-nosnippet>158</a>    <span class="attr">#[default]
-<a href=#159 id=159 data-nosnippet>159</a>    </span>Low,
-<a href=#160 id=160 data-nosnippet>160</a>    Orchestrator,
-<a href=#161 id=161 data-nosnippet>161</a>    High,
-<a href=#162 id=162 data-nosnippet>162</a>    <span class="prelude-val">None</span>,
-<a href=#163 id=163 data-nosnippet>163</a>}
-<a href=#164 id=164 data-nosnippet>164</a>
-<a href=#165 id=165 data-nosnippet>165</a><span class="kw">impl </span>FromStr <span class="kw">for </span>OriginTagCardinality {
-<a href=#166 id=166 data-nosnippet>166</a>    <span class="kw">type </span><span class="prelude-val">Err </span>= Error;
-<a href=#167 id=167 data-nosnippet>167</a>
-<a href=#168 id=168 data-nosnippet>168</a>    <span class="kw">fn </span>from_str(value: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, <span class="self">Self</span>::Err&gt; {
-<a href=#169 id=169 data-nosnippet>169</a>        <span class="kw">match </span>value.to_ascii_lowercase().as_str() {
-<a href=#170 id=170 data-nosnippet>170</a>            <span class="string">"low" </span>=&gt; <span class="prelude-val">Ok</span>(<span class="self">Self</span>::Low),
-<a href=#171 id=171 data-nosnippet>171</a>            <span class="string">"orchestrator" </span>=&gt; <span class="prelude-val">Ok</span>(<span class="self">Self</span>::Orchestrator),
-<a href=#172 id=172 data-nosnippet>172</a>            <span class="string">"high" </span>=&gt; <span class="prelude-val">Ok</span>(<span class="self">Self</span>::High),
-<a href=#173 id=173 data-nosnippet>173</a>            <span class="string">"none" </span>=&gt; <span class="prelude-val">Ok</span>(<span class="self">Self</span>::None),
-<a href=#174 id=174 data-nosnippet>174</a>            other =&gt; <span class="prelude-val">Err</span>(Error::new_without_source(<span class="macro">format!</span>(
-<a href=#175 id=175 data-nosnippet>175</a>                <span class="string">"unknown tag cardinality `{other}`; expected low, orchestrator, high, or none"
-<a href=#176 id=176 data-nosnippet>176</a>            </span>))),
-<a href=#177 id=177 data-nosnippet>177</a>        }
-<a href=#178 id=178 data-nosnippet>178</a>    }
-<a href=#179 id=179 data-nosnippet>179</a>}
-<a href=#180 id=180 data-nosnippet>180</a>
-<a href=#181 id=181 data-nosnippet>181</a><span class="doccomment">/// Telemetry emitted by the DogStatsD source.
-<a href=#182 id=182 data-nosnippet>182</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#183 id=183 data-nosnippet>183</a></span><span class="kw">pub struct </span>Telemetry {
-<a href=#184 id=184 data-nosnippet>184</a>    <span class="doccomment">/// Whether processed-metric telemetry is broken down by detected origin.
-<a href=#185 id=185 data-nosnippet>185</a>    </span><span class="kw">pub </span>origin_breakdown: bool,
-<a href=#186 id=186 data-nosnippet>186</a>}
+<a href=#133 id=133 data-nosnippet>133</a>    <span class="doccomment">/// Host that received metrics are additionally forwarded to.
+<a href=#134 id=134 data-nosnippet>134</a>    </span><span class="kw">pub </span>forward_host: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#135 id=135 data-nosnippet>135</a>
+<a href=#136 id=136 data-nosnippet>136</a>    <span class="doccomment">/// Port that received metrics are additionally forwarded to.
+<a href=#137 id=137 data-nosnippet>137</a>    </span><span class="kw">pub </span>forward_port: u16,
+<a href=#138 id=138 data-nosnippet>138</a>}
+<a href=#139 id=139 data-nosnippet>139</a>
+<a href=#140 id=140 data-nosnippet>140</a><span class="kw">impl </span>Default <span class="kw">for </span>Listeners {
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#142 id=142 data-nosnippet>142</a>        <span class="self">Self </span>{
+<a href=#143 id=143 data-nosnippet>143</a>            <span class="comment">// Saluki-only settings retain these defaults when unset.
+<a href=#144 id=144 data-nosnippet>144</a>            </span>buffer_count: DEFAULT_DOGSTATSD_BUFFER_COUNT,
+<a href=#145 id=145 data-nosnippet>145</a>            buffer_count_max: DEFAULT_DOGSTATSD_BUFFER_COUNT_MAX,
+<a href=#146 id=146 data-nosnippet>146</a>            permissive_decoding: DEFAULT_DOGSTATSD_PERMISSIVE_DECODING,
+<a href=#147 id=147 data-nosnippet>147</a>            tcp_port: DEFAULT_DOGSTATSD_TCP_PORT,
+<a href=#148 id=148 data-nosnippet>148</a>            autoscale_udp_listeners: DEFAULT_DOGSTATSD_AUTOSCALE_UDP_LISTENERS,
+<a href=#149 id=149 data-nosnippet>149</a>            <span class="comment">// Witnessed settings are overwritten during translation.
+<a href=#150 id=150 data-nosnippet>150</a>            </span>port: <span class="number">0</span>,
+<a href=#151 id=151 data-nosnippet>151</a>            socket: <span class="prelude-val">None</span>,
+<a href=#152 id=152 data-nosnippet>152</a>            stream_socket: <span class="prelude-val">None</span>,
+<a href=#153 id=153 data-nosnippet>153</a>            pipe_name: <span class="prelude-val">None</span>,
+<a href=#154 id=154 data-nosnippet>154</a>            windows_pipe_security_descriptor: String::new(),
+<a href=#155 id=155 data-nosnippet>155</a>            non_local_traffic: <span class="bool-val">false</span>,
+<a href=#156 id=156 data-nosnippet>156</a>            bind_host: <span class="prelude-val">None</span>,
+<a href=#157 id=157 data-nosnippet>157</a>            so_rcvbuf: <span class="number">0</span>,
+<a href=#158 id=158 data-nosnippet>158</a>            buffer_size: <span class="number">0</span>,
+<a href=#159 id=159 data-nosnippet>159</a>            workers_count: <span class="number">0</span>,
+<a href=#160 id=160 data-nosnippet>160</a>            capture_path: PathBuf::new(),
+<a href=#161 id=161 data-nosnippet>161</a>            capture_depth: <span class="number">0</span>,
+<a href=#162 id=162 data-nosnippet>162</a>            eol_required: Vec::new(),
+<a href=#163 id=163 data-nosnippet>163</a>            stream_log_too_big: <span class="bool-val">false</span>,
+<a href=#164 id=164 data-nosnippet>164</a>            forward_host: <span class="prelude-val">None</span>,
+<a href=#165 id=165 data-nosnippet>165</a>            forward_port: <span class="number">0</span>,
+<a href=#166 id=166 data-nosnippet>166</a>        }
+<a href=#167 id=167 data-nosnippet>167</a>    }
+<a href=#168 id=168 data-nosnippet>168</a>}
+<a href=#169 id=169 data-nosnippet>169</a>
+<a href=#170 id=170 data-nosnippet>170</a><span class="doccomment">/// Origin detection and tag cardinality.
+<a href=#171 id=171 data-nosnippet>171</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#172 id=172 data-nosnippet>172</a></span><span class="kw">pub struct </span>OriginDetection {
+<a href=#173 id=173 data-nosnippet>173</a>    <span class="doccomment">/// Whether origin detection tags metrics with their source workload.
+<a href=#174 id=174 data-nosnippet>174</a>    </span><span class="kw">pub </span>detection: bool,
+<a href=#175 id=175 data-nosnippet>175</a>
+<a href=#176 id=176 data-nosnippet>176</a>    <span class="doccomment">/// Whether client-supplied origin information is honored.
+<a href=#177 id=177 data-nosnippet>177</a>    </span><span class="kw">pub </span>detection_client: bool,
+<a href=#178 id=178 data-nosnippet>178</a>
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="doccomment">/// Whether the unified origin-detection scheme is used.
+<a href=#180 id=180 data-nosnippet>180</a>    </span><span class="kw">pub </span>unified: bool,
+<a href=#181 id=181 data-nosnippet>181</a>
+<a href=#182 id=182 data-nosnippet>182</a>    <span class="doccomment">/// Whether a client may opt out of origin detection per metric.
+<a href=#183 id=183 data-nosnippet>183</a>    </span><span class="kw">pub </span>optout_enabled: bool,
+<a href=#184 id=184 data-nosnippet>184</a>
+<a href=#185 id=185 data-nosnippet>185</a>    <span class="doccomment">/// Whether a client-supplied entity ID takes precedence over the detected origin.
+<a href=#186 id=186 data-nosnippet>186</a>    </span><span class="kw">pub </span>entity_id_precedence: bool,
 <a href=#187 id=187 data-nosnippet>187</a>
-<a href=#188 id=188 data-nosnippet>188</a><span class="doccomment">/// Context cache sizing and sample-rate floor.
-<a href=#189 id=189 data-nosnippet>189</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#190 id=190 data-nosnippet>190</a></span><span class="kw">pub struct </span>Contexts {
-<a href=#191 id=191 data-nosnippet>191</a>    <span class="doccomment">/// Maximum number of metric contexts held in the cache. (not in Datadog Agent config schema)
-<a href=#192 id=192 data-nosnippet>192</a>    </span><span class="kw">pub </span>cached_contexts_limit: usize,
-<a href=#193 id=193 data-nosnippet>193</a>
-<a href=#194 id=194 data-nosnippet>194</a>    <span class="doccomment">/// Maximum number of tagsets held in the cache. (not in Datadog Agent config schema)
-<a href=#195 id=195 data-nosnippet>195</a>    </span><span class="kw">pub </span>cached_tagsets_limit: usize,
-<a href=#196 id=196 data-nosnippet>196</a>
-<a href=#197 id=197 data-nosnippet>197</a>    <span class="doccomment">/// Number of entries the context string interner holds.
-<a href=#198 id=198 data-nosnippet>198</a>    </span><span class="kw">pub </span>string_interner_size: u64,
-<a href=#199 id=199 data-nosnippet>199</a>
-<a href=#200 id=200 data-nosnippet>200</a>    <span class="doccomment">/// Byte budget for the context string interner, overriding the entry count when set. (not in
-<a href=#201 id=201 data-nosnippet>201</a>    /// Datadog Agent config schema)
-<a href=#202 id=202 data-nosnippet>202</a>    </span><span class="kw">pub </span>string_interner_size_bytes: <span class="prelude-ty">Option</span>&lt;u64&gt;,
-<a href=#203 id=203 data-nosnippet>203</a>
-<a href=#204 id=204 data-nosnippet>204</a>    <span class="doccomment">/// Whether contexts may be heap-allocated when the interner is full. (not in Datadog Agent
-<a href=#205 id=205 data-nosnippet>205</a>    /// config schema)
-<a href=#206 id=206 data-nosnippet>206</a>    </span><span class="kw">pub </span>allow_context_heap_allocs: bool,
-<a href=#207 id=207 data-nosnippet>207</a>
-<a href=#208 id=208 data-nosnippet>208</a>    <span class="doccomment">/// Lowest sample rate accepted before a metric is rejected. (not in Datadog Agent config
-<a href=#209 id=209 data-nosnippet>209</a>    /// schema)
-<a href=#210 id=210 data-nosnippet>210</a>    </span><span class="kw">pub </span>minimum_sample_rate: f64,
-<a href=#211 id=211 data-nosnippet>211</a>}
-<a href=#212 id=212 data-nosnippet>212</a>
-<a href=#213 id=213 data-nosnippet>213</a><span class="doccomment">/// Metric aggregation window and flush behavior.
-<a href=#214 id=214 data-nosnippet>214</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Serialize)]
-<a href=#215 id=215 data-nosnippet>215</a></span><span class="kw">pub struct </span>Aggregation {
-<a href=#216 id=216 data-nosnippet>216</a>    <span class="doccomment">/// Length, in seconds, of each aggregation window. (not in Datadog Agent config schema)
-<a href=#217 id=217 data-nosnippet>217</a>    </span><span class="kw">pub </span>window_duration_seconds: NonZeroU64,
-<a href=#218 id=218 data-nosnippet>218</a>
-<a href=#219 id=219 data-nosnippet>219</a>    <span class="doccomment">/// Maximum number of contexts held per aggregation window. (not in Datadog Agent config schema)
-<a href=#220 id=220 data-nosnippet>220</a>    </span><span class="kw">pub </span>context_limit: usize,
-<a href=#221 id=221 data-nosnippet>221</a>
-<a href=#222 id=222 data-nosnippet>222</a>    <span class="doccomment">/// How often aggregated metrics are flushed. (not in Datadog Agent config schema)
-<a href=#223 id=223 data-nosnippet>223</a>    </span><span class="kw">pub </span>flush_interval: Duration,
-<a href=#224 id=224 data-nosnippet>224</a>
-<a href=#225 id=225 data-nosnippet>225</a>    <span class="doccomment">/// Whether windows that are still open are flushed on shutdown.
-<a href=#226 id=226 data-nosnippet>226</a>    ///
-<a href=#227 id=227 data-nosnippet>227</a>    /// Set by the Datadog `dogstatsd_flush_incomplete_buckets` key.
-<a href=#228 id=228 data-nosnippet>228</a>    </span><span class="kw">pub </span>flush_open_windows: bool,
-<a href=#229 id=229 data-nosnippet>229</a>
-<a href=#230 id=230 data-nosnippet>230</a>    <span class="doccomment">/// How long the no-aggregation passthrough waits before flushing while idle. (not in Datadog
-<a href=#231 id=231 data-nosnippet>231</a>    /// Agent config schema)
-<a href=#232 id=232 data-nosnippet>232</a>    </span><span class="kw">pub </span>passthrough_idle_flush_timeout: Duration,
-<a href=#233 id=233 data-nosnippet>233</a>
-<a href=#234 id=234 data-nosnippet>234</a>    <span class="doccomment">/// How long, in seconds, a counter value is retained after its last update before expiring.
-<a href=#235 id=235 data-nosnippet>235</a>    ///
-<a href=#236 id=236 data-nosnippet>236</a>    /// Set by the Datadog `dogstatsd_expiry_seconds` key. A value of `0` disables zero-value counter
-<a href=#237 id=237 data-nosnippet>237</a>    /// emission.
-<a href=#238 id=238 data-nosnippet>238</a>    </span><span class="kw">pub </span>counter_expiry_seconds: <span class="prelude-ty">Option</span>&lt;u64&gt;,
-<a href=#239 id=239 data-nosnippet>239</a>
-<a href=#240 id=240 data-nosnippet>240</a>    <span class="doccomment">/// How long, in seconds, a context is retained after its last update before expiring.
-<a href=#241 id=241 data-nosnippet>241</a>    </span><span class="kw">pub </span>context_expiry_seconds: u64,
+<a href=#188 id=188 data-nosnippet>188</a>    <span class="doccomment">/// Tag cardinality applied to origin-detected tags, when a payload doesn't specify one itself.
+<a href=#189 id=189 data-nosnippet>189</a>    </span><span class="kw">pub </span>tag_cardinality: OriginTagCardinality,
+<a href=#190 id=190 data-nosnippet>190</a>}
+<a href=#191 id=191 data-nosnippet>191</a>
+<a href=#192 id=192 data-nosnippet>192</a><span class="doccomment">/// Tag cardinality applied during origin detection.
+<a href=#193 id=193 data-nosnippet>193</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+<a href=#194 id=194 data-nosnippet>194</a></span><span class="kw">pub enum </span>OriginTagCardinality {
+<a href=#195 id=195 data-nosnippet>195</a>    <span class="attr">#[default]
+<a href=#196 id=196 data-nosnippet>196</a>    </span>Low,
+<a href=#197 id=197 data-nosnippet>197</a>    Orchestrator,
+<a href=#198 id=198 data-nosnippet>198</a>    High,
+<a href=#199 id=199 data-nosnippet>199</a>    <span class="prelude-val">None</span>,
+<a href=#200 id=200 data-nosnippet>200</a>}
+<a href=#201 id=201 data-nosnippet>201</a>
+<a href=#202 id=202 data-nosnippet>202</a><span class="kw">impl </span>FromStr <span class="kw">for </span>OriginTagCardinality {
+<a href=#203 id=203 data-nosnippet>203</a>    <span class="kw">type </span><span class="prelude-val">Err </span>= Error;
+<a href=#204 id=204 data-nosnippet>204</a>
+<a href=#205 id=205 data-nosnippet>205</a>    <span class="kw">fn </span>from_str(value: <span class="kw-2">&amp;</span>str) -&gt; <span class="prelude-ty">Result</span>&lt;<span class="self">Self</span>, <span class="self">Self</span>::Err&gt; {
+<a href=#206 id=206 data-nosnippet>206</a>        <span class="comment">// The Datadog Agent lower-cases the value before matching, and accepts `orch` as a shorthand
+<a href=#207 id=207 data-nosnippet>207</a>        // for `orchestrator`.
+<a href=#208 id=208 data-nosnippet>208</a>        </span><span class="kw">match </span>value.to_ascii_lowercase().as_str() {
+<a href=#209 id=209 data-nosnippet>209</a>            <span class="string">"low" </span>=&gt; <span class="prelude-val">Ok</span>(<span class="self">Self</span>::Low),
+<a href=#210 id=210 data-nosnippet>210</a>            <span class="string">"orch" </span>| <span class="string">"orchestrator" </span>=&gt; <span class="prelude-val">Ok</span>(<span class="self">Self</span>::Orchestrator),
+<a href=#211 id=211 data-nosnippet>211</a>            <span class="string">"high" </span>=&gt; <span class="prelude-val">Ok</span>(<span class="self">Self</span>::High),
+<a href=#212 id=212 data-nosnippet>212</a>            <span class="string">"none" </span>=&gt; <span class="prelude-val">Ok</span>(<span class="self">Self</span>::None),
+<a href=#213 id=213 data-nosnippet>213</a>            other =&gt; <span class="prelude-val">Err</span>(Error::new_without_source(<span class="macro">format!</span>(
+<a href=#214 id=214 data-nosnippet>214</a>                <span class="string">"unknown tag cardinality `{other}`; expected low, orch, orchestrator, high, or none"
+<a href=#215 id=215 data-nosnippet>215</a>            </span>))),
+<a href=#216 id=216 data-nosnippet>216</a>        }
+<a href=#217 id=217 data-nosnippet>217</a>    }
+<a href=#218 id=218 data-nosnippet>218</a>}
+<a href=#219 id=219 data-nosnippet>219</a>
+<a href=#220 id=220 data-nosnippet>220</a><span class="doccomment">/// Telemetry emitted by the DogStatsD source.
+<a href=#221 id=221 data-nosnippet>221</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#222 id=222 data-nosnippet>222</a></span><span class="kw">pub struct </span>Telemetry {
+<a href=#223 id=223 data-nosnippet>223</a>    <span class="doccomment">/// Whether processed-metric telemetry is broken down by detected origin.
+<a href=#224 id=224 data-nosnippet>224</a>    </span><span class="kw">pub </span>origin_breakdown: bool,
+<a href=#225 id=225 data-nosnippet>225</a>}
+<a href=#226 id=226 data-nosnippet>226</a>
+<a href=#227 id=227 data-nosnippet>227</a><span class="doccomment">/// Context cache sizing and sample-rate floor.
+<a href=#228 id=228 data-nosnippet>228</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Serialize)]
+<a href=#229 id=229 data-nosnippet>229</a></span><span class="kw">pub struct </span>Contexts {
+<a href=#230 id=230 data-nosnippet>230</a>    <span class="doccomment">/// Maximum number of metric contexts held in the cache. (not in Datadog Agent config schema)
+<a href=#231 id=231 data-nosnippet>231</a>    </span><span class="kw">pub </span>cached_contexts_limit: usize,
+<a href=#232 id=232 data-nosnippet>232</a>
+<a href=#233 id=233 data-nosnippet>233</a>    <span class="doccomment">/// Maximum number of tagsets held in the cache. (not in Datadog Agent config schema)
+<a href=#234 id=234 data-nosnippet>234</a>    </span><span class="kw">pub </span>cached_tagsets_limit: usize,
+<a href=#235 id=235 data-nosnippet>235</a>
+<a href=#236 id=236 data-nosnippet>236</a>    <span class="doccomment">/// Number of entries the context string interner holds.
+<a href=#237 id=237 data-nosnippet>237</a>    </span><span class="kw">pub </span>string_interner_size: u64,
+<a href=#238 id=238 data-nosnippet>238</a>
+<a href=#239 id=239 data-nosnippet>239</a>    <span class="doccomment">/// Byte budget for the context string interner, overriding the entry count when set. (not in
+<a href=#240 id=240 data-nosnippet>240</a>    /// Datadog Agent config schema)
+<a href=#241 id=241 data-nosnippet>241</a>    </span><span class="kw">pub </span>string_interner_size_bytes: <span class="prelude-ty">Option</span>&lt;u64&gt;,
 <a href=#242 id=242 data-nosnippet>242</a>
-<a href=#243 id=243 data-nosnippet>243</a>    <span class="doccomment">/// Whether metrics bypass aggregation and are forwarded directly.
-<a href=#244 id=244 data-nosnippet>244</a>    </span><span class="kw">pub </span>no_aggregation_pipeline: bool,
-<a href=#245 id=245 data-nosnippet>245</a>
-<a href=#246 id=246 data-nosnippet>246</a>    <span class="doccomment">/// Capacity of the aggregator's tag-filter result cache.
-<a href=#247 id=247 data-nosnippet>247</a>    </span><span class="kw">pub </span>aggregator_tag_filter_cache_capacity: usize,
-<a href=#248 id=248 data-nosnippet>248</a>}
-<a href=#249 id=249 data-nosnippet>249</a>
-<a href=#250 id=250 data-nosnippet>250</a><span class="kw">impl </span>Default <span class="kw">for </span>Aggregation {
-<a href=#251 id=251 data-nosnippet>251</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#252 id=252 data-nosnippet>252</a>        <span class="self">Self </span>{
-<a href=#253 id=253 data-nosnippet>253</a>            <span class="comment">// Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
-<a href=#254 id=254 data-nosnippet>254</a>            // seeded only when set; absent that, these defaults stand.
-<a href=#255 id=255 data-nosnippet>255</a>            </span>window_duration_seconds: DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
-<a href=#256 id=256 data-nosnippet>256</a>            context_limit: DEFAULT_AGGREGATE_CONTEXT_LIMIT,
-<a href=#257 id=257 data-nosnippet>257</a>            flush_interval: DEFAULT_AGGREGATE_FLUSH_INTERVAL,
-<a href=#258 id=258 data-nosnippet>258</a>            passthrough_idle_flush_timeout: DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT,
-<a href=#259 id=259 data-nosnippet>259</a>            <span class="comment">// Datadog-schema knobs: always written by the witness driver, so these values are
-<a href=#260 id=260 data-nosnippet>260</a>            // placeholders that never survive translation.
-<a href=#261 id=261 data-nosnippet>261</a>            </span>flush_open_windows: <span class="bool-val">false</span>,
-<a href=#262 id=262 data-nosnippet>262</a>            counter_expiry_seconds: <span class="prelude-val">None</span>,
-<a href=#263 id=263 data-nosnippet>263</a>            context_expiry_seconds: <span class="number">0</span>,
-<a href=#264 id=264 data-nosnippet>264</a>            no_aggregation_pipeline: <span class="bool-val">false</span>,
-<a href=#265 id=265 data-nosnippet>265</a>            aggregator_tag_filter_cache_capacity: <span class="number">0</span>,
-<a href=#266 id=266 data-nosnippet>266</a>        }
-<a href=#267 id=267 data-nosnippet>267</a>    }
-<a href=#268 id=268 data-nosnippet>268</a>}
-<a href=#269 id=269 data-nosnippet>269</a>
-<a href=#270 id=270 data-nosnippet>270</a><span class="doccomment">/// DogStatsD metric mapper.
-<a href=#271 id=271 data-nosnippet>271</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Serialize)]
-<a href=#272 id=272 data-nosnippet>272</a></span><span class="kw">pub struct </span>Mapper {
-<a href=#273 id=273 data-nosnippet>273</a>    <span class="doccomment">/// Mapper profiles that rewrite matching metric names and tags.
-<a href=#274 id=274 data-nosnippet>274</a>    </span><span class="kw">pub </span>profiles: Vec&lt;MapperProfile&gt;,
+<a href=#243 id=243 data-nosnippet>243</a>    <span class="doccomment">/// Whether contexts may be heap-allocated when the interner is full. (not in Datadog Agent
+<a href=#244 id=244 data-nosnippet>244</a>    /// config schema)
+<a href=#245 id=245 data-nosnippet>245</a>    </span><span class="kw">pub </span>allow_context_heap_allocs: bool,
+<a href=#246 id=246 data-nosnippet>246</a>
+<a href=#247 id=247 data-nosnippet>247</a>    <span class="doccomment">/// Lowest sample rate honored; the decoder warns and clamps anything below it. (not in Datadog
+<a href=#248 id=248 data-nosnippet>248</a>    /// Agent config schema)
+<a href=#249 id=249 data-nosnippet>249</a>    </span><span class="kw">pub </span>minimum_sample_rate: f64,
+<a href=#250 id=250 data-nosnippet>250</a>}
+<a href=#251 id=251 data-nosnippet>251</a>
+<a href=#252 id=252 data-nosnippet>252</a><span class="kw">impl </span>Default <span class="kw">for </span>Contexts {
+<a href=#253 id=253 data-nosnippet>253</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#254 id=254 data-nosnippet>254</a>        <span class="self">Self </span>{
+<a href=#255 id=255 data-nosnippet>255</a>            <span class="comment">// Saluki-only settings retain these defaults when unset.
+<a href=#256 id=256 data-nosnippet>256</a>            </span>cached_contexts_limit: DEFAULT_DOGSTATSD_CACHED_CONTEXTS_LIMIT,
+<a href=#257 id=257 data-nosnippet>257</a>            cached_tagsets_limit: DEFAULT_DOGSTATSD_CACHED_TAGSETS_LIMIT,
+<a href=#258 id=258 data-nosnippet>258</a>            string_interner_size_bytes: <span class="prelude-val">None</span>,
+<a href=#259 id=259 data-nosnippet>259</a>            allow_context_heap_allocs: DEFAULT_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS,
+<a href=#260 id=260 data-nosnippet>260</a>            minimum_sample_rate: DEFAULT_DOGSTATSD_MINIMUM_SAMPLE_RATE,
+<a href=#261 id=261 data-nosnippet>261</a>            <span class="comment">// Witnessed settings are overwritten during translation.
+<a href=#262 id=262 data-nosnippet>262</a>            </span>string_interner_size: <span class="number">0</span>,
+<a href=#263 id=263 data-nosnippet>263</a>        }
+<a href=#264 id=264 data-nosnippet>264</a>    }
+<a href=#265 id=265 data-nosnippet>265</a>}
+<a href=#266 id=266 data-nosnippet>266</a>
+<a href=#267 id=267 data-nosnippet>267</a><span class="doccomment">/// Metric aggregation window and flush behavior.
+<a href=#268 id=268 data-nosnippet>268</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Serialize)]
+<a href=#269 id=269 data-nosnippet>269</a></span><span class="kw">pub struct </span>Aggregation {
+<a href=#270 id=270 data-nosnippet>270</a>    <span class="doccomment">/// Length, in seconds, of each aggregation window. (not in Datadog Agent config schema)
+<a href=#271 id=271 data-nosnippet>271</a>    </span><span class="kw">pub </span>window_duration_seconds: NonZeroU64,
+<a href=#272 id=272 data-nosnippet>272</a>
+<a href=#273 id=273 data-nosnippet>273</a>    <span class="doccomment">/// Maximum number of contexts held per aggregation window. (not in Datadog Agent config schema)
+<a href=#274 id=274 data-nosnippet>274</a>    </span><span class="kw">pub </span>context_limit: usize,
 <a href=#275 id=275 data-nosnippet>275</a>
-<a href=#276 id=276 data-nosnippet>276</a>    <span class="doccomment">/// Number of mapper match results cached.
-<a href=#277 id=277 data-nosnippet>277</a>    </span><span class="kw">pub </span>cache_size: usize,
+<a href=#276 id=276 data-nosnippet>276</a>    <span class="doccomment">/// How often aggregated metrics are flushed. (not in Datadog Agent config schema)
+<a href=#277 id=277 data-nosnippet>277</a>    </span><span class="kw">pub </span>flush_interval: Duration,
 <a href=#278 id=278 data-nosnippet>278</a>
-<a href=#279 id=279 data-nosnippet>279</a>    <span class="doccomment">/// Byte capacity of the mapper's string interner. (not in Datadog Agent config schema)
-<a href=#280 id=280 data-nosnippet>280</a>    </span><span class="kw">pub </span>string_interner_size_bytes: NonZeroUsize,
-<a href=#281 id=281 data-nosnippet>281</a>}
-<a href=#282 id=282 data-nosnippet>282</a>
-<a href=#283 id=283 data-nosnippet>283</a><span class="kw">impl </span>Default <span class="kw">for </span>Mapper {
-<a href=#284 id=284 data-nosnippet>284</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#285 id=285 data-nosnippet>285</a>        <span class="self">Self </span>{
-<a href=#286 id=286 data-nosnippet>286</a>            profiles: Vec::new(),
-<a href=#287 id=287 data-nosnippet>287</a>            <span class="comment">// Written by the Datadog witness driver.
-<a href=#288 id=288 data-nosnippet>288</a>            </span>cache_size: <span class="number">0</span>,
-<a href=#289 id=289 data-nosnippet>289</a>            string_interner_size_bytes: DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
-<a href=#290 id=290 data-nosnippet>290</a>        }
-<a href=#291 id=291 data-nosnippet>291</a>    }
-<a href=#292 id=292 data-nosnippet>292</a>}
+<a href=#279 id=279 data-nosnippet>279</a>    <span class="doccomment">/// Whether windows that are still open are flushed on shutdown.
+<a href=#280 id=280 data-nosnippet>280</a>    ///
+<a href=#281 id=281 data-nosnippet>281</a>    /// Set by the Datadog `dogstatsd_flush_incomplete_buckets` key.
+<a href=#282 id=282 data-nosnippet>282</a>    </span><span class="kw">pub </span>flush_open_windows: bool,
+<a href=#283 id=283 data-nosnippet>283</a>
+<a href=#284 id=284 data-nosnippet>284</a>    <span class="doccomment">/// How long the no-aggregation passthrough waits before flushing while idle. (not in Datadog
+<a href=#285 id=285 data-nosnippet>285</a>    /// Agent config schema)
+<a href=#286 id=286 data-nosnippet>286</a>    </span><span class="kw">pub </span>passthrough_idle_flush_timeout: Duration,
+<a href=#287 id=287 data-nosnippet>287</a>
+<a href=#288 id=288 data-nosnippet>288</a>    <span class="doccomment">/// How long, in seconds, a counter value is retained after its last update before expiring.
+<a href=#289 id=289 data-nosnippet>289</a>    ///
+<a href=#290 id=290 data-nosnippet>290</a>    /// Set by the Datadog `dogstatsd_expiry_seconds` key. A value of `0` disables zero-value counter
+<a href=#291 id=291 data-nosnippet>291</a>    /// emission.
+<a href=#292 id=292 data-nosnippet>292</a>    </span><span class="kw">pub </span>counter_expiry_seconds: <span class="prelude-ty">Option</span>&lt;u64&gt;,
 <a href=#293 id=293 data-nosnippet>293</a>
-<a href=#294 id=294 data-nosnippet>294</a><span class="doccomment">/// One mapper profile: a name, a metric prefix, and the mappings under it.
-<a href=#295 id=295 data-nosnippet>295</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#296 id=296 data-nosnippet>296</a></span><span class="kw">pub struct </span>MapperProfile {
-<a href=#297 id=297 data-nosnippet>297</a>    <span class="doccomment">/// Profile name, for diagnostics.
-<a href=#298 id=298 data-nosnippet>298</a>    </span><span class="kw">pub </span>name: String,
+<a href=#294 id=294 data-nosnippet>294</a>    <span class="doccomment">/// How long, in seconds, a context is retained after its last update before expiring.
+<a href=#295 id=295 data-nosnippet>295</a>    </span><span class="kw">pub </span>context_expiry_seconds: u64,
+<a href=#296 id=296 data-nosnippet>296</a>
+<a href=#297 id=297 data-nosnippet>297</a>    <span class="doccomment">/// Whether metrics bypass aggregation and are forwarded directly.
+<a href=#298 id=298 data-nosnippet>298</a>    </span><span class="kw">pub </span>no_aggregation_pipeline: bool,
 <a href=#299 id=299 data-nosnippet>299</a>
-<a href=#300 id=300 data-nosnippet>300</a>    <span class="doccomment">/// Metric-name prefix the profile's mappings apply to.
-<a href=#301 id=301 data-nosnippet>301</a>    </span><span class="kw">pub </span>prefix: String,
-<a href=#302 id=302 data-nosnippet>302</a>
-<a href=#303 id=303 data-nosnippet>303</a>    <span class="doccomment">/// The name/tag mappings under this profile.
-<a href=#304 id=304 data-nosnippet>304</a>    </span><span class="kw">pub </span>mappings: Vec&lt;MetricMapping&gt;,
-<a href=#305 id=305 data-nosnippet>305</a>}
-<a href=#306 id=306 data-nosnippet>306</a>
-<a href=#307 id=307 data-nosnippet>307</a><span class="doccomment">/// A single metric-name mapping within a [`MapperProfile`].
-<a href=#308 id=308 data-nosnippet>308</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#309 id=309 data-nosnippet>309</a></span><span class="kw">pub struct </span>MetricMapping {
-<a href=#310 id=310 data-nosnippet>310</a>    <span class="doccomment">/// Pattern a metric name must match.
-<a href=#311 id=311 data-nosnippet>311</a>    </span><span class="kw">pub </span>metric_match: String,
-<a href=#312 id=312 data-nosnippet>312</a>
-<a href=#313 id=313 data-nosnippet>313</a>    <span class="doccomment">/// How `metric_match` is interpreted (for example, `wildcard` or `regex`).
-<a href=#314 id=314 data-nosnippet>314</a>    </span><span class="kw">pub </span>match_type: String,
-<a href=#315 id=315 data-nosnippet>315</a>
-<a href=#316 id=316 data-nosnippet>316</a>    <span class="doccomment">/// Replacement name emitted for a matching metric.
-<a href=#317 id=317 data-nosnippet>317</a>    </span><span class="kw">pub </span>name: String,
-<a href=#318 id=318 data-nosnippet>318</a>
-<a href=#319 id=319 data-nosnippet>319</a>    <span class="doccomment">/// Tags added to a matching metric, with values captured from the match.
-<a href=#320 id=320 data-nosnippet>320</a>    </span><span class="kw">pub </span>tags: HashMap&lt;String, String&gt;,
-<a href=#321 id=321 data-nosnippet>321</a>}
-<a href=#322 id=322 data-nosnippet>322</a>
-<a href=#323 id=323 data-nosnippet>323</a><span class="doccomment">/// Which payload types are emitted.
-<a href=#324 id=324 data-nosnippet>324</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#325 id=325 data-nosnippet>325</a></span><span class="kw">pub struct </span>EnablePayloads {
-<a href=#326 id=326 data-nosnippet>326</a>    <span class="doccomment">/// Whether event payloads are emitted.
-<a href=#327 id=327 data-nosnippet>327</a>    </span><span class="kw">pub </span>events: bool,
-<a href=#328 id=328 data-nosnippet>328</a>
-<a href=#329 id=329 data-nosnippet>329</a>    <span class="doccomment">/// Whether series (metric) payloads are emitted.
-<a href=#330 id=330 data-nosnippet>330</a>    </span><span class="kw">pub </span>series: bool,
-<a href=#331 id=331 data-nosnippet>331</a>
-<a href=#332 id=332 data-nosnippet>332</a>    <span class="doccomment">/// Whether service-check payloads are emitted.
-<a href=#333 id=333 data-nosnippet>333</a>    </span><span class="kw">pub </span>service_checks: bool,
-<a href=#334 id=334 data-nosnippet>334</a>
-<a href=#335 id=335 data-nosnippet>335</a>    <span class="doccomment">/// Whether sketch (distribution) payloads are emitted.
-<a href=#336 id=336 data-nosnippet>336</a>    </span><span class="kw">pub </span>sketches: bool,
-<a href=#337 id=337 data-nosnippet>337</a>}
-<a href=#338 id=338 data-nosnippet>338</a>
-<a href=#339 id=339 data-nosnippet>339</a><span class="doccomment">/// Metric-name filtering (dynamic-capable).
-<a href=#340 id=340 data-nosnippet>340</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#341 id=341 data-nosnippet>341</a></span><span class="kw">pub struct </span>MetricFilter {
-<a href=#342 id=342 data-nosnippet>342</a>    <span class="doccomment">/// Metric names or prefixes that are dropped.
-<a href=#343 id=343 data-nosnippet>343</a>    ///
-<a href=#344 id=344 data-nosnippet>344</a>    /// Defaults to an empty list, which disables metric-name filtering.
-<a href=#345 id=345 data-nosnippet>345</a>    </span><span class="kw">pub </span>values: Vec&lt;String&gt;,
-<a href=#346 id=346 data-nosnippet>346</a>
-<a href=#347 id=347 data-nosnippet>347</a>    <span class="doccomment">/// Whether entries match by prefix rather than exact name.
-<a href=#348 id=348 data-nosnippet>348</a>    ///
-<a href=#349 id=349 data-nosnippet>349</a>    /// Defaults to `false`, which requires exact matches.
-<a href=#350 id=350 data-nosnippet>350</a>    </span><span class="kw">pub </span>match_prefix: bool,
-<a href=#351 id=351 data-nosnippet>351</a>}
-<a href=#352 id=352 data-nosnippet>352</a>
-<a href=#353 id=353 data-nosnippet>353</a><span class="doccomment">/// Metric namespace prefixing.
-<a href=#354 id=354 data-nosnippet>354</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#355 id=355 data-nosnippet>355</a></span><span class="kw">pub struct </span>PrefixFilter {
-<a href=#356 id=356 data-nosnippet>356</a>    <span class="doccomment">/// Namespace prepended to every metric name.
-<a href=#357 id=357 data-nosnippet>357</a>    </span><span class="kw">pub </span>metric_namespace: String,
-<a href=#358 id=358 data-nosnippet>358</a>
-<a href=#359 id=359 data-nosnippet>359</a>    <span class="doccomment">/// Namespaces excluded from the metric-namespace prefixing.
-<a href=#360 id=360 data-nosnippet>360</a>    </span><span class="kw">pub </span>metric_namespace_blocklist: Vec&lt;String&gt;,
-<a href=#361 id=361 data-nosnippet>361</a>}
-<a href=#362 id=362 data-nosnippet>362</a>
-<a href=#363 id=363 data-nosnippet>363</a><span class="doccomment">/// One tag-filterlist entry (dynamic-capable).
-<a href=#364 id=364 data-nosnippet>364</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#365 id=365 data-nosnippet>365</a></span><span class="kw">pub struct </span>MetricTagFilterEntry {
-<a href=#366 id=366 data-nosnippet>366</a>    <span class="doccomment">/// Metric name the entry applies to.
-<a href=#367 id=367 data-nosnippet>367</a>    </span><span class="kw">pub </span>metric_name: String,
-<a href=#368 id=368 data-nosnippet>368</a>
-<a href=#369 id=369 data-nosnippet>369</a>    <span class="doccomment">/// Whether the listed tags are included or excluded.
-<a href=#370 id=370 data-nosnippet>370</a>    </span><span class="kw">pub </span>action: FilterAction,
-<a href=#371 id=371 data-nosnippet>371</a>
-<a href=#372 id=372 data-nosnippet>372</a>    <span class="doccomment">/// Tags the action applies to.
-<a href=#373 id=373 data-nosnippet>373</a>    </span><span class="kw">pub </span>tags: Vec&lt;String&gt;,
-<a href=#374 id=374 data-nosnippet>374</a>}
-<a href=#375 id=375 data-nosnippet>375</a>
-<a href=#376 id=376 data-nosnippet>376</a><span class="doccomment">/// One tag value allow-list entry.
-<a href=#377 id=377 data-nosnippet>377</a>///
-<a href=#378 id=378 data-nosnippet>378</a>/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing. Distinct
-<a href=#379 id=379 data-nosnippet>379</a>/// prefixes must not overlap. Multiple rules may use the same prefix when they target different tags.
-<a href=#380 id=380 data-nosnippet>380</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-<a href=#381 id=381 data-nosnippet>381</a></span><span class="kw">pub struct </span>MetricTagValueAllowlistEntry {
-<a href=#382 id=382 data-nosnippet>382</a>    <span class="doccomment">/// Non-empty metric-name prefix the entry applies to.
-<a href=#383 id=383 data-nosnippet>383</a>    ///
-<a href=#384 id=384 data-nosnippet>384</a>    /// Matching is exact and case-sensitive, including any whitespace. Empty prefixes and overlapping distinct
-<a href=#385 id=385 data-nosnippet>385</a>    /// prefixes are invalid. Multiple rules may use the same prefix when they target different tags.
-<a href=#386 id=386 data-nosnippet>386</a>    </span><span class="kw">pub </span>metric_prefix: String,
-<a href=#387 id=387 data-nosnippet>387</a>
-<a href=#388 id=388 data-nosnippet>388</a>    <span class="doccomment">/// Non-empty tag key whose values are constrained.
-<a href=#389 id=389 data-nosnippet>389</a>    ///
-<a href=#390 id=390 data-nosnippet>390</a>    /// Bare tags have no value and are not changed. Key/value tags with an empty value are processed normally. Empty
-<a href=#391 id=391 data-nosnippet>391</a>    /// names and names containing `:` are invalid. Matching is exact and preserves whitespace.
-<a href=#392 id=392 data-nosnippet>392</a>    </span><span class="kw">pub </span>tag_name: String,
-<a href=#393 id=393 data-nosnippet>393</a>
-<a href=#394 id=394 data-nosnippet>394</a>    <span class="doccomment">/// Tag values retained unchanged.
-<a href=#395 id=395 data-nosnippet>395</a>    ///
-<a href=#396 id=396 data-nosnippet>396</a>    /// The default is an empty list, which treats every key/value tag as a mismatch. The empty string is a valid list
-<a href=#397 id=397 data-nosnippet>397</a>    /// member and retains tags with an empty value. Matching is exact and preserves whitespace.
-<a href=#398 id=398 data-nosnippet>398</a>    </span><span class="attr">#[serde(default)]
+<a href=#300 id=300 data-nosnippet>300</a>    <span class="doccomment">/// Capacity of the aggregator's tag-filter result cache.
+<a href=#301 id=301 data-nosnippet>301</a>    </span><span class="kw">pub </span>aggregator_tag_filter_cache_capacity: usize,
+<a href=#302 id=302 data-nosnippet>302</a>}
+<a href=#303 id=303 data-nosnippet>303</a>
+<a href=#304 id=304 data-nosnippet>304</a><span class="kw">impl </span>Default <span class="kw">for </span>Aggregation {
+<a href=#305 id=305 data-nosnippet>305</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#306 id=306 data-nosnippet>306</a>        <span class="self">Self </span>{
+<a href=#307 id=307 data-nosnippet>307</a>            <span class="comment">// Saluki-schema-only knobs: the Datadog Agent schema does not publish these, so they are
+<a href=#308 id=308 data-nosnippet>308</a>            // seeded only when set; absent that, these defaults stand.
+<a href=#309 id=309 data-nosnippet>309</a>            </span>window_duration_seconds: DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
+<a href=#310 id=310 data-nosnippet>310</a>            context_limit: DEFAULT_AGGREGATE_CONTEXT_LIMIT,
+<a href=#311 id=311 data-nosnippet>311</a>            flush_interval: DEFAULT_AGGREGATE_FLUSH_INTERVAL,
+<a href=#312 id=312 data-nosnippet>312</a>            passthrough_idle_flush_timeout: DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT,
+<a href=#313 id=313 data-nosnippet>313</a>            <span class="comment">// Datadog-schema knobs: always written by the witness driver, so these values are
+<a href=#314 id=314 data-nosnippet>314</a>            // placeholders that never survive translation.
+<a href=#315 id=315 data-nosnippet>315</a>            </span>flush_open_windows: <span class="bool-val">false</span>,
+<a href=#316 id=316 data-nosnippet>316</a>            counter_expiry_seconds: <span class="prelude-val">None</span>,
+<a href=#317 id=317 data-nosnippet>317</a>            context_expiry_seconds: <span class="number">0</span>,
+<a href=#318 id=318 data-nosnippet>318</a>            no_aggregation_pipeline: <span class="bool-val">false</span>,
+<a href=#319 id=319 data-nosnippet>319</a>            aggregator_tag_filter_cache_capacity: <span class="number">0</span>,
+<a href=#320 id=320 data-nosnippet>320</a>        }
+<a href=#321 id=321 data-nosnippet>321</a>    }
+<a href=#322 id=322 data-nosnippet>322</a>}
+<a href=#323 id=323 data-nosnippet>323</a>
+<a href=#324 id=324 data-nosnippet>324</a><span class="doccomment">/// DogStatsD metric mapper.
+<a href=#325 id=325 data-nosnippet>325</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Serialize)]
+<a href=#326 id=326 data-nosnippet>326</a></span><span class="kw">pub struct </span>Mapper {
+<a href=#327 id=327 data-nosnippet>327</a>    <span class="doccomment">/// Mapper profiles that rewrite matching metric names and tags.
+<a href=#328 id=328 data-nosnippet>328</a>    </span><span class="kw">pub </span>profiles: Vec&lt;MapperProfile&gt;,
+<a href=#329 id=329 data-nosnippet>329</a>
+<a href=#330 id=330 data-nosnippet>330</a>    <span class="doccomment">/// Number of mapper match results cached.
+<a href=#331 id=331 data-nosnippet>331</a>    </span><span class="kw">pub </span>cache_size: usize,
+<a href=#332 id=332 data-nosnippet>332</a>
+<a href=#333 id=333 data-nosnippet>333</a>    <span class="doccomment">/// Byte capacity of the mapper's string interner. (not in Datadog Agent config schema)
+<a href=#334 id=334 data-nosnippet>334</a>    </span><span class="kw">pub </span>string_interner_size_bytes: NonZeroUsize,
+<a href=#335 id=335 data-nosnippet>335</a>}
+<a href=#336 id=336 data-nosnippet>336</a>
+<a href=#337 id=337 data-nosnippet>337</a><span class="kw">impl </span>Default <span class="kw">for </span>Mapper {
+<a href=#338 id=338 data-nosnippet>338</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#339 id=339 data-nosnippet>339</a>        <span class="self">Self </span>{
+<a href=#340 id=340 data-nosnippet>340</a>            profiles: Vec::new(),
+<a href=#341 id=341 data-nosnippet>341</a>            <span class="comment">// Written by the Datadog witness driver.
+<a href=#342 id=342 data-nosnippet>342</a>            </span>cache_size: <span class="number">0</span>,
+<a href=#343 id=343 data-nosnippet>343</a>            string_interner_size_bytes: DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
+<a href=#344 id=344 data-nosnippet>344</a>        }
+<a href=#345 id=345 data-nosnippet>345</a>    }
+<a href=#346 id=346 data-nosnippet>346</a>}
+<a href=#347 id=347 data-nosnippet>347</a>
+<a href=#348 id=348 data-nosnippet>348</a><span class="doccomment">/// One mapper profile: a name, a metric prefix, and the mappings under it.
+<a href=#349 id=349 data-nosnippet>349</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#350 id=350 data-nosnippet>350</a></span><span class="kw">pub struct </span>MapperProfile {
+<a href=#351 id=351 data-nosnippet>351</a>    <span class="doccomment">/// Profile name, for diagnostics.
+<a href=#352 id=352 data-nosnippet>352</a>    </span><span class="kw">pub </span>name: String,
+<a href=#353 id=353 data-nosnippet>353</a>
+<a href=#354 id=354 data-nosnippet>354</a>    <span class="doccomment">/// Metric-name prefix the profile's mappings apply to.
+<a href=#355 id=355 data-nosnippet>355</a>    </span><span class="kw">pub </span>prefix: String,
+<a href=#356 id=356 data-nosnippet>356</a>
+<a href=#357 id=357 data-nosnippet>357</a>    <span class="doccomment">/// The name/tag mappings under this profile.
+<a href=#358 id=358 data-nosnippet>358</a>    </span><span class="kw">pub </span>mappings: Vec&lt;MetricMapping&gt;,
+<a href=#359 id=359 data-nosnippet>359</a>}
+<a href=#360 id=360 data-nosnippet>360</a>
+<a href=#361 id=361 data-nosnippet>361</a><span class="doccomment">/// A single metric-name mapping within a [`MapperProfile`].
+<a href=#362 id=362 data-nosnippet>362</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#363 id=363 data-nosnippet>363</a></span><span class="kw">pub struct </span>MetricMapping {
+<a href=#364 id=364 data-nosnippet>364</a>    <span class="doccomment">/// Pattern a metric name must match.
+<a href=#365 id=365 data-nosnippet>365</a>    </span><span class="kw">pub </span>metric_match: String,
+<a href=#366 id=366 data-nosnippet>366</a>
+<a href=#367 id=367 data-nosnippet>367</a>    <span class="doccomment">/// How `metric_match` is interpreted (for example, `wildcard` or `regex`).
+<a href=#368 id=368 data-nosnippet>368</a>    </span><span class="kw">pub </span>match_type: String,
+<a href=#369 id=369 data-nosnippet>369</a>
+<a href=#370 id=370 data-nosnippet>370</a>    <span class="doccomment">/// Replacement name emitted for a matching metric.
+<a href=#371 id=371 data-nosnippet>371</a>    </span><span class="kw">pub </span>name: String,
+<a href=#372 id=372 data-nosnippet>372</a>
+<a href=#373 id=373 data-nosnippet>373</a>    <span class="doccomment">/// Tags added to a matching metric, with values captured from the match.
+<a href=#374 id=374 data-nosnippet>374</a>    </span><span class="kw">pub </span>tags: HashMap&lt;String, String&gt;,
+<a href=#375 id=375 data-nosnippet>375</a>}
+<a href=#376 id=376 data-nosnippet>376</a>
+<a href=#377 id=377 data-nosnippet>377</a><span class="doccomment">/// Which payload types are emitted.
+<a href=#378 id=378 data-nosnippet>378</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#379 id=379 data-nosnippet>379</a></span><span class="kw">pub struct </span>EnablePayloads {
+<a href=#380 id=380 data-nosnippet>380</a>    <span class="doccomment">/// Whether event payloads are emitted.
+<a href=#381 id=381 data-nosnippet>381</a>    </span><span class="kw">pub </span>events: bool,
+<a href=#382 id=382 data-nosnippet>382</a>
+<a href=#383 id=383 data-nosnippet>383</a>    <span class="doccomment">/// Whether series (metric) payloads are emitted.
+<a href=#384 id=384 data-nosnippet>384</a>    </span><span class="kw">pub </span>series: bool,
+<a href=#385 id=385 data-nosnippet>385</a>
+<a href=#386 id=386 data-nosnippet>386</a>    <span class="doccomment">/// Whether service-check payloads are emitted.
+<a href=#387 id=387 data-nosnippet>387</a>    </span><span class="kw">pub </span>service_checks: bool,
+<a href=#388 id=388 data-nosnippet>388</a>
+<a href=#389 id=389 data-nosnippet>389</a>    <span class="doccomment">/// Whether sketch (distribution) payloads are emitted.
+<a href=#390 id=390 data-nosnippet>390</a>    </span><span class="kw">pub </span>sketches: bool,
+<a href=#391 id=391 data-nosnippet>391</a>}
+<a href=#392 id=392 data-nosnippet>392</a>
+<a href=#393 id=393 data-nosnippet>393</a><span class="doccomment">/// Metric-name filtering (dynamic-capable).
+<a href=#394 id=394 data-nosnippet>394</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#395 id=395 data-nosnippet>395</a></span><span class="kw">pub struct </span>MetricFilter {
+<a href=#396 id=396 data-nosnippet>396</a>    <span class="doccomment">/// Metric names or prefixes that are dropped.
+<a href=#397 id=397 data-nosnippet>397</a>    ///
+<a href=#398 id=398 data-nosnippet>398</a>    /// Defaults to an empty list, which disables metric-name filtering.
 <a href=#399 id=399 data-nosnippet>399</a>    </span><span class="kw">pub </span>values: Vec&lt;String&gt;,
 <a href=#400 id=400 data-nosnippet>400</a>
-<a href=#401 id=401 data-nosnippet>401</a>    <span class="doccomment">/// Action applied when a tag value is absent from [`values`][Self::values].
+<a href=#401 id=401 data-nosnippet>401</a>    <span class="doccomment">/// Whether entries match by prefix rather than exact name.
 <a href=#402 id=402 data-nosnippet>402</a>    ///
-<a href=#403 id=403 data-nosnippet>403</a>    /// The default is [`Remove`][TagValueMismatchAction::Remove].
-<a href=#404 id=404 data-nosnippet>404</a>    </span><span class="attr">#[serde(default)]
-<a href=#405 id=405 data-nosnippet>405</a>    </span><span class="kw">pub </span>on_miss: TagValueMismatchAction,
+<a href=#403 id=403 data-nosnippet>403</a>    /// Defaults to `false`, which requires exact matches.
+<a href=#404 id=404 data-nosnippet>404</a>    </span><span class="kw">pub </span>match_prefix: bool,
+<a href=#405 id=405 data-nosnippet>405</a>}
 <a href=#406 id=406 data-nosnippet>406</a>
-<a href=#407 id=407 data-nosnippet>407</a>    <span class="doccomment">/// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace].
-<a href=#408 id=408 data-nosnippet>408</a>    ///
-<a href=#409 id=409 data-nosnippet>409</a>    /// The default is `other`. This field has no effect when `on_miss` is
-<a href=#410 id=410 data-nosnippet>410</a>    /// [`Remove`][TagValueMismatchAction::Remove]. The replacement is emitted exactly as configured, including
-<a href=#411 id=411 data-nosnippet>411</a>    /// whitespace.
-<a href=#412 id=412 data-nosnippet>412</a>    </span><span class="attr">#[serde(default = <span class="string">"default_tag_value_replacement"</span>)]
-<a href=#413 id=413 data-nosnippet>413</a>    </span><span class="kw">pub </span>replacement: String,
-<a href=#414 id=414 data-nosnippet>414</a>}
-<a href=#415 id=415 data-nosnippet>415</a>
-<a href=#416 id=416 data-nosnippet>416</a><span class="kw">fn </span>default_tag_value_replacement() -&gt; String {
-<a href=#417 id=417 data-nosnippet>417</a>    <span class="string">"other"</span>.to_string()
-<a href=#418 id=418 data-nosnippet>418</a>}
-<a href=#419 id=419 data-nosnippet>419</a>
-<a href=#420 id=420 data-nosnippet>420</a><span class="kw">impl </span>Default <span class="kw">for </span>MetricTagValueAllowlistEntry {
-<a href=#421 id=421 data-nosnippet>421</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
-<a href=#422 id=422 data-nosnippet>422</a>        <span class="self">Self </span>{
-<a href=#423 id=423 data-nosnippet>423</a>            metric_prefix: String::new(),
-<a href=#424 id=424 data-nosnippet>424</a>            tag_name: String::new(),
-<a href=#425 id=425 data-nosnippet>425</a>            values: Vec::new(),
-<a href=#426 id=426 data-nosnippet>426</a>            on_miss: TagValueMismatchAction::Remove,
-<a href=#427 id=427 data-nosnippet>427</a>            replacement: default_tag_value_replacement(),
-<a href=#428 id=428 data-nosnippet>428</a>        }
-<a href=#429 id=429 data-nosnippet>429</a>    }
-<a href=#430 id=430 data-nosnippet>430</a>}
-<a href=#431 id=431 data-nosnippet>431</a>
-<a href=#432 id=432 data-nosnippet>432</a><span class="doccomment">/// Reports why a metric tag value allow-list cannot be represented.
-<a href=#433 id=433 data-nosnippet>433</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
-<a href=#434 id=434 data-nosnippet>434</a></span><span class="kw">pub struct </span>InvalidMetricTagValueAllowlist(String);
-<a href=#435 id=435 data-nosnippet>435</a>
-<a href=#436 id=436 data-nosnippet>436</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>InvalidMetricTagValueAllowlist {
-<a href=#437 id=437 data-nosnippet>437</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
-<a href=#438 id=438 data-nosnippet>438</a>        f.write_str(<span class="kw-2">&amp;</span><span class="self">self</span>.<span class="number">0</span>)
-<a href=#439 id=439 data-nosnippet>439</a>    }
-<a href=#440 id=440 data-nosnippet>440</a>}
+<a href=#407 id=407 data-nosnippet>407</a><span class="doccomment">/// Metric namespace prefixing.
+<a href=#408 id=408 data-nosnippet>408</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#409 id=409 data-nosnippet>409</a></span><span class="kw">pub struct </span>PrefixFilter {
+<a href=#410 id=410 data-nosnippet>410</a>    <span class="doccomment">/// Namespace prepended to every metric name.
+<a href=#411 id=411 data-nosnippet>411</a>    </span><span class="kw">pub </span>metric_namespace: String,
+<a href=#412 id=412 data-nosnippet>412</a>
+<a href=#413 id=413 data-nosnippet>413</a>    <span class="doccomment">/// Namespaces excluded from the metric-namespace prefixing.
+<a href=#414 id=414 data-nosnippet>414</a>    </span><span class="kw">pub </span>metric_namespace_blocklist: Vec&lt;String&gt;,
+<a href=#415 id=415 data-nosnippet>415</a>}
+<a href=#416 id=416 data-nosnippet>416</a>
+<a href=#417 id=417 data-nosnippet>417</a><span class="doccomment">/// One tag-filterlist entry (dynamic-capable).
+<a href=#418 id=418 data-nosnippet>418</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#419 id=419 data-nosnippet>419</a></span><span class="kw">pub struct </span>MetricTagFilterEntry {
+<a href=#420 id=420 data-nosnippet>420</a>    <span class="doccomment">/// Metric name the entry applies to.
+<a href=#421 id=421 data-nosnippet>421</a>    </span><span class="kw">pub </span>metric_name: String,
+<a href=#422 id=422 data-nosnippet>422</a>
+<a href=#423 id=423 data-nosnippet>423</a>    <span class="doccomment">/// Whether the listed tags are included or excluded.
+<a href=#424 id=424 data-nosnippet>424</a>    </span><span class="kw">pub </span>action: FilterAction,
+<a href=#425 id=425 data-nosnippet>425</a>
+<a href=#426 id=426 data-nosnippet>426</a>    <span class="doccomment">/// Tags the action applies to.
+<a href=#427 id=427 data-nosnippet>427</a>    </span><span class="kw">pub </span>tags: Vec&lt;String&gt;,
+<a href=#428 id=428 data-nosnippet>428</a>}
+<a href=#429 id=429 data-nosnippet>429</a>
+<a href=#430 id=430 data-nosnippet>430</a><span class="doccomment">/// One tag value allow-list entry.
+<a href=#431 id=431 data-nosnippet>431</a>///
+<a href=#432 id=432 data-nosnippet>432</a>/// Rules apply to counters and sketch-backed metrics after mapper rewrites and metric namespace prefixing. Distinct
+<a href=#433 id=433 data-nosnippet>433</a>/// prefixes must not overlap. Multiple rules may use the same prefix when they target different tags.
+<a href=#434 id=434 data-nosnippet>434</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+<a href=#435 id=435 data-nosnippet>435</a></span><span class="kw">pub struct </span>MetricTagValueAllowlistEntry {
+<a href=#436 id=436 data-nosnippet>436</a>    <span class="doccomment">/// Non-empty metric-name prefix the entry applies to.
+<a href=#437 id=437 data-nosnippet>437</a>    ///
+<a href=#438 id=438 data-nosnippet>438</a>    /// Matching is exact and case-sensitive, including any whitespace. Empty prefixes and overlapping distinct
+<a href=#439 id=439 data-nosnippet>439</a>    /// prefixes are invalid. Multiple rules may use the same prefix when they target different tags.
+<a href=#440 id=440 data-nosnippet>440</a>    </span><span class="kw">pub </span>metric_prefix: String,
 <a href=#441 id=441 data-nosnippet>441</a>
-<a href=#442 id=442 data-nosnippet>442</a><span class="kw">impl </span>std::error::Error <span class="kw">for </span>InvalidMetricTagValueAllowlist {}
-<a href=#443 id=443 data-nosnippet>443</a>
-<a href=#444 id=444 data-nosnippet>444</a><span class="doccomment">/// Validates metric tag value allow-list entries.
-<a href=#445 id=445 data-nosnippet>445</a>///
-<a href=#446 id=446 data-nosnippet>446</a>/// # Errors
-<a href=#447 id=447 data-nosnippet>447</a>///
-<a href=#448 id=448 data-nosnippet>448</a>/// Returns an error for empty prefixes or tag names, tag names containing `:`, overlapping distinct prefixes, or a
-<a href=#449 id=449 data-nosnippet>449</a>/// duplicate prefix and tag pair.
-<a href=#450 id=450 data-nosnippet>450</a></span><span class="kw">pub fn </span>validate_metric_tag_value_allowlists(
-<a href=#451 id=451 data-nosnippet>451</a>    entries: <span class="kw-2">&amp;</span>[MetricTagValueAllowlistEntry],
-<a href=#452 id=452 data-nosnippet>452</a>) -&gt; <span class="prelude-ty">Result</span>&lt;(), InvalidMetricTagValueAllowlist&gt; {
-<a href=#453 id=453 data-nosnippet>453</a>    <span class="kw">for </span>(index, entry) <span class="kw">in </span>entries.iter().enumerate() {
-<a href=#454 id=454 data-nosnippet>454</a>        <span class="kw">let </span>rule = index + <span class="number">1</span>;
-<a href=#455 id=455 data-nosnippet>455</a>        <span class="kw">if </span>entry.metric_prefix.is_empty() {
-<a href=#456 id=456 data-nosnippet>456</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
-<a href=#457 id=457 data-nosnippet>457</a>                <span class="string">"metric tag value allow-list rule {rule} has an empty `metric_prefix`; configure a non-empty metric-name prefix"
-<a href=#458 id=458 data-nosnippet>458</a>            </span>)));
-<a href=#459 id=459 data-nosnippet>459</a>        }
-<a href=#460 id=460 data-nosnippet>460</a>        <span class="kw">if </span>entry.tag_name.is_empty() {
-<a href=#461 id=461 data-nosnippet>461</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
-<a href=#462 id=462 data-nosnippet>462</a>                <span class="string">"metric tag value allow-list rule {rule} for prefix '{}' has an empty `tag_name`; configure a non-empty tag name"</span>,
-<a href=#463 id=463 data-nosnippet>463</a>                entry.metric_prefix
-<a href=#464 id=464 data-nosnippet>464</a>            )));
-<a href=#465 id=465 data-nosnippet>465</a>        }
-<a href=#466 id=466 data-nosnippet>466</a>        <span class="kw">if </span>entry.tag_name.contains(<span class="string">':'</span>) {
-<a href=#467 id=467 data-nosnippet>467</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
-<a href=#468 id=468 data-nosnippet>468</a>                <span class="string">"metric tag value allow-list tag name '{}' contains ':'; configure only the tag key, without a colon or value"</span>,
-<a href=#469 id=469 data-nosnippet>469</a>                entry.tag_name
-<a href=#470 id=470 data-nosnippet>470</a>            )));
-<a href=#471 id=471 data-nosnippet>471</a>        }
-<a href=#472 id=472 data-nosnippet>472</a>    }
+<a href=#442 id=442 data-nosnippet>442</a>    <span class="doccomment">/// Non-empty tag key whose values are constrained.
+<a href=#443 id=443 data-nosnippet>443</a>    ///
+<a href=#444 id=444 data-nosnippet>444</a>    /// Bare tags have no value and are not changed. Key/value tags with an empty value are processed normally. Empty
+<a href=#445 id=445 data-nosnippet>445</a>    /// names and names containing `:` are invalid. Matching is exact and preserves whitespace.
+<a href=#446 id=446 data-nosnippet>446</a>    </span><span class="kw">pub </span>tag_name: String,
+<a href=#447 id=447 data-nosnippet>447</a>
+<a href=#448 id=448 data-nosnippet>448</a>    <span class="doccomment">/// Tag values retained unchanged.
+<a href=#449 id=449 data-nosnippet>449</a>    ///
+<a href=#450 id=450 data-nosnippet>450</a>    /// The default is an empty list, which treats every key/value tag as a mismatch. The empty string is a valid list
+<a href=#451 id=451 data-nosnippet>451</a>    /// member and retains tags with an empty value. Matching is exact and preserves whitespace.
+<a href=#452 id=452 data-nosnippet>452</a>    </span><span class="attr">#[serde(default)]
+<a href=#453 id=453 data-nosnippet>453</a>    </span><span class="kw">pub </span>values: Vec&lt;String&gt;,
+<a href=#454 id=454 data-nosnippet>454</a>
+<a href=#455 id=455 data-nosnippet>455</a>    <span class="doccomment">/// Action applied when a tag value is absent from [`values`][Self::values].
+<a href=#456 id=456 data-nosnippet>456</a>    ///
+<a href=#457 id=457 data-nosnippet>457</a>    /// The default is [`Remove`][TagValueMismatchAction::Remove].
+<a href=#458 id=458 data-nosnippet>458</a>    </span><span class="attr">#[serde(default)]
+<a href=#459 id=459 data-nosnippet>459</a>    </span><span class="kw">pub </span>on_miss: TagValueMismatchAction,
+<a href=#460 id=460 data-nosnippet>460</a>
+<a href=#461 id=461 data-nosnippet>461</a>    <span class="doccomment">/// Replacement value used when `on_miss` is [`Replace`][TagValueMismatchAction::Replace].
+<a href=#462 id=462 data-nosnippet>462</a>    ///
+<a href=#463 id=463 data-nosnippet>463</a>    /// The default is `other`. This field has no effect when `on_miss` is
+<a href=#464 id=464 data-nosnippet>464</a>    /// [`Remove`][TagValueMismatchAction::Remove]. The replacement is emitted exactly as configured, including
+<a href=#465 id=465 data-nosnippet>465</a>    /// whitespace.
+<a href=#466 id=466 data-nosnippet>466</a>    </span><span class="attr">#[serde(default = <span class="string">"default_tag_value_replacement"</span>)]
+<a href=#467 id=467 data-nosnippet>467</a>    </span><span class="kw">pub </span>replacement: String,
+<a href=#468 id=468 data-nosnippet>468</a>}
+<a href=#469 id=469 data-nosnippet>469</a>
+<a href=#470 id=470 data-nosnippet>470</a><span class="kw">fn </span>default_tag_value_replacement() -&gt; String {
+<a href=#471 id=471 data-nosnippet>471</a>    <span class="string">"other"</span>.to_string()
+<a href=#472 id=472 data-nosnippet>472</a>}
 <a href=#473 id=473 data-nosnippet>473</a>
-<a href=#474 id=474 data-nosnippet>474</a>    <span class="kw">let </span><span class="kw-2">mut </span>sorted_entries = entries.iter().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
-<a href=#475 id=475 data-nosnippet>475</a>    sorted_entries.sort_unstable_by(|left, right| {
-<a href=#476 id=476 data-nosnippet>476</a>        left.metric_prefix
-<a href=#477 id=477 data-nosnippet>477</a>            .cmp(<span class="kw-2">&amp;</span>right.metric_prefix)
-<a href=#478 id=478 data-nosnippet>478</a>            .then_with(|| left.tag_name.cmp(<span class="kw-2">&amp;</span>right.tag_name))
-<a href=#479 id=479 data-nosnippet>479</a>    });
-<a href=#480 id=480 data-nosnippet>480</a>
-<a href=#481 id=481 data-nosnippet>481</a>    <span class="comment">// After sorting by prefix and then tag, duplicate prefix/tag pairs are adjacent. Any distinct prefix that extends
-<a href=#482 id=482 data-nosnippet>482</a>    // another prefix follows the complete group for the shorter prefix, so one adjacent pair also exposes that overlap.
-<a href=#483 id=483 data-nosnippet>483</a>    </span><span class="kw">for </span>pair <span class="kw">in </span>sorted_entries.windows(<span class="number">2</span>) {
-<a href=#484 id=484 data-nosnippet>484</a>        <span class="kw">let </span>[left, right] = pair <span class="kw">else </span>{
-<a href=#485 id=485 data-nosnippet>485</a>            <span class="macro">unreachable!</span>(<span class="string">"a two-entry window must contain two entries"</span>);
-<a href=#486 id=486 data-nosnippet>486</a>        };
-<a href=#487 id=487 data-nosnippet>487</a>        <span class="kw">if </span>left.metric_prefix == right.metric_prefix {
-<a href=#488 id=488 data-nosnippet>488</a>            <span class="kw">if </span>left.tag_name == right.tag_name {
-<a href=#489 id=489 data-nosnippet>489</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
-<a href=#490 id=490 data-nosnippet>490</a>                    <span class="string">"metric prefix '{}' is configured more than once for tag '{}'; configure each prefix and tag pair only once"</span>,
-<a href=#491 id=491 data-nosnippet>491</a>                    left.metric_prefix, left.tag_name
-<a href=#492 id=492 data-nosnippet>492</a>                )));
-<a href=#493 id=493 data-nosnippet>493</a>            }
-<a href=#494 id=494 data-nosnippet>494</a>        } <span class="kw">else if </span>right.metric_prefix.starts_with(<span class="kw-2">&amp;</span>left.metric_prefix) {
-<a href=#495 id=495 data-nosnippet>495</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
-<a href=#496 id=496 data-nosnippet>496</a>                <span class="string">"overlapping metric prefixes '{}' and '{}' are configured; configure distinct prefixes that do not overlap"</span>,
-<a href=#497 id=497 data-nosnippet>497</a>                left.metric_prefix, right.metric_prefix
-<a href=#498 id=498 data-nosnippet>498</a>            )));
-<a href=#499 id=499 data-nosnippet>499</a>        }
-<a href=#500 id=500 data-nosnippet>500</a>    }
-<a href=#501 id=501 data-nosnippet>501</a>
-<a href=#502 id=502 data-nosnippet>502</a>    <span class="prelude-val">Ok</span>(())
-<a href=#503 id=503 data-nosnippet>503</a>}
-<a href=#504 id=504 data-nosnippet>504</a>
-<a href=#505 id=505 data-nosnippet>505</a><span class="doccomment">/// Action applied when a tag value is absent from its allow-list.
-<a href=#506 id=506 data-nosnippet>506</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
-<a href=#507 id=507 data-nosnippet>507</a>#[serde(rename_all = <span class="string">"snake_case"</span>)]
-<a href=#508 id=508 data-nosnippet>508</a></span><span class="kw">pub enum </span>TagValueMismatchAction {
-<a href=#509 id=509 data-nosnippet>509</a>    <span class="doccomment">/// Removes the tag.
-<a href=#510 id=510 data-nosnippet>510</a>    </span><span class="attr">#[default]
-<a href=#511 id=511 data-nosnippet>511</a>    </span>Remove,
-<a href=#512 id=512 data-nosnippet>512</a>    <span class="doccomment">/// Replaces the tag value with the configured sentinel.
-<a href=#513 id=513 data-nosnippet>513</a>    </span>Replace,
-<a href=#514 id=514 data-nosnippet>514</a>}
-<a href=#515 id=515 data-nosnippet>515</a>
-<a href=#516 id=516 data-nosnippet>516</a><span class="doccomment">/// Whether a tag-filterlist entry includes or excludes the listed tags.
-<a href=#517 id=517 data-nosnippet>517</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-<a href=#518 id=518 data-nosnippet>518</a></span><span class="kw">pub enum </span>FilterAction {
-<a href=#519 id=519 data-nosnippet>519</a>    Include,
-<a href=#520 id=520 data-nosnippet>520</a>    <span class="attr">#[default]
-<a href=#521 id=521 data-nosnippet>521</a>    </span>Exclude,
-<a href=#522 id=522 data-nosnippet>522</a>}
-<a href=#523 id=523 data-nosnippet>523</a>
-<a href=#524 id=524 data-nosnippet>524</a><span class="doccomment">/// DogStatsD debug-log and verbose-log settings.
-<a href=#525 id=525 data-nosnippet>525</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#526 id=526 data-nosnippet>526</a></span><span class="kw">pub struct </span>DebugLog {
-<a href=#527 id=527 data-nosnippet>527</a>    <span class="doccomment">/// Whether the metric debug-log destination is added at startup.
-<a href=#528 id=528 data-nosnippet>528</a>    ///
-<a href=#529 id=529 data-nosnippet>529</a>    /// Defaults to `true`. Set this to `false` to remove the destination from the topology.
-<a href=#530 id=530 data-nosnippet>530</a>    </span><span class="kw">pub </span>logging_enabled: bool,
-<a href=#531 id=531 data-nosnippet>531</a>
-<a href=#532 id=532 data-nosnippet>532</a>    <span class="doccomment">/// Path of the DogStatsD metric debug log.
-<a href=#533 id=533 data-nosnippet>533</a>    ///
-<a href=#534 id=534 data-nosnippet>534</a>    /// Defaults to `None`, which selects the platform-specific Agent log path at startup.
-<a href=#535 id=535 data-nosnippet>535</a>    /// Set a path to write the diagnostic log elsewhere.
-<a href=#536 id=536 data-nosnippet>536</a>    </span><span class="kw">pub </span>log_file: <span class="prelude-ty">Option</span>&lt;PathBuf&gt;,
-<a href=#537 id=537 data-nosnippet>537</a>
-<a href=#538 id=538 data-nosnippet>538</a>    <span class="doccomment">/// Number of rotated debug log files retained.
-<a href=#539 id=539 data-nosnippet>539</a>    ///
-<a href=#540 id=540 data-nosnippet>540</a>    /// Defaults to `3`. The file writer retains one rotated file when this is `0`.
-<a href=#541 id=541 data-nosnippet>541</a>    </span><span class="kw">pub </span>log_file_max_rolls: usize,
-<a href=#542 id=542 data-nosnippet>542</a>
-<a href=#543 id=543 data-nosnippet>543</a>    <span class="doccomment">/// Maximum size, in bytes, of the active debug log file before rotation.
-<a href=#544 id=544 data-nosnippet>544</a>    ///
-<a href=#545 id=545 data-nosnippet>545</a>    /// Defaults to `10,000,000` bytes. A value of `0` is accepted as the rotation threshold.
-<a href=#546 id=546 data-nosnippet>546</a>    /// Set this based on the diagnostic data and disk space to retain.
-<a href=#547 id=547 data-nosnippet>547</a>    </span><span class="kw">pub </span>log_file_max_size: u64,
-<a href=#548 id=548 data-nosnippet>548</a>
-<a href=#549 id=549 data-nosnippet>549</a>    <span class="doccomment">/// Whether per-metric processing statistics are written to the debug log.
-<a href=#550 id=550 data-nosnippet>550</a>    ///
-<a href=#551 id=551 data-nosnippet>551</a>    /// Defaults to `false` and can change at runtime. Enable this when collecting metric-level diagnostics.
-<a href=#552 id=552 data-nosnippet>552</a>    </span><span class="kw">pub </span>metrics_stats_enable: bool,
-<a href=#553 id=553 data-nosnippet>553</a>
-<a href=#554 id=554 data-nosnippet>554</a>    <span class="doccomment">/// Whether per-packet parse errors are logged at debug rather than error level.
-<a href=#555 id=555 data-nosnippet>555</a>    ///
-<a href=#556 id=556 data-nosnippet>556</a>    /// Defaults to `false`. Enable this to reduce error-level log volume from malformed packets.
-<a href=#557 id=557 data-nosnippet>557</a>    </span><span class="kw">pub </span>disable_verbose_logs: bool,
-<a href=#558 id=558 data-nosnippet>558</a>}
+<a href=#474 id=474 data-nosnippet>474</a><span class="kw">impl </span>Default <span class="kw">for </span>MetricTagValueAllowlistEntry {
+<a href=#475 id=475 data-nosnippet>475</a>    <span class="kw">fn </span>default() -&gt; <span class="self">Self </span>{
+<a href=#476 id=476 data-nosnippet>476</a>        <span class="self">Self </span>{
+<a href=#477 id=477 data-nosnippet>477</a>            metric_prefix: String::new(),
+<a href=#478 id=478 data-nosnippet>478</a>            tag_name: String::new(),
+<a href=#479 id=479 data-nosnippet>479</a>            values: Vec::new(),
+<a href=#480 id=480 data-nosnippet>480</a>            on_miss: TagValueMismatchAction::Remove,
+<a href=#481 id=481 data-nosnippet>481</a>            replacement: default_tag_value_replacement(),
+<a href=#482 id=482 data-nosnippet>482</a>        }
+<a href=#483 id=483 data-nosnippet>483</a>    }
+<a href=#484 id=484 data-nosnippet>484</a>}
+<a href=#485 id=485 data-nosnippet>485</a>
+<a href=#486 id=486 data-nosnippet>486</a><span class="doccomment">/// Reports why a metric tag value allow-list cannot be represented.
+<a href=#487 id=487 data-nosnippet>487</a></span><span class="attr">#[derive(Clone, Debug, PartialEq, Eq)]
+<a href=#488 id=488 data-nosnippet>488</a></span><span class="kw">pub struct </span>InvalidMetricTagValueAllowlist(String);
+<a href=#489 id=489 data-nosnippet>489</a>
+<a href=#490 id=490 data-nosnippet>490</a><span class="kw">impl </span>fmt::Display <span class="kw">for </span>InvalidMetricTagValueAllowlist {
+<a href=#491 id=491 data-nosnippet>491</a>    <span class="kw">fn </span>fmt(<span class="kw-2">&amp;</span><span class="self">self</span>, f: <span class="kw-2">&amp;mut </span>fmt::Formatter&lt;<span class="lifetime">'_</span>&gt;) -&gt; fmt::Result {
+<a href=#492 id=492 data-nosnippet>492</a>        f.write_str(<span class="kw-2">&amp;</span><span class="self">self</span>.<span class="number">0</span>)
+<a href=#493 id=493 data-nosnippet>493</a>    }
+<a href=#494 id=494 data-nosnippet>494</a>}
+<a href=#495 id=495 data-nosnippet>495</a>
+<a href=#496 id=496 data-nosnippet>496</a><span class="kw">impl </span>std::error::Error <span class="kw">for </span>InvalidMetricTagValueAllowlist {}
+<a href=#497 id=497 data-nosnippet>497</a>
+<a href=#498 id=498 data-nosnippet>498</a><span class="doccomment">/// Validates metric tag value allow-list entries.
+<a href=#499 id=499 data-nosnippet>499</a>///
+<a href=#500 id=500 data-nosnippet>500</a>/// # Errors
+<a href=#501 id=501 data-nosnippet>501</a>///
+<a href=#502 id=502 data-nosnippet>502</a>/// Returns an error for empty prefixes or tag names, tag names containing `:`, overlapping distinct prefixes, or a
+<a href=#503 id=503 data-nosnippet>503</a>/// duplicate prefix and tag pair.
+<a href=#504 id=504 data-nosnippet>504</a></span><span class="kw">pub fn </span>validate_metric_tag_value_allowlists(
+<a href=#505 id=505 data-nosnippet>505</a>    entries: <span class="kw-2">&amp;</span>[MetricTagValueAllowlistEntry],
+<a href=#506 id=506 data-nosnippet>506</a>) -&gt; <span class="prelude-ty">Result</span>&lt;(), InvalidMetricTagValueAllowlist&gt; {
+<a href=#507 id=507 data-nosnippet>507</a>    <span class="kw">for </span>(index, entry) <span class="kw">in </span>entries.iter().enumerate() {
+<a href=#508 id=508 data-nosnippet>508</a>        <span class="kw">let </span>rule = index + <span class="number">1</span>;
+<a href=#509 id=509 data-nosnippet>509</a>        <span class="kw">if </span>entry.metric_prefix.is_empty() {
+<a href=#510 id=510 data-nosnippet>510</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
+<a href=#511 id=511 data-nosnippet>511</a>                <span class="string">"metric tag value allow-list rule {rule} has an empty `metric_prefix`; configure a non-empty metric-name prefix"
+<a href=#512 id=512 data-nosnippet>512</a>            </span>)));
+<a href=#513 id=513 data-nosnippet>513</a>        }
+<a href=#514 id=514 data-nosnippet>514</a>        <span class="kw">if </span>entry.tag_name.is_empty() {
+<a href=#515 id=515 data-nosnippet>515</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
+<a href=#516 id=516 data-nosnippet>516</a>                <span class="string">"metric tag value allow-list rule {rule} for prefix '{}' has an empty `tag_name`; configure a non-empty tag name"</span>,
+<a href=#517 id=517 data-nosnippet>517</a>                entry.metric_prefix
+<a href=#518 id=518 data-nosnippet>518</a>            )));
+<a href=#519 id=519 data-nosnippet>519</a>        }
+<a href=#520 id=520 data-nosnippet>520</a>        <span class="kw">if </span>entry.tag_name.contains(<span class="string">':'</span>) {
+<a href=#521 id=521 data-nosnippet>521</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
+<a href=#522 id=522 data-nosnippet>522</a>                <span class="string">"metric tag value allow-list tag name '{}' contains ':'; configure only the tag key, without a colon or value"</span>,
+<a href=#523 id=523 data-nosnippet>523</a>                entry.tag_name
+<a href=#524 id=524 data-nosnippet>524</a>            )));
+<a href=#525 id=525 data-nosnippet>525</a>        }
+<a href=#526 id=526 data-nosnippet>526</a>    }
+<a href=#527 id=527 data-nosnippet>527</a>
+<a href=#528 id=528 data-nosnippet>528</a>    <span class="kw">let </span><span class="kw-2">mut </span>sorted_entries = entries.iter().collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;();
+<a href=#529 id=529 data-nosnippet>529</a>    sorted_entries.sort_unstable_by(|left, right| {
+<a href=#530 id=530 data-nosnippet>530</a>        left.metric_prefix
+<a href=#531 id=531 data-nosnippet>531</a>            .cmp(<span class="kw-2">&amp;</span>right.metric_prefix)
+<a href=#532 id=532 data-nosnippet>532</a>            .then_with(|| left.tag_name.cmp(<span class="kw-2">&amp;</span>right.tag_name))
+<a href=#533 id=533 data-nosnippet>533</a>    });
+<a href=#534 id=534 data-nosnippet>534</a>
+<a href=#535 id=535 data-nosnippet>535</a>    <span class="comment">// After sorting by prefix and then tag, duplicate prefix/tag pairs are adjacent. Any distinct prefix that extends
+<a href=#536 id=536 data-nosnippet>536</a>    // another prefix follows the complete group for the shorter prefix, so one adjacent pair also exposes that overlap.
+<a href=#537 id=537 data-nosnippet>537</a>    </span><span class="kw">for </span>pair <span class="kw">in </span>sorted_entries.windows(<span class="number">2</span>) {
+<a href=#538 id=538 data-nosnippet>538</a>        <span class="kw">let </span>[left, right] = pair <span class="kw">else </span>{
+<a href=#539 id=539 data-nosnippet>539</a>            <span class="macro">unreachable!</span>(<span class="string">"a two-entry window must contain two entries"</span>);
+<a href=#540 id=540 data-nosnippet>540</a>        };
+<a href=#541 id=541 data-nosnippet>541</a>        <span class="kw">if </span>left.metric_prefix == right.metric_prefix {
+<a href=#542 id=542 data-nosnippet>542</a>            <span class="kw">if </span>left.tag_name == right.tag_name {
+<a href=#543 id=543 data-nosnippet>543</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
+<a href=#544 id=544 data-nosnippet>544</a>                    <span class="string">"metric prefix '{}' is configured more than once for tag '{}'; configure each prefix and tag pair only once"</span>,
+<a href=#545 id=545 data-nosnippet>545</a>                    left.metric_prefix, left.tag_name
+<a href=#546 id=546 data-nosnippet>546</a>                )));
+<a href=#547 id=547 data-nosnippet>547</a>            }
+<a href=#548 id=548 data-nosnippet>548</a>        } <span class="kw">else if </span>right.metric_prefix.starts_with(<span class="kw-2">&amp;</span>left.metric_prefix) {
+<a href=#549 id=549 data-nosnippet>549</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(InvalidMetricTagValueAllowlist(<span class="macro">format!</span>(
+<a href=#550 id=550 data-nosnippet>550</a>                <span class="string">"overlapping metric prefixes '{}' and '{}' are configured; configure distinct prefixes that do not overlap"</span>,
+<a href=#551 id=551 data-nosnippet>551</a>                left.metric_prefix, right.metric_prefix
+<a href=#552 id=552 data-nosnippet>552</a>            )));
+<a href=#553 id=553 data-nosnippet>553</a>        }
+<a href=#554 id=554 data-nosnippet>554</a>    }
+<a href=#555 id=555 data-nosnippet>555</a>
+<a href=#556 id=556 data-nosnippet>556</a>    <span class="prelude-val">Ok</span>(())
+<a href=#557 id=557 data-nosnippet>557</a>}
+<a href=#558 id=558 data-nosnippet>558</a>
+<a href=#559 id=559 data-nosnippet>559</a><span class="doccomment">/// Action applied when a tag value is absent from its allow-list.
+<a href=#560 id=560 data-nosnippet>560</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+<a href=#561 id=561 data-nosnippet>561</a>#[serde(rename_all = <span class="string">"snake_case"</span>)]
+<a href=#562 id=562 data-nosnippet>562</a></span><span class="kw">pub enum </span>TagValueMismatchAction {
+<a href=#563 id=563 data-nosnippet>563</a>    <span class="doccomment">/// Removes the tag.
+<a href=#564 id=564 data-nosnippet>564</a>    </span><span class="attr">#[default]
+<a href=#565 id=565 data-nosnippet>565</a>    </span>Remove,
+<a href=#566 id=566 data-nosnippet>566</a>    <span class="doccomment">/// Replaces the tag value with the configured sentinel.
+<a href=#567 id=567 data-nosnippet>567</a>    </span>Replace,
+<a href=#568 id=568 data-nosnippet>568</a>}
+<a href=#569 id=569 data-nosnippet>569</a>
+<a href=#570 id=570 data-nosnippet>570</a><span class="doccomment">/// Whether a tag-filterlist entry includes or excludes the listed tags.
+<a href=#571 id=571 data-nosnippet>571</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+<a href=#572 id=572 data-nosnippet>572</a></span><span class="kw">pub enum </span>FilterAction {
+<a href=#573 id=573 data-nosnippet>573</a>    Include,
+<a href=#574 id=574 data-nosnippet>574</a>    <span class="attr">#[default]
+<a href=#575 id=575 data-nosnippet>575</a>    </span>Exclude,
+<a href=#576 id=576 data-nosnippet>576</a>}
+<a href=#577 id=577 data-nosnippet>577</a>
+<a href=#578 id=578 data-nosnippet>578</a><span class="doccomment">/// DogStatsD debug-log and verbose-log settings.
+<a href=#579 id=579 data-nosnippet>579</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#580 id=580 data-nosnippet>580</a></span><span class="kw">pub struct </span>DebugLog {
+<a href=#581 id=581 data-nosnippet>581</a>    <span class="doccomment">/// Whether the metric debug-log destination is added at startup.
+<a href=#582 id=582 data-nosnippet>582</a>    ///
+<a href=#583 id=583 data-nosnippet>583</a>    /// Defaults to `true`. Set this to `false` to remove the destination from the topology.
+<a href=#584 id=584 data-nosnippet>584</a>    </span><span class="kw">pub </span>logging_enabled: bool,
+<a href=#585 id=585 data-nosnippet>585</a>
+<a href=#586 id=586 data-nosnippet>586</a>    <span class="doccomment">/// Path of the DogStatsD metric debug log.
+<a href=#587 id=587 data-nosnippet>587</a>    ///
+<a href=#588 id=588 data-nosnippet>588</a>    /// Defaults to `None`, which selects the platform-specific Agent log path at startup.
+<a href=#589 id=589 data-nosnippet>589</a>    /// Set a path to write the diagnostic log elsewhere.
+<a href=#590 id=590 data-nosnippet>590</a>    </span><span class="kw">pub </span>log_file: <span class="prelude-ty">Option</span>&lt;PathBuf&gt;,
+<a href=#591 id=591 data-nosnippet>591</a>
+<a href=#592 id=592 data-nosnippet>592</a>    <span class="doccomment">/// Number of rotated debug log files retained.
+<a href=#593 id=593 data-nosnippet>593</a>    ///
+<a href=#594 id=594 data-nosnippet>594</a>    /// Defaults to `3`. The file writer retains one rotated file when this is `0`.
+<a href=#595 id=595 data-nosnippet>595</a>    </span><span class="kw">pub </span>log_file_max_rolls: usize,
+<a href=#596 id=596 data-nosnippet>596</a>
+<a href=#597 id=597 data-nosnippet>597</a>    <span class="doccomment">/// Maximum size, in bytes, of the active debug log file before rotation.
+<a href=#598 id=598 data-nosnippet>598</a>    ///
+<a href=#599 id=599 data-nosnippet>599</a>    /// Defaults to `10,000,000` bytes. A value of `0` is accepted as the rotation threshold.
+<a href=#600 id=600 data-nosnippet>600</a>    /// Set this based on the diagnostic data and disk space to retain.
+<a href=#601 id=601 data-nosnippet>601</a>    </span><span class="kw">pub </span>log_file_max_size: u64,
+<a href=#602 id=602 data-nosnippet>602</a>
+<a href=#603 id=603 data-nosnippet>603</a>    <span class="doccomment">/// Whether per-metric processing statistics are written to the debug log.
+<a href=#604 id=604 data-nosnippet>604</a>    ///
+<a href=#605 id=605 data-nosnippet>605</a>    /// Defaults to `false` and can change at runtime. Enable this when collecting metric-level diagnostics.
+<a href=#606 id=606 data-nosnippet>606</a>    </span><span class="kw">pub </span>metrics_stats_enable: bool,
+<a href=#607 id=607 data-nosnippet>607</a>
+<a href=#608 id=608 data-nosnippet>608</a>    <span class="doccomment">/// Whether per-packet parse errors are logged at debug rather than error level.
+<a href=#609 id=609 data-nosnippet>609</a>    ///
+<a href=#610 id=610 data-nosnippet>610</a>    /// Defaults to `false`. Enable this to reduce error-level log volume from malformed packets.
+<a href=#611 id=611 data-nosnippet>611</a>    </span><span class="kw">pub </span>disable_verbose_logs: bool,
+<a href=#612 id=612 data-nosnippet>612</a>}
 </code></pre></div></section></main></body></html>
