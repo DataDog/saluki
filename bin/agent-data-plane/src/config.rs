@@ -22,6 +22,8 @@ pub struct DataPlaneConfiguration<'a> {
 pub(crate) fn remote_agent_client_configuration(
     config: &SalukiConfiguration,
 ) -> Result<RemoteAgentClientConfiguration, GenericError> {
+    let dp = DataPlaneConfiguration::from_configuration(config);
+
     #[cfg(target_os = "linux")]
     let vsock_cid = match config.control.ipc.vsock_addr.as_str() {
         "" => None,
@@ -43,10 +45,7 @@ pub(crate) fn remote_agent_client_configuration(
 
     Ok(RemoteAgentClientConfiguration {
         cmd_port: config.control.ipc.cmd_port,
-        auth: IpcAuthConfiguration::new(
-            config.control.ipc.auth_token_file_path.clone(),
-            config.control.ipc.ipc_cert_file_path.clone(),
-        ),
+        auth: dp.ipc_auth_configuration(),
         grpc_max_message_size: config.control.ipc.grpc_max_message_size,
         #[cfg(target_os = "linux")]
         vsock_cid,
@@ -57,6 +56,14 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Creates a new `DataPlaneConfiguration` instance from the given configuration.
     pub fn from_configuration(config: &'a SalukiConfiguration) -> Self {
         Self { config }
+    }
+
+    /// Builds the resolved Agent IPC authentication configuration.
+    pub(crate) fn ipc_auth_configuration(&self) -> IpcAuthConfiguration {
+        IpcAuthConfiguration::new(
+            self.config.control.ipc.auth_token_file_path.clone(),
+            self.config.control.ipc.ipc_cert_file_path.clone(),
+        )
     }
 
     /// Returns `true` if the data plane is enabled.
@@ -213,7 +220,24 @@ impl<'a> DataPlaneConfiguration<'a> {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_commons::platform::PlatformSettings;
+
     use super::*;
+
+    #[test]
+    fn remote_agent_client_configuration_resolves_default_auth_paths() {
+        let client_config =
+            remote_agent_client_configuration(&SalukiConfiguration::default()).expect("valid IPC configuration");
+
+        assert_eq!(
+            client_config.auth.auth_token_file_path(),
+            PlatformSettings::get_auth_token_path()
+        );
+        assert_eq!(
+            client_config.auth.ipc_cert_file_path(),
+            PlatformSettings::get_config_dir_path().join(PlatformSettings::get_ipc_cert_filename())
+        );
+    }
 
     #[test]
     fn remote_agent_client_configuration_uses_typed_auth_paths() {

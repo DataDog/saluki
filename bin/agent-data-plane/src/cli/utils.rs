@@ -1,7 +1,7 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use agent_data_plane_config_system::LoadedConfiguration;
-use datadog_agent_commons::ipc::{config::IpcAuthConfiguration, tls::build_ipc_client_ipc_tls_config};
+use datadog_agent_commons::ipc::tls::build_ipc_client_ipc_tls_config;
 use futures::TryFutureExt as _;
 use http::{header::CONTENT_TYPE, uri::PathAndQuery, Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt as _, Full};
@@ -25,10 +25,20 @@ pub struct DataPlaneAPIClient {
 
 /// Builds a data plane API client or exits after logging the error.
 pub(super) async fn get_api_client_or_exit(local_config: &LoadedConfiguration) -> DataPlaneAPIClient {
-    match DataPlaneAPIClient::from_configuration(local_config).await {
+    let config = local_config.local();
+    let dp = DataPlaneConfiguration::from_configuration(config);
+    let result = match dp.secure_api_listen_address() {
+        Ok(listen_address) => {
+            let ipc_config = dp.ipc_auth_configuration();
+            DataPlaneAPIClient::new(ipc_config.ipc_cert_file_path(), &listen_address).await
+        }
+        Err(error) => Err(error),
+    };
+
+    match result {
         Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create data plane API client: {:#}", e);
+        Err(error) => {
+            error!("Failed to create data plane API client: {:#}", error);
             std::process::exit(1);
         }
     }
@@ -53,22 +63,14 @@ struct DogStatsDReplaySessionResponseBody {
 }
 
 impl DataPlaneAPIClient {
-    /// Creates a new `DataPlaneAPIClient` from the typed data plane configuration.
+    /// Creates a `DataPlaneAPIClient` using a resolved IPC certificate path.
     ///
     /// # Errors
     ///
     /// If the IPC certificate can't be read or parsed into a client TLS configuration, the privileged API endpoint
     /// isn't connection-oriented, or the HTTP client can't be constructed, an error is returned.
-    pub async fn from_configuration(loaded_config: &LoadedConfiguration) -> Result<Self, GenericError> {
-        let config = loaded_config.local();
-        let dp = DataPlaneConfiguration::from_configuration(config);
-        let listen_address = dp.secure_api_listen_address()?;
-        let ipc_config = IpcAuthConfiguration::new(
-            config.control.ipc.auth_token_file_path.clone(),
-            config.control.ipc.ipc_cert_file_path.clone(),
-        );
-        let ipc_cert_file_path = ipc_config.ipc_cert_file_path();
-        let client_tls_config = build_ipc_client_ipc_tls_config(&ipc_cert_file_path)
+    pub async fn new(ipc_cert_file_path: &Path, listen_address: &ListenAddress) -> Result<Self, GenericError> {
+        let client_tls_config = build_ipc_client_ipc_tls_config(ipc_cert_file_path)
             .await
             .with_error_context(|| {
                 format!(
@@ -77,7 +79,7 @@ impl DataPlaneAPIClient {
                 )
             })?;
         let builder = HttpClient::builder().with_client_tls_config(client_tls_config);
-        Self::from_builder(builder, &listen_address)
+        Self::from_builder(builder, listen_address)
     }
 
     fn from_builder(builder: HttpClientBuilder, listen_address: &ListenAddress) -> Result<Self, GenericError> {

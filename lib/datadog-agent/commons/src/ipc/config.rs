@@ -1,6 +1,6 @@
 //! IPC configuration.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tonic::transport::Uri;
 
@@ -29,7 +29,10 @@ pub struct IpcAuthConfiguration {
 }
 
 impl IpcAuthConfiguration {
-    /// Creates a new `IpcAuthConfiguration`.
+    /// Creates an `IpcAuthConfiguration`, resolving empty paths to Agent defaults.
+    ///
+    /// An empty token path selects the platform-specific token path. An empty certificate path selects `ipc_cert.pem`
+    /// beside the resolved token, or in the platform configuration directory when the token has no parent.
     pub fn new(mut auth_token_file_path: PathBuf, mut ipc_cert_file_path: PathBuf) -> Self {
         if auth_token_file_path.as_os_str().is_empty() {
             auth_token_file_path = PlatformSettings::get_auth_token_path();
@@ -49,13 +52,13 @@ impl IpcAuthConfiguration {
     }
 
     /// Gets the path to the Agent authentication token file from the configuration.
-    pub fn auth_token_file_path(&self) -> PathBuf {
-        self.auth_token_file_path.clone()
+    pub fn auth_token_file_path(&self) -> &Path {
+        &self.auth_token_file_path
     }
 
     /// Gets the shared IPC mTLS identity file path from the configuration.
-    pub fn ipc_cert_file_path(&self) -> PathBuf {
-        self.ipc_cert_file_path.clone()
+    pub fn ipc_cert_file_path(&self) -> &Path {
+        &self.ipc_cert_file_path
     }
 }
 

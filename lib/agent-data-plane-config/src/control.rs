@@ -118,10 +118,17 @@ pub struct Logging {
 pub struct ControlIpc {
     /// Path to the Agent authentication token file.
     ///
+    /// ADP sends the file contents as a bearer token to the Core Agent. Override this path only when the Core Agent
+    /// uses a non-default token path, and configure both processes to use the same token.
+    ///
     /// Defaults to an empty path, which selects the platform-specific Agent authentication token path.
     pub auth_token_file_path: PathBuf,
 
     /// Path to the shared Agent IPC mTLS identity file.
+    ///
+    /// The PEM file contains the certificate and private key used by ADP and its IPC peers. Every peer must use the
+    /// same identity because authentication requires an exact certificate match. Override this path only when the Core
+    /// Agent uses a non-default identity path.
     ///
     /// Defaults to an empty path, which selects `ipc_cert.pem` beside the resolved authentication token path.
     pub ipc_cert_file_path: PathBuf,
