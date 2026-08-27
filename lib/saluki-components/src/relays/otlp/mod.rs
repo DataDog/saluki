@@ -10,15 +10,15 @@ use saluki_core::components::BuildContext;
 use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, PayloadType};
 use saluki_core::topology::OutputDefinition;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::ListenAddress;
+use saluki_io::net::{server::grpc::GrpcKeepalive, ListenAddress};
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
-    OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
+    build_metrics, resolve_grpc_keepalive, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
+    OtlpTlsConfiguration, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
 };
 
 /// Builds component-owned CORS settings from the resolved configuration model.
@@ -128,6 +128,7 @@ impl RelayBuilder for OtlpRelayConfiguration {
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
+            grpc_keepalive: resolve_grpc_keepalive(&self.receiver.grpc.keepalive),
             cors: cors_configuration(&self.receiver.http.cors),
             http_tls_config,
             grpc_tls_config,
@@ -143,6 +144,7 @@ pub struct OtlpRelay {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
+    grpc_keepalive: GrpcKeepalive,
     cors: CorsConfiguration,
     http_tls_config: Option<OtlpTlsConfiguration>,
     grpc_tls_config: Option<OtlpTlsConfiguration>,
@@ -156,6 +158,7 @@ impl Relay for OtlpRelay {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
+            grpc_keepalive,
             cors,
             http_tls_config,
             grpc_tls_config,
@@ -177,7 +180,8 @@ impl Relay for OtlpRelay {
             grpc_endpoint.clone(),
             grpc_max_recv_msg_size_bytes,
         )
-        .with_cors(cors);
+        .with_cors(cors)
+        .with_grpc_keepalive(grpc_keepalive);
 
         if let Some(tls) = http_tls_config {
             server_config = server_config.with_http_tls(tls);

@@ -38,7 +38,8 @@ use tokio::time::{interval, MissedTickBehavior};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration, OtlpTlsConfiguration,
+    build_metrics, resolve_grpc_keepalive, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
+    OtlpTlsConfiguration,
 };
 
 mod logs;
@@ -71,22 +72,6 @@ fn cors_configuration(cors: &domains::otlp::Cors) -> CorsConfiguration {
         allowed_headers: cors.allowed_headers.clone(),
         exposed_headers: cors.exposed_headers.clone(),
         max_age: cors.max_age,
-    }
-}
-
-/// Converts keepalive server parameters into tonic-compatible settings.
-///
-/// Defaults are already resolved by the configuration layer; this function only maps the typed
-/// values into the tonic-facing struct.
-fn resolve_grpc_keepalive(keepalive: &Option<domains::otlp::KeepaliveServerParameters>) -> GrpcKeepalive {
-    match keepalive.as_ref() {
-        Some(params) => GrpcKeepalive {
-            http2_keepalive_interval: params.time,
-            http2_keepalive_timeout: params.timeout,
-            max_connection_age: params.max_connection_age,
-            max_connection_age_grace: params.max_connection_age_grace,
-        },
-        None => GrpcKeepalive::default(),
     }
 }
 

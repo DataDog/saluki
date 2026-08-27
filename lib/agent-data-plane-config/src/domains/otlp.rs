@@ -354,9 +354,9 @@ pub struct GrpcReceiver {
     /// Transport the gRPC receiver binds. Defaults to `tcp`.
     pub transport: GrpcTransport,
 
-    /// Server-side keepalive parameters. `None` means keepalive is not configured; the component
-    /// layer applies defaults.
-    pub keepalive: Option<KeepaliveServerParameters>,
+    /// Server-side keepalive parameters. Always present; zero durations are resolved to the
+    /// grpc-go defaults (2h interval, 20s timeout) by the translator.
+    pub keepalive: KeepaliveServerParameters,
 
     /// TLS settings for the gRPC receiver.
     pub tls: Tls,

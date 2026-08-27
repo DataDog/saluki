@@ -26,8 +26,8 @@ use agent_data_plane_config::domains::dogstatsd::{
     FilterAction, MapperProfile, MetricMapping, MetricTagFilterEntry, OriginTagCardinality,
 };
 use agent_data_plane_config::domains::otlp::{
-    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, KeepaliveServerParameters,
-    SummaryMode, DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
+    CumulativeMonotonicMode, GrpcTransport, HistogramMode, InitialCumulativeMonotonicValue, SummaryMode,
+    DEFAULT_GRPC_KEEPALIVE_TIME, DEFAULT_GRPC_KEEPALIVE_TIMEOUT, DEFAULT_GRPC_MAX_RECV_MSG_SIZE_MIB,
 };
 use agent_data_plane_config::shared::{ForwarderHttpProtocol, V3SeriesMode};
 use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
@@ -77,18 +77,6 @@ impl<'a> DatadogTranslator<'a> {
     /// Records a translation error encountered while consuming.
     fn record_error(&mut self, error: TranslateError) {
         self.errors.push(error);
-    }
-
-    /// Returns a mutable reference to the keepalive server parameters, initializing the struct if
-    /// keepalive has not yet been configured.
-    fn keepalive_server_parameters_mut(&mut self) -> &mut KeepaliveServerParameters {
-        self.config
-            .domains
-            .otlp
-            .receiver
-            .grpc
-            .keepalive
-            .get_or_insert_with(KeepaliveServerParameters::default)
     }
 }
 
@@ -1053,25 +1041,31 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(
         &mut self, value: std::time::Duration,
     ) {
-        self.keepalive_server_parameters_mut().max_connection_age = value;
+        self.config.domains.otlp.receiver.grpc.keepalive.max_connection_age = value;
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age_grace(
         &mut self, value: std::time::Duration,
     ) {
-        self.keepalive_server_parameters_mut().max_connection_age_grace = value;
+        self.config
+            .domains
+            .otlp
+            .receiver
+            .grpc
+            .keepalive
+            .max_connection_age_grace = value;
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_time(
         &mut self, value: std::time::Duration,
     ) {
-        self.keepalive_server_parameters_mut().time = resolve_keepalive_time(value);
+        self.config.domains.otlp.receiver.grpc.keepalive.time = resolve_keepalive_time(value);
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_timeout(
         &mut self, value: std::time::Duration,
     ) {
-        self.keepalive_server_parameters_mut().timeout = resolve_keepalive_timeout(value);
+        self.config.domains.otlp.receiver.grpc.keepalive.timeout = resolve_keepalive_timeout(value);
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_tls_ca_file(&mut self, value: Option<String>) {

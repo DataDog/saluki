@@ -112,6 +112,21 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
     }
 }
 
+/// Converts keepalive server parameters into tonic-compatible settings.
+///
+/// Defaults are already resolved by the configuration layer; this function only maps the typed
+/// values into the tonic-facing struct.
+pub fn resolve_grpc_keepalive(
+    keepalive: &agent_data_plane_config::domains::otlp::KeepaliveServerParameters,
+) -> GrpcKeepalive {
+    GrpcKeepalive {
+        http2_keepalive_interval: keepalive.time,
+        http2_keepalive_timeout: keepalive.timeout,
+        max_connection_age: keepalive.max_connection_age,
+        max_connection_age_grace: keepalive.max_connection_age_grace,
+    }
+}
+
 /// Handler for OTLP data.
 #[async_trait]
 pub trait OtlpHandler: Send + Sync + 'static {
@@ -187,7 +202,7 @@ pub struct OtlpServerConfiguration {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
-    grpc_keepalive: Option<GrpcKeepalive>,
+    grpc_keepalive: GrpcKeepalive,
     cors: CorsConfiguration,
     http_tls: Option<OtlpTlsConfiguration>,
     grpc_tls: Option<OtlpTlsConfiguration>,
@@ -202,7 +217,7 @@ impl OtlpServerConfiguration {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
-            grpc_keepalive: None,
+            grpc_keepalive: GrpcKeepalive::default(),
             cors: CorsConfiguration::default(),
             http_tls: None,
             grpc_tls: None,
@@ -211,7 +226,7 @@ impl OtlpServerConfiguration {
 
     /// Sets the gRPC keepalive parameters.
     pub fn with_grpc_keepalive(mut self, keepalive: GrpcKeepalive) -> Self {
-        self.grpc_keepalive = Some(keepalive);
+        self.grpc_keepalive = keepalive;
         self
     }
 
@@ -279,11 +294,7 @@ impl OtlpServerConfiguration {
             .add_service(grpc_logs_server)
             .add_service(grpc_traces_server);
 
-        let mut grpc_server = if let Some(keepalive) = self.grpc_keepalive {
-            grpc_server.with_keepalive(keepalive)
-        } else {
-            grpc_server
-        };
+        let mut grpc_server = grpc_server.with_keepalive(self.grpc_keepalive);
 
         if let Some(tls_config) = grpc_tls_config {
             grpc_server = grpc_server.with_tls_config(tls_config);
