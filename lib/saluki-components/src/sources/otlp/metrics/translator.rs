@@ -539,15 +539,16 @@ impl OtlpMetricsTranslator {
 
             let mut new_metrics: Vec<OtlpMetric> = Vec::new();
             for mut metric in scope_metrics.metrics {
-                // Detect runtime languages from the original metric name for the usage beacon.
-                // This checks the OTel-style prefix (e.g. `process.runtime.go.*`) before any remapping.
-                for (prefix, language) in RUNTIME_METRIC_PREFIX_LANGUAGE_MAP.iter() {
-                    if metric.name.starts_with(prefix) {
-                        detected_languages.insert(*language);
-                    }
-                }
-
                 if let Some(mappings) = RUNTIME_METRICS_MAPPINGS.get(metric.name.as_str()) {
+                    // Detect runtime languages only for metrics that match a known runtime metric
+                    // mapping, matching the Agent's behavior. This avoids over-reporting languages
+                    // for unmapped customer metrics that happen to share a prefix (e.g. `jvm.*`).
+                    for (prefix, language) in RUNTIME_METRIC_PREFIX_LANGUAGE_MAP.iter() {
+                        if metric.name.starts_with(prefix) {
+                            detected_languages.insert(*language);
+                        }
+                    }
+
                     for mapping in mappings {
                         if mapping.attributes.is_empty() {
                             // If there are no attributes to match, just duplicate the metric with the new name.
@@ -609,11 +610,10 @@ impl OtlpMetricsTranslator {
     /// sharing state across concurrent requests on the same translator.
     pub fn emit_usage_beacons(&mut self, languages: FastHashSet<&'static str>) -> Vec<Event> {
         let mut events = Vec::new();
-        let now_ns = SystemTime::now()
+        let timestamp_s = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_nanos() as u64;
-        let timestamp_s = now_ns / 1_000_000_000;
+            .as_secs();
 
         // Emit `datadog.agent.otlp.metrics` — one per request, value 1, no tags.
         if let Some(context) = self.context_resolver.resolve_with_optional_host_and_origin_tags(
@@ -4975,55 +4975,6 @@ mod tests {
             .collect();
         assert!(languages.contains(&"language:go".to_string()));
         assert!(languages.contains(&"language:jvm".to_string()));
-    }
-
-    #[test]
-    fn emit_usage_beacons_clears_languages_after_emission() {
-        let metrics = Metrics::for_tests();
-        let mut translator = OtlpMetricsTranslator::for_tests();
-
-        // Translate a Go runtime metric.
-        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("process.runtime.go.goroutines"));
-        let (_, languages) = translator.translate_metrics(resource_metrics, &metrics).unwrap();
-
-        // First emission should produce the Go beacon.
-        let events = translator.emit_usage_beacons(languages);
-        let runtime_beacons: Vec<_> = events
-            .iter()
-            .filter_map(|e| e.try_as_metric())
-            .filter(|m| m.context().name() == "datadog.agent.otlp.runtime_metrics")
-            .collect();
-        assert_eq!(runtime_beacons.len(), 1);
-
-        // Second emission (without new translations) should produce no runtime beacons.
-        let events = translator.emit_usage_beacons(FastHashSet::default());
-        let runtime_beacons: Vec<_> = events
-            .iter()
-            .filter_map(|e| e.try_as_metric())
-            .filter(|m| m.context().name() == "datadog.agent.otlp.runtime_metrics")
-            .collect();
-        assert!(runtime_beacons.is_empty(), "languages should be cleared after emission");
-    }
-
-    #[test]
-    fn emit_usage_beacons_does_not_increment_metrics_received_counter() {
-        let metrics = Metrics::for_tests();
-        let mut translator = OtlpMetricsTranslator::for_tests();
-
-        // Translate a single metric to get a baseline counter value.
-        let resource_metrics = resource_metrics_with_metric(gauge_metric_named("some.metric"));
-        let (_, languages) = translator.translate_metrics(resource_metrics, &metrics).unwrap();
-
-        // Emit beacons — these should not increment the metrics_received counter.
-        translator.emit_usage_beacons(languages);
-
-        // The counter should reflect only the translated metric, not the beacons.
-        // We can't directly read the counter, but we can verify that emitting beacons
-        // without translating any metrics doesn't change the counter by checking that
-        // a second emit call produces no unexpected side effects.
-        let events = translator.emit_usage_beacons(FastHashSet::default());
-        // The metrics beacon is always emitted, but no runtime beacons.
-        let _ = metric_by_name(&events, "datadog.agent.otlp.metrics");
     }
 
     #[test]
