@@ -297,7 +297,7 @@ struct ForwarderRouting {
 
 impl ForwarderConfiguration {
     /// Creates a new `ForwarderConfiguration` from the resolved shared configuration.
-    pub fn from_configuration(shared: &SharedConfiguration, config: &GenericConfiguration) -> Self {
+    pub fn from_configuration(shared: &SharedConfiguration) -> Self {
         let endpoints = &shared.endpoints;
         let routing = ForwarderRouting {
             endpoint: EndpointConfiguration::from_configuration(endpoints),
@@ -308,7 +308,7 @@ impl ForwarderConfiguration {
             },
         };
 
-        Self::from_routing(shared, config, routing)
+        Self::from_routing(shared, routing)
     }
 
     /// Creates a new `ForwarderConfiguration` that forwards only to a single destination.
@@ -316,9 +316,7 @@ impl ForwarderConfiguration {
     /// The destination replaces the configured primary endpoint, and neither dual shipping nor the
     /// alternate metrics intakes apply to it. Because the destination is part of construction, no
     /// later step can overwrite it.
-    pub(crate) fn for_single_destination(
-        shared: &SharedConfiguration, config: &GenericConfiguration, destination: &SingleDestination,
-    ) -> Self {
+    pub(crate) fn for_single_destination(shared: &SharedConfiguration, destination: &SingleDestination) -> Self {
         let mut v3_api: V3ApiConfig = (&shared.metrics_encoding.v3_api).into();
         let mut series_mode: UseV3ApiSeriesConfig = (&shared.metrics_encoding).into();
 
@@ -337,12 +335,12 @@ impl ForwarderConfiguration {
             use_v3_api: UseV3ApiConfig { series: series_mode },
         };
 
-        Self::from_routing(shared, config, routing)
+        Self::from_routing(shared, routing)
     }
 
     /// Builds the forwarder configuration from its destination-specific routing plus the settings
     /// every forwarder reads the same way.
-    fn from_routing(shared: &SharedConfiguration, config: &GenericConfiguration, routing: ForwarderRouting) -> Self {
+    fn from_routing(shared: &SharedConfiguration, routing: ForwarderRouting) -> Self {
         let endpoints = &shared.endpoints;
         let forwarder = &endpoints.forwarder;
 
@@ -352,7 +350,7 @@ impl ForwarderConfiguration {
             request_timeout_secs: forwarder.timeout,
             endpoint_buffer_size: forwarder.high_prio_buffer_size,
             endpoint: routing.endpoint,
-            retry: RetryConfiguration::from_configuration(forwarder, config),
+            retry: RetryConfiguration::from_configuration(forwarder, shared.run_path.as_deref()),
             proxy: ProxyConfiguration::from_configuration(&endpoints.proxy),
             opw_metrics: routing.opw_metrics,
             http_protocol: forwarder.http_protocol.into(),
@@ -569,7 +567,7 @@ mod tests {
     }
 
     async fn forwarder_config_from(shared: SharedConfiguration) -> ForwarderConfiguration {
-        ForwarderConfiguration::from_configuration(&shared, &empty_config().await)
+        ForwarderConfiguration::from_configuration(&shared)
     }
 
     fn endpoint_urls_by_route(config: &ForwarderConfiguration, route: EndpointRoute) -> Vec<String> {
@@ -901,7 +899,7 @@ mod tests {
             HashMap::from([(ADDITIONAL_URL.to_string(), vec!["extra-api-key".to_string()])]);
 
         let live_config = empty_config().await;
-        let config = ForwarderConfiguration::from_configuration(&shared, &live_config);
+        let config = ForwarderConfiguration::from_configuration(&shared);
         let endpoints = config
             .build_routable_endpoints(Some(live_config))
             .expect("endpoints should resolve");
@@ -954,7 +952,7 @@ mod tests {
             api_key_refresh_config_path: Some("multi_region_failover.api_key"),
             accepts_v3_series: false,
         };
-        let config = ForwarderConfiguration::for_single_destination(&shared, &empty_config().await, &destination);
+        let config = ForwarderConfiguration::for_single_destination(&shared, &destination);
 
         let endpoints = config.build_routable_endpoints(None).expect("endpoint should resolve");
         assert_eq!(1, endpoints.len());
@@ -978,7 +976,7 @@ mod tests {
             api_key_refresh_config_path: Some("multi_region_failover.api_key"),
             accepts_v3_series: true,
         };
-        let config = ForwarderConfiguration::for_single_destination(&shared, &empty_config().await, &destination);
+        let config = ForwarderConfiguration::for_single_destination(&shared, &destination);
 
         assert_eq!(V3SeriesMode::Enabled, config.use_v3_api_series().enabled);
     }

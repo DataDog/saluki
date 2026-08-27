@@ -957,6 +957,11 @@ pub static DATADOG_ENV_KEYS: &[EnvKey] = &[
         decode: EnvDecode::StringList,
     },
     EnvKey {
+        env_vars: &["DD_RUN_PATH"],
+        path: &["run_path"],
+        decode: EnvDecode::RawString,
+    },
+    EnvKey {
         env_vars: &["DD_SERIALIZER_COMPRESSOR_KIND"],
         path: &["serializer_compressor_kind"],
         decode: EnvDecode::RawString,

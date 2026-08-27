@@ -10,10 +10,13 @@
 
 use std::time::Duration;
 
-use tokio::{runtime::Handle, sync::oneshot, task::JoinHandle};
+use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
+use tokio::{runtime::Handle, task::JoinHandle};
 
 use crate::components::ComponentSpawner;
-use crate::runtime::{AutoShutdown, ShutdownMode, Supervisor, SupervisorError, SupervisorHandle};
+use crate::runtime::{
+    state::DataspaceRegistry, AutoShutdown, ShutdownMode, Supervisor, SupervisorError, SupervisorHandle,
+};
 
 /// Shutdown budget for the test supervisor.
 ///
@@ -35,7 +38,8 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(5);
 /// component directly.
 pub struct TestComponentSupervisor {
     handle: SupervisorHandle,
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    dataspace: DataspaceRegistry,
+    shutdown_coordinator: Option<ShutdownCoordinator>,
     task: JoinHandle<Result<(), SupervisorError>>,
 }
 
@@ -59,6 +63,7 @@ impl TestComponentSupervisor {
     ///
     /// Panics if `id` isn't a valid supervisor name, or if the supervisor doesn't start within a few seconds.
     pub async fn start_with_budget(id: &str, budget: Duration) -> Self {
+        let dataspace = DataspaceRegistry::default();
         let mut supervisor = Supervisor::new(id)
             .expect("test supervisor name should be valid")
             .with_auto_shutdown(AutoShutdown::AnySignificant)
@@ -69,12 +74,18 @@ impl TestComponentSupervisor {
         // is how we observe that it has.
         let handle = supervisor.handle();
 
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let task = tokio::spawn(async move { supervisor.run_with_shutdown(shutdown_rx).await });
+        let task_dataspace = dataspace.clone();
+        let (shutdown_coordinator, process_shutdown) = ShutdownHandle::paired();
+        let task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown_inner(process_shutdown, Some(task_dataspace))
+                .await
+        });
 
         let supervisor = Self {
             handle,
-            shutdown_tx: Some(shutdown_tx),
+            dataspace,
+            shutdown_coordinator: Some(shutdown_coordinator),
             task,
         };
         supervisor
@@ -89,6 +100,11 @@ impl TestComponentSupervisor {
     /// The current runtime stands in for the shared worker pool.
     pub fn spawner(&self) -> ComponentSpawner {
         ComponentSpawner::new(self.handle.clone(), Handle::current())
+    }
+
+    /// Returns the dataspace shared by the supervisor and its children.
+    pub fn dataspace(&self) -> &DataspaceRegistry {
+        &self.dataspace
     }
 
     /// Returns the number of dynamic children currently running.
@@ -117,9 +133,8 @@ impl TestComponentSupervisor {
     ///
     /// Panics if the supervisor task panicked.
     pub async fn shutdown(mut self) -> Result<(), SupervisorError> {
-        // The receiver only goes away if the run already ended, in which case shutdown is moot.
-        if let Some(shutdown_tx) = self.shutdown_tx.take() {
-            let _ = shutdown_tx.send(());
+        if let Some(shutdown_coordinator) = self.shutdown_coordinator.take() {
+            shutdown_coordinator.shutdown();
         }
 
         (&mut self.task).await.expect("test supervisor task should not panic")
@@ -144,7 +159,7 @@ impl TestComponentSupervisor {
 impl Drop for TestComponentSupervisor {
     fn drop(&mut self) {
         // A test that returns (or panics) without calling `shutdown` shouldn't leak a supervisor and its children into
-        // the rest of the run. Dropping the sender signals shutdown; the task tears itself down from there.
-        self.shutdown_tx.take();
+        // the rest of the run. Dropping the coordinator signals shutdown; the task tears itself down from there.
+        self.shutdown_coordinator.take();
     }
 }

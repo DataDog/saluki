@@ -497,17 +497,17 @@ The following settings are specific to ADP and have no equivalent in the core ag
 | `data_plane.otlp.receiver_http_endpoint_temporary`              | ADP OTLP HTTP listen endpoint              | localhost:6318 |
 | `data_plane.serializer_zstd_compressor_level`                   | ADP zstd compression level                 | 3              |
 | `data_plane.stop_timeout`                                       | ADP graceful shutdown timeout (s)          | derived        |
-| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        |                |
-| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT |                |
+| `dogstatsd_allow_context_heap_allocs`                           | Allow heap allocations for contexts        | true           |
+| `dogstatsd_autoscale_udp_listeners`                             | Bind multiple UDP sockets via SO_REUSEPORT | false          |
 | `dogstatsd_buffer_count_max`                                    | Maximum receive buffer count               | 32768          |
 | `dogstatsd_buffer_count`                                        | Baseline receive buffers                   | 128            |
-| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 |                |
-| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         |                |
+| `dogstatsd_cached_contexts_limit`                               | Max cached metric contexts                 | 500000         |
+| `dogstatsd_cached_tagsets_limit`                                | Max cached tagsets                         | 500000         |
 | `dogstatsd_mapper_string_interner_size`                         | Mapper string interner byte capacity       | 64KiB          |
-| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              |                |
+| `dogstatsd_minimum_sample_rate`                                 | Floor for metric sample rates              | 0.000000003845 |
 | `dogstatsd_permissive_decoding`                                 | Relaxes decoder strictness                 | true           |
 | `dogstatsd_string_interner_size_bytes`                          | Explicit byte budget for context interner  |                |
-| `dogstatsd_tcp_port`                                            | TCP listen port for DSD                    |                |
+| `dogstatsd_tcp_port`                                            | DogStatsD TCP listen port; 0 disables TCP  | 0              |
 | `flush_timeout_secs`                                            | Encoder flush timeout (secs)               |                |
 | `memory_limit`                                                  | Process memory limit                       |                |
 | `memory_slop_factor`                                            | Memory accounting slop fraction            | 0.25           |
@@ -593,6 +593,15 @@ To enable syslog logging, set `log_to_syslog: true`. Console logging remains con
 while syslog logging is enabled, ADP uses the platform default local syslog socket:
 `unixgram:///dev/log` on Linux and `unixgram:///var/run/syslog` on macOS. Set `syslog_rfc: true`
 when the receiving syslog daemon expects the Agent's RFC-style header.
+
+### DogStatsD metric blocklists
+
+A non-empty `metric_filterlist` takes precedence over the legacy `statsd_metric_blocklist`: ADP
+uses `metric_filterlist_match_prefix` as the active match mode. Clearing `metric_filterlist`
+restores `statsd_metric_blocklist` and `statsd_metric_blocklist_match_prefix`.
+
+Both lists default to empty, and both match-prefix settings default to `false`. Accepted runtime
+changes to any of these settings update filtering.
 
 ### UDS origin detection on macOS
 
@@ -856,6 +865,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `proxy.http`                                                   | HTTP proxy URL                                     |
 | `proxy.https`                                                  | HTTPS proxy URL                                    |
 | `proxy.no_proxy`                                               | Hosts bypassing proxy                              |
+| `run_path`                                                     | Runtime state directory                            |
 | `serializer_compressor_kind`                                   | Payload compression algorithm                      |
 | `serializer_experimental_use_v3_api.compression_level`         | V3 API zstd compression level                      |
 | `serializer_experimental_use_v3_api.series.endpoints`          | Endpoints enabled for V3 series API                |

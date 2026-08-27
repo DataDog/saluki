@@ -756,7 +756,7 @@ impl OtlpMetricsTranslator {
                             &context,
                         ),
                         _ => {
-                            warn!(
+                            debug!(
                                 metric_name = base_dims.name,
                                 temporality = exponential_histogram.aggregation_temporality,
                                 "Unknown or unsupported aggregation temporality"
@@ -1705,8 +1705,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use otlp_protos::opentelemetry::proto::metrics::v1::{
-        number_data_point::Value as OtlpNumberDataPointValue, summary_data_point::ValueAtQuantile, Gauge,
-        NumberDataPoint as OtlpNumberDataPoint, ScopeMetrics, Sum,
+        number_data_point::Value as OtlpNumberDataPointValue, summary_data_point::ValueAtQuantile,
+        ExponentialHistogram as OtlpExponentialHistogram, Gauge, NumberDataPoint as OtlpNumberDataPoint, ScopeMetrics,
+        Sum,
     };
     use saluki_context::tags::Tag;
 
@@ -4626,6 +4627,31 @@ mod tests {
         let events = run_exponential_histogram(&mut translator, "otlp.exphist", vec![dp], false, &metrics);
 
         assert!(events.is_empty());
+    }
+
+    #[test]
+    fn exponential_histogram_cumulative_temporality_is_dropped_via_translate_metrics() {
+        let metrics = Metrics::for_tests();
+        let mut translator = OtlpMetricsTranslator::for_tests();
+
+        let metric = OtlpMetric {
+            name: "otlp.exphist.cumulative".to_string(),
+            data: Some(OtlpMetricData::ExponentialHistogram(OtlpExponentialHistogram {
+                aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                data_points: vec![exp_histogram_dp(3, 6.0, None, None)],
+            })),
+            ..Default::default()
+        };
+
+        let events = translator
+            .translate_metrics(resource_metrics_with_metric(metric), &metrics)
+            .expect("translation should succeed")
+            .collect::<Vec<_>>();
+
+        assert!(
+            events.is_empty(),
+            "cumulative exponential histogram must be dropped with no events emitted"
+        );
     }
 
     // -----------------------------------------------------------------------------------------------
