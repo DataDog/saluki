@@ -46,7 +46,6 @@ use saluki_components::{
         MrfMetricsGatewayConfiguration, TraceObfuscationConfiguration, TraceSamplerConfiguration,
     },
 };
-use saluki_config::GenericConfiguration;
 use saluki_context::origin::OriginTagCardinality;
 use saluki_core::accounting::{ComponentBounds, ComponentRegistry};
 use saluki_core::health::HealthRegistry;
@@ -536,19 +535,14 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
         // Metrics, then forwarding.
         .connect_components_in_order(["metrics_enrich", "dd_metrics_encode", "dd_out"])?;
 
-    add_mrf_metrics_pipeline_to_blueprint(
-        blueprint,
-        &config_system.raw_map(),
-        shared,
-        &config.domains.multi_region_failover,
-    )?;
+    add_mrf_metrics_pipeline_to_blueprint(blueprint, config_system, shared, &config.domains.multi_region_failover)?;
     add_autoscaling_failover_metrics_pipeline_to_blueprint(blueprint, shared)?;
 
     Ok(())
 }
 
 fn add_mrf_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config: &GenericConfiguration, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
     mrf: &multi_region_failover::Domain,
 ) -> Result<(), GenericError> {
     let mrf_config = MrfConfiguration::from_configuration(mrf);
@@ -566,13 +560,16 @@ fn add_mrf_metrics_pipeline_to_blueprint(
         return Ok(());
     };
 
-    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(mrf_config.clone(), config.clone());
+    let mrf_gateway_config = MrfMetricsGatewayConfiguration::new(
+        mrf_config.is_enabled(),
+        config_system.live(|config| &config.domains.multi_region_failover.metric_mirroring),
+    );
     let mrf_metrics_config =
         DatadogMetricsConfiguration::from_configuration(shared).with_metrics_endpoint_override(mrf_dd_url.clone());
 
     let mrf_forwarder_config = DatadogForwarderConfiguration::for_endpoint_override(
         shared,
-        config,
+        &config_system.raw_map(),
         mrf_dd_url,
         mrf_api_key,
         "multi_region_failover.api_key",

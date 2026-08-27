@@ -958,11 +958,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_multi_region_failover_failover_metrics(&mut self, value: bool) {
-        self.config.domains.multi_region_failover.failover_metrics = value;
+        self.config.domains.multi_region_failover.metric_mirroring.enabled = value;
     }
 
     fn consume_multi_region_failover_metric_allowlist(&mut self, value: Vec<String>) {
-        self.config.domains.multi_region_failover.metric_allowlist = value;
+        self.config.domains.multi_region_failover.metric_mirroring.allowlist = value;
     }
 
     fn consume_multi_region_failover_site(&mut self, value: String) {
