@@ -4643,10 +4643,10 @@ mod tests {
             ..Default::default()
         };
 
-        let events = translator
+        let (events_iter, _) = translator
             .translate_metrics(resource_metrics_with_metric(metric), &metrics)
-            .expect("translation should succeed")
-            .collect::<Vec<_>>();
+            .expect("translation should succeed");
+        let events = events_iter.collect::<Vec<_>>();
 
         assert!(
             events.is_empty(),
