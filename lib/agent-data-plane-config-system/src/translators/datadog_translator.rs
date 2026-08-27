@@ -78,6 +78,24 @@ impl<'a> DatadogTranslator<'a> {
     fn record_error(&mut self, error: TranslateError) {
         self.errors.push(error);
     }
+
+    /// Narrows a raw `i64` listen port to a `u16`, recording an error for a value outside that range.
+    ///
+    /// A port is not a quantity that can be clamped: the low end (`0`) means "do not listen" for the
+    /// DogStatsD listeners, and the high end would silently move a listener to a port nobody
+    /// configured.
+    fn parse_port(&mut self, key: &'static str, value: i64) -> Option<u16> {
+        match u16::try_from(value) {
+            Ok(port) => Some(port),
+            Err(_) => {
+                self.record_error(TranslateError::new_with_message(
+                    key,
+                    "port must be between 0 and 65535",
+                ));
+                None
+            }
+        }
+    }
 }
 
 /// Resolves the keepalive ping interval, applying the default for unset values.
@@ -504,7 +522,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_buffer_size(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.buffer_size = value.max(0) as usize;
+        // A negative buffer size is invalid and must be rejected.
+        match usize::try_from(value) {
+            Ok(buffer_size) => self.config.domains.dogstatsd.listeners.buffer_size = buffer_size,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_buffer_size",
+                "buffer size must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_dogstatsd_capture_depth(&mut self, value: i64) {
@@ -516,7 +541,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_context_expiry_seconds(&mut self, value: i64) {
-        self.config.domains.dogstatsd.aggregation.context_expiry_seconds = value.max(0) as u64;
+        // A negative expiry is invalid and must be rejected.
+        match u64::try_from(value) {
+            Ok(expiry_seconds) => self.config.domains.dogstatsd.aggregation.context_expiry_seconds = expiry_seconds,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_context_expiry_seconds",
+                "context expiry seconds must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_dogstatsd_disable_verbose_logs(&mut self, value: bool) {
@@ -619,11 +651,20 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_dogstatsd_port(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.port = to_port(value);
+        if let Some(port) = self.parse_port("dogstatsd_port", value) {
+            self.config.domains.dogstatsd.listeners.port = port;
+        }
     }
 
     fn consume_dogstatsd_so_rcvbuf(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.so_rcvbuf = value.max(0) as usize;
+        // A negative receive buffer size is invalid and must be rejected.
+        match usize::try_from(value) {
+            Ok(so_rcvbuf) => self.config.domains.dogstatsd.listeners.so_rcvbuf = so_rcvbuf,
+            Err(_) => self.record_error(TranslateError::new_with_message(
+                "dogstatsd_so_rcvbuf",
+                "socket receive buffer size must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_dogstatsd_socket(&mut self, value: Option<String>) {
@@ -1159,6 +1200,23 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.shared.endpoints.proxy.no_proxy = value;
     }
 
+    fn consume_run_path(&mut self, value: String) {
+        // In the vendored schema, run_path is defaulted to the placeholder ${run_path}. Though it
+        // seems highly unlikely this could slip through to ADP, we check for it, warn and treat
+        // the value as unset.
+        //
+        // Note that for this config, we do not care whether provenance is explicit or default. We
+        // just want to know whether we have a value or not.
+        if value == "${run_path}" {
+            warn!("`run_path` contains the unresolved schema placeholder '${{run_path}}'. Treating it as unset.");
+            self.config.shared.run_path = None;
+        } else if value.is_empty() {
+            self.config.shared.run_path = None;
+        } else {
+            self.config.shared.run_path = Some(PathBuf::from(value))
+        }
+    }
+
     fn consume_serializer_compressor_kind(&mut self, value: String) {
         self.config.shared.endpoints.compression.compressor_kind = value;
     }
@@ -1226,7 +1284,9 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_statsd_forward_port(&mut self, value: i64) {
-        self.config.domains.dogstatsd.listeners.forward_port = to_port(value);
+        if let Some(port) = self.parse_port("statsd_forward_port", value) {
+            self.config.domains.dogstatsd.listeners.forward_port = port;
+        }
     }
 
     fn consume_statsd_metric_blocklist(&mut self, value: Vec<String>) {
@@ -1480,6 +1540,101 @@ mod tests {
         let errors = errors.expect("negative worker count should record a translation error");
         assert!(errors.to_string().contains("dogstatsd_workers_count"));
         assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn negative_dogstatsd_buffer_size_records_translation_error() {
+        let (config, errors) = translate_explicit(json!({
+            "dogstatsd_buffer_size": -1,
+        }));
+
+        // The invalid size is not applied, and the recorded error fails the strict startup gate rather
+        // than leaving the source with a buffer that truncates every payload.
+        assert_eq!(config.domains.dogstatsd.listeners.buffer_size, 0);
+        let errors = errors.expect("negative buffer size should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_buffer_size"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn negative_dogstatsd_context_expiry_seconds_records_translation_error() {
+        let (_, errors) = translate_explicit(json!({
+            "dogstatsd_context_expiry_seconds": -1,
+        }));
+
+        let errors = errors.expect("a negative context expiry should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_context_expiry_seconds"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn negative_dogstatsd_so_rcvbuf_records_translation_error() {
+        let (config, errors) = translate_explicit(json!({
+            "dogstatsd_so_rcvbuf": -1,
+        }));
+
+        // Zero is a meaningful value here, so the invalid size must not silently select the OS default.
+        assert_eq!(config.domains.dogstatsd.listeners.so_rcvbuf, 0);
+        let errors = errors.expect("a negative socket receive buffer size should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_so_rcvbuf"));
+        assert!(errors.to_string().contains("greater than or equal to 0"));
+    }
+
+    #[test]
+    fn out_of_range_dogstatsd_ports_record_translation_errors() {
+        for (key, value) in [
+            ("dogstatsd_port", -1),
+            ("dogstatsd_port", 70_000),
+            ("statsd_forward_port", -1),
+            ("statsd_forward_port", 70_000),
+        ] {
+            let (_, errors) = translate_explicit(json!({ key: value }));
+
+            let errors = errors.unwrap_or_else(|| panic!("{key} = {value} should record a translation error"));
+            assert!(errors.to_string().contains(key));
+            assert!(errors.to_string().contains("between 0 and 65535"));
+        }
+    }
+
+    #[test]
+    fn dogstatsd_tag_cardinality_accepts_the_agent_spellings() {
+        for (value, expected) in [
+            ("low", OriginTagCardinality::Low),
+            ("orch", OriginTagCardinality::Orchestrator),
+            ("ORCHESTRATOR", OriginTagCardinality::Orchestrator),
+            ("High", OriginTagCardinality::High),
+            ("none", OriginTagCardinality::None),
+        ] {
+            let (config, errors) = translate_explicit(json!({ "dogstatsd_tag_cardinality": value }));
+
+            assert!(errors.is_none(), "`{value}` should translate without error");
+            assert_eq!(config.domains.dogstatsd.origin.tag_cardinality, expected);
+        }
+
+        let (_, errors) = translate_explicit(json!({ "dogstatsd_tag_cardinality": "orchestral" }));
+        let errors = errors.expect("an unknown cardinality should record a translation error");
+        assert!(errors.to_string().contains("dogstatsd_tag_cardinality"));
+    }
+
+    #[test]
+    fn empty_dogstatsd_listener_paths_translate_to_unset() {
+        // The source treats a blank path or host the same as an absent one, so translation must not hand
+        // it an empty string to bind or forward to.
+        let (config, errors) = translate_explicit(json!({
+            "bind_host": "",
+            "dogstatsd_pipe_name": "",
+            "dogstatsd_socket": "",
+            "dogstatsd_stream_socket": "",
+            "statsd_forward_host": "",
+        }));
+
+        assert!(errors.is_none());
+        let listeners = &config.domains.dogstatsd.listeners;
+        assert_eq!(listeners.bind_host, None);
+        assert_eq!(listeners.pipe_name, None);
+        assert_eq!(listeners.socket, None);
+        assert_eq!(listeners.stream_socket, None);
+        assert_eq!(listeners.forward_host, None);
     }
 
     #[test]

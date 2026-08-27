@@ -355,7 +355,7 @@ pub struct GrpcReceiver {
     pub transport: GrpcTransport,
 
     /// Server-side keepalive parameters. Always present; zero durations are resolved to the
-    /// grpc-go defaults (2h interval, 20s timeout) by the translator.
+    /// grpc-go defaults (2 h interval, 20 s timeout) by the translator.
     pub keepalive: KeepaliveServerParameters,
 
     /// TLS settings for the gRPC receiver.

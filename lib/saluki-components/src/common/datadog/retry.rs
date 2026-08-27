@@ -92,7 +92,7 @@ impl RetryConfiguration {
     /// When no retry-queue storage path is configured, one is derived from `run_path`, matching the
     /// Datadog Agent's own layout. Both may be absent, in which case there is no storage path and
     /// disk persistence cannot be used.
-    pub(super) fn from_configuration(forwarder: &shared::Forwarder, config: &GenericConfiguration) -> Self {
+    pub(super) fn from_configuration(forwarder: &shared::Forwarder, run_path: Option<&Path>) -> Self {
         Self {
             backoff_factor: forwarder.backoff_factor,
             backoff_base: forwarder.backoff_base,
@@ -102,7 +102,7 @@ impl RetryConfiguration {
             queue_max_size_bytes: forwarder.effective_retry_queue_max_size_bytes(),
             storage_max_size_bytes: forwarder.storage_max_size_in_bytes,
             flush_to_disk_mem_ratio: forwarder.flush_to_disk_mem_ratio,
-            storage_path: resolve_storage_path(&forwarder.storage_path, config),
+            storage_path: resolve_storage_path(&forwarder.storage_path, run_path),
             storage_max_disk_ratio: forwarder.storage_max_disk_ratio,
             outdated_file_in_days: forwarder.outdated_file_in_days,
             capacity_time_interval_secs: forwarder
@@ -178,26 +178,16 @@ impl RetryConfiguration {
 /// Resolves the directory where retry payloads are persisted to disk.
 ///
 /// A configured `forwarder_storage_path` is used as-is. Otherwise the path is derived from
-/// `run_path`, which has no typed home: its schema default is an unresolved placeholder, so
-/// promoting it to the typed model would put that placeholder in the model.
-///
-/// TODO: read `run_path` from typed configuration once the placeholder default is resolved.
-fn resolve_storage_path(configured: &Path, config: &GenericConfiguration) -> PathBuf {
+/// `run_path`. If neither is configured, no storage path is available.
+fn resolve_storage_path(configured: &Path, run_path: Option<&Path>) -> PathBuf {
     if configured.parent().is_some() {
         return configured.to_path_buf();
     }
 
-    match config.try_get_typed::<PathBuf>("run_path") {
-        Ok(Some(mut run_path)) => {
-            run_path.push(RETRY_TXN_DIR);
-            run_path
-        }
-        Ok(None) => {
+    match run_path {
+        Some(run_path) => run_path.join(RETRY_TXN_DIR),
+        None => {
             debug!("`forwarder_storage_path` and `run_path` were empty. Cannot calculate default storage path for forwarder.");
-            PathBuf::new()
-        }
-        Err(e) => {
-            debug!(error = %e, "Failed to read `run_path` from configuration. Cannot calculate default storage path for forwarder.");
             PathBuf::new()
         }
     }
@@ -222,6 +212,8 @@ mod tests {
     type TestRequest = Request<()>;
     type TestResponse = Result<Response<()>, BoxError>;
 
+    const RUN_PATH: &str = "/my/little/run_path";
+
     fn ok_response(status: StatusCode) -> TestResponse {
         Ok(Response::builder().status(status).body(()).unwrap())
     }
@@ -239,21 +231,7 @@ mod tests {
         Policy::<TestRequest, Response<()>, BoxError>::retry(policy, &mut request, &mut response).is_some()
     }
 
-    async fn empty_config() -> GenericConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        config
-    }
-
-    async fn config_from(values: serde_json::Value) -> GenericConfiguration {
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        config
-    }
-
-    async fn retry_config_from(forwarder: shared::Forwarder, config: &GenericConfiguration) -> RetryConfiguration {
-        RetryConfiguration::from_configuration(&forwarder, config)
-    }
-
-    async fn test_retry_config() -> RetryConfiguration {
+    fn test_retry_config() -> RetryConfiguration {
         // Use small backoffs so that any returned `Sleep` futures are cheap; we never await them, but build them.
         let forwarder = shared::Forwarder {
             backoff_base: 0.001,
@@ -262,44 +240,40 @@ mod tests {
             ..Default::default()
         };
 
-        retry_config_from(forwarder, &empty_config().await).await
+        RetryConfiguration::from_configuration(&forwarder, None)
     }
 
-    #[tokio::test]
-    async fn storage_path_is_derived_from_run_path_when_not_configured() {
-        const RUN_PATH: &str = "/my/little/run_path";
+    #[test]
+    fn storage_path_is_derived_from_run_path_when_not_configured() {
+        let retry_config =
+            RetryConfiguration::from_configuration(&shared::Forwarder::default(), Some(Path::new(RUN_PATH)));
 
-        let config = config_from(json!({ "run_path": RUN_PATH })).await;
-        let retry_config = retry_config_from(shared::Forwarder::default(), &config).await;
-
-        assert_eq!(PathBuf::from(RUN_PATH).join(RETRY_TXN_DIR), retry_config.storage_path());
+        assert_eq!(Path::new(RUN_PATH).join(RETRY_TXN_DIR), retry_config.storage_path());
     }
 
-    #[tokio::test]
-    async fn a_configured_storage_path_wins_over_run_path() {
-        const RUN_PATH: &str = "/my/little/run_path";
+    #[test]
+    fn a_configured_storage_path_wins_over_run_path() {
         const FORWARDER_STORAGE_PATH: &str = "/custom/path/to/storage";
 
-        let config = config_from(json!({ "run_path": RUN_PATH })).await;
         let forwarder = shared::Forwarder {
             storage_path: PathBuf::from(FORWARDER_STORAGE_PATH),
             ..Default::default()
         };
-        let retry_config = retry_config_from(forwarder, &config).await;
+        let retry_config = RetryConfiguration::from_configuration(&forwarder, Some(Path::new(RUN_PATH)));
 
         assert_eq!(PathBuf::from(FORWARDER_STORAGE_PATH), retry_config.storage_path());
     }
 
-    #[tokio::test]
-    async fn there_is_no_storage_path_without_a_run_path() {
+    #[test]
+    fn there_is_no_storage_path_without_a_run_path() {
         // With neither setting, no valid path can be constructed, so disk persistence has nowhere to go.
-        let retry_config = retry_config_from(shared::Forwarder::default(), &empty_config().await).await;
+        let retry_config = RetryConfiguration::from_configuration(&shared::Forwarder::default(), None);
 
         assert_eq!(PathBuf::new(), retry_config.storage_path());
     }
 
-    #[tokio::test]
-    async fn queue_max_size_bytes_carries_the_resolved_size() {
+    #[test]
+    fn queue_max_size_bytes_carries_the_resolved_size() {
         // Which of the two retry-queue settings applies is resolved by the configuration layer; the
         // forwarder stores only the outcome.
         let forwarder = shared::Forwarder {
@@ -307,13 +281,13 @@ mod tests {
             retry_queue_max_size: ConfigValue::explicit(1024),
             ..Default::default()
         };
-        let retry_config = retry_config_from(forwarder, &empty_config().await).await;
+        let retry_config = RetryConfiguration::from_configuration(&forwarder, None);
 
         assert_eq!(1024, retry_config.queue_max_size_bytes());
     }
 
-    #[tokio::test]
-    async fn capacity_time_interval_secs_is_clamped_to_the_bucket_size() {
+    #[test]
+    fn capacity_time_interval_secs_is_clamped_to_the_bucket_size() {
         let cases = [
             (900, 900),
             (60, 60),
@@ -325,15 +299,15 @@ mod tests {
                 retry_queue_capacity_time_interval_sec: configured,
                 ..Default::default()
             };
-            let retry_config = retry_config_from(forwarder, &empty_config().await).await;
+            let retry_config = RetryConfiguration::from_configuration(&forwarder, None);
 
             assert_eq!(expected, retry_config.capacity_time_interval_secs(), "{configured}");
         }
     }
 
-    #[tokio::test]
-    async fn policy_without_config_does_not_retry_403() {
-        let retry_config = test_retry_config().await;
+    #[test]
+    fn policy_without_config_does_not_retry_403() {
+        let retry_config = test_retry_config();
         let mut policy = retry_config.to_default_http_retry_policy(None);
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
@@ -342,7 +316,7 @@ mod tests {
     #[tokio::test]
     async fn policy_with_config_but_no_secrets_does_not_retry_403() {
         let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let retry_config = test_retry_config().await;
+        let retry_config = test_retry_config();
         let mut policy = retry_config.to_default_http_retry_policy(Some(config));
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
@@ -352,7 +326,7 @@ mod tests {
     async fn policy_with_secrets_retries_403() {
         let values = json!({ "secret_backend_command": "/bin/true" });
         let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config = test_retry_config().await;
+        let retry_config = test_retry_config();
         let mut policy = retry_config.to_default_http_retry_policy(Some(config));
 
         assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
@@ -362,7 +336,7 @@ mod tests {
     async fn policy_secrets_does_not_affect_other_status_codes() {
         let values = json!({ "secret_backend_command": "/bin/true" });
         let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config = test_retry_config().await;
+        let retry_config = test_retry_config();
         let mut policy = retry_config.to_default_http_retry_policy(Some(config));
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::OK)));
@@ -389,7 +363,7 @@ mod tests {
             .expect("should send initial snapshot");
         config.ready().await;
 
-        let retry_config = test_retry_config().await;
+        let retry_config = test_retry_config();
         let mut policy = retry_config.to_default_http_retry_policy(Some(config.clone()));
 
         // Before secrets are configured, 403 must not be retried.

@@ -37,6 +37,13 @@ pub struct SharedConfiguration {
     /// Verbosity of the internal telemetry emitted about the runtime itself. (not in Datadog Agent
     /// config schema)
     pub metrics_level: String,
+
+    /// Base directory for runtime-state files.
+    ///
+    /// ADP uses this to derive default locations for forwarder retry data, DogStatsD captures, and
+    /// DogStatsD context dumps. Defaults to unset when configuration does not provide a concrete
+    /// `run_path`.
+    pub run_path: Option<PathBuf>,
 }
 
 /// Inputs used to derive deployment-wide static tags.

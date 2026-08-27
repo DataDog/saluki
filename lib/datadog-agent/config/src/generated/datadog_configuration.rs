@@ -436,6 +436,10 @@ pub struct DatadogConfiguration {
     #[serde(default)]
     pub proxy: Proxy,
 
+    #[serde(default = "defaults::datadog_configuration_run_path")]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub run_path: String,
+
     #[serde(default = "defaults::datadog_configuration_serializer_compressor_kind")]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub serializer_compressor_kind: String,
@@ -655,6 +659,7 @@ impl Default for DatadogConfiguration {
             otlp_config: Default::default(),
             provider_kind: Default::default(),
             proxy: Default::default(),
+            run_path: defaults::datadog_configuration_run_path(),
             serializer_compressor_kind: defaults::datadog_configuration_serializer_compressor_kind(),
             serializer_experimental_use_v3_api: Default::default(),
             serializer_max_payload_size: defaults::default_u64::<i64, 2621440>(),
@@ -2096,6 +2101,9 @@ pub mod defaults {
     }
     pub(super) fn datadog_configuration_min_tls_version() -> String {
         "tlsv1.2".to_string()
+    }
+    pub(super) fn datadog_configuration_run_path() -> String {
+        "${run_path}".to_string()
     }
     pub(super) fn datadog_configuration_serializer_compressor_kind() -> String {
         "zstd".to_string()

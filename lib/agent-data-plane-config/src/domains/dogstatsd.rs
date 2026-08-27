@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use crate::defaults::{
     DEFAULT_AGGREGATE_CONTEXT_LIMIT, DEFAULT_AGGREGATE_FLUSH_INTERVAL,
     DEFAULT_AGGREGATE_PASSTHROUGH_IDLE_FLUSH_TIMEOUT, DEFAULT_AGGREGATE_WINDOW_DURATION_SECONDS,
-    DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS, DEFAULT_DOGSTATSD_AUTOSCALE_UDP_LISTENERS,
+    DEFAULT_DOGSTATSD_BUFFER_COUNT, DEFAULT_DOGSTATSD_BUFFER_COUNT_MAX, DEFAULT_DOGSTATSD_CACHED_CONTEXTS_LIMIT,
+    DEFAULT_DOGSTATSD_CACHED_TAGSETS_LIMIT, DEFAULT_DOGSTATSD_MAPPER_STRING_INTERNER_SIZE_BYTES,
+    DEFAULT_DOGSTATSD_MINIMUM_SAMPLE_RATE, DEFAULT_DOGSTATSD_PERMISSIVE_DECODING, DEFAULT_DOGSTATSD_TCP_PORT,
 };
 use crate::Error;
 
@@ -62,12 +65,14 @@ pub struct Domain {
 }
 
 /// Source listeners and packet-decoding options.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Listeners {
     /// UDP port DogStatsD listens on.
     pub port: u16,
 
     /// TCP port DogStatsD listens on. (not in Datadog Agent config schema)
+    ///
+    /// Defaults to `0`, which disables TCP.
     pub tcp_port: u16,
 
     /// Path of the Unix datagram socket DogStatsD listens on.
@@ -110,7 +115,9 @@ pub struct Listeners {
     /// Path a traffic capture is written to or replayed from.
     pub capture_path: PathBuf,
 
-    /// Maximum recursion depth when replaying a traffic capture.
+    /// Maximum number of captured packets queued for persistence.
+    ///
+    /// The capture writer raises a depth below its own minimum, so the default, 0, selects that minimum.
     pub capture_depth: usize,
 
     /// End-of-line markers required to terminate a stream-socket message.
@@ -128,6 +135,36 @@ pub struct Listeners {
 
     /// Port that received metrics are additionally forwarded to.
     pub forward_port: u16,
+}
+
+impl Default for Listeners {
+    fn default() -> Self {
+        Self {
+            // Saluki-only settings retain these defaults when unset.
+            buffer_count: DEFAULT_DOGSTATSD_BUFFER_COUNT,
+            buffer_count_max: DEFAULT_DOGSTATSD_BUFFER_COUNT_MAX,
+            permissive_decoding: DEFAULT_DOGSTATSD_PERMISSIVE_DECODING,
+            tcp_port: DEFAULT_DOGSTATSD_TCP_PORT,
+            autoscale_udp_listeners: DEFAULT_DOGSTATSD_AUTOSCALE_UDP_LISTENERS,
+            // Witnessed settings are overwritten during translation.
+            port: 0,
+            socket: None,
+            stream_socket: None,
+            pipe_name: None,
+            windows_pipe_security_descriptor: String::new(),
+            non_local_traffic: false,
+            bind_host: None,
+            so_rcvbuf: 0,
+            buffer_size: 0,
+            workers_count: 0,
+            capture_path: PathBuf::new(),
+            capture_depth: 0,
+            eol_required: Vec::new(),
+            stream_log_too_big: false,
+            forward_host: None,
+            forward_port: 0,
+        }
+    }
 }
 
 /// Origin detection and tag cardinality.
@@ -148,7 +185,7 @@ pub struct OriginDetection {
     /// Whether a client-supplied entity ID takes precedence over the detected origin.
     pub entity_id_precedence: bool,
 
-    /// Tag cardinality applied to origin-detected tags.
+    /// Tag cardinality applied to origin-detected tags, when a payload doesn't specify one itself.
     pub tag_cardinality: OriginTagCardinality,
 }
 
@@ -166,13 +203,15 @@ impl FromStr for OriginTagCardinality {
     type Err = Error;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
+        // The Datadog Agent lower-cases the value before matching, and accepts `orch` as a shorthand
+        // for `orchestrator`.
         match value.to_ascii_lowercase().as_str() {
             "low" => Ok(Self::Low),
-            "orchestrator" => Ok(Self::Orchestrator),
+            "orch" | "orchestrator" => Ok(Self::Orchestrator),
             "high" => Ok(Self::High),
             "none" => Ok(Self::None),
             other => Err(Error::new_without_source(format!(
-                "unknown tag cardinality `{other}`; expected low, orchestrator, high, or none"
+                "unknown tag cardinality `{other}`; expected low, orch, orchestrator, high, or none"
             ))),
         }
     }
@@ -186,7 +225,7 @@ pub struct Telemetry {
 }
 
 /// Context cache sizing and sample-rate floor.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Contexts {
     /// Maximum number of metric contexts held in the cache. (not in Datadog Agent config schema)
     pub cached_contexts_limit: usize,
@@ -205,9 +244,24 @@ pub struct Contexts {
     /// config schema)
     pub allow_context_heap_allocs: bool,
 
-    /// Lowest sample rate accepted before a metric is rejected. (not in Datadog Agent config
-    /// schema)
+    /// Lowest sample rate honored; the decoder warns and clamps anything below it. (not in Datadog
+    /// Agent config schema)
     pub minimum_sample_rate: f64,
+}
+
+impl Default for Contexts {
+    fn default() -> Self {
+        Self {
+            // Saluki-only settings retain these defaults when unset.
+            cached_contexts_limit: DEFAULT_DOGSTATSD_CACHED_CONTEXTS_LIMIT,
+            cached_tagsets_limit: DEFAULT_DOGSTATSD_CACHED_TAGSETS_LIMIT,
+            string_interner_size_bytes: None,
+            allow_context_heap_allocs: DEFAULT_DOGSTATSD_ALLOW_CONTEXT_HEAP_ALLOCS,
+            minimum_sample_rate: DEFAULT_DOGSTATSD_MINIMUM_SAMPLE_RATE,
+            // Witnessed settings are overwritten during translation.
+            string_interner_size: 0,
+        }
+    }
 }
 
 /// Metric aggregation window and flush behavior.

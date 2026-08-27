@@ -33,6 +33,8 @@ use prost::Message;
 use saluki_core::accounting::MemoryLimiter;
 use saluki_core::components::{ComponentContext, ComponentSpawner};
 use saluki_core::observability::ComponentMetricsExt;
+#[cfg(test)]
+use saluki_core::runtime::state::Identifier;
 use saluki_error::{ErrorContext as _, GenericError};
 use saluki_io::net::server::{
     grpc::{GrpcKeepalive, GrpcServer},
@@ -206,6 +208,10 @@ pub struct OtlpServerConfiguration {
     cors: CorsConfiguration,
     http_tls: Option<OtlpTlsConfiguration>,
     grpc_tls: Option<OtlpTlsConfiguration>,
+    #[cfg(test)]
+    http_bound_address_id: Option<Identifier>,
+    #[cfg(test)]
+    grpc_bound_address_id: Option<Identifier>,
 }
 
 impl OtlpServerConfiguration {
@@ -221,12 +227,24 @@ impl OtlpServerConfiguration {
             cors: CorsConfiguration::default(),
             http_tls: None,
             grpc_tls: None,
+            #[cfg(test)]
+            http_bound_address_id: None,
+            #[cfg(test)]
+            grpc_bound_address_id: None,
         }
     }
 
     /// Sets the gRPC keepalive parameters.
     pub fn with_grpc_keepalive(mut self, keepalive: GrpcKeepalive) -> Self {
         self.grpc_keepalive = keepalive;
+        self
+    }
+
+    /// Sets the identifiers used to publish the bound HTTP and gRPC addresses.
+    #[cfg(test)]
+    fn with_bound_address_ids(mut self, http_id: impl Into<Identifier>, grpc_id: impl Into<Identifier>) -> Self {
+        self.http_bound_address_id = Some(http_id.into());
+        self.grpc_bound_address_id = Some(grpc_id.into());
         self
     }
 
@@ -296,6 +314,10 @@ impl OtlpServerConfiguration {
 
         let mut grpc_server = grpc_server.with_keepalive(self.grpc_keepalive);
 
+        #[cfg(test)]
+        if let Some(id) = self.grpc_bound_address_id {
+            grpc_server = grpc_server.with_bound_address_id(id);
+        }
         if let Some(tls_config) = grpc_tls_config {
             grpc_server = grpc_server.with_tls_config(tls_config);
         }
@@ -325,6 +347,10 @@ impl OtlpServerConfiguration {
 
         let mut http_server = HttpServer::from_listen_address(self.http_endpoint, service);
 
+        #[cfg(test)]
+        if let Some(id) = self.http_bound_address_id {
+            http_server = http_server.with_bound_address_id(id);
+        }
         if let Some(tls_config) = http_tls_config {
             http_server = http_server.with_tls_config(tls_config);
         }
@@ -562,9 +588,7 @@ impl<H: OtlpHandler> TraceService for GrpcServiceImpl<H> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    #[cfg(unix)]
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use axum::{
         body::Body,
@@ -579,7 +603,9 @@ mod tests {
     use saluki_core::{
         accounting::MemoryLimiter,
         components::{test_util::TestComponentSupervisor, ComponentContext},
+        runtime::state::{DataspaceUpdate, IdentifierFilter},
     };
+    use saluki_io::net::server::BoundServerAddress;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -587,6 +613,9 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    const HTTP_BOUND_ADDRESS_ID: &str = "test-otlp-http-bound-address";
+    const GRPC_BOUND_ADDRESS_ID: &str = "test-otlp-grpc-bound-address";
 
     struct NoopHandler;
 
@@ -944,17 +973,9 @@ mod tests {
         let supervisor = TestComponentSupervisor::start("otlp-tls-test").await;
         let spawner = supervisor.spawner();
 
-        // Bind listeners ourselves first to get ephemeral ports, then drop them and let the builder re-bind.
-        let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let http_port = http_listener.local_addr().unwrap().port();
-        let grpc_port = grpc_listener.local_addr().unwrap().port();
-        drop(http_listener);
-        drop(grpc_listener);
-
         let cert = SelfSignedCert::localhost();
-        let http_endpoint = ListenAddress::Tcp(format!("127.0.0.1:{}", http_port).parse().unwrap());
-        let grpc_endpoint = ListenAddress::Tcp(format!("127.0.0.1:{}", grpc_port).parse().unwrap());
+        let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().unwrap());
+        let grpc_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().unwrap());
 
         // Write the cert and key to temp files so OtlpTlsConfiguration can load them.
         let tempdir = tempfile::tempdir().expect("temp dir should be created");
@@ -965,6 +986,7 @@ mod tests {
 
         let tls_config = OtlpTlsConfiguration::new(cert_path, key_path);
         let server_config = OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+            .with_bound_address_ids(HTTP_BOUND_ADDRESS_ID, GRPC_BOUND_ADDRESS_ID)
             .with_http_tls(tls_config.clone())
             .with_grpc_tls(tls_config);
 
@@ -973,7 +995,21 @@ mod tests {
             .await
             .expect("OTLP server with TLS should start");
 
+        let http_port = bound_port(&supervisor, HTTP_BOUND_ADDRESS_ID).await;
+        let grpc_port = bound_port(&supervisor, GRPC_BOUND_ADDRESS_ID).await;
+
         (http_port, grpc_port, cert, supervisor)
+    }
+
+    async fn bound_port(supervisor: &TestComponentSupervisor, id: &str) -> u16 {
+        let mut subscription = supervisor
+            .dataspace()
+            .subscribe::<BoundServerAddress>(IdentifierFilter::exact(id));
+
+        match tokio::time::timeout(Duration::from_secs(5), subscription.recv()).await {
+            Ok(Some(DataspaceUpdate::Asserted(_, BoundServerAddress(address)))) => address.port(),
+            update => panic!("expected a bound address assertion for '{id}', got {update:?}"),
+        }
     }
 
     #[tokio::test]
