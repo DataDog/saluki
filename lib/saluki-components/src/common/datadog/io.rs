@@ -46,7 +46,7 @@ use tracing::{debug, error, warn};
 
 use super::{
     config::ForwarderConfiguration,
-    endpoints::{EndpointRoute, EndpointV3Settings, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
+    endpoints::{EndpointRoute, EndpointV3Settings, LiveApiKeys, ResolvedEndpoint, RoutableEndpoint, V3EndpointConfig},
     middleware::{for_resolved_endpoint, with_allow_arbitrary_tags, with_version_info},
     retry_capacity::{TrafficRateWindow, RETRY_QUEUE_CAPACITY_BUCKET_DURATION_SECS},
     telemetry::{
@@ -297,9 +297,13 @@ where
     B::Error: std::error::Error + Send + Sync,
 {
     /// Creates a new `TransactionForwarder` instance from the given configuration.
+    ///
+    /// Two configuration inputs arrive here, and they are not interchangeable: `api_keys` holds the typed live views
+    /// the endpoints refresh their API keys from, while `live_config` is the raw map that the retry policy's secrets
+    /// gate and API key validation still read. `live_config` goes away as those two move to typed configuration.
     pub fn from_config<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
@@ -308,6 +312,7 @@ where
             context,
             config,
             live_config,
+            api_keys,
             endpoint_name,
             telemetry,
             metrics_builder,
@@ -318,13 +323,13 @@ where
     /// Creates a new `TransactionForwarder` with a custom endpoint request mapper.
     pub(crate) fn from_config_with_endpoint_request_mapper<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
-        endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
+        api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,
         endpoint_request_mapper_factory: EndpointRequestMapperFactory<B>,
     ) -> Result<Self, GenericError>
     where
         F: Fn(&Uri) -> Option<MetaString> + Send + Sync + 'static,
     {
-        let endpoints = config.build_routable_endpoints(live_config.clone())?;
+        let endpoints = config.build_routable_endpoints(api_keys)?;
         let endpoint_name: Arc<EndpointNameFn> = Arc::new(endpoint_name);
         let endpoint_name_for_client = Arc::clone(&endpoint_name);
         let mut client_builder = HttpClient::builder()
@@ -2067,6 +2072,7 @@ mod tests {
                     context,
                     forwarder_config,
                     live_config,
+                    &LiveApiKeys::default(),
                     test_logical_endpoint,
                     telemetry,
                     metrics_builder,

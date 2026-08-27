@@ -367,21 +367,27 @@ mod tests {
 
     use agent_data_plane_config::{
         shared::{AltMetricsIntake, SharedConfiguration},
-        ConfigValue,
+        ConfigValue, SalukiConfiguration,
     };
     use axum::{routing::get, Router};
-    use saluki_config::{
-        dynamic::{ConfigSetting, ConfigUpdate},
-        ConfigurationLoader,
-    };
     use saluki_tls::initialize_default_crypto_provider;
-    use serde_json::json;
     use tokio::net::TcpListener;
 
     use super::*;
     use crate::common::datadog::{
-        config::ForwarderConfiguration, endpoints::ResolvedEndpoint, test_util::shared_configuration,
+        config::ForwarderConfiguration,
+        endpoints::{LiveApiKeys, ResolvedEndpoint},
+        test_util::{shared_configuration, LiveConfiguration},
     };
+
+    /// Returns a live configuration whose primary API key and additional endpoints match `shared`.
+    fn live_configuration_for(shared: &SharedConfiguration) -> LiveConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.endpoints.api_key = shared.endpoints.api_key.clone();
+        config.shared.endpoints.additional_endpoints = shared.endpoints.additional_endpoints.clone();
+
+        LiveConfiguration::new(config)
+    }
 
     /// Returns shared configuration whose primary endpoint is `dd_url`, with `primary-key` as its API key.
     fn shared_configuration_for(dd_url: &str) -> SharedConfiguration {
@@ -485,7 +491,6 @@ mod tests {
 
     #[tokio::test]
     async fn validation_targets_include_primary_additional_and_opw() {
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
         let mut shared = shared_configuration_for("http://primary.example.com");
         shared.endpoints.additional_endpoints = HashMap::from([(
             "http://additional.example.com".to_string(),
@@ -500,9 +505,10 @@ mod tests {
             url: "http://opw.example.com".to_string(),
             use_v3_series: false,
         };
+        let live_config = live_configuration_for(&shared);
         let forwarder_config = ForwarderConfiguration::from_configuration(&shared);
         let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config))
+            .build_routable_endpoints(&live_config.api_keys())
             .expect("endpoints should resolve");
 
         let targets = collect_validation_targets(&mut endpoints);
@@ -525,61 +531,36 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn validation_targets_refresh_existing_additional_endpoint_key() {
-        let (config, sender) = ConfigurationLoader::for_tests(None, None, true).await;
-        let sender = sender.expect("dynamic sender should exist");
-        sender
-            .send(ConfigUpdate::snapshot([
-                ConfigSetting::explicit("api_key", json!("primary-key")),
-                ConfigSetting::explicit("dd_url", json!("http://primary.example.com")),
-                ConfigSetting::explicit(
-                    "additional_endpoints",
-                    json!({ "http://additional.example.com": ["old-additional-key"] }),
-                ),
-            ]))
-            .await
-            .expect("initial snapshot should send");
-        config.ready().await;
-
+    #[test]
+    fn validation_targets_refresh_existing_additional_endpoint_key() {
         let mut shared = shared_configuration_for("http://primary.example.com");
         shared.endpoints.additional_endpoints = HashMap::from([(
             "http://additional.example.com".to_string(),
             vec!["old-additional-key".to_string()],
         )]);
+        let live_config = live_configuration_for(&shared);
         let forwarder_config = ForwarderConfiguration::from_configuration(&shared);
         let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config.clone()))
+            .build_routable_endpoints(&live_config.api_keys())
             .expect("endpoints should resolve");
 
-        sender
-            .send(ConfigUpdate::snapshot([
-                ConfigSetting::explicit("api_key", json!("primary-key")),
-                ConfigSetting::explicit("dd_url", json!("http://primary.example.com")),
-                ConfigSetting::explicit(
-                    "additional_endpoints",
-                    json!({
-                        "http://additional.example.com": ["new-additional-key"],
-                        "http://new.example.com": ["ignored-new-domain-key"]
-                    }),
-                ),
-            ]))
-            .await
-            .expect("updated snapshot should send");
+        // Rotate the existing endpoint's key and add a second endpoint. The rotated key reaches
+        // validation; the new endpoint does not, because the endpoint set is fixed at startup.
+        let mut rotated = SalukiConfiguration::default();
+        rotated.shared.endpoints.api_key = "primary-key".to_string();
+        rotated.shared.endpoints.additional_endpoints = HashMap::from([
+            (
+                "http://additional.example.com".to_string(),
+                vec!["new-additional-key".to_string()],
+            ),
+            (
+                "http://new.example.com".to_string(),
+                vec!["ignored-new-domain-key".to_string()],
+            ),
+        ]);
+        live_config.store(rotated);
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let targets = loop {
-            let targets = collect_validation_targets(&mut endpoints);
-            if targets.iter().any(|target| target.api_key == "new-additional-key") {
-                break targets;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for key refresh"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        };
-
+        let targets = collect_validation_targets(&mut endpoints);
         assert!(targets.iter().any(|target| target.api_key == "new-additional-key"));
         assert!(!targets
             .iter()
@@ -625,10 +606,9 @@ mod tests {
 
         // A validation server that rejects the key with a 403, so validation concludes it is invalid.
         let invalid_url = start_validation_server(StatusCode::FORBIDDEN).await;
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
         let forwarder_config = ForwarderConfiguration::from_configuration(&shared_configuration_for(&invalid_url));
         let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config))
+            .build_routable_endpoints(&LiveApiKeys::default())
             .expect("endpoints should resolve");
 
         // Subscribe to diagnostic events on a dataspace, then build an emitter that publishes to that same dataspace.
@@ -661,10 +641,9 @@ mod tests {
 
         // A validation server that accepts the key, so validation concludes it is valid.
         let valid_url = start_validation_server(StatusCode::OK).await;
-        let (config, _) = ConfigurationLoader::for_tests(Some(json!({ "api_key": "primary-key" })), None, false).await;
         let forwarder_config = ForwarderConfiguration::from_configuration(&shared_configuration_for(&valid_url));
         let mut endpoints = forwarder_config
-            .build_routable_endpoints(Some(config))
+            .build_routable_endpoints(&LiveApiKeys::default())
             .expect("endpoints should resolve");
 
         let dataspace = DataspaceRegistry::new();

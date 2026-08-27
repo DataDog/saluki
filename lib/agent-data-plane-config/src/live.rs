@@ -68,6 +68,24 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
         }
     }
 
+    /// Returns a fresh clone of the projected value.
+    ///
+    /// For a fixed view this is the fixed value. For a dynamic view this reads the shared
+    /// configuration and projects it again, so it returns the newest accepted value even when this
+    /// view has not processed the notification for it yet. The read is independent: it leaves this
+    /// view's snapshot alone, so `Deref` keeps returning the older value and `changed` still reports
+    /// the next state change, with the coalescing it documents.
+    ///
+    /// Use this where a consumer reads the value at a moment of its own choosing, such as while
+    /// serving a request; use `changed` plus `Deref` where a consumer rebuilds state from the update
+    /// it just observed.
+    pub fn current(&self) -> T {
+        match &self.inner {
+            Inner::Fixed(value) => value.clone(),
+            Inner::Dynamic { cell, project, .. } => project(&cell.load()).clone(),
+        }
+    }
+
     /// Creates a view with a value that never changes.
     pub fn new_fixed(value: T) -> Self {
         Self {

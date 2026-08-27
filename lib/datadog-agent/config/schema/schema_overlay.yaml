@@ -50,7 +50,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "Dual-ship to extra endpoints"
     test_support:
-      used_by: [get_typed, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       test_json: '{"smoke-host-1.example.com": ["smoke-api-key"]}'
       additional_attributes:
         config_registry_filename: forwarder.rs
@@ -192,7 +192,7 @@ inventory:
     pipelines: [cross_cutting]
     description: "API key for endpoint auth"
     test_support:
-      used_by: [get_typed, TypedConfigSystem]
+      used_by: [TypedConfigSystem]
       additional_attributes:
         config_registry_filename: forwarder.rs
 

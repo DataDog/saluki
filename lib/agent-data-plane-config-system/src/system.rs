@@ -184,6 +184,13 @@ impl ConfigurationSystem {
 ///
 /// Each update is processed individually (no burst collapse) so a rejection can be attributed to the
 /// exact update that caused it. Updates are infrequent, so re-translating per update is cheap.
+///
+/// A partial update carries a single key, so rejecting one holds back only that key, and discarding
+/// the tentative layer keeps the rejected value from poisoning later updates. A snapshot is the
+/// exception: it carries every setting, so a single value the model cannot accept costs the whole
+/// snapshot.
+/// See `run_config_stream_event_loop` in the `agent-data-plane` binary for what the Agent's stream
+/// guarantees.
 async fn agent_loop(
     mut agent_rx: mpsc::Receiver<ConfigUpdate>, compat_tx: mpsc::Sender<ConfigUpdate>, base: SourceTree,
     mut agent: SourceTree, current: Arc<ArcSwap<SalukiConfiguration>>, tick: Arc<watch::Sender<()>>,

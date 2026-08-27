@@ -22,7 +22,7 @@ use tracing::debug;
 
 use crate::common::datadog::{
     config::ForwarderConfiguration,
-    endpoints::{ResolvedEndpoint, SingleDestination},
+    endpoints::{LiveApiKeys, ResolvedEndpoint, SingleDestination},
     io::{EndpointRequestMapper, EndpointRequestMapperFactory, TransactionForwarder},
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction, TransactionBody},
@@ -60,7 +60,6 @@ impl ClusterAgentForwarderConfiguration {
         let destination = SingleDestination {
             url: endpoint_url,
             api_key: auth_token,
-            api_key_refresh_config_path: None,
             accepts_v3_series: false,
         };
         let forwarder_config =
@@ -87,6 +86,8 @@ impl ForwarderBuilder for ClusterAgentForwarderConfiguration {
             context.component_context().clone(),
             self.forwarder_config.clone(),
             None,
+            // The bearer token is not a configured API key, so nothing refreshes it.
+            &LiveApiKeys::default(),
             get_cluster_agent_endpoint_name,
             telemetry.clone(),
             metrics_builder,
@@ -284,7 +285,7 @@ mod tests {
         .expect("Cluster Agent forwarder configuration should parse");
         let endpoints = config
             .forwarder_config
-            .build_routable_endpoints(None)
+            .build_routable_endpoints(&LiveApiKeys::default())
             .expect("endpoint should resolve");
 
         assert_eq!(endpoints.len(), 1);
