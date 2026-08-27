@@ -1,19 +1,111 @@
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
-use agent_data_plane_config::shared;
-use http::StatusCode;
-use saluki_config::GenericConfiguration;
+use agent_data_plane_config::shared::{self, Secrets};
+use agent_data_plane_config::Live;
+use http::{Response, StatusCode};
+use saluki_common::task::spawn_traced_named;
 use saluki_io::net::util::retry::{
-    DefaultHttpRetryPolicy, ExponentialBackoff, HttpRetryPredicate, StandardHttpClassifier,
+    ExponentialBackoff, RetryClassifier, RollingExponentialBackoffRetryPolicy, StandardHttpClassifier,
+    StandardHttpRetryLifecycle,
 };
 use tracing::debug;
 
 const RETRY_TXN_DIR: &str = "transactions_to_retry";
 const RETRY_QUEUE_CAPACITY_MIN_HISTORY_DURATION_SECS: u64 = 10;
+
+pub(crate) type SecretsHttpRetryPolicy<B = ()> =
+    RollingExponentialBackoffRetryPolicy<SecretsHttpClassifier<B>, StandardHttpRetryLifecycle>;
+
+/// Whether secret resolution might replace a rejected API key.
+///
+/// The retry classifier reads this on every `403 Forbidden` response, and a [`SecretsGateRefresher`]
+/// writes it when typed configuration changes. Cloning shares the gate, so every endpoint's classifier
+/// follows the same setting.
+#[derive(Clone)]
+pub(crate) struct SecretsGate {
+    in_use: Arc<AtomicBool>,
+}
+
+impl SecretsGate {
+    /// Creates a gate reporting `secrets`, which nothing updates.
+    pub(crate) fn new_fixed(secrets: &Secrets) -> Self {
+        Self {
+            in_use: Arc::new(AtomicBool::new(secrets.in_use())),
+        }
+    }
+
+    fn store(&self, secrets: &Secrets) {
+        self.in_use.store(secrets.in_use(), Ordering::Relaxed);
+    }
+
+    fn is_open(&self) -> bool {
+        self.in_use.load(Ordering::Relaxed)
+    }
+}
+
+/// Updates a [`SecretsGate`] as typed configuration changes.
+pub(crate) struct SecretsGateRefresher {
+    secrets: Live<Secrets>,
+
+    /// The gate the classifiers read. Clone it before spawning.
+    pub(crate) gate: SecretsGate,
+}
+
+impl SecretsGateRefresher {
+    /// Creates a refresher whose gate reports what `secrets` projects now.
+    ///
+    /// Seeding here rather than in the task closes the same gap `ApiKeyRefresher` closes: a configuration
+    /// store between view creation and the first `changed` would otherwise leave the gate reporting the
+    /// older setting.
+    pub(crate) fn new(secrets: Live<Secrets>) -> Self {
+        let gate = SecretsGate::new_fixed(&secrets);
+
+        Self { secrets, gate }
+    }
+
+    /// Spawns the task that follows the view.
+    pub(crate) fn spawn(mut self) {
+        spawn_traced_named("dd-secrets-gate-refresher", async move {
+            loop {
+                let secrets = self.secrets.changed().await;
+                self.gate.store(&secrets);
+            }
+        });
+    }
+}
+
+pub(crate) struct SecretsHttpClassifier<B = ()> {
+    standard: StandardHttpClassifier<B>,
+    secrets: SecretsGate,
+}
+
+impl<B> Clone for SecretsHttpClassifier<B> {
+    fn clone(&self) -> Self {
+        Self {
+            standard: self.standard.clone(),
+            secrets: self.secrets.clone(),
+        }
+    }
+}
+
+impl<B, Error> RetryClassifier<Response<B>, Error> for SecretsHttpClassifier<B> {
+    fn should_retry(&mut self, response: &Result<Response<B>, Error>) -> bool {
+        if let Ok(response) = response {
+            if response.status() == StatusCode::FORBIDDEN && self.secrets.is_open() {
+                return true;
+            }
+        }
+
+        self.standard.should_retry(response)
+    }
+}
 
 /// Datadog Agent-specific forwarder retry configuration.
 #[derive(Clone)]
@@ -146,31 +238,26 @@ impl RetryConfiguration {
         self.capacity_time_interval_secs
     }
 
-    /// Creates a new [`DefaultHttpRetryPolicy`] based on the forwarder configuration.
+    /// Creates a new HTTP retry policy based on the forwarder configuration.
     ///
-    /// If a [`GenericConfiguration`] is supplied, the policy captures it and checks whether
-    /// secrets management is active on every 403 Forbidden response. This allows the retry gate to
-    /// pick up runtime changes pushed via the config stream without rebuilding the service. When no
-    /// configuration is supplied, 403 responses retain their default non-retriable behavior.
-    pub fn to_default_http_retry_policy<B: 'static>(
-        &self, live_config: Option<GenericConfiguration>,
-    ) -> DefaultHttpRetryPolicy<B> {
+    /// A `403 Forbidden` response is retriable only when `secrets` reports that secret resolution might replace the
+    /// rejected API key. The gate is updated as configuration changes, so turning secrets management on or off while the
+    /// process runs changes the gate without rebuilding the service. A gate reporting nothing configured leaves a 403
+    /// non-retriable, which is the default behavior.
+    pub(crate) fn to_default_http_retry_policy<B: 'static>(&self, secrets: SecretsGate) -> SecretsHttpRetryPolicy<B> {
         let retry_backoff = ExponentialBackoff::with_jitter(
             Duration::from_secs_f64(self.backoff_base),
             Duration::from_secs_f64(self.backoff_max),
             self.backoff_factor,
         );
-
-        let classifier = if let Some(config) = live_config {
-            let gate: HttpRetryPredicate<B> =
-                Arc::new(move |response| response.status() == StatusCode::FORBIDDEN && secrets_in_use(&config));
-            StandardHttpClassifier::new().with_predicate(gate)
-        } else {
-            StandardHttpClassifier::new()
+        let classifier = SecretsHttpClassifier {
+            standard: StandardHttpClassifier::new(),
+            secrets,
         };
 
         let recovery_error_decrease_factor = (!self.recovery_reset).then_some(self.recovery_error_decrease_factor);
-        DefaultHttpRetryPolicy::with_backoff_and_classifier(retry_backoff, classifier)
+        RollingExponentialBackoffRetryPolicy::new(classifier, retry_backoff)
+            .with_retry_lifecycle(StandardHttpRetryLifecycle)
             .with_recovery_error_decrease_factor(recovery_error_decrease_factor)
     }
 }
@@ -193,20 +280,14 @@ fn resolve_storage_path(configured: &Path, run_path: Option<&Path>) -> PathBuf {
     }
 }
 
-fn secrets_in_use(config: &GenericConfiguration) -> bool {
-    matches!(config.try_get_typed::<u64>("secret_refresh_on_api_key_failure_interval"), Ok(Some(value)) if value > 0)
-        || matches!(config.try_get_typed::<String>("secret_backend_command"), Ok(Some(value)) if !value.trim().is_empty())
-}
-
 #[cfg(test)]
 mod tests {
-    use agent_data_plane_config::ConfigValue;
+    use agent_data_plane_config::{ConfigValue, SalukiConfiguration};
     use http::{Request, Response};
-    use saluki_config::ConfigurationLoader;
-    use serde_json::json;
     use tower::retry::Policy;
 
     use super::*;
+    use crate::common::datadog::test_util::LiveConfiguration;
 
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
     type TestRequest = Request<()>;
@@ -226,7 +307,7 @@ mod tests {
             .unwrap()
     }
 
-    fn would_retry(policy: &mut DefaultHttpRetryPolicy, mut response: TestResponse) -> bool {
+    fn would_retry(policy: &mut SecretsHttpRetryPolicy, mut response: TestResponse) -> bool {
         let mut request = test_request();
         Policy::<TestRequest, Response<()>, BoxError>::retry(policy, &mut request, &mut response).is_some()
     }
@@ -306,38 +387,43 @@ mod tests {
     }
 
     #[test]
-    fn policy_without_config_does_not_retry_403() {
+    fn policy_without_secrets_management_configured_does_not_retry_403() {
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(None);
+        let mut policy = retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&Secrets::default()));
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
     }
 
     #[tokio::test]
-    async fn policy_with_config_but_no_secrets_does_not_retry_403() {
-        let (config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-        let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+    async fn policy_with_secrets_management_retries_403() {
+        for secrets in [
+            Secrets {
+                backend_command: Some("/bin/true".to_string()),
+                refresh_on_api_key_failure_interval: 0,
+            },
+            Secrets {
+                backend_command: None,
+                refresh_on_api_key_failure_interval: 5,
+            },
+        ] {
+            let retry_config = test_retry_config();
+            let mut policy = retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&secrets));
 
-        assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+            assert!(
+                would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)),
+                "{secrets:?}"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn policy_with_secrets_retries_403() {
-        let values = json!({ "secret_backend_command": "/bin/true" });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
+    async fn the_secrets_gate_does_not_affect_other_status_codes() {
+        let secrets = Secrets {
+            backend_command: Some("/bin/true".to_string()),
+            refresh_on_api_key_failure_interval: 0,
+        };
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
-
-        assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
-    }
-
-    #[tokio::test]
-    async fn policy_secrets_does_not_affect_other_status_codes() {
-        let values = json!({ "secret_backend_command": "/bin/true" });
-        let (config, _) = ConfigurationLoader::for_tests(Some(values), None, false).await;
-        let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config));
+        let mut policy = retry_config.to_default_http_retry_policy(SecretsGate::new_fixed(&secrets));
 
         assert!(!would_retry(&mut policy, ok_response(StatusCode::OK)));
         assert!(!would_retry(&mut policy, ok_response(StatusCode::BAD_REQUEST)));
@@ -348,42 +434,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_403_gate_reflects_dynamic_secrets_config_change() {
-        use std::time::Duration as StdDuration;
-
-        use saluki_config::dynamic::{ConfigSetting, ConfigUpdate};
-
-        let (config, sender) = ConfigurationLoader::for_tests(Some(json!({})), None, true).await;
-        let sender = sender.expect("dynamic configuration sender should be present");
-
-        // Apply an empty initial snapshot and wait for readiness.
-        sender
-            .send(ConfigUpdate::snapshot([]))
-            .await
-            .expect("should send initial snapshot");
-        config.ready().await;
+    async fn the_403_gate_follows_a_secrets_configuration_change() {
+        let live_config = LiveConfiguration::new(SalukiConfiguration::default());
+        let refresher = SecretsGateRefresher::new(live_config.live(|config| &config.shared.secrets));
+        let gate = refresher.gate.clone();
+        refresher.spawn();
 
         let retry_config = test_retry_config();
-        let mut policy = retry_config.to_default_http_retry_policy(Some(config.clone()));
+        let mut policy = retry_config.to_default_http_retry_policy(gate.clone());
 
-        // Before secrets are configured, 403 must not be retried.
+        // Before secrets management is configured, a 403 must not be retried.
         assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
 
-        // Push a config update that enables secrets management.
-        let mut watcher = config.watch_for_updates("secret_backend_command");
-        sender
-            .send(ConfigUpdate::Partial(ConfigSetting::explicit(
-                "secret_backend_command",
-                json!("/bin/true"),
-            )))
-            .await
-            .expect("should send partial update");
-
-        tokio::time::timeout(StdDuration::from_secs(2), watcher.changed::<String>())
-            .await
-            .expect("timed out waiting for secret_backend_command update");
-
-        // The same policy instance must now retry 403 because the predicate reads the live cached secrets flag.
+        // The same policy instance reads the gate on every response, so turning secrets management on
+        // changes the gate without rebuilding the service.
+        live_config.store(configuration_with(Secrets {
+            backend_command: Some("/bin/true".to_string()),
+            refresh_on_api_key_failure_interval: 0,
+        }));
+        await_gate(&gate, true).await;
         assert!(would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+
+        live_config.store(SalukiConfiguration::default());
+        await_gate(&gate, false).await;
+        assert!(!would_retry(&mut policy, ok_response(StatusCode::FORBIDDEN)));
+    }
+
+    /// Waits for the refresher to bring `gate` to `expected`, failing if it never does.
+    async fn await_gate(gate: &SecretsGate, expected: bool) {
+        let observed = tokio::time::timeout(Duration::from_secs(2), async {
+            while gate.is_open() != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+
+        assert!(observed.is_ok(), "the gate should report {expected}");
+    }
+
+    /// Returns a configuration carrying `secrets` and nothing else.
+    fn configuration_with(secrets: Secrets) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.secrets = secrets;
+
+        config
     }
 }

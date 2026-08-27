@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
-use agent_data_plane_config::shared::SharedConfiguration;
+use agent_data_plane_config::shared::{Secrets, SharedConfiguration};
 use agent_data_plane_config::Live;
 use async_trait::async_trait;
 use http::Uri;
 use saluki_common::buf::FrozenChunkedBytesBuffer;
-use saluki_config::GenericConfiguration;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder, UsageExpr};
 use saluki_core::{
     components::{forwarders::*, BuildContext},
@@ -22,7 +21,7 @@ use crate::common::datadog::{
     api_key::{ApiKeyView, LiveApiKeys},
     config::ForwarderConfiguration,
     endpoints::SingleDestination,
-    io::TransactionForwarder,
+    io::{LiveForwarderConfiguration, TransactionForwarder},
     protocol::MetricsPayloadInfo,
     telemetry::ComponentTelemetry,
     transaction::{Metadata, Transaction},
@@ -42,32 +41,30 @@ pub struct DatadogForwarderConfiguration {
     /// See [`ForwarderConfiguration`] for more information about the available settings.
     forwarder_config: ForwarderConfiguration,
 
-    /// Live raw configuration, still needed by the retry policy's secrets gate and by API key validation's change
-    /// notifications.
-    configuration: GenericConfiguration,
-
     /// Live views the endpoints take their API keys from.
     api_keys: LiveApiKeys,
+
+    /// Live view of the secrets settings the retry policy's gate reads.
+    secrets: Live<Secrets>,
 }
 
 impl DatadogForwarderConfiguration {
     /// Creates a new `DatadogForwarderConfiguration` from the resolved shared configuration.
     ///
     /// `api_key` and `additional_endpoints` are the live views the endpoints take their API keys from, so that a key an
-    /// operator rotates while the process runs reaches the next request. `config` is a separate channel: it is the raw
-    /// map that the retry policy's secrets gate still reads and that API key validation still subscribes to for change
-    /// notifications.
+    /// operator rotates while the process runs reaches the next request. `secrets` is the live view the retry policy's
+    /// gate reads to decide whether a rejected key is worth retrying.
     pub fn from_configuration(
-        shared: &SharedConfiguration, config: &GenericConfiguration, api_key: Live<String>,
-        additional_endpoints: Live<HashMap<String, Vec<String>>>,
+        shared: &SharedConfiguration, api_key: Live<String>, additional_endpoints: Live<HashMap<String, Vec<String>>>,
+        secrets: Live<Secrets>,
     ) -> Self {
         Self {
             forwarder_config: ForwarderConfiguration::from_configuration(shared),
-            configuration: config.clone(),
             api_keys: LiveApiKeys {
                 primary: Some(ApiKeyView::Required(api_key)),
                 additional: Some(additional_endpoints),
             },
+            secrets,
         }
     }
 
@@ -75,10 +72,11 @@ impl DatadogForwarderConfiguration {
     ///
     /// The override replaces the configured endpoints entirely, and `api_key_view` is the live view its key comes from.
     /// Multi-Region Failover needs this: it has its own key, not the primary one, and configuration can leave that key
-    /// unset.
+    /// unset. `secrets` serves the same purpose as in [`from_configuration`](Self::from_configuration): it decides
+    /// whether the override's rejected key is worth retrying.
     pub fn for_endpoint_override(
-        shared: &SharedConfiguration, config: &GenericConfiguration, dd_url: String, api_key: String,
-        api_key_view: Live<Option<String>>,
+        shared: &SharedConfiguration, dd_url: String, api_key: String, api_key_view: Live<Option<String>>,
+        secrets: Live<Secrets>,
     ) -> Self {
         let destination = SingleDestination {
             url: dd_url,
@@ -88,11 +86,11 @@ impl DatadogForwarderConfiguration {
 
         Self {
             forwarder_config: ForwarderConfiguration::for_single_destination(shared, &destination),
-            configuration: config.clone(),
             api_keys: LiveApiKeys {
                 primary: Some(ApiKeyView::Optional(api_key_view)),
                 additional: None,
             },
+            secrets,
         }
     }
 }
@@ -109,8 +107,10 @@ impl ForwarderBuilder for DatadogForwarderConfiguration {
         let forwarder = TransactionForwarder::from_config(
             context.component_context().clone(),
             self.forwarder_config.clone(),
-            Some(self.configuration.clone()),
-            &self.api_keys,
+            LiveForwarderConfiguration {
+                api_keys: self.api_keys.clone(),
+                secrets: self.secrets.clone(),
+            },
             get_dd_endpoint_name,
             telemetry.clone(),
             metrics_builder,
@@ -229,7 +229,6 @@ fn get_dd_endpoint_name(uri: &Uri) -> Option<MetaString> {
 #[cfg(test)]
 mod tests {
     use agent_data_plane_config::SalukiConfiguration;
-    use saluki_config::ConfigurationLoader;
 
     use super::*;
     use crate::common::datadog::{
@@ -288,8 +287,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_endpoint_override_follows_the_failover_key_and_not_the_primary_one() {
-        let (generic_config, _) = ConfigurationLoader::for_tests(None, None, false).await;
-
         let mut live_config = SalukiConfiguration::default();
         live_config.shared.endpoints.api_key = "primary-api-key".to_string();
         live_config.domains.multi_region_failover.api_key = Some("mrf-api-key".to_string());
@@ -297,10 +294,10 @@ mod tests {
 
         let config = DatadogForwarderConfiguration::for_endpoint_override(
             &shared_configuration(),
-            &generic_config,
             "http://mrf.example.test".to_string(),
             "mrf-api-key".to_string(),
             live.live(|config| &config.domains.multi_region_failover.api_key),
+            live.live(|config| &config.shared.secrets),
         );
 
         let endpoints = config

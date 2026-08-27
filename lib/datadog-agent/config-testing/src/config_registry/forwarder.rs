@@ -379,6 +379,28 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::DogStatsD]),
     };
+    /// `secret_backend_command`-Path to the Agent secret-fetch executable
+    SECRET_BACKEND_COMMAND = SalukiAnnotation {
+        schema: &schema::SECRET_BACKEND_COMMAND,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
+    /// `secret_refresh_on_api_key_failure_interval`-Minutes between secret refreshes after a 403
+    SECRET_REFRESH_ON_API_KEY_FAILURE_INTERVAL = SalukiAnnotation {
+        schema: &schema::SECRET_REFRESH_ON_API_KEY_FAILURE_INTERVAL,
+        support_level: SupportLevel::Full,
+        additional_yaml_paths: &[],
+        env_var_override: None,
+        used_by: &[structs::TYPED_CONFIG_SYSTEM],
+        value_type_override: None,
+        test_json: None,
+        pipeline_affinity: PipelineAffinity::CrossCutting,
+    };
     /// `vector.metrics.use_v3_api.series`-Use V3 series for Vector
     VECTOR_METRICS_USE_V3_API_SERIES = SalukiAnnotation {
         schema: &schema::VECTOR_METRICS_USE_V3_API_SERIES,

@@ -2915,6 +2915,24 @@ inventory:
       additional_attributes:
         config_registry_filename: shared.rs
 
+  secret_backend_command:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Path to the Agent secret-fetch executable"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
+  secret_refresh_on_api_key_failure_interval:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Minutes between secret refreshes after a 403"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: forwarder.rs
+
   serializer_compressor_kind:
     support: full
     pipelines: [cross_cutting]
@@ -4846,7 +4864,6 @@ excluded:
   secret_allowed_k8s_namespace: "ignored in initial audit 2026-04-23"
   secret_audit_file_max_size: "ignored in initial audit 2026-04-23"
   secret_backend_arguments: "ignored in initial audit 2026-04-23"
-  secret_backend_command: "ignored in second bulk edit 2026-05-06"
   secret_backend_command_allow_group_exec_perm: "ignored in initial audit 2026-04-23"
   secret_backend_config: "ignored in initial audit 2026-04-23"
   secret_backend_output_max_size: "ignored in initial audit 2026-04-23"
@@ -4856,7 +4873,6 @@ excluded:
   secret_backend_type: "ignored in initial audit 2026-04-23"
   secret_image_to_handle: "ignored in initial audit 2026-04-23"
   secret_refresh_interval: "ignored in initial audit 2026-04-23"
-  secret_refresh_on_api_key_failure_interval: "ignored in initial audit 2026-04-23"
   secret_refresh_scatter: "ignored in initial audit 2026-04-23"
   secret_scope_integration_to_their_k8s_namespace: "ignored in initial audit 2026-04-23"
   security_agent.cmd_port: "ignored in initial audit 2026-04-23"
