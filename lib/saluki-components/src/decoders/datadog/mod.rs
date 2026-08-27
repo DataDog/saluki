@@ -30,6 +30,12 @@ mod tests;
 pub use self::error::DecodeError;
 use self::string_table::StringTable;
 
+/// Plausible minimum average wire size of a trace chunk containing a span list and 16-byte trace ID.
+const MIN_BYTES_PER_TRACE_CHUNK: u32 = 22;
+
+/// Plausible minimum average wire size of a span containing a random span ID and epoch-nanosecond start time.
+const MIN_BYTES_PER_SPAN: u32 = 21;
+
 /// Decodes a single v1.0 tracer payload into unified trace events.
 ///
 /// Each trace chunk in the payload becomes one [`Trace`]. Payload-level metadata (container ID,
@@ -185,7 +191,7 @@ fn decode_string_table(r: &mut &[u8], strings: &mut StringTable) -> Result<(), D
 
 /// Decodes the list of trace chunks (field 11 of the tracer payload).
 fn decode_chunk_list(r: &mut &[u8], strings: &mut StringTable) -> Result<Vec<DecodedChunk>, DecodeError> {
-    let num_chunks = read::read_array_len(r, "trace chunk list")?;
+    let num_chunks = read::read_array_len_with_minimum(r, MIN_BYTES_PER_TRACE_CHUNK, "trace chunk list")?;
     let mut chunks = Vec::with_capacity(num_chunks as usize);
     for _ in 0..num_chunks {
         chunks.push(decode_chunk(r, strings)?);
@@ -236,7 +242,7 @@ fn decode_chunk(r: &mut &[u8], strings: &mut StringTable) -> Result<DecodedChunk
 
 /// Decodes the list of spans within a trace chunk (field 4).
 fn decode_span_list(r: &mut &[u8], strings: &mut StringTable) -> Result<Vec<Span>, DecodeError> {
-    let num_spans = read::read_array_len(r, "span list")?;
+    let num_spans = read::read_array_len_with_minimum(r, MIN_BYTES_PER_SPAN, "span list")?;
     let mut spans = Vec::with_capacity(num_spans as usize);
     for _ in 0..num_spans {
         spans.push(decode_span(r, strings)?);

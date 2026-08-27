@@ -585,6 +585,51 @@ fn implausible_array_count_rejected() {
 }
 
 #[test]
+fn implausibly_small_trace_chunks_rejected() {
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 2).unwrap();
+    encode::write_map_len(&mut buf, 0).unwrap();
+    encode::write_map_len(&mut buf, 0).unwrap();
+
+    let err = decode_v1_payload(&buf).unwrap_err();
+    assert!(matches!(
+        err,
+        DecodeError::ImplausibleHeaderCount {
+            context: "trace chunk list",
+            len: 2,
+            remaining: 2,
+        }
+    ));
+}
+
+#[test]
+fn implausibly_small_spans_rejected() {
+    let mut buf = Vec::new();
+    encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
+    encode::write_uint(&mut buf, 11).unwrap(); // chunks
+    encode::write_array_len(&mut buf, 1).unwrap();
+    encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
+    encode::write_uint(&mut buf, 4).unwrap(); // spans
+    encode::write_array_len(&mut buf, 2).unwrap();
+    encode::write_map_len(&mut buf, 0).unwrap();
+    encode::write_map_len(&mut buf, 0).unwrap();
+    encode::write_uint(&mut buf, 6).unwrap(); // traceID; makes the chunk itself large enough
+    encode::write_bin(&mut buf, &[0; 16]).unwrap();
+
+    let err = decode_v1_payload(&buf).unwrap_err();
+    assert!(matches!(
+        err,
+        DecodeError::ImplausibleHeaderCount {
+            context: "span list",
+            len: 2,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn implausible_map_count_rejected() {
     // Under MAX_SIZE, but a tiny payload can't possibly back 1000 entries.
     let mut buf = Vec::new();
@@ -626,9 +671,11 @@ fn overlong_trace_id_in_chunk_uses_final_16_bytes() {
     encode::write_map_len(&mut buf, 1).unwrap(); // tracer payload
     encode::write_uint(&mut buf, 11).unwrap(); // chunks
     encode::write_array_len(&mut buf, 1).unwrap();
-    encode::write_map_len(&mut buf, 1).unwrap(); // trace chunk
+    encode::write_map_len(&mut buf, 2).unwrap(); // trace chunk
     encode::write_uint(&mut buf, 6).unwrap(); // traceID
     encode::write_bin(&mut buf, &id).unwrap();
+    encode::write_uint(&mut buf, 5).unwrap(); // droppedTrace; keeps the chunk above its plausible minimum
+    encode::write_bool(&mut buf, true).unwrap();
 
     let traces = decode_v1_payload(&buf).expect("payload with overlong trace ID should decode");
     assert_eq!(traces.len(), 1);

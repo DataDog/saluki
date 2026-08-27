@@ -72,6 +72,22 @@ fn check_slab_count(
 /// [`MAX_SIZE`], or if the declared length couldn't possibly be backed by the remaining input (see
 /// [`check_slab_count`]).
 pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, DecodeError> {
+    read_array_len_with_minimum(r, MIN_BYTES_PER_ARRAY_ELEMENT, context)
+}
+
+/// Reads an array header and checks that the remaining input can plausibly contain its elements.
+///
+/// `min_bytes_per_element` is a format-specific plausibility estimate for the average encoded size
+/// of each element. Use [`read_array_len`] when the element type does not have a tighter bound than
+/// one byte.
+///
+/// # Errors
+///
+/// Returns an error if the next value is not an array header, if the declared length exceeds
+/// [`MAX_SIZE`], or if the declared elements would require more bytes than remain on the cursor.
+pub fn read_array_len_with_minimum(
+    r: &mut &[u8], min_bytes_per_element: u32, context: &'static str,
+) -> Result<u32, DecodeError> {
     let len = rmp::decode::read_array_len(r).map_err(mp(context))?;
     if len > MAX_SIZE {
         return Err(DecodeError::OversizeHeader {
@@ -80,7 +96,7 @@ pub fn read_array_len(r: &mut &[u8], context: &'static str) -> Result<u32, Decod
             max: MAX_SIZE,
         });
     }
-    check_slab_count(len, MIN_BYTES_PER_ARRAY_ELEMENT, r, context)?;
+    check_slab_count(len, min_bytes_per_element, r, context)?;
     Ok(len)
 }
 
