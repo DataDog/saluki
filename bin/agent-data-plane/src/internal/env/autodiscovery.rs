@@ -2,10 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use datadog_agent_commons::ipc::client::RemoteAgentClient;
+use datadog_agent_commons::ipc::{client::RemoteAgentClient, config::RemoteAgentClientConfiguration};
 use futures::StreamExt;
 use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_config::GenericConfiguration;
 use saluki_core::runtime::{InitializationError, Supervisable, Supervisor, SupervisorFuture};
 use saluki_env::autodiscovery::AutodiscoveryEvent;
 use saluki_env::AutodiscoveryProvider;
@@ -36,8 +35,8 @@ impl RemoteAgentAutodiscoveryProvider {
     /// # Errors
     ///
     /// If the remote agent client couldn't be created, an error is returned.
-    pub async fn from_configuration(config: &GenericConfiguration) -> Result<(Self, Supervisor), GenericError> {
-        let client = RemoteAgentClient::from_configuration(config).await?;
+    pub async fn new(client_config: &RemoteAgentClientConfiguration) -> Result<(Self, Supervisor), GenericError> {
+        let client = RemoteAgentClient::connect(client_config).await?;
         let subscribers = Arc::new(Mutex::new(Vec::new()));
 
         let provider = Self {

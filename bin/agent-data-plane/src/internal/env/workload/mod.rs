@@ -2,6 +2,7 @@
 
 use std::{future::Future, num::NonZeroUsize, time::Duration};
 
+use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_context::{
     origin::{OriginTagCardinality, RawOrigin},
@@ -82,7 +83,8 @@ impl RemoteAgentWorkloadProvider {
     /// If there is an issue with any of the provider configuration, or creating the underlying metadata collectors, an
     /// error is returned.
     pub async fn from_configuration(
-        config: &GenericConfiguration, component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
+        config: &GenericConfiguration, client_config: &RemoteAgentClientConfiguration,
+        component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Supervisor), GenericError> {
         let workload_provider_id = root_provider_id().child("workload").child("remote_agent");
         let mut provider_bounds = component_registry.bounds_builder(&workload_provider_id);
@@ -154,7 +156,7 @@ impl RemoteAgentWorkloadProvider {
             "remote_agent_tags",
             health_registry,
             &mut collector_bounds,
-            |health| RemoteAgentTaggerMetadataCollector::from_configuration(config, health, string_interner.clone()),
+            |health| RemoteAgentTaggerMetadataCollector::new(client_config, health, string_interner.clone()),
         )
         .await?;
 
@@ -165,7 +167,7 @@ impl RemoteAgentWorkloadProvider {
             "remote_agent_wmeta",
             health_registry,
             &mut collector_bounds,
-            |health| RemoteAgentWorkloadMetadataCollector::from_configuration(config, health, string_interner.clone()),
+            |health| RemoteAgentWorkloadMetadataCollector::new(client_config, health, string_interner.clone()),
         )
         .await?;
 

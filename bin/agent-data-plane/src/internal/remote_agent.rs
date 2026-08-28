@@ -4,8 +4,11 @@ use std::{collections::hash_map::Entry, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use datadog_agent_commons::ipc::client::RemoteAgentClient;
-use datadog_agent_commons::ipc::session::{SessionId, SessionIdHandle};
+use datadog_agent_commons::ipc::{
+    client::RemoteAgentClient,
+    config::RemoteAgentClientConfiguration,
+    session::{SessionId, SessionIdHandle},
+};
 use datadog_protos::agent::v1::{
     event::Details as RemoteAgentEventDetails, Event as RemoteAgentEvent, InvalidApiKeyEvent,
     ReportRemoteAgentEventRequest,
@@ -22,10 +25,7 @@ use process_memory::Querier as MemoryQuerier;
 use prost_types::value::Kind;
 use saluki_common::sync::shutdown::ShutdownHandle;
 use saluki_common::task::spawn_traced_named;
-use saluki_config::{
-    dynamic::{ConfigSetting, ConfigUpdate, Provenance},
-    GenericConfiguration,
-};
+use saluki_config::dynamic::{ConfigSetting, ConfigUpdate, Provenance};
 use saluki_core::{
     diagnostic::{subscribe_events, DiagnosticCollector, DiagnosticDetails, DiagnosticEvent},
     observability::metrics::{get_shared_metrics_state, AggregatedMetricsProcessor, Reflector, TelemetryProcessor},
@@ -88,8 +88,8 @@ impl RemoteAgentBootstrap {
     /// # Errors
     ///
     /// If the configuration is invalid, an error is returned.
-    pub async fn from_configuration<'a>(
-        config: &GenericConfiguration, dp_config: &DataPlaneConfiguration<'a>,
+    pub async fn new<'a>(
+        client_config: &RemoteAgentClientConfiguration, dp_config: &DataPlaneConfiguration<'a>,
     ) -> Result<Self, GenericError> {
         let secure_api_listen_address = dp_config.secure_api_listen_address()?;
         let api_listen_addr = GrpcTargetAddress::try_from_listen_addr(&secure_api_listen_address)
@@ -108,7 +108,7 @@ impl RemoteAgentBootstrap {
         // Create our client, and then immediately start the registration loop.
         //
         // Wait for the result of the initial registration attempt before proceeding.
-        let client = RemoteAgentClient::from_configuration(config).await?;
+        let client = RemoteAgentClient::connect(client_config).await?;
         spawn_traced_named(
             "adp-remote-agent-task",
             run_remote_agent_registration_loop(client.clone(), state),

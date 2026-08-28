@@ -17,7 +17,6 @@ pub enum ConfigurationStruct {
     DogStatsDDebugLogConfiguration,
     DogStatsDMapperConfiguration,
     DogStatsDPrefixFilterConfiguration,
-    RemoteAgentClientConfiguration,
 
     /// Keys consumed through the typed configuration translation system.
     TypedConfigSystem,
@@ -48,7 +47,6 @@ impl ConfigurationStruct {
             ConfigurationStruct::DogStatsDDebugLogConfiguration => "DOGSTATSD_DEBUG_LOG_CONFIGURATION",
             ConfigurationStruct::DogStatsDMapperConfiguration => "DOGSTATSD_MAPPER_CONFIGURATION",
             ConfigurationStruct::DogStatsDPrefixFilterConfiguration => "DOGSTATSD_PREFIX_FILTER_CONFIGURATION",
-            ConfigurationStruct::RemoteAgentClientConfiguration => "REMOTE_AGENT_CLIENT_CONFIGURATION",
             ConfigurationStruct::TypedConfigSystem => "TYPED_CONFIG_SYSTEM",
             ConfigurationStruct::GetTyped => "GET_TYPED",
             ConfigurationStruct::NoSmoke => "NO_SMOKE",

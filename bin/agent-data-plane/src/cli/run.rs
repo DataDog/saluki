@@ -13,7 +13,7 @@ use agent_data_plane_config::{
 use agent_data_plane_config_system::{ConfigurationSystem, LoadedConfiguration};
 use argh::FromArgs;
 use bytesize::ByteSize;
-use datadog_agent_commons::platform::PlatformSettings;
+use datadog_agent_commons::{ipc::config::RemoteAgentClientConfiguration, platform::PlatformSettings};
 use datadog_agent_config::classifier::{ConfigClassifier, Pipeline, PipelineAffinity, Severity, SupportLevel};
 use saluki_app::{
     accounting::{initialize_memory_bounds, MemoryBoundsConfiguration},
@@ -73,7 +73,10 @@ use crate::{
         DogStatsDControlSurface, TopologyControlSurfaces,
     },
 };
-use crate::{config::DataPlaneConfiguration, internal::env::ADPEnvironmentProvider};
+use crate::{
+    config::{remote_agent_client_configuration, DataPlaneConfiguration},
+    internal::env::ADPEnvironmentProvider,
+};
 
 /// Runs the data plane.
 #[derive(FromArgs, Debug)]
@@ -115,7 +118,8 @@ pub async fn handle_run_command(
         (config_sys, None)
     } else {
         // Blocks until the Core Agent acknowledges registration.
-        let ra_bootstrap = RemoteAgentBootstrap::from_configuration(&local_config.raw_config(), &bootstrap_dp_config)
+        let client_config = remote_agent_client_configuration(local_config.local(), &local_config.raw_config())?;
+        let ra_bootstrap = RemoteAgentBootstrap::new(&client_config, &bootstrap_dp_config)
             .await
             .error_context("Failed to bootstrap remote agent state.")?;
 
@@ -167,6 +171,15 @@ pub async fn handle_run_command(
 
     check_and_warn_config(&config_sys, &active_pipelines).error_context("Incompatible configuration detected.")?;
 
+    let remote_agent_client_config = if standalone {
+        None
+    } else {
+        Some(remote_agent_client_configuration(
+            &config_sys.config(),
+            &config_sys.raw_map(),
+        )?)
+    };
+
     // Set up all of the building blocks for building our topologies and launching internal processes.
     let component_registry = ComponentRegistry::default();
     let health_registry = HealthRegistry::new();
@@ -174,13 +187,20 @@ pub async fn handle_run_command(
     let (env_provider, maybe_env_supervisor) = ADPEnvironmentProvider::from_configuration(
         standalone,
         &config_sys.raw_map(),
+        remote_agent_client_config.as_ref(),
         &component_registry,
         &health_registry,
     )
     .await?;
 
     // Create the blueprint for our primary topology.
-    let (mut blueprint, control_surfaces) = create_topology(&config_sys, &env_provider, &component_registry).await?;
+    let (mut blueprint, control_surfaces) = create_topology(
+        &config_sys,
+        remote_agent_client_config.as_ref(),
+        &env_provider,
+        &component_registry,
+    )
+    .await?;
 
     // Create the internal supervisor which drives our control plane and internal observability.
     let mut internal_supervisor = create_internal_supervisor(
@@ -365,7 +385,8 @@ fn is_a_pipeline_affected(active_pipelines: &HashSet<Pipeline>, pipeline_affinit
 }
 
 async fn create_topology(
-    config_system: &ConfigurationSystem, env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
+    config_system: &ConfigurationSystem, remote_agent_client_config: Option<&RemoteAgentClientConfiguration>,
+    env_provider: &ADPEnvironmentProvider, component_registry: &ComponentRegistry,
 ) -> Result<(TopologyBlueprint, TopologyControlSurfaces), GenericError> {
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
@@ -401,7 +422,14 @@ async fn create_topology(
     }
 
     if dp.metrics_pipeline_required() {
-        add_baseline_metrics_pipeline_to_blueprint(&mut blueprint, config_system, &shared, env_provider).await?;
+        add_baseline_metrics_pipeline_to_blueprint(
+            &mut blueprint,
+            config_system,
+            remote_agent_client_config,
+            &shared,
+            env_provider,
+        )
+        .await?;
     }
 
     if dp.logs_pipeline_required() {
@@ -482,7 +510,8 @@ async fn add_checks_pipeline_to_blueprint(
 }
 
 async fn add_baseline_metrics_pipeline_to_blueprint(
-    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem, shared: &SharedConfiguration,
+    blueprint: &mut TopologyBlueprint, config_system: &ConfigurationSystem,
+    remote_agent_client_config: Option<&RemoteAgentClientConfiguration>, shared: &SharedConfiguration,
     env_provider: &ADPEnvironmentProvider,
 ) -> Result<(), GenericError> {
     // Create the back half of the metrics processing pipeline.
@@ -493,7 +522,9 @@ async fn add_baseline_metrics_pipeline_to_blueprint(
     let config = config_system.config();
     let dp = DataPlaneConfiguration::from_configuration(&config);
     if !dp.standalone_mode() {
-        let host_tags_config = HostTagsConfiguration::from_configuration(&config_system.raw_map())?;
+        let client_config = remote_agent_client_config
+            .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
+        let host_tags_config = HostTagsConfiguration::new(client_config.clone(), shared.tags.expected_tags_duration);
         if host_tags_config.enabled() {
             metrics_enrich_config = metrics_enrich_config.with_transform_builder("host_tags", host_tags_config);
         }

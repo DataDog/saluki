@@ -1,5 +1,6 @@
 use std::future::Future;
 
+use datadog_agent_commons::ipc::config::RemoteAgentClientConfiguration;
 use saluki_config::GenericConfiguration;
 use saluki_core::accounting::ComponentRegistry;
 use saluki_core::health::HealthRegistry;
@@ -10,7 +11,7 @@ use saluki_env::{
     host::providers::{BoxedHostProvider, FixedHostProvider},
     EnvironmentProvider,
 };
-use saluki_error::GenericError;
+use saluki_error::{generic_error, GenericError};
 use tracing::warn;
 
 mod autodiscovery;
@@ -54,8 +55,8 @@ impl ADPEnvironmentProvider {
     /// In standalone mode, no supervisor is returned as all behavior/functionality is either provided via
     /// fixed configuration or operates in a no-op fashion.
     pub async fn from_configuration(
-        standalone: bool, raw_map: &GenericConfiguration, component_registry: &ComponentRegistry,
-        health_registry: &HealthRegistry,
+        standalone: bool, raw_map: &GenericConfiguration, client_config: Option<&RemoteAgentClientConfiguration>,
+        component_registry: &ComponentRegistry, health_registry: &HealthRegistry,
     ) -> Result<(Self, Option<Supervisor>), GenericError> {
         // When we're in standalone mode, all of our functionality is either fixed or a no-op.
         if standalone {
@@ -71,16 +72,23 @@ impl ADPEnvironmentProvider {
         }
 
         // Otherwise, construct our real providers that will interact directly with the Datadog Agent.
+        let client_config = client_config
+            .ok_or_else(|| generic_error!("Remote Agent client configuration is required in connected mode."))?;
         let mut env_supervisor = Supervisor::new("env-provider")?;
 
-        let host_provider = RemoteAgentHostProvider::from_configuration(raw_map, component_registry).await?;
+        let host_provider = RemoteAgentHostProvider::new(client_config, component_registry).await?;
 
-        let (workload_provider, workload_supervisor) =
-            RemoteAgentWorkloadProvider::from_configuration(raw_map, component_registry, health_registry).await?;
+        let (workload_provider, workload_supervisor) = RemoteAgentWorkloadProvider::from_configuration(
+            raw_map,
+            client_config,
+            component_registry,
+            health_registry,
+        )
+        .await?;
         env_supervisor.add_worker(workload_supervisor);
 
         let (autodiscovery_provider, autodiscovery_supervisor) =
-            RemoteAgentAutodiscoveryProvider::from_configuration(raw_map).await?;
+            RemoteAgentAutodiscoveryProvider::new(client_config).await?;
         env_supervisor.add_worker(autodiscovery_supervisor);
 
         let env = Self {

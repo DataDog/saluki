@@ -16,28 +16,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `vsock_addr`-vsock address for Agent IPC endpoint
-    VSOCK_ADDR = SalukiAnnotation {
-        schema: &schema::VSOCK_ADDR,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::REMOTE_AGENT_CLIENT_CONFIGURATION],
-        value_type_override: None,
-        test_json: Some(r#""host""#),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `cmd_port`-Core Agent CMD API port for ADP gRPC IPC
-    CMD_PORT = SalukiAnnotation {
-        schema: &schema::CMD_PORT,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::REMOTE_AGENT_CLIENT_CONFIGURATION],
-        value_type_override: None,
-        test_json: Some("5101"),
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
     /// `log_format_rfc3339`-Use RFC 3339 timestamps in log output
     LOG_FORMAT_RFC3339 = SalukiAnnotation {
         schema: &schema::LOG_FORMAT_RFC3339,
@@ -80,17 +58,6 @@ crate::declare_annotations! {
         used_by: &[structs::GET_TYPED],
         value_type_override: Some(ValueType::Integer),
         test_json: None,
-        pipeline_affinity: PipelineAffinity::CrossCutting,
-    };
-    /// `agent_ipc.grpc_max_message_size`-Max inbound gRPC message size for IPC client
-    AGENT_IPC_GRPC_MAX_MESSAGE_SIZE = SalukiAnnotation {
-        schema: &schema::AGENT_IPC_GRPC_MAX_MESSAGE_SIZE,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::REMOTE_AGENT_CLIENT_CONFIGURATION],
-        value_type_override: None,
-        test_json: Some("4194304"),
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
     /// `autoscaling.failover.enabled`-Enable autoscaling failover metric routing
