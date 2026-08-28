@@ -109,25 +109,35 @@
 <a href=#109 id=109 data-nosnippet>109</a>    </span><span class="kw">pub </span>file_max_size: u64,
 <a href=#110 id=110 data-nosnippet>110</a>}
 <a href=#111 id=111 data-nosnippet>111</a>
-<a href=#112 id=112 data-nosnippet>112</a><span class="doccomment">/// Bootstrap IPC and remote-agent connection parameters, read before runtime authority exists.
-<a href=#113 id=113 data-nosnippet>113</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-<a href=#114 id=114 data-nosnippet>114</a></span><span class="kw">pub struct </span>ControlIpc {
-<a href=#115 id=115 data-nosnippet>115</a>    <span class="doccomment">/// TCP port the command API listens on.
-<a href=#116 id=116 data-nosnippet>116</a>    </span><span class="kw">pub </span>cmd_port: u16,
-<a href=#117 id=117 data-nosnippet>117</a>
-<a href=#118 id=118 data-nosnippet>118</a>    <span class="doccomment">/// vsock address used for guest/host IPC.
-<a href=#119 id=119 data-nosnippet>119</a>    </span><span class="kw">pub </span>vsock_addr: String,
-<a href=#120 id=120 data-nosnippet>120</a>
-<a href=#121 id=121 data-nosnippet>121</a>    <span class="doccomment">/// Maximum gRPC message size, in bytes, accepted over the remote-agent IPC channel.
-<a href=#122 id=122 data-nosnippet>122</a>    </span><span class="kw">pub </span>grpc_max_message_size: i64,
+<a href=#112 id=112 data-nosnippet>112</a><span class="doccomment">/// IPC and remote-agent connection parameters, read once at bootstrap before runtime authority
+<a href=#113 id=113 data-nosnippet>113</a>/// exists and again from the authoritative configuration once it does.
+<a href=#114 id=114 data-nosnippet>114</a>///
+<a href=#115 id=115 data-nosnippet>115</a>/// The derived `Default` is all zeroes and serves only as the starting point for translation. The
+<a href=#116 id=116 data-nosnippet>116</a>/// effective default of each field is the one the Datadog schema declares, noted per field below.
+<a href=#117 id=117 data-nosnippet>117</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+<a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">pub struct </span>ControlIpc {
+<a href=#119 id=119 data-nosnippet>119</a>    <span class="doccomment">/// TCP port the command API listens on.
+<a href=#120 id=120 data-nosnippet>120</a>    ///
+<a href=#121 id=121 data-nosnippet>121</a>    /// Defaults to `5001`.
+<a href=#122 id=122 data-nosnippet>122</a>    </span><span class="kw">pub </span>cmd_port: u16,
 <a href=#123 id=123 data-nosnippet>123</a>
-<a href=#124 id=124 data-nosnippet>124</a>    <span class="doccomment">/// Timeout for establishing a connection to the container runtime interface.
-<a href=#125 id=125 data-nosnippet>125</a>    </span><span class="kw">pub </span>cri_connection_timeout: i64,
-<a href=#126 id=126 data-nosnippet>126</a>
-<a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// Timeout for a single container runtime interface query.
-<a href=#128 id=128 data-nosnippet>128</a>    </span><span class="kw">pub </span>cri_query_timeout: i64,
-<a href=#129 id=129 data-nosnippet>129</a>
-<a href=#130 id=130 data-nosnippet>130</a>    <span class="doccomment">/// Byte budget for the remote-agent IPC string interner. (not in Datadog Agent config schema)
-<a href=#131 id=131 data-nosnippet>131</a>    </span><span class="kw">pub </span>remote_agent_string_interner_size_bytes: usize,
-<a href=#132 id=132 data-nosnippet>132</a>}
+<a href=#124 id=124 data-nosnippet>124</a>    <span class="doccomment">/// vsock address used for guest/host IPC.
+<a href=#125 id=125 data-nosnippet>125</a>    ///
+<a href=#126 id=126 data-nosnippet>126</a>    /// Defaults to empty, which reaches the Core Agent over TCP on localhost at `cmd_port`.
+<a href=#127 id=127 data-nosnippet>127</a>    </span><span class="kw">pub </span>vsock_addr: String,
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a>    <span class="doccomment">/// Maximum gRPC message size, in bytes, accepted over the remote-agent IPC channel.
+<a href=#130 id=130 data-nosnippet>130</a>    ///
+<a href=#131 id=131 data-nosnippet>131</a>    /// Defaults to `134217728` (128 MiB).
+<a href=#132 id=132 data-nosnippet>132</a>    </span><span class="kw">pub </span>grpc_max_message_size: usize,
+<a href=#133 id=133 data-nosnippet>133</a>
+<a href=#134 id=134 data-nosnippet>134</a>    <span class="doccomment">/// Timeout for establishing a connection to the container runtime interface.
+<a href=#135 id=135 data-nosnippet>135</a>    </span><span class="kw">pub </span>cri_connection_timeout: i64,
+<a href=#136 id=136 data-nosnippet>136</a>
+<a href=#137 id=137 data-nosnippet>137</a>    <span class="doccomment">/// Timeout for a single container runtime interface query.
+<a href=#138 id=138 data-nosnippet>138</a>    </span><span class="kw">pub </span>cri_query_timeout: i64,
+<a href=#139 id=139 data-nosnippet>139</a>
+<a href=#140 id=140 data-nosnippet>140</a>    <span class="doccomment">/// Byte budget for the remote-agent IPC string interner. (not in Datadog Agent config schema)
+<a href=#141 id=141 data-nosnippet>141</a>    </span><span class="kw">pub </span>remote_agent_string_interner_size_bytes: usize,
+<a href=#142 id=142 data-nosnippet>142</a>}
 </code></pre></div></section></main></body></html>
