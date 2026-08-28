@@ -163,7 +163,6 @@ def merge_command(arguments: argparse.Namespace) -> int:
     existing = arguments.release_body_file.read_text(encoding="utf-8")
     merged = merge_release_body(existing, markdown)
     arguments.output.write_text(merged, encoding="utf-8")
-    write_github_output("has_notes", str(bool(markdown.strip())).lower())
     return 0
 
 
