@@ -208,7 +208,7 @@ mod tests {
         assert!(remaining.is_empty());
 
         let mut event_tags = TagSet::default();
-        for tag in packet.tags.into_iter() {
+        for tag in packet.tags.iter() {
             event_tags.insert_tag(tag);
         }
 
@@ -411,6 +411,6 @@ mod tests {
         assert_eq!(packet.local_data, None);
         assert_eq!(packet.external_data, None);
         assert_eq!(packet.cardinality, None);
-        assert!(packet.tags.into_iter().next().is_none());
+        assert!(packet.tags.iter().next().is_none());
     }
 }

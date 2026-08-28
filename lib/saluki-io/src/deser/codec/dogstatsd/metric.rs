@@ -331,7 +331,7 @@ mod tests {
         let (remaining, packet) = parse_dogstatsd_metric(input, config)?;
         assert!(remaining.is_empty());
 
-        let tags = packet.tags.into_iter().map(Tag::from).collect::<SharedTagSet>();
+        let tags = packet.tags.iter().map(Tag::from).collect::<SharedTagSet>();
         let context = Context::from_parts(packet.metric_name, tags);
 
         Ok(Some(Metric::from_parts(

@@ -101,12 +101,9 @@ pub fn ascii_alphanum_and_seps(input: &[u8]) -> IResult<&[u8], &str> {
 
 /// Extracts as many raw tags from the input slice as possible, up to the configured limit.
 ///
-/// Tags can be limited by length as well as count. If any tags exceed the maximum length, they're dropped. If the number
-/// of tags exceeds the maximum count, the excess tags are dropped. The remaining slice doesn't contain any dropped tags.
-///
-/// # Errors
-///
-/// If the input slice isn't at least one byte long, or if it's not valid UTF-8, an error is returned.
+/// Tags can be limited by length as well as count. If a tag exceeds the maximum length, it is truncated. If the number
+/// of tags exceeds the maximum count, the excess tags are dropped. Invalid UTF-8 is replaced with one U+FFFD character
+/// per contiguous invalid byte run so downstream tag handling operates exclusively on valid UTF-8.
 #[inline]
 pub fn tags(config: &DogStatsDCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&[u8], RawTags<'_>> {
     let max_tag_count = config.maximum_tag_count;
@@ -114,8 +111,31 @@ pub fn tags(config: &DogStatsDCodecConfiguration) -> impl Fn(&[u8]) -> IResult<&
 
     move |input| match simdutf8::basic::from_utf8(input) {
         Ok(tags) => Ok((&[], RawTags::new(tags, max_tag_count, max_tag_len))),
-        Err(_) => Err(nom::Err::Error(Error::new(input, ErrorKind::Verify))),
+        Err(_) => Ok((
+            &[],
+            RawTags::from_owned(to_valid_utf8(input), max_tag_count, max_tag_len),
+        )),
     }
+}
+
+fn to_valid_utf8(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len());
+    let mut previous_chunk_was_invalid = false;
+
+    for chunk in bytes.utf8_chunks() {
+        if !chunk.valid().is_empty() {
+            output.push_str(chunk.valid());
+            previous_chunk_was_invalid = false;
+        }
+        if !chunk.invalid().is_empty() {
+            if !previous_chunk_was_invalid {
+                output.push('\u{FFFD}');
+            }
+            previous_chunk_was_invalid = true;
+        }
+    }
+
+    output
 }
 
 /// Parses a Unix timestamp from the input slice.

@@ -154,7 +154,7 @@ mod tests {
         assert!(remaining.is_empty());
 
         let mut service_check_tags = TagSet::default();
-        for tag in packet.tags.into_iter() {
+        for tag in packet.tags.iter() {
             service_check_tags.insert_tag(tag);
         }
 
