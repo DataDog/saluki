@@ -421,6 +421,17 @@ mod tests {
     }
 
     #[test]
+    fn metric_tags_with_invalid_utf8_are_normalized() {
+        let mut input = b"my.gauge:1|g|#env:prod,tag:".to_vec();
+        input.extend_from_slice(&[0xff, 0xfe]);
+
+        let expected = Metric::gauge(("my.gauge", &["env:prod", "tag:\u{FFFD}"][..]), 1.0);
+        let actual = parse_dsd_metric(&input).expect("metric with invalid tag bytes should parse");
+
+        check_basic_metric_eq(expected, actual);
+    }
+
+    #[test]
     fn metric_sample_rate() {
         let name = "my.counter";
         let value = 1.0;

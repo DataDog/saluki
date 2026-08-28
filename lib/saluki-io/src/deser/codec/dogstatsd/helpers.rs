@@ -221,10 +221,25 @@ pub fn cardinality(input: &[u8]) -> IResult<&[u8], Option<OriginTagCardinality>>
 mod tests {
     use saluki_context::origin::OriginTagCardinality;
 
-    use super::{cardinality, CARDINALITY_PREFIX};
+    use super::{cardinality, to_valid_utf8, CARDINALITY_PREFIX};
 
     fn card(s: &str) -> Vec<u8> {
         format!("{}{}", simdutf8::basic::from_utf8(CARDINALITY_PREFIX).unwrap(), s).into_bytes()
+    }
+
+    #[test]
+    fn to_valid_utf8_replaces_each_contiguous_invalid_run_once() {
+        let cases = [
+            (b"ok".as_slice(), "ok"),
+            (b"a\xff\xfeb".as_slice(), "a\u{FFFD}b"),
+            (b"\xff\xff\xff".as_slice(), "\u{FFFD}"),
+            (b"a\xffb\xffc".as_slice(), "a\u{FFFD}b\u{FFFD}c"),
+            ("café".as_bytes(), "café"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(to_valid_utf8(input), expected, "failed for {input:?}");
+        }
     }
 
     #[test]

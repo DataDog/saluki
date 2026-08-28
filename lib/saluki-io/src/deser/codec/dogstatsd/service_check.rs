@@ -212,6 +212,20 @@ mod tests {
     }
 
     #[test]
+    fn service_check_tags_with_invalid_utf8_are_normalized() {
+        let mut input = b"_sc|testsvc|0|#env:prod,tag:".to_vec();
+        input.extend_from_slice(&[0xff, 0xfe]);
+
+        let tags = ["env:prod", "tag:\u{FFFD}"];
+        let expected = ServiceCheck::new("testsvc", CheckStatus::Ok).with_tags(SharedTagSet::from(TagSet::from_iter(
+            tags.iter().map(|&tag| tag.into()),
+        )));
+        let actual = parse_dsd_service_check(&input).expect("service check with invalid tag bytes should parse");
+
+        check_basic_service_check_eq(expected, actual);
+    }
+
+    #[test]
     fn service_check_message() {
         let name = "testsvc";
         let sc_status = CheckStatus::Ok;

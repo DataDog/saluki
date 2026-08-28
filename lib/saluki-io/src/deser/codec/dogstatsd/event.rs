@@ -277,6 +277,20 @@ mod tests {
     }
 
     #[test]
+    fn event_tags_with_invalid_utf8_are_normalized() {
+        let mut input = b"_e{5,4}:title|text|#env:prod,tag:".to_vec();
+        input.extend_from_slice(&[0xff, 0xfe]);
+
+        let tags = ["env:prod", "tag:\u{FFFD}"];
+        let expected = EventD::new("title", "text").with_tags(SharedTagSet::from(TagSet::from_iter(
+            tags.iter().map(|&tag| tag.into()),
+        )));
+        let actual = parse_dsd_eventd(&input).expect("event with invalid tag bytes should parse");
+
+        check_basic_eventd_eq(expected, actual);
+    }
+
+    #[test]
     fn eventd_priority() {
         let event_title = "my event";
         let event_text = "text";
