@@ -1,6 +1,7 @@
 //! OTLP domain: the OTLP receiver (gRPC/HTTP transports, logs/metrics activation), the OTLP proxy
 //! gating, and OTLP context sizing. OTLP trace handling lives in the `traces` domain.
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 use std::{num::NonZeroUsize, str::FromStr};
 
@@ -356,9 +357,9 @@ pub struct GrpcReceiver {
 
     /// HTTP/2 maximum concurrent streams per connection.
     ///
-    /// Defaults to `0`, which means no limit (the server applies no cap). A positive value sets
+    /// Defaults to `None`, which means no limit (the server applies no cap). A `Some` value sets
     /// the `SETTINGS_MAX_CONCURRENT_STREAMS` HTTP/2 setting.
-    pub max_concurrent_streams: u32,
+    pub max_concurrent_streams: Option<NonZeroU32>,
 
     /// Server-side keepalive parameters. Always present; zero durations are resolved to the
     /// grpc-go defaults (2 h interval, 20 s timeout) by the translator.
@@ -587,7 +588,7 @@ mod tests {
     #[test]
     fn grpc_receiver_defaults_to_agent_compatible_values() {
         let grpc = GrpcReceiver::default();
-        assert_eq!(grpc.max_concurrent_streams, 0, "0 means no limit (Agent default)");
+        assert_eq!(grpc.max_concurrent_streams, None, "None means no limit (Agent default)");
     }
 
     #[test]

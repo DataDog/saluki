@@ -8,6 +8,7 @@ pub mod semantics;
 pub mod traces;
 pub mod util;
 
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -242,7 +243,8 @@ pub struct OtlpServerConfiguration {
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_keepalive: GrpcKeepalive,
-    grpc_max_concurrent_streams: u32,
+    grpc_max_concurrent_streams: Option<NonZeroU32>,
+    http_max_request_body_size: u64,
     http_max_request_body_size: u64,
     cors: CorsConfiguration,
     http_tls: Option<OtlpTlsConfiguration>,
@@ -263,7 +265,8 @@ impl OtlpServerConfiguration {
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_keepalive: GrpcKeepalive::default(),
-            grpc_max_concurrent_streams: 0,
+            grpc_max_concurrent_streams: None,
+            http_max_request_body_size: 0,
             http_max_request_body_size: 0,
             cors: CorsConfiguration::default(),
             http_tls: None,
@@ -283,16 +286,16 @@ impl OtlpServerConfiguration {
 
     /// Sets the HTTP/2 maximum concurrent streams per connection for the gRPC receiver.
     ///
-    /// A value of `0` (the default) means no limit. A positive value sets the
+    /// A value of `None` (the default) means no limit. A `Some` value sets the
     /// `SETTINGS_MAX_CONCURRENT_STREAMS` HTTP/2 setting.
-    pub fn with_grpc_max_concurrent_streams(mut self, max_concurrent_streams: u32) -> Self {
+    pub fn with_grpc_max_concurrent_streams(mut self, max_concurrent_streams: Option<NonZeroU32>) -> Self {
         self.grpc_max_concurrent_streams = max_concurrent_streams;
         self
     }
 
     /// Sets the maximum HTTP request body size in bytes for the HTTP receiver.
     ///
-    /// A value of `0` (the default) applies the 20 MiB limit used by the Datadog Agent. A positive
+    /// A value of `0` (the default) applies the receiver's 20 MiB compatibility default. A positive
     /// value sets the limit in bytes.
     pub fn with_http_max_request_body_size(mut self, max_request_body_size: u64) -> Self {
         self.http_max_request_body_size = max_request_body_size;
@@ -389,8 +392,10 @@ impl OtlpServerConfiguration {
             .spawn();
 
         // Create and spawn the HTTP server.
-        // Apply an explicit body-size limit. A configured `0` selects the Agent's 20 MiB default; a positive value is
-        // the limit in bytes. Axum's own default is not the Agent's default and must not be left implicit.
+        //
+        // Apply an explicit body-size limit. A configured `0` selects the receiver's 20 MiB compatibility default; a
+        // positive value is the limit in bytes. Axum's own default is not the receiver's default and must not be left
+        // implicit.
         let max_body_size = if self.http_max_request_body_size == 0 {
             HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE
         } else {
@@ -924,29 +929,84 @@ mod tests {
 
     #[tokio::test]
     async fn http_body_limit_rejects_oversized_request() {
-        // The default body limit (when max_request_body_size is 0) is 20 MiB. An explicit small limit should reject
-        // requests that exceed it.
-        let handler = Arc::new(NoopHandler);
-        let max_body_size = 64;
-        let app = Router::new()
-            .route("/v1/metrics", post(http_metrics_handler::<NoopHandler>))
-            .layer(DefaultBodyLimit::max(max_body_size))
-            .with_state((handler, MemoryLimiter::noop(), Arc::new(Metrics::for_tests())));
+        // Exercises the full OtlpServerBuilder wiring: a configured `max_request_body_size` must
+        // flow through the builder into the axum `DefaultBodyLimit` layer and reject oversized
+        // requests. See issue #2068 and PR #2494 review.
+        use saluki_core::components::ComponentSpawner;
+        use saluki_core::runtime::Supervisor;
 
-        let oversized_body = vec![0u8; max_body_size + 1];
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/v1/metrics")
-                    .header("content-type", "application/x-protobuf")
-                    .body(Body::from(oversized_body))
-                    .unwrap(),
-            )
+        // Grab an ephemeral port for the HTTP endpoint.
+        let http_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind should succeed");
+        let http_addr = http_listener.local_addr().expect("local addr should be available");
+        drop(http_listener);
+
+        let grpc_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().expect("addr should parse"));
+        let http_endpoint = ListenAddress::Tcp(http_addr);
+
+        let mut supervisor = Supervisor::new("otlp-test")
+            .expect("test supervisor name should be valid")
+            .with_shutdown_budget(Duration::from_secs(5));
+        let spawner = ComponentSpawner::new(supervisor.handle(), tokio::runtime::Handle::current());
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let supervisor_task = tokio::spawn(async move {
+            supervisor
+                .run_with_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        tokio::task::yield_now().await;
+
+        // Build with a small body limit (64 bytes) through the builder.
+        let max_body_size: usize = 64;
+        OtlpServerBuilder::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+            .with_http_max_request_body_size(max_body_size as u64)
+            .build(NoopHandler, MemoryLimiter::noop(), Metrics::for_tests(), &spawner)
             .await
-            .unwrap();
+            .expect("build should succeed");
 
-        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        // Wait for the HTTP server to accept connections.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if std::time::Instant::now() > deadline {
+                panic!("HTTP server did not start within 5s");
+            }
+            if tokio::net::TcpStream::connect(&http_addr).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        // Send an oversized request and verify it is rejected.
+        let oversized_body = vec![0u8; max_body_size + 1];
+        let mut stream = tokio::net::TcpStream::connect(&http_addr)
+            .await
+            .expect("should connect to HTTP server");
+
+        let request = format!(
+            "POST /v1/metrics HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/x-protobuf\r\nContent-Length: {}\r\n\r\n",
+            oversized_body.len()
+        );
+        use tokio::io::AsyncWriteExt;
+        stream.write_all(request.as_bytes()).await.expect("write request line");
+        stream.write_all(&oversized_body).await.expect("write body");
+        stream.flush().await.expect("flush");
+
+        // Read the response status line.
+        use tokio::io::AsyncReadExt;
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.expect("read response");
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.starts_with("HTTP/1.1 413"),
+            "expected 413 PAYLOAD_TOO_LARGE, got: {}",
+            response_str.lines().next().unwrap_or("<empty>")
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = supervisor_task.await;
     }
 
     /// Polls `port` until something accepts a connection on it.

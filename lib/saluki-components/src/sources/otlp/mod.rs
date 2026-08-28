@@ -1,4 +1,5 @@
 use std::net::ToSocketAddrs as _;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -267,7 +268,8 @@ pub struct Otlp {
     http_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_keepalive: GrpcKeepalive,
-    grpc_max_concurrent_streams: u32,
+    grpc_max_concurrent_streams: Option<NonZeroU32>,
+    http_max_request_body_size: u64,
     http_max_request_body_size: u64,
     metrics_translator_config: metrics::config::OtlpMetricsTranslatorConfig,
     metric_tags: SharedTagSet,

@@ -19,6 +19,7 @@
 //! warn, so the strict startup gate does not reject a configuration the Agent runs with.
 
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -1093,7 +1094,20 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(&mut self, value: i64) {
-        self.config.domains.otlp.receiver.grpc.max_concurrent_streams = u32::try_from(value.max(0)).unwrap_or(0);
+        match value {
+            0 => self.config.domains.otlp.receiver.grpc.max_concurrent_streams = None,
+            n if n > 0 => match NonZeroU32::try_from(value as u32) {
+                Ok(max) => self.config.domains.otlp.receiver.grpc.max_concurrent_streams = Some(max),
+                Err(_) => self.record_error(TranslateError::new_with_message(
+                    "otlp_config.receiver.protocols.grpc.max_concurrent_streams",
+                    "value exceeds the u32 range",
+                )),
+            },
+            _ => self.record_error(TranslateError::new_with_message(
+                "otlp_config.receiver.protocols.grpc.max_concurrent_streams",
+                "max concurrent streams must be greater than or equal to 0",
+            )),
+        }
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_keepalive_server_parameters_max_connection_age(
@@ -1167,7 +1181,14 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_receiver_protocols_http_max_request_body_size(&mut self, value: i64) {
-        self.config.domains.otlp.receiver.http.max_request_body_size = value.max(0) as u64;
+        if value < 0 {
+            self.record_error(TranslateError::new_with_message(
+                "otlp_config.receiver.protocols.http.max_request_body_size",
+                "max request body size must be greater than or equal to 0",
+            ));
+        } else {
+            self.config.domains.otlp.receiver.http.max_request_body_size = value as u64;
+        }
     }
 
     fn consume_otlp_config_receiver_protocols_http_tls_ca_file(&mut self, value: Option<String>) {
