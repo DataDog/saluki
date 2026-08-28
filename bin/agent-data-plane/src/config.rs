@@ -4,7 +4,6 @@ use std::time::Duration;
 use agent_data_plane_config::SalukiConfiguration;
 use datadog_agent_commons::ipc::config::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
 use datadog_agent_config::classifier::Pipeline;
-use saluki_config::GenericConfiguration;
 use saluki_error::{generic_error, GenericError};
 use saluki_io::net::ListenAddress;
 #[cfg(not(target_os = "linux"))]
@@ -19,10 +18,12 @@ pub struct DataPlaneConfiguration<'a> {
     config: &'a SalukiConfiguration,
 }
 
-/// Translates typed IPC settings and the remaining raw authentication settings into client configuration.
+/// Translates typed IPC settings into client configuration.
 pub(crate) fn remote_agent_client_configuration(
-    config: &SalukiConfiguration, raw_map: &GenericConfiguration,
+    config: &SalukiConfiguration,
 ) -> Result<RemoteAgentClientConfiguration, GenericError> {
+    let dp = DataPlaneConfiguration::from_configuration(config);
+
     #[cfg(target_os = "linux")]
     let vsock_cid = match config.control.ipc.vsock_addr.as_str() {
         "" => None,
@@ -44,7 +45,7 @@ pub(crate) fn remote_agent_client_configuration(
 
     Ok(RemoteAgentClientConfiguration {
         cmd_port: config.control.ipc.cmd_port,
-        auth: IpcAuthConfiguration::from_configuration(raw_map)?,
+        auth: dp.ipc_auth_configuration(),
         grpc_max_message_size: config.control.ipc.grpc_max_message_size,
         #[cfg(target_os = "linux")]
         vsock_cid,
@@ -55,6 +56,14 @@ impl<'a> DataPlaneConfiguration<'a> {
     /// Creates a new `DataPlaneConfiguration` instance from the given configuration.
     pub fn from_configuration(config: &'a SalukiConfiguration) -> Self {
         Self { config }
+    }
+
+    /// Builds the resolved Agent IPC authentication configuration.
+    pub(crate) fn ipc_auth_configuration(&self) -> IpcAuthConfiguration {
+        IpcAuthConfiguration::new(
+            self.config.control.ipc.auth_token_file_path.clone(),
+            self.config.control.ipc.ipc_cert_file_path.clone(),
+        )
     }
 
     /// Returns `true` if the data plane is enabled.
@@ -211,19 +220,45 @@ impl<'a> DataPlaneConfiguration<'a> {
 
 #[cfg(test)]
 mod tests {
+    use datadog_agent_commons::platform::PlatformSettings;
+
     use super::*;
 
-    #[cfg(target_os = "linux")]
-    async fn empty_raw_config() -> GenericConfiguration {
-        let (config, _) = saluki_config::ConfigurationLoader::for_tests(None, None, false).await;
-        config
+    #[test]
+    fn remote_agent_client_configuration_resolves_default_auth_paths() {
+        let client_config =
+            remote_agent_client_configuration(&SalukiConfiguration::default()).expect("valid IPC configuration");
+
+        assert_eq!(
+            client_config.auth.auth_token_file_path(),
+            PlatformSettings::get_auth_token_path()
+        );
+        assert_eq!(
+            client_config.auth.ipc_cert_file_path(),
+            PlatformSettings::get_config_dir_path().join(PlatformSettings::get_ipc_cert_filename())
+        );
+    }
+
+    #[test]
+    fn remote_agent_client_configuration_uses_typed_auth_paths() {
+        let mut config = SalukiConfiguration::default();
+        config.control.ipc.auth_token_file_path = "/secret/auth_token".into();
+        config.control.ipc.ipc_cert_file_path = "/secret/ipc_cert.pem".into();
+
+        let client_config = remote_agent_client_configuration(&config).expect("valid IPC configuration");
+        assert_eq!(
+            client_config.auth.auth_token_file_path(),
+            std::path::Path::new("/secret/auth_token")
+        );
+        assert_eq!(
+            client_config.auth.ipc_cert_file_path(),
+            std::path::Path::new("/secret/ipc_cert.pem")
+        );
     }
 
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn remote_agent_client_configuration_resolves_vsock_addresses() {
-        let raw_map = empty_raw_config().await;
-
+    #[test]
+    fn remote_agent_client_configuration_resolves_vsock_addresses() {
         for (value, expected_cid) in [
             ("", None),
             ("host", Some(2)),
@@ -235,7 +270,7 @@ mod tests {
             config.control.ipc.grpc_max_message_size = 4 * 1024 * 1024;
             config.control.ipc.vsock_addr = value.to_string();
 
-            let client_config = remote_agent_client_configuration(&config, &raw_map).expect("valid IPC configuration");
+            let client_config = remote_agent_client_configuration(&config).expect("valid IPC configuration");
             assert_eq!(client_config.vsock_cid, expected_cid);
             assert_eq!(client_config.cmd_port, 5001);
             assert_eq!(client_config.grpc_max_message_size, 4 * 1024 * 1024);
@@ -243,16 +278,14 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn remote_agent_client_configuration_rejects_invalid_vsock_addresses() {
-        let raw_map = empty_raw_config().await;
-
+    #[test]
+    fn remote_agent_client_configuration_rejects_invalid_vsock_addresses() {
         for value in ["invalid", "2", "HOST", "host ", "vm0"] {
             let mut config = SalukiConfiguration::default();
             config.control.ipc.vsock_addr = value.to_string();
 
             assert!(
-                remote_agent_client_configuration(&config, &raw_map).is_err(),
+                remote_agent_client_configuration(&config).is_err(),
                 "expected error for input: {value:?}",
             );
         }

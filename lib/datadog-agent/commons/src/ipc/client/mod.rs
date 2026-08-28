@@ -60,7 +60,7 @@ impl RemoteAgentClient {
         // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
         // have to test it out to make sure it behaves sensibly.
         let service_builder = || async {
-            let auth_interceptor = BearerAuthInterceptor::from_file(&config.auth.auth_token_file_path()).await?;
+            let auth_interceptor = BearerAuthInterceptor::from_file(config.auth.auth_token_file_path()).await?;
             let ipc_cert_file_path = config.auth.ipc_cert_file_path();
             let client_tls_config = build_ipc_client_ipc_tls_config(ipc_cert_file_path).await?;
             let connector_builder = HttpsCapableConnectorBuilder::default();

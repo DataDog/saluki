@@ -446,6 +446,15 @@ inventory:
     test_support:
       used_by: [NO_SMOKE]
 
+  auth_token_file_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Agent authentication token file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
+
   autoscaling.failover.enabled:
     support: full
     pipelines: [checks, dogstatsd, otlp]
@@ -1743,6 +1752,15 @@ inventory:
       test_json: '["0.95"]'
       additional_attributes:
         config_registry_filename: aggregate.rs
+
+  ipc_cert_file_path:
+    support: full
+    pipelines: [cross_cutting]
+    description: "Agent IPC certificate file path"
+    test_support:
+      used_by: [TypedConfigSystem]
+      additional_attributes:
+        config_registry_filename: data_plane.rs
 
   kubernetes_kubelet_nodename:
     support: full
@@ -3488,7 +3506,6 @@ excluded:
   appsec.proxy.processor.port: "ignored in initial audit 2026-04-23"
   appsec.proxy.proxies: "ignored in initial audit 2026-04-23"
   auth_init_timeout: "ignored in initial audit 2026-04-23"
-  auth_token_file_path: "ignored in second bulk edit 2026-05-06"
   auto_exit.noprocess.enabled: "ignored in initial audit 2026-04-23"
   auto_exit.noprocess.excluded_processes: "ignored in initial audit 2026-04-23"
   auto_exit.validation_period: "ignored in initial audit 2026-04-23"
@@ -4081,7 +4098,6 @@ excluded:
   inventories_min_interval: "ignored in initial audit 2026-04-23"
   iot_host: "ignored in initial audit 2026-04-23"
   ipc_address: "ignored in initial audit 2026-04-23"
-  ipc_cert_file_path: "ignored in second bulk edit 2026-05-06"
   jmx_check_period: "ignored in initial audit 2026-04-23"
   jmx_collection_timeout: "ignored in initial audit 2026-04-23"
   jmx_custom_jars: "ignored in initial audit 2026-04-23"

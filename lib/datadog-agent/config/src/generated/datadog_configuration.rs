@@ -64,6 +64,10 @@ pub struct DatadogConfiguration {
     pub apm_config: ApmConfig,
 
     #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub auth_token_file_path: String,
+
+    #[serde(default)]
     pub autoscaling: Autoscaling,
 
     #[serde(default)]
@@ -362,6 +366,10 @@ pub struct DatadogConfiguration {
 
     #[serde(default)]
     #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
+    pub ipc_cert_file_path: String,
+
+    #[serde(default)]
+    #[serde(deserialize_with = "crate::cast_de::deserialize_string")]
     pub kubernetes_kubelet_nodename: String,
 
     #[serde(default = "defaults::default_u64::<i64, 1>")]
@@ -560,6 +568,7 @@ impl Default for DatadogConfiguration {
             allow_arbitrary_tags: Default::default(),
             api_key: Default::default(),
             apm_config: Default::default(),
+            auth_token_file_path: Default::default(),
             autoscaling: Default::default(),
             basic_telemetry_add_container_tags: Default::default(),
             bind_host: Default::default(),
@@ -639,6 +648,7 @@ impl Default for DatadogConfiguration {
             histogram_copy_to_distribution: Default::default(),
             histogram_copy_to_distribution_prefix: Default::default(),
             histogram_percentiles: defaults::datadog_configuration_histogram_percentiles(),
+            ipc_cert_file_path: Default::default(),
             kubernetes_kubelet_nodename: Default::default(),
             log_file_max_rolls: defaults::default_u64::<i64, 1>(),
             log_file_max_size: defaults::datadog_configuration_log_file_max_size(),

@@ -394,6 +394,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
         self.config.domains.traces.target_traces_per_second = value;
     }
 
+    fn consume_auth_token_file_path(&mut self, value: String) {
+        self.config.control.ipc.auth_token_file_path = PathBuf::from(value);
+    }
+
     fn consume_autoscaling_failover_enabled(&mut self, value: bool) {
         self.config.shared.autoscaling_failover.enabled = value;
     }
@@ -862,6 +866,10 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
 
     fn consume_histogram_percentiles(&mut self, value: Vec<String>) {
         self.config.shared.metrics_encoding.histogram.percentiles = value;
+    }
+
+    fn consume_ipc_cert_file_path(&mut self, value: String) {
+        self.config.control.ipc.ipc_cert_file_path = PathBuf::from(value);
     }
 
     fn consume_kubernetes_kubelet_nodename(&mut self, value: String) {
@@ -1388,6 +1396,7 @@ fn parse_seconds(key: &str, value: i64) -> Result<Duration> {
 #[cfg(test)]
 mod tests {
     use std::fmt;
+    use std::path::PathBuf;
     use std::time::Duration;
 
     use agent_data_plane_config::defaults::DEFAULT_ZSTD_COMPRESSOR_LEVEL;
@@ -2172,6 +2181,28 @@ mod tests {
         assert_eq!(config.control.ipc.cmd_port, 5001);
         assert_eq!(config.control.ipc.grpc_max_message_size, 128 * 1024 * 1024);
         assert_eq!(config.control.ipc.vsock_addr, "");
+    }
+
+    #[test]
+    fn ipc_auth_paths_preserve_empty_defaults_and_explicit_values() {
+        let (config, errors) = translate_explicit(json!({}));
+        assert!(errors.is_none());
+        assert!(config.control.ipc.auth_token_file_path.as_os_str().is_empty());
+        assert!(config.control.ipc.ipc_cert_file_path.as_os_str().is_empty());
+
+        let (config, errors) = translate_explicit(json!({
+            "auth_token_file_path": "/secret/auth_token",
+            "ipc_cert_file_path": "/secret/ipc_cert.pem",
+        }));
+        assert!(errors.is_none());
+        assert_eq!(
+            config.control.ipc.auth_token_file_path,
+            PathBuf::from("/secret/auth_token")
+        );
+        assert_eq!(
+            config.control.ipc.ipc_cert_file_path,
+            PathBuf::from("/secret/ipc_cert.pem")
+        );
     }
 
     #[test]

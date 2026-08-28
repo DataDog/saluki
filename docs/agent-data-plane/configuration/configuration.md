@@ -789,6 +789,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `apm_config.probabilistic_sampler.enabled`                                                 | Enable APM probabilistic sampler                   |
 | `apm_config.probabilistic_sampler.sampling_percentage`                                     | Probabilistic sampler percentage                   |
 | `apm_config.target_traces_per_second`                                                      | Target sampled traces per second                   |
+| `auth_token_file_path`                                                                     | Agent authentication token file path               |
 | `autoscaling.failover.enabled`                                                             | Enable autoscaling failover metric routing         |
 | `autoscaling.failover.metrics`                                                             | Metric names forwarded to DCA for failover         |
 | `basic_telemetry_add_container_tags`                                                       | Add container tags to basic telemetry signals      |
@@ -875,6 +876,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `histogram_copy_to_distribution`                                                           | Copy histograms to distributions                   |
 | `histogram_copy_to_distribution_prefix`                                                    | Prefix for hist-to-dist copies                     |
 | `histogram_percentiles`                                                                    | Histogram percentile aggregates                    |
+| `ipc_cert_file_path`                                                                       | Agent IPC certificate file path                    |
 | `kubernetes_kubelet_nodename`                                                              | Kubernetes node name for EKS Fargate static tags   |
 | `log_file_max_rolls`                                                                       | Max rolled log files to retain                     |
 | `log_file_max_size`                                                                        | Max log file size before rolling                   |

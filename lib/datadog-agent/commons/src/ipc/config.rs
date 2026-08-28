@@ -1,17 +1,13 @@
 //! IPC configuration.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use saluki_config::GenericConfiguration;
-use saluki_error::{ErrorContext as _, GenericError};
-use serde::Deserialize;
 use tonic::transport::Uri;
 
 use crate::platform::PlatformSettings;
 
 /// Datadog Agent IPC bearer-token and exact shared-certificate mTLS configuration.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug)]
 pub struct IpcAuthConfiguration {
     /// Path to the Agent authentication token file.
     ///
@@ -29,58 +25,40 @@ pub struct IpcAuthConfiguration {
     ///
     /// Defaults to `ipc_cert.pem` in the same directory as the Agent authentication token file. (for example, if
     /// `auth_token_file_path` is `/etc/datadog-agent/auth_token`, this will be `/etc/datadog-agent/ipc_cert.pem`.)
-    ipc_cert_file_path: Option<PathBuf>,
+    ipc_cert_file_path: PathBuf,
 }
 
 impl IpcAuthConfiguration {
-    /// Creates a new `IpcAuthConfiguration` from the given configuration.
+    /// Creates an `IpcAuthConfiguration`, resolving empty paths to Agent defaults.
     ///
-    /// # Errors
-    ///
-    /// If the configuration is invalid, an error is returned.
-    pub fn from_configuration(config: &GenericConfiguration) -> Result<Self, GenericError> {
-        config
-            .as_typed::<Self>()
-            .error_context("Failed to parse Datadog Agent IPC authentication configuration.")
+    /// An empty token path selects the platform-specific token path. An empty certificate path selects `ipc_cert.pem`
+    /// beside the resolved token, or in the platform configuration directory when the token has no parent.
+    pub fn new(mut auth_token_file_path: PathBuf, mut ipc_cert_file_path: PathBuf) -> Self {
+        if auth_token_file_path.as_os_str().is_empty() {
+            auth_token_file_path = PlatformSettings::get_auth_token_path();
+        }
+
+        if ipc_cert_file_path.as_os_str().is_empty() {
+            let auth_token_dir = auth_token_file_path
+                .parent()
+                .unwrap_or(PlatformSettings::get_config_dir_path());
+            ipc_cert_file_path = auth_token_dir.join(PlatformSettings::get_ipc_cert_filename());
+        }
+
+        Self {
+            auth_token_file_path,
+            ipc_cert_file_path,
+        }
     }
 
     /// Gets the path to the Agent authentication token file from the configuration.
-    pub fn auth_token_file_path(&self) -> PathBuf {
-        if self.auth_token_file_path.as_os_str().is_empty() {
-            return PlatformSettings::get_auth_token_path();
-        }
-
-        self.auth_token_file_path.clone()
+    pub fn auth_token_file_path(&self) -> &Path {
+        &self.auth_token_file_path
     }
 
     /// Gets the shared IPC mTLS identity file path from the configuration.
-    pub fn ipc_cert_file_path(&self) -> PathBuf {
-        // If the IPC cert file path is set explicitly, we always prefer that.
-        if let Some(path) = self.ipc_cert_file_path.as_ref() {
-            if !path.as_os_str().is_empty() {
-                return path.clone();
-            }
-        }
-
-        // Otherwise, we default to the same directory as the auth token file with the default certificate file name.
-        let auth_token_dir = if self.auth_token_file_path.as_os_str().is_empty() {
-            PlatformSettings::get_config_dir_path()
-        } else {
-            self.auth_token_file_path
-                .parent()
-                .unwrap_or(PlatformSettings::get_config_dir_path())
-        };
-
-        auth_token_dir.join(PlatformSettings::get_ipc_cert_filename())
-    }
-}
-
-impl Default for IpcAuthConfiguration {
-    fn default() -> Self {
-        Self {
-            auth_token_file_path: PlatformSettings::get_auth_token_path(),
-            ipc_cert_file_path: None,
-        }
+    pub fn ipc_cert_file_path(&self) -> &Path {
+        &self.ipc_cert_file_path
     }
 }
 
@@ -121,40 +99,17 @@ impl RemoteAgentClientConfiguration {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use saluki_config::ConfigurationLoader;
-
     use super::{IpcAuthConfiguration, RemoteAgentClientConfiguration};
     use crate::platform::PlatformSettings;
 
-    async fn get_auth_config(
-        ipc_cert_file_path: Option<&Path>, auth_token_file_path: Option<&Path>,
-    ) -> IpcAuthConfiguration {
-        let mut values = serde_json::Map::new();
-        if let Some(path) = ipc_cert_file_path {
-            values.insert(
-                "ipc_cert_file_path".to_string(),
-                path.to_string_lossy().into_owned().into(),
-            );
-        }
-        if let Some(path) = auth_token_file_path {
-            values.insert(
-                "auth_token_file_path".to_string(),
-                path.to_string_lossy().into_owned().into(),
-            );
-        }
-
-        let (base_config, _) =
-            ConfigurationLoader::for_tests(Some(serde_json::Value::Object(values)), None, false).await;
-        IpcAuthConfiguration::from_configuration(&base_config).unwrap()
-    }
-
-    #[tokio::test]
-    async fn ipc_cert_file_path_empty_config() {
+    #[test]
+    fn ipc_cert_file_path_empty_config() {
         let default_auth_token_path = PlatformSettings::get_auth_token_path();
 
         // When the auth token file path _and_ IPC cert file path are both unset, we should default to looking for the
         // IPC cert in the same directory as the auth token.
-        let config = get_auth_config(None, None).await;
+        let config = IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new());
+        assert_eq!(config.auth_token_file_path(), default_auth_token_path);
         assert_eq!(
             config.ipc_cert_file_path().parent(),
             default_auth_token_path.as_path().parent()
@@ -165,13 +120,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn ipc_cert_file_path_defaults() {
+    #[test]
+    fn ipc_cert_file_path_defaults() {
         let default_auth_token_path = PlatformSettings::get_auth_token_path();
 
         // When the IPC cert file path is not set, it should default to the same directory as the auth token file using
         // the default certificate file name.
-        let config = get_auth_config(None, Some(&default_auth_token_path)).await;
+        let config = IpcAuthConfiguration::new(default_auth_token_path.clone(), PathBuf::new());
         assert_eq!(
             config.ipc_cert_file_path().parent(),
             default_auth_token_path.as_path().parent()
@@ -182,23 +137,23 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn ipc_cert_file_path_explicitly_set() {
+    #[test]
+    fn ipc_cert_file_path_explicitly_set() {
         let default_auth_token_path = PlatformSettings::get_auth_token_path();
         let custom_ipc_cert_path = PathBuf::from("/tmp/custom_ipc_cert.pem");
 
         // When the IPC cert file path is explicitly set, it should be used.
-        let config = get_auth_config(Some(&custom_ipc_cert_path), Some(&default_auth_token_path)).await;
+        let config = IpcAuthConfiguration::new(default_auth_token_path, custom_ipc_cert_path.clone());
         assert_eq!(custom_ipc_cert_path, config.ipc_cert_file_path());
     }
 
-    #[tokio::test]
-    async fn ipc_cert_file_path_custom_auth_token_path() {
+    #[test]
+    fn ipc_cert_file_path_custom_auth_token_path() {
         let custom_auth_token_path = PathBuf::from("/secret/auth_token");
 
         // When the IPC cert file path is not set, but there's a custom auth token path (explicitly set, different from the default),
         // we should still look in the same directory as the auth token file using the default certificate file name.
-        let config = get_auth_config(None, Some(&custom_auth_token_path)).await;
+        let config = IpcAuthConfiguration::new(custom_auth_token_path.clone(), PathBuf::new());
         assert_eq!(
             config.ipc_cert_file_path().parent(),
             custom_auth_token_path.as_path().parent()
@@ -209,13 +164,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn ipc_cert_file_path_invalid_auth_token_path() {
+    #[test]
+    fn ipc_cert_file_path_invalid_auth_token_path() {
         let invalid_auth_token_path = PathBuf::from("/");
 
         // If the auth token file path is somehow unset or invalid (for example, no parent directory), we should use the same
         // logic but with the default Datadog Agent configuration directory.
-        let config = get_auth_config(None, Some(&invalid_auth_token_path)).await;
+        let config = IpcAuthConfiguration::new(invalid_auth_token_path, PathBuf::new());
         assert_eq!(
             config.ipc_cert_file_path().parent(),
             Some(PlatformSettings::get_config_dir_path())
@@ -229,7 +184,7 @@ mod tests {
     fn remote_agent_config(cmd_port: u16) -> RemoteAgentClientConfiguration {
         RemoteAgentClientConfiguration {
             cmd_port,
-            auth: IpcAuthConfiguration::default(),
+            auth: IpcAuthConfiguration::new(PathBuf::new(), PathBuf::new()),
             grpc_max_message_size: 128 * 1024 * 1024,
             #[cfg(target_os = "linux")]
             vsock_cid: None,
