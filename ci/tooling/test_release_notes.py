@@ -2,6 +2,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("release_notes.py")
@@ -94,6 +95,28 @@ class ReleaseNoteValidationTest(unittest.TestCase):
         path = self.write_note("fix-listener.yaml", "fixes:\n  - text\n")
 
         self.assertTrue(subject.validate_note_file(path))
+
+
+class ReleaseNoteRenderingTest(unittest.TestCase):
+    def test_rejects_non_release_tags_before_running_commands(self):
+        with mock.patch.object(subject.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "X.Y.Z"):
+                subject.render_release_notes("v1.6.0", Path.cwd())
+        run.assert_not_called()
+
+    def test_renders_rst_with_reno_and_pandoc(self):
+        completed = [
+            mock.Mock(stdout="", stderr=""),
+            mock.Mock(stdout="fixes:\n", stderr=""),
+            mock.Mock(stdout="## Bug Fixes\n- Fix\n", stderr=""),
+        ]
+        with mock.patch.object(subject.subprocess, "run", side_effect=completed) as run:
+            rendered = subject.render_release_notes("1.6.0", Path("/repo"))
+
+        self.assertEqual(rendered, "## Bug Fixes\n- Fix\n")
+        self.assertEqual(run.call_args_list[0].args[0], ["git", "rev-parse", "--verify", "refs/tags/1.6.0"])
+        self.assertEqual(run.call_args_list[1].args[0], ["reno", "report", "--ignore-cache", "--no-show-source", "--version", "1.6.0"])
+        self.assertEqual(run.call_args_list[2].args[0], ["pandoc", "--from", "rst", "--to", "gfm", "--wrap=none"])
 
 
 if __name__ == "__main__":

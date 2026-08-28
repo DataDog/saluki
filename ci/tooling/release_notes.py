@@ -4,6 +4,7 @@
 import argparse
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -76,6 +77,29 @@ def check_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def render_release_notes(version: str, repository: Path) -> str:
+    """Render one tagged release's Reno notes as GitHub-flavored Markdown."""
+    if not is_release_tag(version):
+        raise ValueError("release version must use the X.Y.Z format")
+    run = lambda command, **kwargs: subprocess.run(command, cwd=repository, check=True, capture_output=True, text=True, **kwargs)
+    run(["git", "rev-parse", "--verify", f"refs/tags/{version}"])
+    rst = run(["reno", "report", "--ignore-cache", "--no-show-source", "--version", version]).stdout
+    if not rst.strip():
+        return ""
+    return run(["pandoc", "--from", "rst", "--to", "gfm", "--wrap=none"], input=rst).stdout
+
+
+def render_command(arguments: argparse.Namespace) -> int:
+    """Render a tag's notes to a file or standard output."""
+    rendered = render_release_notes(arguments.version, arguments.repository)
+    if str(arguments.output) == "-":
+        print(rendered, end="")
+    else:
+        arguments.output.write_text(rendered, encoding="utf-8")
+    write_github_output("has_notes", str(bool(rendered.strip())).lower())
+    return 0
+
+
 def write_github_output(name: str, value: str) -> None:
     """Write an output value when running inside a GitHub Actions step."""
     output_path = os.environ.get("GITHUB_OUTPUT")
@@ -108,7 +132,11 @@ def parse_arguments() -> argparse.Namespace:
     check_parser = subcommands.add_parser("check", help="Validate Reno release-note files")
     check_parser.add_argument("note_files", nargs="*", type=Path)
     check_parser.set_defaults(handler=check_command)
-    subcommands.add_parser("render", help="Render a tag's Reno release notes")
+    render_parser = subcommands.add_parser("render", help="Render a tag's Reno release notes")
+    render_parser.add_argument("--version", required=True)
+    render_parser.add_argument("--repository", type=Path, default=Path.cwd())
+    render_parser.add_argument("--output", type=Path, required=True)
+    render_parser.set_defaults(handler=render_command)
     return parser.parse_args()
 
 

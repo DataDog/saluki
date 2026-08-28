@@ -29,6 +29,7 @@ The release process for ADP roughly looks like this:
 - If there are any additional notes that should be included, add a new section, called `Additional Notes`, at the top of
   the release notes. (above the auto-generated `What's Changed` section)
 - Click `Publish release`.
+- Confirm that the GitHub `Release notes` workflow for the tag succeeds. It adds curated release notes above GitHub's generated `What's Changed` pull request list. Do this before publishing release artifacts or announcing the release.
 - Go to the [GitLab CI pipelines dashboard](https://gitlab.ddbuild.io/DataDog/saluki/-/pipelines) for the repository and
   find the pipeline that was triggered for the newly created Git tag. It may take a minute or two for the repository
   sync and pipeline creation to occur.
