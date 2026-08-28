@@ -82,11 +82,19 @@ def render_release_notes(version: str, repository: Path) -> str:
     if not is_release_tag(version):
         raise ValueError("release version must use the X.Y.Z format")
     run = lambda command, **kwargs: subprocess.run(command, cwd=repository, check=True, capture_output=True, text=True, **kwargs)
-    run(["git", "rev-parse", "--verify", f"refs/tags/{version}"])
-    rst = run(["reno", "report", "--ignore-cache", "--no-show-source", "--version", version]).stdout
+    try:
+        run(["git", "rev-parse", "--verify", f"refs/tags/{version}"])
+        rst = run(["reno", "report", "--ignore-cache", "--no-show-source", "--version", version]).stdout
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.strip() or str(error)
+        raise RuntimeError(f"could not render release notes for {version}: {detail}") from error
     if not rst.strip():
         return ""
-    return run(["pandoc", "--from", "rst", "--to", "gfm", "--wrap=none"], input=rst).stdout
+    try:
+        return run(["pandoc", "--from", "rst", "--to", "gfm", "--wrap=none"], input=rst).stdout
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.strip() or str(error)
+        raise RuntimeError(f"could not convert release notes for {version}: {detail}") from error
 
 
 def render_command(arguments: argparse.Namespace) -> int:
