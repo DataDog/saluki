@@ -232,10 +232,10 @@ mod tests {
     use saluki_context::Context;
     use saluki_core::{
         accounting::{ComponentRegistry, MemoryLimiter},
-        components::{destinations::DestinationContext, ComponentContext, ComponentSpawner},
+        components::{destinations::DestinationContext, ComponentContext},
         data_model::event::{metric::Metric, Event},
         health::HealthRegistry,
-        runtime::{state::DataspaceRegistry, Supervisor},
+        runtime::state::DataspaceRegistry,
         topology::{interconnect::Consumer, EventsBuffer, TopologyContext},
     };
     use tempfile::tempdir;
@@ -330,15 +330,12 @@ mod tests {
         let health = HealthRegistry::new()
             .register_component(&saluki_core::support::SubsystemIdentifier::from_dotted("test"))
             .expect("component was not previously registered");
-        let supervisor_handle = Supervisor::new("test").expect("valid supervisor name").handle();
-        let spawner = ComponentSpawner::new(supervisor_handle, Handle::current());
         let context = DestinationContext::new(
             &topology_context,
             &component_context,
             ComponentRegistry::default(),
             health,
             consumer,
-            spawner,
         );
         let run_handle = tokio::spawn(async move { Box::new(destination).run(context).await });
 

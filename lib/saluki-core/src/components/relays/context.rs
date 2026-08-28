@@ -5,7 +5,7 @@ use saluki_common::sync::shutdown::ShutdownHandle;
 use crate::accounting::ComponentRegistry;
 use crate::health::Health;
 use crate::{
-    components::{ComponentContext, ComponentSpawner},
+    components::ComponentContext,
     topology::{PayloadsDispatcher, TopologyContext},
 };
 
@@ -14,7 +14,6 @@ struct RelayContextInner {
     component_context: ComponentContext,
     component_registry: ComponentRegistry,
     dispatcher: PayloadsDispatcher,
-    spawner: ComponentSpawner,
 }
 
 /// Relay context.
@@ -29,7 +28,6 @@ impl RelayContext {
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
         component_registry: ComponentRegistry, health_handle: Health, dispatcher: PayloadsDispatcher,
-        spawner: ComponentSpawner,
     ) -> Self {
         Self {
             shutdown_handle: None,
@@ -39,7 +37,6 @@ impl RelayContext {
                 component_context: component_context.clone(),
                 component_registry,
                 dispatcher,
-                spawner,
             }),
         }
     }
@@ -97,14 +94,6 @@ impl RelayContext {
     /// Returns a reference to the payloads dispatcher.
     pub fn dispatcher(&self) -> &PayloadsDispatcher {
         &self.inner.dispatcher
-    }
-
-    /// Returns a spawner for supervised child tasks belonging to this component.
-    ///
-    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
-    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
-    pub fn spawner(&self) -> &ComponentSpawner {
-        &self.inner.spawner
     }
 }
 

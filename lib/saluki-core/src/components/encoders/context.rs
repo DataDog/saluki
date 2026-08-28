@@ -1,7 +1,7 @@
 use crate::accounting::ComponentRegistry;
 use crate::health::Health;
 use crate::{
-    components::{ComponentContext, ComponentSpawner},
+    components::ComponentContext,
     topology::{EventsConsumer, PayloadsDispatcher, TopologyContext},
 };
 
@@ -13,7 +13,6 @@ pub struct EncoderContext {
     health_handle: Option<Health>,
     dispatcher: PayloadsDispatcher,
     consumer: EventsConsumer,
-    spawner: ComponentSpawner,
 }
 
 impl EncoderContext {
@@ -21,7 +20,7 @@ impl EncoderContext {
     pub fn new(
         topology_context: &TopologyContext, component_context: &ComponentContext,
         component_registry: ComponentRegistry, health_handle: Health, dispatcher: PayloadsDispatcher,
-        consumer: EventsConsumer, spawner: ComponentSpawner,
+        consumer: EventsConsumer,
     ) -> Self {
         Self {
             topology_context: topology_context.clone(),
@@ -30,7 +29,6 @@ impl EncoderContext {
             health_handle: Some(health_handle),
             dispatcher,
             consumer,
-            spawner,
         }
     }
 
@@ -66,13 +64,5 @@ impl EncoderContext {
     /// Returns a mutable reference to the events consumer.
     pub fn events(&mut self) -> &mut EventsConsumer {
         &mut self.consumer
-    }
-
-    /// Returns a spawner for supervised child tasks belonging to this component.
-    ///
-    /// All child tasks spawned through this mechanism are tied to the lifecycle of the component itself, such that
-    /// they're automatically shutdown/stopped when the component is stopped during topology shutdown, etc.
-    pub fn spawner(&self) -> &ComponentSpawner {
-        &self.spawner
     }
 }

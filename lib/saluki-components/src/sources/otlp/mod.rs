@@ -17,6 +17,7 @@ use saluki_common::sync::shutdown::{ShutdownCoordinator, ShutdownHandle};
 use saluki_context::tags::{SharedTagSet, TagSet};
 use saluki_context::ContextResolver;
 use saluki_core::accounting::{MemoryBounds, MemoryBoundsBuilder};
+use saluki_core::runtime;
 use saluki_core::topology::interconnect::BufferedDispatcher;
 use saluki_core::{
     components::{
@@ -321,7 +322,12 @@ impl Source for Otlp {
         }
 
         server_config
-            .build(handler, memory_limiter.clone(), metrics.clone(), context.spawner())
+            .build(
+                handler,
+                memory_limiter.clone(),
+                metrics.clone(),
+                context.topology_context().global_thread_pool(),
+            )
             .await?;
 
         // Run the converter task on the worker pool: translating OTLP resources is highly compute-bound.
@@ -330,23 +336,20 @@ impl Source for Otlp {
         let mut converter_shutdown_coordinator = ShutdownCoordinator::default();
         let converter_shutdown = converter_shutdown_coordinator.register();
 
-        context
-            .spawner()
-            .noninterruptible("resource_converter", |_shutdown| {
-                run_converter(
-                    rx,
-                    converter_context,
-                    origin_tag_resolver,
-                    converter_shutdown,
-                    metrics_translator,
-                    metrics,
-                    traces_translator,
-                )
-            })
-            .on_worker_pool()
-            .spawn()
-            .await
-            .error_context("Failed to spawn OTLP resource converter.")?;
+        runtime::worker(
+            "resource_converter",
+            run_converter(
+                rx,
+                converter_context,
+                origin_tag_resolver,
+                converter_shutdown,
+                metrics_translator,
+                metrics,
+                traces_translator,
+            ),
+        )
+        .on_runtime(context.topology_context().global_thread_pool().clone())
+        .spawn();
 
         health.mark_ready();
         debug!("OTLP source started.");

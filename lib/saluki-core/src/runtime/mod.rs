@@ -36,6 +36,24 @@
 //! managed, which in turn allows building fault-tolerant systems: we can restart workers for transient failures, give
 //! up for permanent failures, and so on.
 //!
+//! # Spawning children
+//!
+//! Children are usually declared up front with [`Supervisor::add_worker`], but a supervisor can also take on new
+//! children while it runs. There are exactly two ways to do that, and they differ only in how the supervisor is
+//! identified:
+//!
+//! - [`spawn`], which targets the _ambient_ supervisor: the one supervising the currently running process. This is the
+//!   [`tokio::spawn`] of supervision, and is what code running under supervision should reach for.
+//! - [`SupervisorHandle`], which names a supervisor explicitly.
+//!
+//! Either way, a child is described with [`ChildBuilder`] -- reached through [`worker`] and [`supervisable`] for the
+//! ambient supervisor, or the identically named methods on [`SupervisorHandle`] for a named one. The builder is the
+//! only way to configure a child: [`ChildSpecification`] is the description it produces and carries no settings of its
+//! own, so a combination the builder declines to offer can't be assembled around it.
+//!
+//! Both are synchronous and infallible. As with [`tokio::spawn`], a child being accepted doesn't mean it will run: a
+//! supervisor that shuts down before it reaches the child never starts it at all.
+//!
 //! # Supervision trees
 //!
 //! As supervisors can be nested, this allows building a tree of supervisors (hence _supervision trees_) where leaf
@@ -70,12 +88,19 @@ pub use self::restart::{RestartMode, RestartStrategy, RestartType};
 
 mod supervisor;
 pub use self::supervisor::{
-    AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, ShutdownMode, ShutdownStrategy,
-    SpawnError, Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec,
-    WorkerSpec,
+    AutoShutdown, ChildId, ChildSpecification, ChildState, InitializationError, LoweredChild, ShutdownStrategy,
+    Supervisable, Supervisor, SupervisorError, SupervisorFuture, SupervisorHandle, SupervisorSpec, WorkerSpec,
+};
+
+mod spawn;
+pub use self::spawn::spawn;
+
+mod builder;
+pub use self::builder::{
+    supervisable, worker, BuilderState, CanTerminate, ChildBuilder, OneShot, Restartable, Terminable,
 };
 
 mod workers;
-pub use self::workers::{interruptible_worker, noninterruptible_worker, IntoWorkerResult};
+pub use self::workers::{FnWorker, IntoWorkerResult};
 
 mod worker_state;

@@ -919,7 +919,7 @@ mod tests {
     use crate::accounting::{ComponentRegistry, MemoryBounds, MemoryBoundsBuilder, MemoryLimiter};
     use crate::components::BuildContext;
     use crate::data_model::event::Event;
-    use crate::runtime::{state::ResourceRegistry, Name};
+    use crate::runtime::{self, state::ResourceRegistry, Name};
     use crate::test_support::wait_until;
     use crate::topology::{ids::get_component_relative_identifier, topology_identifier, ComponentId};
     use crate::topology::{EventsBuffer, DEFAULT_EVENTS_BUFFER_CAPACITY};
@@ -966,7 +966,7 @@ mod tests {
         }
     }
 
-    /// A source that runs until shutdown, optionally spawning a dynamic child through its spawn handle first.
+    /// A source that runs until shutdown, optionally spawning a dynamic child on its ambient supervisor first.
     ///
     /// Records that it started (so tests can wait for readiness rather than sleeping) before running.
     struct ControlSource {
@@ -980,11 +980,9 @@ mod tests {
             self.started.fetch_add(1, Ordering::SeqCst);
             let shutdown = context.take_shutdown_handle();
             if let Some(started) = self.spawned_child {
-                context
-                    .spawner()
-                    .spawn_supervisable(CountingChild { started })
-                    .await
-                    .expect("should spawn dynamic child");
+                // Ambient spawning is how a component reaches its own supervisor: nothing is threaded to it, and the
+                // child still has to land under this component rather than anywhere else.
+                runtime::supervisable(CountingChild { started }).spawn();
             }
             shutdown.await;
             Ok(())

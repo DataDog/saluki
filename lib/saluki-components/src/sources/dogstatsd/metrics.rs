@@ -181,6 +181,30 @@ pub(super) struct Metrics {
 }
 
 impl Metrics {
+    #[cfg(test)]
+    pub fn for_tests() -> Self {
+        Self {
+            metrics_received: Counter::noop(),
+            events_received: Counter::noop(),
+            service_checks_received: Counter::noop(),
+            bytes_received: Counter::noop(),
+            bytes_received_size: Histogram::noop(),
+            framing_errors: Counter::noop(),
+            metric_decoder_errors: Counter::noop(),
+            event_decoder_errors: Counter::noop(),
+            service_check_decoder_errors: Counter::noop(),
+            origin_detection_errors: Counter::noop(),
+            failed_context_resolve_total: Counter::noop(),
+            connections_active: Gauge::noop(),
+            packet_receive_success: Counter::noop(),
+            packet_receive_failure: Counter::noop(),
+            packets_forwarded: Counter::noop(),
+            bytes_forwarded: Counter::noop(),
+            packet_forwarding_errors: Counter::noop(),
+            origin_metric_recorder: None,
+        }
+    }
+
     pub(super) fn origin_telemetry_enabled(&self) -> bool {
         self.origin_metric_recorder.is_some()
     }
