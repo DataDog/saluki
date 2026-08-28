@@ -2208,7 +2208,7 @@ mod tests {
             *origin,
             MetricOrigin::OriginMetadata {
                 product: 19,
-                subproduct: 17,
+                subproduct: 0,
                 product_detail: 224,
             }
         );
@@ -2235,7 +2235,7 @@ mod tests {
             *origin,
             MetricOrigin::OriginMetadata {
                 product: 19,
-                subproduct: 17,
+                subproduct: 0,
                 product_detail: 0,
             }
         );
@@ -2263,7 +2263,7 @@ mod tests {
             *origin,
             MetricOrigin::OriginMetadata {
                 product: 19,
-                subproduct: 17,
+                subproduct: 0,
                 product_detail: 0,
             }
         );
@@ -2331,7 +2331,7 @@ mod tests {
             *origin,
             MetricOrigin::OriginMetadata {
                 product: 19,
-                subproduct: 17,
+                subproduct: 0,
                 product_detail: 229, // kubeletstatsreceiver
             }
         );

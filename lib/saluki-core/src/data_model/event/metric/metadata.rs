@@ -6,7 +6,7 @@ const ORIGIN_PRODUCT_AGENT: u32 = 10;
 const ORIGIN_PRODUCT_DATADOG_EXPORTER: u32 = 19;
 const ORIGIN_SUBPRODUCT_DOGSTATSD: u32 = 10;
 const ORIGIN_SUBPRODUCT_INTEGRATION: u32 = 11;
-const ORIGIN_SUBPRODUCT_OTLP: u32 = 17;
+const ORIGIN_SUBPRODUCT_OTLP: u32 = 0;
 const ORIGIN_PRODUCT_DETAIL_NONE: u32 = 0;
 
 /// Metric metadata.
@@ -163,7 +163,7 @@ impl MetricOrigin {
 
     /// Creates a `MetricOrigin` for any metric ingested via OTLP.
     ///
-    /// OTLP metrics use product `19` and the OTLP subproduct (`17`). The product detail is provided by the
+    /// OTLP metrics use product `19` and subproduct `0`. The product detail is provided by the
     /// caller— typically derived from the instrumentation scope name— and falls back to `0` (unknown) when the
     /// scope is absent or does not map to a known receiver.
     pub fn otlp(product_detail: u32) -> Self {
