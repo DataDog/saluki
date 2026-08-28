@@ -202,13 +202,28 @@ impl NormalizedMetrics {
         for metric in metrics {
             let context = NormalizedMetricContext::from_stele_context(metric.context().clone());
             let metric_type = metric_value_type(metric.values());
+            let metric_origin = metric.origin().cloned();
             let key = (context, metric_type);
             let (context_values, origin) = aggregated_context_values
                 .entry(key)
                 .or_insert_with(|| (Vec::new(), None));
             context_values.extend_from_slice(metric.values());
-            if origin.is_none() {
-                *origin = metric.origin().cloned();
+
+            // Track the origin for this group. The same metric may arrive via multiple wire formats
+            // (V1 JSON, V2 series/sketch, V3), and we take the first non-`None` origin. If a later
+            // metric in the same group has a different non-`None` origin, that indicates a wire-format
+            // discrepancy — we reject it rather than silently dropping the conflicting value.
+            match (&*origin, &metric_origin) {
+                (None, Some(new_origin)) => *origin = Some(new_origin.clone()),
+                (Some(existing), Some(new_origin)) if existing != new_origin => {
+                    return Err(generic_error!(
+                        "Conflicting origin metadata for metric '{}': {:?} vs {:?}",
+                        metric.context().name(),
+                        existing,
+                        new_origin
+                    ));
+                }
+                _ => {}
             }
         }
 

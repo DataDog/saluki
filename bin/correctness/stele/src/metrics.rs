@@ -685,7 +685,18 @@ impl Metric {
                 if origin_ref == 0 {
                     None
                 } else {
-                    origins_dict.get(origin_ref - 1).cloned()
+                    Some(
+                        origins_dict
+                            .get(origin_ref - 1)
+                            .ok_or_else(|| {
+                                generic_error!(
+                                    "Invalid origin info ref {} (dict size {})",
+                                    origin_ref,
+                                    origins_dict.len()
+                                )
+                            })?
+                            .clone(),
+                    )
                 }
             };
 
