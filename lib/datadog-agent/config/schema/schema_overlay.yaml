@@ -517,7 +517,7 @@ inventory:
   cluster_agent.kubernetes_service_name:
     support: full
     pipelines: [checks, dogstatsd, otlp]
-    description: "Cluster Agent service name; blank skips lookup"
+    description: "Cluster Agent Kubernetes service name"
     test_support:
       used_by: [TypedConfigSystem]
       test_json: '"datadog-cluster-agent"'

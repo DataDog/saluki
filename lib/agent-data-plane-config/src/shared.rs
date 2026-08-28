@@ -529,7 +529,7 @@ pub struct HistogramEncoding {
 pub struct ClusterAgent {
     /// Whether the Cluster Agent connection is used.
     ///
-    /// Defaults to `false`. When disabled, nothing talks to the Cluster Agent even if the remaining fields are set.
+    /// Defaults to `false`. Turn it on in a deployment that runs a Cluster Agent; while it is off, nothing talks to it.
     pub enabled: bool,
 
     /// URL of the Cluster Agent.
@@ -542,8 +542,8 @@ pub struct ClusterAgent {
 
     /// Token used to authenticate to the Cluster Agent.
     ///
-    /// Defaults to unset, which leaves the Cluster Agent unreachable: there is no anonymous access. A blank value is
-    /// normalized to unset, so padding a token with whitespace does not make it a different token.
+    /// Defaults to unset, which leaves the Cluster Agent unreachable: there is no anonymous access. Set it wherever the
+    /// Cluster Agent is enabled, to that Agent's own token; a blank value is normalized to unset.
     pub auth_token: Option<String>,
 
     /// Kubernetes service name used to discover the Cluster Agent.

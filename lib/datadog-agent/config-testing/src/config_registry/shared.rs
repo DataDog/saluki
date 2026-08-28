@@ -49,7 +49,7 @@ crate::declare_annotations! {
         test_json: Some("true"),
         pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
     };
-    /// `cluster_agent.kubernetes_service_name`-Cluster Agent service name; blank skips lookup
+    /// `cluster_agent.kubernetes_service_name`-Cluster Agent Kubernetes service name
     CLUSTER_AGENT_KUBERNETES_SERVICE_NAME = SalukiAnnotation {
         schema: &schema::CLUSTER_AGENT_KUBERNETES_SERVICE_NAME,
         support_level: SupportLevel::Full,

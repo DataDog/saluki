@@ -118,7 +118,7 @@ fn join_host_port(host: &str, port: &str) -> String {
 mod tests {
     use super::*;
 
-    /// The name the Datadog schema supplies when `cluster_agent.kubernetes_service_name` is absent.
+    /// The configuration default, owned by `cluster_agent_settings_default_to_schema_values_when_unset` upstream.
     const DEFAULT_SERVICE_NAME: &str = "datadog-cluster-agent";
 
     fn enabled_config() -> ClusterAgentConfiguration {
