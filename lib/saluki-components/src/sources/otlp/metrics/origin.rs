@@ -1,30 +1,16 @@
-//! OTLP metrics origin mapping.
-//!
-//! Maps an OTLP `InstrumentationScope` name to a Datadog `OriginProductDetail` identifier, so that metrics ingested
-//! over OTLP carry the same origin metadata the Agent emits for billing and UI attribution.
-//!
-//! This is a port of the Agent's `originProductDetailFromScopeName` logic in
-//! `pkg/opentelemetry-mapping-go/otlp/metrics/origin.go`. The receiver-name-to-product-detail constants and the
-//! scope-name parsing rules are kept identical to the Agent.
+//! Maps an OTLP instrumentation scope name to an origin product detail identifier.
 
 /// The product detail used when a scope is absent or does not map to a known receiver.
 const ORIGIN_PRODUCT_DETAIL_UNKNOWN: u32 = 0;
 
 /// The prefix shared by OpenTelemetry Collector receiver instrumentation scopes.
-///
-/// A scope name is only mapped to a receiver when it begins with this prefix. The receiver name is the first path
-/// segment after the prefix; any further segments (for example, a sub-signal like `disk` in
-/// `hostmetricsreceiver/disk`) are ignored.
 const COLLECTOR_RECEIVER_PREFIX: &str = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/";
 
-/// Returns the `OriginProductDetail` for the given instrumentation scope name.
+/// Returns the origin product detail for the given instrumentation scope name.
 ///
-/// When the scope name is empty (no `InstrumentationScope` was present) or does not begin with the Collector
-/// receiver prefix, this returns `0` (unknown). Otherwise it extracts the receiver name — the first path segment
-/// after the prefix — and looks it up in the known-receiver table.
-///
-/// This mirrors the Agent's behavior at `pkg/opentelemetry-mapping-go/otlp/metrics/origin.go`, including the
-/// unknown-scope fallback.
+/// Returns `0` (unknown) when the scope name is empty or does not begin with the Collector receiver prefix.
+/// Otherwise, extracts the receiver name—the first path segment after the prefix—and looks it up in the
+/// known-receiver table.
 pub fn product_detail_from_scope(scope_name: &str) -> u32 {
     product_detail_from_scope_name(scope_name)
 }
@@ -39,7 +25,6 @@ fn product_detail_from_scope_name(scope_name: &str) -> u32 {
         None => return ORIGIN_PRODUCT_DETAIL_UNKNOWN,
     };
 
-    // The receiver-name-to-product-detail table, kept identical to the Agent.
     match receiver_name {
         "activedirectorydsreceiver" => 251,
         "aerospikereceiver" => 252,
@@ -94,7 +79,6 @@ mod tests {
 
     #[test]
     fn known_receiver_scope_names_map_to_their_product_detail() {
-        // A few representative entries, including the receivers called out in the issue.
         assert_eq!(
             product_detail_from_scope_name(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver"
@@ -129,8 +113,6 @@ mod tests {
 
     #[test]
     fn sub_signal_segments_after_the_receiver_name_are_ignored() {
-        // The Agent takes the first path segment after the prefix; trailing segments (e.g. `disk`) must not affect
-        // the result.
         assert_eq!(
             product_detail_from_scope_name(
                 "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver/disk"
@@ -151,7 +133,6 @@ mod tests {
 
     #[test]
     fn scope_name_without_collector_prefix_falls_back_to_zero() {
-        // Custom instrumentation libraries (e.g. application SDKs) do not use the Collector receiver prefix.
         assert_eq!(product_detail_from_scope_name("io.opentelemetry.myapp"), 0);
         assert_eq!(product_detail_from_scope_name(""), 0);
     }

@@ -566,9 +566,7 @@ impl OtlpMetricsTranslator {
             let mut tags = resource_tags.clone();
             tags.extend_from_shared(&scope_tags);
 
-            // Derive the metric origin's product detail from the instrumentation scope name. The scope is read once
-            // per `ScopeMetrics` and threaded through the translation context to the metric and sketch emission
-            // sites.
+            // Derive the metric origin's product detail from the instrumentation scope name.
             let scope_name = scope_metrics.scope.as_ref().map_or("", |scope| scope.name.as_str());
 
             let mut new_metrics: Vec<OtlpMetric> = Vec::new();
@@ -2194,7 +2192,7 @@ mod tests {
         let metrics = Metrics::for_tests();
         let mut translator = OtlpMetricsTranslator::for_tests();
 
-        // The hostmetricsreceiver is one of the ~40 known Collector receivers in the Agent's mapping table.
+        // The hostmetricsreceiver is one of the known Collector receivers in the mapping table.
         let scope = "github.com/open-telemetry/opentelemetry-collector-contrib/receiver/hostmetricsreceiver";
         let (events, _) = translator
             .translate_metrics(single_gauge_resource_metrics_with_scope(Some(scope)), &metrics)

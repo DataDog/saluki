@@ -163,7 +163,7 @@ impl MetricOrigin {
     /// Creates a `MetricOrigin` for any metric ingested via OTLP.
     ///
     /// OTLP metrics always use product `10` and the OTLP subproduct (`17`). The product detail is provided by the
-    /// caller — typically derived from the instrumentation scope name — and falls back to `0` (unknown) when the
+    /// caller— typically derived from the instrumentation scope name— and falls back to `0` (unknown) when the
     /// scope is absent or does not map to a known receiver.
     pub fn otlp(product_detail: u32) -> Self {
         Self::OriginMetadata {
