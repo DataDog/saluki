@@ -4,6 +4,7 @@
 import argparse
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -109,10 +110,11 @@ def render_release_notes(version: str, repository: Path) -> str:
             "curated release notes cannot be repaired before their adoption"
         ) from error
 
+    reno = shutil.which("reno") or str(Path(sys.executable).with_name("reno"))
     try:
         rst = run(
             [
-                str(Path(sys.executable).with_name("reno")),
+                reno,
                 "report",
                 "--ignore-cache",
                 "--no-show-source",

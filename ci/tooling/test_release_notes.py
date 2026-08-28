@@ -232,6 +232,18 @@ class ReleaseNoteRenderingTest(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, error_text):
                         subject.render_release_notes("1.6.0", Path("/repo"))
 
+    def test_prefers_reno_found_on_the_path(self):
+        completed = [
+            unittest.mock.Mock(stdout="", stderr=""),
+            unittest.mock.Mock(stdout="", stderr=""),
+            unittest.mock.Mock(stdout="", stderr=""),
+        ]
+        with unittest.mock.patch.object(subject.shutil, "which", return_value="/home/runner/.local/bin/reno"):
+            with unittest.mock.patch.object(subject.subprocess, "run", side_effect=completed) as run:
+                self.assertEqual(subject.render_release_notes("1.6.0", Path("/repo")), "")
+
+        self.assertEqual(run.call_args_list[2].args[0][0], "/home/runner/.local/bin/reno")
+
     def test_writes_render_to_standard_output_for_dash_output(self):
         arguments = unittest.mock.Mock(version="1.6.0", repository=Path("/repo"), output=Path("-"))
         with unittest.mock.patch.object(subject, "render_release_notes", return_value="## Bug Fixes\n- Fix\n"):
