@@ -60,7 +60,7 @@
 <a href=#60 id=60 data-nosnippet>60</a>        // We could potentially just use a retry middleware, but Tonic does have its own reconnection logic, so we'd
 <a href=#61 id=61 data-nosnippet>61</a>        // have to test it out to make sure it behaves sensibly.
 <a href=#62 id=62 data-nosnippet>62</a>        </span><span class="kw">let </span>service_builder = || <span class="kw">async </span>{
-<a href=#63 id=63 data-nosnippet>63</a>            <span class="kw">let </span>auth_interceptor = BearerAuthInterceptor::from_file(<span class="kw-2">&amp;</span>config.auth.auth_token_file_path()).<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#63 id=63 data-nosnippet>63</a>            <span class="kw">let </span>auth_interceptor = BearerAuthInterceptor::from_file(config.auth.auth_token_file_path()).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#64 id=64 data-nosnippet>64</a>            <span class="kw">let </span>ipc_cert_file_path = config.auth.ipc_cert_file_path();
 <a href=#65 id=65 data-nosnippet>65</a>            <span class="kw">let </span>client_tls_config = build_ipc_client_ipc_tls_config(ipc_cert_file_path).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#66 id=66 data-nosnippet>66</a>            <span class="kw">let </span>connector_builder = HttpsCapableConnectorBuilder::default();

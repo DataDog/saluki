@@ -4,7 +4,7 @@
 <a href=#4 id=4 data-nosnippet>4</a>//! components. It carries pipeline activation gates, topology-shaping decisions, listen addresses,
 <a href=#5 id=5 data-nosnippet>5</a>//! logging (read before topology exists), bootstrap IPC parameters, and process-lifecycle knobs.
 <a href=#6 id=6 data-nosnippet>6</a>
-<a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>std::time::Duration;
+<a href=#7 id=7 data-nosnippet>7</a></span><span class="kw">use </span>std::{path::PathBuf, time::Duration};
 <a href=#8 id=8 data-nosnippet>8</a>
 <a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>serde::Serialize;
 <a href=#10 id=10 data-nosnippet>10</a>
@@ -116,28 +116,45 @@
 <a href=#116 id=116 data-nosnippet>116</a>/// effective default of each field is the one the Datadog schema declares, noted per field below.
 <a href=#117 id=117 data-nosnippet>117</a></span><span class="attr">#[derive(Clone, Debug, Default, PartialEq, Serialize)]
 <a href=#118 id=118 data-nosnippet>118</a></span><span class="kw">pub struct </span>ControlIpc {
-<a href=#119 id=119 data-nosnippet>119</a>    <span class="doccomment">/// TCP port the command API listens on.
+<a href=#119 id=119 data-nosnippet>119</a>    <span class="doccomment">/// Path to the Agent authentication token file.
 <a href=#120 id=120 data-nosnippet>120</a>    ///
-<a href=#121 id=121 data-nosnippet>121</a>    /// Defaults to `5001`.
-<a href=#122 id=122 data-nosnippet>122</a>    </span><span class="kw">pub </span>cmd_port: u16,
-<a href=#123 id=123 data-nosnippet>123</a>
-<a href=#124 id=124 data-nosnippet>124</a>    <span class="doccomment">/// vsock address used for guest/host IPC.
-<a href=#125 id=125 data-nosnippet>125</a>    ///
-<a href=#126 id=126 data-nosnippet>126</a>    /// Defaults to empty, which reaches the Core Agent over TCP on localhost at `cmd_port`.
-<a href=#127 id=127 data-nosnippet>127</a>    </span><span class="kw">pub </span>vsock_addr: String,
-<a href=#128 id=128 data-nosnippet>128</a>
-<a href=#129 id=129 data-nosnippet>129</a>    <span class="doccomment">/// Maximum gRPC message size, in bytes, accepted over the remote-agent IPC channel.
-<a href=#130 id=130 data-nosnippet>130</a>    ///
-<a href=#131 id=131 data-nosnippet>131</a>    /// Defaults to `134217728` (128 MiB).
-<a href=#132 id=132 data-nosnippet>132</a>    </span><span class="kw">pub </span>grpc_max_message_size: usize,
-<a href=#133 id=133 data-nosnippet>133</a>
-<a href=#134 id=134 data-nosnippet>134</a>    <span class="doccomment">/// Timeout for establishing a connection to the container runtime interface.
-<a href=#135 id=135 data-nosnippet>135</a>    </span><span class="kw">pub </span>cri_connection_timeout: i64,
-<a href=#136 id=136 data-nosnippet>136</a>
-<a href=#137 id=137 data-nosnippet>137</a>    <span class="doccomment">/// Timeout for a single container runtime interface query.
-<a href=#138 id=138 data-nosnippet>138</a>    </span><span class="kw">pub </span>cri_query_timeout: i64,
-<a href=#139 id=139 data-nosnippet>139</a>
-<a href=#140 id=140 data-nosnippet>140</a>    <span class="doccomment">/// Byte budget for the remote-agent IPC string interner. (not in Datadog Agent config schema)
-<a href=#141 id=141 data-nosnippet>141</a>    </span><span class="kw">pub </span>remote_agent_string_interner_size_bytes: usize,
-<a href=#142 id=142 data-nosnippet>142</a>}
+<a href=#121 id=121 data-nosnippet>121</a>    /// ADP sends the file contents as a bearer token to the Core Agent. Override this path only when the Core Agent
+<a href=#122 id=122 data-nosnippet>122</a>    /// uses a non-default token path, and configure both processes to use the same token.
+<a href=#123 id=123 data-nosnippet>123</a>    ///
+<a href=#124 id=124 data-nosnippet>124</a>    /// Defaults to an empty path, which selects the platform-specific Agent authentication token path.
+<a href=#125 id=125 data-nosnippet>125</a>    </span><span class="kw">pub </span>auth_token_file_path: PathBuf,
+<a href=#126 id=126 data-nosnippet>126</a>
+<a href=#127 id=127 data-nosnippet>127</a>    <span class="doccomment">/// Path to the shared Agent IPC mTLS identity file.
+<a href=#128 id=128 data-nosnippet>128</a>    ///
+<a href=#129 id=129 data-nosnippet>129</a>    /// The PEM file contains the certificate and private key used by ADP and its IPC peers. Every peer must use the
+<a href=#130 id=130 data-nosnippet>130</a>    /// same identity because authentication requires an exact certificate match. Override this path only when the Core
+<a href=#131 id=131 data-nosnippet>131</a>    /// Agent uses a non-default identity path.
+<a href=#132 id=132 data-nosnippet>132</a>    ///
+<a href=#133 id=133 data-nosnippet>133</a>    /// Defaults to an empty path, which selects `ipc_cert.pem` beside the resolved authentication token path.
+<a href=#134 id=134 data-nosnippet>134</a>    </span><span class="kw">pub </span>ipc_cert_file_path: PathBuf,
+<a href=#135 id=135 data-nosnippet>135</a>
+<a href=#136 id=136 data-nosnippet>136</a>    <span class="doccomment">/// TCP port the command API listens on.
+<a href=#137 id=137 data-nosnippet>137</a>    ///
+<a href=#138 id=138 data-nosnippet>138</a>    /// Defaults to `5001`.
+<a href=#139 id=139 data-nosnippet>139</a>    </span><span class="kw">pub </span>cmd_port: u16,
+<a href=#140 id=140 data-nosnippet>140</a>
+<a href=#141 id=141 data-nosnippet>141</a>    <span class="doccomment">/// vsock address used for guest/host IPC.
+<a href=#142 id=142 data-nosnippet>142</a>    ///
+<a href=#143 id=143 data-nosnippet>143</a>    /// Defaults to empty, which reaches the Core Agent over TCP on localhost at `cmd_port`.
+<a href=#144 id=144 data-nosnippet>144</a>    </span><span class="kw">pub </span>vsock_addr: String,
+<a href=#145 id=145 data-nosnippet>145</a>
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="doccomment">/// Maximum gRPC message size, in bytes, accepted over the remote-agent IPC channel.
+<a href=#147 id=147 data-nosnippet>147</a>    ///
+<a href=#148 id=148 data-nosnippet>148</a>    /// Defaults to `134217728` (128 MiB).
+<a href=#149 id=149 data-nosnippet>149</a>    </span><span class="kw">pub </span>grpc_max_message_size: usize,
+<a href=#150 id=150 data-nosnippet>150</a>
+<a href=#151 id=151 data-nosnippet>151</a>    <span class="doccomment">/// Timeout for establishing a connection to the container runtime interface.
+<a href=#152 id=152 data-nosnippet>152</a>    </span><span class="kw">pub </span>cri_connection_timeout: i64,
+<a href=#153 id=153 data-nosnippet>153</a>
+<a href=#154 id=154 data-nosnippet>154</a>    <span class="doccomment">/// Timeout for a single container runtime interface query.
+<a href=#155 id=155 data-nosnippet>155</a>    </span><span class="kw">pub </span>cri_query_timeout: i64,
+<a href=#156 id=156 data-nosnippet>156</a>
+<a href=#157 id=157 data-nosnippet>157</a>    <span class="doccomment">/// Byte budget for the remote-agent IPC string interner. (not in Datadog Agent config schema)
+<a href=#158 id=158 data-nosnippet>158</a>    </span><span class="kw">pub </span>remote_agent_string_interner_size_bytes: usize,
+<a href=#159 id=159 data-nosnippet>159</a>}
 </code></pre></div></section></main></body></html>
