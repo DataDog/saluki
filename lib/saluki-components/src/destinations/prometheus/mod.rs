@@ -13,7 +13,7 @@ use std::{
 use async_trait::async_trait;
 use ddsketch::DDSketch;
 use http::{Request, Response, StatusCode};
-use hyper::{body::Incoming, service::service_fn};
+use hyper::body::Incoming;
 use prometheus_exposition::{MetricType, PrometheusRenderer};
 use saluki_common::{collections::FastIndexMap, iter::ReusableDeduplicator, sync::shutdown::ShutdownCoordinator};
 use saluki_context::{tags::Tag, Context};
@@ -35,6 +35,7 @@ use stringtheory::{
     MetaString,
 };
 use tokio::{select, sync::RwLock};
+use tower::util::service_fn;
 use tracing::debug;
 
 const CONTEXT_LIMIT: usize = 10_000;

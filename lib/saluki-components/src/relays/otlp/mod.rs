@@ -10,14 +10,14 @@ use saluki_core::components::BuildContext;
 use saluki_core::data_model::payload::{GrpcPayload, Payload, PayloadMetadata, PayloadType};
 use saluki_core::topology::OutputDefinition;
 use saluki_error::{generic_error, ErrorContext as _, GenericError};
-use saluki_io::net::{server::grpc::GrpcKeepalive, ListenAddress};
+use saluki_io::net::{server::http::Http2Config, ListenAddress};
 use stringtheory::MetaString;
 use tokio::sync::mpsc;
 use tokio::{pin, select};
 use tracing::{debug, error};
 
 use crate::common::otlp::{
-    build_metrics, resolve_grpc_keepalive, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
+    build_metrics, resolve_grpc_http2_config, CorsConfiguration, Metrics, OtlpHandler, OtlpServerConfiguration,
     OtlpTlsConfiguration, OTLP_LOGS_GRPC_SERVICE_PATH, OTLP_METRICS_GRPC_SERVICE_PATH, OTLP_TRACES_GRPC_SERVICE_PATH,
 };
 
@@ -128,8 +128,10 @@ impl RelayBuilder for OtlpRelayConfiguration {
             http_endpoint: self.http_endpoint(),
             grpc_endpoint: self.grpc_endpoint(),
             grpc_max_recv_msg_size_bytes: self.grpc_max_recv_msg_size_bytes(),
-            grpc_keepalive: resolve_grpc_keepalive(&self.receiver.grpc.keepalive),
-            grpc_max_concurrent_streams: self.receiver.grpc.max_concurrent_streams,
+            grpc_http2_config: resolve_grpc_http2_config(
+                &self.receiver.grpc.keepalive,
+                self.receiver.grpc.max_concurrent_streams,
+            ),
             http_max_request_body_size: self.receiver.http.max_request_body_size,
             cors: cors_configuration(&self.receiver.http.cors),
             http_tls_config,
@@ -146,8 +148,7 @@ pub struct OtlpRelay {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
-    grpc_keepalive: GrpcKeepalive,
-    grpc_max_concurrent_streams: u32,
+    grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
     cors: CorsConfiguration,
     http_tls_config: Option<OtlpTlsConfiguration>,
@@ -162,8 +163,7 @@ impl Relay for OtlpRelay {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
-            grpc_keepalive,
-            grpc_max_concurrent_streams,
+            grpc_http2_config,
             http_max_request_body_size,
             cors,
             http_tls_config,
@@ -187,8 +187,7 @@ impl Relay for OtlpRelay {
             grpc_max_recv_msg_size_bytes,
         )
         .with_cors(cors)
-        .with_grpc_keepalive(grpc_keepalive)
-        .with_grpc_max_concurrent_streams(grpc_max_concurrent_streams)
+        .with_grpc_http2_config(grpc_http2_config)
         .with_http_max_request_body_size(http_max_request_body_size);
 
         if let Some(tls) = http_tls_config {

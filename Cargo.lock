@@ -4483,7 +4483,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-rustls",
- "tokio-stream",
  "tokio-test",
  "tokio-vsock",
  "tonic",

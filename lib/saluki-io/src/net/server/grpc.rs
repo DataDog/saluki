@@ -1,672 +1,480 @@
+//! gRPC support for [`HttpServer`][super::http::HttpServer].
+//!
+//! There is no dedicated gRPC server here, because gRPC does not need one: it is HTTP/2 plus a route naming
+//! convention (`/<package>.<Service>/<Method>`) and a trailer-carried status code. `tonic`'s [`Routes`] is an
+//! [`axum::Router`] underneath, and [`HttpServer`][super::http::HttpServer] already serves HTTP/2, so a gRPC service
+//! is served by handing its routes to an [`HttpServer`][super::http::HttpServer] like any other route set.
+//!
+//! What that leaves are the parts route matching can't cover on its own: a request that matches nothing has to be
+//! answered in whichever protocol the caller spoke, and a request that carries a deadline has to be held to it.
+//! [`merge_grpc_routes`] wires up both.
+//!
+//! Most callers never reach for this module directly. Handing services to
+//! [`HttpServer::add_grpc_service`][super::http::HttpServer::add_grpc_service] applies all of it:
+//!
+//! ```no_run
+//! # use saluki_io::net::{server::http::{Http2Config, HttpServer}, ListenAddress};
+//! # fn build<S>(service: S, listen_address: ListenAddress)
+//! # where
+//! #     S: tower::Service<http::Request<tonic::body::Body>, Error = std::convert::Infallible>
+//! #         + tonic::server::NamedService + Clone + Send + Sync + 'static,
+//! #     S::Response: axum::response::IntoResponse,
+//! #     S::Future: Send + 'static,
+//! # {
+//! let _server = HttpServer::from_listen_address(listen_address)
+//!     .add_grpc_service(service)
+//!     .with_http2_only()
+//!     .with_http2_config(Http2Config::grpc_defaults());
+//! # }
+//! ```
+//!
+//! [`merge_grpc_routes`] is for callers that build and serve their own router, such as those still on
+//! [`UnsupervisedHttpServer`][super::http::UnsupervisedHttpServer].
+
 use std::{
     convert::Infallible,
-    io,
-    net::SocketAddr,
+    future::Future,
     pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
+    task::{ready, Context, Poll},
     time::Duration,
 };
 
-use async_trait::async_trait;
-use http::Request;
-use rustls::ServerConfig;
-use saluki_common::sync::shutdown::ShutdownHandle;
-use saluki_core::runtime::{
-    state::{DataspaceRegistry, Identifier},
-    InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture,
-};
-use saluki_error::ErrorContext as _;
-use saluki_tls::ensure_server_config_fips_compliant;
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    pin, select,
-    sync::{mpsc, oneshot},
-    time::timeout,
-};
-use tokio_rustls::server::TlsStream as TokioTlsStream;
-use tokio_stream::wrappers::ReceiverStream;
-use tonic::{
-    body::Body,
-    server::NamedService,
-    service::Routes,
-    transport::{
-        server::{Connected, TcpIncoming},
-        Server,
-    },
-};
-use tower::Service;
-use tracing::{debug, warn};
+use axum::{body::Body, response::IntoResponse as _, Router};
+use http::{header::CONTENT_TYPE, HeaderMap, HeaderValue, Request, Response, StatusCode};
+use pin_project_lite::pin_project;
+use tokio::time::{sleep, Sleep};
+use tonic::{service::Routes, Status};
+use tower::{Layer, Service};
+use tracing::trace;
 
-#[cfg(unix)]
-use crate::net::unix::{ensure_unix_socket_free, set_unix_socket_write_only};
-use crate::net::{server::BoundServerAddress, ListenAddress};
+/// Header a gRPC client uses to communicate the deadline it is holding the server to.
+const GRPC_TIMEOUT_HEADER: &str = "grpc-timeout";
 
-/// Resolved keepalive parameters for a gRPC server.
+const SECONDS_PER_HOUR: u64 = 60 * 60;
+const SECONDS_PER_MINUTE: u64 = 60;
+
+/// Largest `TimeoutValue` the gRPC specification allows, expressed as a digit count.
 ///
-/// Defaults are 2 h interval, 20 s timeout, and no connection age limit.
-#[derive(Clone, Debug)]
-pub struct GrpcKeepalive {
-    /// Interval between HTTP/2 keepalive PING frames.
-    pub http2_keepalive_interval: Duration,
+/// Enforcing it is also what keeps the unit conversions below from overflowing.
+const MAX_TIMEOUT_VALUE_DIGITS: usize = 8;
 
-    /// Timeout for receiving a PONG after a keepalive PING before closing the connection.
-    pub http2_keepalive_timeout: Duration,
+/// Merges gRPC routes into an HTTP router.
+///
+/// The returned router serves both route sets, and answers anything that matches neither with [`unmatched_route`]. The
+/// gRPC routes are additionally wrapped in [`GrpcTimeoutLayer`], so a caller's `grpc-timeout` deadline is enforced.
+///
+/// `tonic` installs its own fallback on [`Routes`] to return gRPC `UNIMPLEMENTED`, and axum refuses to merge two
+/// routers that both define one, so that fallback is dropped in favor of the protocol-aware one. Any fallback set on
+/// `http_router` is dropped for the same reason: register a catch-all route instead if you need one.
+///
+/// # Panics
+///
+/// Panics if the two route sets define the same path, which is [`Router::merge`]'s behavior. In practice this can only
+/// happen if an HTTP route is registered under a path that looks like a gRPC method.
+pub fn merge_grpc_routes(http_router: Router, grpc_routes: Routes) -> Router {
+    // The deadline layer goes on the gRPC routes alone. `grpc-timeout` is a gRPC concept, and an HTTP route that
+    // happens to receive the header has no reason to be held to it.
+    let grpc_router = grpc_routes.into_axum_router().reset_fallback().layer(GrpcTimeoutLayer);
 
-    /// Maximum duration a connection may exist before the server sends GOAWAY. A zero duration
-    /// means no limit.
-    pub max_connection_age: Duration,
-
-    /// Grace period after `max_connection_age` before the connection is forcibly closed. A zero
-    /// duration means no limit.
-    pub max_connection_age_grace: Duration,
+    http_router
+        .reset_fallback()
+        .merge(grpc_router)
+        .fallback(unmatched_route)
 }
 
-impl Default for GrpcKeepalive {
-    fn default() -> Self {
-        Self {
-            http2_keepalive_interval: Duration::from_secs(2 * 60 * 60),
-            http2_keepalive_timeout: Duration::from_secs(20),
-            max_connection_age: Duration::ZERO,
-            max_connection_age_grace: Duration::ZERO,
-        }
+/// A [`Layer`] that holds a gRPC request to the deadline it arrived with.
+///
+/// See [`GrpcTimeout`] for what that means in practice.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GrpcTimeoutLayer;
+
+impl<S> Layer<S> for GrpcTimeoutLayer {
+    type Service = GrpcTimeout<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        GrpcTimeout { inner }
     }
 }
 
-/// A gRPC server.
+/// A [`Service`] that bounds how long the inner service has to answer a gRPC request.
 ///
-/// Allows serving multiple gRPC services from a single endpoint.
+/// A gRPC client states its deadline in the `grpc-timeout` request header. Enforcing it server-side means a request
+/// the caller has already given up on stops consuming resources, rather than running to completion so its response can
+/// be discarded.
 ///
-/// This type is a thin wrapper over helper types from `tonic` and `axum`, and principally is meant to provide an opaque
-/// gRPC server implementation that operates correctly when run under supervision. As such, this type can't be manually
-/// served: it is only usable by adding it to a supervisor.
+/// A request without the header, or with a header that doesn't parse, is passed through with no deadline. Silently
+/// ignoring a malformed value is what the gRPC specification calls for: a deadline the server can't read is not grounds
+/// for rejecting the request.
 ///
-/// # Supervision
+/// An expired deadline is answered with `DEADLINE_EXCEEDED`, which is the code the specification assigns to it. Note
+/// that `tonic`'s own timeout middleware answers with `CANCELLED` instead, an artifact of how it routes the expiry
+/// through its generic error handling.
 ///
-/// The listen address is bound during initialization, so a failure to bind is raised before the supervised worker
-/// starts running, and a restart rebinds.
+/// # Missing
 ///
-/// The server will attempt to gracefully shutdown existing connections when the parent supervisor signals shutdown.
-/// This will cause the worker to utilize the maximum allowable grace period during shutdown: it will attempt to take as
-/// long as necessary to gracefully shutdown existing connections, bounded only by the parent supervisor.
-pub struct GrpcServer {
-    listen_addr: ListenAddress,
-    routes: Option<Routes>,
-    graceful_shutdown_timeout: Option<Duration>,
-    keepalive: GrpcKeepalive,
-    tls_config: Option<ServerConfig>,
-    bound_address_id: Option<Identifier>,
-    max_concurrent_streams: u32,
+/// There is no server-side maximum to bound a client that asks for an unreasonably long deadline, because nothing here
+/// needs one yet. Adding it means taking the shorter of the two durations.
+#[derive(Clone, Copy, Debug)]
+pub struct GrpcTimeout<S> {
+    inner: S,
 }
 
-impl GrpcServer {
-    /// Creates an empty server with no attached services, configured to listen on the given address.
-    pub fn new(listen_addr: ListenAddress) -> Self {
-        Self {
-            listen_addr,
-            routes: None,
-            graceful_shutdown_timeout: None,
-            keepalive: GrpcKeepalive::default(),
-            tls_config: None,
-            bound_address_id: None,
-            max_concurrent_streams: 0,
-        }
-    }
-
-    /// Sets the identifier used to publish the bound TCP address.
-    ///
-    /// Defaults to not publishing the address. Unix listen addresses never publish an address.
-    pub fn with_bound_address_id(mut self, id: impl Into<Identifier>) -> Self {
-        self.bound_address_id = Some(id.into());
-        self
-    }
-
-    /// Sets the graceful shutdown timeout for this server.
-    ///
-    /// During shutdown, the server will for all in-flight connections to complete before ultimately completing itself.
-    /// When no timeout is specified, this will lead to the worker taking the maximum allowable time to shutdown if
-    /// connections are blocked or otherwise "stuck." Setting an explicit graceful shutdown timeout will cause the
-    /// worker to bound how long it waits for in-flight connections to shutdown before forcefully completing and moving
-    /// on.
-    ///
-    /// Defaults to no timeout (wait as long as allowed).
-    pub fn with_graceful_shutdown_timeout(mut self, timeout: Duration) -> Self {
-        self.graceful_shutdown_timeout = Some(timeout);
-        self
-    }
-
-    /// Sets the TLS configuration for the server.
-    ///
-    /// This enables TLS, after which the server only accepts connections that are encrypted with TLS.
-    ///
-    /// Defaults to TLS being disabled.
-    pub fn with_tls_config(mut self, config: ServerConfig) -> Self {
-        self.tls_config = Some(config);
-        self
-    }
-
-    fn publish_bound_address<F>(&self, local_addr: F, configured_addr: &SocketAddr) -> Result<(), InitializationError>
-    where
-        F: FnOnce() -> io::Result<SocketAddr>,
-    {
-        let Some(id) = self.bound_address_id.clone() else {
-            return Ok(());
-        };
-
-        let bound_address = local_addr()
-            .with_error_context(|| format!("Failed to query bound address for gRPC server ({}).", configured_addr))?;
-        let dataspace = DataspaceRegistry::try_current()
-            .ok_or_else(|| saluki_error::generic_error!("Dataspace not available for gRPC server."))?;
-        dataspace.assert(BoundServerAddress(bound_address), id);
-
-        Ok(())
-    }
-
-    /// Adds a new service to this server.
-    pub fn add_service<S>(mut self, svc: S) -> Self
-    where
-        S: Service<Request<Body>, Error = Infallible> + NamedService + Clone + Send + Sync + 'static,
-        S::Response: axum::response::IntoResponse,
-        S::Future: Send + 'static,
-    {
-        let routes = self.routes.take().unwrap_or_default().add_service(svc);
-
-        Self {
-            routes: Some(routes),
-            ..self
-        }
-    }
-
-    /// Sets the keepalive parameters for this server.
-    pub fn with_keepalive(mut self, keepalive: GrpcKeepalive) -> Self {
-        self.keepalive = keepalive;
-        self
-    }
-
-    /// Sets the HTTP/2 maximum concurrent streams per connection.
-    ///
-    /// A value of `0` (the default) means no limit. A positive value sets the
-    /// `SETTINGS_MAX_CONCURRENT_STREAMS` HTTP/2 setting, bounding how many concurrent streams a
-    /// single connection may have.
-    pub fn with_max_concurrent_streams(mut self, max_concurrent_streams: u32) -> Self {
-        self.max_concurrent_streams = max_concurrent_streams;
-        self
-    }
-}
-
-#[async_trait]
-impl Supervisable for GrpcServer {
-    fn name(&self) -> &str {
-        "grpc_server"
-    }
-
-    fn shutdown_strategy(&self) -> ShutdownStrategy {
-        // Utilize the maximum allowable grace period to give connections a chance to gracefully shutdown.
-        ShutdownStrategy::Graceful(Duration::MAX)
-    }
-
-    async fn initialize(&self, process_shutdown: ShutdownHandle) -> Result<SupervisorFuture, InitializationError> {
-        let routes = self.routes.clone().unwrap_or_default();
-        let shutdown_timeout = self.graceful_shutdown_timeout.unwrap_or(Duration::MAX);
-
-        // Build the tonic server with keepalive settings applied.
-        let ka = &self.keepalive;
-        let mut server = Server::default()
-            .http2_keepalive_interval(Some(ka.http2_keepalive_interval))
-            .http2_keepalive_timeout(Some(ka.http2_keepalive_timeout));
-        if ka.max_connection_age != Duration::ZERO {
-            server = server.max_connection_age(ka.max_connection_age);
-        }
-        if ka.max_connection_age_grace != Duration::ZERO {
-            server = server.max_connection_age_grace(ka.max_connection_age_grace);
-        }
-        if self.max_concurrent_streams > 0 {
-            server = server.max_concurrent_streams(self.max_concurrent_streams);
-        }
-
-        // Prepare TLS config once: both TCP and Unix paths use the same acceptor.
-        let tls_acceptor = if let Some(mut config) = self.tls_config.clone() {
-            ensure_server_config_fips_compliant(&mut config)
-                .error_context("Failed to configure TLS for gRPC server")?;
-
-            // ALPN: advertise h2 so TLS clients negotiate HTTP/2 directly.
-            config.alpn_protocols.push(b"h2".to_vec());
-
-            Some(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
-        } else {
-            None
-        };
-
-        match &self.listen_addr {
-            ListenAddress::Tcp(addr) => {
-                if let Some(acceptor) = tls_acceptor {
-                    let listener = tokio::net::TcpListener::bind(*addr)
-                        .await
-                        .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
-                    self.publish_bound_address(|| listener.local_addr(), addr)?;
-
-                    // Spawn each TLS handshake concurrently so a stalled client cannot block the accept loop.
-                    let incoming = spawn_tls_handshake_loop(listener, acceptor);
-
-                    Ok(Box::pin(async move {
-                        let (drain_tx, drain_rx) = oneshot::channel();
-                        let serve = server.serve_with_incoming_shutdown(routes, incoming, async move {
-                            let _ = drain_rx.await;
-                        });
-
-                        pin!(serve, process_shutdown);
-
-                        select! {
-                            result = &mut serve => result.error_context("Failed to serve gRPC server."),
-
-                            _ = &mut process_shutdown => {
-                                let _ = drain_tx.send(());
-
-                                match timeout(shutdown_timeout, serve).await {
-                                    Ok(Ok(())) => Ok(()),
-                                    Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
-                                    Err(_) => {
-                                        warn!("Failed to gracefully drain gRPC connections.");
-                                        Ok(())
-                                    },
-                                }
-                            },
-                        }
-                    }))
-                } else {
-                    let listener = TcpIncoming::bind(*addr)
-                        .with_error_context(|| format!("Failed to bind listener for gRPC server ({}).", addr))?;
-                    self.publish_bound_address(|| listener.local_addr(), addr)?;
-
-                    Ok(Box::pin(async move {
-                        let (drain_tx, drain_rx) = oneshot::channel();
-                        let serve = server.serve_with_incoming_shutdown(routes, listener, async move {
-                            let _ = drain_rx.await;
-                        });
-
-                        pin!(serve, process_shutdown);
-
-                        select! {
-                            result = &mut serve => result.error_context("Failed to serve gRPC server."),
-
-                            _ = &mut process_shutdown => {
-                                let _ = drain_tx.send(());
-
-                                match timeout(shutdown_timeout, serve).await {
-                                    Ok(Ok(())) => Ok(()),
-                                    Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
-                                    Err(_) => {
-                                        warn!("Failed to gracefully drain gRPC connections.");
-                                        Ok(())
-                                    },
-                                }
-                            },
-                        }
-                    }))
-                }
-            }
-            #[cfg(unix)]
-            ListenAddress::Unix(path) => {
-                let path = path.clone();
-                ensure_unix_socket_free(&path)
-                    .await
-                    .with_error_context(|| format!("Failed to clear gRPC Unix socket '{}'.", path.display()))?;
-                let listener = tokio::net::UnixListener::bind(&path)
-                    .with_error_context(|| format!("Failed to bind gRPC Unix listener on '{}'.", path.display()))?;
-                set_unix_socket_write_only(&path).await.with_error_context(|| {
-                    format!("Failed to set permissions on gRPC Unix socket '{}'.", path.display())
-                })?;
-
-                if let Some(acceptor) = tls_acceptor {
-                    // TLS over Unix sockets: same concurrent handshake pattern as TCP.
-                    let incoming = spawn_tls_handshake_loop(listener, acceptor);
-
-                    Ok(Box::pin(async move {
-                        let (drain_tx, drain_rx) = oneshot::channel();
-                        let serve = server.serve_with_incoming_shutdown(routes, incoming, async move {
-                            let _ = drain_rx.await;
-                        });
-
-                        pin!(serve, process_shutdown);
-
-                        select! {
-                            result = &mut serve => result.error_context("Failed to serve gRPC server."),
-
-                            _ = &mut process_shutdown => {
-                                let _ = drain_tx.send(());
-
-                                match timeout(shutdown_timeout, serve).await {
-                                    Ok(Ok(())) => Ok(()),
-                                    Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
-                                    Err(_) => {
-                                        warn!("Failed to gracefully drain gRPC connections.");
-                                        Ok(())
-                                    },
-                                }
-                            },
-                        }
-                    }))
-                } else {
-                    let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
-
-                    Ok(Box::pin(async move {
-                        let (drain_tx, drain_rx) = oneshot::channel();
-                        let serve = server.serve_with_incoming_shutdown(routes, incoming, async move {
-                            let _ = drain_rx.await;
-                        });
-
-                        pin!(serve, process_shutdown);
-
-                        select! {
-                            result = &mut serve => result.error_context("Failed to serve gRPC server."),
-
-                            _ = &mut process_shutdown => {
-                                let _ = drain_tx.send(());
-
-                                match timeout(shutdown_timeout, serve).await {
-                                    Ok(Ok(())) => Ok(()),
-                                    Ok(Err(e)) => Err(e).error_context("Failed to serve gRPC server."),
-                                    Err(_) => {
-                                        warn!("Failed to gracefully drain gRPC connections.");
-                                        Ok(())
-                                    },
-                                }
-                            },
-                        }
-                    }))
-                }
-            }
-            _ => Err(InitializationError::Failed {
-                source: saluki_error::generic_error!("gRPC endpoint must be a TCP or Unix address."),
-            }),
-        }
-    }
-}
-
-/// Accepts connections from a listener and performs TLS handshakes concurrently.
-///
-/// Each accepted connection gets its own spawned task for the TLS handshake, so a stalled client that connects
-/// without sending a TLS ClientHello cannot block subsequent connections from being accepted.
-fn spawn_tls_handshake_loop<L, S>(
-    listener: L, acceptor: tokio_rustls::TlsAcceptor,
-) -> ReceiverStream<Result<TlsServerStream<S>, std::io::Error>>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for GrpcTimeout<S>
 where
-    L: AcceptConnection<S> + Send + 'static,
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error = Infallible>,
+    ResBody: Default,
 {
-    let (tx, rx) = mpsc::channel(128);
+    type Response = Response<ResBody>;
+    type Error = Infallible;
+    type Future = GrpcTimeoutFuture<S::Future>;
 
-    tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok(stream) => {
-                    let acceptor = acceptor.clone();
-                    let tx = tx.clone();
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
 
-                    tokio::spawn(async move {
-                        match acceptor.accept(stream).await {
-                            Ok(tls_stream) => {
-                                let _ = tx.send(Ok(TlsServerStream(tls_stream))).await;
-                            }
-                            Err(e) => {
-                                debug!(error = %e, "gRPC TLS handshake failed; skipping connection.");
-                            }
-                        }
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(e)).await;
-                    break;
-                }
+    fn call(&mut self, req: Request<ReqBody>) -> Self::Future {
+        let deadline = match parse_grpc_timeout(req.headers()) {
+            Ok(deadline) => deadline,
+            Err(value) => {
+                trace!(header = ?value, "Ignoring malformed `grpc-timeout` header.");
+                None
             }
+        };
+
+        GrpcTimeoutFuture {
+            inner: self.inner.call(req),
+            deadline: deadline.map(sleep),
         }
-    });
-
-    ReceiverStream::new(rx)
-}
-
-/// Trait abstracting over `TcpListener` and `UnixListener` accept loops.
-trait AcceptConnection<S> {
-    fn accept(&self) -> impl std::future::Future<Output = std::io::Result<S>> + Send;
-}
-
-#[allow(clippy::manual_async_fn)]
-impl AcceptConnection<tokio::net::TcpStream> for tokio::net::TcpListener {
-    fn accept(&self) -> impl std::future::Future<Output = std::io::Result<tokio::net::TcpStream>> + Send {
-        async { self.accept().await.map(|(stream, _)| stream) }
     }
 }
 
-#[cfg(unix)]
-#[allow(clippy::manual_async_fn)]
-impl AcceptConnection<tokio::net::UnixStream> for tokio::net::UnixListener {
-    fn accept(&self) -> impl std::future::Future<Output = std::io::Result<tokio::net::UnixStream>> + Send {
-        async { self.accept().await.map(|(stream, _)| stream) }
+pin_project! {
+    /// Response future for [`GrpcTimeout`].
+    pub struct GrpcTimeoutFuture<F> {
+        #[pin]
+        inner: F,
+
+        #[pin]
+        deadline: Option<Sleep>,
     }
 }
 
-/// A TLS-wrapped stream that implements tonic's `Connected` trait.
+impl<F, ResBody> Future for GrpcTimeoutFuture<F>
+where
+    F: Future<Output = Result<Response<ResBody>, Infallible>>,
+    ResBody: Default,
+{
+    type Output = Result<Response<ResBody>, Infallible>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+
+        // Poll the request first, so that a response which is already ready wins over a deadline that expires on the
+        // same poll. Answering a request we have the answer to is never worse than reporting that it timed out.
+        if let Poll::Ready(result) = this.inner.poll(cx) {
+            return Poll::Ready(result);
+        }
+
+        if let Some(deadline) = this.deadline.as_pin_mut() {
+            ready!(deadline.poll(cx));
+
+            // Returning here drops the inner future, which is what actually cancels the work in flight.
+            return Poll::Ready(Ok(Status::deadline_exceeded(
+                "Deadline expired before operation could complete.",
+            )
+            .into_http()));
+        }
+
+        Poll::Pending
+    }
+}
+
+/// Parses the deadline carried by the `grpc-timeout` header, if there is one.
 ///
-/// This wrapper is needed because `tokio_rustls::server::TlsStream` only implements tonic's `Connected` trait when
-/// the `tls-connect-info` feature is enabled, which we do not use. We provide a minimal `Connected` implementation
-/// with `ConnectInfo = ()` since the gRPC server does not need connection-level metadata.
-struct TlsServerStream<S>(TokioTlsStream<S>);
+/// Returns the offending value when the header is present but doesn't parse, so the caller can report what it saw.
+///
+/// The encoding is `TimeoutValue TimeoutUnit`, where the value is at most eight digits and the unit is one of `H`
+/// (hours), `M` (minutes), `S` (seconds), `m` (milliseconds), `u` (microseconds), or `n` (nanoseconds). See the
+/// [gRPC over HTTP/2 specification][spec].
+///
+/// [spec]: https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md
+fn parse_grpc_timeout(headers: &HeaderMap) -> Result<Option<Duration>, &HeaderValue> {
+    let Some(value) = headers.get(GRPC_TIMEOUT_HEADER) else {
+        return Ok(None);
+    };
 
-impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for TlsServerStream<S> {
-    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_read(cx, buf)
+    // `to_str` only succeeds for ASCII, so splitting off the last byte can't land in the middle of a character.
+    let encoded = value.to_str().map_err(|_| value)?;
+    if encoded.is_empty() {
+        return Err(value);
+    }
+    let (timeout_value, timeout_unit) = encoded.split_at(encoded.len() - 1);
+
+    if timeout_value.len() > MAX_TIMEOUT_VALUE_DIGITS {
+        return Err(value);
+    }
+
+    let timeout_value: u64 = timeout_value.parse().map_err(|_| value)?;
+
+    let timeout = match timeout_unit {
+        "H" => Duration::from_secs(timeout_value * SECONDS_PER_HOUR),
+        "M" => Duration::from_secs(timeout_value * SECONDS_PER_MINUTE),
+        "S" => Duration::from_secs(timeout_value),
+        "m" => Duration::from_millis(timeout_value),
+        "u" => Duration::from_micros(timeout_value),
+        "n" => Duration::from_nanos(timeout_value),
+        _ => return Err(value),
+    };
+
+    Ok(Some(timeout))
+}
+
+/// Answers a request that matched no route, in the protocol the caller used.
+///
+/// gRPC callers get the `UNIMPLEMENTED` status they expect, and everyone else gets a plain `404 Not Found`.
+///
+/// Answering a gRPC caller with a bare 404 would mostly work -- the gRPC specification has clients map `404` to
+/// `UNIMPLEMENTED` when no `grpc-status` is present -- but it costs nothing to return the status directly, and doing so
+/// keeps the response identical to what a standalone gRPC server would send.
+pub async fn unmatched_route(headers: HeaderMap) -> Response<Body> {
+    if is_grpc_request(&headers) {
+        Status::unimplemented("").into_http()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
     }
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TlsServerStream<S> {
-    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.0).poll_write(cx, buf)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_flush(cx)
-    }
-
-    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.0).poll_shutdown(cx)
-    }
-}
-
-impl<S> Connected for TlsServerStream<S> {
-    type ConnectInfo = ();
-
-    fn connect_info(&self) -> Self::ConnectInfo {}
+/// Returns `true` if the given headers indicate a gRPC request.
+///
+/// The check is on the `Content-Type` header rather than the request path, since a request that reaches this point
+/// matched no route and so its path says nothing useful.
+pub fn is_grpc_request(headers: &HeaderMap) -> bool {
+    // We specifically check if the header value _starts_ with `application/grpc` as the gRPC spec allows for additional
+    // suffixes to describe how the payload is encoded (i.e. `application/grpc+proto` when encoded via Protocol Buffers
+    // vs `application/grpc+json` when encoded via JSON for gRPC-Web).
+    headers
+        .get(CONTENT_TYPE)
+        .map(|content_type| content_type.as_bytes())
+        .is_some_and(|content_type| content_type.starts_with(b"application/grpc"))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::{SocketAddr, TcpListener as StdTcpListener};
-
-    use saluki_common::sync::shutdown::ShutdownCoordinator;
-    #[cfg(unix)]
-    use saluki_core::runtime::state::IdentifierFilter;
-    use saluki_tls::test_util::SelfSignedCert;
-    #[cfg(unix)]
-    use tokio::io::AsyncReadExt as _;
-    use tokio::io::AsyncWriteExt as _;
-    use tokio::net::TcpStream;
-    use tokio::time::timeout;
+    use tonic::server::NamedService;
+    use tower::{util::service_fn, ServiceExt as _};
 
     use super::*;
-    use crate::net::server::test_util::ServerTestHarness;
-    #[cfg(unix)]
-    use crate::net::server::{test_util::connect_unix, BoundServerAddress};
 
-    /// Bound on any server await in these tests, so a hang fails rather than stalling the suite.
-    const TEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-    /// Reserves a loopback port and releases it, yielding an address a server can bind.
-    fn free_local_addr() -> SocketAddr {
-        let listener = StdTcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
-        let addr = listener.local_addr().expect("should have a local address");
-        drop(listener);
-        addr
-    }
-
-    #[tokio::test]
-    async fn publishes_bound_tcp_address() {
-        let harness = ServerTestHarness::start("grpc-bound-address", |supervisor| {
-            let listen_address = ListenAddress::Tcp("127.0.0.1:0".parse().expect("address should parse"));
-            let server = GrpcServer::new(listen_address).with_bound_address_id("grpc-bound-address");
-            supervisor.add_worker(server);
-        })
-        .await;
-
-        let address = harness.bound_address("grpc-bound-address").await;
-        assert_ne!(address.port(), 0);
-        let stream = TcpStream::connect(address)
-            .await
-            .expect("should connect to published address");
-        drop(stream);
-
-        harness.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn tls_server_publishes_bound_tcp_address() {
-        let _ = saluki_tls::initialize_default_crypto_provider();
-        let cert = SelfSignedCert::localhost();
-        let tls_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(cert.cert_chain(), cert.private_key())
-            .expect("should build TLS config");
-        let harness = ServerTestHarness::start("grpc-tls-bound-address", move |supervisor| {
-            let listen_address = ListenAddress::Tcp("127.0.0.1:0".parse().expect("address should parse"));
-            let server = GrpcServer::new(listen_address)
-                .with_tls_config(tls_config)
-                .with_bound_address_id("grpc-tls-bound-address");
-            supervisor.add_worker(server);
-        })
-        .await;
-
-        let address = harness.bound_address("grpc-tls-bound-address").await;
-        assert_ne!(address.port(), 0);
-        let stream = TcpStream::connect(address)
-            .await
-            .expect("should connect to published address");
-        drop(stream);
-
-        harness.shutdown().await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn unix_listener_does_not_publish_bound_address() {
-        let tempdir = tempfile::tempdir().expect("should create temp dir");
-        let socket_path = tempdir.path().join("grpc.sock");
-        let listen_address = ListenAddress::Unix(socket_path.clone());
-        let harness = ServerTestHarness::start("grpc-unix-bound-address", move |supervisor| {
-            let server = GrpcServer::new(listen_address).with_bound_address_id("grpc-unix-bound-address");
-            supervisor.add_worker(server);
-        })
-        .await;
-
-        let mut stream = connect_unix(&socket_path).await;
-        stream
-            .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
-            .await
-            .expect("should write HTTP/2 preface");
-        let mut response = [0; 1];
-        timeout(TEST_TIMEOUT, stream.read_exact(&mut response))
-            .await
-            .expect("server should respond over Unix listener")
-            .expect("should read server response");
-        assert!(
-            harness
-                .dataspace
-                .current_values::<BoundServerAddress>(IdentifierFilter::all())
-                .is_empty(),
-            "Unix listener should not publish a bound address"
+    fn headers_with_content_type(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_str(value).expect("should be a valid header"),
         );
-        drop(stream);
-
-        harness.shutdown().await;
+        headers
     }
 
-    #[tokio::test]
-    async fn binds_during_initialization() {
-        // The listener is bound by `initialize`, so the port is taken before anything serves. That is what makes a bind
-        // failure a non-restartable initialization error rather than a runtime one.
-        let addr = free_local_addr();
-        let run = GrpcServer::new(ListenAddress::Tcp(addr))
-            .initialize(ShutdownHandle::noop())
-            .await
-            .expect("should initialize");
+    /// Reads the gRPC status code off a response, if it carries one.
+    fn grpc_status(response: &Response<Body>) -> Option<&str> {
+        response
+            .headers()
+            .get("grpc-status")
+            .and_then(|value| value.to_str().ok())
+    }
 
-        assert!(
-            StdTcpListener::bind(addr).is_err(),
-            "initialization should have bound {addr} before the worker future ran"
+    /// Parses a `grpc-timeout` header value, discarding the offending value on failure.
+    fn parse_timeout(value: &str) -> Result<Option<Duration>, ()> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            GRPC_TIMEOUT_HEADER,
+            HeaderValue::from_str(value).expect("should be a valid header"),
         );
 
-        drop(run);
+        parse_grpc_timeout(&headers).map_err(|_| ())
     }
 
-    #[tokio::test]
-    async fn bind_failure_is_an_initialization_error() {
-        let addr = free_local_addr();
-        let _held = StdTcpListener::bind(addr).expect("should hold the address");
+    /// Runs a handler that takes `handler_delay` to answer, behind the deadline layer.
+    async fn call_with_deadline(timeout_header: Option<&str>, handler_delay: Duration) -> Response<Body> {
+        let service = GrpcTimeoutLayer.layer(service_fn(move |_req: Request<Body>| async move {
+            tokio::time::sleep(handler_delay).await;
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
 
-        match GrpcServer::new(ListenAddress::Tcp(addr))
-            .initialize(ShutdownHandle::noop())
-            .await
-        {
-            Ok(_) => panic!("initialization should have failed to bind {addr}"),
-            Err(e) => {
-                let error = e.to_string();
-                assert!(error.contains("Failed to bind listener"), "unexpected error: {error}");
-            }
+        let mut request = Request::new(Body::empty());
+        if let Some(timeout_header) = timeout_header {
+            request.headers_mut().insert(
+                GRPC_TIMEOUT_HEADER,
+                HeaderValue::from_str(timeout_header).expect("should be a valid header"),
+            );
+        }
+
+        service.oneshot(request).await.expect("service should not fail")
+    }
+
+    /// A gRPC service that never answers quickly enough to beat a deadline.
+    #[derive(Clone)]
+    struct SlowService;
+
+    impl NamedService for SlowService {
+        const NAME: &'static str = "test.SlowService";
+    }
+
+    impl Service<Request<tonic::body::Body>> for SlowService {
+        type Response = Response<Body>;
+        type Error = Infallible;
+        type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Infallible>> + Send>>;
+
+        fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, _req: Request<tonic::body::Body>) -> Self::Future {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(Response::new(Body::empty()))
+            })
         }
     }
 
-    #[tokio::test]
-    async fn releases_its_port_once_the_worker_finishes() {
-        let addr = free_local_addr();
-        let mut coordinator = ShutdownCoordinator::default();
-        let run = GrpcServer::new(ListenAddress::Tcp(addr))
-            .initialize(coordinator.register())
-            .await
-            .expect("should initialize");
+    #[test]
+    fn detects_grpc_content_types() {
+        // The bare type and the encoding-suffixed forms are all gRPC.
+        for content_type in ["application/grpc", "application/grpc+proto", "application/grpc+json"] {
+            assert!(
+                is_grpc_request(&headers_with_content_type(content_type)),
+                "'{content_type}' should be detected as gRPC"
+            );
+        }
+    }
 
-        coordinator.shutdown();
-        timeout(TEST_TIMEOUT, run)
-            .await
-            .expect("server should stop on shutdown")
-            .expect("server should stop cleanly");
+    #[test]
+    fn does_not_detect_non_grpc_content_types() {
+        for content_type in ["application/json", "application/x-protobuf", "text/plain"] {
+            assert!(
+                !is_grpc_request(&headers_with_content_type(content_type)),
+                "'{content_type}' should not be detected as gRPC"
+            );
+        }
 
         assert!(
-            StdTcpListener::bind(addr).is_ok(),
-            "the server should have released {addr} when its worker finished"
+            !is_grpc_request(&HeaderMap::new()),
+            "a request without a content type should not be detected as gRPC"
         );
     }
 
     #[tokio::test]
-    async fn an_idle_peer_does_not_wedge_the_drain() {
-        // `tonic` waits for every connection to close and imposes no bound of its own, so a peer that connects and then
-        // does nothing would otherwise hold shutdown open indefinitely.
-        let addr = free_local_addr();
-        let mut coordinator = ShutdownCoordinator::default();
-        let run = GrpcServer::new(ListenAddress::Tcp(addr))
-            .with_graceful_shutdown_timeout(Duration::from_secs(1))
-            .initialize(coordinator.register())
-            .await
-            .expect("should initialize");
-        let run = tokio::spawn(run);
+    async fn unmatched_grpc_request_gets_unimplemented() {
+        // gRPC reports errors as a 200 with a `grpc-status` header. UNIMPLEMENTED is code 12.
+        let response = unmatched_route(headers_with_content_type("application/grpc")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("grpc-status").and_then(|v| v.to_str().ok()),
+            Some("12")
+        );
+    }
 
-        let mut stream = TcpStream::connect(addr).await.expect("should connect");
-        stream.write_all(b"PRI * HTTP/2.0\r\n").await.expect("should write");
-        stream.flush().await.expect("should flush");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    #[tokio::test]
+    async fn unmatched_http_request_gets_not_found() {
+        let response = unmatched_route(headers_with_content_type("application/json")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(response.headers().get("grpc-status").is_none());
+    }
+    #[test]
+    fn parses_every_timeout_unit() {
+        assert_eq!(parse_timeout("3H"), Ok(Some(Duration::from_secs(3 * 60 * 60))));
+        assert_eq!(parse_timeout("1M"), Ok(Some(Duration::from_secs(60))));
+        assert_eq!(parse_timeout("42S"), Ok(Some(Duration::from_secs(42))));
+        assert_eq!(parse_timeout("13m"), Ok(Some(Duration::from_millis(13))));
+        assert_eq!(parse_timeout("2u"), Ok(Some(Duration::from_micros(2))));
+        assert_eq!(parse_timeout("82n"), Ok(Some(Duration::from_nanos(82))));
+    }
 
-        coordinator.shutdown();
-        timeout(TEST_TIMEOUT, run)
-            .await
-            .expect("server should finish draining rather than waiting on an idle peer")
-            .expect("server task should not panic")
-            .expect("server should stop cleanly");
+    #[test]
+    fn parses_the_largest_permitted_timeout_value() {
+        // Eight digits of hours is the ceiling the specification allows, and is what the digit cap exists to keep the
+        // unit conversion from overflowing on.
+        assert_eq!(
+            parse_timeout("99999999H"),
+            Ok(Some(Duration::from_secs(99_999_999 * 60 * 60)))
+        );
+    }
+
+    #[test]
+    fn absent_timeout_header_yields_no_deadline() {
+        assert_eq!(
+            parse_grpc_timeout(&HeaderMap::new()).expect("an absent header should not be an error"),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_timeout_values() {
+        // In order: an unknown unit, more digits than the specification allows, a non-numeric value, a unit with no
+        // value, a value with no unit, and an empty header.
+        for value in ["82f", "123456789H", "oneH", "S", "8", ""] {
+            assert!(parse_timeout(value).is_err(), "'{value}' should not parse");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn deadline_expiry_answers_with_deadline_exceeded() {
+        // gRPC reports errors as a 200 with a `grpc-status` header. DEADLINE_EXCEEDED is code 4.
+        let response = call_with_deadline(Some("50m"), Duration::from_secs(10)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(grpc_status(&response), Some("4"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_response_within_the_deadline_is_passed_through() {
+        let response = call_with_deadline(Some("10S"), Duration::from_millis(50)).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(grpc_status(&response), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_without_a_deadline_is_not_bounded() {
+        let response = call_with_deadline(None, Duration::from_secs(60 * 60)).await;
+        assert_eq!(grpc_status(&response), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_malformed_deadline_is_ignored() {
+        // The specification treats an unreadable deadline as no deadline: it is not grounds for rejecting the request.
+        let response = call_with_deadline(Some("howlong"), Duration::from_secs(60 * 60)).await;
+        assert_eq!(grpc_status(&response), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn merged_grpc_routes_are_bound_by_their_deadline() {
+        let router = merge_grpc_routes(Router::new(), Routes::new(SlowService));
+        let request = Request::builder()
+            .uri("/test.SlowService/Method")
+            .header(CONTENT_TYPE, "application/grpc")
+            .header(GRPC_TIMEOUT_HEADER, "50m")
+            .body(Body::empty())
+            .expect("should build request");
+
+        let response = router.oneshot(request).await.expect("router should answer");
+        assert_eq!(grpc_status(&response), Some("4"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn merged_http_routes_are_not_bound_by_a_grpc_deadline() {
+        // The deadline layer is attached to the gRPC routes alone, so an HTTP route that happens to receive the header
+        // runs to completion rather than being cut short by a convention it has nothing to do with.
+        let slow_route = axum::routing::get(|| async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            "done"
+        });
+        let router = merge_grpc_routes(Router::new().route("/slow", slow_route), Routes::default());
+        let request = Request::builder()
+            .uri("/slow")
+            .header(GRPC_TIMEOUT_HEADER, "50m")
+            .body(Body::empty())
+            .expect("should build request");
+
+        let response = router.oneshot(request).await.expect("router should answer");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(grpc_status(&response), None);
     }
 }

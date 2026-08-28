@@ -34,14 +34,8 @@ use saluki_core::accounting::MemoryLimiter;
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_core::runtime;
-#[cfg(test)]
-use saluki_core::runtime::state::Identifier;
 use saluki_error::GenericError;
-use saluki_io::net::server::{
-    grpc::{GrpcKeepalive, GrpcServer},
-    http::HttpServer,
-};
-use saluki_io::net::util::hyper::TowerToHyperService;
+use saluki_io::net::server::http::{Http2Config, HttpServer};
 use saluki_io::net::ListenAddress;
 use saluki_metrics::MetricsBuilder;
 use saluki_tls::ServerTLSConfigBuilder;
@@ -144,19 +138,26 @@ pub fn build_metrics(component_context: &ComponentContext) -> Metrics {
     }
 }
 
-/// Converts keepalive server parameters into tonic-compatible settings.
+/// Converts the gRPC receiver's connection settings into HTTP/2 server settings.
 ///
-/// Defaults are already resolved by the configuration layer; this function only maps the typed
-/// values into the tonic-facing struct.
-pub fn resolve_grpc_keepalive(
-    keepalive: &agent_data_plane_config::domains::otlp::KeepaliveServerParameters,
-) -> GrpcKeepalive {
-    GrpcKeepalive {
-        http2_keepalive_interval: keepalive.time,
-        http2_keepalive_timeout: keepalive.timeout,
-        max_connection_age: keepalive.max_connection_age,
-        max_connection_age_grace: keepalive.max_connection_age_grace,
+/// The keepalive interval and timeout are already resolved by the configuration layer, so they map across directly.
+/// The connection age limits and `max_concurrent_streams` use a zero value to mean "no limit," which is translated
+/// here into the absence of a limit.
+pub fn resolve_grpc_http2_config(
+    keepalive: &agent_data_plane_config::domains::otlp::KeepaliveServerParameters, max_concurrent_streams: u32,
+) -> Http2Config {
+    let mut config = Http2Config::default().with_keepalive(keepalive.time, keepalive.timeout);
+
+    if !keepalive.max_connection_age.is_zero() {
+        let grace = (!keepalive.max_connection_age_grace.is_zero()).then_some(keepalive.max_connection_age_grace);
+        config = config.with_max_connection_age(keepalive.max_connection_age, grace);
     }
+
+    if max_concurrent_streams > 0 {
+        config = config.with_max_concurrent_streams(max_concurrent_streams);
+    }
+
+    config
 }
 
 /// Handler for OTLP data.
@@ -237,16 +238,15 @@ pub struct OtlpServerConfiguration {
     http_endpoint: ListenAddress,
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
-    grpc_keepalive: GrpcKeepalive,
-    grpc_max_concurrent_streams: u32,
+    grpc_http2_config: Http2Config,
     http_max_request_body_size: u64,
     cors: CorsConfiguration,
     http_tls: Option<OtlpTlsConfiguration>,
     grpc_tls: Option<OtlpTlsConfiguration>,
     #[cfg(test)]
-    http_bound_address_id: Option<Identifier>,
+    http_server_id: Option<MetaString>,
     #[cfg(test)]
-    grpc_bound_address_id: Option<Identifier>,
+    grpc_server_id: Option<MetaString>,
 }
 
 impl OtlpServerConfiguration {
@@ -258,31 +258,21 @@ impl OtlpServerConfiguration {
             http_endpoint,
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
-            grpc_keepalive: GrpcKeepalive::default(),
-            grpc_max_concurrent_streams: 0,
+            grpc_http2_config: Http2Config::grpc_defaults(),
             http_max_request_body_size: 0,
             cors: CorsConfiguration::default(),
             http_tls: None,
             grpc_tls: None,
             #[cfg(test)]
-            http_bound_address_id: None,
+            http_server_id: None,
             #[cfg(test)]
-            grpc_bound_address_id: None,
+            grpc_server_id: None,
         }
     }
 
-    /// Sets the gRPC keepalive parameters.
-    pub fn with_grpc_keepalive(mut self, keepalive: GrpcKeepalive) -> Self {
-        self.grpc_keepalive = keepalive;
-        self
-    }
-
-    /// Sets the HTTP/2 maximum concurrent streams per connection for the gRPC receiver.
-    ///
-    /// A value of `0` (the default) means no limit. A positive value sets the
-    /// `SETTINGS_MAX_CONCURRENT_STREAMS` HTTP/2 setting.
-    pub fn with_grpc_max_concurrent_streams(mut self, max_concurrent_streams: u32) -> Self {
-        self.grpc_max_concurrent_streams = max_concurrent_streams;
+    /// Sets the HTTP/2 settings used by the gRPC endpoint.
+    pub fn with_grpc_http2_config(mut self, config: Http2Config) -> Self {
+        self.grpc_http2_config = config;
         self
     }
 
@@ -295,11 +285,14 @@ impl OtlpServerConfiguration {
         self
     }
 
-    /// Sets the identifiers used to publish the bound HTTP and gRPC addresses.
+    /// Sets the identifiers used for the HTTP and gRPC servers.
+    ///
+    /// This is required for subscribing to listen address assertions to find the socket address
+    /// when binding to ephemeral ports.
     #[cfg(test)]
-    fn with_bound_address_ids(mut self, http_id: impl Into<Identifier>, grpc_id: impl Into<Identifier>) -> Self {
-        self.http_bound_address_id = Some(http_id.into());
-        self.grpc_bound_address_id = Some(grpc_id.into());
+    fn with_server_ids(mut self, http_id: impl Into<MetaString>, grpc_id: impl Into<MetaString>) -> Self {
+        self.http_server_id = Some(http_id.into());
+        self.grpc_server_id = Some(grpc_id.into());
         self
     }
 
@@ -363,18 +356,19 @@ impl OtlpServerConfiguration {
         let grpc_traces_server =
             TraceServiceServer::new(inner_grpc).max_decoding_message_size(self.grpc_max_recv_msg_size_bytes);
 
-        let grpc_server = GrpcServer::new(self.grpc_endpoint.clone())
-            .add_service(grpc_metrics_server)
-            .add_service(grpc_logs_server)
-            .add_service(grpc_traces_server);
-
-        let mut grpc_server = grpc_server
-            .with_keepalive(self.grpc_keepalive)
-            .with_max_concurrent_streams(self.grpc_max_concurrent_streams);
+        // The gRPC endpoint is served by an HTTP server: gRPC is HTTP/2 with a distinct route naming convention, so
+        // the generated services are just another route set. It is restricted to HTTP/2 because the OTLP gRPC port
+        // only ever serves gRPC, and an HTTP/1.1 caller belongs on the HTTP endpoint instead.
+        let mut grpc_server = HttpServer::from_listen_address(self.grpc_endpoint.clone())
+            .add_grpc_service(grpc_metrics_server)
+            .add_grpc_service(grpc_logs_server)
+            .add_grpc_service(grpc_traces_server)
+            .with_http2_only()
+            .with_http2_config(self.grpc_http2_config);
 
         #[cfg(test)]
-        if let Some(id) = self.grpc_bound_address_id {
-            grpc_server = grpc_server.with_bound_address_id(id);
+        if let Some(id) = self.grpc_server_id {
+            grpc_server = grpc_server.with_server_id(id);
         }
         if let Some(tls_config) = grpc_tls_config {
             grpc_server = grpc_server.with_tls_config(tls_config);
@@ -409,13 +403,11 @@ impl OtlpServerConfiguration {
             router
         };
 
-        let service = TowerToHyperService::new(router);
-
-        let mut http_server = HttpServer::from_listen_address(self.http_endpoint, service);
+        let mut http_server = HttpServer::from_listen_address(self.http_endpoint).add_routes(router);
 
         #[cfg(test)]
-        if let Some(id) = self.http_bound_address_id {
-            http_server = http_server.with_bound_address_id(id);
+        if let Some(id) = self.http_server_id {
+            http_server = http_server.with_server_id(id);
         }
         if let Some(tls_config) = http_tls_config {
             http_server = http_server.with_tls_config(tls_config);
@@ -666,7 +658,7 @@ mod tests {
         components::{test_util::TestComponentSupervisor, ComponentContext},
         runtime::state::{DataspaceUpdate, IdentifierFilter},
     };
-    use saluki_io::net::server::BoundServerAddress;
+    use saluki_io::net::BoundListenAddress;
     use saluki_metrics::test::TestRecorder;
     use saluki_tls::test_util::SelfSignedCert;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -674,9 +666,6 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-
-    const HTTP_BOUND_ADDRESS_ID: &str = "test-otlp-http-bound-address";
-    const GRPC_BOUND_ADDRESS_ID: &str = "test-otlp-grpc-bound-address";
 
     struct NoopHandler;
 
@@ -1230,13 +1219,13 @@ mod tests {
 
     /// Starts an `OtlpServerConfiguration` with TLS enabled on both HTTP and gRPC, returning the bound ports and
     /// the self-signed certificate (so callers can build a matching client config).
-    async fn start_otlp_server_with_tls() -> (u16, u16, SelfSignedCert, TestComponentSupervisor) {
+    async fn start_otlp_server_with_tls(server_id: &str) -> (u16, u16, SelfSignedCert, TestComponentSupervisor) {
         let _ = saluki_tls::initialize_default_crypto_provider();
         let supervisor = TestComponentSupervisor::start("otlp-tls-test").await;
 
         let cert = SelfSignedCert::localhost();
-        let http_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().unwrap());
-        let grpc_endpoint = ListenAddress::Tcp("127.0.0.1:0".parse().unwrap());
+        let http_endpoint = ListenAddress::tcp_loopback(0);
+        let grpc_endpoint = ListenAddress::tcp_loopback(0);
 
         // Write the cert and key to temp files so OtlpTlsConfiguration can load them.
         let tempdir = tempfile::tempdir().expect("temp dir should be created");
@@ -1245,9 +1234,12 @@ mod tests {
         cert.write_cert_pem(&cert_path);
         cert.write_key_pem(&key_path);
 
+        let http_server_id = format!("otlp-http-test-{}", server_id);
+        let grpc_server_id = format!("otlp-grpc-test-{}", server_id);
+
         let tls_config = OtlpTlsConfiguration::new(cert_path, key_path);
         let server_config = OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
-            .with_bound_address_ids(HTTP_BOUND_ADDRESS_ID, GRPC_BOUND_ADDRESS_ID)
+            .with_server_ids(&*http_server_id, &*grpc_server_id)
             .with_http_tls(tls_config.clone())
             .with_grpc_tls(tls_config);
 
@@ -1261,8 +1253,8 @@ mod tests {
             .await
             .expect("OTLP server with TLS should start");
 
-        let http_port = bound_port(&supervisor, HTTP_BOUND_ADDRESS_ID).await;
-        let grpc_port = bound_port(&supervisor, GRPC_BOUND_ADDRESS_ID).await;
+        let http_port = bound_port(&supervisor, &http_server_id).await;
+        let grpc_port = bound_port(&supervisor, &grpc_server_id).await;
         wait_for_port(http_port).await;
         wait_for_port(grpc_port).await;
 
@@ -1270,19 +1262,20 @@ mod tests {
     }
 
     async fn bound_port(supervisor: &TestComponentSupervisor, id: &str) -> u16 {
+        let id = format!("http-server-{}", id);
         let mut subscription = supervisor
             .dataspace()
-            .subscribe::<BoundServerAddress>(IdentifierFilter::exact(id));
+            .subscribe::<BoundListenAddress>(IdentifierFilter::exact(id.clone()));
 
         match tokio::time::timeout(Duration::from_secs(5), subscription.recv()).await {
-            Ok(Some(DataspaceUpdate::Asserted(_, BoundServerAddress(address)))) => address.port(),
+            Ok(Some(DataspaceUpdate::Asserted(_, BoundListenAddress::Tcp(address)))) => address.port(),
             update => panic!("expected a bound address assertion for '{id}', got {update:?}"),
         }
     }
 
     #[tokio::test]
     async fn http_tls_handshake_succeeds_with_trusted_cert() {
-        let (http_port, _grpc_port, cert, supervisor) = start_otlp_server_with_tls().await;
+        let (http_port, _grpc_port, cert, supervisor) = start_otlp_server_with_tls("http-tls-handshake-succeeds").await;
 
         // Connect a TLS client to the HTTP port and verify the handshake completes.
         let connector = TlsConnector::from(Arc::new(self_signed_client_config(&cert)));
@@ -1324,7 +1317,7 @@ mod tests {
 
     #[tokio::test]
     async fn grpc_tls_handshake_succeeds_with_trusted_cert() {
-        let (_http_port, grpc_port, cert, supervisor) = start_otlp_server_with_tls().await;
+        let (_http_port, grpc_port, cert, supervisor) = start_otlp_server_with_tls("grpc-tls-handshake-succeeds").await;
 
         // Connect a TLS client to the gRPC port and verify the handshake completes.
         // We use a raw TLS connection rather than a full gRPC client to keep the test simple — completing the
@@ -1360,7 +1353,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_tls_handshake_fails_without_trusted_cert() {
-        let (http_port, _grpc_port, _cert, supervisor) = start_otlp_server_with_tls().await;
+        let (http_port, _grpc_port, _cert, supervisor) = start_otlp_server_with_tls("http-tls-handshake-fails").await;
 
         // Connect a TLS client with an empty root store — the handshake should fail because the self-signed cert
         // is not trusted.
