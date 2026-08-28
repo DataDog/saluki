@@ -637,7 +637,7 @@ Accepts a bare integer number of bytes or a human-readable byte-size string such
 
 ### `metric_aggregation_intervals`
 
-Each entry selects a non-zero aggregation window in whole seconds for a non-empty, case-sensitive metric-name prefix. Prefixes must not overlap. Whitespace is preserved and matched exactly. Rules apply after mapper rewrites and metric namespace prefixing.
+Each entry selects an aggregation window from 1 through 60 whole seconds, inclusive, for a non-empty, case-sensitive metric-name prefix. Prefixes must not overlap. Whitespace is preserved and matched exactly. Rules apply after mapper rewrites and metric namespace prefixing.
 
 ```yaml
 metric_aggregation_intervals:

@@ -281,7 +281,7 @@ pub struct MetricAggregationInterval {
     /// Case-sensitive metric-name prefix used for matching.
     pub metric_prefix: String,
 
-    /// Aggregation window length in whole seconds.
+    /// Aggregation window length in whole seconds, from 1 through 60 inclusive.
     pub interval_seconds: u64,
 }
 
@@ -292,9 +292,9 @@ fn sort_and_validate_metric_intervals(rules: &mut [MetricAggregationInterval]) -
                 "metric aggregation intervals must use non-empty metric prefixes",
             ));
         }
-        if rule.interval_seconds == 0 {
+        if !(1..=60).contains(&rule.interval_seconds) {
             return Err(GenericError::msg(
-                "metric aggregation interval durations must be non-zero",
+                "metric aggregation interval durations must be whole seconds from 1 through 60 inclusive",
             ));
         }
     }
@@ -2081,6 +2081,19 @@ mod tests {
             state.interval_for_metric(&Metric::gauge("unmatched.requests", 1.0)),
             BUCKET_WIDTH_SECS
         );
+    }
+
+    #[test]
+    fn metric_interval_rules_reject_out_of_range_intervals() {
+        for interval_seconds in [0, 61] {
+            let mut rules = vec![MetricAggregationInterval {
+                metric_prefix: "requests.".to_string(),
+                interval_seconds,
+            }];
+
+            let error = sort_and_validate_metric_intervals(&mut rules).expect_err("invalid intervals must fail");
+            assert!(error.to_string().contains("1 through 60"));
+        }
     }
 
     #[test]

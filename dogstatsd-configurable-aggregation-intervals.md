@@ -23,14 +23,14 @@ metric_aggregation_intervals:
 Each rule contains:
 
 - `metric_prefix`: A non-empty, case-sensitive metric-name prefix. Whitespace is preserved and matched exactly.
-- `interval_seconds`: A non-zero aggregation window duration in whole seconds.
+- `interval_seconds`: An aggregation window duration from 1 through 60 whole seconds, inclusive.
 
 The default rule list is empty, which preserves current behavior.
 
 ADP rejects the complete configuration at startup if:
 
 - a prefix is empty;
-- an interval is zero;
+- an interval is outside the inclusive range from 1 through 60 seconds;
 - prefixes are duplicated; or
 - prefixes overlap, meaning either prefix starts with the other.
 

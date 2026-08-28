@@ -334,8 +334,8 @@ pub struct MetricAggregationInterval {
     /// another configured prefix. Whitespace is preserved and matched exactly.
     pub metric_prefix: String,
 
-    /// Non-zero aggregation window length in whole seconds. Shorter intervals provide finer
-    /// granularity at higher point, CPU, and memory cost.
+    /// Aggregation window length in whole seconds, from 1 through 60 inclusive. Shorter intervals
+    /// provide finer granularity at higher point, CPU, and memory cost.
     pub interval_seconds: u64,
 }
 
