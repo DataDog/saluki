@@ -16,6 +16,7 @@ START_MARKER = "<!-- saluki-curated-notes:start -->"
 END_MARKER = "<!-- saluki-curated-notes:end -->"
 CATEGORY_ORDER = ("upgrade", "features", "enhancements", "issues", "deprecations", "security", "fixes", "other")
 RENO_FILENAME_RE = re.compile(r"^.+-[0-9a-f]{16}\.yaml$")
+RELEASE_NOTE_CONFIG_PATH = "releasenotes/config.yaml"
 
 
 def is_release_tag(version: str) -> bool:
@@ -77,24 +78,62 @@ def check_command(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def get_error_detail(error: subprocess.CalledProcessError) -> str:
+    """Return a subprocess failure's diagnostic text."""
+    return (error.stderr or "").strip() or str(error)
+
+
+def is_empty_reno_report(error: subprocess.CalledProcessError, version: str) -> bool:
+    """Return whether Reno reported that the requested version has no notes."""
+    return bool(re.search(rf"KeyError: ['\"]{re.escape(version)}['\"]\s*$", error.stderr or ""))
+
+
 def render_release_notes(version: str, repository: Path) -> str:
     """Render one tagged release's Reno notes as GitHub-flavored Markdown."""
     if not is_release_tag(version):
         raise ValueError("release version must use the X.Y.Z format")
-    run = lambda command, **kwargs: subprocess.run(command, cwd=repository, check=True, capture_output=True, text=True, **kwargs)
+
+    def run(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(command, cwd=repository, check=True, capture_output=True, text=True, **kwargs)
+
     try:
         run(["git", "rev-parse", "--verify", f"refs/tags/{version}"])
-        rst = run(["reno", "report", "--ignore-cache", "--no-show-source", "--version", version]).stdout
     except subprocess.CalledProcessError as error:
-        detail = error.stderr.strip() or str(error)
-        raise RuntimeError(f"could not render release notes for {version}: {detail}") from error
+        raise RuntimeError(f"could not verify release tag {version}: {get_error_detail(error)}") from error
+
+    try:
+        run(["git", "cat-file", "-e", f"refs/tags/{version}:{RELEASE_NOTE_CONFIG_PATH}"])
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(
+            f"release tag {version} does not contain {RELEASE_NOTE_CONFIG_PATH}; "
+            "curated release notes cannot be repaired before their adoption"
+        ) from error
+
+    try:
+        rst = run(
+            [
+                str(Path(sys.executable).with_name("reno")),
+                "report",
+                "--ignore-cache",
+                "--no-show-source",
+                "--version",
+                version,
+                "--branch",
+                version,
+            ]
+        ).stdout
+    except subprocess.CalledProcessError as error:
+        if is_empty_reno_report(error, version):
+            return ""
+        raise RuntimeError(f"could not render release notes for {version}: {get_error_detail(error)}") from error
+
     if not rst.strip():
         return ""
+
     try:
         return run(["pandoc", "--from", "rst", "--to", "gfm", "--wrap=none"], input=rst).stdout
     except subprocess.CalledProcessError as error:
-        detail = error.stderr.strip() or str(error)
-        raise RuntimeError(f"could not convert release notes for {version}: {detail}") from error
+        raise RuntimeError(f"could not convert release notes for {version}: {get_error_detail(error)}") from error
 
 
 def render_command(arguments: argparse.Namespace) -> int:
@@ -153,7 +192,11 @@ def main() -> int:
     arguments = parse_arguments()
     if not hasattr(arguments, "handler"):
         raise NotImplementedError(f"the {arguments.command!r} command is not implemented")
-    return arguments.handler(arguments)
+    try:
+        return arguments.handler(arguments)
+    except (RuntimeError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

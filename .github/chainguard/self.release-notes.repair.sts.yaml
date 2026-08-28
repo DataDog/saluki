@@ -1,0 +1,11 @@
+issuer: https://token.actions.githubusercontent.com
+
+subject_pattern: repo:DataDog/saluki:ref:refs/heads/main
+
+claim_pattern:
+  event_name: workflow_dispatch
+  ref: refs/heads/main
+  job_workflow_ref: DataDog/saluki/\.github/workflows/release-notes\.yml@refs/heads/main
+
+permissions:
+  contents: write
