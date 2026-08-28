@@ -175,13 +175,13 @@ impl MemoryBounds for MrfMetricsGatewayConfiguration {
             .with_single_value::<MrfMetricsGateway>("component struct")
             .with_fixed_amount("hashset overhead", std::mem::size_of::<HashSet<String>>())
             .with_fixed_amount(
-                // Two copies: the live view's snapshot, and the copy the routing state is rebuilt from.
+                // Three copies: the live view's snapshot, routing state, and hash set.
                 "allowlist strings",
                 allowlist
                     .iter()
                     .map(|name| name.len() + std::mem::size_of::<String>())
                     .sum::<usize>()
-                    * 2,
+                    * 3,
             )
             .with_fixed_amount(
                 "hashset buckets",
@@ -232,11 +232,15 @@ impl Transform for MrfMetricsGateway {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{mem::size_of, sync::Arc};
 
     use agent_data_plane_config::SalukiConfiguration;
     use arc_swap::ArcSwap;
-    use saluki_core::data_model::event::{metric::Metric, Event};
+    use saluki_core::{
+        accounting::ComponentRegistry,
+        data_model::event::{metric::Metric, Event},
+        support::SubsystemIdentifier,
+    };
     use tokio::sync::watch;
 
     use super::*;
@@ -302,6 +306,29 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(2), view.changed())
             .await
             .expect("the published update should reach the view")
+    }
+
+    #[test]
+    fn memory_bounds_include_all_allowlist_copies() {
+        let allowlist = ["allowed.metric", "also.allowed"];
+        let source = LiveSource::new(true, &allowlist);
+        let config = MrfMetricsGatewayConfiguration::new(true, source.metric_mirroring());
+
+        let registry = ComponentRegistry::default();
+        config.specify_bounds(&mut registry.bounds_builder(&SubsystemIdentifier::from_dotted("test")));
+        let bounds = registry.as_bounds();
+
+        let allowlist_strings = allowlist
+            .iter()
+            .map(|name| name.len() + size_of::<String>())
+            .sum::<usize>();
+        let expected = size_of::<MrfMetricsGateway>()
+            + size_of::<HashSet<String>>()
+            + allowlist_strings * 3
+            + allowlist.len() * size_of::<Option<String>>() * 2;
+
+        assert_eq!(bounds.total_minimum_required_bytes(), expected);
+        assert_eq!(bounds.total_firm_limit_bytes(), expected);
     }
 
     #[tokio::test]
