@@ -2207,7 +2207,7 @@ mod tests {
         assert_eq!(
             *origin,
             MetricOrigin::OriginMetadata {
-                product: 10,
+                product: 19,
                 subproduct: 17,
                 product_detail: 224,
             }
@@ -2234,7 +2234,7 @@ mod tests {
         assert_eq!(
             *origin,
             MetricOrigin::OriginMetadata {
-                product: 10,
+                product: 19,
                 subproduct: 17,
                 product_detail: 0,
             }
@@ -2262,7 +2262,7 @@ mod tests {
         assert_eq!(
             *origin,
             MetricOrigin::OriginMetadata {
-                product: 10,
+                product: 19,
                 subproduct: 17,
                 product_detail: 0,
             }
@@ -2330,7 +2330,7 @@ mod tests {
         assert_eq!(
             *origin,
             MetricOrigin::OriginMetadata {
-                product: 10,
+                product: 19,
                 subproduct: 17,
                 product_detail: 229, // kubeletstatsreceiver
             }

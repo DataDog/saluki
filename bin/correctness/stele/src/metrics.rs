@@ -75,11 +75,31 @@ impl fmt::Display for MetricContext {
     }
 }
 
+/// Origin metadata attached to a metric on the wire.
+///
+/// The field names follow the wire semantics: `product` is the originating product, `category` is the
+/// subproduct, and `service` is the product-specific detail.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MetricOrigin {
+    /// The originating product (for example, `10` for the Agent, `19` for the OpenTelemetry Collector
+    /// Datadog Exporter).
+    pub product: u32,
+
+    /// The subproduct / category.
+    pub category: u32,
+
+    /// The product-specific detail (for example, the receiver that produced the metric).
+    pub service: u32,
+}
+
 /// A simplified metric representation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Metric {
     context: MetricContext,
     values: Vec<(u64, MetricValue)>,
+    /// Origin metadata, if present in the wire payload.
+    #[serde(default)]
+    origin: Option<MetricOrigin>,
 }
 
 impl Metric {
@@ -91,6 +111,11 @@ impl Metric {
     /// Returns the values associated with the metric.
     pub fn values(&self) -> &[(u64, MetricValue)] {
         &self.values
+    }
+
+    /// Returns the origin metadata of the metric, if present.
+    pub fn origin(&self) -> Option<&MetricOrigin> {
+        self.origin.as_ref()
     }
 }
 
@@ -242,6 +267,7 @@ impl Metric {
                     tags,
                 },
                 values,
+                origin: None,
             });
         }
 
@@ -304,9 +330,20 @@ impl Metric {
                 }
             }
 
+            let origin = series
+                .metadata
+                .as_ref()
+                .and_then(|m| m.origin.as_ref())
+                .map(|o| MetricOrigin {
+                    product: o.origin_product,
+                    category: o.origin_category,
+                    service: o.origin_service,
+                });
+
             metrics.push(Metric {
                 context: MetricContext { name, tags },
                 values,
+                origin,
             })
         }
 
@@ -340,9 +377,20 @@ impl Metric {
                 values.push((timestamp, MetricValue::Sketch { sketch }));
             }
 
+            let origin = sketch
+                .metadata
+                .as_ref()
+                .and_then(|m| m.origin.as_ref())
+                .map(|o| MetricOrigin {
+                    product: o.origin_product,
+                    category: o.origin_category,
+                    service: o.origin_service,
+                });
+
             metrics.push(Metric {
                 context: MetricContext { name, tags },
                 values,
+                origin,
             })
         }
 
@@ -416,16 +464,19 @@ impl Metric {
             &data.dictResourceName,
             &parse_dict_strings(&data.dictResourceStr)?,
         )?;
+        let origins_dict = parse_origin_infos(&data.dictOriginInfo)?;
 
         // Delta-decode index arrays.
         let mut name_refs = data.nameRefs;
         let mut tagset_refs = data.tagsetRefs;
         let mut resources_refs = data.resourcesRefs;
         let mut timestamps = data.timestamps;
+        let mut origin_info_refs = data.originInfoRefs;
         delta_decode(&mut name_refs);
         delta_decode(&mut tagset_refs);
         delta_decode(&mut resources_refs);
         delta_decode(&mut timestamps);
+        delta_decode(&mut origin_info_refs);
 
         // Delta-decode sketch bin keys (per-sketch sequences are individually delta-encoded,
         // but we handle that during iteration).
@@ -623,9 +674,25 @@ impl Metric {
                 }
             }
 
+            let origin = if origin_info_refs.is_empty() {
+                None
+            } else {
+                let origin_ref = origin_info_refs
+                    .get(i)
+                    .copied()
+                    .ok_or_else(|| generic_error!("Ran out of originInfoRefs"))
+                    .and_then(|r| i64_to_usize(r, "origin info ref"))?;
+                if origin_ref == 0 {
+                    None
+                } else {
+                    origins_dict.get(origin_ref - 1).cloned()
+                }
+            };
+
             metrics.push(Metric {
                 context: MetricContext { name, tags },
                 values,
+                origin,
             });
         }
 
@@ -795,6 +862,29 @@ fn resource_index(idx: i64) -> Result<usize, GenericError> {
     let idx = usize::try_from(idx).map_err(|_| generic_error!("Invalid negative resource index: {}", idx))?;
     idx.checked_sub(1)
         .ok_or_else(|| generic_error!("Invalid zero resource index"))
+}
+
+/// Parse the `dictOriginInfo` dictionary into a list of origin tuples.
+///
+/// The dictionary is a flat array of `i32` values, where every three consecutive elements form a
+/// `(product, category, service)` tuple.
+fn parse_origin_infos(dict_origin_info: &[i32]) -> Result<Vec<MetricOrigin>, GenericError> {
+    if !dict_origin_info.len().is_multiple_of(3) {
+        return Err(generic_error!(
+            "dictOriginInfo has {} elements, which is not a multiple of 3",
+            dict_origin_info.len()
+        ));
+    }
+
+    let mut origins = Vec::with_capacity(dict_origin_info.len() / 3);
+    for chunk in dict_origin_info.chunks_exact(3) {
+        origins.push(MetricOrigin {
+            product: chunk[0] as u32,
+            category: chunk[1] as u32,
+            service: chunk[2] as u32,
+        });
+    }
+    Ok(origins)
 }
 
 /// Read the next f64 value from the appropriate value array based on `value_type`.
@@ -1005,6 +1095,89 @@ mod tests {
     }
 
     #[test]
+    fn try_from_series_v2_extracts_origin_metadata() {
+        use datadog_protos::metrics::metric_payload::{MetricPoint, MetricSeries, MetricType as ProtoMetricType};
+        use datadog_protos::metrics::{Metadata, MetricPayload, Origin};
+
+        let mut payload = MetricPayload::new();
+
+        let mut series = MetricSeries::new();
+        series.set_metric("my.metric".into());
+        series.set_type(ProtoMetricType::COUNT);
+
+        let mut origin = Origin::new();
+        origin.origin_product = 19;
+        origin.origin_category = 0;
+        origin.origin_service = 224;
+        let mut metadata = Metadata::new();
+        metadata.set_origin(origin);
+        series.set_metadata(metadata);
+
+        let mut point = MetricPoint::new();
+        point.value = 1.0;
+        point.timestamp = 1;
+        series.points.push(point);
+
+        payload.series.push(series);
+
+        let metrics = Metric::try_from_series_v2(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+        let origin = metrics[0].origin().expect("origin should be present");
+        assert_eq!(origin.product, 19);
+        assert_eq!(origin.category, 0);
+        assert_eq!(origin.service, 224);
+    }
+
+    #[test]
+    fn try_from_series_v2_omits_origin_when_metadata_absent() {
+        use datadog_protos::metrics::metric_payload::{MetricPoint, MetricSeries, MetricType as ProtoMetricType};
+        use datadog_protos::metrics::MetricPayload;
+
+        let mut payload = MetricPayload::new();
+        let mut series = MetricSeries::new();
+        series.set_metric("my.metric".into());
+        series.set_type(ProtoMetricType::COUNT);
+
+        let mut point = MetricPoint::new();
+        point.value = 1.0;
+        point.timestamp = 1;
+        series.points.push(point);
+
+        payload.series.push(series);
+
+        let metrics = Metric::try_from_series_v2(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+        assert!(metrics[0].origin().is_none());
+    }
+
+    #[test]
+    fn try_from_sketch_extracts_origin_metadata() {
+        use datadog_protos::metrics::sketch_payload::Sketch;
+        use datadog_protos::metrics::{Metadata, Origin, SketchPayload};
+
+        let mut payload = SketchPayload::new();
+        let mut sketch = Sketch::new();
+        sketch.set_metric("my.metric".into());
+
+        let mut origin = Origin::new();
+        origin.origin_product = 19;
+        origin.origin_category = 0;
+        origin.origin_service = 229;
+        let mut metadata = Metadata::new();
+        metadata.set_origin(origin);
+        sketch.set_metadata(metadata);
+
+        payload.sketches.push(sketch);
+
+        let metrics = Metric::try_from_sketch(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+        let origin = metrics[0].origin().expect("origin should be present");
+        assert_eq!(origin.product, 19);
+        assert_eq!(origin.category, 0);
+        assert_eq!(origin.service, 229);
+    }
+
+    #[test]
     fn try_from_sketch_folds_host_into_tags() {
         use datadog_protos::metrics::sketch_payload::Sketch;
         use datadog_protos::metrics::SketchPayload;
@@ -1050,6 +1223,57 @@ mod tests {
         assert!(metrics[0].context.tags.contains(&"env:prod".to_string()));
         assert!(metrics[0].context.tags.contains(&"host:server-1".to_string()));
         assert!(!metrics[0].context.tags.iter().any(|tag| tag.starts_with("device:")));
+    }
+
+    #[test]
+    fn try_from_v3_extracts_origin_metadata() {
+        use datadog_protos::metrics::v3::{MetricData, Payload};
+
+        let mut data = MetricData::new();
+        data.dictNameStr = length_prefixed_strings(["my.metric"]);
+        // One origin tuple: (19, 0, 224) at 1-based index 1.
+        data.dictOriginInfo = vec![19, 0, 224];
+        data.types = vec![V3_METRIC_TYPE_COUNT | V3_VALUE_TYPE_ZERO];
+        data.nameRefs = vec![1];
+        data.tagsetRefs = vec![0];
+        data.resourcesRefs = vec![0];
+        data.intervals = vec![0];
+        data.numPoints = vec![1];
+        data.timestamps = vec![1];
+        data.originInfoRefs = vec![1];
+
+        let mut payload = Payload::new();
+        payload.metricData = Some(data).into();
+
+        let metrics = Metric::try_from_v3(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+        let origin = metrics[0].origin().expect("origin should be present");
+        assert_eq!(origin.product, 19);
+        assert_eq!(origin.category, 0);
+        assert_eq!(origin.service, 224);
+    }
+
+    #[test]
+    fn try_from_v3_omits_origin_when_ref_is_zero() {
+        use datadog_protos::metrics::v3::{MetricData, Payload};
+
+        let mut data = MetricData::new();
+        data.dictNameStr = length_prefixed_strings(["my.metric"]);
+        data.types = vec![V3_METRIC_TYPE_COUNT | V3_VALUE_TYPE_ZERO];
+        data.nameRefs = vec![1];
+        data.tagsetRefs = vec![0];
+        data.resourcesRefs = vec![0];
+        data.intervals = vec![0];
+        data.numPoints = vec![1];
+        data.timestamps = vec![1];
+        data.originInfoRefs = vec![0];
+
+        let mut payload = Payload::new();
+        payload.metricData = Some(data).into();
+
+        let metrics = Metric::try_from_v3(payload).expect("parse should succeed");
+        assert_eq!(metrics.len(), 1);
+        assert!(metrics[0].origin().is_none());
     }
 
     #[test]
