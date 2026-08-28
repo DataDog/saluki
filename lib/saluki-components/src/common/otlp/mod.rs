@@ -8,7 +8,6 @@ pub mod semantics;
 pub mod traces;
 pub mod util;
 
-use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -243,8 +242,7 @@ pub struct OtlpServerConfiguration {
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_keepalive: GrpcKeepalive,
-    grpc_max_concurrent_streams: Option<NonZeroU32>,
-    http_max_request_body_size: u64,
+    grpc_max_concurrent_streams: u32,
     http_max_request_body_size: u64,
     cors: CorsConfiguration,
     http_tls: Option<OtlpTlsConfiguration>,
@@ -265,8 +263,7 @@ impl OtlpServerConfiguration {
             grpc_endpoint,
             grpc_max_recv_msg_size_bytes,
             grpc_keepalive: GrpcKeepalive::default(),
-            grpc_max_concurrent_streams: None,
-            http_max_request_body_size: 0,
+            grpc_max_concurrent_streams: 0,
             http_max_request_body_size: 0,
             cors: CorsConfiguration::default(),
             http_tls: None,
@@ -288,7 +285,7 @@ impl OtlpServerConfiguration {
     ///
     /// A value of `None` (the default) means no limit. A `Some` value sets the
     /// `SETTINGS_MAX_CONCURRENT_STREAMS` HTTP/2 setting.
-    pub fn with_grpc_max_concurrent_streams(mut self, max_concurrent_streams: Option<NonZeroU32>) -> Self {
+    pub fn with_grpc_max_concurrent_streams(mut self, max_concurrent_streams: u32) -> Self {
         self.grpc_max_concurrent_streams = max_concurrent_streams;
         self
     }
@@ -929,10 +926,9 @@ mod tests {
 
     #[tokio::test]
     async fn http_body_limit_rejects_oversized_request() {
-        // Exercises the full OtlpServerBuilder wiring: a configured `max_request_body_size` must
+        // Exercises the full OtlpServerConfiguration wiring: a configured `max_request_body_size` must
         // flow through the builder into the axum `DefaultBodyLimit` layer and reject oversized
         // requests. See issue #2068 and PR #2494 review.
-        use saluki_core::components::ComponentSpawner;
         use saluki_core::runtime::Supervisor;
 
         // Grab an ephemeral port for the HTTP endpoint.
@@ -946,7 +942,7 @@ mod tests {
         let mut supervisor = Supervisor::new("otlp-test")
             .expect("test supervisor name should be valid")
             .with_shutdown_budget(Duration::from_secs(5));
-        let spawner = ComponentSpawner::new(supervisor.handle(), tokio::runtime::Handle::current());
+        let supervisor_handle = supervisor.handle();
 
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let supervisor_task = tokio::spawn(async move {
@@ -961,9 +957,17 @@ mod tests {
 
         // Build with a small body limit (64 bytes) through the builder.
         let max_body_size: usize = 64;
-        OtlpServerBuilder::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
-            .with_http_max_request_body_size(max_body_size as u64)
-            .build(NoopHandler, MemoryLimiter::noop(), Metrics::for_tests(), &spawner)
+        supervisor_handle
+            .scope(
+                OtlpServerConfiguration::new(http_endpoint, grpc_endpoint, 4 * 1024 * 1024)
+                    .with_http_max_request_body_size(max_body_size as u64)
+                    .build(
+                        NoopHandler,
+                        MemoryLimiter::noop(),
+                        Metrics::for_tests(),
+                        &tokio::runtime::Handle::current(),
+                    ),
+            )
             .await
             .expect("build should succeed");
 

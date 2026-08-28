@@ -2,7 +2,6 @@ use std::{
     convert::Infallible,
     io,
     net::SocketAddr,
-    num::NonZeroU32,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -97,8 +96,7 @@ pub struct GrpcServer {
     keepalive: GrpcKeepalive,
     tls_config: Option<ServerConfig>,
     bound_address_id: Option<Identifier>,
-    max_concurrent_streams: Option<NonZeroU32>,
-}
+    max_concurrent_streams: u32,
 }
 
 impl GrpcServer {
@@ -111,7 +109,7 @@ impl GrpcServer {
             keepalive: GrpcKeepalive::default(),
             tls_config: None,
             bound_address_id: None,
-            max_concurrent_streams: None,
+            max_concurrent_streams: 0,
         }
     }
 
@@ -187,10 +185,10 @@ impl GrpcServer {
 
     /// Sets the HTTP/2 maximum concurrent streams per connection.
     ///
-    /// A value of `None` (the default) means no limit. A `Some` value sets the
+    /// A value of `0` (the default) means no limit. A positive value sets the
     /// `SETTINGS_MAX_CONCURRENT_STREAMS` HTTP/2 setting, bounding how many concurrent streams a
     /// single connection may have.
-    pub fn with_max_concurrent_streams(mut self, max_concurrent_streams: Option<NonZeroU32>) -> Self {
+    pub fn with_max_concurrent_streams(mut self, max_concurrent_streams: u32) -> Self {
         self.max_concurrent_streams = max_concurrent_streams;
         self
     }
@@ -222,8 +220,8 @@ impl Supervisable for GrpcServer {
         if ka.max_connection_age_grace != Duration::ZERO {
             server = server.max_connection_age_grace(ka.max_connection_age_grace);
         }
-        if let Some(max) = self.max_concurrent_streams {
-            server = server.max_concurrent_streams(max.get());
+        if self.max_concurrent_streams > 0 {
+            server = server.max_concurrent_streams(self.max_concurrent_streams);
         }
 
         // Prepare TLS config once: both TCP and Unix paths use the same acceptor.

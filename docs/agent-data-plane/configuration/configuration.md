@@ -64,9 +64,11 @@ architecture is fundamentally different or the feature is platform-specific.
 | `otlp_config.metrics.batch.flush_timeout`                                                | OTLP metrics batch flush timeout                   | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.max_size`                                                     | Maximum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.metrics.batch.min_size`                                                     | Minimum OTLP metrics batch size                    | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.include_metadata`                                   | gRPC metadata propagation (not supported)          | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`              | gRPC keepalive: min time between pings             | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.permit_without_stream` | gRPC keepalive: allow no-stream pings              | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_idle`    | gRPC keepalive: max connection idle                | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.grpc.read_buffer_size`                                   | gRPC read buffer size (not supported)              | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.grpc.tls.ca_pem`                                         | gRPC TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP gRPC receiver.                                                                                                                                                                |
 | `otlp_config.receiver.protocols.grpc.tls.cert_pem`                                       | gRPC TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP gRPC receiver.                                                                                                                                                                               |
 | `otlp_config.receiver.protocols.grpc.tls.cipher_suites`                                  | gRPC TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
@@ -82,6 +84,8 @@ architecture is fundamentally different or the feature is platform-specific.
 | `otlp_config.receiver.protocols.grpc.tls.tpm.enabled`                                    | gRPC TLS TPM enabled                               |                                                                                                                                                                                                                                                                           |
 | `otlp_config.receiver.protocols.grpc.tls.tpm.owner_auth`                                 | gRPC TLS TPM owner auth                            |                                                                                                                                                                                                                                                                           |
 | `otlp_config.receiver.protocols.grpc.tls.tpm.path`                                       | gRPC TLS TPM path                                  |                                                                                                                                                                                                                                                                           |
+| `otlp_config.receiver.protocols.grpc.write_buffer_size`                                  | gRPC write buffer size (not supported)             | See below                                                                                                                                                                                                                                                                 |
+| `otlp_config.receiver.protocols.http.include_metadata`                                   | HTTP metadata propagation (not supported)          | See below                                                                                                                                                                                                                                                                 |
 | `otlp_config.receiver.protocols.http.tls.ca_pem`                                         | HTTP TLS CA PEM                                    | Not supported. Use `ca_file` to provide CA certificates for client verification on the OTLP HTTP receiver.                                                                                                                                                                |
 | `otlp_config.receiver.protocols.http.tls.cert_pem`                                       | HTTP TLS cert PEM                                  | Not supported. Use `cert_file` to provide the certificate chain for the OTLP HTTP receiver.                                                                                                                                                                               |
 | `otlp_config.receiver.protocols.http.tls.cipher_suites`                                  | HTTP TLS cipher suites                             |                                                                                                                                                                                                                                                                           |
@@ -252,6 +256,16 @@ ADP's architecture does not have the same batching mechanism and is unaffected b
 The core Agent batches OTLP metric input before translation through its serializer exporter queue.
 ADP's architecture does not have the same batching mechanism and is unaffected by this configuration value.
 
+### `otlp_config.receiver.protocols.grpc.include_metadata`
+
+The Datadog Agent uses `include_metadata` to control whether incoming gRPC request metadata
+(headers) is propagated to downstream consumers in the OpenTelemetry Collector pipeline
+context. ADP does not support this setting.
+
+ADP's OTLP receiver does not propagate request metadata to downstream components. The gRPC
+and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
+setting has no effect in ADP.
+
 ### `otlp_config.receiver.protocols.grpc.keepalive.enforcement_policy.min_time`
 
 The Core Agent's OTLP gRPC receiver (grpc-go) uses this to rate-limit client keepalive PINGs:
@@ -319,6 +333,41 @@ supports. At the default configuration, ADP's behavior matches the Core Agent on
 
 Setting `max_connection_idle` has no effect in ADP. The default (infinity) is accepted silently;
 a non-default value emits a warning.
+
+### `otlp_config.receiver.protocols.grpc.read_buffer_size`
+
+The Datadog Agent uses `read_buffer_size` to set the gRPC server's per-connection read buffer
+size in bytes (default `524288`). ADP does not support this setting.
+
+Tonic (the gRPC library ADP uses) does not expose a fixed read buffer size. Its I/O stack
+(hyper → h2 → tokio) uses a expandable `BytesMut` buffer that starts at 8 KiB and expands
+dynamically to accommodate incoming frames, then retains the larger size for subsequent
+reads. This auto-tunes to the typical message size per connection without configuration.
+
+Setting `read_buffer_size` has no effect in ADP.
+
+### `otlp_config.receiver.protocols.grpc.write_buffer_size`
+
+The Datadog Agent uses `write_buffer_size` to set the gRPC server's per-connection write buffer
+size in bytes (default `0`, which selects grpc-go's built-in default). ADP does not support this
+setting.
+
+Tonic (the gRPC library ADP uses) does not expose a fixed write buffer size. Its I/O stack
+(hyper → h2 → tokio) manages write buffering internally with adaptive defaults. The closest
+available knob, h2's `max_send_buffer_size`, controls backpressure rather than per-syscall write
+sizing and is not surfaced by Tonic.
+
+Setting `write_buffer_size` has no effect in ADP.
+
+### `otlp_config.receiver.protocols.http.include_metadata`
+
+The Datadog Agent uses `include_metadata` to control whether incoming HTTP request headers
+are propagated to downstream consumers in the OpenTelemetry Collector pipeline context. ADP
+does not support this setting.
+
+ADP's OTLP receiver does not propagate request headers to downstream components. The gRPC
+and HTTP handlers decode the request body and discard transport-level metadata. Enabling this
+setting has no effect in ADP.
 
 
 ## Behavioral Differences
@@ -519,26 +568,20 @@ and tracks send failures through telemetry.
 The following settings need further investigation. ADP behavior may differ from the core agent in
 ways that are not yet fully characterized.
 
-| Config Key                                                   | Description                      | Issue   |
-| ------------------------------------------------------------ | -------------------------------- | ------- |
-| `forwarder_low_prio_buffer_size`                             | Low-priority request queue size  | [#1362] |
-| `otlp_config.receiver.protocols.grpc.dialer.timeout`         | gRPC dialer timeout              |         |
-| `otlp_config.receiver.protocols.grpc.include_metadata`       | gRPC include metadata in context |         |
-| `otlp_config.receiver.protocols.grpc.max_concurrent_streams` | gRPC max concurrent streams      |         |
-| `otlp_config.receiver.protocols.grpc.read_buffer_size`       | gRPC read buffer size            |         |
-| `otlp_config.receiver.protocols.grpc.write_buffer_size`      | gRPC write buffer size           |         |
-| `otlp_config.receiver.protocols.http.compression_algorithms` | HTTP compression algorithms      |         |
-| `otlp_config.receiver.protocols.http.idle_timeout`           | HTTP idle timeout                |         |
-| `otlp_config.receiver.protocols.http.include_metadata`       | HTTP include metadata in context |         |
-| `otlp_config.receiver.protocols.http.keep_alives_enabled`    | HTTP keep-alives enabled         |         |
-| `otlp_config.receiver.protocols.http.logs_url_path`          | HTTP logs URL path               |         |
-| `otlp_config.receiver.protocols.http.max_request_body_size`  | HTTP max request body size       |         |
-| `otlp_config.receiver.protocols.http.metrics_url_path`       | HTTP metrics URL path            |         |
-| `otlp_config.receiver.protocols.http.read_header_timeout`    | HTTP read header timeout         |         |
-| `otlp_config.receiver.protocols.http.read_timeout`           | HTTP read timeout                |         |
-| `otlp_config.receiver.protocols.http.response_headers`       | HTTP response headers            |         |
-| `otlp_config.receiver.protocols.http.traces_url_path`        | HTTP traces URL path             |         |
-| `otlp_config.receiver.protocols.http.write_timeout`          | HTTP write timeout               |         |
+| Config Key                                                   | Description                     | Issue   |
+| ------------------------------------------------------------ | ------------------------------- | ------- |
+| `forwarder_low_prio_buffer_size`                             | Low-priority request queue size | [#1362] |
+| `otlp_config.receiver.protocols.grpc.dialer.timeout`         | gRPC dialer timeout             |         |
+| `otlp_config.receiver.protocols.http.compression_algorithms` | HTTP compression algorithms     |         |
+| `otlp_config.receiver.protocols.http.idle_timeout`           | HTTP idle timeout               |         |
+| `otlp_config.receiver.protocols.http.keep_alives_enabled`    | HTTP keep-alives enabled        |         |
+| `otlp_config.receiver.protocols.http.logs_url_path`          | HTTP logs URL path              |         |
+| `otlp_config.receiver.protocols.http.metrics_url_path`       | HTTP metrics URL path           |         |
+| `otlp_config.receiver.protocols.http.read_header_timeout`    | HTTP read header timeout        |         |
+| `otlp_config.receiver.protocols.http.read_timeout`           | HTTP read timeout               |         |
+| `otlp_config.receiver.protocols.http.response_headers`       | HTTP response headers           |         |
+| `otlp_config.receiver.protocols.http.traces_url_path`        | HTTP traces URL path            |         |
+| `otlp_config.receiver.protocols.http.write_timeout`          | HTTP write timeout              |         |
 
 ## ADP-Only Settings
 
@@ -915,6 +958,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.max_connection_age_grace` | gRPC keepalive: max conn age grace                 |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.time`                     | gRPC keepalive: ping time                          |
 | `otlp_config.receiver.protocols.grpc.keepalive.server_parameters.timeout`                  | gRPC keepalive: ping timeout                       |
+| `otlp_config.receiver.protocols.grpc.max_concurrent_streams`                               | HTTP/2 max concurrent streams (0 = unlimited)      |
 | `otlp_config.receiver.protocols.grpc.max_recv_msg_size_mib`                                | Max OTLP inbound gRPC message size (MiB)           |
 | `otlp_config.receiver.protocols.grpc.tls.ca_file`                                          | gRPC TLS CA file path                              |
 | `otlp_config.receiver.protocols.grpc.tls.cert_file`                                        | gRPC TLS cert file path                            |
@@ -925,6 +969,7 @@ Both commands scrub recognized secret values before writing JSON to standard out
 | `otlp_config.receiver.protocols.http.cors.exposed_headers`                                 | HTTP CORS exposed headers                          |
 | `otlp_config.receiver.protocols.http.cors.max_age`                                         | HTTP CORS max age                                  |
 | `otlp_config.receiver.protocols.http.endpoint`                                             | otlp_config.receiver.protocols.http.endpoint       |
+| `otlp_config.receiver.protocols.http.max_request_body_size`                                | HTTP max request body size in bytes (0 = 20 MiB)   |
 | `otlp_config.receiver.protocols.http.tls.ca_file`                                          | HTTP TLS CA file path                              |
 | `otlp_config.receiver.protocols.http.tls.cert_file`                                        | HTTP TLS cert file path                            |
 | `otlp_config.receiver.protocols.http.tls.key_file`                                         | HTTP TLS key file path                             |

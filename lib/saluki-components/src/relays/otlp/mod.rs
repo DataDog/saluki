@@ -1,4 +1,3 @@
-use std::num::NonZeroU32;
 use std::sync::LazyLock;
 
 use agent_data_plane_config::domains;
@@ -148,8 +147,7 @@ pub struct OtlpRelay {
     grpc_endpoint: ListenAddress,
     grpc_max_recv_msg_size_bytes: usize,
     grpc_keepalive: GrpcKeepalive,
-    grpc_max_concurrent_streams: Option<NonZeroU32>,
-    http_max_request_body_size: u64,
+    grpc_max_concurrent_streams: u32,
     http_max_request_body_size: u64,
     cors: CorsConfiguration,
     http_tls_config: Option<OtlpTlsConfiguration>,

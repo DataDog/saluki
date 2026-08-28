@@ -19,7 +19,6 @@
 //! warn, so the strict startup gate does not reject a configuration the Agent runs with.
 
 use std::collections::HashMap;
-use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -1094,18 +1093,11 @@ impl DatadogConfigWitness for DatadogTranslator<'_> {
     }
 
     fn consume_otlp_config_receiver_protocols_grpc_max_concurrent_streams(&mut self, value: i64) {
-        match value {
-            0 => self.config.domains.otlp.receiver.grpc.max_concurrent_streams = None,
-            n if n > 0 => match NonZeroU32::try_from(value as u32) {
-                Ok(max) => self.config.domains.otlp.receiver.grpc.max_concurrent_streams = Some(max),
-                Err(_) => self.record_error(TranslateError::new_with_message(
-                    "otlp_config.receiver.protocols.grpc.max_concurrent_streams",
-                    "value exceeds the u32 range",
-                )),
-            },
-            _ => self.record_error(TranslateError::new_with_message(
+        match u32::try_from(value) {
+            Ok(v) => self.config.domains.otlp.receiver.grpc.max_concurrent_streams = v,
+            Err(_) => self.record_error(TranslateError::new_with_message(
                 "otlp_config.receiver.protocols.grpc.max_concurrent_streams",
-                "max concurrent streams must be greater than or equal to 0",
+                "max concurrent streams must be between 0 and 4294967295",
             )),
         }
     }
