@@ -261,6 +261,9 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         self.assertIn("releasenotes/**", workflow["on"]["pull_request"]["paths"])
         self.assertEqual(workflow["on"]["release"]["types"], ["published"])
         self.assertEqual(workflow["on"]["workflow_dispatch"]["inputs"]["tag"]["required"], "true")
+        validate = workflow["jobs"]["validate"]
+        validate_checkout = next(step for step in validate["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(validate_checkout["with"]["fetch-depth"], "0")
         publish = workflow["jobs"]["publish"]
         self.assertIn("github.ref == 'refs/heads/main'", publish["if"])
         self.assertEqual(publish["permissions"]["contents"], "read")
