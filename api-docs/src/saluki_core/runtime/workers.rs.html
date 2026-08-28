@@ -4,19 +4,19 @@
 <a href=#4 id=4 data-nosnippet>4</a><span class="kw">use </span>async_trait::async_trait;
 <a href=#5 id=5 data-nosnippet>5</a><span class="kw">use </span>saluki_common::sync::shutdown::ShutdownHandle;
 <a href=#6 id=6 data-nosnippet>6</a><span class="kw">use </span>saluki_error::{generic_error, GenericError};
-<a href=#7 id=7 data-nosnippet>7</a><span class="kw">use </span>tracing::debug;
-<a href=#8 id=8 data-nosnippet>8</a>
-<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span><span class="kw">super</span>::supervisor::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
-<a href=#10 id=10 data-nosnippet>10</a>
-<a href=#11 id=11 data-nosnippet>11</a><span class="doccomment">/// Default graceful shutdown period for a function-based worker.
-<a href=#12 id=12 data-nosnippet>12</a>///
-<a href=#13 id=13 data-nosnippet>13</a>/// Matches the [`Supervisable`] trait default, and applies only when nothing else sets a strategy for the child.
+<a href=#7 id=7 data-nosnippet>7</a>
+<a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span><span class="kw">super</span>::supervisor::{InitializationError, ShutdownStrategy, Supervisable, SupervisorFuture};
+<a href=#9 id=9 data-nosnippet>9</a>
+<a href=#10 id=10 data-nosnippet>10</a><span class="doccomment">/// Fallback graceful shutdown period for a function-based worker.
+<a href=#11 id=11 data-nosnippet>11</a>///
+<a href=#12 id=12 data-nosnippet>12</a>/// Only consulted when nothing else bounds the worker: a child spawned through the builder defers to its supervisor's
+<a href=#13 id=13 data-nosnippet>13</a>/// shutdown budget, and falls back to this when the supervisor has no budget at all.
 <a href=#14 id=14 data-nosnippet>14</a></span><span class="kw">const </span>DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(<span class="number">5</span>);
 <a href=#15 id=15 data-nosnippet>15</a>
 <a href=#16 id=16 data-nosnippet>16</a><span class="doccomment">/// An output type that a function-based worker can produce.
 <a href=#17 id=17 data-nosnippet>17</a>///
 <a href=#18 id=18 data-nosnippet>18</a>/// Implemented for `()` (a worker that can't fail) and `Result&lt;(), GenericError&gt;` (one that can), so both forms can be
-<a href=#19 id=19 data-nosnippet>19</a>/// passed to [`noninterruptible_worker`] and [`interruptible_worker`] without wrapping.
+<a href=#19 id=19 data-nosnippet>19</a>/// passed to [`FnWorker::new`] without wrapping.
 <a href=#20 id=20 data-nosnippet>20</a></span><span class="kw">pub trait </span>IntoWorkerResult {
 <a href=#21 id=21 data-nosnippet>21</a>    <span class="doccomment">/// Converts this output into a worker result.
 <a href=#22 id=22 data-nosnippet>22</a>    </span><span class="kw">fn </span>into_worker_result(<span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;(), GenericError&gt;;
@@ -34,244 +34,167 @@
 <a href=#34 id=34 data-nosnippet>34</a>    </span>}
 <a href=#35 id=35 data-nosnippet>35</a>}
 <a href=#36 id=36 data-nosnippet>36</a>
-<a href=#37 id=37 data-nosnippet>37</a><span class="kw">type </span>WorkerBody = Box&lt;<span class="kw">dyn </span>FnOnce(ShutdownHandle) -&gt; SupervisorFuture + Send&gt;;
+<a href=#37 id=37 data-nosnippet>37</a><span class="kw">type </span>WorkerBody = Box&lt;<span class="kw">dyn </span>FnOnce() -&gt; SupervisorFuture + Send&gt;;
 <a href=#38 id=38 data-nosnippet>38</a>
-<a href=#39 id=39 data-nosnippet>39</a><span class="doccomment">/// A [`Supervisable`] worker built from a closure.
+<a href=#39 id=39 data-nosnippet>39</a><span class="doccomment">/// A [`Supervisable`] worker built from a plain future.
 <a href=#40 id=40 data-nosnippet>40</a>///
-<a href=#41 id=41 data-nosnippet>41</a>/// This worker cannot be restarted as the closure is consumed during initialization.
-<a href=#42 id=42 data-nosnippet>42</a></span><span class="kw">pub struct </span>FnWorker {
-<a href=#43 id=43 data-nosnippet>43</a>    name: String,
-<a href=#44 id=44 data-nosnippet>44</a>    shutdown_strategy: ShutdownStrategy,
-<a href=#45 id=45 data-nosnippet>45</a>    body: Mutex&lt;<span class="prelude-ty">Option</span>&lt;WorkerBody&gt;&gt;,
-<a href=#46 id=46 data-nosnippet>46</a>}
-<a href=#47 id=47 data-nosnippet>47</a>
-<a href=#48 id=48 data-nosnippet>48</a><span class="kw">impl </span>FnWorker {
-<a href=#49 id=49 data-nosnippet>49</a>    <span class="kw">fn </span>new(name: String, body: WorkerBody) -&gt; <span class="self">Self </span>{
-<a href=#50 id=50 data-nosnippet>50</a>        <span class="self">Self </span>{
-<a href=#51 id=51 data-nosnippet>51</a>            name,
-<a href=#52 id=52 data-nosnippet>52</a>            shutdown_strategy: ShutdownStrategy::Graceful(DEFAULT_SHUTDOWN_TIMEOUT),
-<a href=#53 id=53 data-nosnippet>53</a>            body: Mutex::new(<span class="prelude-val">Some</span>(body)),
-<a href=#54 id=54 data-nosnippet>54</a>        }
-<a href=#55 id=55 data-nosnippet>55</a>    }
-<a href=#56 id=56 data-nosnippet>56</a>
-<a href=#57 id=57 data-nosnippet>57</a>    <span class="doccomment">/// Sets the shutdown timeout for this worker.
-<a href=#58 id=58 data-nosnippet>58</a>    </span><span class="attr">#[must_use]
-<a href=#59 id=59 data-nosnippet>59</a>    </span><span class="kw">pub const fn </span>with_shutdown_timeout(<span class="kw-2">mut </span><span class="self">self</span>, timeout: Duration) -&gt; <span class="self">Self </span>{
-<a href=#60 id=60 data-nosnippet>60</a>        <span class="self">self</span>.shutdown_strategy = ShutdownStrategy::Graceful(timeout);
-<a href=#61 id=61 data-nosnippet>61</a>        <span class="self">self
-<a href=#62 id=62 data-nosnippet>62</a>    </span>}
-<a href=#63 id=63 data-nosnippet>63</a>}
-<a href=#64 id=64 data-nosnippet>64</a>
-<a href=#65 id=65 data-nosnippet>65</a><span class="attr">#[async_trait]
-<a href=#66 id=66 data-nosnippet>66</a></span><span class="kw">impl </span>Supervisable <span class="kw">for </span>FnWorker {
-<a href=#67 id=67 data-nosnippet>67</a>    <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
-<a href=#68 id=68 data-nosnippet>68</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.name
-<a href=#69 id=69 data-nosnippet>69</a>    }
-<a href=#70 id=70 data-nosnippet>70</a>
-<a href=#71 id=71 data-nosnippet>71</a>    <span class="kw">fn </span>shutdown_strategy(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ShutdownStrategy {
-<a href=#72 id=72 data-nosnippet>72</a>        <span class="self">self</span>.shutdown_strategy
-<a href=#73 id=73 data-nosnippet>73</a>    }
-<a href=#74 id=74 data-nosnippet>74</a>
-<a href=#75 id=75 data-nosnippet>75</a>    <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
-<a href=#76 id=76 data-nosnippet>76</a>        <span class="kw">let </span>body = <span class="self">self
-<a href=#77 id=77 data-nosnippet>77</a>            </span>.body
-<a href=#78 id=78 data-nosnippet>78</a>            .lock()
-<a href=#79 id=79 data-nosnippet>79</a>            .expect(<span class="string">"function worker mutex poisoned"</span>)
-<a href=#80 id=80 data-nosnippet>80</a>            .take()
-<a href=#81 id=81 data-nosnippet>81</a>            .ok_or_else(|| InitializationError::from(<span class="macro">generic_error!</span>(<span class="string">"worker already initialized"</span>)))<span class="question-mark">?</span>;
-<a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a>        <span class="prelude-val">Ok</span>(body(process_shutdown))
-<a href=#84 id=84 data-nosnippet>84</a>    }
-<a href=#85 id=85 data-nosnippet>85</a>}
-<a href=#86 id=86 data-nosnippet>86</a>
-<a href=#87 id=87 data-nosnippet>87</a><span class="doccomment">/// Creates a one-shot [`Supervisable`] worker that is never interrupted mid-operation.
-<a href=#88 id=88 data-nosnippet>88</a>///
-<a href=#89 id=89 data-nosnippet>89</a>/// The future that is created is solely responsible for handling the shutdown signal exposed to it via
-<a href=#90 id=90 data-nosnippet>90</a>/// `ShutdownHandle`. Callers should ensure that they respond to shutdown signals in a timely manner otherwise they risk
-<a href=#91 id=91 data-nosnippet>91</a>/// failing to run to completion when the supervisor forcefully exits. Use this for workers that need to drain in
-<a href=#92 id=92 data-nosnippet>92</a>/// response to shutdown; for workers that are safe to stop at an arbitrary await point, [`interruptible_worker`] is
-<a href=#93 id=93 data-nosnippet>93</a>/// simpler.
-<a href=#94 id=94 data-nosnippet>94</a>///
-<a href=#95 id=95 data-nosnippet>95</a>/// Workers may return either `()` or `Result&lt;(), GenericError&gt;`.
-<a href=#96 id=96 data-nosnippet>96</a>///
-<a href=#97 id=97 data-nosnippet>97</a>/// The worker cannot be restarted as the given closure is consumed during initialization.
-<a href=#98 id=98 data-nosnippet>98</a>///
-<a href=#99 id=99 data-nosnippet>99</a>/// # Examples
-<a href=#100 id=100 data-nosnippet>100</a>///
-<a href=#101 id=101 data-nosnippet>101</a>/// ```no_run
-<a href=#102 id=102 data-nosnippet>102</a>/// # use saluki_core::runtime::noninterruptible_worker;
-<a href=#103 id=103 data-nosnippet>103</a>/// # async fn drain_queue() {}
-<a href=#104 id=104 data-nosnippet>104</a>/// let worker = noninterruptible_worker("queue_drainer", |shutdown| async move {
-<a href=#105 id=105 data-nosnippet>105</a>///     tokio::select! {
-<a href=#106 id=106 data-nosnippet>106</a>///         _ = shutdown =&gt; {},
-<a href=#107 id=107 data-nosnippet>107</a>///         _ = drain_queue() =&gt; {},
-<a href=#108 id=108 data-nosnippet>108</a>///     }
-<a href=#109 id=109 data-nosnippet>109</a>/// });
-<a href=#110 id=110 data-nosnippet>110</a>/// ```
-<a href=#111 id=111 data-nosnippet>111</a></span><span class="attr">#[must_use]
-<a href=#112 id=112 data-nosnippet>112</a></span><span class="kw">pub fn </span>noninterruptible_worker&lt;N, F, Fut&gt;(name: N, f: F) -&gt; FnWorker
-<a href=#113 id=113 data-nosnippet>113</a><span class="kw">where
-<a href=#114 id=114 data-nosnippet>114</a>    </span>N: Into&lt;String&gt;,
-<a href=#115 id=115 data-nosnippet>115</a>    F: FnOnce(ShutdownHandle) -&gt; Fut + Send + <span class="lifetime">'static</span>,
-<a href=#116 id=116 data-nosnippet>116</a>    Fut: Future + Send + <span class="lifetime">'static</span>,
-<a href=#117 id=117 data-nosnippet>117</a>    Fut::Output: IntoWorkerResult,
-<a href=#118 id=118 data-nosnippet>118</a>{
-<a href=#119 id=119 data-nosnippet>119</a>    FnWorker::new(
-<a href=#120 id=120 data-nosnippet>120</a>        name.into(),
-<a href=#121 id=121 data-nosnippet>121</a>        Box::new(<span class="kw">move </span>|shutdown| Box::pin(<span class="kw">async move </span>{ f(shutdown).<span class="kw">await</span>.into_worker_result() })),
-<a href=#122 id=122 data-nosnippet>122</a>    )
-<a href=#123 id=123 data-nosnippet>123</a>}
-<a href=#124 id=124 data-nosnippet>124</a>
-<a href=#125 id=125 data-nosnippet>125</a><span class="doccomment">/// Creates a one-shot [`Supervisable`] worker that runs `fut` until it completes or shutdown is signalled, whichever
-<a href=#126 id=126 data-nosnippet>126</a>/// happens first.
-<a href=#127 id=127 data-nosnippet>127</a>///
-<a href=#128 id=128 data-nosnippet>128</a>/// The future that is given is subsequently wrapped such that shutdown is always handled: the underlying worker cannot
-<a href=#129 id=129 data-nosnippet>129</a>/// ignore or defer honoring it. The future is dropped at whatever await point it happens to be parked on when shutdown
-<a href=#130 id=130 data-nosnippet>130</a>/// fires, so use this only for work that is safe to interrupt: a server accept loop, a background refresher, a
-<a href=#131 id=131 data-nosnippet>131</a>/// connection handler. Anything that must finish what it started should use [`noninterruptible_worker`] and observe the
-<a href=#132 id=132 data-nosnippet>132</a>/// shutdown signal itself.
-<a href=#133 id=133 data-nosnippet>133</a>///
-<a href=#134 id=134 data-nosnippet>134</a>/// Workers may return either `()` or `Result&lt;(), GenericError&gt;`.
-<a href=#135 id=135 data-nosnippet>135</a>///
-<a href=#136 id=136 data-nosnippet>136</a>/// The worker cannot be restarted as the given future is consumed during initialization.
-<a href=#137 id=137 data-nosnippet>137</a>///
-<a href=#138 id=138 data-nosnippet>138</a>/// # Examples
-<a href=#139 id=139 data-nosnippet>139</a>///
-<a href=#140 id=140 data-nosnippet>140</a>/// ```no_run
-<a href=#141 id=141 data-nosnippet>141</a>/// # use saluki_core::runtime::interruptible_worker;
-<a href=#142 id=142 data-nosnippet>142</a>/// # async fn run_accept_loop() {}
-<a href=#143 id=143 data-nosnippet>143</a>/// let worker = interruptible_worker("acceptor", run_accept_loop());
-<a href=#144 id=144 data-nosnippet>144</a>/// ```
-<a href=#145 id=145 data-nosnippet>145</a></span><span class="attr">#[must_use]
-<a href=#146 id=146 data-nosnippet>146</a></span><span class="kw">pub fn </span>interruptible_worker&lt;N, Fut&gt;(name: N, fut: Fut) -&gt; FnWorker
-<a href=#147 id=147 data-nosnippet>147</a><span class="kw">where
-<a href=#148 id=148 data-nosnippet>148</a>    </span>N: Into&lt;String&gt;,
-<a href=#149 id=149 data-nosnippet>149</a>    Fut: Future + Send + <span class="lifetime">'static</span>,
-<a href=#150 id=150 data-nosnippet>150</a>    Fut::Output: IntoWorkerResult,
-<a href=#151 id=151 data-nosnippet>151</a>{
-<a href=#152 id=152 data-nosnippet>152</a>    <span class="kw">let </span>name = name.into();
-<a href=#153 id=153 data-nosnippet>153</a>    FnWorker::new(
-<a href=#154 id=154 data-nosnippet>154</a>        name.clone(),
-<a href=#155 id=155 data-nosnippet>155</a>        Box::new(<span class="kw">move </span>|shutdown| {
-<a href=#156 id=156 data-nosnippet>156</a>            Box::pin(<span class="kw">async move </span>{
-<a href=#157 id=157 data-nosnippet>157</a>                <span class="macro">tokio::select!</span> {
-<a href=#158 id=158 data-nosnippet>158</a>                    <span class="kw">_ </span>= shutdown =&gt; {
-<a href=#159 id=159 data-nosnippet>159</a>                        <span class="macro">debug!</span>(worker_name = %name, <span class="string">"Worker interrupted by shutdown signal."</span>);
-<a href=#160 id=160 data-nosnippet>160</a>                        <span class="prelude-val">Ok</span>(())
-<a href=#161 id=161 data-nosnippet>161</a>                    },
-<a href=#162 id=162 data-nosnippet>162</a>                    output = fut =&gt; output.into_worker_result(),
-<a href=#163 id=163 data-nosnippet>163</a>                }
-<a href=#164 id=164 data-nosnippet>164</a>            })
-<a href=#165 id=165 data-nosnippet>165</a>        }),
-<a href=#166 id=166 data-nosnippet>166</a>    )
-<a href=#167 id=167 data-nosnippet>167</a>}
-<a href=#168 id=168 data-nosnippet>168</a>
-<a href=#169 id=169 data-nosnippet>169</a><span class="attr">#[cfg(test)]
-<a href=#170 id=170 data-nosnippet>170</a></span><span class="kw">mod </span>tests {
-<a href=#171 id=171 data-nosnippet>171</a>    <span class="kw">use </span>std::sync::{
-<a href=#172 id=172 data-nosnippet>172</a>        atomic::{AtomicUsize, Ordering},
-<a href=#173 id=173 data-nosnippet>173</a>        Arc,
-<a href=#174 id=174 data-nosnippet>174</a>    };
-<a href=#175 id=175 data-nosnippet>175</a>
-<a href=#176 id=176 data-nosnippet>176</a>    <span class="kw">use </span>saluki_common::sync::shutdown::ShutdownCoordinator;
-<a href=#177 id=177 data-nosnippet>177</a>    <span class="kw">use </span>tokio::time::timeout;
+<a href=#41 id=41 data-nosnippet>41</a>/// This is the ordinary kind of supervised child: a piece of asynchronous work that runs until it reaches its own
+<a href=#42 id=42 data-nosnippet>42</a>/// terminal condition -- an input channel closing, a loop finishing, a request completing.
+<a href=#43 id=43 data-nosnippet>43</a>///
+<a href=#44 id=44 data-nosnippet>44</a>/// # Shutdown
+<a href=#45 id=45 data-nosnippet>45</a>///
+<a href=#46 id=46 data-nosnippet>46</a>/// An `FnWorker` is never handed a shutdown signal, and reports as much through
+<a href=#47 id=47 data-nosnippet>47</a>/// [`wants_shutdown_signal`][Supervisable::wants_shutdown_signal]. Shutdown of a subtree is a _trigger_, not an
+<a href=#48 id=48 data-nosnippet>48</a>/// enforcement: the workers within it keep running until their terminal conditions are reached, which is what lets a
+<a href=#49 id=49 data-nosnippet>49</a>/// set of tasks connected by channels drain in dependency order without any of them having to know that order. The
+<a href=#50 id=50 data-nosnippet>50</a>/// supervisor's [shutdown budget][crate::runtime::Supervisor::with_shutdown_budget] is the backstop for work that
+<a href=#51 id=51 data-nosnippet>51</a>/// takes too long, and [`ShutdownStrategy::Brutal`] is the answer for work that has no terminal condition at all.
+<a href=#52 id=52 data-nosnippet>52</a>///
+<a href=#53 id=53 data-nosnippet>53</a>/// A worker that genuinely needs to observe shutdown -- to run cleanup, or because it has no other way to know it
+<a href=#54 id=54 data-nosnippet>54</a>/// should stop -- should implement [`Supervisable`] directly, which does receive the signal.
+<a href=#55 id=55 data-nosnippet>55</a>///
+<a href=#56 id=56 data-nosnippet>56</a>/// This worker cannot be restarted, as the future is consumed during initialization.
+<a href=#57 id=57 data-nosnippet>57</a></span><span class="kw">pub struct </span>FnWorker {
+<a href=#58 id=58 data-nosnippet>58</a>    name: String,
+<a href=#59 id=59 data-nosnippet>59</a>    body: Mutex&lt;<span class="prelude-ty">Option</span>&lt;WorkerBody&gt;&gt;,
+<a href=#60 id=60 data-nosnippet>60</a>}
+<a href=#61 id=61 data-nosnippet>61</a>
+<a href=#62 id=62 data-nosnippet>62</a><span class="kw">impl </span>FnWorker {
+<a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// Creates a worker that runs `fut` to completion.
+<a href=#64 id=64 data-nosnippet>64</a>    ///
+<a href=#65 id=65 data-nosnippet>65</a>    /// Workers may return either `()` or `Result&lt;(), GenericError&gt;`.
+<a href=#66 id=66 data-nosnippet>66</a>    ///
+<a href=#67 id=67 data-nosnippet>67</a>    /// Prefer [`worker`][crate::runtime::worker] and its counterparts on
+<a href=#68 id=68 data-nosnippet>68</a>    /// [`SupervisorHandle`][crate::runtime::SupervisorHandle], which wrap this up with the defaults appropriate to a
+<a href=#69 id=69 data-nosnippet>69</a>    /// dynamically spawned child.
+<a href=#70 id=70 data-nosnippet>70</a>    ///
+<a href=#71 id=71 data-nosnippet>71</a>    /// # Examples
+<a href=#72 id=72 data-nosnippet>72</a>    ///
+<a href=#73 id=73 data-nosnippet>73</a>    /// ```no_run
+<a href=#74 id=74 data-nosnippet>74</a>    /// # use saluki_core::runtime::FnWorker;
+<a href=#75 id=75 data-nosnippet>75</a>    /// # async fn drain_queue() {}
+<a href=#76 id=76 data-nosnippet>76</a>    /// let worker = FnWorker::new("queue_drainer", drain_queue());
+<a href=#77 id=77 data-nosnippet>77</a>    /// ```
+<a href=#78 id=78 data-nosnippet>78</a>    </span><span class="attr">#[must_use]
+<a href=#79 id=79 data-nosnippet>79</a>    </span><span class="kw">pub fn </span>new&lt;N, Fut&gt;(name: N, fut: Fut) -&gt; <span class="self">Self
+<a href=#80 id=80 data-nosnippet>80</a>    </span><span class="kw">where
+<a href=#81 id=81 data-nosnippet>81</a>        </span>N: Into&lt;String&gt;,
+<a href=#82 id=82 data-nosnippet>82</a>        Fut: Future + Send + <span class="lifetime">'static</span>,
+<a href=#83 id=83 data-nosnippet>83</a>        Fut::Output: IntoWorkerResult,
+<a href=#84 id=84 data-nosnippet>84</a>    {
+<a href=#85 id=85 data-nosnippet>85</a>        <span class="self">Self </span>{
+<a href=#86 id=86 data-nosnippet>86</a>            name: name.into(),
+<a href=#87 id=87 data-nosnippet>87</a>            body: Mutex::new(<span class="prelude-val">Some</span>(Box::new(<span class="kw">move </span>|| {
+<a href=#88 id=88 data-nosnippet>88</a>                Box::pin(<span class="kw">async move </span>{ fut.<span class="kw">await</span>.into_worker_result() })
+<a href=#89 id=89 data-nosnippet>89</a>            }))),
+<a href=#90 id=90 data-nosnippet>90</a>        }
+<a href=#91 id=91 data-nosnippet>91</a>    }
+<a href=#92 id=92 data-nosnippet>92</a>}
+<a href=#93 id=93 data-nosnippet>93</a>
+<a href=#94 id=94 data-nosnippet>94</a><span class="attr">#[async_trait]
+<a href=#95 id=95 data-nosnippet>95</a></span><span class="kw">impl </span>Supervisable <span class="kw">for </span>FnWorker {
+<a href=#96 id=96 data-nosnippet>96</a>    <span class="kw">fn </span>name(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="kw-2">&amp;</span>str {
+<a href=#97 id=97 data-nosnippet>97</a>        <span class="kw-2">&amp;</span><span class="self">self</span>.name
+<a href=#98 id=98 data-nosnippet>98</a>    }
+<a href=#99 id=99 data-nosnippet>99</a>
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="kw">fn </span>shutdown_strategy(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; ShutdownStrategy {
+<a href=#101 id=101 data-nosnippet>101</a>        ShutdownStrategy::Graceful(DEFAULT_SHUTDOWN_TIMEOUT)
+<a href=#102 id=102 data-nosnippet>102</a>    }
+<a href=#103 id=103 data-nosnippet>103</a>
+<a href=#104 id=104 data-nosnippet>104</a>    <span class="kw">fn </span>wants_shutdown_signal(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#105 id=105 data-nosnippet>105</a>        <span class="bool-val">false
+<a href=#106 id=106 data-nosnippet>106</a>    </span>}
+<a href=#107 id=107 data-nosnippet>107</a>
+<a href=#108 id=108 data-nosnippet>108</a>    <span class="kw">async fn </span>initialize(<span class="kw-2">&amp;</span><span class="self">self</span>, _process_shutdown: ShutdownHandle) -&gt; <span class="prelude-ty">Result</span>&lt;SupervisorFuture, InitializationError&gt; {
+<a href=#109 id=109 data-nosnippet>109</a>        <span class="kw">let </span>body = <span class="self">self
+<a href=#110 id=110 data-nosnippet>110</a>            </span>.body
+<a href=#111 id=111 data-nosnippet>111</a>            .lock()
+<a href=#112 id=112 data-nosnippet>112</a>            .expect(<span class="string">"function worker mutex poisoned"</span>)
+<a href=#113 id=113 data-nosnippet>113</a>            .take()
+<a href=#114 id=114 data-nosnippet>114</a>            .ok_or_else(|| InitializationError::from(<span class="macro">generic_error!</span>(<span class="string">"worker already initialized"</span>)))<span class="question-mark">?</span>;
+<a href=#115 id=115 data-nosnippet>115</a>
+<a href=#116 id=116 data-nosnippet>116</a>        <span class="prelude-val">Ok</span>(body())
+<a href=#117 id=117 data-nosnippet>117</a>    }
+<a href=#118 id=118 data-nosnippet>118</a>}
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a><span class="attr">#[cfg(test)]
+<a href=#121 id=121 data-nosnippet>121</a></span><span class="kw">mod </span>tests {
+<a href=#122 id=122 data-nosnippet>122</a>    <span class="kw">use </span>std::sync::{
+<a href=#123 id=123 data-nosnippet>123</a>        atomic::{AtomicUsize, Ordering},
+<a href=#124 id=124 data-nosnippet>124</a>        Arc,
+<a href=#125 id=125 data-nosnippet>125</a>    };
+<a href=#126 id=126 data-nosnippet>126</a>
+<a href=#127 id=127 data-nosnippet>127</a>    <span class="kw">use </span>tokio::time::timeout;
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
+<a href=#130 id=130 data-nosnippet>130</a>
+<a href=#131 id=131 data-nosnippet>131</a>    <span class="doccomment">/// Bound on any worker-body await in these tests.
+<a href=#132 id=132 data-nosnippet>132</a>    ///
+<a href=#133 id=133 data-nosnippet>133</a>    /// A worker that never finishes would otherwise hang the test process until the harness kills it, which reads as a
+<a href=#134 id=134 data-nosnippet>134</a>    /// stall rather than a failure.
+<a href=#135 id=135 data-nosnippet>135</a>    </span><span class="kw">const </span>RUN_TIMEOUT: Duration = Duration::from_secs(<span class="number">5</span>);
+<a href=#136 id=136 data-nosnippet>136</a>
+<a href=#137 id=137 data-nosnippet>137</a>    <span class="attr">#[tokio::test]
+<a href=#138 id=138 data-nosnippet>138</a>    </span><span class="kw">async fn </span>worker_runs_its_future_to_completion() {
+<a href=#139 id=139 data-nosnippet>139</a>        <span class="kw">let </span>ran = Arc::new(AtomicUsize::new(<span class="number">0</span>));
+<a href=#140 id=140 data-nosnippet>140</a>        <span class="kw">let </span>worker_ran = Arc::clone(<span class="kw-2">&amp;</span>ran);
+<a href=#141 id=141 data-nosnippet>141</a>
+<a href=#142 id=142 data-nosnippet>142</a>        <span class="kw">let </span>worker = FnWorker::new(<span class="string">"test"</span>, <span class="kw">async move </span>{
+<a href=#143 id=143 data-nosnippet>143</a>            worker_ran.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
+<a href=#144 id=144 data-nosnippet>144</a>        });
+<a href=#145 id=145 data-nosnippet>145</a>
+<a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">let </span>run = worker
+<a href=#147 id=147 data-nosnippet>147</a>            .initialize(ShutdownHandle::noop())
+<a href=#148 id=148 data-nosnippet>148</a>            .<span class="kw">await
+<a href=#149 id=149 data-nosnippet>149</a>            </span>.expect(<span class="string">"should initialize"</span>);
+<a href=#150 id=150 data-nosnippet>150</a>
+<a href=#151 id=151 data-nosnippet>151</a>        timeout(RUN_TIMEOUT, run)
+<a href=#152 id=152 data-nosnippet>152</a>            .<span class="kw">await
+<a href=#153 id=153 data-nosnippet>153</a>            </span>.expect(<span class="string">"worker should run to completion"</span>)
+<a href=#154 id=154 data-nosnippet>154</a>            .expect(<span class="string">"should exit cleanly"</span>);
+<a href=#155 id=155 data-nosnippet>155</a>
+<a href=#156 id=156 data-nosnippet>156</a>        <span class="macro">assert_eq!</span>(ran.load(Ordering::SeqCst), <span class="number">1</span>);
+<a href=#157 id=157 data-nosnippet>157</a>    }
+<a href=#158 id=158 data-nosnippet>158</a>
+<a href=#159 id=159 data-nosnippet>159</a>    <span class="attr">#[tokio::test]
+<a href=#160 id=160 data-nosnippet>160</a>    </span><span class="kw">async fn </span>worker_propagates_error() {
+<a href=#161 id=161 data-nosnippet>161</a>        <span class="kw">let </span>worker = FnWorker::new(<span class="string">"test"</span>, <span class="kw">async </span>{ Err::&lt;(), <span class="kw">_</span>&gt;(<span class="macro">generic_error!</span>(<span class="string">"worker failed"</span>)) });
+<a href=#162 id=162 data-nosnippet>162</a>
+<a href=#163 id=163 data-nosnippet>163</a>        <span class="kw">let </span>run = worker
+<a href=#164 id=164 data-nosnippet>164</a>            .initialize(ShutdownHandle::noop())
+<a href=#165 id=165 data-nosnippet>165</a>            .<span class="kw">await
+<a href=#166 id=166 data-nosnippet>166</a>            </span>.expect(<span class="string">"should initialize"</span>);
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a>        <span class="kw">let </span>error = run.<span class="kw">await</span>.expect_err(<span class="string">"should surface the worker's error"</span>);
+<a href=#169 id=169 data-nosnippet>169</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"worker failed"</span>));
+<a href=#170 id=170 data-nosnippet>170</a>    }
+<a href=#171 id=171 data-nosnippet>171</a>
+<a href=#172 id=172 data-nosnippet>172</a>    <span class="attr">#[tokio::test]
+<a href=#173 id=173 data-nosnippet>173</a>    </span><span class="kw">async fn </span>worker_does_not_want_the_shutdown_signal() {
+<a href=#174 id=174 data-nosnippet>174</a>        <span class="comment">// The supervisor uses this to skip allocating a shutdown coordinator it would never fire: an `FnWorker` runs
+<a href=#175 id=175 data-nosnippet>175</a>        // until its own terminal condition regardless of what the supervisor signals.
+<a href=#176 id=176 data-nosnippet>176</a>        </span><span class="macro">assert!</span>(!FnWorker::new(<span class="string">"test"</span>, <span class="kw">async </span>{}).wants_shutdown_signal());
+<a href=#177 id=177 data-nosnippet>177</a>    }
 <a href=#178 id=178 data-nosnippet>178</a>
-<a href=#179 id=179 data-nosnippet>179</a>    <span class="kw">use </span>super::<span class="kw-2">*</span>;
-<a href=#180 id=180 data-nosnippet>180</a>
-<a href=#181 id=181 data-nosnippet>181</a>    <span class="doccomment">/// Bound on any worker-body await in these tests.
-<a href=#182 id=182 data-nosnippet>182</a>    ///
-<a href=#183 id=183 data-nosnippet>183</a>    /// A worker that stops observing shutdown would otherwise hang the test process until the harness kills it, which
-<a href=#184 id=184 data-nosnippet>184</a>    /// reads as a stall rather than a failure.
-<a href=#185 id=185 data-nosnippet>185</a>    </span><span class="kw">const </span>RUN_TIMEOUT: Duration = Duration::from_secs(<span class="number">5</span>);
-<a href=#186 id=186 data-nosnippet>186</a>
-<a href=#187 id=187 data-nosnippet>187</a>    <span class="attr">#[tokio::test]
-<a href=#188 id=188 data-nosnippet>188</a>    </span><span class="kw">async fn </span>noninterruptible_worker_receives_shutdown_signal() {
-<a href=#189 id=189 data-nosnippet>189</a>        <span class="comment">// A non-interruptible worker is handed the shutdown signal and is expected to observe it and return.
-<a href=#190 id=190 data-nosnippet>190</a>        </span><span class="kw">let </span>observed = Arc::new(AtomicUsize::new(<span class="number">0</span>));
-<a href=#191 id=191 data-nosnippet>191</a>        <span class="kw">let </span>worker_observed = Arc::clone(<span class="kw-2">&amp;</span>observed);
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="attr">#[tokio::test]
+<a href=#180 id=180 data-nosnippet>180</a>    </span><span class="kw">async fn </span>second_initialization_fails() {
+<a href=#181 id=181 data-nosnippet>181</a>        <span class="comment">// Function-based workers are one-shot: a restart would re-initialize, which must fail loudly rather than
+<a href=#182 id=182 data-nosnippet>182</a>        // silently running nothing.
+<a href=#183 id=183 data-nosnippet>183</a>        </span><span class="kw">let </span>worker = FnWorker::new(<span class="string">"test"</span>, <span class="kw">async </span>{});
+<a href=#184 id=184 data-nosnippet>184</a>
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="comment">// Drop the run-future without polling it; we only care that the body was consumed.
+<a href=#186 id=186 data-nosnippet>186</a>        </span>drop(
+<a href=#187 id=187 data-nosnippet>187</a>            worker
+<a href=#188 id=188 data-nosnippet>188</a>                .initialize(ShutdownHandle::noop())
+<a href=#189 id=189 data-nosnippet>189</a>                .<span class="kw">await
+<a href=#190 id=190 data-nosnippet>190</a>                </span>.expect(<span class="string">"first initialization should succeed"</span>),
+<a href=#191 id=191 data-nosnippet>191</a>        );
 <a href=#192 id=192 data-nosnippet>192</a>
-<a href=#193 id=193 data-nosnippet>193</a>        <span class="kw">let </span>worker = noninterruptible_worker(<span class="string">"test"</span>, <span class="kw">move </span>|shutdown| <span class="kw">async move </span>{
-<a href=#194 id=194 data-nosnippet>194</a>            shutdown.<span class="kw">await</span>;
-<a href=#195 id=195 data-nosnippet>195</a>            worker_observed.fetch_add(<span class="number">1</span>, Ordering::SeqCst);
-<a href=#196 id=196 data-nosnippet>196</a>        });
-<a href=#197 id=197 data-nosnippet>197</a>
-<a href=#198 id=198 data-nosnippet>198</a>        <span class="kw">let </span><span class="kw-2">mut </span>coordinator = ShutdownCoordinator::default();
-<a href=#199 id=199 data-nosnippet>199</a>        <span class="kw">let </span>handle = coordinator.register();
-<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">let </span>run = worker.initialize(handle).<span class="kw">await</span>.expect(<span class="string">"should initialize"</span>);
-<a href=#201 id=201 data-nosnippet>201</a>
-<a href=#202 id=202 data-nosnippet>202</a>        coordinator.shutdown();
-<a href=#203 id=203 data-nosnippet>203</a>        timeout(RUN_TIMEOUT, run)
-<a href=#204 id=204 data-nosnippet>204</a>            .<span class="kw">await
-<a href=#205 id=205 data-nosnippet>205</a>            </span>.expect(<span class="string">"worker should observe shutdown and exit"</span>)
-<a href=#206 id=206 data-nosnippet>206</a>            .expect(<span class="string">"should exit cleanly"</span>);
-<a href=#207 id=207 data-nosnippet>207</a>
-<a href=#208 id=208 data-nosnippet>208</a>        <span class="macro">assert_eq!</span>(observed.load(Ordering::SeqCst), <span class="number">1</span>);
-<a href=#209 id=209 data-nosnippet>209</a>    }
-<a href=#210 id=210 data-nosnippet>210</a>
-<a href=#211 id=211 data-nosnippet>211</a>    <span class="attr">#[tokio::test]
-<a href=#212 id=212 data-nosnippet>212</a>    </span><span class="kw">async fn </span>noninterruptible_worker_propagates_error() {
-<a href=#213 id=213 data-nosnippet>213</a>        <span class="kw">let </span>worker = noninterruptible_worker(<span class="string">"test"</span>, |_shutdown| <span class="kw">async move </span>{
-<a href=#214 id=214 data-nosnippet>214</a>            Err::&lt;(), <span class="kw">_</span>&gt;(<span class="macro">generic_error!</span>(<span class="string">"worker failed"</span>))
-<a href=#215 id=215 data-nosnippet>215</a>        });
-<a href=#216 id=216 data-nosnippet>216</a>
-<a href=#217 id=217 data-nosnippet>217</a>        <span class="kw">let </span>run = worker
-<a href=#218 id=218 data-nosnippet>218</a>            .initialize(ShutdownHandle::noop())
-<a href=#219 id=219 data-nosnippet>219</a>            .<span class="kw">await
-<a href=#220 id=220 data-nosnippet>220</a>            </span>.expect(<span class="string">"should initialize"</span>);
-<a href=#221 id=221 data-nosnippet>221</a>
-<a href=#222 id=222 data-nosnippet>222</a>        <span class="kw">let </span>error = run.<span class="kw">await</span>.expect_err(<span class="string">"should surface the worker's error"</span>);
-<a href=#223 id=223 data-nosnippet>223</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"worker failed"</span>));
-<a href=#224 id=224 data-nosnippet>224</a>    }
-<a href=#225 id=225 data-nosnippet>225</a>
-<a href=#226 id=226 data-nosnippet>226</a>    <span class="attr">#[tokio::test]
-<a href=#227 id=227 data-nosnippet>227</a>    </span><span class="kw">async fn </span>interruptible_worker_is_interrupted_at_shutdown() {
-<a href=#228 id=228 data-nosnippet>228</a>        <span class="comment">// The future never completes on its own, so the only way out is being interrupted -- which is reported as a
-<a href=#229 id=229 data-nosnippet>229</a>        // clean exit rather than an error.
-<a href=#230 id=230 data-nosnippet>230</a>        </span><span class="kw">let </span>worker = interruptible_worker(<span class="string">"test"</span>, std::future::pending::&lt;()&gt;());
-<a href=#231 id=231 data-nosnippet>231</a>
-<a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span><span class="kw-2">mut </span>coordinator = ShutdownCoordinator::default();
-<a href=#233 id=233 data-nosnippet>233</a>        <span class="kw">let </span>handle = coordinator.register();
-<a href=#234 id=234 data-nosnippet>234</a>        <span class="kw">let </span>run = worker.initialize(handle).<span class="kw">await</span>.expect(<span class="string">"should initialize"</span>);
-<a href=#235 id=235 data-nosnippet>235</a>
-<a href=#236 id=236 data-nosnippet>236</a>        coordinator.shutdown();
-<a href=#237 id=237 data-nosnippet>237</a>        timeout(RUN_TIMEOUT, run)
-<a href=#238 id=238 data-nosnippet>238</a>            .<span class="kw">await
-<a href=#239 id=239 data-nosnippet>239</a>            </span>.expect(<span class="string">"worker should be interrupted by shutdown and exit"</span>)
-<a href=#240 id=240 data-nosnippet>240</a>            .expect(<span class="string">"being interrupted should be reported as a clean exit"</span>);
-<a href=#241 id=241 data-nosnippet>241</a>    }
-<a href=#242 id=242 data-nosnippet>242</a>
-<a href=#243 id=243 data-nosnippet>243</a>    <span class="attr">#[tokio::test]
-<a href=#244 id=244 data-nosnippet>244</a>    </span><span class="kw">async fn </span>interruptible_worker_returns_future_output_when_it_completes_first() {
-<a href=#245 id=245 data-nosnippet>245</a>        <span class="kw">let </span>worker = interruptible_worker(<span class="string">"test"</span>, <span class="kw">async </span>{ Err::&lt;(), <span class="kw">_</span>&gt;(<span class="macro">generic_error!</span>(<span class="string">"boom"</span>)) });
-<a href=#246 id=246 data-nosnippet>246</a>
-<a href=#247 id=247 data-nosnippet>247</a>        <span class="kw">let </span>run = worker
-<a href=#248 id=248 data-nosnippet>248</a>            .initialize(ShutdownHandle::noop())
-<a href=#249 id=249 data-nosnippet>249</a>            .<span class="kw">await
-<a href=#250 id=250 data-nosnippet>250</a>            </span>.expect(<span class="string">"should initialize"</span>);
-<a href=#251 id=251 data-nosnippet>251</a>
-<a href=#252 id=252 data-nosnippet>252</a>        <span class="kw">let </span>error = run.<span class="kw">await</span>.expect_err(<span class="string">"should surface the future's error"</span>);
-<a href=#253 id=253 data-nosnippet>253</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"boom"</span>));
-<a href=#254 id=254 data-nosnippet>254</a>    }
-<a href=#255 id=255 data-nosnippet>255</a>
-<a href=#256 id=256 data-nosnippet>256</a>    <span class="attr">#[tokio::test]
-<a href=#257 id=257 data-nosnippet>257</a>    </span><span class="kw">async fn </span>second_initialization_fails() {
-<a href=#258 id=258 data-nosnippet>258</a>        <span class="comment">// Function-based workers are one-shot: a restart would re-initialize, which must fail loudly rather than
-<a href=#259 id=259 data-nosnippet>259</a>        // silently running nothing.
-<a href=#260 id=260 data-nosnippet>260</a>        </span><span class="kw">let </span>worker = noninterruptible_worker(<span class="string">"test"</span>, |_shutdown| <span class="kw">async </span>{});
-<a href=#261 id=261 data-nosnippet>261</a>
-<a href=#262 id=262 data-nosnippet>262</a>        <span class="comment">// Drop the run-future without polling it; we only care that the body was consumed.
-<a href=#263 id=263 data-nosnippet>263</a>        </span>drop(
-<a href=#264 id=264 data-nosnippet>264</a>            worker
-<a href=#265 id=265 data-nosnippet>265</a>                .initialize(ShutdownHandle::noop())
-<a href=#266 id=266 data-nosnippet>266</a>                .<span class="kw">await
-<a href=#267 id=267 data-nosnippet>267</a>                </span>.expect(<span class="string">"first initialization should succeed"</span>),
-<a href=#268 id=268 data-nosnippet>268</a>        );
-<a href=#269 id=269 data-nosnippet>269</a>
-<a href=#270 id=270 data-nosnippet>270</a>        <span class="comment">// `SupervisorFuture` isn't `Debug`, so match rather than using `expect_err`.
-<a href=#271 id=271 data-nosnippet>271</a>        </span><span class="kw">match </span>worker.initialize(ShutdownHandle::noop()).<span class="kw">await </span>{
-<a href=#272 id=272 data-nosnippet>272</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"second initialization should fail"</span>),
-<a href=#273 id=273 data-nosnippet>273</a>            <span class="prelude-val">Err</span>(e) =&gt; <span class="macro">assert!</span>(e.to_string().contains(<span class="string">"already initialized"</span>)),
-<a href=#274 id=274 data-nosnippet>274</a>        }
-<a href=#275 id=275 data-nosnippet>275</a>    }
-<a href=#276 id=276 data-nosnippet>276</a>}
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="comment">// `SupervisorFuture` isn't `Debug`, so match rather than using `expect_err`.
+<a href=#194 id=194 data-nosnippet>194</a>        </span><span class="kw">match </span>worker.initialize(ShutdownHandle::noop()).<span class="kw">await </span>{
+<a href=#195 id=195 data-nosnippet>195</a>            <span class="prelude-val">Ok</span>(<span class="kw">_</span>) =&gt; <span class="macro">panic!</span>(<span class="string">"second initialization should fail"</span>),
+<a href=#196 id=196 data-nosnippet>196</a>            <span class="prelude-val">Err</span>(e) =&gt; <span class="macro">assert!</span>(e.to_string().contains(<span class="string">"already initialized"</span>)),
+<a href=#197 id=197 data-nosnippet>197</a>        }
+<a href=#198 id=198 data-nosnippet>198</a>    }
+<a href=#199 id=199 data-nosnippet>199</a>}
 </code></pre></div></section></main></body></html>

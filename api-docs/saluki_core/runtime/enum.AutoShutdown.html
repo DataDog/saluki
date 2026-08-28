@@ -3,7 +3,7 @@
     AnySignificant,
     AllSignificant,
 }</code></pre><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Policy for automatically shutting a supervisor down based on the termination of its <em>significant</em> children.</p>
-<p>A significant child (see <a href="struct.ChildSpecification.html#method.with_significant" title="method saluki_core::runtime::ChildSpecification::with_significant"><code>ChildSpecification::with_significant</code></a>) is one whose termination – when it isn’t restarted – can
+<p>A significant child (see <a href="struct.ChildBuilder.html#method.with_significant" title="method saluki_core::runtime::ChildBuilder::with_significant"><code>ChildBuilder::with_significant</code></a>) is one whose termination – when it isn’t restarted – can
 drive the supervisor to shut down. This mirrors Erlang/OTP’s <code>auto_shutdown</code> supervisor flag, and is how an
 unexpected (or intentional) child exit cascades into the supervisor stopping, and thus propagating up the tree,
 without that child being restarted.</p>
