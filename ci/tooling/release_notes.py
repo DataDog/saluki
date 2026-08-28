@@ -4,12 +4,17 @@
 import argparse
 import os
 import re
+import sys
 from pathlib import Path
+
+import yaml
 
 
 RELEASE_TAG_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 START_MARKER = "<!-- saluki-curated-notes:start -->"
 END_MARKER = "<!-- saluki-curated-notes:end -->"
+CATEGORY_ORDER = ("upgrade", "features", "enhancements", "issues", "deprecations", "security", "fixes", "other")
+RENO_FILENAME_RE = re.compile(r"^.+-[0-9a-f]{16}\.yaml$")
 
 
 def is_release_tag(version: str) -> bool:
@@ -43,6 +48,34 @@ def merge_release_body(existing: str, markdown: str) -> str:
     return block + "\n\n" + existing if existing else block
 
 
+def validate_note_file(path: Path) -> list[str]:
+    """Return validation errors for one opt-in Reno release note."""
+    errors = []
+    if not RENO_FILENAME_RE.fullmatch(path.name):
+        errors.append(f"{path}: filename must end in -<16 lowercase hex characters>.yaml")
+    try:
+        content = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as error:
+        return [*errors, f"{path}: invalid YAML: {error}"]
+    if not isinstance(content, dict) or not content:
+        return [*errors, f"{path}: release note must be a non-empty YAML mapping"]
+    for category, entries in content.items():
+        if category not in CATEGORY_ORDER:
+            errors.append(f"{path}: unsupported release-note category {category!r}")
+        elif not isinstance(entries, list) or not entries or any(not isinstance(entry, str) or not entry.strip() for entry in entries):
+            errors.append(f"{path}: {category!r} must be a non-empty list of non-empty strings")
+    return errors
+
+
+def check_command(arguments: argparse.Namespace) -> int:
+    """Validate every supplied release-note file."""
+    errors = [error for path in arguments.note_files for error in validate_note_file(path)]
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+    return 0
+
+
 def write_github_output(name: str, value: str) -> None:
     """Write an output value when running inside a GitHub Actions step."""
     output_path = os.environ.get("GITHUB_OUTPUT")
@@ -72,7 +105,9 @@ def parse_arguments() -> argparse.Namespace:
     merge_parser.add_argument("--output", type=Path, required=True)
     merge_parser.set_defaults(handler=merge_command)
 
-    subcommands.add_parser("check", help="Validate Reno release-note files")
+    check_parser = subcommands.add_parser("check", help="Validate Reno release-note files")
+    check_parser.add_argument("note_files", nargs="*", type=Path)
+    check_parser.set_defaults(handler=check_command)
     subcommands.add_parser("render", help="Render a tag's Reno release notes")
     return parser.parse_args()
 

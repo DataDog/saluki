@@ -1,4 +1,5 @@
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -48,6 +49,51 @@ class ReleaseBodyTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "malformed"):
             subject.merge_release_body(existing, "## Bug Fixes\n- Fix")
+
+
+class ReleaseNoteValidationTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.notes_directory = Path(self.temporary_directory.name)
+
+    def write_note(self, name, content):
+        path = self.notes_directory / name
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_accepts_a_valid_note(self):
+        path = self.write_note(
+            "fix-listener-0123456789abcdef.yaml",
+            "fixes:\n  - |\n    Fix a listener shutdown race that could drop telemetry during process exit.\n",
+        )
+
+        self.assertEqual(subject.validate_note_file(path), [])
+
+    def test_rejects_malformed_yaml(self):
+        path = self.write_note("fix-listener-0123456789abcdef.yaml", "fixes: [\n")
+
+        self.assertTrue(subject.validate_note_file(path))
+
+    def test_rejects_a_non_mapping_document(self):
+        path = self.write_note("fix-listener-0123456789abcdef.yaml", "- fixes\n")
+
+        self.assertTrue(subject.validate_note_file(path))
+
+    def test_rejects_unknown_categories(self):
+        path = self.write_note("fix-listener-0123456789abcdef.yaml", "unknown:\n  - text\n")
+
+        self.assertTrue(subject.validate_note_file(path))
+
+    def test_rejects_empty_items(self):
+        path = self.write_note("fix-listener-0123456789abcdef.yaml", "fixes:\n  - \"\"\n")
+
+        self.assertTrue(subject.validate_note_file(path))
+
+    def test_rejects_non_reno_filenames(self):
+        path = self.write_note("fix-listener.yaml", "fixes:\n  - text\n")
+
+        self.assertTrue(subject.validate_note_file(path))
 
 
 if __name__ == "__main__":
