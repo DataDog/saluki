@@ -82,6 +82,32 @@ impl IntakeHasMetricAssertion {
         }
     }
 
+    /// Builds the failure result for a run that ended without a matching metric.
+    ///
+    /// `summary` states why we stopped looking; the metric names and intake error seen on the last
+    /// poll are appended as diagnostics when we have them.
+    fn unmatched_result(
+        &self, started: Instant, summary: String, observed_names: BTreeSet<String>, last_error: Option<String>,
+    ) -> AssertionResult {
+        let mut message = summary;
+        if !observed_names.is_empty() {
+            message.push_str(&format!(
+                " Observed metric names: {}.",
+                observed_names.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if let Some(error) = last_error {
+            message.push_str(&format!(" Last intake error: {}.", error));
+        }
+
+        AssertionResult {
+            name: self.name().to_string(),
+            passed: false,
+            message,
+            duration: started.elapsed(),
+        }
+    }
+
     fn criteria(&self) -> String {
         let mut parts = vec![format!("name={}", self.name)];
         if let Some(mtype) = self.mtype {
@@ -125,6 +151,14 @@ impl Assertion for IntakeHasMetricAssertion {
         let mut last_error = None;
 
         loop {
+            // Read the exit state before polling so a metric that reached the intake just before
+            // the target exited still counts; see the post-poll check below.
+            let exited = ctx.container_exit_token.is_cancelled();
+
+            if ctx.cancel_token.is_cancelled() {
+                return self.unmatched_result(started, "Assertion cancelled.".to_string(), observed_names, last_error);
+            }
+
             match client.get(&endpoint).send().await {
                 Ok(response) => match response.json::<Vec<Metric>>().await {
                     Ok(metrics) => {
@@ -146,28 +180,29 @@ impl Assertion for IntakeHasMetricAssertion {
 
             trace!(endpoint = %endpoint, "Intake metric not present yet.");
 
-            if Instant::now() >= deadline || ctx.cancel_token.is_cancelled() {
-                let mut message = format!("No metric matching {} arrived at the intake.", self.criteria());
-                if !observed_names.is_empty() {
-                    message.push_str(&format!(
-                        " Observed metric names: {}.",
-                        observed_names.into_iter().collect::<Vec<_>>().join(", ")
-                    ));
-                }
-                if let Some(error) = last_error {
-                    message.push_str(&format!(" Last intake error: {}.", error));
-                }
-                return AssertionResult {
-                    name: self.name().to_string(),
-                    passed: false,
-                    message,
-                    duration: started.elapsed(),
-                };
+            // Nothing more can reach the intake once the target is gone, so report the crash
+            // instead of polling until the timeout.
+            if exited {
+                let summary = format!(
+                    "No metric matching {} arrived at the intake before the target exited.",
+                    self.criteria()
+                );
+                return self.unmatched_result(started, summary, observed_names, last_error);
+            }
+
+            if Instant::now() >= deadline {
+                let summary = format!(
+                    "No metric matching {} arrived at the intake within {:?}.",
+                    self.criteria(),
+                    self.timeout
+                );
+                return self.unmatched_result(started, summary, observed_names, last_error);
             }
 
             tokio::select! {
                 _ = tokio::time::sleep(POLL_INTERVAL) => {}
                 _ = ctx.cancel_token.cancelled() => {}
+                _ = ctx.container_exit_token.cancelled() => {}
             }
         }
     }
@@ -175,11 +210,16 @@ impl Assertion for IntakeHasMetricAssertion {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::net::TcpListener;
+    use std::sync::{Arc, RwLock};
     use std::time::Duration;
 
     use stele::{Metric, MetricValue};
+    use tokio_util::sync::CancellationToken;
 
     use super::IntakeHasMetricAssertion;
+    use crate::assertions::{Assertion as _, AssertionContext, LogBuffer, TargetCommand};
     use crate::config::MetricTypeMatcher;
 
     fn metric(name: &str, tags: &[&str], value: MetricValue) -> Metric {
@@ -204,6 +244,86 @@ mod tests {
             tags.iter().map(|t| t.to_string()).collect(),
             Duration::from_secs(1),
         )
+    }
+
+    /// Returns a context pointing at a port with no listener, so every intake poll fails.
+    fn context(cancel_token: CancellationToken, container_exit_token: CancellationToken) -> AssertionContext {
+        // The assertion builds a reqwest client, which needs the process-wide crypto provider that
+        // `main` installs at startup.
+        let _ = crate::default_crypto_provider().install_default();
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("should bind an ephemeral port");
+        let closed_port = listener.local_addr().expect("should have a local address").port();
+        drop(listener);
+
+        AssertionContext {
+            log_buffer: Arc::new(RwLock::new(LogBuffer::default())),
+            container_exit_token,
+            cancel_token,
+            port_mappings: HashMap::new(),
+            container_ip: None,
+            target_os: None,
+            container_name: "intake-has-metric-test".to_string(),
+            is_host_process: false,
+            host_process_exit_code: None,
+            docker_container_exit_code: None,
+            intake_host_port: Some(closed_port),
+            core_agent_auth_token_path: None,
+            adp_cli_command: TargetCommand::new(vec!["panoramic-unused-cli-program".to_string()]),
+            core_agent_cli_command: TargetCommand::new(vec!["panoramic-unused-cli-program".to_string()]),
+        }
+    }
+
+    fn polling_assertion(timeout: Duration) -> IntakeHasMetricAssertion {
+        IntakeHasMetricAssertion::new("some.counter".to_string(), None, None, Vec::new(), timeout)
+    }
+
+    #[tokio::test]
+    async fn target_exit_fails_without_waiting_out_the_timeout() {
+        let container_exit_token = CancellationToken::new();
+        container_exit_token.cancel();
+        let ctx = context(CancellationToken::new(), container_exit_token);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            polling_assertion(Duration::from_secs(600)).check(&ctx),
+        )
+        .await
+        .expect("assertion should return once the target has exited");
+
+        assert!(!result.passed, "unexpected assertion pass: {}", result.message);
+        assert!(
+            result.message.contains("before the target exited"),
+            "unexpected message: {}",
+            result.message
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_and_timeout_are_reported_distinctly() {
+        let cancel_token = CancellationToken::new();
+        cancel_token.cancel();
+        let cancelled = polling_assertion(Duration::from_secs(600))
+            .check(&context(cancel_token, CancellationToken::new()))
+            .await;
+
+        assert!(!cancelled.passed, "unexpected assertion pass: {}", cancelled.message);
+        assert!(
+            cancelled.message.starts_with("Assertion cancelled."),
+            "unexpected message: {}",
+            cancelled.message
+        );
+
+        let timed_out = polling_assertion(Duration::ZERO)
+            .check(&context(CancellationToken::new(), CancellationToken::new()))
+            .await;
+
+        assert!(!timed_out.passed, "unexpected assertion pass: {}", timed_out.message);
+        assert!(
+            timed_out.message.contains("arrived at the intake within"),
+            "unexpected message: {}",
+            timed_out.message
+        );
     }
 
     #[test]
