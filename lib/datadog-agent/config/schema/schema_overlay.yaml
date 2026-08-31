@@ -460,20 +460,20 @@ inventory:
     pipelines: [checks, dogstatsd, otlp]
     description: "Enable autoscaling failover metric routing"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: "true"
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   autoscaling.failover.metrics:
     support: full
     pipelines: [checks, dogstatsd, otlp]
     description: "Metric names forwarded to DCA for failover"
     test_support:
-      used_by: [get_typed]
+      used_by: [TypedConfigSystem]
       test_json: '["container.memory.usage"]'
       additional_attributes:
-        config_registry_filename: get_typed.rs
+        config_registry_filename: shared.rs
 
   basic_telemetry_add_container_tags:
     support: full

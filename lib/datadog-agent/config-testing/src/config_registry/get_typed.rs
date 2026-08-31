@@ -60,28 +60,6 @@ crate::declare_annotations! {
         test_json: None,
         pipeline_affinity: PipelineAffinity::CrossCutting,
     };
-    /// `autoscaling.failover.enabled`-Enable autoscaling failover metric routing
-    AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
-        schema: &schema::AUTOSCALING_FAILOVER_ENABLED,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::GET_TYPED],
-        value_type_override: None,
-        test_json: Some("true"),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
-    };
-    /// `autoscaling.failover.metrics`-Metric names forwarded to DCA for failover
-    AUTOSCALING_FAILOVER_METRICS = SalukiAnnotation {
-        schema: &schema::AUTOSCALING_FAILOVER_METRICS,
-        support_level: SupportLevel::Full,
-        additional_yaml_paths: &[],
-        env_var_override: None,
-        used_by: &[structs::GET_TYPED],
-        value_type_override: None,
-        test_json: Some(r#"["container.memory.usage"]"#),
-        pipeline_affinity: PipelineAffinity::Pipelines(&[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
-    };
     /// `cluster_agent.auth_token`-Bearer token for Cluster Agent requests
     CLUSTER_AGENT_AUTH_TOKEN = SalukiAnnotation {
         schema: &schema::CLUSTER_AGENT_AUTH_TOKEN,

@@ -539,10 +539,17 @@ pub struct ClusterAgent {
 /// Autoscaling failover, shared by checks, DogStatsD, and OTLP.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct AutoscalingFailover {
-    /// Whether autoscaling metrics failover is active.
+    /// Whether metrics designated for autoscaling failover are forwarded to the Cluster Agent.
+    ///
+    /// Defaults to `false`. Also needs `cluster_agent.enabled`, `cluster_agent.auth_token`, a resolvable Cluster Agent
+    /// endpoint, and a non-empty `metrics`; otherwise the branch is not built and primary forwarding continues.
     pub enabled: bool,
 
-    /// Metrics designated for failover.
+    /// Names of the metrics designated for autoscaling failover.
+    ///
+    /// Defaults to `container.memory.usage` and `container.cpu.usage`. An empty list turns the failover branch off even
+    /// when `enabled` is set, because there is nothing left to forward. Set this when autoscaling reads metrics other
+    /// than the two defaults.
     pub metrics: Vec<String>,
 }
 
