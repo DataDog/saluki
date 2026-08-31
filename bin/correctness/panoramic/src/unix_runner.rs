@@ -125,6 +125,20 @@ impl UnixIntegrationRunner {
 
         info!(test = %test_name, "Starting Unix integration test case.");
 
+        // Host-process runtimes have no container network, so there is nowhere for a sidecar to run.
+        if self.test_case.intake.enabled {
+            return make_error_result(
+                test_name,
+                started,
+                "validate_case",
+                saluki_error::generic_error!(
+                    "Intake sidecar is not supported on the '{}' runtime.",
+                    crate::config::MAC_RUNTIME
+                ),
+                phase_timings,
+            );
+        }
+
         // Phase: resolve binary path.
         let binary_path = match resolve_adp_binary_path() {
             Ok(p) => p,
@@ -374,6 +388,7 @@ impl UnixIntegrationRunner {
             is_host_process: true,
             host_process_exit_code: Some(exit_code_cell),
             docker_container_exit_code: None,
+            intake_host_port: None,
             core_agent_auth_token_path,
             adp_cli_command,
             core_agent_cli_command,

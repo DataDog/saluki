@@ -606,7 +606,7 @@ build-panoramic: ## Builds the panoramic binary (ADP integration test runner)
 	@cargo build --profile release --package panoramic
 
 .PHONY: test-integration
-test-integration: build-panoramic build-datadog-agent-image
+test-integration: build-panoramic build-datadog-agent-image build-correctness-tools-image
 test-integration: ## Runs all ADP integration tests
 	@echo "[*] Running ADP integration tests..."
 	@target/release/panoramic run -d $(shell pwd)/test/integration/cases $(if $(PANORAMIC_LOG_DIR),-l $(PANORAMIC_LOG_DIR))

@@ -1,0 +1,48 @@
+type: integration
+name: "dogstatsd-intake-metric"
+description: "Sends one UDP DogStatsD metric through Agent+ADP and asserts it reaches the mock intake"
+timeout: 180s
+# Docker only: the host-process runtime has no container network and so no intake sidecar.
+runtimes: [linux]
+
+intake:
+  enabled: true
+
+env:
+  DD_API_KEY: "00000000000000000000000000000000"
+  DD_HOSTNAME: "integration-test-intake-metric"
+  DD_DD_URL: "http://datadog-intake:2049"
+  DD_DATA_PLANE_ENABLED: "true"
+  DD_DATA_PLANE_STANDALONE_MODE: "false"
+  DD_DATA_PLANE_DOGSTATSD_ENABLED: "true"
+  DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+  DD_DOGSTATSD_ORIGIN_DETECTION: "false"
+
+container:
+  exposed_ports:
+    - "58125/udp"
+
+procedure:
+  # Readiness gate: nothing is sent until the DogStatsD listener is bound.
+  - assertion: port_listening
+    port: 58125
+    protocol: udp
+    timeout: 60s
+  - action: dogstatsd_send
+    payload: "integration.intake.counter:3|c|#source:integration-test"
+    port: 58125
+    timeout: 10s
+  # Polls to cover the aggregation and flush window rather than sleeping for it.
+  - assertion: intake_has_metric
+    name: "integration.intake.counter"
+    mtype: count
+    value: 3
+    tags: ["source:integration-test"]
+    timeout: 120s
+  - parallel:
+      - assertion: process_stable_for
+        duration: 5s
+      - assertion: log_not_contains
+        pattern: "panic|PANIC"
+        regex: true
+        during: 5s

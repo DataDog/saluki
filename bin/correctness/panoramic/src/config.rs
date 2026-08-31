@@ -114,6 +114,10 @@ pub struct IntegrationConfig {
     #[serde(default)]
     pub container: ContainerConfig,
 
+    /// Mock intake sidecar configuration. Optional; disabled by default.
+    #[serde(default)]
+    pub intake: IntakeConfig,
+
     /// Environment variables to set on the target process(es).
     ///
     /// Top-level (not under `container`) because both the linux and `mac` runtimes apply
@@ -196,6 +200,27 @@ pub fn default_host_runtime() -> &'static str {
         LINUX_RUNTIME
     }
 }
+
+/// Mock intake sidecar configuration for a test case.
+///
+/// When enabled, the runner starts a `datadog-intake` container in the test's isolation group,
+/// reachable from the target under a fixed network alias. Tests point the target's intake URL at
+/// that alias and assert on what the intake received.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct IntakeConfig {
+    /// Whether to start the intake sidecar.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// Container image providing the `datadog-intake` binary.
+pub const DEFAULT_INTAKE_IMAGE: &str = "saluki-images/correctness-tools:latest";
+
+/// Docker network alias under which the target reaches the intake sidecar.
+pub const INTAKE_NETWORK_ALIAS: &str = "datadog-intake";
+
+/// Container-side HTTP port of the intake sidecar.
+pub const INTAKE_HTTP_PORT: u16 = 2049;
 
 /// Container configuration for a test case.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -291,6 +316,17 @@ pub enum ActionConfig {
         #[serde(default)]
         output_contains: Option<String>,
         /// Timeout for waiting for the command to succeed.
+        #[serde(default = "default_action_timeout")]
+        timeout: HumanDuration,
+    },
+
+    /// Send one DogStatsD datagram over UDP to the target.
+    DogstatsdSend {
+        /// Datagram payload, in DogStatsD text protocol.
+        payload: String,
+        /// Container-side UDP port to send to. Must be exposed by the test case.
+        port: u16,
+        /// Timeout for the send.
         #[serde(default = "default_action_timeout")]
         timeout: HumanDuration,
     },
@@ -419,6 +455,33 @@ pub enum AssertionConfig {
         /// Timeout for waiting for the value to appear.
         timeout: HumanDuration,
     },
+
+    /// Poll the intake sidecar until it holds a metric matching the given criteria.
+    IntakeHasMetric {
+        /// Metric name. Matched exactly.
+        name: String,
+        /// Optional metric type the matching value must have.
+        #[serde(default)]
+        mtype: Option<MetricTypeMatcher>,
+        /// Optional numeric value the matching value must carry. Not applicable to sketches.
+        #[serde(default)]
+        value: Option<f64>,
+        /// Tags that must all be present on the matching metric. Extra tags are allowed.
+        #[serde(default)]
+        tags: Vec<String>,
+        /// Timeout for waiting for the metric to arrive.
+        timeout: HumanDuration,
+    },
+}
+
+/// Metric type accepted by an [`AssertionConfig::IntakeHasMetric`].
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricTypeMatcher {
+    Count,
+    Rate,
+    Gauge,
+    Sketch,
 }
 
 /// Which log streams to check.
@@ -481,6 +544,9 @@ impl ActionConfig {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
                 }
             }
+            ActionConfig::DogstatsdSend { payload, .. } => {
+                crate::dynamic_vars::resolve_placeholders(payload, vars);
+            }
             ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::resolve_placeholders(arg, vars);
@@ -526,6 +592,9 @@ impl ActionConfig {
                     crate::dynamic_vars::find_unresolved(arg, &mut out);
                 }
             }
+            ActionConfig::DogstatsdSend { payload, .. } => {
+                crate::dynamic_vars::find_unresolved(payload, &mut out);
+            }
             ActionConfig::TargetExec { command, .. } => {
                 for arg in command {
                     crate::dynamic_vars::find_unresolved(arg, &mut out);
@@ -559,6 +628,12 @@ impl AssertionConfig {
                 crate::dynamic_vars::resolve_placeholders(key, vars);
                 crate::dynamic_vars::resolve_placeholders(endpoint, vars);
             }
+            AssertionConfig::IntakeHasMetric { name, tags, .. } => {
+                crate::dynamic_vars::resolve_placeholders(name, vars);
+                for tag in tags {
+                    crate::dynamic_vars::resolve_placeholders(tag, vars);
+                }
+            }
             AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
     }
@@ -585,6 +660,12 @@ impl AssertionConfig {
             AssertionConfig::AdpConfigKeyEquals { key, endpoint, .. } => {
                 crate::dynamic_vars::find_unresolved(key, &mut out);
                 crate::dynamic_vars::find_unresolved(endpoint, &mut out);
+            }
+            AssertionConfig::IntakeHasMetric { name, tags, .. } => {
+                crate::dynamic_vars::find_unresolved(name, &mut out);
+                for tag in tags {
+                    crate::dynamic_vars::find_unresolved(tag, &mut out);
+                }
             }
             AssertionConfig::ProcessStableFor { .. } | AssertionConfig::AdpExitsWith { .. } => {}
         }
@@ -638,6 +719,9 @@ impl Test for IntegrationConfig {
         let mut m = BTreeMap::new();
         if let Some(image) = target_image_for_runtime(&self.active_runtime) {
             m.insert("container", image.to_string());
+        }
+        if self.intake.enabled {
+            m.insert("intake", DEFAULT_INTAKE_IMAGE.to_string());
         }
         m
     }
@@ -1279,6 +1363,66 @@ procedure: []
         assert_eq!(key, "prefix.resolved_key");
         assert_eq!(value, Value::String("resolved_val".to_string()));
         assert_eq!(endpoint, "http://agent/resolved_ep");
+    }
+
+    #[test]
+    fn integration_case_parses_intake_send_and_metric_steps() {
+        let yaml = r#"
+type: integration
+name: intake-case
+timeout: 60s
+intake:
+  enabled: true
+procedure:
+  - action: dogstatsd_send
+    payload: "example.counter:3|c"
+    port: 58125
+  - assertion: intake_has_metric
+    name: "example.counter"
+    mtype: count
+    value: 3
+    tags: ["source:integration-test"]
+    timeout: 30s
+"#;
+
+        let config: IntegrationConfig = serde_yaml::from_str(yaml).expect("case should parse");
+
+        assert!(config.intake.enabled);
+        let AssertionStep::Action(ActionConfig::DogstatsdSend { payload, port, .. }) = &config.procedure[0] else {
+            panic!("first step should parse as a dogstatsd_send action");
+        };
+        assert_eq!(payload, "example.counter:3|c");
+        assert_eq!(*port, 58125);
+        let AssertionStep::Single(AssertionConfig::IntakeHasMetric {
+            name,
+            mtype,
+            value,
+            tags,
+            ..
+        }) = &config.procedure[1]
+        else {
+            panic!("second step should parse as an intake_has_metric assertion");
+        };
+        assert_eq!(name, "example.counter");
+        assert_eq!(*mtype, Some(MetricTypeMatcher::Count));
+        assert_eq!(*value, Some(3.0));
+        assert_eq!(tags, &["source:integration-test".to_string()]);
+    }
+
+    #[test]
+    fn integration_case_without_intake_block_leaves_the_sidecar_disabled() {
+        let yaml = r#"
+type: integration
+name: no-intake-case
+timeout: 60s
+procedure:
+  - assertion: process_stable_for
+    duration: 5s
+"#;
+
+        let config: IntegrationConfig = serde_yaml::from_str(yaml).expect("case should parse");
+
+        assert!(!config.intake.enabled);
     }
 
     #[test]
