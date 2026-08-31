@@ -224,6 +224,8 @@ impl SourceBuilder for OtlpConfiguration {
         let http_tls_config = build_tls_config(&self.otlp.receiver.http.tls)?;
         let grpc_tls_config = build_tls_config(&self.otlp.receiver.grpc.tls)?;
         let metrics = build_metrics(context.component_context());
+        let translator_metrics =
+            metrics::telemetry::OtlpMetricsTranslatorMetrics::from_component_context(context.component_context());
 
         Ok(Box::new(Otlp {
             context_resolver,
@@ -240,6 +242,7 @@ impl SourceBuilder for OtlpConfiguration {
             http_tls_config,
             grpc_tls_config,
             metrics,
+            translator_metrics,
         }))
     }
 }
@@ -268,6 +271,7 @@ pub struct Otlp {
     http_tls_config: Option<OtlpTlsConfiguration>,
     grpc_tls_config: Option<OtlpTlsConfiguration>,
     metrics: Metrics, // Telemetry metrics, not DD native metrics.
+    translator_metrics: metrics::telemetry::OtlpMetricsTranslatorMetrics,
 }
 
 #[async_trait]
@@ -288,6 +292,7 @@ impl Source for Otlp {
             http_tls_config,
             grpc_tls_config,
             metrics,
+            translator_metrics,
         } = *self;
 
         let global_shutdown = context.take_shutdown_handle();
@@ -305,6 +310,7 @@ impl Source for Otlp {
             context_resolver,
             origin_tag_resolver.clone(),
             metric_tags,
+            translator_metrics,
         )?;
 
         // Build our gRPC and HTTP servers and spawn them.
@@ -472,6 +478,7 @@ async fn run_converter(
                                         });
                                         if let Err(e) = dispatcher.push(event).await {
                                             error!(error = %e, "Failed to dispatch metric event.");
+                                            metrics.metrics_errors_dispatch().increment(1);
                                         }
                                     }
                                 }
@@ -529,6 +536,7 @@ async fn run_converter(
                 if let Some(dispatcher) = metrics_dispatcher.take() {
                     if let Err(e) = dispatcher.flush().await {
                         error!(error = %e, "Failed to flush metric events.");
+                        metrics.metrics_errors_flush().increment(1);
                     }
                 }
                 if let Some(dispatcher) = logs_dispatcher.take() {
@@ -552,6 +560,7 @@ async fn run_converter(
     if let Some(dispatcher) = metrics_dispatcher.take() {
         if let Err(e) = dispatcher.flush().await {
             error!(error = %e, "Failed to flush metric events.");
+            metrics.metrics_errors_flush().increment(1);
         }
     }
     if let Some(dispatcher) = logs_dispatcher.take() {
