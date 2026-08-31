@@ -29,6 +29,9 @@ type Projection<T> = Arc<dyn for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send
 ///
 /// On the same clone, `refresh` and `changed` both advance the snapshot. After `refresh` observes a
 /// value, `changed` does not return that value unless the source first changes to something else.
+/// In other words, do not mix usage of the `refresh()` (pull API) with `changed()` (event API) on
+/// the same clone.
+// TODO: can refresh and changed on the same clone be made safe?
 pub struct Live<T> {
     inner: Inner<T>,
 }
