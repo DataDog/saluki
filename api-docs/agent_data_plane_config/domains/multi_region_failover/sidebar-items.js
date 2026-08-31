@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["Domain"]};
+window.SIDEBAR_ITEMS = {"struct":["Domain","MetricMirroring"]};

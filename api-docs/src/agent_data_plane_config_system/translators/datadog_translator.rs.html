@@ -958,11 +958,11 @@
 <a href=#958 id=958 data-nosnippet>958</a>    }
 <a href=#959 id=959 data-nosnippet>959</a>
 <a href=#960 id=960 data-nosnippet>960</a>    <span class="kw">fn </span>consume_multi_region_failover_failover_metrics(<span class="kw-2">&amp;mut </span><span class="self">self</span>, value: bool) {
-<a href=#961 id=961 data-nosnippet>961</a>        <span class="self">self</span>.config.domains.multi_region_failover.failover_metrics = value;
+<a href=#961 id=961 data-nosnippet>961</a>        <span class="self">self</span>.config.domains.multi_region_failover.metric_mirroring.enabled = value;
 <a href=#962 id=962 data-nosnippet>962</a>    }
 <a href=#963 id=963 data-nosnippet>963</a>
 <a href=#964 id=964 data-nosnippet>964</a>    <span class="kw">fn </span>consume_multi_region_failover_metric_allowlist(<span class="kw-2">&amp;mut </span><span class="self">self</span>, value: Vec&lt;String&gt;) {
-<a href=#965 id=965 data-nosnippet>965</a>        <span class="self">self</span>.config.domains.multi_region_failover.metric_allowlist = value;
+<a href=#965 id=965 data-nosnippet>965</a>        <span class="self">self</span>.config.domains.multi_region_failover.metric_mirroring.allowlist = value;
 <a href=#966 id=966 data-nosnippet>966</a>    }
 <a href=#967 id=967 data-nosnippet>967</a>
 <a href=#968 id=968 data-nosnippet>968</a>    <span class="kw">fn </span>consume_multi_region_failover_site(<span class="kw-2">&amp;mut </span><span class="self">self</span>, value: String) {
