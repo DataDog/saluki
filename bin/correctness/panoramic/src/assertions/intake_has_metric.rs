@@ -12,7 +12,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// Assertion that polls the intake sidecar for a metric matching the configured criteria.
 pub struct IntakeHasMetricAssertion {
     name: String,
-    mtype: Option<MetricTypeMatcher>,
+    metric_type: Option<MetricTypeMatcher>,
     value: Option<f64>,
     tags: Vec<String>,
     timeout: Duration,
@@ -20,11 +20,11 @@ pub struct IntakeHasMetricAssertion {
 
 impl IntakeHasMetricAssertion {
     pub fn new(
-        name: String, mtype: Option<MetricTypeMatcher>, value: Option<f64>, tags: Vec<String>, timeout: Duration,
+        name: String, metric_type: Option<MetricTypeMatcher>, value: Option<f64>, tags: Vec<String>, timeout: Duration,
     ) -> Self {
         Self {
             name,
-            mtype,
+            metric_type,
             value,
             tags,
             timeout,
@@ -42,7 +42,7 @@ impl IntakeHasMetricAssertion {
             return false;
         }
 
-        if self.mtype.is_none() && self.value.is_none() {
+        if self.metric_type.is_none() && self.value.is_none() {
             return true;
         }
 
@@ -52,14 +52,14 @@ impl IntakeHasMetricAssertion {
     }
 
     fn value_matches(&self, observed: &MetricValue) -> bool {
-        if let Some(mtype) = self.mtype {
+        if let Some(metric_type) = self.metric_type {
             let observed_type = match observed {
                 MetricValue::Count { .. } => MetricTypeMatcher::Count,
                 MetricValue::Rate { .. } => MetricTypeMatcher::Rate,
                 MetricValue::Gauge { .. } => MetricTypeMatcher::Gauge,
                 MetricValue::Sketch { .. } => MetricTypeMatcher::Sketch,
             };
-            if observed_type != mtype {
+            if observed_type != metric_type {
                 return false;
             }
         }
@@ -110,8 +110,8 @@ impl IntakeHasMetricAssertion {
 
     fn criteria(&self) -> String {
         let mut parts = vec![format!("name={}", self.name)];
-        if let Some(mtype) = self.mtype {
-            parts.push(format!("mtype={:?}", mtype).to_lowercase());
+        if let Some(metric_type) = self.metric_type {
+            parts.push(format!("metric_type={:?}", metric_type).to_lowercase());
         }
         if let Some(value) = self.value {
             parts.push(format!("value={}", value));
@@ -223,23 +223,32 @@ mod tests {
     use crate::config::MetricTypeMatcher;
 
     fn metric(name: &str, tags: &[&str], value: MetricValue) -> Metric {
+        metric_with_values(name, tags, &[value])
+    }
+
+    fn metric_with_values(name: &str, tags: &[&str], values: &[MetricValue]) -> Metric {
+        let values = values
+            .iter()
+            .enumerate()
+            .map(|(idx, value)| serde_json::json!([idx as u64, value]))
+            .collect::<Vec<_>>();
         let json = serde_json::json!({
             "context": {
                 "name": name,
                 "tags": tags,
             },
-            "values": [[1_u64, value]],
+            "values": values,
         });
 
         serde_json::from_value(json).expect("metric should deserialize")
     }
 
     fn assertion(
-        name: &str, mtype: Option<MetricTypeMatcher>, value: Option<f64>, tags: &[&str],
+        name: &str, metric_type: Option<MetricTypeMatcher>, value: Option<f64>, tags: &[&str],
     ) -> IntakeHasMetricAssertion {
         IntakeHasMetricAssertion::new(
             name.to_string(),
-            mtype,
+            metric_type,
             value,
             tags.iter().map(|t| t.to_string()).collect(),
             Duration::from_secs(1),
@@ -300,6 +309,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_intake_port_fails_immediately() {
+        let mut ctx = context(CancellationToken::new(), CancellationToken::new());
+        ctx.intake_host_port = None;
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            polling_assertion(Duration::from_secs(600)).check(&ctx),
+        )
+        .await
+        .expect("assertion should return without polling when the test has no intake sidecar");
+
+        assert!(!result.passed, "unexpected assertion pass: {}", result.message);
+        assert!(
+            result.message.contains("intake.enabled"),
+            "unexpected message: {}",
+            result.message
+        );
+    }
+
+    #[tokio::test]
     async fn cancellation_and_timeout_are_reported_distinctly() {
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
@@ -341,6 +370,22 @@ mod tests {
         assert!(assertion("some.counter", Some(MetricTypeMatcher::Count), Some(3.0), &[]).matches(&observed));
         assert!(!assertion("some.counter", Some(MetricTypeMatcher::Gauge), Some(3.0), &[]).matches(&observed));
         assert!(!assertion("some.counter", Some(MetricTypeMatcher::Count), Some(4.0), &[]).matches(&observed));
+    }
+
+    #[test]
+    fn metric_type_and_value_must_hold_for_the_same_value_entry() {
+        let observed = metric_with_values(
+            "some.counter",
+            &[],
+            &[MetricValue::Count { value: 3.0 }, MetricValue::Gauge { value: 7.0 }],
+        );
+
+        assert!(assertion("some.counter", Some(MetricTypeMatcher::Count), Some(3.0), &[]).matches(&observed));
+        assert!(assertion("some.counter", Some(MetricTypeMatcher::Gauge), Some(7.0), &[]).matches(&observed));
+
+        // Each criterion holds for one entry, but no single entry satisfies both.
+        assert!(!assertion("some.counter", Some(MetricTypeMatcher::Count), Some(7.0), &[]).matches(&observed));
+        assert!(!assertion("some.counter", Some(MetricTypeMatcher::Gauge), Some(3.0), &[]).matches(&observed));
     }
 
     #[test]

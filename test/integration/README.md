@@ -349,12 +349,12 @@ The assertion accepts only `https://localhost:55101` or `https://127.0.0.1:55101
 
 Polls the mock intake sidecar until it holds a metric matching every criterion given, or until `timeout` elapses. Requires `intake.enabled: true` on the test case. Polling, rather than a single check, absorbs the target's aggregation and flush window without a fixed sleep.
 
-Only `name` is required, and it must match exactly. `mtype` (`count`, `rate`, `gauge`, or `sketch`) and `value` must both hold for the same metric value. `tags` is a subset requirement: every listed tag must be present, and additional tags, such as the environment-derived ones the Agent adds, are allowed.
+Only `name` is required, and it must match exactly. `metric_type` (`count`, `rate`, `gauge`, or `sketch`) and `value` must both hold for the same metric value. `tags` is a subset requirement: every listed tag must be present, and additional tags, such as the environment-derived ones the Agent adds, are allowed.
 
 ```yaml
 - assertion: intake_has_metric
   name: "example.counter"
-  mtype: count
+  metric_type: count
   value: 3
   tags: ["source:integration-test"]
   timeout: 120s

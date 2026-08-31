@@ -462,7 +462,7 @@ pub enum AssertionConfig {
         name: String,
         /// Optional metric type the matching value must have.
         #[serde(default)]
-        mtype: Option<MetricTypeMatcher>,
+        metric_type: Option<MetricTypeMatcher>,
         /// Optional numeric value the matching value must carry. Not applicable to sketches.
         #[serde(default)]
         value: Option<f64>,
@@ -1379,7 +1379,7 @@ procedure:
     port: 58125
   - assertion: intake_has_metric
     name: "example.counter"
-    mtype: count
+    metric_type: count
     value: 3
     tags: ["source:integration-test"]
     timeout: 30s
@@ -1395,7 +1395,7 @@ procedure:
         assert_eq!(*port, 58125);
         let AssertionStep::Single(AssertionConfig::IntakeHasMetric {
             name,
-            mtype,
+            metric_type,
             value,
             tags,
             ..
@@ -1404,7 +1404,7 @@ procedure:
             panic!("second step should parse as an intake_has_metric assertion");
         };
         assert_eq!(name, "example.counter");
-        assert_eq!(*mtype, Some(MetricTypeMatcher::Count));
+        assert_eq!(*metric_type, Some(MetricTypeMatcher::Count));
         assert_eq!(*value, Some(3.0));
         assert_eq!(tags, &["source:integration-test".to_string()]);
     }

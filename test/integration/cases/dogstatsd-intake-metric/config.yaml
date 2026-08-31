@@ -38,7 +38,7 @@ procedure:
   # payload count divided by the aggregation window (10s by default).
   - assertion: intake_has_metric
     name: "integration.intake.counter"
-    mtype: rate
+    metric_type: rate
     value: 0.3
     tags: ["source:integration-test"]
     timeout: 120s
