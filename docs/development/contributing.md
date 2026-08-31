@@ -44,6 +44,27 @@ tested in other ways... then the overhead to add an additional test is low, and 
 Depending on the complexity of the change, we may insist that tests be included, even if it means adding additional
 abstractions. Reviewers will help guide you on this during the review process.
 
+### Release notes
+
+Every pull request records whether it has customer-visible release information. When it does, add a Reno note. When it does not, ask a maintainer to apply the `changelog/no-changelog` label. The release-note check requires one of these choices before the pull request can merge.
+
+Notes are self-contained and describe behavior for someone operating Agent Data Plane.
+
+```shell
+make ensure-python-venv
+.venv/bin/reno new describe-the-change --edit
+```
+
+Keep the applicable section and remove unused template sections. For example:
+
+```yaml
+fixes:
+  - |
+    Fix a listener shutdown race that could drop telemetry during process exit.
+```
+
+Validate notes locally with `make check-release-notes`.
+
 ### Commit messages
 
 Please don't be this person: `git commit -m "Fixed stuff"`. Take a moment to write meaningful commit messages.

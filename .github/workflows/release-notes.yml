@@ -1,0 +1,103 @@
+name: Release notes
+
+on:
+  pull_request:
+    paths:
+      - releasenotes/**
+      - ci/tooling/release_notes.py
+      - ci/tooling/test_release_notes.py
+      - requirements.txt
+      - Makefile
+      - .github/workflows/release-notes.yml
+      - .github/chainguard/self.release-notes.*.sts.yaml
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published X.Y.Z release tag to repair
+        required: true
+        type: string
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+      - run: python -m pip install --requirement requirements.txt
+      - run: make test-release-notes && make check-release-notes && reno lint
+
+  publish:
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
+        id: octo-sts
+        with:
+          scope: DataDog/saluki
+          policy: ${{ github.event_name == 'release' && 'self.release-notes.publish' || 'self.release-notes.repair' }}
+      - name: Checkout release-note tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          token: ${{ steps.octo-sts.outputs.token }}
+      - name: Checkout release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          token: ${{ steps.octo-sts.outputs.token }}
+          fetch-depth: 0
+          path: release-tag
+      - run: sudo apt-get update && sudo apt-get install --yes pandoc && python -m pip install --requirement requirements.txt
+      - id: release
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.octo-sts.outputs.token }}
+          script: |
+            const fs = require('fs');
+            let release;
+
+            if (context.eventName === 'release') {
+              release = context.payload.release;
+            } else {
+              release = (
+                await github.rest.repos.getReleaseByTag({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tag: process.env.RELEASE_TAG,
+                })
+              ).data;
+            }
+
+            fs.writeFileSync(`${process.env.RUNNER_TEMP}/release-body.md`, release.body ?? '');
+            core.setOutput('id', release.id);
+      - id: notes
+        run: |
+          python ci/tooling/release_notes.py render --repository release-tag --version "$RELEASE_TAG" --output "$RUNNER_TEMP/notes.md"
+          python ci/tooling/release_notes.py merge --notes-file "$RUNNER_TEMP/notes.md" --release-body-file "$RUNNER_TEMP/release-body.md" --output "$RUNNER_TEMP/updated-release-body.md"
+      - if: steps.notes.outputs.has_notes == 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ steps.octo-sts.outputs.token }}
+          script: |
+            const fs = require('fs');
+
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: Number('${{ steps.release.outputs.id }}'),
+              body: fs.readFileSync(`${process.env.RUNNER_TEMP}/updated-release-body.md`, 'utf8'),
+            });

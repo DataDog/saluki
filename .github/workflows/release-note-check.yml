@@ -1,0 +1,36 @@
+name: Release note check
+
+on:
+  pull_request:
+    branches:
+      - main
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  release-note-check:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const labels = context.payload.pull_request.labels.map((label) => label.name);
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const hasReleaseNote = files.some(
+              (file) => file.filename.startsWith('releasenotes/notes/') && file.status !== 'removed',
+            );
+
+            if (hasReleaseNote || labels.includes('changelog/no-changelog')) {
+              return;
+            }
+
+            core.setFailed(
+              'Add a release-note fragment under releasenotes/notes/ or apply the changelog/no-changelog label.',
+            );

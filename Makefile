@@ -923,6 +923,19 @@ VENV_PYTHON := $(VENV_DIR)/bin/python
 PYTHON_REQUIREMENTS := requirements.txt
 PYTHON = $(if $(wildcard $(VENV_PYTHON)),$(VENV_PYTHON),python3)
 
+.PHONY: test-release-notes
+test-release-notes: ## Runs unit tests for release-note tooling
+	@$(PYTHON) -m unittest ci/tooling/test_release_notes.py -v
+
+.PHONY: check-release-notes
+check-release-notes: ## Validates committed Reno release-note files
+	@$(PYTHON) ci/tooling/release_notes.py check $$(find releasenotes/notes -type f -name '*.yaml' 2>/dev/null)
+
+.PHONY: render-release-notes
+render-release-notes: ## Renders VERSION=X.Y.Z Reno notes as GitHub-flavored Markdown
+	@test -n "$(VERSION)" || { echo "Set VERSION=X.Y.Z" >&2; exit 2; }
+	@$(PYTHON) ci/tooling/release_notes.py render --version "$(VERSION)" --output -
+
 .PHONY: ensure-python-venv
 ensure-python-venv: ## Creates the virtualenv that Python tooling prefers, or updates an existing one
 	@echo "[*] Installing Python tooling dependencies into $(VENV_DIR)..."

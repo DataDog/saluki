@@ -10,3 +10,4 @@
 # with the change under review.
 Jinja2==3.1.6
 PyYAML==6.0.3
+reno==4.1.0
