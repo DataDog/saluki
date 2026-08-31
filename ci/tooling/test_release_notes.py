@@ -258,7 +258,10 @@ class ReleaseWorkflowContractTest(unittest.TestCase):
         workflow_path = MODULE_PATH.parents[2] / ".github/workflows/release-notes.yml"
         workflow = yaml.load(workflow_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
 
-        self.assertIn("releasenotes/**", workflow["on"]["pull_request"]["paths"])
+        validation_paths = workflow["on"]["pull_request"]["paths"]
+        self.assertIn("releasenotes/**", validation_paths)
+        self.assertIn(".github/workflows/release-notes.yml", validation_paths)
+        self.assertIn(".github/chainguard/self.release-notes.*.sts.yaml", validation_paths)
         self.assertEqual(workflow["on"]["release"]["types"], ["published"])
         self.assertEqual(workflow["on"]["workflow_dispatch"]["inputs"]["tag"]["required"], "true")
         validate = workflow["jobs"]["validate"]
