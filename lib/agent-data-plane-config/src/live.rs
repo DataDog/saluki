@@ -24,8 +24,11 @@ type Projection<T> = Arc<dyn for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send
 /// - `changed` waits for a projected value that differs from the snapshot, then updates it.
 /// - `refresh` updates the snapshot from the shared configuration synchronously.
 ///
-/// A `Live<T>` therefore tracks one consumer's progress through the updates. Separate consumers
-/// **SHOULD** hold separate clones, so that one consumer's reads do not move the other's snapshot.
+/// A `Live<T>` therefore tracks one consumer's progress through the updates. Each clone owns its
+/// snapshot and notification cursor, so `refresh` on one clone cannot suppress `changed` on another.
+///
+/// On the same clone, `refresh` and `changed` both advance the snapshot. After `refresh` observes a
+/// value, `changed` does not return that value unless the source first changes to something else.
 pub struct Live<T> {
     inner: Inner<T>,
 }
