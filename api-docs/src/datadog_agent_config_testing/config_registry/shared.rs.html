@@ -5,42 +5,42 @@
 <a href=#5 id=5 data-nosnippet>5</a></span><span class="kw">use </span>super::<span class="kw-2">*</span>;
 <a href=#6 id=6 data-nosnippet>6</a>
 <a href=#7 id=7 data-nosnippet>7</a><span class="macro">crate::declare_annotations!</span> {
-<a href=#8 id=8 data-nosnippet>8</a>    <span class="doccomment">/// `cluster_name`-EKS Fargate cluster name static tag
-<a href=#9 id=9 data-nosnippet>9</a>    </span>CLUSTER_NAME = SalukiAnnotation {
-<a href=#10 id=10 data-nosnippet>10</a>        schema: <span class="kw-2">&amp;</span>schema::CLUSTER_NAME,
+<a href=#8 id=8 data-nosnippet>8</a>    <span class="doccomment">/// `autoscaling.failover.enabled`-Enable autoscaling failover metric routing
+<a href=#9 id=9 data-nosnippet>9</a>    </span>AUTOSCALING_FAILOVER_ENABLED = SalukiAnnotation {
+<a href=#10 id=10 data-nosnippet>10</a>        schema: <span class="kw-2">&amp;</span>schema::AUTOSCALING_FAILOVER_ENABLED,
 <a href=#11 id=11 data-nosnippet>11</a>        support_level: SupportLevel::Full,
 <a href=#12 id=12 data-nosnippet>12</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#13 id=13 data-nosnippet>13</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#14 id=14 data-nosnippet>14</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
 <a href=#15 id=15 data-nosnippet>15</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#16 id=16 data-nosnippet>16</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#17 id=17 data-nosnippet>17</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Otlp]),
+<a href=#16 id=16 data-nosnippet>16</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">"true"</span>),
+<a href=#17 id=17 data-nosnippet>17</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
 <a href=#18 id=18 data-nosnippet>18</a>    };
-<a href=#19 id=19 data-nosnippet>19</a>    <span class="doccomment">/// `eks_fargate`-Enable EKS Fargate static tags
-<a href=#20 id=20 data-nosnippet>20</a>    </span>EKS_FARGATE = SalukiAnnotation {
-<a href=#21 id=21 data-nosnippet>21</a>        schema: <span class="kw-2">&amp;</span>schema::EKS_FARGATE,
+<a href=#19 id=19 data-nosnippet>19</a>    <span class="doccomment">/// `autoscaling.failover.metrics`-Metric names forwarded to DCA for failover
+<a href=#20 id=20 data-nosnippet>20</a>    </span>AUTOSCALING_FAILOVER_METRICS = SalukiAnnotation {
+<a href=#21 id=21 data-nosnippet>21</a>        schema: <span class="kw-2">&amp;</span>schema::AUTOSCALING_FAILOVER_METRICS,
 <a href=#22 id=22 data-nosnippet>22</a>        support_level: SupportLevel::Full,
 <a href=#23 id=23 data-nosnippet>23</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#24 id=24 data-nosnippet>24</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#25 id=25 data-nosnippet>25</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
 <a href=#26 id=26 data-nosnippet>26</a>        value_type_override: <span class="prelude-val">None</span>,
-<a href=#27 id=27 data-nosnippet>27</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#28 id=28 data-nosnippet>28</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Otlp]),
+<a href=#27 id=27 data-nosnippet>27</a>        test_json: <span class="prelude-val">Some</span>(<span class="string">r#"["container.memory.usage"]"#</span>),
+<a href=#28 id=28 data-nosnippet>28</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::Checks, Pipeline::DogStatsD, Pipeline::Otlp]),
 <a href=#29 id=29 data-nosnippet>29</a>    };
-<a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// `expected_tags_duration`-How long startup host tags are attached
-<a href=#31 id=31 data-nosnippet>31</a>    </span>EXPECTED_TAGS_DURATION = SalukiAnnotation {
-<a href=#32 id=32 data-nosnippet>32</a>        schema: <span class="kw-2">&amp;</span>schema::EXPECTED_TAGS_DURATION,
+<a href=#30 id=30 data-nosnippet>30</a>    <span class="doccomment">/// `cluster_name`-EKS Fargate cluster name static tag
+<a href=#31 id=31 data-nosnippet>31</a>    </span>CLUSTER_NAME = SalukiAnnotation {
+<a href=#32 id=32 data-nosnippet>32</a>        schema: <span class="kw-2">&amp;</span>schema::CLUSTER_NAME,
 <a href=#33 id=33 data-nosnippet>33</a>        support_level: SupportLevel::Full,
 <a href=#34 id=34 data-nosnippet>34</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#35 id=35 data-nosnippet>35</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#36 id=36 data-nosnippet>36</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
 <a href=#37 id=37 data-nosnippet>37</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#38 id=38 data-nosnippet>38</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#39 id=39 data-nosnippet>39</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#39 id=39 data-nosnippet>39</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Otlp]),
 <a href=#40 id=40 data-nosnippet>40</a>    };
-<a href=#41 id=41 data-nosnippet>41</a>    <span class="doccomment">/// `kubernetes_kubelet_nodename`-Kubernetes node name for EKS Fargate static tags
-<a href=#42 id=42 data-nosnippet>42</a>    </span>KUBERNETES_KUBELET_NODENAME = SalukiAnnotation {
-<a href=#43 id=43 data-nosnippet>43</a>        schema: <span class="kw-2">&amp;</span>schema::KUBERNETES_KUBELET_NODENAME,
+<a href=#41 id=41 data-nosnippet>41</a>    <span class="doccomment">/// `eks_fargate`-Enable EKS Fargate static tags
+<a href=#42 id=42 data-nosnippet>42</a>    </span>EKS_FARGATE = SalukiAnnotation {
+<a href=#43 id=43 data-nosnippet>43</a>        schema: <span class="kw-2">&amp;</span>schema::EKS_FARGATE,
 <a href=#44 id=44 data-nosnippet>44</a>        support_level: SupportLevel::Full,
 <a href=#45 id=45 data-nosnippet>45</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#46 id=46 data-nosnippet>46</a>        env_var_override: <span class="prelude-val">None</span>,
@@ -49,27 +49,49 @@
 <a href=#49 id=49 data-nosnippet>49</a>        test_json: <span class="prelude-val">None</span>,
 <a href=#50 id=50 data-nosnippet>50</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Otlp]),
 <a href=#51 id=51 data-nosnippet>51</a>    };
-<a href=#52 id=52 data-nosnippet>52</a>    <span class="doccomment">/// `provider_kind`-Provider kind static tag
-<a href=#53 id=53 data-nosnippet>53</a>    </span>PROVIDER_KIND = SalukiAnnotation {
-<a href=#54 id=54 data-nosnippet>54</a>        schema: <span class="kw-2">&amp;</span>schema::PROVIDER_KIND,
+<a href=#52 id=52 data-nosnippet>52</a>    <span class="doccomment">/// `expected_tags_duration`-How long startup host tags are attached
+<a href=#53 id=53 data-nosnippet>53</a>    </span>EXPECTED_TAGS_DURATION = SalukiAnnotation {
+<a href=#54 id=54 data-nosnippet>54</a>        schema: <span class="kw-2">&amp;</span>schema::EXPECTED_TAGS_DURATION,
 <a href=#55 id=55 data-nosnippet>55</a>        support_level: SupportLevel::Full,
 <a href=#56 id=56 data-nosnippet>56</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
-<a href=#57 id=57 data-nosnippet>57</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_PROVIDER_KIND"</span>]),
+<a href=#57 id=57 data-nosnippet>57</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#58 id=58 data-nosnippet>58</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
 <a href=#59 id=59 data-nosnippet>59</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#60 id=60 data-nosnippet>60</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#61 id=61 data-nosnippet>61</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Otlp]),
+<a href=#61 id=61 data-nosnippet>61</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
 <a href=#62 id=62 data-nosnippet>62</a>    };
-<a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// `run_path`-Runtime state directory
-<a href=#64 id=64 data-nosnippet>64</a>    </span>RUN_PATH = SalukiAnnotation {
-<a href=#65 id=65 data-nosnippet>65</a>        schema: <span class="kw-2">&amp;</span>schema::RUN_PATH,
+<a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// `kubernetes_kubelet_nodename`-Kubernetes node name for EKS Fargate static tags
+<a href=#64 id=64 data-nosnippet>64</a>    </span>KUBERNETES_KUBELET_NODENAME = SalukiAnnotation {
+<a href=#65 id=65 data-nosnippet>65</a>        schema: <span class="kw-2">&amp;</span>schema::KUBERNETES_KUBELET_NODENAME,
 <a href=#66 id=66 data-nosnippet>66</a>        support_level: SupportLevel::Full,
 <a href=#67 id=67 data-nosnippet>67</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
 <a href=#68 id=68 data-nosnippet>68</a>        env_var_override: <span class="prelude-val">None</span>,
 <a href=#69 id=69 data-nosnippet>69</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
 <a href=#70 id=70 data-nosnippet>70</a>        value_type_override: <span class="prelude-val">None</span>,
 <a href=#71 id=71 data-nosnippet>71</a>        test_json: <span class="prelude-val">None</span>,
-<a href=#72 id=72 data-nosnippet>72</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#72 id=72 data-nosnippet>72</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Otlp]),
 <a href=#73 id=73 data-nosnippet>73</a>    };
-<a href=#74 id=74 data-nosnippet>74</a>}
+<a href=#74 id=74 data-nosnippet>74</a>    <span class="doccomment">/// `provider_kind`-Provider kind static tag
+<a href=#75 id=75 data-nosnippet>75</a>    </span>PROVIDER_KIND = SalukiAnnotation {
+<a href=#76 id=76 data-nosnippet>76</a>        schema: <span class="kw-2">&amp;</span>schema::PROVIDER_KIND,
+<a href=#77 id=77 data-nosnippet>77</a>        support_level: SupportLevel::Full,
+<a href=#78 id=78 data-nosnippet>78</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#79 id=79 data-nosnippet>79</a>        env_var_override: <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>[<span class="string">"DD_PROVIDER_KIND"</span>]),
+<a href=#80 id=80 data-nosnippet>80</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#81 id=81 data-nosnippet>81</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#82 id=82 data-nosnippet>82</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#83 id=83 data-nosnippet>83</a>        pipeline_affinity: PipelineAffinity::Pipelines(<span class="kw-2">&amp;</span>[Pipeline::DogStatsD, Pipeline::Otlp]),
+<a href=#84 id=84 data-nosnippet>84</a>    };
+<a href=#85 id=85 data-nosnippet>85</a>    <span class="doccomment">/// `run_path`-Runtime state directory
+<a href=#86 id=86 data-nosnippet>86</a>    </span>RUN_PATH = SalukiAnnotation {
+<a href=#87 id=87 data-nosnippet>87</a>        schema: <span class="kw-2">&amp;</span>schema::RUN_PATH,
+<a href=#88 id=88 data-nosnippet>88</a>        support_level: SupportLevel::Full,
+<a href=#89 id=89 data-nosnippet>89</a>        additional_yaml_paths: <span class="kw-2">&amp;</span>[],
+<a href=#90 id=90 data-nosnippet>90</a>        env_var_override: <span class="prelude-val">None</span>,
+<a href=#91 id=91 data-nosnippet>91</a>        used_by: <span class="kw-2">&amp;</span>[structs::TYPED_CONFIG_SYSTEM],
+<a href=#92 id=92 data-nosnippet>92</a>        value_type_override: <span class="prelude-val">None</span>,
+<a href=#93 id=93 data-nosnippet>93</a>        test_json: <span class="prelude-val">None</span>,
+<a href=#94 id=94 data-nosnippet>94</a>        pipeline_affinity: PipelineAffinity::CrossCutting,
+<a href=#95 id=95 data-nosnippet>95</a>    };
+<a href=#96 id=96 data-nosnippet>96</a>}
 </code></pre></div></section></main></body></html>
