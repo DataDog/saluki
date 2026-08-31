@@ -179,6 +179,7 @@ pub struct HttpServer {
     http2_only: bool,
     graceful_shutdown_timeout: Option<Duration>,
     server_id: Option<MetaString>,
+    name: MetaString,
     http_routes: Router,
     grpc_routes: Option<Routes>,
     router_override: Option<Router>,
@@ -194,6 +195,7 @@ impl HttpServer {
             http2_only: false,
             graceful_shutdown_timeout: None,
             server_id: None,
+            name: MetaString::from_static(DEFAULT_SERVER_NAME),
             http_routes: Router::new(),
             grpc_routes: None,
             router_override: None,
@@ -275,9 +277,18 @@ impl HttpServer {
 
     /// Sets the server identifier to use when asserting any facts for this server.
     ///
-    /// If no identifier is set, no assertions will be made at runtime.
+    /// The identifier also distinguishes this server from any other running under the same supervisor: it becomes part
+    /// of the name the server reports, so that logs and per-worker task metrics can be attributed to a specific
+    /// endpoint. Set it on any server that shares a supervisor with another, even when nothing consumes the
+    /// assertions.
+    ///
+    /// If no identifier is set, no assertions will be made at runtime, and the server reports a bare
+    /// `http_server`.
     pub fn with_server_id(mut self, id: impl Into<MetaString>) -> Self {
-        self.server_id = Some(id.into());
+        let id = id.into();
+
+        self.name = MetaString::from(format!("{}_{}", DEFAULT_SERVER_NAME, id));
+        self.server_id = Some(id);
         self
     }
 
@@ -313,7 +324,7 @@ impl HttpServer {
 #[async_trait]
 impl Supervisable for HttpServer {
     fn name(&self) -> &str {
-        "http_server"
+        &self.name
     }
 
     fn shutdown_strategy(&self) -> ShutdownStrategy {
@@ -774,6 +785,9 @@ fn build_conn_builder(http2_config: Http2Config, http2_only: bool) -> Builder<To
     builder
 }
 
+/// Name a server reports when it has no identifier of its own.
+const DEFAULT_SERVER_NAME: &str = "http_server";
+
 fn get_bound_address_id(server_id: &str) -> Identifier {
     Identifier::from(format!("http-server-{}", server_id))
 }
@@ -902,6 +916,20 @@ mod tests {
 
         let unmatched_http = route_request(router, "/nowhere", None).await;
         assert_eq!(unmatched_http.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn the_server_name_reflects_the_server_id() {
+        // Two servers sharing a supervisor have to be tellable apart in logs and per-worker task metrics. That is what
+        // the identifier buys beyond namespacing assertions, and why an endpoint sets one even when nothing consumes
+        // the assertions it enables.
+        let unnamed = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0));
+        assert_eq!(unnamed.name(), DEFAULT_SERVER_NAME);
+
+        let grpc = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0)).with_server_id("otlp-grpc");
+        let http = HttpServer::from_listen_address(ListenAddress::tcp_loopback(0)).with_server_id("otlp-http");
+        assert_eq!(grpc.name(), "http_server_otlp-grpc");
+        assert_eq!(http.name(), "http_server_otlp-http");
     }
 
     #[tokio::test]

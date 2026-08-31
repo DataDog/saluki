@@ -221,7 +221,7 @@ impl Listener {
                 listener
             }
             #[cfg(not(unix))]
-            ListenAddress::Unixgram(_, _) | ListenAddress::Unix(_, _) => {
+            ListenAddress::Unixgram(_) | ListenAddress::Unix(_) => {
                 return Err(ListenerError::InvalidConfiguration {
                     reason: "Unix listen addresses are not supported on this platform",
                 });
@@ -466,12 +466,17 @@ where
     Ok(())
 }
 
-fn bind_udp_socket(addr: SocketAddr, reuse_port: bool) -> io::Result<TokioUdpSocket> {
+fn bind_udp_socket(addr: SocketAddr, _allow_multi_bind: bool) -> io::Result<TokioUdpSocket> {
     use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 
     let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    socket.set_reuse_port(reuse_port)?;
+
+    #[cfg(target_os = "linux")]
+    if _allow_multi_bind {
+        socket.set_reuse_address(true)?;
+        socket.set_reuse_port(true)?;
+    }
+
     socket.set_nonblocking(true)?;
     socket.bind(&SockAddr::from(addr))?;
     let std_socket: std::net::UdpSocket = socket.into();

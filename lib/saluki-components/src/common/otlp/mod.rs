@@ -230,6 +230,12 @@ impl OtlpTlsConfiguration {
 /// The default HTTP request body size limit (20 MiB) applied when `max_request_body_size` is `0`.
 const HTTP_DEFAULT_MAX_REQUEST_BODY_SIZE: usize = 20 * 1024 * 1024;
 
+/// Server identifier of the OTLP HTTP endpoint.
+const HTTP_SERVER_ID: &str = "otlp-http";
+
+/// Server identifier of the OTLP gRPC endpoint.
+const GRPC_SERVER_ID: &str = "otlp-grpc";
+
 /// OTLP server configuration.
 ///
 /// Holds the raw inputs needed to construct and start the OTLP HTTP and gRPC servers. Call [`build`][Self::build] to
@@ -243,10 +249,8 @@ pub struct OtlpServerConfiguration {
     cors: CorsConfiguration,
     http_tls: Option<OtlpTlsConfiguration>,
     grpc_tls: Option<OtlpTlsConfiguration>,
-    #[cfg(test)]
-    http_server_id: Option<MetaString>,
-    #[cfg(test)]
-    grpc_server_id: Option<MetaString>,
+    http_server_id: MetaString,
+    grpc_server_id: MetaString,
 }
 
 impl OtlpServerConfiguration {
@@ -263,10 +267,8 @@ impl OtlpServerConfiguration {
             cors: CorsConfiguration::default(),
             http_tls: None,
             grpc_tls: None,
-            #[cfg(test)]
-            http_server_id: None,
-            #[cfg(test)]
-            grpc_server_id: None,
+            http_server_id: MetaString::from_static(HTTP_SERVER_ID),
+            grpc_server_id: MetaString::from_static(GRPC_SERVER_ID),
         }
     }
 
@@ -285,14 +287,14 @@ impl OtlpServerConfiguration {
         self
     }
 
-    /// Sets the identifiers used for the HTTP and gRPC servers.
+    /// Overrides the identifiers used for the HTTP and gRPC servers.
     ///
-    /// This is required for subscribing to listen address assertions to find the socket address
-    /// when binding to ephemeral ports.
+    /// Tests give each server a unique identifier so that concurrently running tests can each find the ephemeral port
+    /// their own server bound to, without picking up another test's listen address assertion.
     #[cfg(test)]
     fn with_server_ids(mut self, http_id: impl Into<MetaString>, grpc_id: impl Into<MetaString>) -> Self {
-        self.http_server_id = Some(http_id.into());
-        self.grpc_server_id = Some(grpc_id.into());
+        self.http_server_id = http_id.into();
+        self.grpc_server_id = grpc_id.into();
         self
     }
 
@@ -364,12 +366,9 @@ impl OtlpServerConfiguration {
             .add_grpc_service(grpc_logs_server)
             .add_grpc_service(grpc_traces_server)
             .with_http2_only()
-            .with_http2_config(self.grpc_http2_config);
+            .with_http2_config(self.grpc_http2_config)
+            .with_server_id(self.grpc_server_id);
 
-        #[cfg(test)]
-        if let Some(id) = self.grpc_server_id {
-            grpc_server = grpc_server.with_server_id(id);
-        }
         if let Some(tls_config) = grpc_tls_config {
             grpc_server = grpc_server.with_tls_config(tls_config);
         }
@@ -403,12 +402,10 @@ impl OtlpServerConfiguration {
             router
         };
 
-        let mut http_server = HttpServer::from_listen_address(self.http_endpoint).add_routes(router);
+        let mut http_server = HttpServer::from_listen_address(self.http_endpoint)
+            .add_routes(router)
+            .with_server_id(self.http_server_id);
 
-        #[cfg(test)]
-        if let Some(id) = self.http_server_id {
-            http_server = http_server.with_server_id(id);
-        }
         if let Some(tls_config) = http_tls_config {
             http_server = http_server.with_tls_config(tls_config);
         }

@@ -8,7 +8,6 @@ use std::{
     convert::Infallible,
     error::Error,
     future::Future,
-    net::SocketAddr,
     panic::{catch_unwind, AssertUnwindSafe},
     pin::Pin,
     sync::Arc,
@@ -40,12 +39,6 @@ use tonic::{body::Body as GrpcBody, server::NamedService, service::RoutesBuilder
 use tower::Service;
 use tracing::{debug, info, warn};
 
-/// The actual bound listen address of a running dynamic API server.
-///
-/// Asserted by dynamic API servers to allow discovering the exact socket address the server is bound to.
-#[derive(Clone, Debug)]
-pub struct BoundApiAddress(pub SocketAddr);
-
 /// A dynamic API server that can add and remove routes at runtime.
 ///
 /// `DynamicAPIBuilder` serves HTTP and gRPC on a given address, on a single port. gRPC is HTTP/2 with a distinct route
@@ -73,8 +66,9 @@ pub struct BoundApiAddress(pub SocketAddr);
 ///
 /// ## Assertions
 ///
-/// - `BoundApiAddress`: the actual listen address bound by the API server. Identifier is `"dynamic-<type>-api"`, where
-///   `type` is the stringified value of `EndpointType::as_str` (for example, `"dynamic-privileged-api"`)
+/// - [`BoundListenAddress`][saluki_io::net::BoundListenAddress]: the address the API server bound to. Identifier is
+///   `"dynamic-<type>-api"`, where `type` is the stringified value of `EndpointType::as_str` (for example,
+///   `"dynamic-privileged-api"`)
 pub struct DynamicAPIBuilder {
     endpoint_type: EndpointType,
     listen_address: ListenAddress,
