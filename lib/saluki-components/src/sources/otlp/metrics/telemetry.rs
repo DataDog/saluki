@@ -1,18 +1,11 @@
-//! Self-telemetry for the OTLP metrics translator.
-//!
-//! These metrics are distinct from the server-level volume counters in [`crate::common::otlp::Metrics`], which
-//! track bytes and events received. All counters use a bounded `reason` tag:
-//!
-//! - `translate`: the translator returned an error for an entire resource batch.
-//! - `unsupported_temporality`: a metric point was dropped because its aggregation temporality is not supported.
-//! - `histogram_conversion`: a histogram or exponential histogram data point could not be converted.
-//! - `invalid_value`: a metric point was dropped because its value was `NaN` or `Infinity`.
-
 use ::metrics::{Counter, Histogram};
 use saluki_core::components::ComponentContext;
 use saluki_core::observability::ComponentMetricsExt;
 use saluki_metrics::MetricsBuilder;
 
+/// Self-telemetry for the OTLP metrics translator.
+///
+/// Holds translation-specific error and dropped-point counters, plus a processing-latency histogram.
 #[derive(Clone)]
 pub struct OtlpMetricsTranslatorMetrics {
     errors_translate: Counter,
@@ -23,6 +16,7 @@ pub struct OtlpMetricsTranslatorMetrics {
 }
 
 impl OtlpMetricsTranslatorMetrics {
+    /// Builds the translator telemetry from the given component context.
     pub fn from_component_context(component_context: &ComponentContext) -> Self {
         let builder = MetricsBuilder::from_component_context(component_context);
 
@@ -43,6 +37,7 @@ impl OtlpMetricsTranslatorMetrics {
         }
     }
 
+    /// Creates a no-op instance for use in tests where real metric recording is not needed.
     pub fn for_tests() -> Self {
         Self {
             errors_translate: Counter::noop(),
@@ -53,22 +48,27 @@ impl OtlpMetricsTranslatorMetrics {
         }
     }
 
+    /// Returns the counter for batch-level translation errors.
     pub fn errors_translate(&self) -> &Counter {
         &self.errors_translate
     }
 
+    /// Returns the counter for points dropped due to unsupported aggregation temporality.
     pub fn dropped_unsupported_temporality(&self) -> &Counter {
         &self.dropped_unsupported_temporality
     }
 
+    /// Returns the counter for points dropped due to histogram conversion failures.
     pub fn dropped_histogram_conversion(&self) -> &Counter {
         &self.dropped_histogram_conversion
     }
 
+    /// Returns the counter for points dropped due to invalid values (`NaN` or `Infinity`).
     pub fn dropped_invalid_value(&self) -> &Counter {
         &self.dropped_invalid_value
     }
 
+    /// Returns the histogram for OTLP metrics processing latency.
     pub fn processing_duration(&self) -> &Histogram {
         &self.processing_duration
     }

@@ -755,7 +755,9 @@ impl OtlpMetricsTranslator {
                             temporality = sum.aggregation_temporality,
                             "Unsupported or unknown aggregation temporality for Sum metric."
                         );
-                        self.translator_metrics.dropped_unsupported_temporality().increment(1);
+                        self.translator_metrics
+                            .dropped_unsupported_temporality()
+                            .increment(sum.data_points.len() as u64);
                         Vec::new()
                     }
                 },
@@ -773,7 +775,9 @@ impl OtlpMetricsTranslator {
                                 temporality = histogram.aggregation_temporality,
                                 "Unsupported or unknown aggregation temporality for Histogram metric."
                             );
-                            self.translator_metrics.dropped_unsupported_temporality().increment(1);
+                            self.translator_metrics
+                                .dropped_unsupported_temporality()
+                                .increment(histogram.data_points.len() as u64);
                             Vec::new()
                         }
                     }
@@ -793,7 +797,9 @@ impl OtlpMetricsTranslator {
                                 temporality = exponential_histogram.aggregation_temporality,
                                 "Unknown or unsupported aggregation temporality"
                             );
-                            self.translator_metrics.dropped_unsupported_temporality().increment(1);
+                            self.translator_metrics
+                                .dropped_unsupported_temporality()
+                                .increment(exponential_histogram.data_points.len() as u64);
                             Vec::new()
                         }
                     }
@@ -1297,7 +1303,7 @@ impl OtlpMetricsTranslator {
                 }
             } else {
                 hist_info.ok = false;
-                self.translator_metrics.dropped_histogram_conversion().increment(1);
+                self.translator_metrics.dropped_invalid_value().increment(1);
             }
 
             if let Some(min) = dp.min {
@@ -1414,7 +1420,7 @@ impl OtlpMetricsTranslator {
                 }
             } else {
                 hist_info.ok = false;
-                self.translator_metrics.dropped_histogram_conversion().increment(1);
+                self.translator_metrics.dropped_invalid_value().increment(1);
             }
 
             let min_dims = point_dims.with_suffix("min");
@@ -5123,16 +5129,24 @@ mod tests {
         let mut translator = OtlpMetricsTranslator::for_tests_with_translator_metrics(translator_metrics);
 
         // A Sum with an invalid aggregation temporality (99) triggers the unsupported-temporality drop path.
+        // Two data points are dropped, so the counter should increment by 2.
         let metric = OtlpMetric {
             name: "unsupported.temporality".to_string(),
             data: Some(OtlpMetricData::Sum(Sum {
                 aggregation_temporality: 99,
                 is_monotonic: false,
-                data_points: vec![OtlpNumberDataPoint {
-                    value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
-                    time_unix_nano: nanos_from_seconds(1),
-                    ..Default::default()
-                }],
+                data_points: vec![
+                    OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsDouble(1.0)),
+                        time_unix_nano: nanos_from_seconds(1),
+                        ..Default::default()
+                    },
+                    OtlpNumberDataPoint {
+                        value: Some(OtlpNumberDataPointValue::AsDouble(2.0)),
+                        time_unix_nano: nanos_from_seconds(2),
+                        ..Default::default()
+                    },
+                ],
             })),
             ..Default::default()
         };
@@ -5144,7 +5158,7 @@ mod tests {
             ("component_type", "source"),
             ("reason", "unsupported_temporality"),
         ];
-        assert_eq!(recorder.counter(("otlp_metrics_dropped_points_total", tags)), Some(1));
+        assert_eq!(recorder.counter(("otlp_metrics_dropped_points_total", tags)), Some(2));
     }
 
     #[test]
