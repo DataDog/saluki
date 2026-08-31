@@ -39,6 +39,9 @@ pub(crate) type EventSender = mpsc::UnboundedSender<TestEvent>;
 /// The amount of time a test has to clean up after cancellation or timing out.
 const GRACE_TIME: Duration = Duration::from_secs(30);
 
+/// The amount of time the intake sidecar has to report healthy before the test fails.
+const INTAKE_HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Maps shared `DD_DATA_PLANE_*` test env keys to their Windows-image-native nested form.
 ///
 /// ADP reads its own configuration as a nested object: a key like `data_plane.enabled` maps to
@@ -951,7 +954,22 @@ impl IntegrationRunner {
         let mut driver = Driver::from_config(self.isolation_group_id.clone(), config)?
             .with_logging(self.tctx.log_dir().to_path_buf());
         let details = driver.start().await?;
-        driver.wait_for_container_healthy().await?;
+
+        // The health wait polls until it gets an answer, so bound it and watch for cancellation. A sidecar that never
+        // reports healthy would otherwise hold the test past its teardown grace period, leaking the isolation group.
+        let test_cancel = self.tctx.test_cancel_token();
+        tokio::select! {
+            result = driver.wait_for_container_healthy() => {
+                result.error_context("Intake sidecar failed its health check.")?
+            }
+            _ = tokio::time::sleep(INTAKE_HEALTH_TIMEOUT) => return Err(generic_error!(
+                "Intake sidecar did not report healthy within {:?}.",
+                INTAKE_HEALTH_TIMEOUT
+            )),
+            _ = test_cancel.cancelled() => return Err(generic_error!(
+                "Canceled while waiting for the intake sidecar to report healthy."
+            )),
+        }
 
         let host_port = details
             .try_get_exposed_port("tcp", crate::config::INTAKE_HTTP_PORT)
