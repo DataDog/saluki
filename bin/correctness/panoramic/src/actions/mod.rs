@@ -121,6 +121,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dogstatsd_send_fails_for_a_windows_target() {
+        let action = create_action(&ActionConfig::DogstatsdSend {
+            payload: "panoramic.test:1|c".to_string(),
+            port: 8125,
+            timeout: HumanDuration(Duration::from_secs(5)),
+        })
+        .expect("action should be created");
+        let mut ctx = host_context_with_commands(TargetCommand::new(Vec::new()), TargetCommand::new(Vec::new()));
+        ctx.is_host_process = false;
+        ctx.target_os = Some(airlock::driver::ContainerOs::Windows);
+        // Windows runtimes map exposed ports to themselves, which is what makes a host-side send
+        // look like it worked.
+        ctx.port_mappings = HashMap::from([("8125/udp".to_string(), 8125)]);
+
+        let result = action.execute(&ctx).await;
+
+        assert!(!result.passed, "Windows target unexpectedly passed: {}", result.message);
+        assert!(
+            result.message.contains("Windows"),
+            "unexpected message: {}",
+            result.message
+        );
+    }
+
+    #[tokio::test]
     async fn adp_cli_passes_prefix_literal_arguments_and_host_environment_to_child() {
         let action = create_action(&ActionConfig::AdpCli {
             args: vec!["yaml arg; printf not-interpreted".to_string()],

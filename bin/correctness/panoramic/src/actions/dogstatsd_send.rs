@@ -41,6 +41,18 @@ impl Action for DogstatsdSendAction {
     async fn execute(&self, ctx: &AssertionContext) -> AssertionResult {
         let started = Instant::now();
 
+        // Windows containers keep their ports internal, and the runtime hands out identity port
+        // mappings for them. Sending to the host loopback would succeed without ever reaching the
+        // listener, so refuse instead of passing. Reaching a Windows listener needs an
+        // in-container send, which we don't support yet.
+        if ctx.target_is_windows() {
+            return self.result(
+                started,
+                false,
+                "Sending DogStatsD datagrams to a Windows target is not supported.",
+            );
+        }
+
         // The datagram is sent from the host, so the target must publish the port.
         let mapping_key = format!("{}/udp", self.port);
         let Some(host_port) = ctx.port_mappings.get(&mapping_key).copied() else {
