@@ -23,10 +23,10 @@ container:
     - "58125/udp"
 
 procedure:
-  # Readiness gate: nothing is sent until the DogStatsD listener is bound.
-  - assertion: port_listening
-    port: 58125
-    protocol: udp
+  # Readiness gate: the listener logs this only once it is bound, and steps run in order, so
+  # nothing is sent early. A UDP `port_listening` probe would pass before the bind.
+  - assertion: log_contains
+    pattern: 'listen_addr:"udp://0.0.0.0:58125" | DogStatsD listener started.'
     timeout: 60s
   - action: dogstatsd_send
     payload: "integration.intake.counter:3|c|#source:integration-test"
