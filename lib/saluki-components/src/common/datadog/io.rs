@@ -300,7 +300,8 @@ where
     ///
     /// Two configuration inputs arrive here, and they are not interchangeable: `api_keys` holds the typed live views
     /// the endpoints refresh their API keys from, while `live_config` is the raw map that the retry policy's secrets
-    /// gate and API key validation still read. `live_config` goes away as those two move to typed configuration.
+    /// gate still reads and that API key validation subscribes to for change notifications. `live_config` goes away as
+    /// those two move to typed configuration.
     pub fn from_config<F>(
         context: ComponentContext, config: ForwarderConfiguration, live_config: Option<GenericConfiguration>,
         api_keys: &LiveApiKeys, endpoint_name: F, telemetry: ComponentTelemetry, metrics_builder: MetricsBuilder,

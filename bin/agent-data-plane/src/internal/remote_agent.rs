@@ -294,19 +294,7 @@ async fn run_remote_agent_registration_loop(mut client: RemoteAgentClient, mut s
 /// Consumes the Core Agent's configuration event stream, turning each event into a `ConfigUpdate`,
 /// and re-establishes the stream whenever it ends.
 ///
-/// Two properties of the Agent's stream that consumers rely on:
-///
-/// - An update event carries exactly one setting, never a batch. The Agent notifies on each `Set`,
-///   and a `Set` writes one key, so several settings changing at once arrive as that many
-///   consecutive single-key updates. A secret refresh that rotates five values is five updates.
-/// - A snapshot arrives when the stream is established, and again whenever the Agent sees a gap in
-///   the sequence IDs it has sent us. A gap means an update was skipped, so the Agent sends the whole
-///   configuration again to resynchronize.
-///
-/// Agent implementation, at `c21baa551cc32dfe55989ef45e44cd17f8d95a98`:
-/// <https://github.com/DataDog/datadog-agent/blob/c21baa551cc32dfe55989ef45e44cd17f8d95a98/comp/core/configstream/impl/configstream.go>
-/// and
-/// <https://github.com/DataDog/datadog-agent/blob/c21baa551cc32dfe55989ef45e44cd17f8d95a98/pkg/config/nodetreemodel/config.go>
+/// The Agent sends one setting in each partial configuration update.
 async fn run_config_stream_event_loop(
     mut client: RemoteAgentClient, sender: mpsc::Sender<ConfigUpdate>, session_id: SessionIdHandle,
 ) {

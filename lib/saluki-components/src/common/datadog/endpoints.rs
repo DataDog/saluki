@@ -307,7 +307,7 @@ impl ApiKeySource {
 /// Returns the resolved endpoints for each configured additional endpoint and API key.
 ///
 /// This generates a [`ResolvedEndpoint`] for each unique endpoint/API key pair, assigning each
-/// endpoint an `api_key_index` equal to the position of its key in the configured key list for that
+/// endpoint the URL as configured and the position of its key in the key list configured for that
 /// URL (the `enumerate()` index, not a post-dedup counter). Empty and duplicate keys are skipped;
 /// their positions are consumed but no endpoint is created.
 ///
