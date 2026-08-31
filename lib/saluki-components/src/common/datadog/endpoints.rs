@@ -211,7 +211,9 @@ pub(crate) enum EndpointError {
 /// A live view of one configured API key.
 ///
 /// Configuration always resolves the primary intake's key to a string, while a failover region's key
-/// can be left unset. The two shapes are kept apart so that neither view has to invent a value.
+/// can be left unset. The two shapes are kept apart so that neither view has to invent a value. A
+/// forwarder supplies one of these, and building an endpoint from it produces the matching
+/// [`ApiKeySource`] state.
 #[derive(Clone, Debug)]
 pub(crate) enum ApiKeyView {
     /// A key configuration always resolves, such as the primary intake's key.
@@ -219,16 +221,6 @@ pub(crate) enum ApiKeyView {
 
     /// A key configuration can leave unset, such as a failover region's key.
     Optional(Live<Option<String>>),
-}
-
-impl ApiKeyView {
-    /// Returns the currently configured key, or `None` when configuration does not supply one.
-    fn current(&self) -> Option<String> {
-        match self {
-            Self::Required(view) => Some(view.current()),
-            Self::Optional(view) => view.current(),
-        }
-    }
 }
 
 /// The live configuration views a forwarder's endpoints refresh their API keys from.
@@ -252,21 +244,27 @@ pub(crate) struct LiveApiKeys {
 
 /// Which configured key a resolved endpoint refreshes from, and where to find it.
 ///
-/// The variant is the endpoint's kind, and it is fixed at construction: `Single` for the primary
-/// endpoint, the metrics-primary endpoint, and a single-destination override; `Additional` for a
-/// dual-shipping endpoint, which is one position in one configured key list.
-///
-/// The view inside the variant is what can be absent. A destination whose key is not configuration's
-/// to change is built without one, and then the endpoint keeps the key it started with for its whole
-/// life.
+/// The variant is fixed at construction. `Required` and `Optional` are one configured key, as the
+/// primary endpoint, the metrics-primary endpoint, and a single-destination override use; they differ
+/// in whether configuration can leave that key unset. `Additional` is one position in one configured
+/// key list, as a dual-shipping endpoint uses. `Fixed` is a destination whose key is not
+/// configuration's to change, and such an endpoint keeps the key it started with for its whole life.
 #[derive(Clone, Debug)]
 enum ApiKeySource {
-    /// One configured key, as the primary and metrics-primary endpoints use.
-    Single(Option<ApiKeyView>),
+    /// Nothing refreshes this endpoint's key.
+    Fixed,
+
+    /// One configured key that always resolves.
+    Required(Live<String>),
+
+    /// One configured key that configuration can leave unset.
+    Optional(Live<Option<String>>),
 
     /// One position in one additional endpoint's configured key list.
     Additional {
         /// The configured additional endpoints, keyed by intake URL as configuration spells it.
+        /// `None` when the endpoint was built without a live view, which still keeps `url` and
+        /// `index` for the retry queue ID.
         endpoints: Option<Live<HashMap<String, Vec<String>>>>,
 
         /// Intake URL, as configuration spells it and before normalization.
@@ -282,25 +280,31 @@ impl ApiKeySource {
     /// Returns whether configuration can change this endpoint's key.
     fn refreshes(&self) -> bool {
         match self {
-            Self::Single(view) => view.is_some(),
+            Self::Fixed => false,
+            Self::Required(_) | Self::Optional(_) => true,
             Self::Additional { endpoints, .. } => endpoints.is_some(),
         }
     }
 
-    /// Returns the currently configured key for this endpoint, trimmed.
+    /// Refreshes the live views and returns the currently configured key for this endpoint, trimmed.
     ///
     /// Returns `None` when nothing refreshes the key, when configuration supplies no key or a blank
     /// one, or, for an additional endpoint, when its URL or key position is gone. Every variant
     /// normalizes here so that a caller cannot install a key that only differs from the configured
-    /// one by surrounding whitespace.
-    fn current(&self) -> Option<String> {
+    /// one by surrounding whitespace. The key is borrowed from the refreshed view, so a caller that
+    /// reads it per request allocates nothing until the key actually changes.
+    fn refresh(&mut self) -> Option<&str> {
         let key = match self {
-            Self::Single(view) => view.as_ref()?.current()?,
-            Self::Additional { endpoints, url, index } => endpoints.as_ref()?.current().get(url)?.get(*index)?.clone(),
+            Self::Fixed => return None,
+            Self::Required(view) => view.refresh().as_str(),
+            Self::Optional(view) => view.refresh().as_deref()?,
+            Self::Additional { endpoints, url, index } => {
+                endpoints.as_mut()?.refresh().get(url.as_str())?.get(*index)?.as_str()
+            }
         };
 
         let key = key.trim();
-        (!key.is_empty()).then(|| key.to_string())
+        (!key.is_empty()).then_some(key)
     }
 }
 
@@ -531,7 +535,7 @@ impl ResolvedEndpoint {
             endpoint,
             configured_endpoint: raw_endpoint.to_string(),
             api_key: api_key.to_string(),
-            api_key_source: ApiKeySource::Single(None),
+            api_key_source: ApiKeySource::Fixed,
             logs_authority,
             traces_authority,
         })
@@ -545,7 +549,11 @@ impl ResolvedEndpoint {
     /// [`resolve_additional_endpoints`] instead, which also carries the position that identifies its
     /// retry queue.
     pub(crate) fn with_api_key_view(mut self, api_key_view: Option<&ApiKeyView>) -> Self {
-        self.api_key_source = ApiKeySource::Single(api_key_view.cloned());
+        self.api_key_source = match api_key_view {
+            Some(ApiKeyView::Required(view)) => ApiKeySource::Required(view.clone()),
+            Some(ApiKeyView::Optional(view)) => ApiKeySource::Optional(view.clone()),
+            None => ApiKeySource::Fixed,
+        };
         self
     }
 
@@ -570,10 +578,10 @@ impl ResolvedEndpoint {
     /// An endpoint built without such a view, such as a destination presenting a token that configuration does not
     /// own, returns the key it was built with.
     pub fn api_key(&mut self) -> &str {
-        match self.api_key_source.current() {
+        match self.api_key_source.refresh() {
             Some(api_key) if api_key != self.api_key => {
+                self.api_key = api_key.to_string();
                 debug!(endpoint = %self.endpoint, "Refreshed endpoint API key.");
-                self.api_key = api_key;
             }
             Some(_) => {}
             None => {
@@ -619,7 +627,7 @@ impl ResolvedEndpoint {
     pub(crate) fn api_key_index(&self) -> Option<usize> {
         match &self.api_key_source {
             ApiKeySource::Additional { index, .. } => Some(*index),
-            ApiKeySource::Single(_) => None,
+            _ => None,
         }
     }
 

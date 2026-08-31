@@ -16,13 +16,16 @@ type Projection<T> = Arc<dyn for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send
 /// A typed view of one projection of the current configuration.
 ///
 /// A never-dynamic consumer can hold a plain `T`; a dynamic one holds `Live<T>` and never learns
-/// whether it is fixed or tracking the live config. Read the view's cached snapshot with `Deref`;
-/// wait for and receive the next selected update with `changed`.
+/// whether it is fixed or tracking the live config.
 ///
-/// For a dynamic view, `Deref` does not perform a fresh read from the shared configuration. It
-/// returns the last snapshot processed by this view. If the configuration advances before this
-/// view awaits `changed`, `Deref` continues to return the older snapshot until `changed` processes
-/// the notification.
+/// Every read goes through this view's own snapshot:
+///
+/// - `Deref` returns the snapshot, without touching the shared configuration.
+/// - `changed` waits for a projected value that differs from the snapshot, then updates it.
+/// - `refresh` updates the snapshot from the shared configuration synchronously.
+///
+/// A `Live<T>` therefore tracks one consumer's progress through the updates. Separate consumers
+/// **SHOULD** hold separate clones, so that one consumer's reads do not move the other's snapshot.
 pub struct Live<T> {
     inner: Inner<T>,
 }
@@ -37,11 +40,11 @@ enum Inner<T> {
         // after receiving it and ignores notifications that do not change T.
         tick: watch::Receiver<()>,
 
-        // Re-applied to the shared source whenever the view processes a notification.
+        // Re-applied to the shared source whenever the view updates its snapshot.
         project: Projection<T>,
 
         // This value belongs to this Live<T>. It is what Deref returns and what changed() compares
-        // against; a newer value in `cell` does not replace it until changed() processes a tick.
+        // against; a newer value in `cell` does not replace it until changed() or refresh() runs.
         snapshot: T,
     },
 }
@@ -49,10 +52,9 @@ enum Inner<T> {
 impl<T: Clone + PartialEq + 'static> Live<T> {
     /// Creates a view that re-projects the shared configuration after accepted updates.
     ///
-    /// The projection selects the subtree this view owns. The initial projected value is captured
-    /// immediately; later calls to `changed` load and project the shared configuration, then update
-    /// this view's local snapshot. Until `changed` processes a notification, `Deref` continues to
-    /// return the previous snapshot even if the shared configuration has advanced.
+    /// The projection selects the subtree this view owns, and the initial projected value is
+    /// captured immediately. After that, the snapshot moves only when `changed` or `refresh`
+    /// updates it.
     pub fn new_dynamic(
         cell: Arc<ArcSwap<SalukiConfiguration>>, tick: watch::Receiver<()>,
         project: impl for<'a> Fn(&'a SalukiConfiguration) -> &'a T + Send + Sync + 'static,
@@ -68,21 +70,32 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
         }
     }
 
-    /// Returns a fresh clone of the projected value.
+    /// Updates this view's snapshot from the shared configuration and returns it.
     ///
-    /// For a fixed view this is the fixed value. For a dynamic view this reads the shared
-    /// configuration and projects it again, so it returns the newest accepted value even when this
-    /// view has not processed the notification for it yet. The read is independent: it leaves this
-    /// view's snapshot alone, so `Deref` keeps returning the older value and `changed` still reports
-    /// the next state change, with the coalescing it documents.
+    /// This is the synchronous counterpart to `changed`: use it where a consumer reads the value at
+    /// a moment of its own choosing, such as while serving a request. A fixed view returns its fixed
+    /// value. After this returns, `Deref` returns the same value.
     ///
-    /// Use this where a consumer reads the value at a moment of its own choosing, such as while
-    /// serving a request; use `changed` plus `Deref` where a consumer rebuilds state from the update
-    /// it just observed.
-    pub fn current(&self) -> T {
-        match &self.inner {
-            Inner::Fixed(value) => value.clone(),
-            Inner::Dynamic { cell, project, .. } => project(&cell.load()).clone(),
+    /// This does not mark the notification cursor as observed, because the shared configuration can
+    /// advance between the load and the mark, and the update would then be lost. A notification
+    /// already pending for the value read here therefore still wakes `changed`, which finds the
+    /// value unchanged and waits again.
+    pub fn refresh(&mut self) -> &T {
+        match &mut self.inner {
+            Inner::Fixed(value) => value,
+            Inner::Dynamic {
+                cell,
+                project,
+                snapshot,
+                ..
+            } => {
+                let guard = cell.load();
+                let latest = project(&guard);
+                if *latest != *snapshot {
+                    *snapshot = latest.clone();
+                }
+                snapshot
+            }
         }
     }
 
@@ -99,8 +112,8 @@ impl<T: Clone + PartialEq + 'static> Live<T> {
     /// source, applies the projection, compares it with this view's snapshot, and keeps waiting if
     /// the selected value is unchanged. It parks forever when `Fixed` or the channel is closed, so
     /// a caller can `select!` on it unconditionally. The returned value and `Deref` reflect the
-    /// same processed snapshot. This is a state-change watcher, not a fresh-read API or an event
-    /// history: multiple source updates may be coalesced before this view processes them.
+    /// same updated snapshot. This is a state-change watcher, not an event history: multiple source
+    /// updates may be coalesced before this view observes them.
     pub async fn changed(&mut self) -> T {
         match &mut self.inner {
             Inner::Fixed(_) => std::future::pending::<T>().await,
@@ -185,5 +198,87 @@ impl<T: fmt::Debug> fmt::Debug for Live<T> {
                 .field("snapshot", snapshot)
                 .finish_non_exhaustive(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A configuration cell and its notification channel, with the two steps kept separate so that a
+    /// test can advance the shared configuration without notifying the views.
+    struct Source {
+        cell: Arc<ArcSwap<SalukiConfiguration>>,
+        tick: watch::Sender<()>,
+    }
+
+    impl Source {
+        fn new(api_key: &str) -> Self {
+            Self {
+                cell: Arc::new(ArcSwap::from_pointee(config(api_key))),
+                tick: watch::channel(()).0,
+            }
+        }
+
+        fn store(&self, api_key: &str) {
+            self.cell.store(Arc::new(config(api_key)));
+        }
+
+        fn notify(&self) {
+            self.tick.send_replace(());
+        }
+
+        fn api_key_view(&self) -> Live<String> {
+            Live::new_dynamic(Arc::clone(&self.cell), self.tick.subscribe(), |config| {
+                &config.shared.endpoints.api_key
+            })
+        }
+    }
+
+    fn config(api_key: &str) -> SalukiConfiguration {
+        let mut config = SalukiConfiguration::default();
+        config.shared.endpoints.api_key = api_key.to_string();
+        config
+    }
+
+    #[test]
+    fn refresh_updates_the_snapshot_deref_returns() {
+        let source = Source::new("key-1");
+        let mut view = source.api_key_view();
+        assert_eq!("key-1", &*view);
+
+        source.store("key-2");
+        source.notify();
+
+        assert_eq!("key-2", view.refresh());
+        assert_eq!("key-2", &*view, "Deref agrees with the value refresh() returned");
+    }
+
+    #[test]
+    fn refresh_leaves_a_fixed_view_alone() {
+        let mut view = Live::new_fixed("key-1".to_string());
+        assert_eq!("key-1", view.refresh());
+        assert_eq!("key-1", &*view);
+    }
+
+    #[test]
+    fn refresh_does_not_consume_a_pending_notification() {
+        // Asserting on the cursor rather than on changed() keeps the test synchronous, and the cursor
+        // is the thing that must not move: were refresh() to mark it, an update that lands between
+        // the load and the mark would have no notification left to wake changed() with.
+        let source = Source::new("key-1");
+        let mut view = source.api_key_view();
+
+        source.store("key-2");
+        source.notify();
+        assert_eq!("key-2", view.refresh());
+
+        let Inner::Dynamic { tick, .. } = &view.inner else {
+            panic!("a dynamic view");
+        };
+        assert!(
+            tick.has_changed().expect("the channel is open"),
+            "the notification is still pending after refresh()"
+        );
     }
 }
