@@ -100,6 +100,8 @@ timeout: 60s
 # Optional: mock intake sidecar. When enabled, the runner starts a datadog-intake
 # container on the test's Docker network under the `datadog-intake` alias, so the
 # target can forward to `http://datadog-intake:2049`. Docker runtimes only.
+# The sidecar runs from the correctness-tools image, which `make test-integration`
+# builds and `make test-integration-quick` expects to already exist.
 intake:
   enabled: false
 
