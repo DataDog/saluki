@@ -484,9 +484,11 @@ impl OtlpMetricsTranslator {
     ) -> Result<(IntoIter<Event>, FastHashSet<&'static str>), GenericError> {
         let start = Instant::now();
         let result = self.translate_metrics_inner(resource_metrics, metrics);
-        self.translator_metrics.record_processing_duration(start.elapsed());
+        self.translator_metrics
+            .processing_duration()
+            .record(start.elapsed().as_secs_f64());
         if let Err(ref _e) = &result {
-            self.translator_metrics.increment_translate_error();
+            self.translator_metrics.errors_translate().increment(1);
         }
         result
     }
@@ -753,7 +755,7 @@ impl OtlpMetricsTranslator {
                             temporality = sum.aggregation_temporality,
                             "Unsupported or unknown aggregation temporality for Sum metric."
                         );
-                        self.translator_metrics.increment_dropped_unsupported_temporality();
+                        self.translator_metrics.dropped_unsupported_temporality().increment(1);
                         Vec::new()
                     }
                 },
@@ -771,7 +773,7 @@ impl OtlpMetricsTranslator {
                                 temporality = histogram.aggregation_temporality,
                                 "Unsupported or unknown aggregation temporality for Histogram metric."
                             );
-                            self.translator_metrics.increment_dropped_unsupported_temporality();
+                            self.translator_metrics.dropped_unsupported_temporality().increment(1);
                             Vec::new()
                         }
                     }
@@ -791,7 +793,7 @@ impl OtlpMetricsTranslator {
                                 temporality = exponential_histogram.aggregation_temporality,
                                 "Unknown or unsupported aggregation temporality"
                             );
-                            self.translator_metrics.increment_dropped_unsupported_temporality();
+                            self.translator_metrics.dropped_unsupported_temporality().increment(1);
                             Vec::new()
                         }
                     }
@@ -874,7 +876,7 @@ impl OtlpMetricsTranslator {
                         self.record_metric_event(&sum_dims, sum_delta, ts, DataType::Count, &mut events, context);
                     }
                 } else {
-                    self.translator_metrics.increment_dropped_invalid_value();
+                    self.translator_metrics.dropped_invalid_value().increment(1);
                 }
             }
 
@@ -883,7 +885,7 @@ impl OtlpMetricsTranslator {
                 let quantiles = &dp.quantile_values;
                 for quantile in quantiles {
                     if is_skippable(quantile.value) {
-                        self.translator_metrics.increment_dropped_invalid_value();
+                        self.translator_metrics.dropped_invalid_value().increment(1);
                         continue;
                     }
                     let quantile_dims = base_quantile_dims.add_tags([format_quantile_tag(quantile.quantile)]);
@@ -923,7 +925,7 @@ impl OtlpMetricsTranslator {
                     metric_name = point_dims.name,
                     value, "Skipping metric with unsupported value (NaN or Infinity)."
                 );
-                self.translator_metrics.increment_dropped_invalid_value();
+                self.translator_metrics.dropped_invalid_value().increment(1);
                 continue;
             }
 
@@ -986,7 +988,7 @@ impl OtlpMetricsTranslator {
                     metric_name = point_dims.name,
                     value, "Skipping metric with unsupported value (NaN or Infinity)."
                 );
-                self.translator_metrics.increment_dropped_invalid_value();
+                self.translator_metrics.dropped_invalid_value().increment(1);
                 continue;
             }
 
@@ -1245,7 +1247,7 @@ impl OtlpMetricsTranslator {
             // Validate before updating cumulative state.
             if let Err(e) = validate_histogram_buckets(&point_dims, &dp) {
                 warn!(error = %e, "Failed to validate histogram buckets, dropping data point.");
-                self.translator_metrics.increment_dropped_histogram_conversion();
+                self.translator_metrics.dropped_histogram_conversion().increment(1);
                 continue;
             }
 
@@ -1295,7 +1297,7 @@ impl OtlpMetricsTranslator {
                 }
             } else {
                 hist_info.ok = false;
-                self.translator_metrics.increment_dropped_histogram_conversion();
+                self.translator_metrics.dropped_histogram_conversion().increment(1);
             }
 
             if let Some(min) = dp.min {
@@ -1343,13 +1345,13 @@ impl OtlpMetricsTranslator {
                 HistogramMode::Counters => {
                     if let Err(e) = self.get_legacy_buckets(context, point_dims, dp, delta, &mut events) {
                         warn!(error = %e, "Failed to convert histogram buckets to counters, dropping data point.");
-                        self.translator_metrics.increment_dropped_histogram_conversion();
+                        self.translator_metrics.dropped_histogram_conversion().increment(1);
                     }
                 }
                 HistogramMode::Distributions => {
                     if let Err(e) = self.get_sketch_buckets(context, point_dims, &dp, delta, &mut events, hist_info) {
                         warn!(error = %e, "Failed to convert histogram buckets to sketch, dropping data point.");
-                        self.translator_metrics.increment_dropped_histogram_conversion();
+                        self.translator_metrics.dropped_histogram_conversion().increment(1);
                     }
                 }
             }
@@ -1412,7 +1414,7 @@ impl OtlpMetricsTranslator {
                 }
             } else {
                 hist_info.ok = false;
-                self.translator_metrics.increment_dropped_histogram_conversion();
+                self.translator_metrics.dropped_histogram_conversion().increment(1);
             }
 
             let min_dims = point_dims.with_suffix("min");
@@ -1453,7 +1455,7 @@ impl OtlpMetricsTranslator {
                         error = %e,
                         "Failed to convert ExponentialHistogram into DDSketch"
                     );
-                    self.translator_metrics.increment_dropped_histogram_conversion();
+                    self.translator_metrics.dropped_histogram_conversion().increment(1);
                     continue;
                 }
             };
@@ -1466,7 +1468,7 @@ impl OtlpMetricsTranslator {
                         error = %e,
                         "Failed to convert DDSketch into agent sketch"
                     );
-                    self.translator_metrics.increment_dropped_histogram_conversion();
+                    self.translator_metrics.dropped_histogram_conversion().increment(1);
                     continue;
                 }
             };
